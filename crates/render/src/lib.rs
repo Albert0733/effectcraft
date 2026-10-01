@@ -332,3 +332,22 @@ pub fn render_frame(project: &Project, comp: ItemId, t: Tick, scale: f64) -> Ima
 
 #[cfg(test)]
 mod tests;
+
+/// Layer-space bounds `[x0, y0, x1, y1]` of a layer's content at the context time (source size
+/// for solids/footage/precomps, glyph bounds for text, painted bounds for shapes). Used for viewer
+/// handles and hit testing.
+pub fn content_bounds(ctx: &EvalCtx, layer: &effectcraft_project::Layer) -> Option<[f64; 4]> {
+    match &layer.source {
+        LayerSource::Text => {
+            let glyphs = text::glyph_paths(ctx, layer);
+            let paths: Vec<_> = glyphs.into_iter().map(|g| g.0).collect();
+            effectcraft_path::bounds(&paths).map(|r| [r.x0, r.y0, r.x1, r.y1])
+        }
+        LayerSource::Shape => layer.props.sub("contents").and_then(|c| shapes::content_bounds(ctx, layer, c)).map(|r| [r.x0, r.y0, r.x1, r.y1]),
+        LayerSource::Camera | LayerSource::Light { .. } => None,
+        _ => {
+            let (w, h) = source_size(ctx.project, layer);
+            (w > 0 && h > 0).then_some([0.0, 0.0, w as f64, h as f64])
+        }
+    }
+}

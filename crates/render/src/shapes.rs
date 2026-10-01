@@ -485,3 +485,17 @@ pub fn render(ctx: &EvalCtx, layer: &Layer, contents: &PropGroup, s: f64) -> Buf
 
 #[cfg(test)]
 mod tests;
+
+/// Layer-space bounds of a shape layer's painted contents (strokes included), without
+/// rasterising.
+pub fn content_bounds(ctx: &EvalCtx, layer: &Layer, contents: &PropGroup) -> Option<kurbo::Rect> {
+    let mut arena = Vec::new();
+    let (draws, _) = collect(ctx, layer, contents, &mut arena);
+    draws
+        .iter()
+        .filter_map(|d| {
+            let paths: Vec<BezPath> = d.slots.iter().map(|&i| arena[i].clone()).filter(|p| !p.elements().is_empty()).collect();
+            draw_bounds(d, &paths)
+        })
+        .reduce(|a, b| a.union(b))
+}
