@@ -6,11 +6,24 @@
 //! [`instantiate`]), so parameters animate, take expressions and are addressable like any other
 //! property.
 
+mod blur2;
+mod channel;
+mod color2;
 mod color_fx;
 mod controls;
 mod distort;
+mod distort2;
 mod generate;
+mod generate2;
+mod keying;
+mod matte;
 mod misc;
+mod noise;
+mod perspective;
+mod stylize2;
+mod transition;
+pub mod util;
+mod utility;
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -76,6 +89,13 @@ impl Params {
     }
     pub fn e(&self, id: &str) -> u32 {
         self.values.get(id).map(Value::as_enum).unwrap_or(0)
+    }
+    /// String parameter (`Value::Str`), empty when missing or of another kind.
+    pub fn s(&self, id: &str) -> &str {
+        match self.values.get(id) {
+            Some(Value::Str(s)) => s,
+            _ => "",
+        }
     }
 }
 
@@ -155,6 +175,18 @@ pub fn registry() -> &'static [EffectSpec] {
         v.extend(generate::specs());
         v.extend(distort::specs());
         v.extend(controls::specs());
+        v.extend(keying::specs());
+        v.extend(matte::specs());
+        v.extend(channel::specs());
+        v.extend(blur2::specs());
+        v.extend(color2::specs());
+        v.extend(stylize2::specs());
+        v.extend(noise::specs());
+        v.extend(generate2::specs());
+        v.extend(distort2::specs());
+        v.extend(perspective::specs());
+        v.extend(transition::specs());
+        v.extend(utility::specs());
         v.sort_by(|a, b| a.category.cmp(b.category).then(a.name.cmp(b.name)));
         v
     })
