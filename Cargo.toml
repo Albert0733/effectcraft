@@ -22,6 +22,7 @@ effectcraft-project = { path = "crates/project" }
 effectcraft-text = { path = "crates/text" }
 effectcraft-effects = { path = "crates/effects" }
 effectcraft-render = { path = "crates/render" }
+effectcraft-expr = { path = "crates/expr" }
 effectcraft-engine = { path = "crates/engine" }
 effectcraft-ui-egui = { path = "crates/ui-egui" }
 effectcraft-automation = { path = "crates/automation" }
@@ -33,6 +34,9 @@ serde_json = "1"
 log = "0.4"
 rayon = "1"
 proptest = "1"
+
+# scripting (expressions)
+boa_engine = { version = "0.22", default-features = false }
 
 # geometry / fonts
 kurbo = { version = "0.13", features = ["serde"] }
