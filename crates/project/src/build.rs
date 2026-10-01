@@ -249,6 +249,30 @@ pub fn shape_gradient_fill(ids: &mut Ids, radial: bool, start: [f64; 2], end: [f
         .with(ids.prop("opacity", "Opacity", Value::Scalar(100.0)).with_ui(slider(0.0, 100.0, 0.0, 100.0, 0)))
 }
 
+/// Gradient Stroke: a stroke painted with a linear or radial gradient.
+pub fn shape_gradient_stroke(ids: &mut Ids, radial: bool, start: [f64; 2], end: [f64; 2], g: Gradient, width: f64) -> PropGroup {
+    indexed(ids.group("gstroke", "Gradient Stroke 1"))
+        .with(ids.prop("blend", "Blend Mode", Value::Enum(0)).with_ui(ParamUi::Hidden))
+        .with(ids.prop("composite", "Composite", Value::Enum(0)).with_ui(popup(&["Below Previous in Same Group", "Above Previous in Same Group"])))
+        .with(ids.prop("type", "Type", Value::Enum(radial as u32)).with_ui(popup(&["Linear", "Radial"])))
+        .with(ids.prop("start", "Start Point", Value::Vec2(start)).with_ui(ParamUi::Point))
+        .with(ids.prop("end", "End Point", Value::Vec2(end)).with_ui(ParamUi::Point))
+        .with(ids.prop("highlightLength", "Highlight Length", Value::Scalar(0.0)).with_ui(ParamUi::Percent))
+        .with(ids.prop("highlightAngle", "Highlight Angle", Value::Scalar(0.0)).with_ui(ParamUi::Angle))
+        .with(ids.prop("colors", "Colors", Value::Gradient(g)).with_ui(ParamUi::Gradient))
+        .with(ids.prop("opacity", "Opacity", Value::Scalar(100.0)).with_ui(slider(0.0, 100.0, 0.0, 100.0, 0)))
+        .with(ids.prop("width", "Stroke Width", Value::Scalar(width)).with_ui(ParamUi::Pixels))
+        .with(ids.prop("cap", "Line Cap", Value::Enum(0)).with_ui(popup(&["Butt Cap", "Round Cap", "Projecting Cap"])))
+        .with(ids.prop("join", "Line Join", Value::Enum(0)).with_ui(popup(&["Miter Join", "Round Join", "Bevel Join"])))
+        .with(ids.prop("miter", "Miter Limit", Value::Scalar(4.0)))
+        .with(
+            ids.group("dashes", "Dashes")
+                .with(ids.prop("dash", "Dash", Value::Scalar(0.0)).with_ui(ParamUi::Pixels))
+                .with(ids.prop("gap", "Gap", Value::Scalar(0.0)).with_ui(ParamUi::Pixels))
+                .with(ids.prop("offset", "Offset", Value::Scalar(0.0)).with_ui(ParamUi::Pixels)),
+        )
+}
+
 pub fn shape_trim(ids: &mut Ids, start: f64, end: f64, offset: f64) -> PropGroup {
     indexed(ids.group("trim", "Trim Paths 1"))
         .with(ids.prop("start", "Start", Value::Scalar(start)).with_ui(slider(0.0, 100.0, 0.0, 100.0, 1)))
