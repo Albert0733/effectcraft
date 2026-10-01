@@ -351,3 +351,8 @@ pub fn content_bounds(ctx: &EvalCtx, layer: &effectcraft_project::Layer) -> Opti
         }
     }
 }
+
+/// A mask/shape path as a kurbo path (for drawing overlays).
+pub fn kurbo_path(sp: &effectcraft_keyframe::ShapePath) -> kurbo::BezPath {
+    effectcraft_path::to_kurbo(sp)
+}

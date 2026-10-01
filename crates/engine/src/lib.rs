@@ -23,6 +23,8 @@ use serde_json::Value;
 
 pub use commands::{CommandSpec, command_specs, find as find_command};
 pub use effectcraft_effects as effects;
+pub use effectcraft_color as color;
+pub use effectcraft_geom as geom;
 pub use effectcraft_keyframe as keyframe;
 pub use effectcraft_project as project;
 pub use effectcraft_render as render;
