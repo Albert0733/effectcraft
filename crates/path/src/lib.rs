@@ -2,8 +2,12 @@
 //!
 //! Geometry is kept in [`kurbo::BezPath`]; anti-aliased coverage comes from tiny-skia's scanline
 //! rasteriser (BSD-3) and is converted to our `f32` [`Mask`]. Path operations (trim, round corners,
-//! pucker & bloat, zig zag, twist, wiggle, offset, merge) live in [`ops`].
+//! pucker & bloat, zig zag, twist, wiggle, offset, merge) live in [`ops`]; curve-preserving booleans
+//! (for Merge Paths) in [`boolean`] and curve offsetting in [`offset`].
 
+pub mod boolean;
+mod fit;
+pub mod offset;
 pub mod ops;
 
 use effectcraft_geom::Mat3;
