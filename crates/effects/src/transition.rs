@@ -1,0 +1,617 @@
+//! Transition effects (batch 2): Block Dissolve, Gradient Wipe (self gradient), Iris Wipe, Card
+//! Wipe (2D cards), CC Grid Wipe, CC Radial ScaleWipe, CC Scale Wipe and CC Light Wipe.
+//!
+//! Every transition is the identity at 0 % completion. Angles are clockwise from "up".
+
+use effectcraft_color::luminance;
+use effectcraft_keyframe::Value;
+use effectcraft_project::ParamUi;
+use effectcraft_raster::Px;
+use rayon::prelude::*;
+
+use crate::util::{Plane, gauss_plane, hash1, layer_rect, remap, unpremul};
+use crate::{Buf, EffectCtx, EffectSpec, ParamSpec, col, num, p, popup, slider};
+
+fn spec(id: &'static str, name: &'static str, params: Vec<ParamSpec>, render: crate::RenderFn) -> EffectSpec {
+    EffectSpec { id, name, category: "Transition", params, render, gpu: false, float: true }
+}
+
+fn completion(ctx: &EffectCtx) -> f64 {
+    (ctx.params.f("completion") / 100.0).clamp(0.0, 1.0)
+}
+
+#[inline]
+fn scale_px(px: &mut Px, k: f32) {
+    for c in px.iter_mut() {
+        *c *= k;
+    }
+}
+
+/// Largest distance from `c` to a corner of the buffer.
+fn max_corner_dist(b: &Buf, c: (f64, f64), metric: impl Fn(f64, f64) -> f64) -> f64 {
+    let (w, h) = (b.img.width as f64, b.img.height as f64);
+    [(0.0, 0.0), (w, 0.0), (0.0, h), (w, h)].iter().map(|(x, y)| metric(x - c.0, y - c.1)).fold(1e-6, f64::max)
+}
+
+fn block_dissolve(ctx: &EffectCtx, mut b: Buf) -> Buf {
+    let done = completion(ctx) as f32;
+    if done <= 0.0 {
+        return b;
+    }
+    let bw = (ctx.params.f("blockWidth") * b.scale).max(1e-3);
+    let bh = (ctx.params.f("blockHeight") * b.scale).max(1e-3);
+    let feather = ctx.params.f("feather") * b.scale;
+    let (ox, oy) = (b.offset[0], b.offset[1]);
+    let seed = ctx.seed ^ 0xb10c;
+    let mut mask = Plane::new(b.img.width as usize, b.img.height as usize);
+    let w = mask.w;
+    mask.data.par_chunks_mut(w.max(1)).enumerate().for_each(|(y, row)| {
+        let by = ((y as f64 + 0.5 - oy) / bh).floor() as i64;
+        for (x, m) in row.iter_mut().enumerate() {
+            let bx = ((x as f64 + 0.5 - ox) / bw).floor() as i64;
+            let r = hash1(bx as u32, by as u32, seed);
+            *m = if r >= done { 1.0 } else { 0.0 };
+        }
+    });
+    if feather > 0.0 {
+        mask = gauss_plane(&mask, feather * 0.5, feather * 0.5);
+    }
+    b.img.mul_mask(&mask.data);
+    b
+}
+
+fn gradient_wipe(ctx: &EffectCtx, mut b: Buf) -> Buf {
+    let done = completion(ctx) as f32;
+    if done <= 0.0 {
+        return b;
+    }
+    let soft = (ctx.params.f("softness") / 100.0) as f32;
+    let invert = ctx.params.b("invert");
+    b.img.data.par_iter_mut().for_each(|px| {
+        let (c, _) = unpremul(*px);
+        let mut t = luminance(c[0], c[1], c[2]).clamp(0.0, 1.0);
+        if invert {
+            t = 1.0 - t;
+        }
+        let k = if done >= 1.0 {
+            0.0
+        } else if soft > 0.0 {
+            ((t - (done * (1.0 + soft) - soft)) / soft).clamp(0.0, 1.0)
+        } else if t >= done {
+            1.0
+        } else {
+            0.0
+        };
+        scale_px(px, k);
+    });
+    b
+}
+
+#[inline]
+fn cross(a: (f64, f64), b: (f64, f64)) -> f64 {
+    a.0 * b.1 - a.1 * b.0
+}
+
+fn iris_wipe(ctx: &EffectCtx, mut b: Buf) -> Buf {
+    let outer = ctx.params.f("outerRadius").max(0.0) * b.scale;
+    if outer <= 0.0 {
+        return b;
+    }
+    let n = ctx.params.f("points").round().clamp(3.0, 64.0) as usize;
+    let inner = if ctx.params.b("useInnerRadius") { ctx.params.f("innerRadius").max(0.0) * b.scale } else { outer };
+    let star = ctx.params.b("useInnerRadius");
+    let rot = ctx.params.f("rotation").to_radians();
+    let feather = ctx.params.f("feather") * b.scale;
+    let c = b.to_px(ctx.params.v2("center"));
+    let m = if star { n * 2 } else { n };
+    let step = std::f64::consts::TAU / m as f64;
+    let verts: Vec<(f64, f64)> = (0..m)
+        .map(|i| {
+            let r = if star && i % 2 == 1 { inner } else { outer };
+            let a = rot + i as f64 * step;
+            (r * a.sin(), -r * a.cos())
+        })
+        .collect();
+    b.img.rows_mut().for_each(|(y, row)| {
+        for (x, px) in row.iter_mut().enumerate() {
+            let d = (x as f64 + 0.5 - c.0, y as f64 + 0.5 - c.1);
+            let r = d.0.hypot(d.1);
+            let rb = if r < 1e-9 {
+                outer.min(inner)
+            } else {
+                let a = (d.0.atan2(-d.1) - rot).rem_euclid(std::f64::consts::TAU);
+                let i = ((a / step).floor() as usize).min(m - 1);
+                let (vi, vj) = (verts[i], verts[(i + 1) % m]);
+                let e = (vj.0 - vi.0, vj.1 - vi.1);
+                let dir = (d.0 / r, d.1 / r);
+                let den = cross(dir, e);
+                if den.abs() < 1e-12 { outer } else { cross(vi, e) / den }
+            };
+            let k = if feather > 0.0 {
+                ((r - rb) / feather + 0.5).clamp(0.0, 1.0)
+            } else if r >= rb {
+                1.0
+            } else {
+                0.0
+            };
+            scale_px(px, k as f32);
+        }
+    });
+    b
+}
+
+fn card_wipe(ctx: &EffectCtx, mut b: Buf) -> Buf {
+    let done = completion(ctx);
+    if done <= 0.0 {
+        return b;
+    }
+    let tw = (ctx.params.f("transitionWidth") / 100.0).clamp(0.01, 1.0);
+    let rows = ctx.params.f("rows").round().clamp(1.0, 1000.0) as i64;
+    let cols = ctx.params.f("columns").round().clamp(1.0, 1000.0) as i64;
+    let axis = ctx.params.e("flipAxis");
+    let order = ctx.params.e("flipOrder");
+    let back_self = ctx.params.e("backLayer") == 1;
+    let seed = ctx.params.f("randomSeed") as u32 ^ 0xca7d;
+    let (x0, y0, w, h) = layer_rect(ctx, &b);
+    let (cw, ch) = (w / cols as f64, h / rows as f64);
+    let nx = |i: i64| if cols > 1 { i as f64 / (cols - 1) as f64 } else { 0.0 };
+    let ny = |j: i64| if rows > 1 { j as f64 / (rows - 1) as f64 } else { 0.0 };
+    let src = b.img.clone();
+    b.img = remap(&src, false, |x, y| {
+        let (lx, ly) = (x - x0, y - y0);
+        if lx < 0.0 || ly < 0.0 || lx >= w || ly >= h {
+            return Some((x, y));
+        }
+        let i = ((lx / cw).floor() as i64).min(cols - 1);
+        let j = ((ly / ch).floor() as i64).min(rows - 1);
+        let o = match order {
+            1 => 1.0 - nx(i),
+            2 => ny(j),
+            3 => 1.0 - ny(j),
+            4 => (nx(i) + ny(j)) * 0.5,
+            5 => 1.0 - (nx(i) + ny(j)) * 0.5,
+            6 => hash1(i as u32, j as u32, seed) as f64,
+            _ => nx(i),
+        };
+        let p = ((done - o * (1.0 - tw)) / tw).clamp(0.0, 1.0);
+        if p <= 0.0 {
+            return Some((x, y));
+        }
+        let cos = (p * std::f64::consts::PI).cos();
+        if cos.abs() < 1e-4 || (cos < 0.0 && !back_self) {
+            return None;
+        }
+        let around_x = match axis {
+            1 => false,
+            2 => hash1(i as u32, j as u32, seed ^ 0x55) < 0.5,
+            _ => true,
+        };
+        let (ccx, ccy) = (x0 + (i as f64 + 0.5) * cw, y0 + (j as f64 + 0.5) * ch);
+        let (mut dx, mut dy) = (x - ccx, y - ccy);
+        if around_x {
+            dy /= cos;
+            if dy.abs() > ch * 0.5 {
+                return None;
+            }
+        } else {
+            dx /= cos;
+            if dx.abs() > cw * 0.5 {
+                return None;
+            }
+        }
+        Some((ccx + dx, ccy + dy))
+    });
+    b
+}
+
+fn grid_wipe(ctx: &EffectCtx, mut b: Buf) -> Buf {
+    let done = completion(ctx);
+    if done <= 0.0 {
+        return b;
+    }
+    let c = b.to_px(ctx.params.v2("center"));
+    let rot = ctx.params.f("rotation").to_radians();
+    let border = ctx.params.f("border").max(0.0) * b.scale;
+    let tiles = ctx.params.f("tiles").round().clamp(1.0, 500.0);
+    let shape = ctx.params.e("shape");
+    let reverse = ctx.params.b("reverse");
+    let (_, _, w, _) = layer_rect(ctx, &b);
+    let cs = (w / tiles).max(1.0);
+    let (s, co) = rot.sin_cos();
+    let metric = |dx: f64, dy: f64| match shape {
+        0 => dx.abs(),
+        2 => dx.abs().max(dy.abs()),
+        _ => dx.hypot(dy),
+    };
+    let maxd = max_corner_dist(&b, c, |dx, dy| {
+        let (qx, qy) = (dx * co + dy * s, -dx * s + dy * co);
+        metric(qx, qy)
+    });
+    let spread = 0.25;
+    b.img.rows_mut().for_each(|(y, row)| {
+        for (x, px) in row.iter_mut().enumerate() {
+            let (dx, dy) = (x as f64 + 0.5 - c.0, y as f64 + 0.5 - c.1);
+            let (qx, qy) = (dx * co + dy * s, -dx * s + dy * co);
+            let (cx, cy) = (((qx / cs).floor() + 0.5) * cs, ((qy / cs).floor() + 0.5) * cs);
+            let mut o = (metric(cx, cy) / maxd).clamp(0.0, 1.0);
+            if reverse {
+                o = 1.0 - o;
+            }
+            let p = ((done * (1.0 + spread) - o) / spread).clamp(0.0, 1.0);
+            if p <= 0.0 {
+                continue;
+            }
+            let half = cs * 0.5 * (1.0 - p);
+            let m = (qx - cx).abs().max((qy - cy).abs());
+            let k = if border > 0.0 {
+                ((half - m) / border + 0.5).clamp(0.0, 1.0)
+            } else if m < half {
+                1.0
+            } else {
+                0.0
+            };
+            scale_px(px, k as f32);
+        }
+    });
+    b
+}
+
+fn radial_scale_wipe(ctx: &EffectCtx, mut b: Buf) -> Buf {
+    let done = completion(ctx);
+    if done <= 0.0 {
+        return b;
+    }
+    let c = b.to_px(ctx.params.v2("center"));
+    let reverse = ctx.params.b("reverse");
+    let maxd = max_corner_dist(&b, c, f64::hypot);
+    let hole = done * maxd;
+    let src = b.img.clone();
+    b.img = remap(&src, false, |x, y| {
+        let (dx, dy) = (x - c.0, y - c.1);
+        let r = dx.hypot(dy);
+        if reverse {
+            let lim = (1.0 - done) * maxd;
+            if r >= lim || lim <= 1e-9 {
+                return None;
+            }
+            let k = maxd / lim;
+            Some((c.0 + dx * k, c.1 + dy * k))
+        } else {
+            if r <= hole || maxd - hole <= 1e-9 {
+                return None;
+            }
+            let rs = (r - hole) * maxd / (maxd - hole);
+            Some((c.0 + dx / r * rs, c.1 + dy / r * rs))
+        }
+    });
+    b
+}
+
+fn scale_wipe(ctx: &EffectCtx, mut b: Buf) -> Buf {
+    let stretch = ctx.params.f("stretch").max(0.0);
+    if stretch <= 0.0 {
+        return b;
+    }
+    let c = b.to_px(ctx.params.v2("center"));
+    let a = ctx.params.f("direction").to_radians();
+    let dir = (a.sin(), -a.cos());
+    let src = b.img.clone();
+    b.img = remap(&src, true, |x, y| {
+        let u = (x - c.0) * dir.0 + (y - c.1) * dir.1;
+        if u <= 0.0 {
+            return Some((x, y));
+        }
+        let back = u - u / (1.0 + stretch);
+        Some((x - dir.0 * back, y - dir.1 * back))
+    });
+    b
+}
+
+fn light_wipe(ctx: &EffectCtx, mut b: Buf) -> Buf {
+    let done = completion(ctx);
+    if done <= 0.0 {
+        return b;
+    }
+    let c = b.to_px(ctx.params.v2("center"));
+    let intensity = ctx.params.f("intensity") as f32 / 100.0;
+    let shape = ctx.params.e("shape");
+    let a = ctx.params.f("direction").to_radians();
+    let (s, co) = a.sin_cos();
+    let from_source = ctx.params.b("colorFromSource");
+    let color = ctx.params.color("color");
+    let reverse = ctx.params.b("reverse");
+    let metric = move |dx: f64, dy: f64| {
+        let (qx, qy) = (dx * co + dy * s, -dx * s + dy * co);
+        match shape {
+            0 => qx.abs(),
+            2 => qx.abs().max(qy.abs()),
+            _ => qx.hypot(qy),
+        }
+    };
+    let maxd = max_corner_dist(&b, c, metric);
+    let edge = if reverse { (1.0 - done) * maxd } else { done * maxd };
+    let band = (maxd * 0.06).max(2.0);
+    let ramp = (done * 20.0).min(1.0) as f32 * ((1.0 - done) * 20.0).min(1.0) as f32;
+    b.img.rows_mut().for_each(|(y, row)| {
+        for (x, px) in row.iter_mut().enumerate() {
+            let m = metric(x as f64 + 0.5 - c.0, y as f64 + 0.5 - c.1);
+            let visible = if reverse { m < edge } else { m > edge };
+            if !visible {
+                *px = [0.0; 4];
+                continue;
+            }
+            let g = (-((m - edge) / band).powi(2)).exp() as f32 * intensity * ramp;
+            if g <= 0.0 {
+                continue;
+            }
+            let (sc, a) = unpremul(*px);
+            let lc = if from_source { sc } else { [color[0], color[1], color[2]] };
+            for i in 0..3 {
+                px[i] += lc[i] * g * a;
+            }
+        }
+    });
+    b
+}
+
+pub fn specs() -> Vec<EffectSpec> {
+    let pt = |x, y| Value::Vec2([x, y]);
+    let done = || p("completion", "Transition Completion", num(0.0), slider(0.0, 100.0, 0.0, 100.0, 0));
+    vec![
+        spec(
+            "ec.transition.blockdissolve",
+            "Block Dissolve",
+            vec![
+                done(),
+                p("blockWidth", "Block Width", num(1.0), slider(1.0, 4000.0, 1.0, 100.0, 1)),
+                p("blockHeight", "Block Height", num(1.0), slider(1.0, 4000.0, 1.0, 100.0, 1)),
+                p("feather", "Feather", num(0.0), slider(0.0, 400.0, 0.0, 50.0, 1)),
+            ],
+            block_dissolve,
+        ),
+        spec(
+            "ec.transition.gradientwipe",
+            "Gradient Wipe",
+            vec![
+                done(),
+                p("softness", "Transition Softness", num(0.0), slider(0.0, 100.0, 0.0, 100.0, 0)),
+                p("invert", "Invert Gradient", Value::Bool(false), ParamUi::Checkbox),
+            ],
+            gradient_wipe,
+        ),
+        spec(
+            "ec.transition.iriswipe",
+            "Iris Wipe",
+            vec![
+                p("center", "Iris Center", pt(0.5, 0.5), ParamUi::Point),
+                p("points", "Iris Points", num(6.0), slider(6.0, 32.0, 6.0, 32.0, 0)),
+                p("outerRadius", "Outer Radius", num(0.0), slider(0.0, 32000.0, 0.0, 2000.0, 1)),
+                p("useInnerRadius", "Use Inner Radius", Value::Bool(false), ParamUi::Checkbox),
+                p("innerRadius", "Inner Radius", num(0.0), slider(0.0, 32000.0, 0.0, 2000.0, 1)),
+                p("rotation", "Rotation", num(0.0), ParamUi::Angle),
+                p("feather", "Feather", num(0.0), slider(0.0, 1000.0, 0.0, 100.0, 1)),
+            ],
+            iris_wipe,
+        ),
+        spec(
+            "ec.transition.cardwipe",
+            "Card Wipe",
+            vec![
+                done(),
+                p("transitionWidth", "Transition Width", num(50.0), slider(1.0, 100.0, 1.0, 100.0, 0)),
+                p("backLayer", "Back Layer", Value::Enum(0), popup(&["None", "Self"])),
+                p("rows", "Rows", num(8.0), slider(1.0, 1000.0, 1.0, 100.0, 0)),
+                p("columns", "Columns", num(8.0), slider(1.0, 1000.0, 1.0, 100.0, 0)),
+                p("flipAxis", "Flip Axis", Value::Enum(0), popup(&["X", "Y", "Random"])),
+                p(
+                    "flipOrder",
+                    "Flip Order",
+                    Value::Enum(0),
+                    popup(&[
+                        "Left to Right",
+                        "Right to Left",
+                        "Top to Bottom",
+                        "Bottom to Top",
+                        "Top Left to Bottom Right",
+                        "Bottom Right to Top Left",
+                        "Random",
+                    ]),
+                ),
+                p("randomSeed", "Random Seed", num(1.0), slider(0.0, 10000.0, 0.0, 100.0, 0)),
+            ],
+            card_wipe,
+        ),
+        spec(
+            "ec.transition.ccgridwipe",
+            "CC Grid Wipe",
+            vec![
+                done(),
+                p("center", "Center", pt(0.5, 0.5), ParamUi::Point),
+                p("rotation", "Rotation", num(0.0), ParamUi::Angle),
+                p("border", "Border", num(0.0), slider(0.0, 100.0, 0.0, 20.0, 1)),
+                p("tiles", "Tiles", num(10.0), slider(1.0, 500.0, 1.0, 50.0, 1)),
+                p("shape", "Shape", Value::Enum(1), popup(&["Doors", "Radial", "Rectangular"])),
+                p("reverse", "Reverse Transition", Value::Bool(false), ParamUi::Checkbox),
+            ],
+            grid_wipe,
+        ),
+        spec(
+            "ec.transition.ccradialscalewipe",
+            "CC Radial ScaleWipe",
+            vec![done(), p("center", "Center", pt(0.5, 0.5), ParamUi::Point), p("reverse", "Reverse Transition", Value::Bool(false), ParamUi::Checkbox)],
+            radial_scale_wipe,
+        ),
+        spec(
+            "ec.transition.ccscalewipe",
+            "CC Scale Wipe",
+            vec![
+                p("stretch", "Stretch", num(0.0), slider(0.0, 1000.0, 0.0, 50.0, 2)),
+                p("center", "Center", pt(0.5, 0.5), ParamUi::Point),
+                p("direction", "Direction", num(90.0), ParamUi::Angle),
+            ],
+            scale_wipe,
+        ),
+        spec(
+            "ec.transition.cclightwipe",
+            "CC Light Wipe",
+            vec![
+                done(),
+                p("center", "Center", pt(0.5, 0.5), ParamUi::Point),
+                p("intensity", "Intensity", num(100.0), slider(0.0, 1000.0, 0.0, 200.0, 1)),
+                p("shape", "Shape", Value::Enum(1), popup(&["Doors", "Round", "Square"])),
+                p("direction", "Direction", num(0.0), ParamUi::Angle),
+                p("colorFromSource", "Color from Source", Value::Bool(false), ParamUi::Checkbox),
+                p("color", "Color", col(1.0, 1.0, 1.0), ParamUi::Color),
+                p("reverse", "Reverse Transition", Value::Bool(false), ParamUi::Checkbox),
+            ],
+            light_wipe,
+        ),
+    ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Params, find};
+    use effectcraft_raster::Image;
+
+    fn run(id: &str, img: &Image, set: &[(&str, Value)]) -> Image {
+        let s = find(id).unwrap();
+        let mut params = Params { values: s.params.iter().map(|p| (p.id.to_string(), p.default.clone())).collect() };
+        for ps in &s.params {
+            if let (ParamUi::Point, Value::Vec2(f)) = (&ps.ui, &ps.default) {
+                params.values.insert(ps.id.to_string(), Value::Vec2([f[0] * img.width as f64, f[1] * img.height as f64]));
+            }
+        }
+        for (k, v) in set {
+            params.values.insert(k.to_string(), v.clone());
+        }
+        let ctx = EffectCtx { params: &params, time: 0.0, layer_size: [img.width as f64, img.height as f64], seed: 7, adjustment: false };
+        (s.render)(&ctx, Buf { img: img.clone(), offset: [0.0, 0.0], scale: 1.0 }).img
+    }
+
+    fn ramp(w: u32, h: u32) -> Image {
+        let mut img = Image::new(w, h);
+        for y in 0..h {
+            for x in 0..w {
+                let v = (x as f32 + 0.5) / w as f32;
+                img.set(x, y, [v, v, v, 1.0]);
+            }
+        }
+        img
+    }
+
+    fn alpha_sum(img: &Image) -> f32 {
+        img.data.iter().map(|p| p[3]).sum()
+    }
+
+    #[test]
+    fn transitions_are_identity_at_zero_and_clear_at_full() {
+        let img = ramp(40, 30);
+        let full = alpha_sum(&img);
+        for id in [
+            "ec.transition.blockdissolve",
+            "ec.transition.gradientwipe",
+            "ec.transition.cardwipe",
+            "ec.transition.ccgridwipe",
+            "ec.transition.ccradialscalewipe",
+            "ec.transition.cclightwipe",
+        ] {
+            assert_eq!(run(id, &img, &[]), img, "{id} at 0%");
+            let out = run(id, &img, &[("completion", num(100.0))]);
+            assert!(alpha_sum(&out) < full * 0.02, "{id} at 100%: {}", alpha_sum(&out));
+            let half = alpha_sum(&run(id, &img, &[("completion", num(50.0))]));
+            assert!(half > 0.0 && half < full, "{id} at 50%: {half}");
+        }
+    }
+
+    #[test]
+    fn gradient_wipe_removes_dark_pixels_first() {
+        let img = ramp(40, 4);
+        let out = run("ec.transition.gradientwipe", &img, &[("completion", num(50.0))]);
+        assert_eq!(out.get(5, 1)[3], 0.0);
+        assert_eq!(out.get(35, 1)[3], 1.0);
+        let inv = run("ec.transition.gradientwipe", &img, &[("completion", num(50.0)), ("invert", Value::Bool(true))]);
+        assert_eq!(inv.get(5, 1)[3], 1.0);
+        assert_eq!(inv.get(35, 1)[3], 0.0);
+    }
+
+    #[test]
+    fn iris_wipe_opens_a_polygon_hole() {
+        let img = Image::filled(60, 60, [1.0, 1.0, 1.0, 1.0]);
+        assert_eq!(run("ec.transition.iriswipe", &img, &[]), img);
+        let out = run("ec.transition.iriswipe", &img, &[("outerRadius", num(20.0))]);
+        assert_eq!(out.get(30, 30)[3], 0.0);
+        assert_eq!(out.get(30, 12)[3], 0.0, "vertex points up");
+        assert_eq!(out.get(2, 2)[3], 1.0);
+        // A hexagon's flat side is closer than its vertex: cos(30°)·20 ≈ 17.3 px.
+        assert_eq!(out.get(30 + 18, 30)[3], 1.0);
+        // Star with a small inner radius leaves the space between points opaque.
+        let star = run("ec.transition.iriswipe", &img, &[("outerRadius", num(20.0)), ("useInnerRadius", Value::Bool(true)), ("innerRadius", num(5.0))]);
+        assert_eq!(star.get(30, 15)[3], 0.0);
+        assert_eq!(star.get(30 + 12, 30)[3], 1.0);
+    }
+
+    #[test]
+    fn block_dissolve_is_binary_per_block() {
+        let img = Image::filled(40, 40, [1.0, 1.0, 1.0, 1.0]);
+        let out = run("ec.transition.blockdissolve", &img, &[("completion", num(50.0)), ("blockWidth", num(10.0)), ("blockHeight", num(10.0))]);
+        for by in 0..4 {
+            for bx in 0..4 {
+                let a = out.get(bx * 10, by * 10)[3];
+                for y in 0..10 {
+                    for x in 0..10 {
+                        assert_eq!(out.get(bx * 10 + x, by * 10 + y)[3], a);
+                    }
+                }
+            }
+        }
+        let n = alpha_sum(&out) / 100.0;
+        assert!(n > 2.0 && n < 14.0, "{n}");
+    }
+
+    #[test]
+    fn card_wipe_flips_cards_in_order() {
+        let img = Image::filled(80, 40, [1.0, 0.0, 0.0, 1.0]);
+        let out = run("ec.transition.cardwipe", &img, &[("completion", num(50.0)), ("rows", num(1.0)), ("columns", num(8.0)), ("transitionWidth", num(10.0))]);
+        // Left cards are gone, right cards untouched.
+        assert_eq!(out.get(2, 20)[3], 0.0);
+        assert_eq!(out.get(77, 20), [1.0, 0.0, 0.0, 1.0]);
+        let back = run(
+            "ec.transition.cardwipe",
+            &img,
+            &[("completion", num(50.0)), ("rows", num(1.0)), ("columns", num(8.0)), ("transitionWidth", num(10.0)), ("backLayer", Value::Enum(1))],
+        );
+        assert_eq!(back.get(2, 20)[3], 1.0);
+    }
+
+    #[test]
+    fn radial_scale_wipe_pushes_content_outward() {
+        let img = ramp(41, 41);
+        let out = run("ec.transition.ccradialscalewipe", &img, &[("completion", num(30.0))]);
+        assert_eq!(out.get(20, 20)[3], 0.0);
+        assert!(out.get(0, 0)[3] > 0.0);
+        let rev = run("ec.transition.ccradialscalewipe", &img, &[("completion", num(30.0)), ("reverse", Value::Bool(true))]);
+        assert!(rev.get(20, 20)[3] > 0.0);
+        assert_eq!(rev.get(0, 0)[3], 0.0);
+    }
+
+    #[test]
+    fn scale_wipe_smears_past_the_center_line() {
+        let img = ramp(40, 4);
+        assert_eq!(run("ec.transition.ccscalewipe", &img, &[]), img);
+        let out = run("ec.transition.ccscalewipe", &img, &[("stretch", num(1000.0))]);
+        // direction 90° → to the right of centre, everything samples (almost) the centre column.
+        assert_eq!(out.get(10, 1), img.get(10, 1));
+        let centre = img.get(20, 1)[0];
+        assert!((out.get(38, 1)[0] - centre).abs() < 0.03, "{}", out.get(38, 1)[0]);
+    }
+
+    #[test]
+    fn grid_wipe_shrinks_tiles_from_center() {
+        let img = Image::filled(100, 100, [1.0, 1.0, 1.0, 1.0]);
+        let out = run("ec.transition.ccgridwipe", &img, &[("completion", num(30.0))]);
+        assert_eq!(out.get(50, 50)[3], 0.0, "centre tiles are gone first");
+        assert_eq!(out.get(1, 1)[3], 1.0, "corners last");
+    }
+}
