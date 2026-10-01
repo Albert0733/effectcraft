@@ -1,0 +1,94 @@
+//! Time navigation (CTI) commands.
+
+use effectcraft_time::Tick;
+use serde_json::{Value, json};
+
+use super::{CommandSpec, f_p, has_comp, str_p};
+use crate::{EngineError, Result, Session, cmd};
+
+fn report(s: &Session) -> Value {
+    let t = s.time();
+    let frame = s.active_comp().map(|c| c.frame_rate.frame_at(t)).unwrap_or(0);
+    json!({"time": t.seconds(), "frame": frame})
+}
+
+fn set(s: &mut Session, p: &Value) -> Result<Value> {
+    let comp = s.active_comp().ok_or(EngineError::NoComp)?;
+    let t = if let Some(f) = p.get("frame").and_then(Value::as_i64) {
+        comp.frame_rate.tick_of(f)
+    } else if let Some(tc) = str_p(p, "timecode") {
+        let cur = comp.frame_rate.frame_at(s.time());
+        let f = effectcraft_time::parse_timecode(tc, comp.frame_rate, comp.frame_rate.supports_drop_frame(), cur).map_err(|e| super::bad("time.set", e.0))?;
+        comp.frame_rate.tick_of(f)
+    } else {
+        Tick::from_seconds_f64(f_p(p, "time").ok_or_else(|| super::bad("time.set", "need `time`, `frame` or `timecode`"))?)
+    };
+    s.set_time(t);
+    Ok(report(s))
+}
+
+fn step(s: &mut Session, p: &Value) -> Result<Value> {
+    let n = p.get("frames").and_then(Value::as_i64).unwrap_or(1);
+    let comp = s.active_comp().ok_or(EngineError::NoComp)?;
+    let f = comp.frame_rate.frame_at(s.time()) + n;
+    let t = comp.frame_rate.tick_of(f);
+    s.set_time(t);
+    Ok(report(s))
+}
+
+fn go(s: &mut Session, p: &Value) -> Result<Value> {
+    let comp = s.active_comp().ok_or(EngineError::NoComp)?.clone();
+    let t = s.time();
+    let to = str_p(p, "to").unwrap_or("start");
+    let sel_layer = s.state.selected_layers.first().and_then(|id| comp.layer(*id));
+    let target = match to {
+        "start" => Tick::ZERO,
+        "end" => comp.duration - comp.frame_duration(),
+        "workStart" => comp.work_area.0,
+        "workEnd" => comp.work_area.1 - comp.frame_duration(),
+        "layerIn" => sel_layer.map(|l| l.in_point).unwrap_or(t),
+        "layerOut" => sel_layer.map(|l| l.out_point - comp.frame_duration()).unwrap_or(t),
+        "nextKey" | "prevKey" => {
+            // Keyframes (of visible/selected layers) and markers, in comp time.
+            let mut times: Vec<Tick> = comp.markers.iter().map(|m| m.time).collect();
+            let layers: Vec<_> = if s.state.selected_layers.is_empty() { comp.layers.iter().collect() } else { comp.layers.iter().filter(|l| s.state.selected_layers.contains(&l.id)).collect() };
+            for l in layers {
+                l.props.walk("", &mut |_, pr| {
+                    for k in &pr.keys {
+                        times.push(l.comp_time(k.time));
+                    }
+                });
+                times.extend(l.markers.iter().map(|m| l.comp_time(m.time)));
+            }
+            times.sort();
+            times.dedup();
+            let half = comp.frame_duration().0 / 2;
+            if to == "nextKey" {
+                times.into_iter().find(|x| x.0 > t.0 + half).unwrap_or(t)
+            } else {
+                times.into_iter().rev().find(|x| x.0 < t.0 - half).unwrap_or(t)
+            }
+        }
+        _ => return Err(super::bad("time.go", "to: start|end|workStart|workEnd|layerIn|layerOut|nextKey|prevKey")),
+    };
+    s.set_time(target);
+    Ok(report(s))
+}
+
+pub fn specs() -> Vec<CommandSpec> {
+    vec![
+        cmd!("time.set", "Go to Time…", ["View"], Some("Alt+Shift+J"), "{time? (s) | frame? | timecode?}", has_comp, set),
+        cmd!("time.nextFrame", "Next Frame", [], Some("PageDown"), "{}", has_comp, |s, _| step(s, &json!({"frames": 1}))),
+        cmd!("time.previousFrame", "Previous Frame", [], Some("PageUp"), "{}", has_comp, |s, _| step(s, &json!({"frames": -1}))),
+        cmd!("time.forward10", "Forward 10 Frames", [], Some("Shift+PageDown"), "{}", has_comp, |s, _| step(s, &json!({"frames": 10}))),
+        cmd!("time.back10", "Back 10 Frames", [], Some("Shift+PageUp"), "{}", has_comp, |s, _| step(s, &json!({"frames": -10}))),
+        cmd!("time.step", "Step Frames", [], None, "{frames}", has_comp, step),
+        cmd!("time.start", "Go to Start", [], Some("Home"), "{}", has_comp, |s, _| go(s, &json!({"to": "start"}))),
+        cmd!("time.end", "Go to End", [], Some("End"), "{}", has_comp, |s, _| go(s, &json!({"to": "end"}))),
+        cmd!("time.layerIn", "Go to Layer In Point", [], Some("I"), "{}", has_comp, |s, _| go(s, &json!({"to": "layerIn"}))),
+        cmd!("time.layerOut", "Go to Layer Out Point", [], Some("O"), "{}", has_comp, |s, _| go(s, &json!({"to": "layerOut"}))),
+        cmd!("time.nextKey", "Go to Next Keyframe or Marker", [], Some("K"), "{}", has_comp, |s, _| go(s, &json!({"to": "nextKey"}))),
+        cmd!("time.previousKey", "Go to Previous Keyframe or Marker", [], Some("J"), "{}", has_comp, |s, _| go(s, &json!({"to": "prevKey"}))),
+        cmd!("time.go", "Go To", [], None, "{to: start|end|workStart|workEnd|layerIn|layerOut|nextKey|prevKey}", has_comp, go),
+    ]
+}
