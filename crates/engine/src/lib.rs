@@ -22,8 +22,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub use commands::{CommandSpec, command_specs, find as find_command};
-pub use effectcraft_effects as effects;
 pub use effectcraft_color as color;
+pub use effectcraft_effects as effects;
 pub use effectcraft_geom as geom;
 pub use effectcraft_keyframe as keyframe;
 pub use effectcraft_project as project;
@@ -320,3 +320,8 @@ impl Session {
 
 #[cfg(test)]
 mod tests;
+
+/// Font families available to text layers (bundled + scanned system fonts).
+pub fn text_families() -> Vec<String> {
+    effectcraft_text::families().into_iter().map(|(f, _)| f).collect()
+}

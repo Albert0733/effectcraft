@@ -241,16 +241,24 @@ impl LightKind {
 #[serde(tag = "type")]
 pub enum LayerSource {
     /// Footage item (video, still, sequence, audio).
-    Footage { item: ItemId },
+    Footage {
+        item: ItemId,
+    },
     /// Nested composition (precomp).
-    Comp { item: ItemId },
+    Comp {
+        item: ItemId,
+    },
     /// Solid item (solids also back adjustment layers).
-    Solid { item: ItemId },
+    Solid {
+        item: ItemId,
+    },
     Text,
     Shape,
     Null,
     Camera,
-    Light { kind: LightKind },
+    Light {
+        kind: LightKind,
+    },
 }
 
 impl LayerSource {
@@ -415,19 +423,11 @@ impl Layer {
     /// Layer time for a comp time (stretch-aware).
     pub fn layer_time(&self, comp_t: Tick) -> Tick {
         let d = comp_t - self.start_time;
-        if (self.stretch - 100.0).abs() < 1e-9 {
-            d
-        } else {
-            Tick((d.0 as f64 * 100.0 / self.stretch) as i64)
-        }
+        if (self.stretch - 100.0).abs() < 1e-9 { d } else { Tick((d.0 as f64 * 100.0 / self.stretch) as i64) }
     }
     /// Comp time for a layer time.
     pub fn comp_time(&self, layer_t: Tick) -> Tick {
-        if (self.stretch - 100.0).abs() < 1e-9 {
-            self.start_time + layer_t
-        } else {
-            self.start_time + Tick((layer_t.0 as f64 * self.stretch / 100.0) as i64)
-        }
+        if (self.stretch - 100.0).abs() < 1e-9 { self.start_time + layer_t } else { self.start_time + Tick((layer_t.0 as f64 * self.stretch / 100.0) as i64) }
     }
     pub fn transform(&self) -> Option<&PropGroup> {
         self.props.sub("transform")

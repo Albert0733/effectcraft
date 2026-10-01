@@ -33,7 +33,11 @@ fn tritone(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let blend = 1.0 - ctx.params.f("blend") as f32 / 100.0;
     b.img.map_straight(|c| {
         let l = luminance(c[0], c[1], c[2]).clamp(0.0, 1.0);
-        let t = if l < 0.5 { mix([sh[0], sh[1], sh[2]], [mid[0], mid[1], mid[2]], l * 2.0) } else { mix([mid[0], mid[1], mid[2]], [hi[0], hi[1], hi[2]], (l - 0.5) * 2.0) };
+        let t = if l < 0.5 {
+            mix([sh[0], sh[1], sh[2]], [mid[0], mid[1], mid[2]], l * 2.0)
+        } else {
+            mix([mid[0], mid[1], mid[2]], [hi[0], hi[1], hi[2]], (l - 0.5) * 2.0)
+        };
         mix(c, t, blend)
     });
     b
@@ -105,7 +109,8 @@ fn exposure(ctx: &EffectCtx, mut b: Buf) -> Buf {
 }
 
 fn black_white(ctx: &EffectCtx, mut b: Buf) -> Buf {
-    let w = [ctx.params.f("reds"), ctx.params.f("yellows"), ctx.params.f("greens"), ctx.params.f("cyans"), ctx.params.f("blues"), ctx.params.f("magentas")].map(|v| v as f32 / 100.0);
+    let w = [ctx.params.f("reds"), ctx.params.f("yellows"), ctx.params.f("greens"), ctx.params.f("cyans"), ctx.params.f("blues"), ctx.params.f("magentas")]
+        .map(|v| v as f32 / 100.0);
     let tint_on = ctx.params.b("tint");
     let tc = ctx.params.color("tintColor");
     b.img.map_straight(|c| {
@@ -243,7 +248,8 @@ fn channel_mixer(ctx: &EffectCtx, mut b: Buf) -> Buf {
 }
 
 fn gamma_pg(ctx: &EffectCtx, mut b: Buf) -> Buf {
-    let ch = |n: &str| (ctx.params.f(&format!("{n}Gamma")).max(0.01) as f32, ctx.params.f(&format!("{n}Pedestal")) as f32, ctx.params.f(&format!("{n}Gain")) as f32);
+    let ch =
+        |n: &str| (ctx.params.f(&format!("{n}Gamma")).max(0.01) as f32, ctx.params.f(&format!("{n}Pedestal")) as f32, ctx.params.f(&format!("{n}Gain")) as f32);
     let r = ch("red");
     let g = ch("green");
     let bl = ch("blue");
@@ -426,7 +432,17 @@ pub fn specs() -> Vec<EffectSpec> {
             {
                 let ids = ["rr", "rg", "rb", "rc", "gr", "gg", "gb", "gc", "br", "bg", "bb", "bc"];
                 let names = [
-                    "Red-Red", "Red-Green", "Red-Blue", "Red-Const", "Green-Red", "Green-Green", "Green-Blue", "Green-Const", "Blue-Red", "Blue-Green", "Blue-Blue",
+                    "Red-Red",
+                    "Red-Green",
+                    "Red-Blue",
+                    "Red-Const",
+                    "Green-Red",
+                    "Green-Green",
+                    "Green-Blue",
+                    "Green-Const",
+                    "Blue-Red",
+                    "Blue-Green",
+                    "Blue-Blue",
                     "Blue-Const",
                 ];
                 let mut v: Vec<_> = ids

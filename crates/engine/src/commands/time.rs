@@ -51,7 +51,11 @@ fn go(s: &mut Session, p: &Value) -> Result<Value> {
         "nextKey" | "prevKey" => {
             // Keyframes (of visible/selected layers) and markers, in comp time.
             let mut times: Vec<Tick> = comp.markers.iter().map(|m| m.time).collect();
-            let layers: Vec<_> = if s.state.selected_layers.is_empty() { comp.layers.iter().collect() } else { comp.layers.iter().filter(|l| s.state.selected_layers.contains(&l.id)).collect() };
+            let layers: Vec<_> = if s.state.selected_layers.is_empty() {
+                comp.layers.iter().collect()
+            } else {
+                comp.layers.iter().filter(|l| s.state.selected_layers.contains(&l.id)).collect()
+            };
             for l in layers {
                 l.props.walk("", &mut |_, pr| {
                     for k in &pr.keys {

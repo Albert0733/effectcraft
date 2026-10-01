@@ -47,7 +47,16 @@ macro_rules! cmd {
 #[macro_export]
 macro_rules! query {
     ($id:literal, $label:literal, $params:literal, $run:expr) => {
-        $crate::commands::CommandSpec { id: $id, label: $label, menu: &[], shortcut: None, params: $params, enabled: $crate::commands::always, run: $run, journal: false }
+        $crate::commands::CommandSpec {
+            id: $id,
+            label: $label,
+            menu: &[],
+            shortcut: None,
+            params: $params,
+            enabled: $crate::commands::always,
+            run: $run,
+            journal: false,
+        }
     };
 }
 
@@ -140,7 +149,13 @@ pub(crate) fn layer_p(s: &Session, p: &Value, cmd: &str) -> Result<(ItemId, Laye
     if let Some(v) = p.get("layer") {
         return resolve_layer(comp, v).map(|l| (cid, l)).ok_or_else(|| bad(cmd, format!("no layer {v}")));
     }
-    s.state.selected_layers.first().copied().filter(|l| comp.layer(*l).is_some()).map(|l| (cid, l)).ok_or_else(|| bad(cmd, "no `layer` given and no layer selected"))
+    s.state
+        .selected_layers
+        .first()
+        .copied()
+        .filter(|l| comp.layer(*l).is_some())
+        .map(|l| (cid, l))
+        .ok_or_else(|| bad(cmd, "no `layer` given and no layer selected"))
 }
 
 /// `layers` param (array) or the selection.

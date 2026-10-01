@@ -167,7 +167,11 @@ fn new_shape(s: &mut Session, p: &Value) -> Result<Value> {
     let cid = comp_id(s, p)?;
     let comp = s.project.comp(cid).ok_or(EngineError::NoComp)?.clone();
     let kind = str_p(p, "kind").unwrap_or("none").to_string();
-    let size = p.get("size").and_then(Value::as_array).map(|a| [a[0].as_f64().unwrap_or(200.0), a.get(1).and_then(Value::as_f64).unwrap_or(200.0)]).unwrap_or([300.0, 300.0]);
+    let size = p
+        .get("size")
+        .and_then(Value::as_array)
+        .map(|a| [a[0].as_f64().unwrap_or(200.0), a.get(1).and_then(Value::as_f64).unwrap_or(200.0)])
+        .unwrap_or([300.0, 300.0]);
     let fill = Some(c4(color_p(p, "fill"), [0.25, 0.55, 1.0, 1.0]));
     let stroke = (f_p(p, "strokeWidth").unwrap_or(0.0) > 0.0).then(|| (c4(color_p(p, "stroke"), [1.0, 1.0, 1.0, 1.0]), f_p(p, "strokeWidth").unwrap_or(2.0)));
     let pos = p.get("position").and_then(|v| v.as_array()).map(|a| [a[0].as_f64().unwrap_or(0.0), a.get(1).and_then(Value::as_f64).unwrap_or(0.0)]);
@@ -669,7 +673,10 @@ fn add_shape_item(s: &mut Session, p: &Value) -> Result<Value> {
         let l = layer_mut(proj, cid, lid)?;
         let contents = l.props.sub_mut("contents").ok_or_else(|| bad("layer.addShapeItem", "not a shape layer"))?;
         let target = match group_uid {
-            Some(u) => contents.find_group_mut(u).and_then(|g| if g.match_id == "contents" { Some(g) } else { g.sub_mut("contents") }).ok_or_else(|| bad("layer.addShapeItem", "no such group"))?,
+            Some(u) => contents
+                .find_group_mut(u)
+                .and_then(|g| if g.match_id == "contents" { Some(g) } else { g.sub_mut("contents") })
+                .ok_or_else(|| bad("layer.addShapeItem", "no such group"))?,
             None => contents,
         };
         target.children.push(g.into());
@@ -734,7 +741,8 @@ fn transform_op(s: &mut Session, p: &Value) -> Result<Value> {
     let op = str_p(p, "op").unwrap_or("reset").to_string();
     let comp = s.project.comp(cid).ok_or(EngineError::NoComp)?.clone();
     let t = s.time();
-    let sizes: Vec<(LayerId, (u32, u32))> = comp.layers.iter().filter(|l| ids.contains(&l.id)).map(|l| (l.id, effectcraft_render::source_size(&s.project, l))).collect();
+    let sizes: Vec<(LayerId, (u32, u32))> =
+        comp.layers.iter().filter(|l| ids.contains(&l.id)).map(|l| (l.id, effectcraft_render::source_size(&s.project, l))).collect();
     s.edit("Transform", None, |proj, _| {
         for (lid, (w, h)) in &sizes {
             let l = layer_mut(proj, cid, *lid)?;
@@ -848,7 +856,15 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!("layer.newLight", "Light…", ["Layer", "New"], Some("Cmd+Alt+Shift+L"), "{kind?: Parallel|Spot|Point|Ambient}", has_comp, new_light),
         cmd!("layer.newCamera", "Camera…", ["Layer", "New"], Some("Cmd+Alt+Shift+C"), "{name?}", has_comp, new_camera),
         cmd!("layer.newNull", "Null Object", ["Layer", "New"], Some("Cmd+Alt+Shift+Y"), "{name?}", has_comp, new_null),
-        cmd!("layer.newShape", "Shape Layer", ["Layer", "New"], None, "{kind?: rect|rounded|ellipse|star|polygon|none, size?, fill?, stroke?, strokeWidth?, position?}", has_comp, new_shape),
+        cmd!(
+            "layer.newShape",
+            "Shape Layer",
+            ["Layer", "New"],
+            None,
+            "{kind?: rect|rounded|ellipse|star|polygon|none, size?, fill?, stroke?, strokeWidth?, position?}",
+            has_comp,
+            new_shape
+        ),
         cmd!("layer.newAdjustment", "Adjustment Layer", ["Layer", "New"], Some("Cmd+Alt+Y"), "{name?}", has_comp, new_adjustment),
         cmd!("layer.settings", "Layer Settings…", ["Layer"], Some("Cmd+Shift+Y"), "{layer?, name?, color?, width?, height?}", has_layers, layer_settings),
         cmd!("layer.addItem", "Add Footage to Comp", ["File"], Some("Cmd+/"), "{item: id|name, time?}", has_comp, add_item),
@@ -866,12 +882,36 @@ pub fn specs() -> Vec<CommandSpec> {
         ),
         cmd!("layer.rename", "Rename", [], Some("Enter"), "{layer?, name}", has_layers, rename),
         cmd!("layer.setBlendMode", "Blending Mode", [], None, "{layers?, mode?: Normal|Multiply|Screen|…, step?: ±1}", has_layers, blend),
-        cmd!("layer.setTrackMatte", "Track Matte", [], None, "{layer?, matte: layer|null, kind?: alpha|alphaInverted|luma|lumaInverted}", has_layers, track_matte),
+        cmd!(
+            "layer.setTrackMatte",
+            "Track Matte",
+            [],
+            None,
+            "{layer?, matte: layer|null, kind?: alpha|alphaInverted|luma|lumaInverted}",
+            has_layers,
+            track_matte
+        ),
         cmd!("layer.setParent", "Parent", [], None, "{layers?, parent: layer|null}", has_layers, set_parent),
-        cmd!("layer.timing", "Layer Timing", [], None, "{layers?, op?: moveInToTime|moveOutToTime|trimInToTime|trimOutToTime, delta?, start?, in?, out?, merge?}", has_layers, timing),
+        cmd!(
+            "layer.timing",
+            "Layer Timing",
+            [],
+            None,
+            "{layers?, op?: moveInToTime|moveOutToTime|trimInToTime|trimOutToTime, delta?, start?, in?, out?, merge?}",
+            has_layers,
+            timing
+        ),
         cmd!("layer.arrange", "Arrange", ["Layer", "Arrange"], None, "{layers?, to: front|forward|backward|back, index?}", has_layers, arrange),
         cmd!("layer.precompose", "Pre-compose…", ["Layer"], Some("Cmd+Shift+C"), "{layers?, name?}", has_layers, precompose),
-        cmd!("layer.addMask", "New Mask", ["Layer", "Mask"], Some("Cmd+Shift+N"), "{layer?, shape?: rect|ellipse, rect? [x,y,w,h], mode?}", has_layers, add_mask),
+        cmd!(
+            "layer.addMask",
+            "New Mask",
+            ["Layer", "Mask"],
+            Some("Cmd+Shift+N"),
+            "{layer?, shape?: rect|ellipse, rect? [x,y,w,h], mode?}",
+            has_layers,
+            add_mask
+        ),
         cmd!("layer.setMask", "Mask Mode", [], None, "{layer?, mask: index|uid|name, mode?, inverted?}", has_layers, mask_props),
         cmd!(
             "layer.addShapeItem",
@@ -891,8 +931,24 @@ pub fn specs() -> Vec<CommandSpec> {
             has_layers,
             set_text
         ),
-        cmd!("layer.addTextAnimator", "Animate Text", ["Animation"], None, "{layer?, properties: [position|scale|rotation|opacity|fillColor|tracking|…]}", has_layers, add_animator),
-        cmd!("layer.transform", "Transform", ["Layer", "Transform"], None, "{layers?, op: reset|center|fit|fitWidth|fitHeight|flipH|flipV}", has_layers, transform_op),
+        cmd!(
+            "layer.addTextAnimator",
+            "Animate Text",
+            ["Animation"],
+            None,
+            "{layer?, properties: [position|scale|rotation|opacity|fillColor|tracking|…]}",
+            has_layers,
+            add_animator
+        ),
+        cmd!(
+            "layer.transform",
+            "Transform",
+            ["Layer", "Transform"],
+            None,
+            "{layers?, op: reset|center|fit|fitWidth|fitHeight|flipH|flipV}",
+            has_layers,
+            transform_op
+        ),
         cmd!("layer.timeStretch", "Time Stretch…", ["Layer", "Time"], None, "{layers?, percent?, op?: reverse}", has_layers, time_stretch),
     ]
 }

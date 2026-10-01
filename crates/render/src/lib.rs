@@ -16,11 +16,11 @@ use std::sync::Arc;
 use effectcraft_color::BlendMode;
 use effectcraft_effects::{Buf, EffectCtx, Params};
 use effectcraft_geom::{Mat3, vec2};
-pub use eval::{EvalCtx, ExprHost, source_size};
 use effectcraft_project::{Comp, Footage, GroupKind, ItemId, ItemKind, Layer, LayerSource, MatteKind, Node, Project, Quality, Sampling};
 pub use effectcraft_raster::Image;
 use effectcraft_raster::{WarpOpts, composite_warp};
 use effectcraft_time::Tick;
+pub use eval::{EvalCtx, ExprHost, source_size};
 use rayon::prelude::*;
 
 /// Supplies decoded footage frames (implemented by the media layer).

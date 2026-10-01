@@ -8,7 +8,12 @@ fn project_with_layer() -> (Project, crate::ItemId) {
     let mut p = Project::default();
     let comp = Comp::new(1920, 1080, FrameRate::FPS_29_97, Tick::from_seconds_f64(10.0));
     let cid = p.add_item("Main", effectcraft_color::Label::Sandstone, None, ItemKind::Comp(comp.clone().into()));
-    let sid = p.add_item("Red Solid", effectcraft_color::Label::Red, None, ItemKind::Solid(Solid { color: [1.0, 0.0, 0.0], width: 1920, height: 1080, pixel_aspect: 1.0 }));
+    let sid = p.add_item(
+        "Red Solid",
+        effectcraft_color::Label::Red,
+        None,
+        ItemKind::Solid(Solid { color: [1.0, 0.0, 0.0], width: 1920, height: 1080, pixel_aspect: 1.0 }),
+    );
     let layer = build::layer(&mut p, &comp, "Red Solid 1", LayerSource::Solid { item: sid }, (1920, 1080), None);
     p.comp_mut(cid).unwrap().layers.push(layer);
     (p, cid)

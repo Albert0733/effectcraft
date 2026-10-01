@@ -86,7 +86,12 @@ fn group_json(g: &PropGroup, l: &Layer, t: effectcraft_time::Tick, depth: usize,
                 Node::Prop(p) => {
                     let mut o = json!({"uid": p.uid, "match": p.match_id, "name": p.name, "value": p.value_at(l.layer_time(t)).to_json()});
                     if !p.keys.is_empty() {
-                        o["keys"] = json!(p.keys.iter().map(|k| json!({"time": k.time.seconds(), "value": k.value.to_json(), "in": k.in_interp.label(), "out": k.out_interp.label()})).collect::<Vec<_>>());
+                        o["keys"] = json!(
+                            p.keys
+                                .iter()
+                                .map(|k| json!({"time": k.time.seconds(), "value": k.value.to_json(), "in": k.in_interp.label(), "out": k.out_interp.label()}))
+                                .collect::<Vec<_>>()
+                        );
                     }
                     if let Some(e) = &p.expr {
                         o["expression"] = json!(e.text);

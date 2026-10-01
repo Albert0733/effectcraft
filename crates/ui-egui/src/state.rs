@@ -1,0 +1,332 @@
+//! Frontend view state (not project data). Serde so the control channel can read and set it.
+
+use std::collections::BTreeSet;
+
+use serde::{Deserialize, Serialize};
+
+use crate::dock::{DockNode, PanelKind};
+use crate::icons::Icon;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Tool {
+    #[default]
+    Selection,
+    Hand,
+    Zoom,
+    Orbit,
+    PanCamera,
+    Dolly,
+    Rotate,
+    PanBehind,
+    Rectangle,
+    RoundedRect,
+    Ellipse,
+    Polygon,
+    Star,
+    Pen,
+    Type,
+    TypeVertical,
+    Brush,
+    Clone,
+    Eraser,
+    RotoBrush,
+    Puppet,
+}
+
+impl Tool {
+    /// Toolbar slots: each slot shows its current tool; the slot cycles with its shortcut.
+    pub const SLOTS: &'static [&'static [Tool]] = &[
+        &[Tool::Selection],
+        &[Tool::Hand],
+        &[Tool::Zoom],
+        &[Tool::Orbit],
+        &[Tool::PanCamera],
+        &[Tool::Dolly],
+        &[Tool::Rotate],
+        &[Tool::PanBehind],
+        &[Tool::Rectangle, Tool::RoundedRect, Tool::Ellipse, Tool::Polygon, Tool::Star],
+        &[Tool::Pen],
+        &[Tool::Type, Tool::TypeVertical],
+        &[Tool::Brush],
+        &[Tool::Clone],
+        &[Tool::Eraser],
+        &[Tool::RotoBrush],
+        &[Tool::Puppet],
+    ];
+    pub const ALL: [Tool; 21] = [
+        Tool::Selection,
+        Tool::Hand,
+        Tool::Zoom,
+        Tool::Orbit,
+        Tool::PanCamera,
+        Tool::Dolly,
+        Tool::Rotate,
+        Tool::PanBehind,
+        Tool::Rectangle,
+        Tool::RoundedRect,
+        Tool::Ellipse,
+        Tool::Polygon,
+        Tool::Star,
+        Tool::Pen,
+        Tool::Type,
+        Tool::TypeVertical,
+        Tool::Brush,
+        Tool::Clone,
+        Tool::Eraser,
+        Tool::RotoBrush,
+        Tool::Puppet,
+    ];
+    pub fn label(self) -> &'static str {
+        match self {
+            Tool::Selection => "Selection Tool",
+            Tool::Hand => "Hand Tool",
+            Tool::Zoom => "Zoom Tool",
+            Tool::Orbit => "Orbit Around Cursor Tool",
+            Tool::PanCamera => "Pan Under Cursor Tool",
+            Tool::Dolly => "Dolly Towards Cursor Tool",
+            Tool::Rotate => "Rotation Tool",
+            Tool::PanBehind => "Pan Behind (Anchor Point) Tool",
+            Tool::Rectangle => "Rectangle Tool",
+            Tool::RoundedRect => "Rounded Rectangle Tool",
+            Tool::Ellipse => "Ellipse Tool",
+            Tool::Polygon => "Polygon Tool",
+            Tool::Star => "Star Tool",
+            Tool::Pen => "Pen Tool",
+            Tool::Type => "Horizontal Type Tool",
+            Tool::TypeVertical => "Vertical Type Tool",
+            Tool::Brush => "Brush Tool",
+            Tool::Clone => "Clone Stamp Tool",
+            Tool::Eraser => "Eraser Tool",
+            Tool::RotoBrush => "Roto Brush Tool",
+            Tool::Puppet => "Puppet Position Pin Tool",
+        }
+    }
+    pub fn shortcut(self) -> Option<&'static str> {
+        match self {
+            Tool::Selection => Some("V"),
+            Tool::Hand => Some("H"),
+            Tool::Zoom => Some("Z"),
+            Tool::Orbit => Some("1"),
+            Tool::PanCamera => Some("2"),
+            Tool::Dolly => Some("3"),
+            Tool::Rotate => Some("W"),
+            Tool::PanBehind => Some("Y"),
+            Tool::Rectangle | Tool::RoundedRect | Tool::Ellipse | Tool::Polygon | Tool::Star => Some("Q"),
+            Tool::Pen => Some("G"),
+            Tool::Type | Tool::TypeVertical => Some("Cmd+T"),
+            Tool::Brush | Tool::Clone | Tool::Eraser => Some("Cmd+B"),
+            Tool::RotoBrush => Some("Alt+W"),
+            Tool::Puppet => Some("Cmd+P"),
+        }
+    }
+    pub fn icon(self) -> Icon {
+        match self {
+            Tool::Selection => Icon::Selection,
+            Tool::Hand => Icon::Hand,
+            Tool::Zoom => Icon::Zoom,
+            Tool::Orbit => Icon::Orbit,
+            Tool::PanCamera => Icon::PanCamera,
+            Tool::Dolly => Icon::Dolly,
+            Tool::Rotate => Icon::Rotate,
+            Tool::PanBehind => Icon::PanBehind,
+            Tool::Rectangle => Icon::Rectangle,
+            Tool::RoundedRect => Icon::RoundedRect,
+            Tool::Ellipse => Icon::Ellipse,
+            Tool::Polygon => Icon::Polygon,
+            Tool::Star => Icon::Star,
+            Tool::Pen => Icon::Pen,
+            Tool::Type => Icon::Type,
+            Tool::TypeVertical => Icon::TypeVertical,
+            Tool::Brush => Icon::Brush,
+            Tool::Clone => Icon::Clone,
+            Tool::Eraser => Icon::Eraser,
+            Tool::RotoBrush => Icon::RotoBrush,
+            Tool::Puppet => Icon::Puppet,
+        }
+    }
+    pub fn from_name(s: &str) -> Option<Tool> {
+        let n = s.to_ascii_lowercase().replace([' ', '_', '-'], "");
+        Tool::ALL.into_iter().find(|t| format!("{t:?}").to_ascii_lowercase() == n || t.label().to_ascii_lowercase().replace(' ', "").starts_with(&n))
+    }
+    pub fn is_shape(self) -> bool {
+        matches!(self, Tool::Rectangle | Tool::RoundedRect | Tool::Ellipse | Tool::Polygon | Tool::Star)
+    }
+}
+
+/// Viewer resolution (Auto follows the magnification).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Resolution {
+    #[default]
+    Auto,
+    Full,
+    Half,
+    Third,
+    Quarter,
+}
+
+impl Resolution {
+    pub const ALL: [Resolution; 5] = [Resolution::Auto, Resolution::Full, Resolution::Half, Resolution::Third, Resolution::Quarter];
+    pub fn label(self) -> &'static str {
+        match self {
+            Resolution::Auto => "Auto",
+            Resolution::Full => "Full",
+            Resolution::Half => "Half",
+            Resolution::Third => "Third",
+            Resolution::Quarter => "Quarter",
+        }
+    }
+    /// Render scale for a viewer magnification (and display pixel density).
+    pub fn scale(self, zoom: f32, ppp: f32) -> f64 {
+        match self {
+            Resolution::Auto => {
+                let z = (zoom * ppp) as f64;
+                if z >= 0.75 {
+                    1.0
+                } else if z >= 0.45 {
+                    0.5
+                } else if z >= 0.3 {
+                    1.0 / 3.0
+                } else {
+                    0.25
+                }
+            }
+            Resolution::Full => 1.0,
+            Resolution::Half => 0.5,
+            Resolution::Third => 1.0 / 3.0,
+            Resolution::Quarter => 0.25,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ViewerState {
+    /// Magnification (1 = 100%); None = fit.
+    pub zoom: Option<f32>,
+    /// Pan offset in points from the centred position.
+    pub pan: [f32; 2],
+    pub res: Resolution,
+    pub transparency_grid: bool,
+    pub show_masks: bool,
+    pub safe_margins: bool,
+    pub grid: bool,
+    pub rulers: bool,
+    pub channel: String,
+    pub show_layer_controls: bool,
+    pub fast_preview: bool,
+}
+
+impl Default for ViewerState {
+    fn default() -> Self {
+        ViewerState {
+            zoom: None,
+            pan: [0.0, 0.0],
+            res: Resolution::Auto,
+            transparency_grid: false,
+            show_masks: true,
+            safe_margins: false,
+            grid: false,
+            rulers: false,
+            channel: "RGB".into(),
+            show_layer_controls: true,
+            fast_preview: false,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TimelineState {
+    /// Visible span start (seconds) and pixels per second; None = fit comp.
+    pub start: f64,
+    pub pps: Option<f64>,
+    pub scroll_y: f32,
+    /// Left column area width.
+    pub columns_w: f32,
+    pub show_modes: bool,
+    pub graph_editor: bool,
+    pub search: String,
+    /// Twirled-open layers and groups (by layer id / group uid).
+    pub open_layers: BTreeSet<u64>,
+    pub open_groups: BTreeSet<u64>,
+    /// "Reveal" filter: only show these property match ids (P/S/R/T/A…) — empty = normal.
+    pub reveal: Vec<String>,
+}
+
+impl Default for TimelineState {
+    fn default() -> Self {
+        TimelineState {
+            start: 0.0,
+            pps: None,
+            scroll_y: 0.0,
+            columns_w: 560.0,
+            show_modes: true,
+            graph_editor: false,
+            search: String::new(),
+            open_layers: BTreeSet::new(),
+            open_groups: BTreeSet::new(),
+            reveal: vec![],
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct UiState {
+    pub tool: Tool,
+    /// Tool shown in each toolbar slot.
+    pub slot_tools: Vec<Tool>,
+    pub workspace: String,
+    pub dock: DockNode,
+    pub focused: PanelKind,
+    pub viewer: ViewerState,
+    pub timeline: TimelineState,
+    pub theme: crate::theme::ThemeKind,
+    pub show_menu_bar: bool,
+    pub status: String,
+    /// Effects & Presets search text.
+    pub effects_search: String,
+    pub effects_open: BTreeSet<String>,
+    pub project_search: String,
+    pub project_open_folders: BTreeSet<u64>,
+    /// Effect Controls twirl state (group uids that are collapsed).
+    pub fx_closed: BTreeSet<u64>,
+    /// Shape tool options.
+    pub fill_color: [f32; 3],
+    pub stroke_color: [f32; 3],
+    pub stroke_width: f32,
+    pub snapping: bool,
+    /// Tool creates shape (true) or mask (false) when a layer is selected.
+    pub tool_creates_shape: bool,
+    /// Preview panel options.
+    pub preview_loop: bool,
+    pub preview_cache_first: bool,
+    pub start_screen: bool,
+}
+
+impl Default for UiState {
+    fn default() -> Self {
+        UiState {
+            tool: Tool::Selection,
+            slot_tools: Tool::SLOTS.iter().map(|s| s[0]).collect(),
+            workspace: "Default".into(),
+            dock: crate::dock::workspace("Default"),
+            focused: PanelKind::Composition,
+            viewer: ViewerState::default(),
+            timeline: TimelineState::default(),
+            theme: Default::default(),
+            show_menu_bar: true,
+            status: String::new(),
+            effects_search: String::new(),
+            effects_open: BTreeSet::new(),
+            project_search: String::new(),
+            project_open_folders: BTreeSet::new(),
+            fx_closed: BTreeSet::new(),
+            fill_color: [0.24, 0.55, 0.96],
+            stroke_color: [1.0, 1.0, 1.0],
+            stroke_width: 0.0,
+            snapping: true,
+            tool_creates_shape: true,
+            preview_loop: true,
+            preview_cache_first: false,
+            start_screen: false,
+        }
+    }
+}

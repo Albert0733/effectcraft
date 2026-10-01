@@ -1,9 +1,9 @@
 //! Generate and Noise effects that synthesise images.
 
-use rayon::prelude::*;
 use effectcraft_keyframe::Value;
 use effectcraft_project::ParamUi;
 use effectcraft_raster::Px;
+use rayon::prelude::*;
 
 use crate::{Buf, EffectCtx, EffectSpec, col, num, p, popup, slider};
 
@@ -142,7 +142,8 @@ fn circle(ctx: &EffectCtx, mut b: Buf) -> Buf {
 
 #[inline]
 fn lattice(ix: i32, iy: i32, iz: i32, seed: u32) -> f32 {
-    let mut h = (ix as u32).wrapping_mul(0x27d4_eb2d) ^ (iy as u32).wrapping_mul(0x1656_67b1) ^ (iz as u32).wrapping_mul(0x9e37_79b9) ^ seed.wrapping_mul(0x85eb_ca6b);
+    let mut h =
+        (ix as u32).wrapping_mul(0x27d4_eb2d) ^ (iy as u32).wrapping_mul(0x1656_67b1) ^ (iz as u32).wrapping_mul(0x9e37_79b9) ^ seed.wrapping_mul(0x85eb_ca6b);
     h ^= h >> 15;
     h = h.wrapping_mul(0x2c1b_3c6d);
     h ^= h >> 12;

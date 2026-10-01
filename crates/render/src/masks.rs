@@ -19,7 +19,13 @@ fn coverage(ctx: &EvalCtx, layer: &Layer, g: &effectcraft_project::PropGroup, bu
     let mut cov = effectcraft_path::fill_coverage(std::slice::from_ref(&path), &m, w, h, FillRule::NonZero);
     let exp = ctx.f(layer, g, "expansion", 0.0);
     if exp.abs() > 0.01 {
-        let ring = effectcraft_path::stroke_coverage(std::slice::from_ref(&path), &StrokeStyle { width: exp.abs() * 2.0, join: effectcraft_path::Join::Round, ..Default::default() }, &m, w, h);
+        let ring = effectcraft_path::stroke_coverage(
+            std::slice::from_ref(&path),
+            &StrokeStyle { width: exp.abs() * 2.0, join: effectcraft_path::Join::Round, ..Default::default() },
+            &m,
+            w,
+            h,
+        );
         cov.data.par_iter_mut().zip(ring.data.par_iter()).for_each(|(c, r)| {
             *c = if exp > 0.0 { (*c + r - *c * r).min(1.0) } else { (*c * (1.0 - r)).max(0.0) };
         });

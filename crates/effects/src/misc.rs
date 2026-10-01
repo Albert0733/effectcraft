@@ -300,7 +300,12 @@ fn noise(ctx: &EffectCtx, mut b: Buf) -> Buf {
                 continue;
             }
             let n = |k: u32| (hash_noise(x as u32 + k * w, y as u32, frame_seed) - 0.5) * amt;
-            let (r, g, bl) = if color { (n(0), n(1), n(2)) } else { let v = n(0); (v, v, v) };
+            let (r, g, bl) = if color {
+                (n(0), n(1), n(2))
+            } else {
+                let v = n(0);
+                (v, v, v)
+            };
             px[0] = (px[0] + r * a).clamp(0.0, a);
             px[1] = (px[1] + g * a).clamp(0.0, a);
             px[2] = (px[2] + bl * a).clamp(0.0, a);
@@ -494,7 +499,10 @@ pub fn specs() -> Vec<EffectSpec> {
             "ec.noise.noise",
             "Noise",
             "Noise & Grain",
-            vec![p("amount", "Amount of Noise", num(0.0), slider(0.0, 100.0, 0.0, 100.0, 1)), p("color", "Use Color Noise", Value::Bool(true), ParamUi::Checkbox)],
+            vec![
+                p("amount", "Amount of Noise", num(0.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
+                p("color", "Use Color Noise", Value::Bool(true), ParamUi::Checkbox),
+            ],
             noise,
         ),
         spec(

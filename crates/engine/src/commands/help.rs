@@ -23,6 +23,14 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!("help.appPage", "EffectCraft Home Page", ["Help"], None, "{}", always, |s, _| open(s, links::APP_PAGE.into())),
         cmd!("help.github", "EffectCraft on GitHub", ["Help"], None, "{}", always, |s, _| open(s, links::GITHUB.into())),
         cmd!("help.reportIssue", "Report an Issue…", ["Help"], None, "{}", always, |s, _| open(s, links::ISSUES.into())),
-        cmd!("help.sibling", "Other ArtCraft Apps", [], None, "{app: photocraft|drawcraft|filmcraft|lightcraft|printcraft|designcraft, kind?: page|github}", always, sibling),
+        cmd!(
+            "help.sibling",
+            "Other ArtCraft Apps",
+            [],
+            None,
+            "{app: photocraft|drawcraft|filmcraft|lightcraft|printcraft|designcraft, kind?: page|github}",
+            always,
+            sibling
+        ),
     ]
 }

@@ -2,10 +2,10 @@
 //! work, MIT OR Apache-2.0): gradient background, orbiting shape rings with trim paths and a
 //! repeater burst, an animated title with a text animator and glow, a lower-third precomp.
 
+use effectcraft_color::BlendMode;
 use effectcraft_color::Label;
 use effectcraft_keyframe::{Ease, Gradient, Interp, Justify, Keyframe, TextDoc, Value};
 use effectcraft_project::build::{self, Ids};
-use effectcraft_color::BlendMode;
 use effectcraft_project::{Comp, ItemId, ItemKind, Layer, LayerSource, Project, PropGroup, Solid};
 use effectcraft_time::{FrameRate, Tick};
 
@@ -227,7 +227,10 @@ pub fn demo_project() -> Project {
             false,
             [-320.0, 0.0],
             [320.0, 0.0],
-            Gradient { colors: vec![(0.0, [0.24, 0.56, 0.96, 1.0]), (1.0, [0.56, 0.42, 1.0, 1.0])], opacities: vec![(0.0, 0.0), (0.2, 1.0), (0.8, 1.0), (1.0, 0.0)] },
+            Gradient {
+                colors: vec![(0.0, [0.24, 0.56, 0.96, 1.0]), (1.0, [0.56, 0.42, 1.0, 1.0])],
+                opacities: vec![(0.0, 0.0), (0.2, 1.0), (0.8, 1.0), (1.0, 0.0)],
+            },
         );
         let g = build::shape_group(&mut ids, "Line", vec![r, gf]);
         contents(&mut line, vec![g]);

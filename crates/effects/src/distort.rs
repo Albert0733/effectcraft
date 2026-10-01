@@ -1,10 +1,10 @@
 //! Distort effects: inverse-mapped warps (each output pixel samples the source).
 
 use effectcraft_geom::{Mat3, vec2};
-use rayon::prelude::*;
 use effectcraft_keyframe::Value;
 use effectcraft_project::ParamUi;
 use effectcraft_raster::Image;
+use rayon::prelude::*;
 
 use crate::{Buf, EffectCtx, EffectSpec, num, p, popup, slider};
 
@@ -89,7 +89,13 @@ fn wave_warp(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let wave = move |t: f64| -> f64 {
         let ph = t.rem_euclid(std::f64::consts::TAU) / std::f64::consts::TAU;
         match kind {
-            1 => if ph < 0.5 { 1.0 } else { -1.0 },
+            1 => {
+                if ph < 0.5 {
+                    1.0
+                } else {
+                    -1.0
+                }
+            }
             2 => 1.0 - 4.0 * (ph - 0.5).abs(),
             3 => 2.0 * ph - 1.0,
             _ => t.sin(),
@@ -278,7 +284,12 @@ pub fn specs() -> Vec<EffectSpec> {
             ],
             ripple,
         ),
-        spec("ec.distort.mirror", "Mirror", vec![p("center", "Reflection Center", pt(0.5, 0.5), ParamUi::Point), p("angle", "Reflection Angle", num(0.0), ParamUi::Angle)], mirror),
+        spec(
+            "ec.distort.mirror",
+            "Mirror",
+            vec![p("center", "Reflection Center", pt(0.5, 0.5), ParamUi::Point), p("angle", "Reflection Angle", num(0.0), ParamUi::Angle)],
+            mirror,
+        ),
         spec(
             "ec.distort.offset",
             "Offset",

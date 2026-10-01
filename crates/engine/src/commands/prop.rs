@@ -20,7 +20,15 @@ fn prop_ref(s: &Session, p: &Value, cmd: &str) -> Result<(ItemId, LayerId, Uid)>
     Ok((cid, lid, pr.uid))
 }
 
-fn with_prop<T>(s: &mut Session, label: &str, merge: Option<&str>, cid: ItemId, lid: LayerId, uid: Uid, f: impl FnOnce(&mut Property, Tick) -> Result<T>) -> Result<T> {
+fn with_prop<T>(
+    s: &mut Session,
+    label: &str,
+    merge: Option<&str>,
+    cid: ItemId,
+    lid: LayerId,
+    uid: Uid,
+    f: impl FnOnce(&mut Property, Tick) -> Result<T>,
+) -> Result<T> {
     let t = s.time();
     s.edit(label, merge, |proj, _| {
         let l = layer_mut(proj, cid, lid)?;
@@ -403,15 +411,42 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!("prop.setExpression", "Add Expression", ["Animation"], Some("Alt+Shift+="), "{layer?, path|prop, expression?, enabled?}", has_layers, set_expr),
         cmd!("prop.reset", "Reset Property", [], None, "{layer?, path|prop, default?}", has_layers, reset),
         cmd!("prop.select", "Select Property", [], None, "{layer?, path|prop, add?, selectKeys?}", has_layers, select_prop),
-        cmd!("prop.convertExpressionToKeyframes", "Convert Expression to Keyframes", ["Animation", "Keyframe Assistant"], None, "{layer?, path|prop}", has_layers, convert_expr_to_keys),
+        cmd!(
+            "prop.convertExpressionToKeyframes",
+            "Convert Expression to Keyframes",
+            ["Animation", "Keyframe Assistant"],
+            None,
+            "{layer?, path|prop}",
+            has_layers,
+            convert_expr_to_keys
+        ),
         cmd!("keys.select", "Select Keyframes", [], None, "{keys: [{layer, prop, time}], add?}", has_comp, select_keys),
         cmd!("keys.move", "Move Keyframes", [], None, "{delta (s), merge?}", has_keys, move_keys),
         cmd!("keys.delete", "Delete Keyframes", [], None, "{}", has_keys, delete_keys),
         cmd!("keys.easyEase", "Easy Ease", ["Animation", "Keyframe Assistant"], Some("F9"), "{which?: both|in|out}", has_keys, ease),
         cmd!("keys.easyEaseIn", "Easy Ease In", ["Animation", "Keyframe Assistant"], Some("Shift+F9"), "{}", has_keys, |s, _| ease(s, &json!({"which": "in"}))),
-        cmd!("keys.easyEaseOut", "Easy Ease Out", ["Animation", "Keyframe Assistant"], Some("Cmd+Shift+F9"), "{}", has_keys, |s, _| ease(s, &json!({"which": "out"}))),
+        cmd!("keys.easyEaseOut", "Easy Ease Out", ["Animation", "Keyframe Assistant"], Some("Cmd+Shift+F9"), "{}", has_keys, |s, _| ease(
+            s,
+            &json!({"which": "out"})
+        )),
         cmd!("keys.toggleHold", "Toggle Hold Keyframe", ["Animation"], Some("Cmd+Alt+H"), "{}", has_keys, toggle_hold),
-        cmd!("keys.interpolation", "Keyframe Interpolation…", ["Animation"], Some("Cmd+Alt+K"), "{interpolation?|in?|out?: linear|bezier|hold, autoBezier?}", has_keys, interpolation),
-        cmd!("keys.velocity", "Keyframe Velocity…", ["Animation"], Some("Cmd+Shift+K"), "{inSpeed?, inInfluence? %, outSpeed?, outInfluence? %}", has_keys, velocity),
+        cmd!(
+            "keys.interpolation",
+            "Keyframe Interpolation…",
+            ["Animation"],
+            Some("Cmd+Alt+K"),
+            "{interpolation?|in?|out?: linear|bezier|hold, autoBezier?}",
+            has_keys,
+            interpolation
+        ),
+        cmd!(
+            "keys.velocity",
+            "Keyframe Velocity…",
+            ["Animation"],
+            Some("Cmd+Shift+K"),
+            "{inSpeed?, inInfluence? %, outSpeed?, outInfluence? %}",
+            has_keys,
+            velocity
+        ),
     ]
 }

@@ -1,0 +1,128 @@
+//! Panel bodies.
+
+pub mod dialogs;
+pub mod effect_controls;
+pub mod effects_presets;
+pub mod info;
+pub mod misc;
+pub mod project;
+pub mod text_panels;
+pub mod timeline;
+pub mod viewer;
+
+use effectcraft_engine::Session;
+use effectcraft_engine::project::{Comp, TimeDisplayStyle};
+use effectcraft_engine::time::Tick;
+use egui::Rect;
+
+use crate::EffectcraftApp;
+use crate::dock::PanelKind;
+
+/// Drag-and-drop payloads between panels.
+#[derive(Clone, Debug)]
+pub enum DragPayload {
+    /// A project item (footage, comp, solid).
+    Item(u64),
+    /// An effect id from Effects & Presets.
+    Effect(String),
+}
+
+/// The current time formatted per project settings (timecode with `;` for drop-frame, or frames).
+pub fn timecode(session: &Session, comp: &Comp, t: Tick) -> String {
+    let fr = comp.frame_rate;
+    match session.project.settings.time_display {
+        TimeDisplayStyle::Frames => format!("{:05}", fr.frame_at(t) + session.project.settings.frame_start),
+        TimeDisplayStyle::Timecode => {
+            let df = fr.supports_drop_frame();
+            let s = effectcraft_engine::time::format_timecode_frames(fr.frame_at(t + comp.display_start), fr, df);
+            if df { s } else { s.replace(';', ":") }
+        }
+    }
+}
+
+pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: PanelKind, rect: Rect) {
+    match p {
+        PanelKind::Composition => {
+            if app.ui.start_screen {
+                misc::start_screen(app, ui, rect);
+            } else {
+                viewer::show(app, ui, rect)
+            }
+        }
+        PanelKind::Timeline => timeline::show(app, ui, rect),
+        PanelKind::Project => project::show(app, ui, rect),
+        PanelKind::EffectControls => effect_controls::show(app, ui, rect),
+        PanelKind::EffectsPresets => effects_presets::show(app, ui, rect),
+        PanelKind::Info => info::show(app, ui, rect),
+        PanelKind::Preview => misc::preview(app, ui, rect),
+        PanelKind::Character => text_panels::character(app, ui, rect),
+        PanelKind::Paragraph => text_panels::paragraph(app, ui, rect),
+        PanelKind::Align => text_panels::align(app, ui, rect),
+        PanelKind::Properties => effect_controls::properties(app, ui, rect),
+        PanelKind::Audio => misc::audio(app, ui, rect),
+        PanelKind::History => misc::history(app, ui, rect),
+        PanelKind::Markers => misc::markers(app, ui, rect),
+        PanelKind::Wiggler => misc::wiggler(app, ui, rect),
+        PanelKind::RenderQueue => misc::render_queue(app, ui, rect),
+        other => misc::placeholder(app, ui, rect, other),
+    }
+}
+
+/// The ≡ panel menu (opened from a tab).
+pub fn panel_menu_popup(app: &mut EffectcraftApp, ui: &mut egui::Ui) {
+    let id = egui::Id::new("panel-menu");
+    let Some((panel, pos)) = ui.ctx().data(|d| d.get_temp::<(PanelKind, egui::Pos2)>(id)) else { return };
+    let mut close = false;
+    let area = egui::Area::new(id.with("area")).order(egui::Order::Foreground).fixed_pos(pos).show(ui.ctx(), |ui| {
+        egui::Frame::popup(ui.style()).show(ui, |ui| {
+            ui.set_min_width(200.0);
+            if ui.button("Close Panel").clicked() {
+                app.ui.dock.close(panel);
+                close = true;
+            }
+            if ui.button("Maximize Panel").clicked() {
+                app.ui.dock = crate::dock::DockNode::Tabs { panels: vec![panel], active: 0 };
+                close = true;
+            }
+            ui.separator();
+            match panel {
+                PanelKind::Timeline => {
+                    for (label, id) in [
+                        ("Hide Shy Layers", "hideShy"),
+                        ("Enable Frame Blending", "frameBlending"),
+                        ("Enable Motion Blur", "motionBlur"),
+                        ("Draft 3D", "draft3d"),
+                    ] {
+                        if ui.button(label).clicked() {
+                            let _ = app.session.execute("comp.setSwitch", serde_json::json!({"switch": id}));
+                            close = true;
+                        }
+                    }
+                    if ui.button("Composition Settings…").clicked() {
+                        let _ = dialogs::open_comp_settings(app);
+                        close = true;
+                    }
+                }
+                PanelKind::Composition => {
+                    for (label, cmd) in [
+                        ("Composition Settings…", "app.compSettings"),
+                        ("View Options…", "view.layerControls"),
+                        ("Show Grid", "view.grid"),
+                        ("Title/Action Safe", "view.safeMargins"),
+                    ] {
+                        if ui.button(label).clicked() {
+                            let _ = crate::menus::invoke(app, &ui.ctx().clone(), cmd, serde_json::json!({}));
+                            close = true;
+                        }
+                    }
+                }
+                _ => {
+                    ui.label(egui::RichText::new(panel.title()).weak());
+                }
+            }
+        });
+    });
+    if close || (ui.input(|i| i.pointer.any_pressed()) && !area.response.contains_pointer() && !area.response.hovered()) {
+        ui.ctx().data_mut(|d| d.remove::<(PanelKind, egui::Pos2)>(id));
+    }
+}

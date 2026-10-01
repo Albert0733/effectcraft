@@ -29,17 +29,30 @@ pub struct CharXf {
 
 impl Default for CharXf {
     fn default() -> Self {
-        CharXf { offset: [0.0; 2], anchor: [0.0; 2], scale: [100.0; 2], rotation: 0.0, skew: 0.0, opacity: 100.0, fill: None, fill_k: 0.0, stroke: None, stroke_k: 0.0, stroke_width: 0.0, tracking: 0.0 }
+        CharXf {
+            offset: [0.0; 2],
+            anchor: [0.0; 2],
+            scale: [100.0; 2],
+            rotation: 0.0,
+            skew: 0.0,
+            opacity: 100.0,
+            fill: None,
+            fill_k: 0.0,
+            stroke: None,
+            stroke_k: 0.0,
+            stroke_width: 0.0,
+            tracking: 0.0,
+        }
     }
 }
 
 fn shape_value(shape: u32, f: f64) -> f64 {
     let f = f.clamp(0.0, 1.0);
     match shape {
-        1 => f,                                         // ramp up
-        2 => 1.0 - f,                                   // ramp down
-        3 => 1.0 - (2.0 * f - 1.0).abs(),               // triangle
-        4 => (1.0 - (2.0 * f - 1.0).powi(2)).sqrt(),    // round
+        1 => f,                                      // ramp up
+        2 => 1.0 - f,                                // ramp down
+        3 => 1.0 - (2.0 * f - 1.0).abs(),            // triangle
+        4 => (1.0 - (2.0 * f - 1.0).powi(2)).sqrt(), // round
         5 => {
             let t = 1.0 - (2.0 * f - 1.0).abs();
             t * t * (3.0 - 2.0 * t)

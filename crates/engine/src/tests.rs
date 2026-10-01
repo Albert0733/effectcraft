@@ -114,4 +114,3 @@ fn time_navigation() {
     s.execute("time.set", json!({"frame": 45})).unwrap();
     assert_eq!(s.execute("time.step", json!({"frames": 5})).unwrap()["frame"], 50);
 }
-

@@ -186,7 +186,12 @@ fn dodge(cb: f32, cs: f32) -> f32 {
     }
 }
 fn hard_light(cb: f32, cs: f32) -> f32 {
-    if cs <= 0.5 { cb * 2.0 * cs } else { let s = 2.0 * cs - 1.0; cb + s - cb * s }
+    if cs <= 0.5 {
+        cb * 2.0 * cs
+    } else {
+        let s = 2.0 * cs - 1.0;
+        cb + s - cb * s
+    }
 }
 fn soft_light(cb: f32, cs: f32) -> f32 {
     if cs <= 0.5 {

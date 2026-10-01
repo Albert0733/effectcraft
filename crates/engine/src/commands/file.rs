@@ -148,7 +148,15 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!("file.incrementAndSave", "Increment and Save", ["File"], Some("Cmd+Alt+Shift+S"), "{}", has_path, increment_save),
         cmd!("file.revert", "Revert", ["File"], None, "{}", has_path, revert),
         cmd!("file.import", "File…", ["File", "Import"], Some("Cmd+I"), "{paths: [string]}", always, import),
-        cmd!("file.projectSettings", "Project Settings…", ["File"], Some("Cmd+Alt+Shift+K"), "{bitDepth?: 8|16|32, linearize?, timeDisplay?: timecode|frames}", always, project_settings),
+        cmd!(
+            "file.projectSettings",
+            "Project Settings…",
+            ["File"],
+            Some("Cmd+Alt+Shift+K"),
+            "{bitDepth?: 8|16|32, linearize?, timeDisplay?: timecode|frames}",
+            always,
+            project_settings
+        ),
         cmd!("file.cycleBitDepth", "Cycle Project Bit Depth", [], None, "{}", always, cycle_depth),
     ]
 }

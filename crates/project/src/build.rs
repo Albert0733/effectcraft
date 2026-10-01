@@ -58,8 +58,16 @@ pub fn effects(ids: &mut Ids) -> PropGroup {
 }
 
 /// Mask colours cycle like AE's default mask colours.
-pub const MASK_COLORS: [[u8; 3]; 8] =
-    [[0xb1, 0xb4, 0x4f], [0x4f, 0x8c, 0xc9], [0xc9, 0x4f, 0x8c], [0x4f, 0xc9, 0x7a], [0xc9, 0x8c, 0x4f], [0x8c, 0x4f, 0xc9], [0x4f, 0xc9, 0xc9], [0xc9, 0x4f, 0x4f]];
+pub const MASK_COLORS: [[u8; 3]; 8] = [
+    [0xb1, 0xb4, 0x4f],
+    [0x4f, 0x8c, 0xc9],
+    [0xc9, 0x4f, 0x8c],
+    [0x4f, 0xc9, 0x7a],
+    [0xc9, 0x8c, 0x4f],
+    [0x8c, 0x4f, 0xc9],
+    [0x4f, 0xc9, 0xc9],
+    [0xc9, 0x4f, 0x4f],
+];
 
 pub fn mask(ids: &mut Ids, name: &str, path: ShapePath, mode: MaskMode, color: [u8; 3]) -> PropGroup {
     let mut g = ids.group("mask", name);
@@ -78,7 +86,11 @@ pub fn text(ids: &mut Ids, doc: TextDoc) -> PropGroup {
         .group("moreOptions", "More Options")
         .with(ids.prop("anchorGrouping", "Anchor Point Grouping", Value::Enum(0)).with_ui(popup(&["Character", "Word", "Line", "All"])))
         .with(ids.prop("groupingAlignment", "Grouping Alignment", Value::Vec2([0.0, 0.0])).with_ui(ParamUi::Percent))
-        .with(ids.prop("fillStroke", "Fill & Stroke", Value::Enum(0)).with_ui(popup(&["Per Character Palette", "All Fills Over All Strokes", "All Strokes Over All Fills"])))
+        .with(ids.prop("fillStroke", "Fill & Stroke", Value::Enum(0)).with_ui(popup(&[
+            "Per Character Palette",
+            "All Fills Over All Strokes",
+            "All Strokes Over All Fills",
+        ])))
         .with(ids.prop("interCharBlend", "Inter-Character Blending", Value::Enum(0)).with_ui(popup(&["Normal", "Multiply", "Screen", "Overlay"])));
     ids.group("text", "Text").with(st).with(path_opts).with(more).with(ids.group("animators", "Animators"))
 }
@@ -306,7 +318,8 @@ pub fn shape_simple_op(ids: &mut Ids, kind: &str) -> Option<PropGroup> {
             .with(ids.prop("miter", "Miter Limit", Value::Scalar(4.0)))
             .with(ids.prop("copies", "Copies", Value::Scalar(1.0)))
             .with(ids.prop("copyOffset", "Copy Offset", Value::Scalar(0.0))),
-        "pucker" => indexed(ids.group("pucker", "Pucker & Bloat 1")).with(ids.prop("amount", "Amount", Value::Scalar(0.0)).with_ui(slider(-100.0, 100.0, -100.0, 100.0, 1))),
+        "pucker" => indexed(ids.group("pucker", "Pucker & Bloat 1"))
+            .with(ids.prop("amount", "Amount", Value::Scalar(0.0)).with_ui(slider(-100.0, 100.0, -100.0, 100.0, 1))),
         "twist" => indexed(ids.group("twist", "Twist 1"))
             .with(ids.prop("angle", "Angle", Value::Scalar(0.0)).with_ui(ParamUi::Angle))
             .with(ids.prop("center", "Center", Value::Vec2([0.0, 0.0])).with_ui(ParamUi::Point)),
@@ -322,8 +335,13 @@ pub fn shape_simple_op(ids: &mut Ids, kind: &str) -> Option<PropGroup> {
             .with(ids.prop("correlation", "Correlation", Value::Scalar(50.0)).with_ui(ParamUi::Percent))
             .with(ids.prop("phase", "Temporal Phase", Value::Scalar(0.0)).with_ui(ParamUi::Angle))
             .with(ids.prop("seed", "Random Seed", Value::Scalar(0.0))),
-        "merge" => indexed(ids.group("merge", "Merge Paths 1"))
-            .with(ids.prop("mode", "Mode", Value::Enum(0)).with_ui(popup(&["Merge", "Add", "Subtract", "Intersect", "Exclude Intersections"]))),
+        "merge" => indexed(ids.group("merge", "Merge Paths 1")).with(ids.prop("mode", "Mode", Value::Enum(0)).with_ui(popup(&[
+            "Merge",
+            "Add",
+            "Subtract",
+            "Intersect",
+            "Exclude Intersections",
+        ]))),
         _ => return None,
     };
     Some(g)
@@ -446,7 +464,8 @@ pub fn layer(project: &mut Project, comp: &Comp, name: &str, source: LayerSource
             g.children.push(ids.prop("poi", "Point of Interest", Value::Vec3([cw / 2.0, ch / 2.0, 0.0])).with_ui(ParamUi::Point3).spatial().into());
         }
         if kind != LightKind::Ambient {
-            g.children.push(ids.prop("position", "Position", Value::Vec3([cw / 2.0 - 260.0, ch / 2.0 - 260.0, -440.0])).with_ui(ParamUi::Point3).spatial().into());
+            g.children
+                .push(ids.prop("position", "Position", Value::Vec3([cw / 2.0 - 260.0, ch / 2.0 - 260.0, -440.0])).with_ui(ParamUi::Point3).spatial().into());
         }
         root.children.push(g.into());
         root.children.push(light_options(&mut ids, kind).into());

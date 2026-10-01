@@ -182,7 +182,8 @@ pub enum MaskMode {
 }
 
 impl MaskMode {
-    pub const ALL: [MaskMode; 7] = [MaskMode::None, MaskMode::Add, MaskMode::Subtract, MaskMode::Intersect, MaskMode::Lighten, MaskMode::Darken, MaskMode::Difference];
+    pub const ALL: [MaskMode; 7] =
+        [MaskMode::None, MaskMode::Add, MaskMode::Subtract, MaskMode::Intersect, MaskMode::Lighten, MaskMode::Darken, MaskMode::Difference];
     pub fn label(self) -> &'static str {
         match self {
             MaskMode::None => "None",
@@ -299,13 +300,9 @@ impl PropGroup {
         match seg {
             Seg::Uid(u) => self.children.iter().position(|c| c.uid() == *u),
             Seg::Index(i) => (*i >= 1 && *i <= self.children.len()).then(|| i - 1),
-            Seg::Match(m, n) => self
-                .children
-                .iter()
-                .enumerate()
-                .filter(|(_, c)| c.match_id() == m || c.name().eq_ignore_ascii_case(m))
-                .nth(n.saturating_sub(1))
-                .map(|(i, _)| i),
+            Seg::Match(m, n) => {
+                self.children.iter().enumerate().filter(|(_, c)| c.match_id() == m || c.name().eq_ignore_ascii_case(m)).nth(n.saturating_sub(1)).map(|(i, _)| i)
+            }
         }
     }
 
@@ -492,10 +489,13 @@ impl PropGroup {
         }
     }
     pub fn max_uid(&self) -> Uid {
-        self.children.iter().map(|c| match c {
-            Node::Prop(p) => p.uid,
-            Node::Group(g) => g.max_uid(),
-        }).fold(self.uid, Uid::max)
+        self.children
+            .iter()
+            .map(|c| match c {
+                Node::Prop(p) => p.uid,
+                Node::Group(g) => g.max_uid(),
+            })
+            .fold(self.uid, Uid::max)
     }
 }
 

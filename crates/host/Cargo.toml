@@ -1,0 +1,19 @@
+[package]
+name = "effectcraft-host"
+description = "Builds a fully wired EffectCraft session: media decoding (FilmCraft codecs), importer and the expression engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+effectcraft-engine = { workspace = true }
+effectcraft-project = { workspace = true }
+effectcraft-media = { workspace = true }
+effectcraft-expr = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

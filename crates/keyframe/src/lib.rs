@@ -334,12 +334,7 @@ pub fn segment_value(keys: &[Keyframe], i: usize, t: Tick, spatial: bool) -> Val
         let p3 = v3(&b.value);
         let (_, out_t) = spatial_tangents(keys, i);
         let (in_t, _) = spatial_tangents(keys, i + 1);
-        let seg = SpatialSeg::new([
-            p0,
-            [p0[0] + out_t[0], p0[1] + out_t[1], p0[2] + out_t[2]],
-            [p3[0] + in_t[0], p3[1] + in_t[1], p3[2] + in_t[2]],
-            p3,
-        ]);
+        let seg = SpatialSeg::new([p0, [p0[0] + out_t[0], p0[1] + out_t[1], p0[2] + out_t[2]], [p3[0] + in_t[0], p3[1] + in_t[1], p3[2] + in_t[2]], p3]);
         let len = seg.length();
         let f = if lin_out && lin_in || len <= 1e-12 {
             x
