@@ -165,7 +165,11 @@ impl Session {
     pub fn execute(&mut self, id: &str, params: Value) -> Result<Value> {
         let spec = commands::find(id).ok_or_else(|| EngineError::UnknownCommand(id.to_string()))?;
         if let Err(why) = (spec.enabled)(self) {
-            return Err(EngineError::Disabled(id.to_string(), why));
+            // Explicit targets (agents, scripts) don't need a UI selection.
+            let explicit = ["layer", "layers", "prop", "keys"].iter().any(|k| params.get(k).is_some()) && commands::has_comp(self).is_ok();
+            if !explicit {
+                return Err(EngineError::Disabled(id.to_string(), why));
+            }
         }
         let r = (spec.run)(self, &params)?;
         if spec.journal {
