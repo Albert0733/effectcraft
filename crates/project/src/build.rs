@@ -1,0 +1,464 @@
+//! Builders for the standard property groups and layers.
+
+use effectcraft_color::{BlendMode, Label};
+use effectcraft_keyframe::{Gradient, ShapePath, TextDoc, Value};
+use effectcraft_time::Tick;
+
+use crate::props::{GroupKind, MaskMode, ParamUi, PropGroup, Property};
+use crate::{Comp, Layer, LayerId, LayerSource, LightKind, Project, Switches};
+
+/// Id allocator borrowing the project's counter.
+pub struct Ids<'a>(pub &'a mut u64);
+
+impl Ids<'_> {
+    pub fn alloc(&mut self) -> u64 {
+        let v = *self.0;
+        *self.0 += 1;
+        v
+    }
+    pub fn prop(&mut self, m: &str, name: &str, v: Value) -> Property {
+        Property::new(self.alloc(), m, name, v)
+    }
+    pub fn group(&mut self, m: &str, name: &str) -> PropGroup {
+        PropGroup::new(self.alloc(), m, name)
+    }
+}
+
+fn slider(min: f64, max: f64, smin: f64, smax: f64, decimals: u8) -> ParamUi {
+    ParamUi::Slider { min, max, slider_min: smin, slider_max: smax, decimals }
+}
+fn popup(opts: &[&str]) -> ParamUi {
+    ParamUi::Popup { options: opts.iter().map(|s| s.to_string()).collect() }
+}
+
+/// Layer Transform group. Values are always 3D; 2D layers show two dimensions.
+pub fn transform(ids: &mut Ids, anchor: [f64; 2], position: [f64; 2]) -> PropGroup {
+    let mut a = ids.prop("anchor", "Anchor Point", Value::Vec3([anchor[0], anchor[1], 0.0])).with_ui(ParamUi::Point).spatial();
+    a.shown_dims = 2;
+    let mut p = ids.prop("position", "Position", Value::Vec3([position[0], position[1], 0.0])).with_ui(ParamUi::Point).spatial();
+    p.shown_dims = 2;
+    let mut s = ids.prop("scale", "Scale", Value::Vec3([100.0, 100.0, 100.0])).with_ui(ParamUi::Percent);
+    s.shown_dims = 2;
+    let mut o = ids.prop("orientation", "Orientation", Value::Vec3([0.0; 3])).with_ui(ParamUi::Angle);
+    o.three_d_only = true;
+    let mut rx = ids.prop("rotationX", "X Rotation", Value::Scalar(0.0)).with_ui(ParamUi::Angle);
+    rx.three_d_only = true;
+    let mut ry = ids.prop("rotationY", "Y Rotation", Value::Scalar(0.0)).with_ui(ParamUi::Angle);
+    ry.three_d_only = true;
+    let rz = ids.prop("rotation", "Rotation", Value::Scalar(0.0)).with_ui(ParamUi::Angle);
+    let op = ids.prop("opacity", "Opacity", Value::Scalar(100.0)).with_ui(slider(0.0, 100.0, 0.0, 100.0, 0));
+    ids.group("transform", "Transform").with(a).with(p).with(s).with(o).with(rx).with(ry).with(rz).with(op)
+}
+
+pub fn masks(ids: &mut Ids) -> PropGroup {
+    ids.group("masks", "Masks")
+}
+pub fn effects(ids: &mut Ids) -> PropGroup {
+    ids.group("effects", "Effects")
+}
+
+/// Mask colours cycle like AE's default mask colours.
+pub const MASK_COLORS: [[u8; 3]; 8] =
+    [[0xb1, 0xb4, 0x4f], [0x4f, 0x8c, 0xc9], [0xc9, 0x4f, 0x8c], [0x4f, 0xc9, 0x7a], [0xc9, 0x8c, 0x4f], [0x8c, 0x4f, 0xc9], [0x4f, 0xc9, 0xc9], [0xc9, 0x4f, 0x4f]];
+
+pub fn mask(ids: &mut Ids, name: &str, path: ShapePath, mode: MaskMode, color: [u8; 3]) -> PropGroup {
+    let mut g = ids.group("mask", name);
+    g.kind = GroupKind::Mask { mode, inverted: false, color, locked: false };
+    g.with(ids.prop("path", "Mask Path", Value::Path(path)).with_ui(ParamUi::Path))
+        .with(ids.prop("feather", "Mask Feather", Value::Vec2([0.0, 0.0])).with_ui(ParamUi::Pixels))
+        .with(ids.prop("opacity", "Mask Opacity", Value::Scalar(100.0)).with_ui(slider(0.0, 100.0, 0.0, 100.0, 0)))
+        .with(ids.prop("expansion", "Mask Expansion", Value::Scalar(0.0)).with_ui(ParamUi::Pixels))
+}
+
+pub fn text(ids: &mut Ids, doc: TextDoc) -> PropGroup {
+    let mut st = ids.prop("sourceText", "Source Text", Value::Text(Box::new(doc))).with_ui(ParamUi::Text);
+    st.hold_only = true;
+    let path_opts = ids.group("pathOptions", "Path Options").with(ids.prop("path", "Path", Value::Enum(0)).with_ui(popup(&["None"])));
+    let more = ids
+        .group("moreOptions", "More Options")
+        .with(ids.prop("anchorGrouping", "Anchor Point Grouping", Value::Enum(0)).with_ui(popup(&["Character", "Word", "Line", "All"])))
+        .with(ids.prop("groupingAlignment", "Grouping Alignment", Value::Vec2([0.0, 0.0])).with_ui(ParamUi::Percent))
+        .with(ids.prop("fillStroke", "Fill & Stroke", Value::Enum(0)).with_ui(popup(&["Per Character Palette", "All Fills Over All Strokes", "All Strokes Over All Fills"])))
+        .with(ids.prop("interCharBlend", "Inter-Character Blending", Value::Enum(0)).with_ui(popup(&["Normal", "Multiply", "Screen", "Overlay"])));
+    ids.group("text", "Text").with(st).with(path_opts).with(more).with(ids.group("animators", "Animators"))
+}
+
+/// A text animator with one range selector and the given properties.
+pub fn text_animator(ids: &mut Ids, name: &str, props: Vec<Property>) -> PropGroup {
+    let mut g = ids.group("animator", name);
+    g.kind = GroupKind::Indexed;
+    let mut sels = ids.group("selectors", "Selectors");
+    sels.children.push(range_selector(ids, "Range Selector 1").into());
+    let mut pg = ids.group("properties", "Properties");
+    for p in props {
+        pg.children.push(p.into());
+    }
+    g.with(sels).with(pg)
+}
+
+pub fn range_selector(ids: &mut Ids, name: &str) -> PropGroup {
+    let mut g = ids.group("rangeSelector", name);
+    g.kind = GroupKind::Indexed;
+    let adv = ids
+        .group("advanced", "Advanced")
+        .with(ids.prop("units", "Units", Value::Enum(0)).with_ui(popup(&["Percentage", "Index"])))
+        .with(ids.prop("basedOn", "Based On", Value::Enum(0)).with_ui(popup(&["Characters", "Characters Excluding Spaces", "Words", "Lines"])))
+        .with(ids.prop("mode", "Mode", Value::Enum(0)).with_ui(popup(&["Add", "Subtract", "Intersect", "Min", "Max", "Difference"])))
+        .with(ids.prop("amount", "Amount", Value::Scalar(100.0)).with_ui(ParamUi::Percent))
+        .with(ids.prop("shape", "Shape", Value::Enum(0)).with_ui(popup(&["Square", "Ramp Up", "Ramp Down", "Triangle", "Round", "Smooth"])))
+        .with(ids.prop("smoothness", "Smoothness", Value::Scalar(100.0)).with_ui(ParamUi::Percent))
+        .with(ids.prop("easeHigh", "Ease High", Value::Scalar(0.0)).with_ui(ParamUi::Percent))
+        .with(ids.prop("easeLow", "Ease Low", Value::Scalar(0.0)).with_ui(ParamUi::Percent))
+        .with(ids.prop("randomize", "Randomize Order", Value::Bool(false)).with_ui(ParamUi::Checkbox))
+        .with(ids.prop("randomSeed", "Random Seed", Value::Scalar(0.0)));
+    g.with(ids.prop("start", "Start", Value::Scalar(0.0)).with_ui(ParamUi::Percent))
+        .with(ids.prop("end", "End", Value::Scalar(100.0)).with_ui(ParamUi::Percent))
+        .with(ids.prop("offset", "Offset", Value::Scalar(0.0)).with_ui(ParamUi::Percent))
+        .with(adv)
+}
+
+/// Text animator properties by id (Animate ▸ …).
+pub fn text_anim_prop(ids: &mut Ids, kind: &str) -> Option<Property> {
+    Some(match kind {
+        "anchor" => ids.prop("anchor", "Anchor Point", Value::Vec2([0.0, 0.0])).with_ui(ParamUi::Point),
+        "position" => ids.prop("position", "Position", Value::Vec2([0.0, 0.0])).with_ui(ParamUi::Point),
+        "scale" => ids.prop("scale", "Scale", Value::Vec2([100.0, 100.0])).with_ui(ParamUi::Percent),
+        "skew" => ids.prop("skew", "Skew", Value::Scalar(0.0)),
+        "rotation" => ids.prop("rotation", "Rotation", Value::Scalar(0.0)).with_ui(ParamUi::Angle),
+        "opacity" => ids.prop("opacity", "Opacity", Value::Scalar(100.0)).with_ui(ParamUi::Percent),
+        "fillColor" => ids.prop("fillColor", "Fill Color", Value::Color([1.0, 0.0, 0.0, 1.0])).with_ui(ParamUi::Color),
+        "strokeColor" => ids.prop("strokeColor", "Stroke Color", Value::Color([1.0, 0.0, 0.0, 1.0])).with_ui(ParamUi::Color),
+        "strokeWidth" => ids.prop("strokeWidth", "Stroke Width", Value::Scalar(0.0)).with_ui(ParamUi::Pixels),
+        "tracking" => ids.prop("tracking", "Tracking Amount", Value::Scalar(0.0)),
+        "lineSpacing" => ids.prop("lineSpacing", "Line Spacing", Value::Vec2([0.0, 0.0])),
+        "characterOffset" => ids.prop("characterOffset", "Character Offset", Value::Scalar(0.0)),
+        "blur" => ids.prop("blur", "Blur", Value::Vec2([0.0, 0.0])),
+        _ => return None,
+    })
+}
+
+// ---------------------------------------------------------------- shape layer contents
+
+pub fn contents(ids: &mut Ids) -> PropGroup {
+    ids.group("contents", "Contents")
+}
+
+/// Shape group transform (2D).
+pub fn shape_transform(ids: &mut Ids) -> PropGroup {
+    ids.group("transform", "Transform")
+        .with(ids.prop("anchor", "Anchor Point", Value::Vec2([0.0, 0.0])).with_ui(ParamUi::Point))
+        .with(ids.prop("position", "Position", Value::Vec2([0.0, 0.0])).with_ui(ParamUi::Point))
+        .with(ids.prop("scale", "Scale", Value::Vec2([100.0, 100.0])).with_ui(ParamUi::Percent))
+        .with(ids.prop("skew", "Skew", Value::Scalar(0.0)).with_ui(slider(-85.0, 85.0, -85.0, 85.0, 1)))
+        .with(ids.prop("skewAxis", "Skew Axis", Value::Scalar(0.0)).with_ui(ParamUi::Angle))
+        .with(ids.prop("rotation", "Rotation", Value::Scalar(0.0)).with_ui(ParamUi::Angle))
+        .with(ids.prop("opacity", "Opacity", Value::Scalar(100.0)).with_ui(slider(0.0, 100.0, 0.0, 100.0, 0)))
+}
+
+fn indexed(mut g: PropGroup) -> PropGroup {
+    g.kind = GroupKind::Indexed;
+    g
+}
+
+pub fn shape_group(ids: &mut Ids, name: &str, items: Vec<PropGroup>) -> PropGroup {
+    let mut c = ids.group("contents", "Contents");
+    for i in items {
+        c.children.push(i.into());
+    }
+    let mut g = indexed(ids.group("group", name));
+    g.children.push(ids.prop("blend", "Blend Mode", Value::Enum(0)).with_ui(ParamUi::Hidden).into());
+    g.with(c).with(shape_transform(ids))
+}
+
+pub fn shape_rect(ids: &mut Ids, size: [f64; 2], position: [f64; 2], roundness: f64) -> PropGroup {
+    indexed(ids.group("rect", "Rectangle Path 1"))
+        .with(ids.prop("direction", "Path Direction", Value::Enum(0)).with_ui(ParamUi::Hidden))
+        .with(ids.prop("size", "Size", Value::Vec2(size)).with_ui(ParamUi::Pixels))
+        .with(ids.prop("position", "Position", Value::Vec2(position)).with_ui(ParamUi::Point))
+        .with(ids.prop("roundness", "Roundness", Value::Scalar(roundness)).with_ui(ParamUi::Pixels))
+}
+
+pub fn shape_ellipse(ids: &mut Ids, size: [f64; 2], position: [f64; 2]) -> PropGroup {
+    indexed(ids.group("ellipse", "Ellipse Path 1"))
+        .with(ids.prop("direction", "Path Direction", Value::Enum(0)).with_ui(ParamUi::Hidden))
+        .with(ids.prop("size", "Size", Value::Vec2(size)).with_ui(ParamUi::Pixels))
+        .with(ids.prop("position", "Position", Value::Vec2(position)).with_ui(ParamUi::Point))
+}
+
+/// Polystar: `star = false` makes a polygon.
+pub fn shape_star(ids: &mut Ids, star: bool, points: f64, position: [f64; 2], outer: f64, inner: f64) -> PropGroup {
+    let mut g = indexed(ids.group("star", "Polystar Path 1"))
+        .with(ids.prop("direction", "Path Direction", Value::Enum(0)).with_ui(ParamUi::Hidden))
+        .with(ids.prop("type", "Type", Value::Enum(if star { 0 } else { 1 })).with_ui(popup(&["Star", "Polygon"])))
+        .with(ids.prop("points", "Points", Value::Scalar(points)).with_ui(slider(3.0, 100.0, 3.0, 20.0, 1)))
+        .with(ids.prop("position", "Position", Value::Vec2(position)).with_ui(ParamUi::Point))
+        .with(ids.prop("rotation", "Rotation", Value::Scalar(0.0)).with_ui(ParamUi::Angle));
+    if star {
+        g = g.with(ids.prop("innerRadius", "Inner Radius", Value::Scalar(inner)).with_ui(ParamUi::Pixels));
+    }
+    g = g.with(ids.prop("outerRadius", "Outer Radius", Value::Scalar(outer)).with_ui(ParamUi::Pixels));
+    if star {
+        g = g.with(ids.prop("innerRoundness", "Inner Roundness", Value::Scalar(0.0)).with_ui(ParamUi::Percent));
+    }
+    g.with(ids.prop("outerRoundness", "Outer Roundness", Value::Scalar(0.0)).with_ui(ParamUi::Percent))
+}
+
+pub fn shape_path(ids: &mut Ids, path: ShapePath) -> PropGroup {
+    indexed(ids.group("path", "Path 1"))
+        .with(ids.prop("direction", "Path Direction", Value::Enum(0)).with_ui(ParamUi::Hidden))
+        .with(ids.prop("path", "Path", Value::Path(path)).with_ui(ParamUi::Path))
+}
+
+pub fn shape_fill(ids: &mut Ids, color: [f64; 4]) -> PropGroup {
+    indexed(ids.group("fill", "Fill 1"))
+        .with(ids.prop("blend", "Blend Mode", Value::Enum(0)).with_ui(ParamUi::Hidden))
+        .with(ids.prop("composite", "Composite", Value::Enum(0)).with_ui(popup(&["Below Previous in Same Group", "Above Previous in Same Group"])))
+        .with(ids.prop("rule", "Fill Rule", Value::Enum(0)).with_ui(popup(&["Non-Zero Winding", "Even-Odd"])))
+        .with(ids.prop("color", "Color", Value::Color(color)).with_ui(ParamUi::Color))
+        .with(ids.prop("opacity", "Opacity", Value::Scalar(100.0)).with_ui(slider(0.0, 100.0, 0.0, 100.0, 0)))
+}
+
+pub fn shape_stroke(ids: &mut Ids, color: [f64; 4], width: f64) -> PropGroup {
+    indexed(ids.group("stroke", "Stroke 1"))
+        .with(ids.prop("blend", "Blend Mode", Value::Enum(0)).with_ui(ParamUi::Hidden))
+        .with(ids.prop("composite", "Composite", Value::Enum(0)).with_ui(popup(&["Below Previous in Same Group", "Above Previous in Same Group"])))
+        .with(ids.prop("color", "Color", Value::Color(color)).with_ui(ParamUi::Color))
+        .with(ids.prop("opacity", "Opacity", Value::Scalar(100.0)).with_ui(slider(0.0, 100.0, 0.0, 100.0, 0)))
+        .with(ids.prop("width", "Stroke Width", Value::Scalar(width)).with_ui(ParamUi::Pixels))
+        .with(ids.prop("cap", "Line Cap", Value::Enum(0)).with_ui(popup(&["Butt Cap", "Round Cap", "Projecting Cap"])))
+        .with(ids.prop("join", "Line Join", Value::Enum(0)).with_ui(popup(&["Miter Join", "Round Join", "Bevel Join"])))
+        .with(ids.prop("miter", "Miter Limit", Value::Scalar(4.0)))
+        .with(
+            ids.group("dashes", "Dashes")
+                .with(ids.prop("dash", "Dash", Value::Scalar(0.0)).with_ui(ParamUi::Pixels))
+                .with(ids.prop("gap", "Gap", Value::Scalar(0.0)).with_ui(ParamUi::Pixels))
+                .with(ids.prop("offset", "Offset", Value::Scalar(0.0)).with_ui(ParamUi::Pixels)),
+        )
+}
+
+pub fn shape_gradient_fill(ids: &mut Ids, radial: bool, start: [f64; 2], end: [f64; 2], g: Gradient) -> PropGroup {
+    indexed(ids.group("gfill", "Gradient Fill 1"))
+        .with(ids.prop("blend", "Blend Mode", Value::Enum(0)).with_ui(ParamUi::Hidden))
+        .with(ids.prop("rule", "Fill Rule", Value::Enum(0)).with_ui(popup(&["Non-Zero Winding", "Even-Odd"])))
+        .with(ids.prop("type", "Type", Value::Enum(radial as u32)).with_ui(popup(&["Linear", "Radial"])))
+        .with(ids.prop("start", "Start Point", Value::Vec2(start)).with_ui(ParamUi::Point))
+        .with(ids.prop("end", "End Point", Value::Vec2(end)).with_ui(ParamUi::Point))
+        .with(ids.prop("highlightLength", "Highlight Length", Value::Scalar(0.0)).with_ui(ParamUi::Percent))
+        .with(ids.prop("highlightAngle", "Highlight Angle", Value::Scalar(0.0)).with_ui(ParamUi::Angle))
+        .with(ids.prop("colors", "Colors", Value::Gradient(g)).with_ui(ParamUi::Gradient))
+        .with(ids.prop("opacity", "Opacity", Value::Scalar(100.0)).with_ui(slider(0.0, 100.0, 0.0, 100.0, 0)))
+}
+
+pub fn shape_trim(ids: &mut Ids, start: f64, end: f64, offset: f64) -> PropGroup {
+    indexed(ids.group("trim", "Trim Paths 1"))
+        .with(ids.prop("start", "Start", Value::Scalar(start)).with_ui(slider(0.0, 100.0, 0.0, 100.0, 1)))
+        .with(ids.prop("end", "End", Value::Scalar(end)).with_ui(slider(0.0, 100.0, 0.0, 100.0, 1)))
+        .with(ids.prop("offset", "Offset", Value::Scalar(offset)).with_ui(ParamUi::Angle))
+        .with(ids.prop("mode", "Trim Multiple Shapes", Value::Enum(0)).with_ui(popup(&["Simultaneously", "Individually"])))
+}
+
+pub fn shape_repeater(ids: &mut Ids, copies: f64, offset_pos: [f64; 2]) -> PropGroup {
+    let tr = ids
+        .group("transform", "Transform")
+        .with(ids.prop("anchor", "Anchor Point", Value::Vec2([0.0, 0.0])).with_ui(ParamUi::Point))
+        .with(ids.prop("position", "Position", Value::Vec2(offset_pos)).with_ui(ParamUi::Point))
+        .with(ids.prop("scale", "Scale", Value::Vec2([100.0, 100.0])).with_ui(ParamUi::Percent))
+        .with(ids.prop("rotation", "Rotation", Value::Scalar(0.0)).with_ui(ParamUi::Angle))
+        .with(ids.prop("startOpacity", "Start Opacity", Value::Scalar(100.0)).with_ui(ParamUi::Percent))
+        .with(ids.prop("endOpacity", "End Opacity", Value::Scalar(100.0)).with_ui(ParamUi::Percent));
+    indexed(ids.group("repeater", "Repeater 1"))
+        .with(ids.prop("copies", "Copies", Value::Scalar(copies)))
+        .with(ids.prop("offset", "Offset", Value::Scalar(0.0)))
+        .with(ids.prop("composite", "Composite", Value::Enum(0)).with_ui(popup(&["Below", "Above"])))
+        .with(tr)
+}
+
+pub fn shape_simple_op(ids: &mut Ids, kind: &str) -> Option<PropGroup> {
+    let g = match kind {
+        "round" => indexed(ids.group("round", "Round Corners 1")).with(ids.prop("radius", "Radius", Value::Scalar(10.0)).with_ui(ParamUi::Pixels)),
+        "offset" => indexed(ids.group("offset", "Offset Paths 1"))
+            .with(ids.prop("amount", "Amount", Value::Scalar(10.0)).with_ui(ParamUi::Pixels))
+            .with(ids.prop("join", "Line Join", Value::Enum(0)).with_ui(popup(&["Miter Join", "Round Join", "Bevel Join"])))
+            .with(ids.prop("miter", "Miter Limit", Value::Scalar(4.0)))
+            .with(ids.prop("copies", "Copies", Value::Scalar(1.0)))
+            .with(ids.prop("copyOffset", "Copy Offset", Value::Scalar(0.0))),
+        "pucker" => indexed(ids.group("pucker", "Pucker & Bloat 1")).with(ids.prop("amount", "Amount", Value::Scalar(0.0)).with_ui(slider(-100.0, 100.0, -100.0, 100.0, 1))),
+        "twist" => indexed(ids.group("twist", "Twist 1"))
+            .with(ids.prop("angle", "Angle", Value::Scalar(0.0)).with_ui(ParamUi::Angle))
+            .with(ids.prop("center", "Center", Value::Vec2([0.0, 0.0])).with_ui(ParamUi::Point)),
+        "zigzag" => indexed(ids.group("zigzag", "Zig Zag 1"))
+            .with(ids.prop("size", "Size", Value::Scalar(10.0)).with_ui(ParamUi::Pixels))
+            .with(ids.prop("ridges", "Ridges per segment", Value::Scalar(5.0)))
+            .with(ids.prop("points", "Points", Value::Enum(0)).with_ui(popup(&["Corner", "Smooth"]))),
+        "wiggle" => indexed(ids.group("wiggle", "Wiggle Paths 1"))
+            .with(ids.prop("size", "Size", Value::Scalar(10.0)).with_ui(ParamUi::Pixels))
+            .with(ids.prop("detail", "Detail", Value::Scalar(10.0)))
+            .with(ids.prop("points", "Points", Value::Enum(1)).with_ui(popup(&["Corner", "Smooth"])))
+            .with(ids.prop("speed", "Wiggles/Second", Value::Scalar(2.0)))
+            .with(ids.prop("correlation", "Correlation", Value::Scalar(50.0)).with_ui(ParamUi::Percent))
+            .with(ids.prop("phase", "Temporal Phase", Value::Scalar(0.0)).with_ui(ParamUi::Angle))
+            .with(ids.prop("seed", "Random Seed", Value::Scalar(0.0))),
+        "merge" => indexed(ids.group("merge", "Merge Paths 1"))
+            .with(ids.prop("mode", "Mode", Value::Enum(0)).with_ui(popup(&["Merge", "Add", "Subtract", "Intersect", "Exclude Intersections"]))),
+        _ => return None,
+    };
+    Some(g)
+}
+
+// ---------------------------------------------------------------- camera / light / 3D
+
+pub fn camera_options(ids: &mut Ids, zoom: f64) -> PropGroup {
+    ids.group("cameraOptions", "Camera Options")
+        .with(ids.prop("zoom", "Zoom", Value::Scalar(zoom)).with_ui(ParamUi::Pixels))
+        .with(ids.prop("dof", "Depth of Field", Value::Bool(false)).with_ui(ParamUi::Checkbox))
+        .with(ids.prop("focusDistance", "Focus Distance", Value::Scalar(zoom)).with_ui(ParamUi::Pixels))
+        .with(ids.prop("aperture", "Aperture", Value::Scalar(25.3)).with_ui(ParamUi::Pixels))
+        .with(ids.prop("blurLevel", "Blur Level", Value::Scalar(100.0)).with_ui(ParamUi::Percent))
+}
+
+pub fn light_options(ids: &mut Ids, kind: LightKind) -> PropGroup {
+    let mut g = ids
+        .group("lightOptions", "Light Options")
+        .with(ids.prop("intensity", "Intensity", Value::Scalar(100.0)).with_ui(ParamUi::Percent))
+        .with(ids.prop("color", "Color", Value::Color([1.0, 1.0, 1.0, 1.0])).with_ui(ParamUi::Color));
+    if kind == LightKind::Spot {
+        g = g
+            .with(ids.prop("coneAngle", "Cone Angle", Value::Scalar(90.0)).with_ui(ParamUi::Angle))
+            .with(ids.prop("coneFeather", "Cone Feather", Value::Scalar(50.0)).with_ui(ParamUi::Percent));
+    }
+    if kind != LightKind::Ambient {
+        g = g
+            .with(ids.prop("falloff", "Falloff", Value::Enum(0)).with_ui(popup(&["None", "Smooth", "Inverse Square Clamped"])))
+            .with(ids.prop("radius", "Radius", Value::Scalar(500.0)).with_ui(ParamUi::Pixels))
+            .with(ids.prop("falloffDistance", "Falloff Distance", Value::Scalar(500.0)).with_ui(ParamUi::Pixels))
+            .with(ids.prop("castsShadows", "Casts Shadows", Value::Bool(false)).with_ui(ParamUi::Checkbox))
+            .with(ids.prop("shadowDarkness", "Shadow Darkness", Value::Scalar(100.0)).with_ui(ParamUi::Percent))
+            .with(ids.prop("shadowDiffusion", "Shadow Diffusion", Value::Scalar(0.0)).with_ui(ParamUi::Pixels));
+    }
+    g
+}
+
+pub fn material_options(ids: &mut Ids) -> PropGroup {
+    ids.group("materialOptions", "Material Options")
+        .with(ids.prop("castsShadows", "Casts Shadows", Value::Enum(0)).with_ui(popup(&["Off", "On", "Only"])))
+        .with(ids.prop("lightTransmission", "Light Transmission", Value::Scalar(0.0)).with_ui(ParamUi::Percent))
+        .with(ids.prop("acceptsShadows", "Accepts Shadows", Value::Enum(1)).with_ui(popup(&["Off", "On", "Only"])))
+        .with(ids.prop("acceptsLights", "Accepts Lights", Value::Bool(true)).with_ui(ParamUi::Checkbox))
+        .with(ids.prop("ambient", "Ambient", Value::Scalar(100.0)).with_ui(ParamUi::Percent))
+        .with(ids.prop("diffuse", "Diffuse", Value::Scalar(50.0)).with_ui(ParamUi::Percent))
+        .with(ids.prop("specularIntensity", "Specular Intensity", Value::Scalar(50.0)).with_ui(ParamUi::Percent))
+        .with(ids.prop("specularShininess", "Specular Shininess", Value::Scalar(5.0)).with_ui(ParamUi::Percent))
+        .with(ids.prop("metal", "Metal", Value::Scalar(100.0)).with_ui(ParamUi::Percent))
+}
+
+pub fn audio(ids: &mut Ids) -> PropGroup {
+    ids.group("audio", "Audio").with(ids.prop("levels", "Audio Levels", Value::Vec2([0.0, 0.0])))
+}
+
+// ---------------------------------------------------------------- layers
+
+/// Default label colour for a layer source (Labels preferences defaults).
+pub fn default_label(src: &LayerSource, project: &Project) -> Label {
+    match src {
+        LayerSource::Comp { .. } => Label::Sandstone,
+        LayerSource::Footage { item } => match project.item(*item).map(|i| i.type_name()) {
+            Some("Image") | Some("Image Sequence") => Label::Lavender,
+            Some("Audio") => Label::SeaFoam,
+            _ => Label::Aqua,
+        },
+        LayerSource::Solid { .. } => Label::Red,
+        LayerSource::Text => Label::Red,
+        LayerSource::Shape => Label::Blue,
+        LayerSource::Null => Label::Red,
+        LayerSource::Camera | LayerSource::Light { .. } => Label::Pink,
+    }
+}
+
+/// A new layer spanning the whole comp, anchored at its source centre and centred in the comp.
+pub fn layer(project: &mut Project, comp: &Comp, name: &str, source: LayerSource, size: (u32, u32), duration: Option<Tick>) -> Layer {
+    let label = default_label(&source, project);
+    let id = LayerId(project.alloc());
+    let mut ids = Ids(&mut project.next_id);
+    let (w, h) = (size.0 as f64, size.1 as f64);
+    let (cw, ch) = (comp.width as f64, comp.height as f64);
+    let anchor = match source {
+        LayerSource::Text | LayerSource::Shape | LayerSource::Camera | LayerSource::Light { .. } => [0.0, 0.0],
+        LayerSource::Null => [50.0, 50.0],
+        _ => [w / 2.0, h / 2.0],
+    };
+    let mut root = ids.group("layer", name);
+    match &source {
+        LayerSource::Text => {
+            root.children.push(text(&mut ids, TextDoc::default()).into());
+        }
+        LayerSource::Shape => {
+            root.children.push(contents(&mut ids).into());
+        }
+        _ => {}
+    }
+    if source.is_av() {
+        root.children.push(masks(&mut ids).into());
+        root.children.push(effects(&mut ids).into());
+    } else if matches!(source, LayerSource::Null) {
+        root.children.push(effects(&mut ids).into());
+    }
+    let mut tr = transform(&mut ids, anchor, [cw / 2.0, ch / 2.0]);
+    if let LayerSource::Camera = source {
+        // Two-node camera default: point of interest at the comp centre, camera at -zoom.
+        let zoom = effectcraft_geom::default_camera_zoom(cw);
+        tr = ids
+            .group("transform", "Transform")
+            .with(ids.prop("poi", "Point of Interest", Value::Vec3([cw / 2.0, ch / 2.0, 0.0])).with_ui(ParamUi::Point3).spatial())
+            .with(ids.prop("position", "Position", Value::Vec3([cw / 2.0, ch / 2.0, -zoom])).with_ui(ParamUi::Point3).spatial())
+            .with(ids.prop("orientation", "Orientation", Value::Vec3([0.0; 3])).with_ui(ParamUi::Angle))
+            .with(ids.prop("rotationX", "X Rotation", Value::Scalar(0.0)).with_ui(ParamUi::Angle))
+            .with(ids.prop("rotationY", "Y Rotation", Value::Scalar(0.0)).with_ui(ParamUi::Angle))
+            .with(ids.prop("rotation", "Z Rotation", Value::Scalar(0.0)).with_ui(ParamUi::Angle));
+        root.children.push(tr.into());
+        root.children.push(camera_options(&mut ids, zoom).into());
+    } else if let LayerSource::Light { kind } = source {
+        let mut g = ids.group("transform", "Transform");
+        if matches!(kind, LightKind::Spot | LightKind::Parallel) {
+            g.children.push(ids.prop("poi", "Point of Interest", Value::Vec3([cw / 2.0, ch / 2.0, 0.0])).with_ui(ParamUi::Point3).spatial().into());
+        }
+        if kind != LightKind::Ambient {
+            g.children.push(ids.prop("position", "Position", Value::Vec3([cw / 2.0 - 260.0, ch / 2.0 - 260.0, -440.0])).with_ui(ParamUi::Point3).spatial().into());
+        }
+        root.children.push(g.into());
+        root.children.push(light_options(&mut ids, kind).into());
+    } else {
+        if let LayerSource::Null = source {
+            // Nulls are 100×100.
+        }
+        root.children.push(std::mem::replace(&mut tr, PropGroup::new(0, "", "")).into());
+        if source.is_av() {
+            root.children.push(material_options(&mut ids).into());
+        }
+    }
+    let has_audio = matches!(&source, LayerSource::Footage { item } if matches!(project.item(*item).map(|i| &i.kind), Some(crate::ItemKind::Footage(f)) if f.has_audio))
+        || matches!(source, LayerSource::Comp { .. });
+    if has_audio {
+        let mut ids = Ids(&mut project.next_id);
+        root.children.push(audio(&mut ids).into());
+    }
+    let out = duration.map(|d| d.min(comp.duration)).unwrap_or(comp.duration);
+    Layer {
+        id,
+        name: comp.unique_layer_name(name),
+        source,
+        label,
+        comment: String::new(),
+        start_time: Tick::ZERO,
+        in_point: Tick::ZERO,
+        out_point: out,
+        stretch: 100.0,
+        switches: Switches::default(),
+        blend_mode: BlendMode::Normal,
+        preserve_transparency: false,
+        track_matte: None,
+        parent: None,
+        markers: vec![],
+        auto_orient: Default::default(),
+        props: root,
+    }
+}
