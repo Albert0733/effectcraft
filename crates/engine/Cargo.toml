@@ -20,9 +20,11 @@ effectcraft-path = { workspace = true }
 effectcraft-text = { workspace = true }
 effectcraft-effects = { workspace = true }
 effectcraft-render = { workspace = true }
+effectcraft-track = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 log = { workspace = true }
+rayon = { workspace = true }
 image = { workspace = true }
 web-time = { workspace = true }

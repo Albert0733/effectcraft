@@ -341,6 +341,13 @@ impl<'a> Renderer<'a> {
         Some(flat)
     }
 
+    /// A layer's source pixels at the context time, before masks, effects and the transform
+    /// (what the motion tracker analyses, like After Effects' Layer panel). `None` for layers
+    /// without pixels.
+    pub fn layer_source(&self, ctx: &EvalCtx, layer: &Layer) -> Option<Buf> {
+        self.source(ctx, layer)
+    }
+
     /// Layer pixels after source → masks → effects (no layer styles).
     pub fn content_buf(&self, ctx: &EvalCtx, layer: &Layer) -> Option<Arc<Buf>> {
         self.content_buf_timed(ctx, layer, None).map(|(b, _)| b)

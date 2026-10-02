@@ -16,6 +16,7 @@ pub mod properties;
 pub mod render_queue;
 pub mod text_panels;
 pub mod timeline;
+pub mod tracker;
 pub mod viewer;
 pub mod waveform;
 
@@ -70,6 +71,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: PanelKind, rect: Rec
         PanelKind::Markers => misc::markers(app, ui, rect),
         PanelKind::Wiggler => misc::wiggler(app, ui, rect),
         PanelKind::RenderQueue => render_queue::show(app, ui, rect),
+        PanelKind::Tracker => tracker::show(app, ui, rect),
         other => misc::placeholder(app, ui, rect, other),
     }
 }

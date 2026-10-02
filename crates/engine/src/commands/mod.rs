@@ -24,6 +24,7 @@ mod styles;
 mod text_anim;
 mod three_d;
 mod time;
+mod track;
 mod view;
 
 use std::sync::OnceLock;
@@ -102,6 +103,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(file_more::specs());
         v.extend(comp_more::specs());
         v.extend(frontend::specs());
+        v.extend(track::specs());
         v.extend(stubs::specs());
         v
     })

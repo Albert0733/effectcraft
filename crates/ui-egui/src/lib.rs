@@ -57,6 +57,12 @@ pub enum Dialog {
     KeyVelocity,
     KeyInterpolation,
     TimeStretch,
+    /// Tracker ▸ Options…
+    TrackOptions,
+    /// Tracker ▸ Edit Target…
+    TrackTarget,
+    /// Tracker ▸ Apply (Transform / Stabilize): Apply Dimensions.
+    TrackApply,
 }
 
 /// Host hooks provided by the native app (file pickers etc.).
@@ -535,6 +541,10 @@ impl EffectcraftApp {
         if self.session.render_job.is_some() {
             self.session.poll_render();
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
+        if self.session.track_job.is_some() {
+            self.session.poll_track();
+            ctx.request_repaint_after(std::time::Duration::from_millis(50));
         }
         self.handle_events(&ctx);
         if let Some(rx) = self.command_inbox.take() {

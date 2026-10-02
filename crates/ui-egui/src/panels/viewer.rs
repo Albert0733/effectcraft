@@ -119,6 +119,12 @@ enum Gesture {
         inv: Mat3,
         press: Pos2,
     },
+    /// Dragging a track point's feature/search region, a corner or its attach point.
+    Track {
+        layer: LayerId,
+        tracker: u64,
+        drag: super::tracker::Drag,
+    },
 }
 
 /// Pen tool path in progress: (layer, mask uid).
@@ -502,6 +508,19 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         }
     }
 
+    // Track points of the current track (Tracker panel) on its layer, while that layer is selected.
+    let mut track_hits = vec![];
+    let track_cur = super::tracker::viewer_track(app);
+    if app.ui.viewer.show_layer_controls
+        && let Some((tl, tu)) = track_cur
+        && selected.contains(&tl)
+        && let Some(layer) = comp.layer(tl)
+        && layer.is_active_at(time)
+    {
+        let (m, _) = l2c(&ectx, layer);
+        track_hits = super::tracker::draw_overlay(app, &painter, &map, &m, layer, tu, time);
+    }
+
     // Cameras and lights (wireframes) and the 3D view name.
     if comp.has_3d() {
         draw_rigs(app, &painter, &map, &ectx, &selected);
@@ -530,7 +549,9 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
             Tool::Dolly => egui::CursorIcon::ResizeVertical,
             t if t.is_shape() || t == Tool::Pen => egui::CursorIcon::Crosshair,
             _ => {
-                if handle_hits.iter().any(|(_, _, h)| h.distance(hp) < HANDLE) {
+                if super::tracker::hit_at(&track_hits, hp).is_some() {
+                    egui::CursorIcon::Move
+                } else if handle_hits.iter().any(|(_, _, h)| h.distance(hp) < HANDLE) {
                     egui::CursorIcon::ResizeNwSe
                 } else {
                     egui::CursorIcon::Default
@@ -610,6 +631,14 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
             }),
             t if t.is_shape() => Some(Gesture::Create { tool: t, start: cpt }),
             Tool::Orbit | Tool::PanCamera | Tool::Dolly => Some(Gesture::Camera { tool }),
+            Tool::Selection if super::tracker::hit_at(&track_hits, press).is_some() => {
+                let hit = super::tracker::hit_at(&track_hits, press);
+                track_cur.zip(hit).and_then(|((tl, tu), hit)| {
+                    let layer = comp.layer(tl)?;
+                    let (m, _) = l2c(&ectx, layer);
+                    super::tracker::begin_drag(layer, tu, time, &m, hit, map.to_comp(press)).map(|drag| Gesture::Track { layer: tl, tracker: tu, drag })
+                })
+            }
             Tool::Selection if vertex_at(press, true).is_some() => vertex_at(press, true).map(|h| Gesture::Tangent {
                 layer: h.layer,
                 mask: h.mask,
@@ -792,6 +821,13 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                         .session
                         .execute("mask.setVertex", json!({"layer": layer.0, "mask": mask, "index": index, "out": t, "in": [-t[0], -t[1]], "merge": merge}));
                 }
+            }
+            Gesture::Track { layer, tracker, drag } => {
+                let mut q = super::tracker::drag_params(&drag, cpt);
+                q["layer"] = json!(layer.0);
+                q["tracker"] = json!(tracker);
+                q["merge"] = json!(merge);
+                let _ = app.session.execute("track.setPoint", q);
             }
             Gesture::Marquee { start } => {
                 let r = Rect::from_two_pos(start, pos);

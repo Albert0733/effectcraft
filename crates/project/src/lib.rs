@@ -8,6 +8,7 @@ pub mod build;
 pub mod props;
 pub mod render_queue;
 pub mod styles;
+pub mod tracking;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

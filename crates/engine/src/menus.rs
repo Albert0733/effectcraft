@@ -788,6 +788,7 @@ Animation
   Track Camera | track.camera
   Warp Stabilizer VFX | track.warpStabilizer
   Track Motion | track.motion
+  Stabilize Motion | track.stabilize
   Track Mask | track.mask
   Track this Property | track.property
   ---

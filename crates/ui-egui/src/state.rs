@@ -412,6 +412,9 @@ pub struct UiState {
     pub start_screen: bool,
     /// Composition ▸ Preview ▸ Cache Frames When Idle.
     pub cache_when_idle: bool,
+    /// Tracker panel ▸ Motion Source chosen without a tracker yet (layer id).
+    #[serde(default)]
+    pub tracker_source: Option<u64>,
 }
 
 impl Default for UiState {
@@ -452,6 +455,7 @@ impl Default for UiState {
             preview_audio: true,
             start_screen: false,
             cache_when_idle: false,
+            tracker_source: None,
         }
     }
 }

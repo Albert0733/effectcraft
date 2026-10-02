@@ -21,6 +21,7 @@ effectcraft-keyframe = { path = "crates/keyframe" }
 effectcraft-project = { path = "crates/project" }
 effectcraft-text = { path = "crates/text" }
 effectcraft-effects = { path = "crates/effects" }
+effectcraft-track = { path = "crates/track" }
 effectcraft-render = { path = "crates/render" }
 effectcraft-media = { path = "crates/media" }
 effectcraft-export = { path = "crates/export" }
@@ -107,6 +108,9 @@ opt-level = 3
 opt-level = 3
 
 [profile.dev.package.effectcraft-effects]
+opt-level = 3
+
+[profile.dev.package.effectcraft-track]
 opt-level = 3
 
 [profile.dev.package.effectcraft-path]

@@ -13,6 +13,7 @@ pub mod demo;
 pub mod links;
 pub mod menus;
 pub mod render_queue;
+pub mod tracking;
 
 use std::sync::Arc;
 
@@ -157,6 +158,9 @@ pub struct EditorState {
     /// Viewer 3D view per comp (Active Camera / Front / … / Custom View 3 and edited view cameras).
     #[serde(default)]
     pub views3d: std::collections::BTreeMap<ItemId, effectcraft_render::three_d::Views3D>,
+    /// Tracker panel ▸ Current Track: (tracked layer, tracker group uid) in the active comp.
+    #[serde(default)]
+    pub current_track: Option<(LayerId, Uid)>,
 }
 
 /// What Copy with Property Links / Copy Expression Only put on the clipboard.
@@ -207,6 +211,8 @@ pub struct Session {
     pub exporter: Option<Arc<dyn Exporter>>,
     /// The running (or finished, not yet polled) render.
     pub render_job: Option<render_queue::RenderJob>,
+    /// The running (or finished, not yet polled) track analysis.
+    pub track_job: Option<tracking::TrackJob>,
     pub events: Vec<Event>,
     /// Commands executed: (id, params).
     pub journal: Vec<(String, Value)>,
@@ -230,6 +236,7 @@ impl Default for Session {
             importer: None,
             exporter: None,
             render_job: None,
+            track_job: None,
             events: vec![],
             journal: vec![],
             layer_cache: Arc::new(LayerCache::default()),
@@ -336,6 +343,11 @@ impl Session {
             self.state.selected_keys.retain(|k| ids.contains(&k.layer));
             self.state.selected_vertices.retain(|v| ids.contains(&v.layer));
         }
+        if let Some((l, t)) = self.state.current_track
+            && self.active_comp().and_then(|c| c.layer(l)).and_then(|l| l.tracker(t)).is_none()
+        {
+            self.state.current_track = None;
+        }
         self.state.project_selection.retain(|i| p.item(*i).is_some());
     }
 
@@ -380,6 +392,7 @@ impl Session {
             self.state.selected_props.clear();
             self.state.selected_keys.clear();
             self.state.selected_vertices.clear();
+            self.state.current_track = None;
         }
         self.events.push(Event::OpenComp(id));
     }
@@ -437,6 +450,8 @@ impl Session {
             job.wait();
         }
         self.render_job = None;
+        self.stop_track();
+        self.track_job = None;
         p.fix_next_id();
         self.project = Arc::new(p);
         self.history = History::default();
@@ -467,6 +482,8 @@ mod tests_styles;
 mod tests_text;
 #[cfg(test)]
 mod tests_timeline;
+#[cfg(test)]
+mod tests_track;
 
 /// Font families available to text layers (bundled + scanned system fonts).
 /// Text animation presets: (id, name), for menus.

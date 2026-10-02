@@ -170,6 +170,10 @@ pub enum GroupKind {
         /// Effect spec id, e.g. `ec.blur.gaussian`.
         effect: String,
     },
+    /// A motion tracker (Motion Trackers ▸ Tracker n) with its Tracker panel settings.
+    Tracker {
+        settings: Box<crate::tracking::TrackerSettings>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
