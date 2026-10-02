@@ -276,6 +276,8 @@ impl Session {
         let mut p = (*self.project).clone();
         let mut st = self.state.clone();
         let r = f(&mut p, &mut st)?;
+        // Layer styles: one Global Light per comp, whichever layer edited it.
+        effectcraft_project::styles::sync_global_light(&before, &mut p);
         let same = merge.is_some() && merge.map(str::to_string) == self.history.merge_key;
         if !same {
             self.history.undo.push((label.to_string(), before));
@@ -453,6 +455,8 @@ mod tests;
 mod tests_3d;
 #[cfg(test)]
 mod tests_menu_cmds;
+#[cfg(test)]
+mod tests_styles;
 #[cfg(test)]
 mod tests_timeline;
 

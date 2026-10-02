@@ -7,6 +7,7 @@
 pub mod build;
 pub mod props;
 pub mod render_queue;
+pub mod styles;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -150,6 +151,9 @@ pub struct Comp {
     pub draft_3d: bool,
     #[serde(default)]
     pub poster_time: Tick,
+    /// Global Light for layer styles (Layer ▸ Layer Styles ▸ Blending Options).
+    #[serde(default)]
+    pub global_light: styles::GlobalLight,
     /// Viewer guides (View ▸ Add Guide…), in comp pixels.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub guides: Vec<Guide>,
@@ -189,6 +193,7 @@ impl Comp {
             draft_3d: false,
             poster_time: Tick::ZERO,
             guides: vec![],
+            global_light: styles::GlobalLight::default(),
         }
     }
     pub fn layer(&self, id: LayerId) -> Option<&Layer> {

@@ -641,19 +641,19 @@ Layer
     Matte with Layer Above | layer.trackMatte {"op":"above"}
     Matte with Layer Below | layer.trackMatte {"op":"below"}
   Layer Styles
-    Convert to Editable Styles | layer.styles {"op":"convert"}
-    Show All | layer.styles {"op":"showAll"}
-    Remove All | layer.styles {"op":"removeAll"}
+    Convert to Editable Styles | layer.style.convertToEditable
+    Show All | layer.style.showAll
+    Remove All | layer.style.removeAll
     ---
-    Drop Shadow | layer.styles {"style":"dropShadow"}
-    Inner Shadow | layer.styles {"style":"innerShadow"}
-    Outer Glow | layer.styles {"style":"outerGlow"}
-    Inner Glow | layer.styles {"style":"innerGlow"}
-    Bevel and Emboss | layer.styles {"style":"bevelEmboss"}
-    Satin | layer.styles {"style":"satin"}
-    Color Overlay | layer.styles {"style":"colorOverlay"}
-    Gradient Overlay | layer.styles {"style":"gradientOverlay"}
-    Stroke | layer.styles {"style":"stroke"}
+    Drop Shadow | layer.style.dropShadow
+    Inner Shadow | layer.style.innerShadow
+    Outer Glow | layer.style.outerGlow
+    Inner Glow | layer.style.innerGlow
+    Bevel and Emboss | layer.style.bevelEmboss
+    Satin | layer.style.satin
+    Color Overlay | layer.style.colorOverlay
+    Gradient Overlay | layer.style.gradientOverlay
+    Stroke | layer.style.stroke
   ---
   Arrange
     Bring Layer to Front | layer.arrange {"to":"front"} | Cmd+Shift+]

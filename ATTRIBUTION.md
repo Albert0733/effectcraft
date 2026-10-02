@@ -17,6 +17,18 @@ iconography, images or other Adobe assets; open licences only; every asset attri
 | `assets/fonts/NotoSerif-Regular.ttf` | The Noto Project Authors | https://github.com/notofonts/latin-greek-cyrillic | OFL-1.1 (`assets/fonts/OFL-NotoSerif.txt`) |
 | `assets/fonts/JetBrainsMono-Regular.ttf` | The JetBrains Mono Project Authors | https://github.com/JetBrains/JetBrainsMono | OFL-1.1 (`assets/fonts/OFL-JetBrainsMono.txt`) |
 
+## Screenshots
+
+Screenshots of EffectCraft itself, rendered headlessly, showing only procedurally generated demo content.
+
+| Asset | Author | Source | Licence |
+|---|---|---|---|
+| `docs/images/effectcraft-hero.png` | EffectCraft contributors | Original work: screenshot of EffectCraft (EffectCraft main window) | MIT OR Apache-2.0 |
+| `docs/images/effectcraft-3d.png` | EffectCraft contributors | Original work: screenshot of EffectCraft (EffectCraft Classic 3D) | MIT OR Apache-2.0 |
+| `docs/images/effectcraft-graph-editor.png` | EffectCraft contributors | Original work: screenshot of EffectCraft (EffectCraft Graph Editor) | MIT OR Apache-2.0 |
+| `docs/images/effectcraft-effects.png` | EffectCraft contributors | Original work: screenshot of EffectCraft (EffectCraft effects) | MIT OR Apache-2.0 |
+| `docs/images/effectcraft-render-queue.png` | EffectCraft contributors | Original work: screenshot of EffectCraft (EffectCraft Render Queue panel with the demo compositions queued for H.264 and ProRes export) | MIT OR Apache-2.0 |
+
 ## Code-drawn assets (original work, MIT OR Apache-2.0)
 
 - UI icons drawn in code: `crates/ui-egui/src/icons.rs`.
