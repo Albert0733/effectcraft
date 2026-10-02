@@ -113,6 +113,10 @@ pub struct ProjectSettings {
     /// Frame numbering starts at 0 (or 1).
     pub frame_start: i64,
     pub audio_sample_rate: u32,
+    /// Video Rendering and Effects ▸ Use: Mercury GPU Acceleration (`true`, the default; used
+    /// when a GPU adapter exists) or Mercury Software Only (`false`, the CPU compositor).
+    #[serde(default = "yes")]
+    pub gpu_acceleration: bool,
 }
 
 impl Default for ProjectSettings {
@@ -125,6 +129,7 @@ impl Default for ProjectSettings {
             time_display: TimeDisplayStyle::Timecode,
             frame_start: 0,
             audio_sample_rate: 48_000,
+            gpu_acceleration: true,
         }
     }
 }

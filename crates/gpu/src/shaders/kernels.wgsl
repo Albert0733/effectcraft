@@ -1,0 +1,750 @@
+// Compositing and effect kernels (rgba32float output). Parameter layouts are documented next to
+// each entry point and mirrored by the Rust dispatch code (src/ops.rs, src/effects.rs).
+
+@group(0) @binding(3) var out: texture_storage_2d<rgba32float, write>;
+
+fn out_dims() -> vec2<i32> {
+    return vec2<i32>(textureDimensions(out));
+}
+
+// ---------------------------------------------------------------- compositing
+
+// Warp `src` by the inverse matrix (output pixel → source pixel) and blend over `aux`
+// (raster::composite_warp / accumulate_warp).
+// u[0] = (mode, sampling, seed, flags: 1 accumulate, 2 clear outside bounds)
+// f[0..3] = inverse rows; f[3] = (opacity, weight); f[4] = bounds (x0, y0, x1, y1)
+@compute @workgroup_size(16, 16)
+fn warp_blend(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let dims = out_dims();
+    let x = i32(gid.x);
+    let y = i32(gid.y);
+    if (x >= dims.x || y >= dims.y) {
+        return;
+    }
+    let mode = P.u[0].x;
+    let sampling = P.u[0].y;
+    let seed = P.u[0].z;
+    let flags = P.u[0].w;
+    let b = P.f[4];
+    var d = textureLoad(aux, vec2<i32>(x, y), 0);
+    let fx = f32(x) + 0.5;
+    let fy = f32(y) + 0.5;
+    if (fx < b.x || fy < b.y || fx > b.z || fy > b.w) {
+        if ((flags & 2u) != 0u) {
+            d = vec4<f32>(0.0);
+        }
+        textureStore(out, vec2<i32>(x, y), d);
+        return;
+    }
+    let r0 = P.f[0];
+    let r1 = P.f[1];
+    let r2 = P.f[2];
+    var px = r0.x * fx + r0.y * fy + r0.z;
+    var py = r1.x * fx + r1.y * fy + r1.z;
+    let w = r2.x * fx + r2.y * fy + r2.z;
+    if (w != 1.0 && w != 0.0) {
+        px = px / w;
+        py = py / w;
+    }
+    let sz = vec2<f32>(textureDimensions(src));
+    let stencil = is_stencil(mode);
+    if (px < -1.0 || py < -1.0 || px > sz.x + 1.0 || py > sz.y + 1.0) {
+        if (stencil && (flags & 1u) == 0u) {
+            d = blend_pixel(mode, d, vec4<f32>(0.0), 0.5);
+        }
+        textureStore(out, vec2<i32>(x, y), d);
+        return;
+    }
+    var s = sample(src, sampling, px, py);
+    if ((flags & 1u) != 0u) {
+        if (s.w > 0.0) {
+            d = d + s * P.f[3].y;
+        }
+        textureStore(out, vec2<i32>(x, y), d);
+        return;
+    }
+    if (s.w <= 0.0 && !stencil) {
+        textureStore(out, vec2<i32>(x, y), d);
+        return;
+    }
+    let op = P.f[3].x;
+    if (op < 1.0) {
+        s = s * op;
+    }
+    var n = 0.5;
+    if (mode == 1u || mode == 2u) {
+        n = hash_noise(u32(x), u32(y), seed);
+    }
+    textureStore(out, vec2<i32>(x, y), blend_pixel(mode, d, s, n));
+}
+
+// Blend `src` (same size) onto `aux` (Image::blend_from).
+// u[0] = (mode, _, seed); f[0].x = opacity
+@compute @workgroup_size(16, 16)
+fn blend_full(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let dims = out_dims();
+    let p = vec2<i32>(gid.xy);
+    if (p.x >= dims.x || p.y >= dims.y) {
+        return;
+    }
+    let mode = P.u[0].x;
+    let d = textureLoad(aux, p, 0);
+    var s = textureLoad(src, p, 0);
+    if (s.w <= 0.0 && !is_stencil(mode)) {
+        textureStore(out, p, d);
+        return;
+    }
+    s = s * P.f[0].x;
+    var n = 0.5;
+    if (mode == 1u || mode == 2u) {
+        n = hash_noise(gid.x, gid.y, P.u[0].z);
+    }
+    textureStore(out, p, blend_pixel(mode, d, s, n));
+}
+
+// Track matte: `src` × matte factor of `aux`. u[0].x = 0 alpha, 1 alpha inverted, 2 luma,
+// 3 luma inverted.
+@compute @workgroup_size(16, 16)
+fn matte(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let dims = out_dims();
+    let p = vec2<i32>(gid.xy);
+    if (p.x >= dims.x || p.y >= dims.y) {
+        return;
+    }
+    let q = textureLoad(aux, p, 0);
+    var k: f32;
+    switch P.u[0].x {
+        case 0u: { k = q.w; }
+        case 1u: { k = 1.0 - q.w; }
+        case 2u: { k = luminance(q.xyz); }
+        default: { k = 1.0 - luminance(q.xyz); }
+    }
+    k = clamp(k, 0.0, 1.0);
+    textureStore(out, p, textureLoad(src, p, 0) * k);
+}
+
+// Preserve Transparency: `src` × alpha of `aux`.
+@compute @workgroup_size(16, 16)
+fn preserve(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let dims = out_dims();
+    let p = vec2<i32>(gid.xy);
+    if (p.x >= dims.x || p.y >= dims.y) {
+        return;
+    }
+    textureStore(out, p, textureLoad(src, p, 0) * textureLoad(aux, p, 0).w);
+}
+
+// Knockout: `src` × (1 − alpha of `aux`).
+@compute @workgroup_size(16, 16)
+fn knockout(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let dims = out_dims();
+    let p = vec2<i32>(gid.xy);
+    if (p.x >= dims.x || p.y >= dims.y) {
+        return;
+    }
+    let keep = 1.0 - clamp(textureLoad(aux, p, 0).w, 0.0, 1.0);
+    textureStore(out, p, textureLoad(src, p, 0) * keep);
+}
+
+// Styled layer finish: canvas `src` moves toward `aux` by the opacity, per enabled channel.
+// u[0].xyz = R/G/B switches; f[0].x = opacity.
+@compute @workgroup_size(16, 16)
+fn channel_mix(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let dims = out_dims();
+    let p = vec2<i32>(gid.xy);
+    if (p.x >= dims.x || p.y >= dims.y) {
+        return;
+    }
+    let c = textureLoad(src, p, 0);
+    let t = textureLoad(aux, p, 0);
+    let op = P.f[0].x;
+    var v = t;
+    if (P.u[0].x == 0u) {
+        v.x = c.x;
+    }
+    if (P.u[0].y == 0u) {
+        v.y = c.y;
+    }
+    if (P.u[0].z == 0u) {
+        v.z = c.z;
+    }
+    textureStore(out, p, c + (v - c) * op);
+}
+
+// 8/16 bpc: clamp premultiplied pixels to 0..1 (colour ≤ alpha) and round. f[0].x = levels.
+@compute @workgroup_size(16, 16)
+fn quantize(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let dims = out_dims();
+    let p = vec2<i32>(gid.xy);
+    if (p.x >= dims.x || p.y >= dims.y) {
+        return;
+    }
+    let levels = P.f[0].x;
+    let inv = 1.0 / levels;
+    let s = textureLoad(src, p, 0);
+    let a = round_away(clamp(s.w, 0.0, 1.0) * levels) * inv;
+    var o = vec4<f32>(0.0, 0.0, 0.0, a);
+    o.x = round_away(clamp(s.x, 0.0, a) * levels) * inv;
+    o.y = round_away(clamp(s.y, 0.0, a) * levels) * inv;
+    o.z = round_away(clamp(s.z, 0.0, a) * levels) * inv;
+    textureStore(out, p, o);
+}
+
+// Colour conversion on straight colour (render::color::convert).
+// u[0] = (decode curve, has matrix, encode curve); f[0..3] = matrix rows.
+@compute @workgroup_size(16, 16)
+fn convert(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let dims = out_dims();
+    let p = vec2<i32>(gid.xy);
+    if (p.x >= dims.x || p.y >= dims.y) {
+        return;
+    }
+    let s = textureLoad(src, p, 0);
+    let a = s.w;
+    if (a <= 0.0) {
+        textureStore(out, p, s);
+        return;
+    }
+    var c = s.xyz / a;
+    let dc = P.u[0].x;
+    if (dc != 0u) {
+        c = vec3<f32>(curve_decode(dc, c.x), curve_decode(dc, c.y), curve_decode(dc, c.z));
+    }
+    if (P.u[0].y != 0u) {
+        let m0 = P.f[0].xyz;
+        let m1 = P.f[1].xyz;
+        let m2 = P.f[2].xyz;
+        c = vec3<f32>(m0.x * c.x + m0.y * c.y + m0.z * c.z, m1.x * c.x + m1.y * c.y + m1.z * c.z, m2.x * c.x + m2.y * c.y + m2.z * c.z);
+    }
+    let ec = P.u[0].z;
+    if (ec != 0u) {
+        c = vec3<f32>(curve_encode(ec, c.x), curve_encode(ec, c.y), curve_encode(ec, c.z));
+    }
+    textureStore(out, p, vec4<f32>(c * a, a));
+}
+
+// Box-filter halving for minification (raster::warp::half).
+@compute @workgroup_size(16, 16)
+fn half(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let dims = out_dims();
+    let p = vec2<i32>(gid.xy);
+    if (p.x >= dims.x || p.y >= dims.y) {
+        return;
+    }
+    let sx = 2 * p.x;
+    let sy = 2 * p.y;
+    var acc = vec4<f32>(0.0);
+    acc += tex_get_clamped(src, sx, sy);
+    acc += tex_get_clamped(src, sx + 1, sy);
+    acc += tex_get_clamped(src, sx, sy + 1);
+    acc += tex_get_clamped(src, sx + 1, sy + 1);
+    textureStore(out, p, acc * 0.25);
+}
+
+// ---------------------------------------------------------------- blurs (raster::blur)
+
+fn line_get(horizontal: bool, line: i32, i: i32, n: i32, repeat: bool) -> vec4<f32> {
+    var j = i;
+    if (i < 0 || i >= n) {
+        if (!repeat) {
+            return vec4<f32>(0.0);
+        }
+        j = clamp(i, 0, n - 1);
+    }
+    if (horizontal) {
+        return textureLoad(src, vec2<i32>(j, line), 0);
+    }
+    return textureLoad(src, vec2<i32>(line, j), 0);
+}
+
+// One box pass of radius r along rows (horizontal) or columns, as running sums over blocks of
+// `block` pixels (each block restarts its sum, as the CPU's vertical pass does).
+fn box_pass(gid: vec3<u32>, horizontal: bool) {
+    let dims = out_dims();
+    let r = i32(P.u[0].x);
+    let repeat = P.u[0].y != 0u;
+    let block = i32(P.u[0].z);
+    var lines = dims.x;
+    var n = dims.y;
+    if (horizontal) {
+        lines = dims.y;
+        n = dims.x;
+    }
+    let line = i32(gid.x);
+    let b0 = i32(gid.y) * block;
+    if (line >= lines || b0 >= n) {
+        return;
+    }
+    let norm = 1.0 / f32(2 * r + 1);
+    var acc = vec4<f32>(0.0);
+    for (var i = b0 - r; i <= b0 + r; i++) {
+        acc += line_get(horizontal, line, i, n, repeat);
+    }
+    let b1 = min(b0 + block, n);
+    for (var i = b0; i < b1; i++) {
+        if (horizontal) {
+            textureStore(out, vec2<i32>(i, line), acc * norm);
+        } else {
+            textureStore(out, vec2<i32>(line, i), acc * norm);
+        }
+        let add = line_get(horizontal, line, i + r + 1, n, repeat);
+        let sub = line_get(horizontal, line, i - r, n, repeat);
+        acc += add - sub;
+    }
+}
+
+// u[0] = (radius, repeat edges, block); dispatched over (line, block).
+@compute @workgroup_size(64, 1)
+fn box_h(@builtin(global_invocation_id) gid: vec3<u32>) {
+    box_pass(gid, true);
+}
+
+@compute @workgroup_size(64, 1)
+fn box_v(@builtin(global_invocation_id) gid: vec3<u32>) {
+    box_pass(gid, false);
+}
+
+// Directional blur (raster::directional_blur). f[0] = (dx, dy, length, samples).
+@compute @workgroup_size(16, 16)
+fn directional(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let dims = out_dims();
+    let p = vec2<i32>(gid.xy);
+    if (p.x >= dims.x || p.y >= dims.y) {
+        return;
+    }
+    let dx = P.f[0].x;
+    let dy = P.f[0].y;
+    let len = P.f[0].z;
+    let n = i32(P.f[0].w);
+    var acc = vec4<f32>(0.0);
+    for (var i = 0; i < n; i++) {
+        let t = (f32(i) / f32(n - 1) - 0.5) * len;
+        acc += sample_bilinear(src, f32(p.x) + 0.5 + dx * t, f32(p.y) + 0.5 + dy * t);
+    }
+    textureStore(out, p, acc / f32(n));
+}
+
+// ---------------------------------------------------------------- Glow / Drop Shadow
+
+// Glow bright pass. u[0].x = A & B colours; f[0].x = threshold; f[1] = colour A; f[2] = colour B.
+@compute @workgroup_size(16, 16)
+fn glow_bright(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let dims = out_dims();
+    let p = vec2<i32>(gid.xy);
+    if (p.x >= dims.x || p.y >= dims.y) {
+        return;
+    }
+    let px = textureLoad(src, p, 0);
+    let a = px.w;
+    if (a <= 0.0) {
+        textureStore(out, p, vec4<f32>(0.0));
+        return;
+    }
+    let thr = P.f[0].x;
+    let l = luminance(px.xyz / a);
+    let k = clamp((l - thr) / max(1.0 - thr, 1e-3), 0.0, 1.0);
+    if (P.u[0].x != 0u) {
+        let t = clamp(l, 0.0, 1.0);
+        let ca = P.f[1].xyz;
+        let cb = P.f[2].xyz;
+        let c = ca + (cb - ca) * t;
+        textureStore(out, p, vec4<f32>(c * k * a, k * a));
+    } else {
+        textureStore(out, p, px * k);
+    }
+}
+
+// Glow composite: original `src` with the blurred glow `aux`. u[0].x = behind; f[0].x = intensity.
+@compute @workgroup_size(16, 16)
+fn glow_combine(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let dims = out_dims();
+    let p = vec2<i32>(gid.xy);
+    if (p.x >= dims.x || p.y >= dims.y) {
+        return;
+    }
+    var o = textureLoad(src, p, 0);
+    let g = textureLoad(aux, p, 0) * P.f[0].x;
+    if (P.u[0].x != 0u) {
+        let k = 1.0 - o.w;
+        o = o + g * k;
+    } else {
+        o = vec4<f32>(o.xyz + g.xyz, min(o.w + g.w * (1.0 - o.w), 1.0));
+    }
+    o.w = clamp(o.w, 0.0, 1.0);
+    textureStore(out, p, o);
+}
+
+// Drop shadow silhouette. f[0] = shadow colour; f[1] = (opacity, dx, dy).
+@compute @workgroup_size(16, 16)
+fn shadow_make(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let dims = out_dims();
+    let p = vec2<i32>(gid.xy);
+    if (p.x >= dims.x || p.y >= dims.y) {
+        return;
+    }
+    let c = P.f[0];
+    let a = sample_bilinear(src, f32(p.x) + 0.5 - P.f[1].y, f32(p.y) + 0.5 - P.f[1].z).w * P.f[1].x * c.w;
+    textureStore(out, p, vec4<f32>(c.xyz * a, a));
+}
+
+// The layer over its shadow: `aux` (original) over `src` (shadow).
+@compute @workgroup_size(16, 16)
+fn shadow_combine(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let dims = out_dims();
+    let p = vec2<i32>(gid.xy);
+    if (p.x >= dims.x || p.y >= dims.y) {
+        return;
+    }
+    let s = textureLoad(src, p, 0);
+    let o = textureLoad(aux, p, 0);
+    textureStore(out, p, o + s * (1.0 - o.w));
+}
+
+// ---------------------------------------------------------------- per-pixel effects
+
+fn mix3(a: vec3<f32>, b: vec3<f32>, t: f32) -> vec3<f32> {
+    return a + (b - a) * t;
+}
+
+// Curves: data = [n, xs.., ys.., ms.., lut (1025)] per channel at offsets f[c].
+fn curve_exact(base: u32, x: f32) -> f32 {
+    let n = u32(data[base]);
+    let xs = base + 1u;
+    let ys = xs + n;
+    let ms = ys + n;
+    if (x <= data[xs]) {
+        return data[ys] + (x - data[xs]) * data[ms];
+    }
+    if (x >= data[xs + n - 1u]) {
+        return data[ys + n - 1u] + (x - data[xs + n - 1u]) * data[ms + n - 1u];
+    }
+    // partition_point(|v| v <= x) - 1, clamped to n - 2.
+    var k = 0u;
+    for (var i = 0u; i < n; i++) {
+        if (data[xs + i] <= x) {
+            k = i + 1u;
+        }
+    }
+    k = min(max(k, 1u) - 1u, n - 2u);
+    let h = data[xs + k + 1u] - data[xs + k];
+    let t = (x - data[xs + k]) / h;
+    let t2 = t * t;
+    let t3 = t * t * t;
+    let h00 = 2.0 * t3 - 3.0 * t2 + 1.0;
+    let h10 = t3 - 2.0 * t2 + t;
+    let h01 = -2.0 * t3 + 3.0 * t2;
+    let h11 = t3 - t2;
+    return h00 * data[ys + k] + h10 * h * data[ms + k] + h01 * data[ys + k + 1u] + h11 * h * data[ms + k + 1u];
+}
+
+fn curve_eval(base_f: f32, x: f32) -> f32 {
+    if (base_f < 0.0) {
+        return x;
+    }
+    let base = u32(base_f);
+    if (!(x >= 0.0 && x <= 1.0)) {
+        return curve_exact(base, x);
+    }
+    let n = u32(data[base]);
+    let lut = base + 1u + 3u * n;
+    let f = x * 1024.0;
+    let i = min(u32(f), 1023u);
+    let t = f - f32(i);
+    return data[lut + i] + (data[lut + i + 1u] - data[lut + i]) * t;
+}
+
+// Fractal Noise lattice (effects::generate::lattice / value_noise).
+fn lattice(ix: i32, iy: i32, iz: i32, seed: u32) -> f32 {
+    var h = (bitcast<u32>(ix) * 0x27d4eb2du) ^ (bitcast<u32>(iy) * 0x165667b1u) ^ (bitcast<u32>(iz) * 0x9e3779b9u) ^ (seed * 0x85ebca6bu);
+    h = h ^ (h >> 15u);
+    h = h * 0x2c1b3c6du;
+    h = h ^ (h >> 12u);
+    h = h * 0x297a2d39u;
+    h = h ^ (h >> 15u);
+    return f32(h & 0xffffu) / 65535.0;
+}
+
+fn fade(t: f32) -> f32 {
+    return t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
+}
+
+fn value_noise(x: f32, y: f32, z: f32, seed: u32) -> f32 {
+    let x0 = floor(x);
+    let y0 = floor(y);
+    let z0 = floor(z);
+    let fx = fade(x - x0);
+    let fy = fade(y - y0);
+    let fz = fade(z - z0);
+    let ix = i32(x0);
+    let iy = i32(y0);
+    let iz = i32(z0);
+    let c000 = lattice(ix, iy, iz, seed);
+    let c100 = lattice(ix + 1, iy, iz, seed);
+    let c010 = lattice(ix, iy + 1, iz, seed);
+    let c110 = lattice(ix + 1, iy + 1, iz, seed);
+    let c001 = lattice(ix, iy, iz + 1, seed);
+    let c101 = lattice(ix + 1, iy, iz + 1, seed);
+    let c011 = lattice(ix, iy + 1, iz + 1, seed);
+    let c111 = lattice(ix + 1, iy + 1, iz + 1, seed);
+    let l00 = c000 + (c100 - c000) * fx;
+    let l01 = c010 + (c110 - c010) * fx;
+    let a = l00 + (l01 - l00) * fy;
+    let l10 = c001 + (c101 - c001) * fx;
+    let l11 = c011 + (c111 - c011) * fx;
+    let b = l10 + (l11 - l10) * fy;
+    return a + (b - a) * fz;
+}
+
+// generate::put: blend a generated straight colour (alpha ga) over the pixel.
+fn put(px: vec4<f32>, g: vec3<f32>, ga: f32, blend_orig: f32) -> vec4<f32> {
+    let g2 = vec4<f32>(g * ga, ga);
+    let k = 1.0 - blend_orig;
+    return px * blend_orig + g2 * k;
+}
+
+// Straight-colour map helper: skips transparent pixels (Image::map_straight).
+fn straight(px: vec4<f32>) -> vec3<f32> {
+    return px.xyz / px.w;
+}
+
+// u[0].x = op:
+//  1 Tint            f[0] = black, f[1] = white, f[2].x = amount
+//  2 Bright/Contrast f[0] = (brightness, k)
+//  3 Hue/Saturation  u[0].y = colorize; f[0] = (hue, sat, light); f[1] = (ch, cs, cl)
+//  4 Levels          f[0] = (ib, iw, g, ob); f[1] = (ow); u[0].y = clip
+//  5 Exposure        f[0] = (e, offset, gamma)
+//  6 Invert          u[0].y = channel; f[0].x = blend
+//  7 Fill            f[0] = colour; f[1] = (opacity); u[0].y = invert
+//  8 Curves          f[0] = data offsets (rgb, red, green, blue), f[1].x = alpha (−1 = none)
+//  9 Gradient Ramp   f[0] = (sx, sy, ex, ey); f[1] = start colour; f[2] = end colour;
+//                    f[3] = (len2, scatter, blend); u[0] = (_, radial, seed)
+// 10 Fractal Noise   f[0] = (contrast, brightness, scale, frac); f[1] = (ox, oy, sr, cr);
+//                    f[2] = (evo, blend, opacity); u[0] = (_, kind, n_oct, seed); u[1].x = invert
+@compute @workgroup_size(16, 16)
+fn pointwise(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let dims = out_dims();
+    let p = vec2<i32>(gid.xy);
+    if (p.x >= dims.x || p.y >= dims.y) {
+        return;
+    }
+    var px = textureLoad(src, p, 0);
+    let a = px.w;
+    let op = P.u[0].x;
+    switch op {
+        case 1u: {
+            if (a > 0.0) {
+                let c = straight(px);
+                let l = clamp(luminance(c), 0.0, 1.0);
+                let blk = P.f[0].xyz;
+                let wht = P.f[1].xyz;
+                let t = blk + (wht - blk) * l;
+                px = vec4<f32>(mix3(c, t, P.f[2].x) * a, a);
+            }
+        }
+        case 2u: {
+            if (a > 0.0) {
+                let c = straight(px);
+                let br = P.f[0].x;
+                let k = P.f[0].y;
+                px = vec4<f32>(max((c + br - 0.5) * k + 0.5, vec3<f32>(0.0)) * a, a);
+            }
+        }
+        case 3u: {
+            if (a > 0.0) {
+                let c = straight(px);
+                let hsl = rgb_to_hsl(c);
+                var h = hsl.x;
+                var s = hsl.y;
+                var l = hsl.z;
+                if (P.u[0].y != 0u) {
+                    let cl = P.f[1].z;
+                    var k = l;
+                    if (cl > 0.0) {
+                        k = 1.0 - l;
+                    }
+                    h = P.f[1].x;
+                    s = P.f[1].y;
+                    l = clamp(l + cl * k, 0.0, 1.0);
+                } else {
+                    let hue = P.f[0].x;
+                    let sat = P.f[0].y;
+                    let light = P.f[0].z;
+                    var s2: f32;
+                    if (sat >= 0.0) {
+                        s2 = s + (1.0 - s) * sat * min(s, 1.0);
+                    } else {
+                        s2 = s * (1.0 + sat);
+                    }
+                    var l2: f32;
+                    if (light >= 0.0) {
+                        l2 = l + (1.0 - l) * light;
+                    } else {
+                        l2 = l * (1.0 + light);
+                    }
+                    h = fract_euclid(h + hue);
+                    s = clamp(s2, 0.0, 1.0);
+                    l = l2;
+                }
+                px = vec4<f32>(hsl_to_rgb(h, s, l) * a, a);
+            }
+        }
+        case 4u: {
+            if (a > 0.0) {
+                let c = straight(px);
+                let ib = P.f[0].x;
+                let iw = P.f[0].y;
+                let g = P.f[0].z;
+                let ob = P.f[0].w;
+                let ow = P.f[1].x;
+                var o = vec3<f32>(0.0);
+                for (var i = 0; i < 3; i++) {
+                    var t = (c[i] - ib) / max(iw - ib, 1e-6);
+                    if (P.u[0].y != 0u) {
+                        t = clamp(t, 0.0, 1.0);
+                    }
+                    t = powz(max(t, 0.0), 1.0 / g);
+                    o[i] = ob + (ow - ob) * t;
+                }
+                px = vec4<f32>(o * a, a);
+            }
+        }
+        case 5u: {
+            if (a > 0.0) {
+                let c = straight(px);
+                var o = vec3<f32>(0.0);
+                for (var i = 0; i < 3; i++) {
+                    let lin = srgb_to_linear(max(c[i], 0.0));
+                    let v = powz(max(lin * P.f[0].x + P.f[0].y, 0.0), 1.0 / P.f[0].z);
+                    o[i] = linear_to_srgb(v);
+                }
+                px = vec4<f32>(o * a, a);
+            }
+        }
+        case 6u: {
+            let ch = P.u[0].y;
+            let blend = P.f[0].x;
+            if (ch == 4u) {
+                let na = 1.0 - a;
+                var k = 0.0;
+                if (a > 0.0) {
+                    k = na / a;
+                }
+                let inv = vec4<f32>(px.xyz * k, na);
+                px = px + (inv - px) * blend;
+            } else if (a > 0.0) {
+                let s = straight(px);
+                var o = s;
+                switch ch {
+                    case 1u: { o.x = 1.0 - s.x; }
+                    case 2u: { o.y = 1.0 - s.y; }
+                    case 3u: { o.z = 1.0 - s.z; }
+                    default: { o = 1.0 - s; }
+                }
+                px = vec4<f32>((s + (o - s) * blend) * a, a);
+            }
+        }
+        case 7u: {
+            let c = P.f[0];
+            let invert = P.u[0].y != 0u;
+            let opacity = P.f[1].x;
+            var fa = px.w;
+            if (invert) {
+                fa = 1.0 - px.w;
+            }
+            let f = c.xyz * fa;
+            let rgb = px.xyz + (f - px.xyz) * opacity;
+            var alpha = px.w;
+            if (invert) {
+                alpha = px.w + (fa - px.w) * opacity;
+            }
+            px = vec4<f32>(rgb, alpha);
+        }
+        case 8u: {
+            // effects::color2::map_ca: transparent pixels only change through the alpha curve.
+            if (a <= 0.0 && px.x == 0.0 && px.y == 0.0 && px.z == 0.0) {
+                let na = curve_eval(P.f[1].x, 0.0);
+                if (na > 0.0) {
+                    px = vec4<f32>(0.0, 0.0, 0.0, clamp(na, 0.0, 1.0));
+                }
+            } else {
+                var c = vec3<f32>(0.0);
+                var aa = max(a, 0.0);
+                if (a > 1e-6) {
+                    c = px.xyz / a;
+                    aa = a;
+                }
+                var o = vec3<f32>(0.0);
+                for (var i = 0; i < 3; i++) {
+                    o[i] = curve_eval(P.f[0][i + 1], curve_eval(P.f[0].x, c[i]));
+                }
+                let na = clamp(curve_eval(P.f[1].x, aa), 0.0, 1.0);
+                px = vec4<f32>(o * na, na);
+            }
+        }
+        case 9u: {
+            let s = P.f[0].xy;
+            let e = P.f[0].zw;
+            let d = e - s;
+            let v = vec2<f32>(f32(p.x) + 0.5, f32(p.y) + 0.5) - s;
+            let len2 = P.f[3].x;
+            var t: f32;
+            if (P.u[0].y != 0u) {
+                t = sqrt((v.x * v.x + v.y * v.y) / len2);
+            } else {
+                t = (v.x * d.x + v.y * d.y) / len2;
+            }
+            let scatter = P.f[3].y;
+            if (scatter > 0.0) {
+                t += (hash_noise(gid.x, gid.y, P.u[0].z) - 0.5) * scatter;
+            }
+            t = clamp(t, 0.0, 1.0);
+            let c0 = P.f[1].xyz;
+            let c1 = P.f[2].xyz;
+            px = put(px, c0 + (c1 - c0) * t, 1.0, P.f[3].z);
+        }
+        case 10u: {
+            let contrast = P.f[0].x;
+            let brightness = P.f[0].y;
+            let scale = P.f[0].z;
+            let frac = P.f[0].w;
+            let ox = P.f[1].x;
+            let oy = P.f[1].y;
+            let sr = P.f[1].z;
+            let cr = P.f[1].w;
+            let evo = P.f[2].x;
+            let kind = P.u[0].y;
+            let n_oct = P.u[0].z;
+            let seed = P.u[0].w;
+            let dx = f32(p.x) + 0.5 - ox;
+            let dy = f32(p.y) + 0.5 - oy;
+            let u = (dx * cr + dy * sr) / scale;
+            let v = (-dx * sr + dy * cr) / scale;
+            var sum = 0.0;
+            var amp = 1.0;
+            var norm = 0.0;
+            var f = 1.0;
+            for (var o = 0u; o < n_oct; o++) {
+                var w = 1.0;
+                if (o + 1u == n_oct && frac > 0.0) {
+                    w = frac;
+                }
+                var n = value_noise(u * f, v * f, evo + f32(o) * 7.31, seed + o);
+                if (kind == 1u) {
+                    n = 1.0 - abs(n * 2.0 - 1.0);
+                }
+                sum += n * amp * w;
+                norm += amp * w;
+                amp *= 0.5;
+                f *= 2.0;
+            }
+            var val = sum / max(norm, 1e-6);
+            val = clamp((val - 0.5) * contrast + 0.5 + brightness, 0.0, 1.0);
+            if (P.u[1].x != 0u) {
+                val = 1.0 - val;
+            }
+            px = put(px, vec3<f32>(val), P.f[2].z, P.f[2].y);
+        }
+        default: {}
+    }
+    textureStore(out, p, px);
+}

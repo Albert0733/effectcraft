@@ -69,7 +69,7 @@ pub fn preview(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     yy += 26.0;
     if let Some(c) = comp {
         let cid = app.session.active_comp_id().map(|i| i.0).unwrap_or(0);
-        let scale = app.viewer_tex.as_ref().map(|(_, k)| k.scale).unwrap_or(1000);
+        let scale = app.viewer_shown.as_ref().map(|(_, k)| k.scale).unwrap_or(1000);
         let cached = app.frames.cached_frames(app.session.revision, cid, scale).len();
         let total = c.frame_rate.frame_at(c.work_area.1) - c.frame_rate.frame_at(c.work_area.0);
         let bar = Rect::from_min_size(pos2(rect.min.x + 12.0, yy), vec2(rect.width() - 24.0, 6.0));

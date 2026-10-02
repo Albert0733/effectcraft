@@ -47,6 +47,7 @@ fn summary(s: &mut Session, _: &Value) -> Result<Value> {
         "path": s.path,
         "dirty": s.is_dirty(),
         "bitDepth": s.project.settings.bit_depth.label(),
+        "renderer": super::file::backend_status(s),
         "items": items,
         "activeComp": s.state.active_comp.map(|c| c.0),
         "time": s.time().seconds(),

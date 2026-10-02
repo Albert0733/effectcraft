@@ -381,17 +381,9 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let key = app.frame_key(cid, frame, scale);
     app.request_frame_urgent(cid, frame, scale);
     if let Some(img) = app.frames.get(&key) {
-        let stale = app.viewer_tex.as_ref().is_none_or(|(_, k)| *k != key);
+        let stale = app.viewer_shown.as_ref().is_none_or(|(_, k)| *k != key);
         if stale {
-            match &mut app.viewer_tex {
-                Some((tex, k)) if tex.size() == img.size => {
-                    tex.set((*img).clone(), egui::TextureOptions::LINEAR);
-                    *k = key;
-                }
-                _ => app.viewer_tex = Some((ctx.load_texture("viewer-frame", (*img).clone(), egui::TextureOptions::LINEAR), key)),
-            }
-            app.viewer_image = Some(img);
-            vt::set_texture_roi(&ctx, app.session.state.region_of_interest);
+            show_frame(app, &ctx, key, img);
         }
     }
     if app.ui.viewer.transparency_grid {
@@ -1429,4 +1421,41 @@ pub(crate) fn hex_rgb(s: &str) -> Option<[u8; 3]> {
     }
     let p = |i: usize| u8::from_str_radix(&h[i..i + 2], 16).ok();
     Some([p(0)?, p(2)?, p(4)?])
+}
+
+/// Put a rendered frame on screen: CPU pixels go into an egui texture; GPU frames are drawn
+/// straight from their wgpu texture (registered with egui-wgpu, no readback).
+fn show_frame(app: &mut EffectcraftApp, ctx: &egui::Context, key: crate::frames::FrameKey, img: crate::frames::FrameImage) {
+    use crate::frames::FrameImage;
+    match img {
+        FrameImage::Cpu(img) => {
+            match &mut app.viewer_tex {
+                Some((tex, k)) if tex.size() == img.size => {
+                    tex.set((*img).clone(), egui::TextureOptions::LINEAR);
+                    *k = key;
+                }
+                _ => app.viewer_tex = Some((ctx.load_texture("viewer-frame", (*img).clone(), egui::TextureOptions::LINEAR), key)),
+            }
+            app.viewer_shown = app.viewer_tex.as_ref().map(|(t, k)| (t.id(), *k));
+            app.viewer_image = Some(img);
+            vt::set_texture_roi(ctx, app.session.state.region_of_interest);
+        }
+        FrameImage::Gpu(f) => {
+            let Some(rs) = &app.wgpu else { return };
+            let view = f.texture.create_view(&Default::default());
+            let mut ren = rs.renderer.write();
+            let id = match &app.viewer_native {
+                Some((id, _, _)) => {
+                    ren.update_egui_texture_from_wgpu_texture(&rs.device, &view, eframe::wgpu::FilterMode::Linear, *id);
+                    *id
+                }
+                None => ren.register_native_texture(&rs.device, &view, eframe::wgpu::FilterMode::Linear),
+            };
+            drop(ren);
+            app.viewer_native = Some((id, key, f));
+            app.viewer_shown = Some((id, key));
+            // Pixels are read back on demand (viewer_pixels).
+            app.viewer_image = None;
+        }
+    }
 }

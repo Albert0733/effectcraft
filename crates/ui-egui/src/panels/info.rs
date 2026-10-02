@@ -10,6 +10,10 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let p = ui.painter().with_clip_rect(rect);
     let x0 = rect.min.x + 12.0;
     let mut y = rect.min.y + 14.0;
+    if app.pointer_comp.is_some() {
+        // GPU frames: read the shown frame back for sampling.
+        app.viewer_pixels();
+    }
     let (rgba, xy) = match (app.pointer_comp, &app.viewer_image) {
         (Some([cx, cy]), Some(img)) => {
             let comp = app.session.active_comp();

@@ -152,6 +152,17 @@ fn project_settings(s: &mut Session, p: &Value) -> Result<Value> {
                 ),
             };
         }
+        if let Some(r) = p.get("renderer").or_else(|| p.get("gpuAcceleration")) {
+            proj.settings.gpu_acceleration = match r {
+                Value::Bool(b) => *b,
+                Value::String(s) => match effectcraft_render::Backend::parse(s) {
+                    Some(effectcraft_render::Backend::Cpu) => false,
+                    Some(_) => true,
+                    None => return Err(bad("file.projectSettings", format!("renderer: gpu|software, not `{s}`"))),
+                },
+                _ => return Err(bad("file.projectSettings", "renderer: gpu|software")),
+            };
+        }
         if let Some(t) = str_p(p, "timeDisplay") {
             proj.settings.time_display =
                 if t.eq_ignore_ascii_case("frames") { effectcraft_project::TimeDisplayStyle::Frames } else { effectcraft_project::TimeDisplayStyle::Timecode };
@@ -159,6 +170,41 @@ fn project_settings(s: &mut Session, p: &Value) -> Result<Value> {
         Ok(())
     })?;
     Ok(serde_json::to_value(&s.project.settings).unwrap_or_default())
+}
+
+/// Video Rendering and Effects: report or set the renderer (Mercury GPU Acceleration when a GPU
+/// adapter exists, else Mercury Software Only).
+fn render_backend(s: &mut Session, p: &Value) -> Result<Value> {
+    if let Some(b) = p.get("backend").or_else(|| p.get("renderer")) {
+        let gpu = match b {
+            Value::Bool(b) => *b,
+            Value::String(v) => match effectcraft_render::Backend::parse(v) {
+                Some(effectcraft_render::Backend::Cpu) => false,
+                Some(_) => true,
+                None => return Err(bad("render.backend", format!("backend: gpu|cpu, not `{v}`"))),
+            },
+            _ => return Err(bad("render.backend", "backend: gpu|cpu")),
+        };
+        if gpu != s.project.settings.gpu_acceleration {
+            s.edit("Project Settings", None, |proj, _| {
+                proj.settings.gpu_acceleration = gpu;
+                Ok(())
+            })?;
+        }
+    }
+    Ok(backend_status(s))
+}
+
+/// The renderer setting and what renders with it.
+pub fn backend_status(s: &Session) -> Value {
+    let adapter = s.accel.as_ref().map(|a| a.name());
+    let gpu = s.project.settings.gpu_acceleration;
+    json!({
+        "renderer": if gpu { "Mercury GPU Acceleration" } else { "Mercury Software Only" },
+        "gpuAcceleration": gpu,
+        "adapter": adapter,
+        "active": if gpu && adapter.is_some() { "gpu" } else { "cpu" },
+    })
 }
 
 fn cycle_depth(s: &mut Session, _: &Value) -> Result<Value> {
@@ -184,10 +230,11 @@ pub fn specs() -> Vec<CommandSpec> {
             "Project Settings...",
             ["File"],
             Some("Cmd+Alt+Shift+K"),
-            "{bitDepth?: 8|16|32, workingSpace?: none|srgb|rec709|rec2020|p3, linearize?, blendLinear?, timeDisplay?: timecode|frames}",
+            "{bitDepth?: 8|16|32, workingSpace?: none|srgb|rec709|rec2020|p3, linearize?, blendLinear?, renderer?: gpu|software, timeDisplay?: timecode|frames}",
             always,
             project_settings
         ),
         cmd!("file.cycleBitDepth", "Cycle Project Bit Depth", [], None, "{}", always, cycle_depth),
+        cmd!("render.backend", "Video Rendering and Effects", [], None, "{backend?: gpu|cpu}", always, render_backend),
     ]
 }

@@ -69,11 +69,11 @@ rendering, on-canvas text editing) are where the conservative figure is most lik
 | Text | ≈ 85% | 1.5 | vertical type is basic (upright characters, no tate-chu-yoko), no OpenType feature panel, no text on 3D bevels; per-character styles, paragraph settings, on-canvas editing and the `sourceText` style API landed (M9.9–M9.10) |
 | Web | 60% | 2.5 | threads, browser storage, audio |
 | 3D | 58% | 20.5 | Advanced 3D (models, PBR, image-based light), 3D camera tracker, multi-view layouts |
-| Effects | 56% | 14.6 | Effect Controls widgets (angle dial, point crosshair, eyedropper, curves), GPU effects, 41 missing effects |
+| Effects | 58% | 13.6 | Effect Controls widgets (angle dial, point crosshair, eyedropper, curves), GPU versions of more effects, 41 missing effects |
 | Interface | 55% | 10.4 | drag-to-dock and floating panels, preferences, native macOS menus (viewer rulers/snapping/channels/snapshots landed in M0.13) |
 | Project | 53% | 8.1 | 8/16/32-bit pipeline and colour management, auto-save, proxies, folder moves |
 | Masks & roto | 44% | 13.0 | mask tracking, Roto Brush, variable-width mask feather points |
-| Preview | 43% | 8.1 | GPU compositor, disk cache (region of interest, snapshots, exposure and Fast Previews landed in M0.13) |
+| Preview | 55% | 6.1 | GPU 3D and adjustment layers, disk cache (region of interest, snapshots, exposure and Fast Previews landed in M0.13) |
 | Tracking | 0% | 13.0 | point tracker, Warp Stabilizer, mask and face tracking |
 | Paint | 0% | 4.0 | Brush, Clone Stamp, Eraser |
 
@@ -90,7 +90,8 @@ Mocha and Cineware are third-party and not counted.
 1. ~~On-canvas text editing and per-character styles~~ (landed: M9.9–M9.10).
 2. Effect Controls widgets: angle dial, point crosshair, eyedropper, curves and levels editors.
 3. ~~Viewer basics: snapping, rulers, channel view, snapshots, exposure, a drawable region of interest.~~ (M0.13)
-4. A GPU (wgpu) compositor, then GPU effects.
+4. ~~A GPU (wgpu) compositor, then GPU effects~~ (M12.2: 2D compositing and 16 GPU effects; 3D runs
+   and adjustment layers still composite on the CPU).
 5. ~~Pen tool for shape paths, shape vertex editing, free transform~~ (M6.5); the Layer viewer.
 6. ~~Motion-path handles in the viewer; graph editor transform box and snapping.~~ (M5.8)
 7. Point tracking and stabilization (in progress).
