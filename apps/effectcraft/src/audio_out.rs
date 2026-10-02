@@ -1,4 +1,5 @@
-//! Audio preview output through cpal (the default output device).
+//! Audio preview output through cpal (the device and channel mapping chosen in Settings ▸ Audio;
+//! the default output device when none is set or it is gone).
 //!
 //! cpal streams are not `Send` on every platform, so each preview runs its stream on a small
 //! dedicated thread that owns it until stopped. The callback pulls interleaved stereo from the
@@ -12,21 +13,41 @@ use std::thread::JoinHandle;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SizedSample};
-use effectcraft_ui_egui::audio::{AudioDevice, AudioFeed};
+use effectcraft_ui_egui::audio::{AudioDevice, AudioFeed, AudioOutput};
 
 pub struct CpalOut {
+    out: AudioOutput,
     rate: u32,
     latency: Arc<AtomicU64>,
     stop: Option<mpsc::Sender<()>>,
     thread: Option<JoinHandle<()>>,
 }
 
-/// Open the default output device (`None` without one).
-pub fn open() -> Option<Box<dyn AudioDevice>> {
+/// Names of the output devices (Settings ▸ Audio).
+pub fn devices() -> Vec<String> {
     let host = cpal::default_host();
-    let dev = host.default_output_device()?;
+    #[allow(deprecated)]
+    host.output_devices().map(|d| d.filter_map(|d| d.name().ok()).collect()).unwrap_or_default()
+}
+
+/// The named output device, or the default one.
+fn device(name: &str) -> Option<cpal::Device> {
+    let host = cpal::default_host();
+    if !name.is_empty() {
+        #[allow(deprecated)]
+        let found = host.output_devices().ok().and_then(|mut d| d.find(|d| d.name().ok().as_deref() == Some(name)));
+        if found.is_some() {
+            return found;
+        }
+    }
+    host.default_output_device()
+}
+
+/// Open the output device (`None` without one).
+pub fn open(out: &AudioOutput) -> Option<Box<dyn AudioDevice>> {
+    let dev = device(&out.device)?;
     let cfg = dev.default_output_config().ok()?;
-    Some(Box::new(CpalOut { rate: cfg.sample_rate().0, latency: Arc::new(AtomicU64::new(0)), stop: None, thread: None }))
+    Some(Box::new(CpalOut { out: out.clone(), rate: cfg.sample_rate().0, latency: Arc::new(AtomicU64::new(0)), stop: None, thread: None }))
 }
 
 fn run<T: SizedSample + FromSample<f32>>(
@@ -34,8 +55,11 @@ fn run<T: SizedSample + FromSample<f32>>(
     cfg: &cpal::StreamConfig,
     feed: Arc<AudioFeed>,
     latency: Arc<AtomicU64>,
+    map: (usize, usize),
 ) -> Result<cpal::Stream, String> {
     let ch = cfg.channels as usize;
+    // Output mapping: device channels (0-based) for left and right; out of range → 1 and 2.
+    let (left, right) = if map.0 < ch && map.1 < ch { map } else { (0, 1) };
     let rate = cfg.sample_rate.0 as f64;
     let mut stereo: Vec<f32> = Vec::new();
     dev.build_output_stream(
@@ -46,11 +70,15 @@ fn run<T: SizedSample + FromSample<f32>>(
             feed.pull(&mut stereo);
             for (f, s) in out.chunks_mut(ch.max(1)).zip(stereo.chunks_exact(2)) {
                 for (c, o) in f.iter_mut().enumerate() {
-                    let v = match (ch, c) {
-                        (1, _) => (s[0] + s[1]) * 0.5,
-                        (_, 0) => s[0],
-                        (_, 1) => s[1],
-                        _ => 0.0,
+                    // Mono devices, or left and right mapped to the same channel, get the mix.
+                    let v = if ch == 1 || (c == left && c == right) {
+                        (s[0] + s[1]) * 0.5
+                    } else if c == left {
+                        s[0]
+                    } else if c == right {
+                        s[1]
+                    } else {
+                        0.0
                     };
                     *o = T::from_sample(v.clamp(-1.0, 1.0));
                 }
@@ -77,11 +105,12 @@ impl AudioDevice for CpalOut {
         let (ready_tx, ready_rx) = mpsc::channel::<Result<(), String>>();
         let latency = self.latency.clone();
         let rate = self.rate;
+        let name = self.out.device.clone();
+        let map = ((self.out.left.max(1) - 1) as usize, (self.out.right.max(1) - 1) as usize);
         let thread = std::thread::Builder::new()
             .name("ec-audio-out".into())
             .spawn(move || {
-                let host = cpal::default_host();
-                let Some(dev) = host.default_output_device() else {
+                let Some(dev) = device(&name) else {
                     let _ = ready_tx.send(Err("no audio output device".into()));
                     return;
                 };
@@ -95,10 +124,10 @@ impl AudioDevice for CpalOut {
                 let mut cfg: cpal::StreamConfig = sup.config();
                 cfg.sample_rate = cpal::SampleRate(rate);
                 let stream = match sup.sample_format() {
-                    cpal::SampleFormat::F32 => run::<f32>(&dev, &cfg, feed, latency),
-                    cpal::SampleFormat::I16 => run::<i16>(&dev, &cfg, feed, latency),
-                    cpal::SampleFormat::U16 => run::<u16>(&dev, &cfg, feed, latency),
-                    cpal::SampleFormat::I32 => run::<i32>(&dev, &cfg, feed, latency),
+                    cpal::SampleFormat::F32 => run::<f32>(&dev, &cfg, feed, latency, map),
+                    cpal::SampleFormat::I16 => run::<i16>(&dev, &cfg, feed, latency, map),
+                    cpal::SampleFormat::U16 => run::<u16>(&dev, &cfg, feed, latency, map),
+                    cpal::SampleFormat::I32 => run::<i32>(&dev, &cfg, feed, latency, map),
                     f => Err(format!("unsupported sample format {f:?}")),
                 };
                 let stream = match stream.and_then(|s| s.play().map(|_| s).map_err(|e| e.to_string())) {

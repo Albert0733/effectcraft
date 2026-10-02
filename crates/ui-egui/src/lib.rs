@@ -67,6 +67,10 @@ pub struct Hooks {
     pub pick_open_project: Option<Box<dyn Fn() -> Option<String>>>,
     /// Opens the audio output for preview playback (the desktop app uses cpal).
     pub audio_device: Option<audio::AudioDeviceFactory>,
+    /// Lists audio output devices (Settings ▸ Audio).
+    pub audio_devices: Option<Box<dyn Fn() -> Vec<String>>>,
+    /// Picks a folder (Settings paths).
+    pub pick_folder: Option<Box<dyn Fn() -> Option<String>>>,
 }
 
 #[derive(Default)]
@@ -122,6 +126,8 @@ pub struct EffectcraftApp {
     pub(crate) waveforms: panels::waveform::Cache,
     /// Last reveal shortcut and when (double-press shortcuts such as LL).
     pub(crate) last_reveal: Option<(String, f64)>,
+    /// Settings revision applied to the theme, tooltips and caches.
+    applied_prefs: Option<u64>,
 }
 
 impl EffectcraftApp {
@@ -158,7 +164,33 @@ impl EffectcraftApp {
             meter: Default::default(),
             waveforms: Default::default(),
             last_reveal: None,
+            applied_prefs: None,
         }
+    }
+
+    /// Apply changed settings: theme and brightness, label colours, tool tips, preview caches.
+    pub fn apply_prefs(&mut self, ctx: &egui::Context) {
+        if self.applied_prefs == Some(self.session.prefs_revision) {
+            return;
+        }
+        self.applied_prefs = Some(self.session.prefs_revision);
+        let p = &self.session.prefs;
+        self.ui.theme = theme::ThemeKind::from_name(&p.appearance.theme).unwrap_or_default();
+        self.tokens = Tokens::from_prefs(p);
+        theme::apply_visuals(ctx, &self.tokens);
+        let tips = p.general.show_tool_tips;
+        ctx.all_styles_mut(|s| s.interaction.tooltip_delay = if tips { 0.5 } else { f32::INFINITY });
+        self.ui.cache_when_idle = p.previews.cache_frames_when_idle;
+        self.ui.viewer.fast_preview = p.previews.fast_previews;
+        self.frames.set_budget(p.preview_cache_bytes());
+    }
+
+    /// Change settings from the UI (applied next frame and saved).
+    pub fn set_pref(&mut self, key: &str, value: serde_json::Value) -> Result<(), String> {
+        self.session.prefs.set(key, value)?;
+        self.session.prefs_changed();
+        self.session.save_prefs();
+        Ok(())
     }
 
     pub fn with_control(mut self, rx: Receiver<ControlRequest>) -> Self {
@@ -167,9 +199,13 @@ impl EffectcraftApp {
     }
 
     pub fn set_theme(&mut self, ctx: &egui::Context, k: theme::ThemeKind) {
-        self.ui.theme = k;
-        self.tokens = Tokens::for_kind(k);
-        theme::apply_visuals(ctx, &self.tokens);
+        let name = match k {
+            theme::ThemeKind::Dark => "dark",
+            theme::ThemeKind::Darker => "darker",
+            theme::ThemeKind::Light => "light",
+        };
+        let _ = self.set_pref("appearance.theme", json!(name));
+        self.apply_prefs(ctx);
     }
 
     pub fn set_workspace(&mut self, name: &str) {
@@ -203,8 +239,10 @@ impl EffectcraftApp {
     /// The render scale used by the viewer right now.
     pub fn viewer_scale(&self, zoom: f32, ppp: f32) -> f64 {
         if self.playback.playing && self.ui.viewer.res == state::Resolution::Auto {
-            // Keep previews snappy: never more than the displayed size.
-            return self.ui.viewer.res.scale(zoom, ppp).min(0.5);
+            // Keep previews snappy: half the displayed size, but no lower than Settings ▸
+            // Previews ▸ Adaptive Resolution Limit.
+            let full = self.ui.viewer.res.scale(zoom, ppp);
+            return full.min((full * 0.5).max(self.session.prefs.adaptive_limit()));
         }
         self.ui.viewer.res.scale(zoom, ppp)
     }
@@ -285,7 +323,8 @@ impl EffectcraftApp {
         if !effectcraft_engine::render::audio::comp_has_audio(&self.session.project, cid) {
             return;
         }
-        let Some(dev) = self.hooks.audio_device.as_ref().and_then(|f| f()) else { return };
+        let out = audio::AudioOutput::from_prefs(&self.session.prefs);
+        let Some(dev) = self.hooks.audio_device.as_ref().and_then(|f| f(&out)) else { return };
         match audio::AudioPlayback::start(dev, self.render_source(), cid, t, c.work_area.0, c.work_area.1, self.ui.preview_loop) {
             Ok(a) => self.audio = Some(a),
             Err(e) => log::warn!("audio preview: {e}"),
@@ -536,6 +575,7 @@ impl EffectcraftApp {
             self.session.poll_render();
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
+        self.apply_prefs(&ctx);
         self.handle_events(&ctx);
         if let Some(rx) = self.command_inbox.take() {
             while let Ok(id) = rx.try_recv() {

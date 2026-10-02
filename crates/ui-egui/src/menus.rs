@@ -193,7 +193,11 @@ pub fn invoke(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, params: V
         }
         "view.safeMargins" => app.ui.viewer.safe_margins = !app.ui.viewer.safe_margins,
         "view.transparencyGrid" => app.ui.viewer.transparency_grid = !app.ui.viewer.transparency_grid,
-        "view.fastPreviews" => app.ui.viewer.fast_preview = !app.ui.viewer.fast_preview,
+        "view.fastPreviews" => {
+            let on = !app.ui.viewer.fast_preview;
+            app.set_pref("previews.fastPreviews", json!(on))?;
+            app.ui.viewer.fast_preview = on;
+        }
         "timeline.zoomIn" | "timeline.zoomOut" => {
             let k = if id == "timeline.zoomIn" { 1.5 } else { 1.0 / 1.5 };
             crate::panels::timeline::zoom(app, ctx, k);
@@ -310,8 +314,21 @@ pub fn frontend(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, p: Valu
             Value::Null
         }
         "app.settings" => {
-            app.dialog_state.settings_page = p.get("page").and_then(Value::as_str).unwrap_or("general").to_string();
-            app.dialog = Some(crate::Dialog::Settings);
+            let page = p.get("page").and_then(Value::as_str).unwrap_or("general");
+            crate::panels::settings::open(app, effectcraft_engine::prefs::page_id(page).unwrap_or("general"));
+            Value::Null
+        }
+        "app.gpuInfo" => {
+            let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+            crate::panels::dialogs::info(
+                app,
+                "GPU Information",
+                &format!(
+                    "Compositing: CPU, {threads} threads (pure Rust, rayon).\nDisplay: egui on wgpu.\nLayer cache: {} MB  •  Preview cache: {} MB.",
+                    app.session.layer_cache.budget() >> 20,
+                    app.frames.budget() >> 20
+                ),
+            );
             Value::Null
         }
         "app.hide" => {
@@ -349,7 +366,11 @@ pub fn frontend(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, p: Valu
             app.toggle_play(now);
             json!({"playing": app.playback.playing})
         }
-        "playback.cacheWhenIdle" => toggle(&mut app.ui.cache_when_idle, &p),
+        "playback.cacheWhenIdle" => {
+            let r = toggle(&mut app.ui.cache_when_idle, &p);
+            app.set_pref("previews.cacheFramesWhenIdle", r.clone())?;
+            r
+        }
         "playback.audio" => {
             let r = toggle(&mut app.ui.preview_audio, &p);
             if !app.ui.preview_audio {
@@ -559,7 +580,7 @@ fn entry_label(app: &EffectcraftApp, e: &MenuEntry) -> String {
     match e.command.as_str() {
         "edit.undo" => app.session.history.undo.last().map(|u| format!("Undo {}", u.0)).unwrap_or_else(|| "Can't Undo".into()),
         "edit.redo" => app.session.history.redo.last().map(|u| format!("Redo {}", u.0)).unwrap_or_else(|| "Can't Redo".into()),
-        _ => e.label.clone(),
+        _ => effectcraft_engine::menus::entry_label(&app.session, e),
     }
 }
 
@@ -771,6 +792,13 @@ pub fn handle_shortcuts(app: &mut EffectcraftApp, ctx: &egui::Context) {
     for (key, mods) in events {
         // Escape closes dialogs.
         if key == egui::Key::Escape && app.dialog.is_some() {
+            // Escape in Settings is Cancel: restore the settings from when it opened.
+            if app.dialog == Some(crate::Dialog::Settings)
+                && let Some(p) = app.dialog_state.prefs_snapshot.take()
+            {
+                app.session.prefs = p;
+                app.session.prefs_changed();
+            }
             app.dialog = None;
             continue;
         }
@@ -886,6 +914,15 @@ mod tests {
                 seen.insert(key, target);
             }
         }
+    }
+
+    #[test]
+    fn renamed_label_shows_in_the_label_menu() {
+        let mut app = EffectcraftApp::new(effectcraft_engine::Session::default());
+        app.set_pref("labels.1.name", json!("Sunflower")).unwrap();
+        let labels: Vec<String> = menu_items(&app).into_iter().filter(|i| i.id == "edit.label").map(|i| i.label).collect();
+        assert!(labels.contains(&"Sunflower".to_string()), "{labels:?}");
+        assert!(!labels.contains(&"Yellow".to_string()));
     }
 
     #[test]

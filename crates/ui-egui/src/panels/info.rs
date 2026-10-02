@@ -83,8 +83,12 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 ly += 18.0;
             }
         }
-        let ms = app.frames.last_ms.lock().map(|v| *v).unwrap_or(0.0);
-        p.text(pos2(x0, ly), Align2::LEFT_CENTER, format!("Render: {ms:.0} ms  •  UI {:.0} fps", app.fps), Tokens::ui(11.5), t.text_faint);
+        // Settings ▸ Composition ▸ Show Rendering Progress in Info Panel.
+        if app.session.prefs.composition.show_rendering_progress {
+            let ms = app.frames.last_ms.lock().map(|v| *v).unwrap_or(0.0);
+            let rq = app.session.render_job.as_ref().map(|_| "  •  Rendering queue…").unwrap_or("");
+            p.text(pos2(x0, ly), Align2::LEFT_CENTER, format!("Render: {ms:.0} ms  •  UI {:.0} fps{rq}", app.fps), Tokens::ui(11.5), t.text_faint);
+        }
         if !app.session.state.selected_keys.is_empty() {
             p.text(
                 pos2(x0, ly + 18.0),

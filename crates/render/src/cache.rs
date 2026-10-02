@@ -112,6 +112,29 @@ impl LayerCache {
         }
     }
 
+    /// The memory budget in bytes.
+    pub fn budget(&self) -> usize {
+        self.inner.lock().map(|g| g.budget).unwrap_or(0)
+    }
+
+    /// Change the memory budget (evicts least-recently used entries when shrinking).
+    pub fn set_budget(&self, budget: usize) {
+        let Ok(mut g) = self.inner.lock() else { return };
+        g.budget = budget;
+        if g.bytes > budget {
+            let mut by_age: Vec<(u64, u64)> = g.map.iter().map(|(k, e)| (e.last_use, *k)).collect();
+            by_age.sort_unstable();
+            for (_, k) in by_age {
+                if g.bytes <= budget {
+                    break;
+                }
+                if let Some(e) = g.map.remove(&k) {
+                    g.bytes -= e.bytes;
+                }
+            }
+        }
+    }
+
     pub fn clear(&self) {
         if let Ok(mut g) = self.inner.lock() {
             g.map.clear();

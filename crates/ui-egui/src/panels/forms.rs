@@ -1,7 +1,7 @@
 //! Menu dialogs: a generic parameter form (numeric Transform dialogs, Mask Feather/Opacity/
 //! Expansion, Auto-Orient, Go to Time, Add Guide, Sequence Layers, Interpret Footage, Project
-//! Settings, placeholders…), Settings (Preferences), Keyboard Shortcuts, View Options and simple
-//! message boxes. Every form runs an engine command with the collected parameters, so whatever a
+//! Settings, placeholders…), Keyboard Shortcuts, View Options and simple message boxes
+//! (Settings: `settings`). Every form runs an engine command with the collected parameters, so whatever a
 //! dialog does an agent can do with one `engine.execute`.
 
 use egui::{Color32, vec2};
@@ -354,98 +354,6 @@ pub fn show_info(app: &mut EffectcraftApp, ctx: &egui::Context, t: &Tokens) {
             }
         });
     });
-    if close {
-        app.dialog = None;
-    }
-}
-
-pub const SETTINGS_PAGES: [(&str, &str); 17] = [
-    ("general", "General"),
-    ("startup", "Startup & Repair"),
-    ("project", "Project"),
-    ("composition", "Composition"),
-    ("previews", "Previews"),
-    ("appearance", "Appearance"),
-    ("grids", "Grids & Guides"),
-    ("labels", "Labels"),
-    ("type", "Type"),
-    ("import", "Import"),
-    ("export", "Export"),
-    ("audio", "Audio"),
-    ("disk", "Disk"),
-    ("memory", "Memory & CPU"),
-    ("video", "Video"),
-    ("3d", "3D"),
-    ("scripting", "Scripting & Expressions"),
-];
-
-pub fn show_settings(app: &mut EffectcraftApp, ctx: &egui::Context, t: &Tokens) {
-    let mut page = app.dialog_state.settings_page.clone();
-    let mut close = false;
-    let mut theme = None;
-    super::dialogs::modal(ctx, "Settings", vec2(640.0, 440.0), t, |ui| {
-        ui.horizontal_top(|ui| {
-            ui.vertical(|ui| {
-                ui.set_width(170.0);
-                for (id, label) in SETTINGS_PAGES {
-                    if ui.selectable_label(page == id, label).clicked() {
-                        page = id.to_string();
-                    }
-                }
-            });
-            ui.separator();
-            ui.vertical(|ui| {
-                let title = SETTINGS_PAGES.iter().find(|p| p.0 == page).map(|p| p.1).unwrap_or("General");
-                ui.label(egui::RichText::new(title).font(Tokens::semibold(13.0)));
-                ui.add_space(8.0);
-                match page.as_str() {
-                    "general" => {
-                        ui.checkbox(&mut app.ui.show_menu_bar, "Show the in-window menu bar");
-                        ui.checkbox(&mut app.ui.snapping, "Snapping");
-                    }
-                    "appearance" => {
-                        for (k, name) in [("dark", "Dark"), ("darker", "Darker"), ("light", "Light")] {
-                            if ui.button(name).clicked() {
-                                theme = crate::theme::ThemeKind::from_name(k);
-                            }
-                        }
-                    }
-                    "previews" => {
-                        ui.checkbox(&mut app.ui.cache_when_idle, "Cache frames when idle");
-                        ui.checkbox(&mut app.ui.viewer.fast_preview, "Fast previews");
-                    }
-                    "grids" => {
-                        ui.checkbox(&mut app.ui.viewer.grid, "Show grid");
-                        ui.checkbox(&mut app.ui.viewer.guides, "Show guides");
-                        ui.checkbox(&mut app.ui.viewer.safe_margins, "Show title/action safe");
-                    }
-                    "labels" => {
-                        for l in effectcraft_engine::color::Label::ALL.into_iter().skip(1) {
-                            ui.horizontal(|ui| {
-                                let [r, g, b] = l.rgb();
-                                let (rect, _) = ui.allocate_exact_size(vec2(26.0, 14.0), egui::Sense::hover());
-                                ui.painter().rect_filled(rect, 2.0, Color32::from_rgb(r, g, b));
-                                ui.label(l.name());
-                            });
-                        }
-                    }
-                    _ => {
-                        ui.label(egui::RichText::new("No options on this page yet.").color(t.text_dim));
-                    }
-                }
-            });
-        });
-        ui.add_space(10.0);
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.add(egui::Button::new(egui::RichText::new("   OK   ").color(Color32::WHITE)).fill(t.accent)).clicked() {
-                close = true;
-            }
-        });
-    });
-    app.dialog_state.settings_page = page;
-    if let Some(k) = theme {
-        app.set_theme(ctx, k);
-    }
     if close {
         app.dialog = None;
     }

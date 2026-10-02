@@ -366,7 +366,7 @@ fn split(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn label(s: &mut Session, p: &Value) -> Result<Value> {
     let name = str_p(p, "label").unwrap_or("Red");
-    let lab = Label::from_name(name).ok_or_else(|| super::bad("edit.label", format!("unknown label `{name}`")))?;
+    let lab = s.prefs.label_from_name(name).ok_or_else(|| super::bad("edit.label", format!("unknown label `{name}`")))?;
     let (cid, ids) = layers_p(s, p)?;
     let items = s.state.project_selection.clone();
     s.edit("Label", None, |proj, _| {

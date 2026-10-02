@@ -451,6 +451,12 @@ impl Inner {
 }
 
 impl FootageSource for MediaPool {
+    fn set_cache_budget(&self, bytes: usize) {
+        self.set_budget(bytes);
+    }
+    fn cache_budget(&self) -> Option<usize> {
+        Some(self.budget())
+    }
     fn frame(&self, _item: ItemId, footage: &Footage, t: Tick) -> Option<Arc<Image>> {
         if footage.missing {
             return None;

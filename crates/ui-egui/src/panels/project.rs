@@ -217,7 +217,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
             Tokens::ui(12.0),
             if selected { Color32::WHITE } else { t.text },
         );
-        lp.rect_filled(Rect::from_center_size(pos2(r.min.x + name_w + 14.0, r.center().y), vec2(10.0, 10.0)), 2.0, Tokens::label(it.label));
+        lp.rect_filled(Rect::from_center_size(pos2(r.min.x + name_w + 14.0, r.center().y), vec2(10.0, 10.0)), 2.0, t.label(it.label));
         lp.text(pos2(col_type, r.center().y), Align2::LEFT_CENTER, it.type_name(), Tokens::ui(11.5), t.text_dim);
         if let Some(b) = file_size(&it) {
             lp.text(pos2(col_size, r.center().y), Align2::LEFT_CENTER, fmt_size(b), Tokens::ui(11.5), t.text_dim);

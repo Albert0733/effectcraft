@@ -12,6 +12,14 @@ fn has_path(s: &Session) -> std::result::Result<(), String> {
 }
 
 fn new_project(s: &mut Session, _: &Value) -> Result<Value> {
+    // Settings ▸ Project ▸ New Project Loads Template: open the template as an untitled project.
+    let tpl = s.prefs.project.template_path.trim().to_string();
+    if s.prefs.project.use_template && !tpl.is_empty() {
+        let bytes = s.services.read_file(&tpl).map_err(|e| EngineError::Other(format!("cannot read the new project template {tpl}: {e}")))?;
+        let text = String::from_utf8(bytes).map_err(|_| EngineError::Other("the new project template is not a project file".into()))?;
+        s.replace_project(Project::from_json(&text)?, None);
+        return Ok(json!({"template": tpl}));
+    }
     s.replace_project(Project::default(), None);
     Ok(Value::Null)
 }
@@ -79,9 +87,19 @@ fn import(s: &mut Session, p: &Value) -> Result<Value> {
     let mut ids = vec![];
     let mut errors = vec![];
     let mut probed = vec![];
+    let seq_rate = effectcraft_time::FrameRate::from_f64(s.prefs.import.sequence_fps);
     for path in &paths {
         match importer.probe(path) {
-            Ok(f) => probed.push((path.clone(), f)),
+            Ok(mut f) => {
+                // Settings ▸ Import ▸ Sequence Footage frames per second.
+                if f.kind == FootageKind::Sequence {
+                    let r = seq_rate;
+                    let frames = f.frame_rate.frame_at(f.duration);
+                    f.frame_rate = r;
+                    f.duration = r.tick_of(frames.max(1));
+                }
+                probed.push((path.clone(), f))
+            }
             Err(e) => errors.push(format!("{path}: {e}")),
         }
     }

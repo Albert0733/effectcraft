@@ -37,6 +37,13 @@ pub trait FootageSource: Send + Sync {
     fn audio(&self, _item: ItemId, _footage: &Footage, _t: Tick, _frames: usize, _rate: u32) -> Option<Vec<f32>> {
         None
     }
+    /// Set the decoded-frame cache budget in bytes (Settings ▸ Memory & CPU); sources without
+    /// a cache ignore it.
+    fn set_cache_budget(&self, _bytes: usize) {}
+    /// The decoded-frame cache budget in bytes, if the source has a cache.
+    fn cache_budget(&self) -> Option<usize> {
+        None
+    }
 }
 
 /// Layer parameters and audio for effects (see [`effectcraft_effects::EffectHost`]).

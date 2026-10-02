@@ -19,6 +19,7 @@ mod mask;
 mod prop;
 mod query;
 mod render_queue;
+mod settings;
 mod stubs;
 mod styles;
 mod text_anim;
@@ -102,6 +103,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(file_more::specs());
         v.extend(comp_more::specs());
         v.extend(frontend::specs());
+        v.extend(settings::specs());
         v.extend(stubs::specs());
         v
     })

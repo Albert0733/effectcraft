@@ -252,12 +252,19 @@ fn add_item(s: &mut Session, p: &Value) -> Result<Value> {
     let it = s.project.item(item).ok_or_else(|| bad("layer.addItem", "no such item"))?.clone();
     let (src, size, dur) = match &it.kind {
         ItemKind::Comp(c) => (LayerSource::Comp { item }, (c.width, c.height), Some(c.duration)),
-        ItemKind::Footage(f) => (LayerSource::Footage { item }, (f.width, f.height), (f.kind != effectcraft_project::FootageKind::Still).then_some(f.duration)),
+        ItemKind::Footage(f) if f.kind == effectcraft_project::FootageKind::Still => {
+            // Settings ▸ Import ▸ Still Footage: length of the composition or a duration.
+            let d = (s.prefs.import.still_footage == "seconds").then(|| Tick::from_seconds_f64(s.prefs.import.still_seconds));
+            (LayerSource::Footage { item }, (f.width, f.height), d)
+        }
+        ItemKind::Footage(f) => (LayerSource::Footage { item }, (f.width, f.height), Some(f.duration)),
         ItemKind::Solid(so) => (LayerSource::Solid { item }, (so.width, so.height), None),
         ItemKind::Folder => return Err(bad("layer.addItem", "folders can't be layers")),
     };
     let fr = comp.frame_rate;
-    let start = fr.snap_nearest(f_p(p, "time").map(Tick::from_seconds_f64).unwrap_or(Tick::ZERO));
+    // Settings ▸ General ▸ Create Layers at Composition Start Time (off: at the current time).
+    let default_start = if s.prefs.general.create_layers_at_comp_start || s.active_comp_id() != Some(cid) { Tick::ZERO } else { s.time() };
+    let start = fr.snap_nearest(f_p(p, "time").map(Tick::from_seconds_f64).unwrap_or(default_start));
     let id = s.edit("Add Footage to Comp", None, |proj, st| {
         let mut l = build::layer(proj, &comp, &it.name, src, size, dur);
         l.start_time = start;

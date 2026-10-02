@@ -313,7 +313,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         }
         app.auto.add(&aid("render"), cb, if it.render { "Render: on" } else { "Render: off" });
         let comp_item = app.session.project.item(it.comp);
-        let label_col = comp_item.map(|i| Tokens::label(i.label)).unwrap_or(t.text_faint);
+        let label_col = comp_item.map(|i| t.label(i.label)).unwrap_or(t.text_faint);
         lp.rect_filled(Rect::from_center_size(pos2(cx_label + 6.0, row.center().y), vec2(10.0, 10.0)), 2.0, label_col);
         lp.text(pos2(cx_num + 2.0, row.center().y), Align2::LEFT_CENTER, n.to_string(), Tokens::ui(12.0), t.text_dim);
         let name = comp_item.map(|i| i.name.clone()).unwrap_or_else(|| "(missing composition)".into());

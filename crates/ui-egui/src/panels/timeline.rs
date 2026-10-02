@@ -635,7 +635,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         let x = tm.x(m.time.seconds());
         pr.add(egui::Shape::convex_polygon(
             vec![pos2(x - 4.0, ruler.max.y - 10.0), pos2(x + 4.0, ruler.max.y - 10.0), pos2(x, ruler.max.y - 4.0)],
-            Tokens::label(m.label),
+            t.label(m.label),
             Stroke::NONE,
         ));
     }
@@ -763,11 +763,12 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 }
                 // Label swatch.
                 let lr = Rect::from_center_size(pos2(cw.label + 10.0, cy), vec2(12.0, 12.0));
-                lp.rect_filled(lr, 2.0, Tokens::label(layer.label));
+                lp.rect_filled(lr, 2.0, t.label(layer.label));
                 let lresp = ui.interact(lr, egui::Id::new(("label", layer.id.0)), Sense::click());
                 lresp.context_menu(|ui| {
                     for lab in effectcraft_engine::color::Label::ALL {
-                        if ui.button(lab.name()).clicked() {
+                        let name = if lab == effectcraft_engine::color::Label::None { lab.name().to_string() } else { app.session.prefs.label_name(lab) };
+                        if ui.button(name).clicked() {
                             actions.push(("edit.label".into(), json!({"layers": [layer.id.0], "label": lab.name()})));
                             ui.close();
                         }
@@ -936,7 +937,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     let x_in = tm.x(layer.in_point.seconds());
                     let x_out = tm.x(layer.out_point.seconds());
                     let bar = Rect::from_min_max(pos2(x_in, r.min.y + 3.0), pos2(x_out, r.max.y - 3.0));
-                    let lc = Tokens::label(layer.label);
+                    let lc = t.label(layer.label);
                     let fill = if is_sel { lc.gamma_multiply(0.85) } else { lc.gamma_multiply(0.55) };
                     gp.rect_filled(bar, 2.0, fill);
                     if is_sel {

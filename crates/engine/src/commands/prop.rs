@@ -30,11 +30,23 @@ fn with_prop<T>(
     f: impl FnOnce(&mut Property, Tick) -> Result<T>,
 ) -> Result<T> {
     let t = s.time();
+    let linear = s.prefs.general.default_spatial_linear;
     s.edit(label, merge, |proj, _| {
         let l = layer_mut(proj, cid, lid)?;
         let lt = l.layer_time(t);
         let pr = l.props.find_mut(uid).ok_or_else(|| bad("prop", "property vanished"))?;
-        f(pr, lt)
+        let before: Vec<Tick> = pr.keys.iter().map(|k| k.time).collect();
+        let r = f(pr, lt)?;
+        // Settings ▸ General ▸ Default Spatial Interpolation to Linear: new keys of spatial
+        // properties get straight motion paths instead of Auto Bezier.
+        if linear && pr.spatial {
+            for k in pr.keys.iter_mut().filter(|k| !before.contains(&k.time)) {
+                k.spatial_auto = false;
+                k.spatial_in = [0.0; 3];
+                k.spatial_out = [0.0; 3];
+            }
+        }
+        Ok(r)
     })
 }
 
