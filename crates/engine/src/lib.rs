@@ -236,6 +236,10 @@ pub struct Session {
     pub services: Arc<dyn Services>,
     pub footage: Arc<dyn FootageSource>,
     pub expr: Option<Arc<dyn ExprHost>>,
+    /// GPU compositor (Mercury GPU Acceleration), when the frontend has one: used by renders
+    /// that ask for [`effectcraft_render::Backend::Gpu`]/`Auto`, and by Render Queue exports
+    /// when the project's renderer is the GPU.
+    pub accel: Option<Arc<dyn effectcraft_render::Accelerator>>,
     /// Expression syntax checker (set by the host that links the expression engine).
     pub expr_check: Option<fn(&str) -> std::result::Result<(), String>>,
     pub importer: Option<Arc<dyn Importer>>,
@@ -281,6 +285,7 @@ impl Default for Session {
             services: Arc::new(FsServices),
             footage: Arc::new(NoFootage),
             expr: None,
+            accel: None,
             expr_check: None,
             importer: None,
             exporter: None,
@@ -484,6 +489,7 @@ impl Session {
         let mut r = Renderer::new(&self.project, self.footage.as_ref(), opts);
         r.expr = self.expr.as_deref();
         r.cache = Some(&self.layer_cache);
+        r.accel = self.accel.as_deref();
         r.comp_frame(comp, t)
     }
 
@@ -502,7 +508,7 @@ impl Session {
         let c = self.project.comp(comp).ok_or(EngineError::NoComp)?;
         let long = c.width.max(c.height).max(1) as f64;
         let scale = if max_side == 0 { 1.0 } else { (max_side as f64 / long).min(1.0) };
-        let img = self.render(comp, t, RenderOpts { scale, ..Default::default() });
+        let img = self.render(comp, t, RenderOpts { scale, backend: effectcraft_render::Backend::Auto, ..Default::default() });
         Ok((img.width, img.height, img.to_rgba8_over(c.background)))
     }
 
@@ -538,13 +544,19 @@ mod tests;
 #[cfg(test)]
 mod tests_3d;
 #[cfg(test)]
+mod tests_anim_tools;
+#[cfg(test)]
 mod tests_effects;
 #[cfg(test)]
 mod tests_fidelity;
 #[cfg(test)]
 mod tests_lottie;
 #[cfg(test)]
+mod tests_markers;
+#[cfg(test)]
 mod tests_menu_cmds;
+#[cfg(test)]
+mod tests_project_items;
 #[cfg(test)]
 mod tests_settings;
 #[cfg(test)]

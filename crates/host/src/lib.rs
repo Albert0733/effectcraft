@@ -32,6 +32,7 @@ impl Exporter for FileExporter {
             project: job.project,
             footage: job.footage,
             expr: job.expr,
+            accel: job.accel,
             comp: job.item.comp,
             settings: &job.item.settings,
             output: &job.item.output,

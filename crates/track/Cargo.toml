@@ -13,3 +13,4 @@ workspace = true
 effectcraft-raster = { workspace = true }
 rayon = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }

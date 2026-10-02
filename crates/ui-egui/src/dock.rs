@@ -381,6 +381,204 @@ impl DockNode {
     }
 }
 
+/// Where a dragged panel tab lands on a group: as a tab (center) or split off to one side.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Zone {
+    Center,
+    Left,
+    Right,
+    Top,
+    Bottom,
+}
+
+impl Zone {
+    pub fn from_name(s: &str) -> Option<Zone> {
+        Some(match s.to_ascii_lowercase().as_str() {
+            "center" | "tab" => Zone::Center,
+            "left" => Zone::Left,
+            "right" => Zone::Right,
+            "top" => Zone::Top,
+            "bottom" => Zone::Bottom,
+            _ => return None,
+        })
+    }
+}
+
+/// The drop zone for a pointer at `pos` over a group `rect` (with a `tab_h` tab strip): the tab
+/// strip and the middle of the group are Center; within a quarter of the size from an edge,
+/// the nearest edge.
+pub fn drop_zone(rect: Rect, tab_h: f32, pos: egui::Pos2) -> Zone {
+    if pos.y < rect.min.y + tab_h {
+        return Zone::Center;
+    }
+    let fx = ((pos.x - rect.min.x) / rect.width().max(1.0)).clamp(0.0, 1.0);
+    let fy = ((pos.y - rect.min.y) / rect.height().max(1.0)).clamp(0.0, 1.0);
+    let d = [(fx, Zone::Left), (1.0 - fx, Zone::Right), (fy, Zone::Top), (1.0 - fy, Zone::Bottom)];
+    let (m, z) = d.into_iter().min_by(|a, b| a.0.total_cmp(&b.0)).unwrap_or((1.0, Zone::Center));
+    if m > 0.25 { Zone::Center } else { z }
+}
+
+/// The part of a group `rect` a drop into `zone` would occupy (the AE-style highlight).
+pub fn zone_rect(rect: Rect, zone: Zone) -> Rect {
+    let c = rect.center();
+    match zone {
+        Zone::Center => rect,
+        Zone::Left => Rect::from_min_max(rect.min, pos2(c.x, rect.max.y)),
+        Zone::Right => Rect::from_min_max(pos2(c.x, rect.min.y), rect.max),
+        Zone::Top => Rect::from_min_max(rect.min, pos2(rect.max.x, c.y)),
+        Zone::Bottom => Rect::from_min_max(pos2(rect.min.x, c.y), rect.max),
+    }
+}
+
+/// A panel group floating over the dock (undocked).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Floating {
+    pub panels: Vec<PanelKind>,
+    pub active: usize,
+    /// [x, y, w, h] in points.
+    pub rect: [f32; 4],
+}
+
+impl DockNode {
+    /// Insert panel `p` relative to the group that holds `anchor`: as a tab next to it
+    /// (Center) or in a new group split off to one side. `p` is removed from its old place
+    /// first. Returns false (tree unchanged) if `anchor` isn't docked or is `p` itself alone.
+    pub fn dock_panel(&mut self, p: PanelKind, anchor: PanelKind, zone: Zone) -> bool {
+        if p == anchor || !self.contains(anchor) {
+            return false;
+        }
+        let before = self.clone();
+        self.close(p);
+        fn rec(n: &mut DockNode, p: PanelKind, anchor: PanelKind, zone: Zone) -> bool {
+            let here = match n {
+                DockNode::Split { a, b, .. } => return rec(a, p, anchor, zone) || rec(b, p, anchor, zone),
+                DockNode::Tabs { panels, .. } => panels.contains(&anchor),
+                DockNode::Stack { entries } => entries.iter().any(|e| e.panel == anchor),
+            };
+            if !here {
+                return false;
+            }
+            match (zone, &mut *n) {
+                (Zone::Center, DockNode::Tabs { panels, active }) => {
+                    let i = panels.iter().position(|x| *x == anchor).map_or(panels.len(), |i| i + 1);
+                    panels.insert(i, p);
+                    *active = i;
+                }
+                (Zone::Center, DockNode::Stack { entries }) => {
+                    let i = entries.iter().position(|e| e.panel == anchor).map_or(entries.len(), |i| i + 1);
+                    entries.insert(i, StackEntry { panel: p, open: true, height: None });
+                }
+                (z, node) => {
+                    let new = tabs(&[p], 0);
+                    let old = std::mem::replace(node, tabs(&[], 0));
+                    let vertical = matches!(z, Zone::Top | Zone::Bottom);
+                    let (a, b) = if matches!(z, Zone::Left | Zone::Top) { (new, old) } else { (old, new) };
+                    *node = DockNode::Split { vertical, size: SplitSize::Ratio(0.5), a: Box::new(a), b: Box::new(b) };
+                }
+            }
+            true
+        }
+        if rec(self, p, anchor, zone) {
+            true
+        } else {
+            *self = before;
+            false
+        }
+    }
+
+    /// Path of the group containing `p` (as in [`Group::path`]; stacks add `sN`).
+    pub fn path_of(&self, p: PanelKind) -> Option<String> {
+        fn rec(n: &DockNode, p: PanelKind, path: &str) -> Option<String> {
+            match n {
+                DockNode::Split { a, b, .. } => rec(a, p, &format!("{path}a")).or_else(|| rec(b, p, &format!("{path}b"))),
+                DockNode::Tabs { panels, .. } => panels.contains(&p).then(|| path.to_string()),
+                DockNode::Stack { entries } => entries.iter().position(|e| e.panel == p).map(|i| format!("{path}s{i}")),
+            }
+        }
+        rec(self, p, "")
+    }
+
+    /// Number of panels in the tree.
+    pub fn panel_count(&self) -> usize {
+        let mut v = vec![];
+        self.panels(&mut v);
+        v.len()
+    }
+}
+
+/// A full layout: the docked tree plus floating panels (what a workspace saves).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Layout {
+    pub root: DockNode,
+    #[serde(default)]
+    pub floating: Vec<Floating>,
+}
+
+impl Layout {
+    /// Undock `p` into a floating group at `rect` (no-op if it is the last docked panel).
+    pub fn float(&mut self, p: PanelKind, rect: [f32; 4]) -> bool {
+        if self.root.contains(p) {
+            if self.root.panel_count() <= 1 {
+                return false;
+            }
+            self.root.close(p);
+        } else if !self.unfloat(p) {
+            return false;
+        }
+        self.floating.push(Floating { panels: vec![p], active: 0, rect });
+        true
+    }
+
+    /// Remove `p` from the floating groups (dropping emptied groups). True if it was floating.
+    pub fn unfloat(&mut self, p: PanelKind) -> bool {
+        let mut found = false;
+        for f in &mut self.floating {
+            if let Some(i) = f.panels.iter().position(|x| *x == p) {
+                f.panels.remove(i);
+                f.active = f.active.min(f.panels.len().saturating_sub(1));
+                found = true;
+            }
+        }
+        self.floating.retain(|f| !f.panels.is_empty());
+        found
+    }
+
+    /// Dock `p` (docked or floating) next to `anchor`; `anchor` may be floating too (then Center
+    /// adds a tab to that floating group).
+    pub fn dock(&mut self, p: PanelKind, anchor: PanelKind, zone: Zone) -> bool {
+        if p == anchor {
+            return false;
+        }
+        if self.floating.iter().any(|f| f.panels.contains(&anchor)) {
+            if zone != Zone::Center {
+                return false;
+            }
+            if self.root.contains(p) {
+                if self.root.panel_count() <= 1 {
+                    return false;
+                }
+                self.root.close(p);
+            } else {
+                self.unfloat(p);
+            }
+            let Some(f) = self.floating.iter_mut().find(|f| f.panels.contains(&anchor)) else { return false };
+            f.panels.push(p);
+            f.active = f.panels.len() - 1;
+            return true;
+        }
+        if !self.root.contains(anchor) {
+            return false;
+        }
+        // A floating panel isn't in the tree, so dock_panel's removal is a no-op for it.
+        self.unfloat(p);
+        self.root.dock_panel(p, anchor, zone)
+    }
+
+    pub fn contains(&self, p: PanelKind) -> bool {
+        self.root.contains(p) || self.floating.iter().any(|f| f.panels.contains(&p))
+    }
+}
+
 /// One laid-out tab group.
 pub struct Group {
     pub path: String,
@@ -401,6 +599,8 @@ pub enum DockAction {
     Focus(PanelKind),
     Close(PanelKind),
     PanelMenu(PanelKind, egui::Pos2),
+    /// A tab started being dragged (re-dock or undock).
+    BeginDrag(PanelKind),
 }
 
 /// Lay out the tree into group rects (with `gap` gutters) and handle gutter dragging.
@@ -521,7 +721,10 @@ pub fn draw_group_chrome(
                 break;
             }
             let tab = Rect::from_min_size(pos2(x, strip.min.y), vec2(w, t.tab_h));
-            let resp = ui.interact(tab, egui::Id::new(("tab", g.path.clone(), i)), Sense::click());
+            let resp = ui.interact(tab, egui::Id::new(("tab", g.path.clone(), i)), Sense::click_and_drag());
+            if resp.drag_started() {
+                actions.push(DockAction::BeginDrag(*p));
+            }
             reg.add(&format!("panel.tab.{}", p.id()), tab, &label);
             let label_x = tab.min.x + 8.0;
             let label_w = galley.size().x;
@@ -611,6 +814,84 @@ mod tests {
             assert!(d.contains(PanelKind::Timeline), "{w}");
             assert!(d.contains(PanelKind::Composition) || d.contains(PanelKind::Layer), "{w}");
         }
+    }
+
+    #[test]
+    fn drop_zone_math() {
+        let r = Rect::from_min_size(pos2(100.0, 100.0), vec2(400.0, 300.0));
+        let tab = 28.0;
+        assert_eq!(drop_zone(r, tab, pos2(300.0, 110.0)), Zone::Center, "tab strip");
+        assert_eq!(drop_zone(r, tab, r.center()), Zone::Center);
+        assert_eq!(drop_zone(r, tab, pos2(120.0, 250.0)), Zone::Left);
+        assert_eq!(drop_zone(r, tab, pos2(490.0, 250.0)), Zone::Right);
+        assert_eq!(drop_zone(r, tab, pos2(300.0, 140.0)), Zone::Top);
+        assert_eq!(drop_zone(r, tab, pos2(300.0, 390.0)), Zone::Bottom);
+        // Corners go to the nearer edge.
+        assert_eq!(drop_zone(r, tab, pos2(105.0, 395.0)), Zone::Left);
+        assert_eq!(zone_rect(r, Zone::Right), Rect::from_min_max(pos2(300.0, 100.0), r.max));
+        assert_eq!(zone_rect(r, Zone::Top).height(), 150.0);
+        assert_eq!(zone_rect(r, Zone::Center), r);
+    }
+
+    #[test]
+    fn dock_panel_splits_and_inserts_tabs() {
+        use PanelKind::*;
+        let mut d = workspace("Standard");
+        let n = d.panel_count();
+        // Tab next to an anchor.
+        assert!(d.dock_panel(Info, Timeline, Zone::Center));
+        assert_eq!(d.panel_count(), n);
+        let p = d.path_of(Timeline).unwrap();
+        assert_eq!(d.path_of(Info).unwrap(), p);
+        assert!(d.is_visible(Info));
+        // Split to the right of the Composition group: a new single-tab group beside it.
+        assert!(d.dock_panel(Info, Composition, Zone::Right));
+        let comp_path = d.path_of(Composition).unwrap();
+        let info_path = d.path_of(Info).unwrap();
+        assert_eq!(comp_path.len(), info_path.len());
+        assert!(comp_path.ends_with('a') && info_path.ends_with('b'));
+        assert!(d.is_visible(Info));
+        // Top: the new group comes first in a vertical split.
+        assert!(d.dock_panel(Audio, Timeline, Zone::Top));
+        assert!(d.path_of(Audio).unwrap().ends_with('a'));
+        // Dropping a panel on itself or an undocked anchor changes nothing.
+        let before = d.clone();
+        assert!(!d.dock_panel(Audio, Audio, Zone::Left));
+        assert!(!d.dock_panel(Audio, Tracker, Zone::Left));
+        assert_eq!(d, before);
+        // Into a stack.
+        let mut s = workspace("Default");
+        assert!(s.dock_panel(Tracker, Properties, Zone::Center));
+        assert!(s.path_of(Tracker).unwrap().contains('s'));
+        // Moving the only panel of a group collapses its split.
+        let mut m = hsplit(SplitSize::Ratio(0.5), tabs(&[Project], 0), tabs(&[Composition], 0));
+        assert!(m.dock_panel(Project, Composition, Zone::Center));
+        assert_eq!(m, tabs(&[Composition, Project], 1));
+    }
+
+    #[test]
+    fn floating_layout_round_trips() {
+        use PanelKind::*;
+        let mut l = Layout { root: workspace("Standard"), floating: vec![] };
+        assert!(l.float(Info, [200.0, 150.0, 320.0, 240.0]));
+        assert!(!l.root.contains(Info) && l.contains(Info));
+        // Tab another panel into the floating group, then dock it back.
+        assert!(l.dock(Audio, Info, Zone::Center));
+        assert_eq!(l.floating[0].panels, [Info, Audio]);
+        assert!(!l.dock(Audio, Info, Zone::Left), "floating groups only take tabs");
+        assert!(l.dock(Info, Timeline, Zone::Bottom));
+        assert_eq!(l.floating[0].panels, [Audio]);
+        assert!(l.root.contains(Info));
+        let s = serde_json::to_string(&l).unwrap();
+        let back: Layout = serde_json::from_str(&s).unwrap();
+        assert_eq!(back, l);
+        // A workspace saved before floating panels existed still loads.
+        let old: Layout = serde_json::from_str(&format!("{{\"root\": {}}}", serde_json::to_string(&l.root).unwrap())).unwrap();
+        assert!(old.floating.is_empty());
+        // The last docked panel can't float.
+        let mut one = Layout { root: tabs(&[Timeline], 0), floating: vec![] };
+        assert!(!one.float(Timeline, [0.0; 4]));
+        assert!(l.unfloat(Audio) && l.floating.is_empty());
     }
 
     #[test]

@@ -113,6 +113,10 @@ pub struct ProjectSettings {
     /// Frame numbering starts at 0 (or 1).
     pub frame_start: i64,
     pub audio_sample_rate: u32,
+    /// Video Rendering and Effects ▸ Use: Mercury GPU Acceleration (`true`, the default; used
+    /// when a GPU adapter exists) or Mercury Software Only (`false`, the CPU compositor).
+    #[serde(default = "yes")]
+    pub gpu_acceleration: bool,
 }
 
 impl Default for ProjectSettings {
@@ -125,6 +129,7 @@ impl Default for ProjectSettings {
             time_display: TimeDisplayStyle::Timecode,
             frame_start: 0,
             audio_sample_rate: 48_000,
+            gpu_acceleration: true,
         }
     }
 }
@@ -144,6 +149,24 @@ pub struct Marker {
     pub url: String,
     #[serde(default)]
     pub protected: bool,
+    /// Web link frame target (`_blank`, a frame name…).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub frame_target: String,
+    /// Flash/video cue point (Event or Navigation) with name and parameters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cue_point: Option<CuePoint>,
+}
+
+/// A marker's cue point (Composition/Layer Marker dialog ▸ Cue Point).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct CuePoint {
+    pub name: String,
+    /// Navigation (true) or Event cue point.
+    #[serde(default)]
+    pub navigation: bool,
+    /// (name, value) parameter pairs.
+    #[serde(default)]
+    pub params: Vec<(String, String)>,
 }
 
 /// 3D renderer of a composition.

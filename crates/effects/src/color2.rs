@@ -119,6 +119,12 @@ impl Curve {
         h00 * self.ys[k] + h10 * h * self.ms[k] + h01 * self.ys[k + 1] + h11 * h * self.ms[k + 1]
     }
 
+    /// Control points (x, y), Hermite tangents and the 1025-entry table over 0..1 that
+    /// [`Curve::eval`] interpolates (the GPU path uploads them).
+    pub fn tables(&self) -> (&[f32], &[f32], &[f32], &[f32]) {
+        (&self.xs, &self.ys, &self.ms, &self.lut)
+    }
+
     pub fn eval(&self, x: f32) -> f32 {
         if !(0.0..=1.0).contains(&x) {
             return self.eval_exact(x);

@@ -528,8 +528,8 @@ fn curves_size(width: f32) -> f32 {
 }
 
 /// Cached histogram of the displayed frame (recomputed when the frame changes).
-fn frame_histogram(app: &EffectcraftApp, ctx: &egui::Context) -> Option<std::sync::Arc<[[u32; 256]; 5]>> {
-    let img = app.viewer_image.clone()?;
+fn frame_histogram(app: &mut EffectcraftApp, ctx: &egui::Context) -> Option<std::sync::Arc<[[u32; 256]; 5]>> {
+    let img = app.viewer_pixels()?;
     let key = std::sync::Arc::as_ptr(&img) as usize;
     let id = egui::Id::new("ec-histogram");
     if let Some((k, h)) = ctx.data(|d| d.get_temp::<(usize, std::sync::Arc<[[u32; 256]; 5]>)>(id))
@@ -969,6 +969,10 @@ pub fn viewer_hook(
             app.ui.fx_pick = None;
             return;
         };
+        if pick.kind == "color" {
+            // GPU frames: read the shown frame back for sampling.
+            app.viewer_pixels();
+        }
         let resp = ui.interact(map.area, egui::Id::new("viewer-fx-pick"), Sense::click());
         app.auto.add("viewer.fxPick", map.area, &pick.name);
         let hint = if pick.kind == "point" { format!("Click to set {}", pick.name) } else { format!("Click to sample {}", pick.name) };

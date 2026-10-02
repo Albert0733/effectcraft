@@ -23,6 +23,7 @@ effectcraft-text = { path = "crates/text" }
 effectcraft-effects = { path = "crates/effects" }
 effectcraft-track = { path = "crates/track" }
 effectcraft-render = { path = "crates/render" }
+effectcraft-gpu = { path = "crates/gpu" }
 effectcraft-media = { path = "crates/media" }
 effectcraft-export = { path = "crates/export" }
 effectcraft-expr = { path = "crates/expr" }
@@ -66,6 +67,11 @@ filmcraft-prores = { git = "https://github.com/storytold/filmcraft", rev = "89cf
 filmcraft-aac = { git = "https://github.com/storytold/filmcraft", rev = "89cfbf24f698b0f0e538eb7795929f19bbfb1dbb" }
 filmcraft-isobmff = { git = "https://github.com/storytold/filmcraft", rev = "89cfbf24f698b0f0e538eb7795929f19bbfb1dbb" }
 
+# gpu (the same wgpu eframe / egui-wgpu use)
+wgpu = { version = "30.0.1", features = ["fragile-send-sync-non-atomic-wasm"] }
+bytemuck = "1"
+pollster = "0.4"
+
 # ui
 egui = "0.36"
 eframe = { version = "0.36", default-features = false }
@@ -106,6 +112,9 @@ opt-level = 1
 opt-level = 3
 
 [profile.dev.package.effectcraft-render]
+opt-level = 3
+
+[profile.dev.package.effectcraft-gpu]
 opt-level = 3
 
 [profile.dev.package.effectcraft-effects]
