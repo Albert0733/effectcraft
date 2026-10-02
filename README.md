@@ -15,7 +15,7 @@
 
 <p align="center">
   A free, open-source compositor in the spirit of After Effects: compositions, layers,
-  keyframes, 241 effects, expressions, 3D cameras and lights, and a render queue, native on macOS,
+  keyframes, 259 effects, layer styles, expressions, 3D cameras and lights, and a render queue, native on macOS,
   Windows and Linux, and in the browser later on. Young, moving fast, and already usable.
 </p>
 
@@ -108,12 +108,15 @@ Paragraph, Align, Info, Preview, Audio and the Render Queue, docked the way you 
 
 ## Effects
 
-241 effects across After Effects' categories, each with its parameter names, order and
+259 effects across After Effects' categories, each with its parameter names, order and
 defaults: blur and sharpen, channel, color correction (Curves, Levels, Hue/Saturation, Lumetri
 Color…), distort (Warp, Bulge, Turbulent Displace, CC Power Pin…), generate (Fractal Noise,
 Gradient Ramp, Stroke, Write-on, Audio Spectrum…), keying, matte, noise and grain, perspective,
 **simulation** (CC Particle World, CC Rainfall, Shatter, Card Dance, Caustics, Wave World…),
-stylize (Glow, CC Glass…), text, transitions, utility and expression controls.
+stylize (Glow, CC Glass…), **time** (Echo, Posterize Time, Timewarp, Time Displacement…),
+**audio** (Reverb, Parametric EQ, Delay, Stereo Mixer…), text, transitions, utility and expression
+controls. All nine **Layer Styles** (Drop Shadow, Inner/Outer Glow, Bevel and Emboss, Satin,
+overlays, Stroke) with Global Light. Preview plays audio in sync, with meters and waveforms.
 
 <p align="center">
   <img src="docs/images/effectcraft-effects.png" alt="A CC Particle World burst with Glow, and the Effect Controls panel listing the particle system's parameters" width="100%">
@@ -176,10 +179,10 @@ tests, layering, asset attribution and the WebAssembly build). See [CONTRIBUTING
 ## Where it stands
 
 EffectCraft is young. The core of After Effects is in place and gets deeper every week: what is
-done and what comes next is in the [ROADMAP](ROADMAP.md). Not there yet: layer styles, time and
-audio effects, audio playback, motion tracking, puppet and paint tools, and GPU compositing. The
-web build runs the full app in the browser, single-threaded for now. Projects are saved as `.ecproj`, readable versioned JSON; After Effects `.aep`
-files cannot be opened.
+done and what comes next is in the [ROADMAP](ROADMAP.md). Not there yet: motion tracking, puppet,
+paint and roto tools, Lottie, preferences and a shortcut editor, and GPU compositing. The web build
+([docs/web.md](docs/web.md)) runs the full app in the browser, single-threaded for now. Projects
+are saved as `.ecproj`, readable versioned JSON; After Effects `.aep` files cannot be opened.
 
 ## How it's made
 

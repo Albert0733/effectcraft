@@ -15,11 +15,12 @@ once.
 | M6 | Shapes, masks and footage: shape operators, masks and the pen tool, video and image import | Done |
 | M7 | 3D: 3D layers, cameras, lights, shadows, depth of field, 3D views and camera tools | In review |
 | M8 | Expressions with the After Effects object model | Done |
-| M9 | Text and effects: text animators, 241 effects | In progress (layer styles, more selectors) |
+| M9 | Text and effects: text animators, layer styles, 259 effects incl. time and audio effects | Mostly done (text animator depth in review) |
 | M10 | Export: render queue, H.264, ProRes, image sequences, GIF, audio | Done |
-| M11 | Animation tools: presets, Motion Sketch, Wiggler, Lottie, audio playback | Next |
+| M11 | Animation tools: audio playback, meters and waveforms (done); presets, Motion Sketch, Wiggler, Lottie | In progress |
 | M12 | Performance: layer cache and parallel compositing (done), GPU compositing, disk cache, motion tracking | In progress |
-| M13+ | Time effects, puppet, paint, roto, preferences and shortcut editor, the web app, a plugin API | Planned |
+| M13+ | Puppet, paint, roto, motion tracking, preferences and shortcut editor, a plugin API | Planned |
+| M15 | The web app (WebAssembly, WebGPU) | Done, single-threaded |
 | M14 | Built for agents: MCP server, command-line tool, control channel | Done |
 
 Come tell us what matters most to you on [Discord](https://discord.gg/artcraft).
