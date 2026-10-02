@@ -195,23 +195,55 @@ fn solid(app: &mut EffectcraftApp, ctx: &egui::Context, t: &Tokens) {
     let mut name = app.dialog_state.solid_name.clone();
     let mut col = app.dialog_state.solid_color;
     let mut size = app.dialog_state.solid_size;
-    modal(ctx, "Solid Settings", vec2(420.0, 300.0), t, |ui| {
-        egui::Grid::new("solid-grid").num_columns(2).spacing([14.0, 10.0]).show(ui, |ui| {
-            ui.label("Name");
-            ui.add(egui::TextEdit::singleline(&mut name).desired_width(220.0));
-            ui.end_row();
-            ui.label("Size");
+    let comp_size = app.session.active_comp().map(|c| (c.width, c.height)).unwrap_or((1920, 1080));
+    let lock_id = egui::Id::new("solid-lock-aspect");
+    let mut lock = ctx.data(|d| d.get_temp::<bool>(lock_id)).unwrap_or(true);
+    modal(ctx, "Solid Settings", vec2(460.0, 360.0), t, |ui| {
+        ui.horizontal(|ui| {
+            ui.label("Name:");
+            ui.add(egui::TextEdit::singleline(&mut name).desired_width(320.0));
+        });
+        ui.add_space(8.0);
+        ui.label(egui::RichText::new("Size").strong());
+        egui::Grid::new("solid-grid").num_columns(2).spacing([14.0, 8.0]).show(ui, |ui| {
+            let (ow, oh) = (size[0], size[1]);
+            ui.label("Width:");
             ui.horizontal(|ui| {
-                ui.add(egui::DragValue::new(&mut size[0]).range(1..=30000));
-                ui.label("×");
-                ui.add(egui::DragValue::new(&mut size[1]).range(1..=30000));
+                ui.add(egui::DragValue::new(&mut size[0]).range(1..=30000).suffix(" px"));
+                ui.checkbox(&mut lock, format!("Lock Aspect Ratio to {}", super::comp_settings::aspect_label(ow as f64, oh as f64)));
             });
             ui.end_row();
-            ui.label("Color");
-            ui.color_edit_button_rgb(&mut col);
+            ui.label("Height:");
+            ui.add(egui::DragValue::new(&mut size[1]).range(1..=30000).suffix(" px"));
             ui.end_row();
+            if lock && ow > 0 && oh > 0 {
+                if size[0] != ow {
+                    size[1] = ((size[0] as f64) * oh as f64 / ow as f64).round().max(1.0) as u32;
+                } else if size[1] != oh {
+                    size[0] = ((size[1] as f64) * ow as f64 / oh as f64).round().max(1.0) as u32;
+                }
+            }
         });
-        ui.add_space(18.0);
+        let pct = |a: u32, b: u32| 100.0 * a as f64 / b.max(1) as f64;
+        ui.label(
+            egui::RichText::new(format!(
+                "Width: {:.1}% of comp\nHeight: {:.1}% of comp\nFrame Aspect Ratio: {}",
+                pct(size[0], comp_size.0),
+                pct(size[1], comp_size.1),
+                super::comp_settings::aspect_label(size[0] as f64, size[1] as f64)
+            ))
+            .color(Color32::GRAY),
+        );
+        ui.add_space(4.0);
+        if ui.button("Make Comp Size").clicked() {
+            size = [comp_size.0, comp_size.1];
+        }
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            ui.label("Color:");
+            ui.color_edit_button_rgb(&mut col);
+        });
+        ui.add_space(14.0);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui.add(egui::Button::new(egui::RichText::new("   OK   ").color(Color32::WHITE)).fill(t.accent)).clicked() {
                 ok = true;
@@ -221,6 +253,7 @@ fn solid(app: &mut EffectcraftApp, ctx: &egui::Context, t: &Tokens) {
             }
         });
     });
+    ctx.data_mut(|d| d.insert_temp(lock_id, lock));
     app.dialog_state.solid_name = name.clone();
     app.dialog_state.solid_color = col;
     app.dialog_state.solid_size = size;
