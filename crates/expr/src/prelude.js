@@ -17,7 +17,7 @@ var textTotal = 1;
 var selectorValue = [100, 100, 100];
 
 // Request ops (must match runtime.rs).
-var __COMP = 0, __COMPNAME = 1, __LAYER = 2, __LINFO = 3, __CHILD = 4, __PINFO = 5, __VALUE = 6, __XFORM = 7, __RECT = 8, __MARKERS = 9;
+var __COMP = 0, __COMPNAME = 1, __LAYER = 2, __LINFO = 3, __CHILD = 4, __PINFO = 5, __VALUE = 6, __XFORM = 7, __RECT = 8, __MARKERS = 9, __DOC = 10;
 
 function __begin(t, v, c, l, path, uid, idx, fd, ti, tt, sv) {
   time = t;
@@ -34,6 +34,7 @@ function __begin(t, v, c, l, path, uid, idx, fd, ti, tt, sv) {
 function __finish(r) {
   r = __v(r);
   if (r !== null && typeof r === 'object' && r.__isLayer) return r.index;
+  if (r !== null && typeof r === 'object' && r.__isTextStyle) return r.__out();
   // `[temp, temp]` where temp is a property (pick-whip 1D → 2D): read the values here, while
   // host requests can still be answered and the script re-run.
   if (Array.isArray(r)) return r.map(function (x) { return __v(x); });
@@ -640,6 +641,18 @@ Prop.prototype = {
   inTangents: function (t) { return this.valueAtTime(t === undefined ? time : t).inTangents(); },
   outTangents: function (t) { return this.valueAtTime(t === undefined ? time : t).outTangents(); },
   isClosed: function () { return this.value.isClosed(); },
+  // Source Text style API.
+  __docAt: function (t) {
+    var d = __h(__DOC, this.__c, this.__l, this.__p, t, this.__self);
+    if (d === null) __err('Property "' + this.name + '" is not a Source Text property');
+    return JSON.parse(d);
+  },
+  get style() { return this.getStyleAt(0); },
+  getStyleAt: function (i, t) {
+    if (t === undefined) t = time;
+    return new __TextStyle(this.__docAt(__v(t)), i === undefined ? 0 : Math.floor(__v(i)), [], false);
+  },
+  createStyle: function () { return new __TextStyle(this.__docAt(time), 0, [], true); },
   valueOf: function () { return this.value; },
   toString: function () { return String(this.value); },
 };
@@ -657,6 +670,138 @@ var __propHandler = {
 function __mkProp(c, l, path) {
   return new Proxy(new Prop(c, l, path), __propHandler);
 }
+
+// Text styles (the Source Text style API) ------------------------------------------------------
+// A TextStyle is the source document (as JSON from the host), the character index it reads its
+// attributes at, and the setter calls made on it ([key, value, start, count]). Setters return
+// new objects; returning a style from a Source Text expression applies it.
+
+function __TextStyle(doc, idx, ops, empty) { this.__d = doc; this.__i = idx; this.__ops = ops; this.__empty = empty; }
+
+function __styleSetter(key, conv) {
+  return function (v, start, count) {
+    v = __v(v);
+    if (conv) v = conv(v, this);
+    var s = start === undefined ? -1 : Math.max(0, Math.floor(__v(start)));
+    var n = count === undefined ? -1 : Math.max(0, Math.floor(__v(count)));
+    return new __TextStyle(this.__d, this.__i, this.__ops.concat([[key, v, s, n]]), this.__empty);
+  };
+}
+
+function __colorIn(c) {
+  if (typeof c === 'string') return c;
+  return [c[0], c[1], c[2]];
+}
+
+__TextStyle.prototype = {
+  __isTextStyle: true,
+  __base: function () {
+    var runs = this.__d.runs, pos = 0, i = this.__i;
+    for (var k = 0; k < runs.length; k++) {
+      if (i < pos + runs[k].len || k === runs.length - 1) return runs[k].style;
+      pos += runs[k].len;
+    }
+    return {};
+  },
+  __para: function () {
+    var t = this.text, p = 0;
+    for (var k = 0; k < Math.min(this.__i, t.length); k++) if (t[k] === '\n' || t[k] === '\r') p++;
+    var paras = this.__d.paras;
+    return paras[Math.min(p, paras.length - 1)];
+  },
+  __get: function (key, para) {
+    for (var k = this.__ops.length - 1; k >= 0; k--) {
+      var o = this.__ops[k];
+      if (o[0] !== key) continue;
+      if (o[2] < 0 || (this.__i >= o[2] && (o[3] < 0 || this.__i < o[2] + o[3]))) return o[1];
+    }
+    return (para ? this.__para() : this.__base())[key];
+  },
+  get text() {
+    var t = this.__d.text;
+    for (var k = 0; k < this.__ops.length; k++) {
+      var o = this.__ops[k];
+      if (o[0] !== 'text') continue;
+      if (o[2] < 0) t = String(o[1]);
+      else t = t.slice(0, o[2]) + String(o[1]) + (o[3] < 0 ? '' : t.slice(o[2] + o[3]));
+    }
+    return t;
+  },
+  get font() { return this.__get('font'); },
+  get fontSize() { return this.__get('size'); },
+  get isFauxBold() { return this.__get('fauxBold'); },
+  get isFauxItalic() { return this.__get('fauxItalic'); },
+  get isAllCaps() { return this.__get('allCaps'); },
+  get isSmallCaps() { return this.__get('smallCaps'); },
+  get tracking() { return this.__get('tracking'); },
+  get autoLeading() { return this.__get('leading') === 'auto'; },
+  get leading() { var l = this.__get('leading'); return l === 'auto' ? this.fontSize * 1.2 : l; },
+  get baselineShift() { return this.__get('baselineShift'); },
+  get applyFill() { return this.__get('applyFill'); },
+  get fillColor() { var c = this.__get('fill'); return [c[0], c[1], c[2]]; },
+  get applyStroke() { return this.__get('applyStroke'); },
+  get strokeColor() { var c = this.__get('stroke'); return [c[0], c[1], c[2]]; },
+  get strokeWidth() { return this.__get('strokeWidth'); },
+  get horizontalScaling() { return this.__get('hScale'); },
+  get verticalScaling() { return this.__get('vScale'); },
+  get tsume() { return this.__get('tsume'); },
+  get baselineOption() { return this.__get('baseline'); },
+  get isSuperscript() { return this.__get('baseline') === 'superscript'; },
+  get isSubscript() { return this.__get('baseline') === 'subscript'; },
+  get kerningType() { var k = this.__get('kerning'); return typeof k === 'number' ? 'manual' : k; },
+  get kerning() { var k = this.__get('kerning'); return typeof k === 'number' ? k : 0; },
+  get isLigature() { return this.__get('ligatures'); },
+  get justification() { return this.__get('justify', true); },
+  get firstLineIndent() { return this.__get('indentFirst', true); },
+  get startIndent() { return this.__get('indentLeft', true); },
+  get endIndent() { return this.__get('indentRight', true); },
+  get spaceBefore() { return this.__get('spaceBefore', true); },
+  get spaceAfter() { return this.__get('spaceAfter', true); },
+  get direction() { return this.__get('direction', true); },
+  get isEveryLineComposer() { return this.__get('composer', true) === 'everyLine'; },
+  get isHangingRoman() { return this.__get('hangingPunctuation', true); },
+  setText: __styleSetter('text', function (v) { return String(v); }),
+  replaceText: __styleSetter('text', function (v) { return String(v); }),
+  setFont: __styleSetter('font', function (v) { return String(v); }),
+  setFontSize: __styleSetter('size'),
+  setFauxBold: __styleSetter('fauxBold', Boolean),
+  setFauxItalic: __styleSetter('fauxItalic', Boolean),
+  setAllCaps: __styleSetter('allCaps', Boolean),
+  setSmallCaps: __styleSetter('smallCaps', Boolean),
+  setTracking: __styleSetter('tracking'),
+  setLeading: __styleSetter('leading'),
+  setAutoLeading: __styleSetter('leading', function (v, s) { return v ? 'auto' : s.leading; }),
+  setBaselineShift: __styleSetter('baselineShift'),
+  setApplyFill: __styleSetter('applyFill', Boolean),
+  setFillColor: __styleSetter('fill', __colorIn),
+  setApplyStroke: __styleSetter('applyStroke', Boolean),
+  setStrokeColor: __styleSetter('stroke', __colorIn),
+  setStrokeWidth: __styleSetter('strokeWidth'),
+  setHorizontalScaling: __styleSetter('hScale'),
+  setVerticalScaling: __styleSetter('vScale'),
+  setTsume: __styleSetter('tsume'),
+  setBaselineOption: __styleSetter('baseline', function (v) { return String(v).toLowerCase().replace('_baseline', ''); }),
+  setSuperscript: __styleSetter('superscript', Boolean),
+  setSubscript: __styleSetter('subscript', Boolean),
+  setKerningType: __styleSetter('kerning', function (v) { v = String(v).toLowerCase(); return v === 'manual' ? 0 : v; }),
+  setKerning: __styleSetter('kerning', Number),
+  setLigature: __styleSetter('ligatures', Boolean),
+  setJustification: __styleSetter('justify', function (v) { return String(v); }),
+  setFirstLineIndent: __styleSetter('indentFirst'),
+  setStartIndent: __styleSetter('indentLeft'),
+  setEndIndent: __styleSetter('indentRight'),
+  setSpaceBefore: __styleSetter('spaceBefore'),
+  setSpaceAfter: __styleSetter('spaceAfter'),
+  setDirection: __styleSetter('direction', function (v) { v = String(v).toLowerCase(); return v.indexOf('right') === 0 || v === 'rtl' ? 'rtl' : 'ltr'; }),
+  setEveryLineComposer: __styleSetter('composer', function (v) { return v ? 'everyLine' : 'singleLine'; }),
+  setHangingRoman: __styleSetter('hangingPunctuation', Boolean),
+  __out: function () {
+    return { __style: true, __json: JSON.stringify({ doc: this.__empty ? null : this.__d.doc, ops: this.__ops }) };
+  },
+  toString: function () { return this.text; },
+  valueOf: function () { return this.text; },
+};
+Object.defineProperty(__TextStyle.prototype, 'length', { get: function () { return this.text.length; } });
 
 // Markers ---------------------------------------------------------------------------------------
 

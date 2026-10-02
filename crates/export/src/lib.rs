@@ -175,6 +175,7 @@ pub(crate) fn render_frame(job: &Job, comp: &Comp, i: u64) -> Image {
         // Output renders always look through the comp's active camera.
         view: None,
         backend: effectcraft_render::Backend::Auto,
+        roi: None,
     };
     let mut r = Renderer::new(job.project, job.footage, opts);
     r.expr = job.expr;

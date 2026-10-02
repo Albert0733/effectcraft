@@ -49,6 +49,17 @@ pub enum Req {
     SourceRect { comp: u64, layer: u64, t: Secs, extents: bool },
     /// `[[time, duration, comment, chapter, url], …]` for a layer, or the comp when `layer` is None.
     Markers { comp: u64, layer: Option<u64> },
+    /// A Source Text value as JSON `{doc, text, runs: [{len, style}], paras}` (styles as
+    /// `layer.setText` keys), or null for other properties.
+    Doc { comp: u64, layer: u64, path: String, t: Secs, pre: bool },
+}
+
+/// A text document as the style API's JSON.
+pub fn doc_json(d: &effectcraft_keyframe::TextDoc) -> String {
+    use effectcraft_keyframe::text_doc::{char_style_json, para_style_json};
+    let runs: Vec<serde_json::Value> = d.runs().iter().map(|r| serde_json::json!({"len": r.len, "style": char_style_json(&r.style)})).collect();
+    let paras: Vec<serde_json::Value> = d.paras().iter().map(para_style_json).collect();
+    serde_json::json!({"doc": d, "text": d.text, "runs": runs, "paras": paras}).to_string()
 }
 
 /// Plain data answer, converted to a JS value by the runtime.
@@ -291,6 +302,16 @@ impl<'a> Resolver<'a> {
                 let t = f64::from_bits(*t);
                 let v = if *pre { p.value_at(l.layer_time(Tick::from_seconds_f64(t))) } else { self.ctx_at(*comp, t)?.value(l, p) };
                 value_resp(&v, prop_dims(l, p))
+            }
+            Req::Doc { comp, layer, path, t, pre } => {
+                let (l, p) = self.prop(*comp, *layer, path)?;
+                let t = f64::from_bits(*t);
+                let v = if *pre { p.value_at(l.layer_time(Tick::from_seconds_f64(t))) } else { self.ctx_at(*comp, t)?.value(l, p) };
+                match v {
+                    Value::Text(d) => Resp::Str(doc_json(&d)),
+                    Value::Str(s) => Resp::Str(doc_json(&effectcraft_keyframe::TextDoc::plain(&s))),
+                    _ => Resp::Null,
+                }
             }
             Req::Xform { comp, layer, t } => {
                 let l = self.layer(*comp, *layer)?;

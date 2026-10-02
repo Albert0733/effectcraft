@@ -20,6 +20,10 @@ use crate::ops;
 /// `Renderer::comp_frame_cpu` returns it). `None` when something cannot run here (the caller
 /// renders on the CPU instead).
 pub(crate) fn render<'g>(e: &mut Enc<'g>, r: &Renderer, comp_id: ItemId, t: Tick) -> Option<GpuImage> {
+    // Region-of-interest frames are cropped on the CPU path.
+    if r.opts.roi.is_some() {
+        return None;
+    }
     let ctx = r.eval_ctx(comp_id, t)?;
     let s = r.opts.scale;
     let w = ((ctx.comp.width as f64 * s).round() as u32).max(1);

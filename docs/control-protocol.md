@@ -81,7 +81,21 @@ Element ids are stable, for example `tools.Selection`, `panel.Timeline`, `panel.
 `header.workspace.Animation`, `project.item.<id>`, `viewer.comp`, `viewer.handle.<layer>.<i>`,
 `timeline.layer.<id>.bar`, `timeline.layer.<id>.twirl`, `timeline.prop.<uid>.stopwatch`,
 `timeline.key.<uid>.<frame>`, `timeline.cti`, `effectControls.prop.<uid>.value` and
-`effects.item.<name>`. Use `ui.elements` to see what is on screen.
+`effects.item.<name>`. The Composition viewer adds `viewer.magnification`, `viewer.resolution`,
+`viewer.roi`, `viewer.grid`, `viewer.channel`, `viewer.exposure`, `viewer.snapshot`,
+`viewer.showSnapshot`, `viewer.fastPreviews` (their popup entries are `viewer.<menu>Item.<n>`),
+`viewer.ruler.top|left|origin`, `viewer.mask.<uid>.vertex.<i>`, `viewer.shapePath.<uid>.vertex.<i>`,
+`viewer.motionPath.<layer>.<key>[.in|.out]`, `viewer.freeTransform.handle.<i>` and
+`viewer.regionOfInterest`; the Graph Editor adds `timeline.graph.transformBox[.<i>]`,
+`timeline.graph.snap` and `timeline.graph.reference`. Use `ui.elements` to see what is on screen.
+
+Viewer state that agents drive headless too: `view.snapping`, `view.channel {channel, colorized?}`,
+`view.exposure {stops | delta}`, `view.resetExposure`, `view.takeSnapshot`, `view.showSnapshot`,
+`view.fastPreviewMode {mode}`, `view.setRegionOfInterest {rect}`, `view.addGuide`,
+`view.moveGuide`, `view.removeGuide`; editing: `shape.newPath` (Pen on shape layers),
+`mask.insertVertex`, `mask.convertVertex`, `mask.deleteVertices`, `path.freeTransform` (masks and
+shape paths by uid), `keys.setSpatialTangents` (motion-path handles) and `keys.transform` (Graph
+Editor transform box, timeline Alt-drag scaling).
 
 The MCP server's bridge mode (`effectcraft-cli mcp --bridge 9877`) is a thin client of this protocol;
 see [agents.md](agents.md).

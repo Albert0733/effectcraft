@@ -118,6 +118,10 @@ pub struct RenderSource {
     pub layer_cache: Arc<LayerCache>,
     /// GPU compositor on the viewer's device (Mercury GPU Acceleration), if available.
     pub gpu: Option<Gpu>,
+    /// Keep GPU frames on the GPU for the viewer (native egui-wgpu textures). Off by default:
+    /// Show Channel / exposure / region-of-interest drawing read the CPU frame texture, so GPU
+    /// frames are read back (the compositing still runs on the GPU).
+    pub gpu_display: bool,
 }
 
 pub struct Frames {
@@ -328,7 +332,7 @@ impl Worker {
         // The GPU leaves the frame in a texture for the viewer; otherwise (Software Only, no
         // adapter, or a frame the GPU cannot finish here) the CPU renders it.
         let gpu_frame = match (&job.src.gpu, r.active_accel()) {
-            (Some(g), Some(_)) => g.render_display(&r, job.comp, job.t),
+            (Some(g), Some(_)) if job.src.gpu_display => g.render_display(&r, job.comp, job.t),
             _ => None,
         };
         let ci = match gpu_frame {

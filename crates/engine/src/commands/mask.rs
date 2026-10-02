@@ -20,17 +20,36 @@ fn pts(v: Option<&Value>) -> Vec<[f64; 2]> {
     v.and_then(Value::as_array).map(|a| a.iter().filter_map(|p| pt(Some(p))).collect()).unwrap_or_default()
 }
 
-/// Find a mask group by uid, 1-based index or name.
-fn find_mask<'a>(masks: &'a mut PropGroup, key: &Value) -> Option<&'a mut PropGroup> {
-    let i = match key {
+/// Index of a mask group by uid, 1-based index or name.
+fn mask_index(masks: &PropGroup, key: &Value) -> Option<usize> {
+    match key {
         Value::Number(n) => {
             let n = n.as_u64()?;
-            masks.children.iter().position(|c| c.uid() == n).or_else(|| (n as usize).checked_sub(1).filter(|i| *i < masks.children.len()))?
+            masks.children.iter().position(|c| c.uid() == n).or_else(|| (n as usize).checked_sub(1).filter(|i| *i < masks.children.len()))
         }
-        Value::String(s) => masks.children.iter().position(|c| c.name() == s)?,
-        _ => return None,
-    };
+        Value::String(s) => masks.children.iter().position(|c| c.name() == s),
+        _ => None,
+    }
+}
+
+/// Find a mask group by uid, 1-based index or name.
+fn find_mask<'a>(masks: &'a mut PropGroup, key: &Value) -> Option<&'a mut PropGroup> {
+    let i = mask_index(masks, key)?;
     masks.children.get_mut(i)?.as_group_mut()
+}
+
+/// Whether a group holds an editable Bezier path (a mask, or a shape layer's Path item).
+pub(crate) fn is_path_group(g: &PropGroup) -> bool {
+    matches!(g.get("path").map(|p| &p.value), Some(KV::Path(_))) && (matches!(g.kind, effectcraft_project::GroupKind::Mask { .. }) || g.match_id == "path")
+}
+
+/// A mask (uid, 1-based index or name) or, by uid, a shape layer's Path item.
+pub(crate) fn path_group<'a>(props: &'a mut PropGroup, key: &Value) -> Option<&'a mut PropGroup> {
+    if let Some(i) = props.sub("masks").and_then(|m| mask_index(m, key)) {
+        return props.sub_mut("masks")?.children.get_mut(i)?.as_group_mut();
+    }
+    let uid = key.as_u64()?;
+    props.find_group_mut(uid).filter(|g| is_path_group(g))
 }
 
 /// Edit the mask path of (layer, mask) at the current time.
@@ -41,8 +60,7 @@ fn edit_path<T>(s: &mut Session, p: &Value, label: &str, f: impl FnOnce(&mut Sha
     s.edit(label, merge_p(p), |proj, _| {
         let l = layer_mut(proj, cid, lid)?;
         let lt = l.layer_time(t);
-        let masks = l.props.sub_mut("masks").ok_or_else(|| bad(label, "this layer has no masks"))?;
-        let g = find_mask(masks, &key).ok_or_else(|| bad(label, "no such mask"))?;
+        let g = path_group(&mut l.props, &key).ok_or_else(|| bad(label, "no such mask or shape path"))?;
         let uid = g.uid;
         let roto = super::paths::is_roto(g);
         let pr = g.get_mut("path").ok_or_else(|| bad(label, "mask has no path"))?;
@@ -186,7 +204,7 @@ fn edit_vertices(s: &mut Session, p: &Value, label: &str, f: impl Fn(&mut ShapeP
         for ((l, m), idx) in &groups {
             let Some(layer) = comp.layer_mut(effectcraft_project::LayerId(*l)) else { continue };
             let lt = layer.layer_time(t);
-            let Some(g) = layer.props.sub_mut("masks").and_then(|ms| ms.find_group_mut(*m)) else { continue };
+            let Some(g) = layer.props.find_group_mut(*m).filter(|g| is_path_group(g)) else { continue };
             let roto = super::paths::is_roto(g);
             let Some(pr) = g.get_mut("path") else { continue };
             let KV::Path(mut sp) = pr.value_at(lt) else { continue };
@@ -233,6 +251,93 @@ fn delete_vertices(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(n)
 }
 
+/// Convert Vertex tool: a corner vertex becomes smooth (tangents along its neighbours, a sixth
+/// of their distance each way), a smooth one becomes a corner (no tangents). `smooth` forces one.
+fn convert_vertex(s: &mut Session, p: &Value) -> Result<Value> {
+    let i = p.get("index").and_then(Value::as_u64).ok_or_else(|| bad("mask.convertVertex", "missing `index`"))? as usize;
+    let force = b_p(p, "smooth");
+    let (_, smooth) = edit_path(s, p, "Convert Vertex", |sp| {
+        let n = sp.vertices.len();
+        if i >= n {
+            return Err(bad("mask.convertVertex", "no such vertex"));
+        }
+        sp.in_tangents.resize(n, [0.0; 2]);
+        sp.out_tangents.resize(n, [0.0; 2]);
+        let is_smooth = sp.in_tangents[i] != [0.0; 2] || sp.out_tangents[i] != [0.0; 2];
+        let make_smooth = force.unwrap_or(!is_smooth);
+        if make_smooth {
+            let prev = if i > 0 {
+                Some(i - 1)
+            } else if sp.closed {
+                Some(n - 1)
+            } else {
+                None
+            };
+            let next = if i + 1 < n {
+                Some(i + 1)
+            } else if sp.closed {
+                Some(0)
+            } else {
+                None
+            };
+            let v = sp.vertices[i];
+            let a = prev.map(|j| sp.vertices[j]).unwrap_or(v);
+            let b = next.map(|j| sp.vertices[j]).unwrap_or(v);
+            let mut d = [(b[0] - a[0]) / 6.0, (b[1] - a[1]) / 6.0];
+            if d == [0.0, 0.0] {
+                d = [10.0, 0.0];
+            }
+            sp.out_tangents[i] = d;
+            sp.in_tangents[i] = [-d[0], -d[1]];
+        } else {
+            sp.in_tangents[i] = [0.0; 2];
+            sp.out_tangents[i] = [0.0; 2];
+        }
+        Ok(make_smooth)
+    })?;
+    Ok(json!({"smooth": smooth}))
+}
+
+/// Split cubic segment `i` (vertex i → i+1) at parameter `t`; the path keeps its shape.
+pub(crate) fn split_segment(sp: &mut ShapePath, seg: usize, t: f64) -> Option<usize> {
+    let n = sp.vertices.len();
+    let j = if seg + 1 < n {
+        seg + 1
+    } else if sp.closed && seg + 1 == n {
+        0
+    } else {
+        return None;
+    };
+    sp.in_tangents.resize(n, [0.0; 2]);
+    sp.out_tangents.resize(n, [0.0; 2]);
+    let p0 = sp.vertices[seg];
+    let p3 = sp.vertices[j];
+    let p1 = [p0[0] + sp.out_tangents[seg][0], p0[1] + sp.out_tangents[seg][1]];
+    let p2 = [p3[0] + sp.in_tangents[j][0], p3[1] + sp.in_tangents[j][1]];
+    let lerp = |a: [f64; 2], b: [f64; 2]| [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+    let (a, b, c) = (lerp(p0, p1), lerp(p1, p2), lerp(p2, p3));
+    let (d, e) = (lerp(a, b), lerp(b, c));
+    let m = lerp(d, e);
+    sp.out_tangents[seg] = [a[0] - p0[0], a[1] - p0[1]];
+    sp.in_tangents[j] = [c[0] - p3[0], c[1] - p3[1]];
+    let at = seg + 1;
+    sp.vertices.insert(at, m);
+    sp.in_tangents.insert(at, [d[0] - m[0], d[1] - m[1]]);
+    sp.out_tangents.insert(at, [e[0] - m[0], e[1] - m[1]]);
+    Some(at)
+}
+
+/// Add Vertex tool: insert a vertex on segment `segment` at parameter `t` (default 0.5).
+fn insert_vertex(s: &mut Session, p: &Value) -> Result<Value> {
+    let seg =
+        p.get("segment").and_then(Value::as_u64).ok_or_else(|| bad("mask.insertVertex", "missing `segment` (index of the segment's first vertex)"))? as usize;
+    let t = super::f_p(p, "t").unwrap_or(0.5).clamp(0.0, 1.0);
+    let (_, lid) = layer_p(s, p, "mask.insertVertex")?;
+    let (uid, i) = edit_path(s, p, "Add Vertex", |sp| split_segment(sp, seg, t).ok_or_else(|| bad("mask.insertVertex", "no such segment")))?;
+    s.state.selected_vertices = vec![VertexRef { layer: lid, mask: uid, index: i }];
+    Ok(json!(i))
+}
+
 fn remove_masks(s: &mut Session, p: &Value, all: bool) -> Result<Value> {
     let (cid, lid) = layer_p(s, p, "mask.remove")?;
     let key = p.get("mask").cloned();
@@ -263,6 +368,8 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!("mask.selectVertices", "Select Mask Vertices", [], None, "{vertices: [{layer, mask, index}], add?, toggle?}", has_comp, select_vertices),
         cmd!("mask.moveVertices", "Move Mask Vertices", [], None, "{vertices?: [{layer, mask, index}], delta: [dx,dy], merge?}", has_vertices, move_vertices),
         cmd!("mask.deleteVertices", "Delete Mask Vertices", [], None, "{vertices?}", has_vertices, delete_vertices),
+        cmd!("mask.convertVertex", "Convert Vertex", [], None, "{layer?, mask: uid (mask or shape Path item), index, smooth?}", has_comp, convert_vertex),
+        cmd!("mask.insertVertex", "Add Vertex", [], None, "{layer?, mask: uid (mask or shape Path item), segment, t?: 0..1}", has_comp, insert_vertex),
         cmd!("mask.remove", "Remove Mask", [], None, "{layer?, mask}", has_layers, |s, p| remove_masks(s, p, false)),
         cmd!("mask.removeAll", "Remove All Masks", [], None, "{layer?}", has_layers, |s, p| remove_masks(s, p, true)),
     ]
