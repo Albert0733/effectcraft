@@ -1,5 +1,5 @@
 //! Modal dialogs: About (with community links), New Composition / Composition Settings, Solid
-//! Settings and the command palette.
+//! Settings and the command palette (Camera/Light Settings live in `dialogs_3d`).
 
 use egui::{Align2, Color32, Rect, Sense, pos2, vec2};
 use serde_json::json;
@@ -34,6 +34,8 @@ pub struct DialogState {
     pub solid_size: [u32; 2],
     pub palette_query: String,
     pub palette_sel: usize,
+    pub camera: super::dialogs_3d::CameraDraft,
+    pub light: super::dialogs_3d::LightDraft,
 }
 
 pub fn open_new_comp(app: &mut EffectcraftApp) {
@@ -72,7 +74,7 @@ pub fn open_new_solid(app: &mut EffectcraftApp) -> Result<(), String> {
     Ok(())
 }
 
-fn modal(ctx: &egui::Context, title: &str, size: egui::Vec2, t: &Tokens, body: impl FnOnce(&mut egui::Ui)) {
+pub(crate) fn modal(ctx: &egui::Context, title: &str, size: egui::Vec2, t: &Tokens, body: impl FnOnce(&mut egui::Ui)) {
     // Dim the app.
     let screen = ctx.content_rect();
     ctx.layer_painter(egui::LayerId::new(egui::Order::Middle, egui::Id::new("modal-dim"))).rect_filled(screen, 0.0, Color32::from_black_alpha(120));
@@ -95,6 +97,8 @@ pub fn show(app: &mut EffectcraftApp, ctx: &egui::Context) {
         Dialog::NewComp | Dialog::CompSettings => comp_settings(app, ctx, &t, d == Dialog::CompSettings),
         Dialog::SolidSettings => solid(app, ctx, &t),
         Dialog::CommandPalette => palette(app, ctx, &t),
+        Dialog::CameraSettings => super::dialogs_3d::camera(app, ctx, &t),
+        Dialog::LightSettings => super::dialogs_3d::light(app, ctx, &t),
     }
 }
 
@@ -262,7 +266,7 @@ fn comp_settings(app: &mut EffectcraftApp, ctx: &egui::Context, t: &Tokens, exis
     }
 }
 
-fn ui_enter(ctx: &egui::Context) -> bool {
+pub(crate) fn ui_enter(ctx: &egui::Context) -> bool {
     !ctx.egui_wants_keyboard_input() && ctx.input(|i| i.key_pressed(egui::Key::Enter))
 }
 

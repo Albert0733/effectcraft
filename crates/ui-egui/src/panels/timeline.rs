@@ -42,7 +42,6 @@ struct Cols {
     label: f32,
     num: f32,
     name: f32,
-    name_w: f32,
     switches: f32,
     mode: f32,
     trkmat: f32,
@@ -61,7 +60,7 @@ fn cols(x0: f32, width: f32, show_modes: bool) -> Cols {
     let mode = switches + SW * 8.0 + 6.0;
     let trkmat = mode + if show_modes { 92.0 } else { 0.0 };
     let parent = trkmat + if show_modes { 112.0 } else { 0.0 };
-    Cols { av, label, num, name, name_w, switches, mode, trkmat, parent, end: parent + 116.0 }
+    Cols { av, label, num, name, switches, mode, trkmat, parent, end: parent + 116.0 }
 }
 
 /// Timeline horizontal mapping.
@@ -139,6 +138,10 @@ fn prop_visible(p: &Property, layer: &Layer) -> bool {
         return false;
     }
     if p.two_d_only && layer.is_3d() {
+        return false;
+    }
+    // One-node cameras (and lights with auto-orient off) have no Point of Interest.
+    if p.match_id == "poi" && (layer.is_camera() || layer.is_light()) && layer.auto_orient != effectcraft_engine::project::AutoOrient::TowardsPointOfInterest {
         return false;
     }
     true
@@ -785,10 +788,8 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     if lin.hovered() || lout.hovered() || lin.dragged() || lout.dragged() {
                         ctx.set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
                     }
-                    if body.clicked() || body.drag_started() {
-                        if !is_sel {
-                            actions.push(("layer.select".into(), json!({"layers": [layer.id.0], "add": ui.input(|i| i.modifiers.shift)})));
-                        }
+                    if (body.clicked() || body.drag_started()) && !is_sel {
+                        actions.push(("layer.select".into(), json!({"layers": [layer.id.0], "add": ui.input(|i| i.modifiers.shift)})));
                     }
                     layer_context_menu(&body, layer, &mut actions);
                     let drag_key = format!("bar-{}", layer.id.0);
@@ -944,7 +945,10 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     }
                 }
                 let name_x = indent + 12.0;
-                let pname = if prop.has_expression() { format!("{}  =", prop.name) } else { prop.name.clone() };
+                // 3D layers show Rotation as "Z Rotation" next to X/Y Rotation.
+                let is_tr_rot = layer.transform().and_then(|t| t.get("rotation")).is_some_and(|r| r.uid == prop.uid);
+                let base = if is_tr_rot && prop.name == "Rotation" && layer.is_3d() { "Z Rotation".to_string() } else { prop.name.clone() };
+                let pname = if prop.has_expression() { format!("{base}  =") } else { base };
                 lp.text(
                     pos2(name_x, cy),
                     Align2::LEFT_CENTER,
@@ -1049,7 +1053,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         actions.push(("keys.select".into(), json!({"keys": []})));
     }
     if let (true, Some(origin), Some(cur)) =
-        (empty.dragged(), empty.interact_pointer_pos().map(|_| ctx.input(|i| i.pointer.press_origin())).flatten(), empty.interact_pointer_pos())
+        (empty.dragged(), empty.interact_pointer_pos().and_then(|_| ctx.input(|i| i.pointer.press_origin())), empty.interact_pointer_pos())
     {
         let br = Rect::from_two_pos(origin, cur);
         gp.rect_filled(br, 0.0, t.accent.gamma_multiply(0.12));

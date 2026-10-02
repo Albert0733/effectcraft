@@ -121,6 +121,10 @@ fn reveal(app: &mut EffectcraftApp, kind: &str) {
 /// Execute a UI or engine command by id.
 pub fn invoke(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, params: Value) -> Result<Value, String> {
     let now = ctx.input(|i| i.time);
+    // New Camera/Light and Camera/Light Settings without parameters open their dialogs.
+    if crate::panels::dialogs_3d::route(app, id, &params)? {
+        return Ok(Value::Null);
+    }
     if let Some(rest) = id.strip_prefix("window.panel.") {
         let p = PanelKind::from_name(rest).ok_or_else(|| format!("unknown panel `{rest}`"))?;
         app.show_panel(p);
