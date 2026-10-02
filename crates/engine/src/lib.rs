@@ -11,6 +11,7 @@
 pub mod commands;
 pub mod demo;
 pub mod links;
+pub mod menus;
 
 use std::sync::Arc;
 
@@ -110,15 +111,57 @@ pub struct EditorState {
     pub snapping: bool,
     /// Last applied effect id (Effect ▸ last effect).
     pub last_effect: Option<String>,
+    /// Viewer region of interest `[x, y, w, h]` in comp pixels (Composition ▸ Crop Comp to Region
+    /// of Interest).
+    #[serde(default)]
+    pub region_of_interest: Option<[f64; 4]>,
+    /// Keyframe clipboard (Edit ▸ Copy with keys selected; Paste / Paste Reversed Keyframes).
+    #[serde(skip)]
+    pub key_clipboard: Vec<KeyClip>,
+    /// Property-link clipboard (Edit ▸ Copy with Property Links / Copy Expression Only).
+    #[serde(skip)]
+    pub link_clipboard: Option<LinkClip>,
+    /// File ▸ Interpret Footage ▸ Remember Interpretation.
+    #[serde(skip)]
+    pub interpretation: Option<effectcraft_project::Footage>,
+}
+
+/// Copied keyframes of one property, addressed by its match path (`transform/position`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct KeyClip {
+    pub path: String,
+    pub keys: Vec<effectcraft_keyframe::Keyframe>,
+}
+
+/// What Copy with Property Links / Copy Expression Only put on the clipboard.
+#[derive(Clone, Debug, PartialEq)]
+pub enum LinkClip {
+    /// Expressions that link back to the source properties: (match path, expression text).
+    Links { relative: bool, links: Vec<(String, String)> },
+    /// Expressions only: (match path, expression).
+    Expressions(Vec<(String, effectcraft_project::Expression)>),
 }
 
 /// Events for frontends (drained each frame).
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub enum Event {
-    ProjectChanged { revision: u64 },
-    Toast { message: String, error: bool },
+    ProjectChanged {
+        revision: u64,
+    },
+    Toast {
+        message: String,
+        error: bool,
+    },
     OpenComp(ItemId),
     OpenUrl(String),
+    /// A frontend-only command (viewer zoom, panels, dialogs…) ran: the UI performs it. Headless
+    /// sessions ignore these.
+    Frontend {
+        command: String,
+        params: Value,
+    },
+    /// Drop cached frames / renders (Edit ▸ Purge).
+    PurgeCaches,
 }
 
 pub struct Session {
@@ -324,6 +367,8 @@ impl Session {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_menu_cmds;
 
 /// Font families available to text layers (bundled + scanned system fonts).
 pub fn text_families() -> Vec<String> {

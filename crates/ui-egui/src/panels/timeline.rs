@@ -42,6 +42,7 @@ struct Cols {
     label: f32,
     num: f32,
     name: f32,
+    #[allow(dead_code)]
     name_w: f32,
     switches: f32,
     mode: f32,
@@ -209,6 +210,36 @@ fn build_rows(app: &EffectcraftApp, comp: &Comp) -> Vec<Row> {
                                 push_group(&mut rows, l, g, 2, &tl.open_groups);
                             }
                         }
+                    }
+                }
+                "props" => {
+                    // Animation ▸ Reveal Properties…: the engine picked the uids.
+                    fn groups_in<'a>(g: &'a PropGroup, set: &std::collections::BTreeSet<u64>, out: &mut Vec<&'a PropGroup>) {
+                        for sg in g.groups() {
+                            if set.contains(&sg.uid) {
+                                out.push(sg);
+                            } else {
+                                groups_in(sg, set, out);
+                            }
+                        }
+                    }
+                    let mut groups = vec![];
+                    groups_in(&l.props, &tl.reveal_props, &mut groups);
+                    for g in groups {
+                        let open = tl.open_groups.contains(&g.uid);
+                        rows.push(Row {
+                            layer: l.id,
+                            depth: 1,
+                            kind: RowKind::Group { uid: g.uid, name: g.name.clone(), open, has_children: !g.children.is_empty(), fx: None },
+                        });
+                        if open {
+                            push_group(&mut rows, l, g, 2, &tl.open_groups);
+                        }
+                    }
+                    let mut found = vec![];
+                    collect_props(&l.props, &mut found, &|p| prop_visible(p, l) && tl.reveal_props.contains(&p.uid));
+                    for uid in found {
+                        rows.push(Row { layer: l.id, depth: 1, kind: RowKind::Prop { uid } });
                     }
                 }
                 _ => {
@@ -439,7 +470,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let fd = comp.frame_duration().seconds();
     let cy0 = ruler.min.y + 11.0;
     let mut run: Option<(i64, i64)> = None;
-    let mut draw_run = |a: i64, b: i64| {
+    let draw_run = |a: i64, b: i64| {
         let x0 = tm.x(a as f64 * fd);
         let x1 = tm.x((b + 1) as f64 * fd);
         p.rect_filled(Rect::from_min_max(pos2(x0, cy0), pos2(x1, cy0 + 2.5)), 0.0, t.cache_green);
@@ -785,10 +816,8 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     if lin.hovered() || lout.hovered() || lin.dragged() || lout.dragged() {
                         ctx.set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
                     }
-                    if body.clicked() || body.drag_started() {
-                        if !is_sel {
-                            actions.push(("layer.select".into(), json!({"layers": [layer.id.0], "add": ui.input(|i| i.modifiers.shift)})));
-                        }
+                    if (body.clicked() || body.drag_started()) && !is_sel {
+                        actions.push(("layer.select".into(), json!({"layers": [layer.id.0], "add": ui.input(|i| i.modifiers.shift)})));
                     }
                     layer_context_menu(&body, layer, &mut actions);
                     let drag_key = format!("bar-{}", layer.id.0);
@@ -1049,7 +1078,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         actions.push(("keys.select".into(), json!({"keys": []})));
     }
     if let (true, Some(origin), Some(cur)) =
-        (empty.dragged(), empty.interact_pointer_pos().map(|_| ctx.input(|i| i.pointer.press_origin())).flatten(), empty.interact_pointer_pos())
+        (empty.dragged(), empty.interact_pointer_pos().and_then(|_| ctx.input(|i| i.pointer.press_origin())), empty.interact_pointer_pos())
     {
         let br = Rect::from_two_pos(origin, cur);
         gp.rect_filled(br, 0.0, t.accent.gamma_multiply(0.12));

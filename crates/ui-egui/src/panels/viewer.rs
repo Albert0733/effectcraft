@@ -55,13 +55,43 @@ pub fn last_fit(ctx: &egui::Context) -> f32 {
 /// What a drag in the viewer is doing.
 #[derive(Clone, Debug)]
 enum Gesture {
-    Move { layers: Vec<(LayerId, [f64; 3], Mat3)>, start: [f64; 2] },
-    Scale { layer: LayerId, anchor_screen: Pos2, start_scale: [f64; 3], start_local: [f64; 2], inv: Mat3, uniform: bool },
-    Rotate { layer: LayerId, center: Pos2, start_angle: f64, start_rot: f64 },
-    Anchor { layer: LayerId, start_anchor: [f64; 3], start_pos: [f64; 3], start: [f64; 2], inv: Mat3, l2p: Mat3 },
-    Pan { start_pan: [f32; 2] },
-    Create { tool: Tool, start: [f64; 2] },
-    Marquee { start: Pos2 },
+    Move {
+        layers: Vec<(LayerId, [f64; 3], Mat3)>,
+        start: [f64; 2],
+    },
+    #[allow(dead_code)]
+    Scale {
+        layer: LayerId,
+        anchor_screen: Pos2,
+        start_scale: [f64; 3],
+        start_local: [f64; 2],
+        inv: Mat3,
+        uniform: bool,
+    },
+    Rotate {
+        layer: LayerId,
+        center: Pos2,
+        start_angle: f64,
+        start_rot: f64,
+    },
+    Anchor {
+        layer: LayerId,
+        start_anchor: [f64; 3],
+        start_pos: [f64; 3],
+        start: [f64; 2],
+        inv: Mat3,
+        l2p: Mat3,
+    },
+    Pan {
+        start_pan: [f32; 2],
+    },
+    Create {
+        tool: Tool,
+        start: [f64; 2],
+    },
+    Marquee {
+        start: Pos2,
+    },
 }
 
 const HANDLE: f32 = 7.0;
@@ -168,7 +198,8 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let bar_h = 30.0;
     let bar = Rect::from_min_max(pos2(rect.min.x, rect.max.y - bar_h), rect.max);
     let area = Rect::from_min_max(pos2(rect.min.x, nav.max.y), pos2(rect.max.x, bar.min.y));
-    p.rect_filled(area, 0.0, t.pasteboard);
+    let pasteboard = app.ui.viewer.pasteboard.map(|[r, g, b]| Color32::from_rgb(r, g, b)).unwrap_or(t.pasteboard);
+    p.rect_filled(area, 0.0, pasteboard);
 
     let (cw, ch) = (comp.width as f32, comp.height as f32);
     let fit = ((area.width() - 40.0) / cw).min((area.height() - 40.0) / ch).max(0.01);
@@ -239,6 +270,24 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
             painter.line_segment([pos2(comp_rect.min.x, gy), pos2(comp_rect.max.x, gy)], Stroke::new(1.0, Color32::from_rgba_unmultiplied(120, 160, 255, 50)));
             gy += step;
         }
+    }
+
+    // Comp guides (View ▸ Show Guides) and the region of interest.
+    if app.ui.viewer.guides {
+        let stroke = Stroke::new(1.0, Color32::from_rgb(0x3c, 0xc8, 0xf0));
+        for g in &comp.guides {
+            if g.vertical {
+                let x = comp_rect.min.x + g.position as f32 * zoom;
+                painter.line_segment([pos2(x, area.min.y), pos2(x, area.max.y)], stroke);
+            } else {
+                let y = comp_rect.min.y + g.position as f32 * zoom;
+                painter.line_segment([pos2(area.min.x, y), pos2(area.max.x, y)], stroke);
+            }
+        }
+    }
+    if let Some([rx, ry, rw, rh]) = app.session.state.region_of_interest {
+        let r = Rect::from_min_size(comp_rect.min + vec2(rx as f32 * zoom, ry as f32 * zoom), vec2(rw as f32 * zoom, rh as f32 * zoom));
+        painter.rect_stroke(r, 0.0, Stroke::new(1.0, Color32::WHITE), StrokeKind::Middle);
     }
 
     // Overlays + interaction.
@@ -491,14 +540,14 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     let _ = app.session.execute("prop.set", json!({"layer": lid.0, "path": "transform/position", "value": v, "merge": merge}));
                 }
             }
-            Gesture::Scale { layer, start_scale, start_local, inv, uniform, .. } => {
+            Gesture::Scale { layer, start_scale, start_local, inv, .. } => {
                 let lp = inv.apply(gv2(cpt[0], cpt[1]));
                 // Local point relative to the anchor in *unscaled* layer space.
                 let a = comp.layer(layer).and_then(|l| l.transform().map(|tr| ectx.v3(l, tr, "anchor", [0.0; 3]))).unwrap_or([0.0; 3]);
                 let cur = [lp.x - a[0], lp.y - a[1]];
                 let fx = if start_local[0].abs() > 1e-6 { cur[0] / start_local[0] } else { 1.0 };
                 let fy = if start_local[1].abs() > 1e-6 { cur[1] / start_local[1] } else { 1.0 };
-                let (fx, fy) = if mods.shift || uniform && start_local[0].abs() > 1e-6 && start_local[1].abs() > 1e-6 && mods.shift {
+                let (fx, fy) = if mods.shift {
                     let f = (fx + fy) / 2.0;
                     (f, f)
                 } else {
@@ -847,7 +896,16 @@ fn bottom_bar(app: &mut EffectcraftApp, ui: &mut egui::Ui, bar: Rect, zoom: f32,
         app.ui.viewer.res = Resolution::ALL[i];
     }
     x = r.max.x + 6.0;
-    if tog(ui, &mut app.auto, &mut x, Icon::Region, false, "roi", "Region of Interest") {}
+    let has_roi = app.session.state.region_of_interest.is_some();
+    if tog(ui, &mut app.auto, &mut x, Icon::Region, has_roi, "roi", "Region of Interest") {
+        // Toggle a centred region of interest (Composition ▸ Crop Comp to Region of Interest).
+        let rect = if has_roi {
+            serde_json::Value::Null
+        } else {
+            json!([comp.width as f64 / 4.0, comp.height as f64 / 4.0, comp.width as f64 / 2.0, comp.height as f64 / 2.0])
+        };
+        let _ = app.session.execute("view.setRegionOfInterest", json!({"rect": rect}));
+    }
     if tog(ui, &mut app.auto, &mut x, Icon::Checker, app.ui.viewer.transparency_grid, "transparency", "Toggle Transparency Grid") {
         app.ui.viewer.transparency_grid = !app.ui.viewer.transparency_grid;
     }

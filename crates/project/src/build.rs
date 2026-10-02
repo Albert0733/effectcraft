@@ -501,6 +501,7 @@ pub fn layer(project: &mut Project, comp: &Comp, name: &str, source: LayerSource
         track_matte: None,
         parent: None,
         markers: vec![],
+        markers_locked: false,
         auto_orient: Default::default(),
         props: root,
     }

@@ -3,6 +3,7 @@
 pub mod dialogs;
 pub mod effect_controls;
 pub mod effects_presets;
+pub mod forms;
 pub mod info;
 pub mod misc;
 pub mod project;

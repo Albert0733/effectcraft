@@ -105,6 +105,25 @@ fn main() {
             }
             continue;
         }
+        // Pointer input straight into the harness (menus and popups need real input events):
+        // {"method":"pointer","params":{"x":237,"y":12,"click":true}}
+        if method == "pointer" {
+            let pos = egui::pos2(params["x"].as_f64().unwrap_or(0.0) as f32, params["y"].as_f64().unwrap_or(0.0) as f32);
+            harness.input_mut().events.push(egui::Event::PointerMoved(pos));
+            if params["click"].as_bool() == Some(true) {
+                for pressed in [true, false] {
+                    harness.input_mut().events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: Default::default(),
+                    });
+                }
+            }
+            settle(&mut harness, 0.3);
+            println!("{}", json!({"method": method, "reply": {"ok": true}}));
+            continue;
+        }
         let (reply_tx, reply_rx) = mpsc::channel();
         let _ = tx.send(ControlRequest { method: method.clone(), params, reply: reply_tx });
         // Requests are answered on a later frame (some wait for input to be processed).

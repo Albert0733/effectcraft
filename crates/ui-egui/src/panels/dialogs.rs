@@ -4,9 +4,10 @@
 use egui::{Align2, Color32, Rect, Sense, pos2, vec2};
 use serde_json::json;
 
+pub use super::forms::{Field, form, info, open_form};
 use crate::icons::{self, Icon};
 use crate::theme::Tokens;
-use crate::{Dialog, EffectcraftApp, widgets};
+use crate::{Dialog, EffectcraftApp};
 
 #[derive(Clone, Debug)]
 pub struct CompDraft {
@@ -34,6 +35,12 @@ pub struct DialogState {
     pub solid_size: [u32; 2],
     pub palette_query: String,
     pub palette_sel: usize,
+    /// Settings dialog page id (`general`, `appearance`…).
+    pub settings_page: String,
+    /// The open parameter form.
+    pub form: super::forms::Form,
+    /// Message box (title, body).
+    pub info: (String, String),
 }
 
 pub fn open_new_comp(app: &mut EffectcraftApp) {
@@ -72,7 +79,7 @@ pub fn open_new_solid(app: &mut EffectcraftApp) -> Result<(), String> {
     Ok(())
 }
 
-fn modal(ctx: &egui::Context, title: &str, size: egui::Vec2, t: &Tokens, body: impl FnOnce(&mut egui::Ui)) {
+pub(crate) fn modal(ctx: &egui::Context, title: &str, size: egui::Vec2, t: &Tokens, body: impl FnOnce(&mut egui::Ui)) {
     // Dim the app.
     let screen = ctx.content_rect();
     ctx.layer_painter(egui::LayerId::new(egui::Order::Middle, egui::Id::new("modal-dim"))).rect_filled(screen, 0.0, Color32::from_black_alpha(120));
@@ -95,6 +102,11 @@ pub fn show(app: &mut EffectcraftApp, ctx: &egui::Context) {
         Dialog::NewComp | Dialog::CompSettings => comp_settings(app, ctx, &t, d == Dialog::CompSettings),
         Dialog::SolidSettings => solid(app, ctx, &t),
         Dialog::CommandPalette => palette(app, ctx, &t),
+        Dialog::Settings => super::forms::show_settings(app, ctx, &t),
+        Dialog::Shortcuts => super::forms::show_shortcuts(app, ctx, &t),
+        Dialog::Form => super::forms::show_form(app, ctx, &t),
+        Dialog::Info => super::forms::show_info(app, ctx, &t),
+        Dialog::ViewOptions => super::forms::show_view_options(app, ctx, &t),
     }
 }
 

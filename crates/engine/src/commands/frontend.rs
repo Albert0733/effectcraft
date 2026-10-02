@@ -1,0 +1,77 @@
+//! Frontend-only commands: viewer zoom/resolution/overlays, panels, workspaces, dialogs and app
+//! chrome. They live in the registry so every menu entry is a command (menus, shortcuts, the
+//! control channel and MCP all see them); running one emits [`crate::Event::Frontend`] and the UI
+//! performs it. Headless sessions accept and ignore them.
+
+use super::{CommandSpec, always, frontend, has_comp, has_layers};
+use crate::cmd;
+
+macro_rules! fe {
+    ($id:literal, $label:literal, [$($m:literal),*], $sc:expr, $params:literal, $en:expr) => {
+        cmd!($id, $label, [$($m),*], $sc, $params, $en, |s, p| frontend(s, $id, p))
+    };
+}
+
+pub fn specs() -> Vec<CommandSpec> {
+    vec![
+        // Application.
+        fe!("app.about", "About EffectCraft...", [], None, "{}", always),
+        fe!(
+            "app.settings",
+            "Settings...",
+            [],
+            None,
+            "{page?: general|startup|project|composition|previews|appearance|grids|labels|type|import|export|audio|disk|memory|video|3d|scripting}",
+            always
+        ),
+        fe!("app.hide", "Hide EffectCraft", [], None, "{}", always),
+        fe!("app.quit", "Quit EffectCraft", [], Some("Cmd+Q"), "{}", always),
+        fe!("app.commandPalette", "Quick Apply...", ["Edit"], Some("Cmd+Shift+Space"), "{query?}", always),
+        fe!("app.keyboardShortcuts", "Keyboard Shortcuts", ["Edit"], Some("Cmd+Alt+'"), "{}", always),
+        fe!("app.templates", "Templates", [], None, "{kind: renderSettings|outputModule}", always),
+        fe!("app.find", "Find", ["File"], Some("Cmd+F"), "{query?}", always),
+        // Preview.
+        fe!("playback.toggle", "Play Current Preview", ["Composition", "Preview"], Some("Space"), "{}", has_comp),
+        fe!("playback.cacheWhenIdle", "Cache Frames When Idle", ["Composition", "Preview"], None, "{value?}", always),
+        // Viewer.
+        fe!("view.zoomIn", "Zoom In", ["View"], Some("."), "{}", has_comp),
+        fe!("view.zoomOut", "Zoom Out", ["View"], Some(","), "{}", has_comp),
+        fe!("view.res.full", "Full", ["View", "Resolution"], Some("Cmd+J"), "{}", has_comp),
+        fe!("view.res.half", "Half", ["View", "Resolution"], Some("Cmd+Shift+J"), "{}", has_comp),
+        fe!("view.res.third", "Third", ["View", "Resolution"], None, "{}", has_comp),
+        fe!("view.res.quarter", "Quarter", ["View", "Resolution"], Some("Cmd+Alt+Shift+J"), "{}", has_comp),
+        fe!("view.rulers", "Show Rulers", ["View"], Some("Cmd+R"), "{value?}", always),
+        fe!("view.panelBackground", "Panel Background Color", [], None, "{color?: black|darkGray|mediumGray|lightGray|white|custom|#hex, pick?: true}", always),
+        fe!("view.guides", "Show Guides", ["View"], Some("Cmd+;"), "{value?}", always),
+        fe!("view.snapToGuides", "Snap to Guides", ["View"], Some("Cmd+Shift+;"), "{value?}", always),
+        fe!("view.lockGuides", "Lock Guides", ["View"], Some("Cmd+Alt+Shift+;"), "{value?}", always),
+        fe!("view.grid", "Show Grid", ["View"], Some("Cmd+'"), "{value?}", always),
+        fe!("view.snapToGrid", "Snap to Grid", ["View"], Some("Cmd+Shift+'"), "{value?}", always),
+        fe!("view.options", "View Options...", ["View"], Some("Cmd+Alt+U"), "{}", has_comp),
+        fe!("view.layerControls", "Show Layer Controls", ["View"], Some("Cmd+Shift+H"), "{value?}", always),
+        fe!("view.fullScreen", "Enter Full Screen", ["View"], Some("Ctrl+Cmd+F"), "{}", always),
+        // Panels and workspaces.
+        fe!(
+            "window.panel",
+            "Show Panel",
+            [],
+            None,
+            "{panel: project|effectControls|composition|layer|timeline|info|audio|preview|effectsPresets|properties|character|paragraph|align|tracker|wiggler|smoother|motionSketch|paint|brushes|renderQueue|flowchart|history|markers|tools}",
+            always
+        ),
+        fe!(
+            "window.workspace",
+            "Workspace",
+            [],
+            None,
+            "{name: Default|Standard|Small Screen|Animation|Effects|Motion Tracking|Paint|Text|Minimal|All Panels}",
+            always
+        ),
+        fe!("window.resetWorkspace", "Reset to Saved Layout", ["Window", "Workspace"], None, "{}", always),
+        fe!("comp.flowchart", "Composition Flowchart", ["Composition"], Some("Cmd+F11"), "{}", always),
+        fe!("comp.miniFlowchart", "Composition Mini-Flowchart", ["Composition"], None, "{}", has_comp),
+        fe!("layer.openLayer", "Open Layer", ["Layer"], None, "{layer?}", has_layers),
+        fe!("effect.manage", "Manage Effects...", ["Effect"], None, "{}", always),
+        fe!("anim.browsePresets", "Browse Presets...", ["Animation"], None, "{}", always),
+    ]
+}
