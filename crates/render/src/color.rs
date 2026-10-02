@@ -73,10 +73,47 @@ impl Pipe {
         Conversion::new(ws, self.linear, ColorSpace::Srgb, false)
     }
 
+    /// One pixel clamped and quantised to the bit depth.
+    pub fn quantize_px(&self, mut p: [f32; 4]) -> [f32; 4] {
+        if let Some(l) = self.levels {
+            quantize_px(&mut p, l, 1.0 / l);
+        }
+        p
+    }
+
     /// Clamp and quantise to the bit depth (no-op in 32 bpc).
     pub fn quantize(&self, img: &mut Image) {
-        if let Some(l) = self.levels {
-            quantize(img, l);
+        self.quantize_region(img, Region::Full);
+    }
+
+    /// Clamp and quantise the pixels of `region` (no-op in 32 bpc). Pixels outside it must
+    /// already be quantised (checked in debug builds).
+    pub fn quantize_region(&self, img: &mut Image, region: Region) {
+        let Some(l) = self.levels else { return };
+        let r = match region {
+            Region::Empty => None,
+            Region::Full => Some(PxRect { x0: 0, y0: 0, x1: img.width, y1: img.height }),
+            Region::Rect(r) => Some(r.clamp_to(img.width, img.height)),
+        };
+        if let Some(r) = r {
+            quantize_rect(img, r, l);
+        }
+        #[cfg(debug_assertions)]
+        if img.data.len() <= 1 << 20 {
+            let inv = 1.0 / l;
+            let bad = img.data.iter().position(|p| {
+                let q = |v: f32, hi: f32| (v.clamp(0.0, hi) * l).round() * inv;
+                let a = q(p[3], 1.0);
+                (p[3] - a).abs() > 1e-5 || (0..3).any(|c| (p[c] - q(p[c], a)).abs() > 1e-5)
+            });
+            if let Some(i) = bad {
+                panic!(
+                    "pixel ({}, {}) outside the quantised region {region:?} is not quantised: {:?}",
+                    i as u32 % img.width,
+                    i as u32 / img.width,
+                    img.data[i]
+                );
+            }
         }
     }
 
@@ -89,14 +126,67 @@ impl Pipe {
     }
 }
 
+/// A pixel rectangle `[x0, x1) × [y0, y1)`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PxRect {
+    pub x0: u32,
+    pub y0: u32,
+    pub x1: u32,
+    pub y1: u32,
+}
+
+impl PxRect {
+    /// The pixels covering the real-valued box `[x0, x1] × [y0, y1]` grown by `margin`.
+    pub fn covering(x0: f64, y0: f64, x1: f64, y1: f64, margin: f64) -> Option<PxRect> {
+        if !(x0.is_finite() && y0.is_finite() && x1.is_finite() && y1.is_finite()) {
+            return None;
+        }
+        let c = |v: f64| v.clamp(0.0, u32::MAX as f64) as u32;
+        Some(PxRect { x0: c((x0 - margin).floor()), y0: c((y0 - margin).floor()), x1: c((x1 + margin).ceil()), y1: c((y1 + margin).ceil()) })
+    }
+    fn clamp_to(self, w: u32, h: u32) -> PxRect {
+        let (x1, y1) = (self.x1.min(w), self.y1.min(h));
+        PxRect { x0: self.x0.min(x1), y0: self.y0.min(y1), x1, y1 }
+    }
+}
+
+/// The part of a canvas that a drawing step may have changed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Region {
+    Empty,
+    Rect(PxRect),
+    Full,
+}
+
 /// Clamp premultiplied pixels to 0..1 (colour ≤ alpha) and round to `levels` steps.
 pub fn quantize(img: &mut Image, levels: f32) {
+    quantize_rect(img, PxRect { x0: 0, y0: 0, x1: img.width, y1: img.height }, levels);
+}
+
+/// Clamp (colour ≤ alpha ≤ 1, NaN → 0) and round half up; values are non-negative after the
+/// clamp, so the integer conversion rounds like `round()` and vectorises.
+#[allow(clippy::manual_clamp)] // max/min map NaN to 0; clamp would keep NaN
+#[inline(always)]
+fn quantize_px(p: &mut [f32; 4], levels: f32, inv: f32) {
+    let a = (p[3].max(0.0).min(1.0) * levels + 0.5) as u32 as f32 * inv;
+    let hi = [a, a, a, a];
+    for c in 0..3 {
+        p[c] = (p[c].max(0.0).min(hi[c]) * levels + 0.5) as u32 as f32 * inv;
+    }
+    p[3] = a;
+}
+
+/// [`quantize`] restricted to a rectangle (already clamped to the image), row-parallel.
+fn quantize_rect(img: &mut Image, r: PxRect, levels: f32) {
+    if r.x0 >= r.x1 || r.y0 >= r.y1 {
+        return;
+    }
     let inv = 1.0 / levels;
-    img.data.par_iter_mut().for_each(|p| {
-        let a = (p[3].clamp(0.0, 1.0) * levels).round() * inv;
-        p[3] = a;
-        for c in 0..3 {
-            p[c] = (p[c].clamp(0.0, a) * levels).round() * inv;
+    let w = img.width as usize;
+    let (x0, x1) = (r.x0 as usize, r.x1 as usize);
+    img.data[r.y0 as usize * w..r.y1 as usize * w].par_chunks_mut(w).for_each(|row| {
+        for p in &mut row[x0..x1] {
+            quantize_px(p, levels, inv);
         }
     });
 }

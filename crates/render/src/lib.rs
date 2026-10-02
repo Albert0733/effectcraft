@@ -9,6 +9,7 @@
 pub mod audio;
 pub mod cache;
 pub mod color;
+use color::Region;
 pub mod eval;
 pub mod masks;
 pub mod shapes;
@@ -320,22 +321,25 @@ impl<'a> Renderer<'a> {
     /// Draw a collapsed 2D precomp layer: nested layers blend straight into `canvas` with their
     /// own modes (Normal precomp, no matte); otherwise they are drawn into an isolated buffer
     /// that then takes the precomp layer's track matte, Preserve Transparency and blend mode.
-    fn draw_collapsed(&self, ctx: &EvalCtx<'a>, layer: &Layer, item: ItemId, canvas: &mut Image) {
+    /// Returns the region left to re-quantise (nested layers drawn straight into `canvas`
+    /// quantise their own footprints).
+    fn draw_collapsed(&self, ctx: &EvalCtx<'a>, layer: &Layer, item: ItemId, canvas: &mut Image, blank: bool) -> Region {
         let opacity = ctx.opacity(layer) as f32 * self.opacity_mul;
         if opacity <= 0.0 {
-            return;
+            return Region::Empty;
         }
         let matte = layer.track_matte.is_some_and(|tm| tm.layer != layer.id && ctx.comp.layer(tm.layer).is_some());
         if layer.blend_mode == BlendMode::Normal && !matte && !layer.preserve_transparency {
             if let Some((sub, nctx)) = self.collapse_into(ctx, layer, item, opacity) {
-                sub.draw_comp(&nctx, canvas);
+                sub.draw_comp(&nctx, canvas, blank);
             }
-            return;
+            return Region::Empty;
         }
-        let Some((sub, nctx)) = self.collapse_into(ctx, layer, item, 1.0) else { return };
+        let Some((sub, nctx)) = self.collapse_into(ctx, layer, item, 1.0) else { return Region::Empty };
         let mut iso = Image::new(canvas.width, canvas.height);
-        sub.draw_comp(&nctx, &mut iso);
+        sub.draw_comp(&nctx, &mut iso, true);
         self.composite_iso(ctx, layer, iso, canvas, opacity);
+        Region::Full
     }
 
     /// Rasterisation scale of a layer's source: the output scale, or — for Continuously
@@ -448,11 +452,12 @@ impl<'a> Renderer<'a> {
             return canvas;
         }
         let ctx = self.ctx(comp_id, comp, t);
-        self.draw_comp(&ctx, &mut canvas);
+        self.draw_comp(&ctx, &mut canvas, true);
+        // The canvas is already quantised after every layer; only re-encoding changes it.
         if let Some(c) = self.pipe.from_blend() {
             color::convert(&mut canvas, &c);
+            self.pipe.quantize(&mut canvas);
         }
-        self.pipe.quantize(&mut canvas);
         // The top-level comp leaves the working space for the (sRGB) display / output.
         if self.depth == 0
             && let Some(c) = self.pipe.output()
@@ -464,7 +469,8 @@ impl<'a> Renderer<'a> {
     }
 
     /// Draw a comp's layers (bottom to top) into `canvas` (blending space).
-    fn draw_comp(&self, ctx: &EvalCtx<'a>, canvas: &mut Image) {
+    /// `blank`: the canvas is fully transparent (lets the first layer skip re-quantising).
+    fn draw_comp(&self, ctx: &EvalCtx<'a>, canvas: &mut Image, mut blank: bool) {
         // Bottom-to-top, with runs of consecutive 3D layers depth-sorted (farthest first).
         let visible = self.visible_layers(ctx);
         let mut i = 0;
@@ -476,15 +482,19 @@ impl<'a> Renderer<'a> {
                 }
                 three_d::compose::draw_run(self, ctx, &visible[i..j], canvas);
                 i = j;
+                self.pipe.quantize(canvas);
+                blank = false;
             } else {
-                match self.collapsed(ctx, visible[i]) {
-                    Some(item) => self.draw_collapsed(ctx, visible[i], item, canvas),
-                    None => self.draw_layer(ctx, visible[i], canvas),
-                }
+                let changed = match self.collapsed(ctx, visible[i]) {
+                    Some(item) => self.draw_collapsed(ctx, visible[i], item, canvas, blank),
+                    None => self.draw_layer(ctx, visible[i], canvas, blank),
+                };
                 i += 1;
+                // 8/16 bpc: the comp is an integer buffer after every layer (only the pixels the
+                // layer touched need re-quantising).
+                self.pipe.quantize_region(canvas, changed);
+                blank = false;
             }
-            // 8/16 bpc: the comp is an integer buffer after every layer.
-            self.pipe.quantize(canvas);
         }
     }
 
@@ -592,7 +602,8 @@ impl<'a> Renderer<'a> {
                 if let Some(conv) = self.pipe.authored_in() {
                     c = conv.apply(c);
                 }
-                Some(Buf { img: Image::filled(w, h, [c[0], c[1], c[2], 1.0]), offset: [0.0; 2], scale: s })
+                let px = self.pipe.quantize_px([c[0], c[1], c[2], 1.0]);
+                Some(Buf { img: Image::filled(w, h, px), offset: [0.0; 2], scale: s })
             }
             LayerSource::Comp { item } => {
                 if self.project.comp_contains(*item, ctx.comp_id) {
@@ -687,8 +698,11 @@ impl<'a> Renderer<'a> {
     /// Source → masks, clamped/quantised to the project depth.
     fn masked_source(&self, ctx: &EvalCtx, layer: &Layer) -> Option<Buf> {
         let mut buf = self.source(ctx, layer)?;
-        masks::apply(ctx, layer, &mut buf);
-        self.pipe.quantize(&mut buf.img);
+        // A solid is filled with a quantised colour: only masks can take it off the grid.
+        let solid = matches!(layer.source, LayerSource::Solid { .. });
+        if masks::apply(ctx, layer, &mut buf) || !solid {
+            self.pipe.quantize(&mut buf.img);
+        }
         Some(buf)
     }
 
@@ -881,14 +895,58 @@ impl<'a> Renderer<'a> {
             * Mat3::translate(vec2(-buf.offset[0], -buf.offset[1]))
     }
 
-    /// How a processed layer buffer lands in the output: one buffer → output matrix, or one per
-    /// motion-blur sub-sample (averaged), with the layer's sampling filter and dissolve seed.
-    pub fn placement(&self, ctx: &EvalCtx, layer: &Layer, buf: &Buf) -> Placement {
-        let samples = if self.opts.motion_blur && ctx.comp.enable_motion_blur && layer.switches.motion_blur {
+    /// Motion-blur sub-samples for a layer (1 = no motion blur).
+    fn mb_samples(&self, ctx: &EvalCtx, layer: &Layer) -> usize {
+        if self.opts.motion_blur && ctx.comp.enable_motion_blur && layer.switches.motion_blur {
             if self.opts.draft { 4 } else { ctx.comp.motion_blur_samples.clamp(2, 64) as usize }
         } else {
             1
-        };
+        }
+    }
+
+    /// Canvas pixels that compositing `buf` for `layer` can change: the transformed buffer's
+    /// bounds plus the resampling footprint. Stencil/silhouette modes, motion blur and
+    /// perspective fall back to the whole canvas.
+    ///
+    /// A quantised buffer placed pixel-exactly (integer translation, Normal, 100%) over a blank
+    /// canvas leaves exactly its own (quantised) pixels: nothing to re-quantise.
+    fn footprint(&self, ctx: &EvalCtx, layer: &Layer, buf: &Buf, opacity: f32, blank: bool) -> Region {
+        if layer.blend_mode.is_stencil() || self.mb_samples(ctx, layer) > 1 {
+            return Region::Full;
+        }
+        let m = self.buf_matrix(ctx, layer, buf);
+        if !m.is_affine() {
+            return Region::Full;
+        }
+        let matte = layer.track_matte.is_some_and(|tm| tm.layer != layer.id && ctx.comp.layer(tm.layer).is_some());
+        let k = &m.0;
+        let integral = |v: f64| v == v.round();
+        if blank
+            && layer.blend_mode == BlendMode::Normal
+            && opacity == 1.0
+            && !matte
+            && !layer.preserve_transparency
+            && self.pipe.to_blend().is_none()
+            && k[0][0] == 1.0
+            && k[1][1] == 1.0
+            && k[0][1] == 0.0
+            && k[1][0] == 0.0
+            && integral(k[0][2])
+            && integral(k[1][2])
+        {
+            return Region::Empty;
+        }
+        let (w, h) = (buf.img.width as f64, buf.img.height as f64);
+        let c = [(0.0, 0.0), (w, 0.0), (0.0, h), (w, h)].map(|(x, y)| m.apply(vec2(x, y)));
+        let (x0, x1) = (c.iter().map(|p| p.x).fold(f64::INFINITY, f64::min), c.iter().map(|p| p.x).fold(f64::NEG_INFINITY, f64::max));
+        let (y0, y1) = (c.iter().map(|p| p.y).fold(f64::INFINITY, f64::min), c.iter().map(|p| p.y).fold(f64::NEG_INFINITY, f64::max));
+        color::PxRect::covering(x0, y0, x1, y1, 3.0).map_or(Region::Full, Region::Rect)
+    }
+
+    /// How a processed layer buffer lands in the output: one buffer → output matrix, or one per
+    /// motion-blur sub-sample (averaged), with the layer's sampling filter and dissolve seed.
+    pub fn placement(&self, ctx: &EvalCtx, layer: &Layer, buf: &Buf) -> Placement {
+        let samples = self.mb_samples(ctx, layer);
         let (sampling, seed) = (self.sampling(layer), layer.id.0 as u32);
         if samples <= 1 {
             return Placement { matrices: vec![self.buf_matrix(ctx, layer, buf)], sampling, seed };
@@ -922,29 +980,32 @@ impl<'a> Renderer<'a> {
         target.blend_from(&acc, mode, opacity, pl.seed);
     }
 
-    fn draw_layer(&self, ctx: &EvalCtx, layer: &Layer, canvas: &mut Image) {
+    /// Draw a 2D layer into `canvas`; returns the region it may have changed.
+    fn draw_layer(&self, ctx: &EvalCtx, layer: &Layer, canvas: &mut Image, blank: bool) -> Region {
         let opacity = ctx.opacity(layer) as f32 * self.opacity_mul;
         if layer.switches.quality == Quality::Wireframe && !layer.switches.adjustment {
             self.draw_wireframe(ctx, layer, canvas);
-            return;
+            return Region::Full;
         }
         if opacity <= 0.0 && !layer.switches.adjustment {
-            return;
+            return Region::Empty;
         }
         if layer.switches.adjustment {
             self.draw_adjustment(ctx, layer, canvas, opacity);
-            return;
+            return Region::Full;
         }
         let mut timing = self.profile.map(|_| LayerTiming { depth: self.depth, layer: layer.name.clone(), ..Default::default() });
         let t0 = web_time::Instant::now();
-        let Some(st) = self.styled(ctx, layer, timing.as_mut()) else { return };
+        let Some(st) = self.styled(ctx, layer, timing.as_mut()) else { return Region::Empty };
         let st = self.styled_to_blend(st);
         let t1 = web_time::Instant::now();
-        if st.plain {
+        let changed = if st.plain {
             self.composite_layer(ctx, layer, &st.body, canvas, opacity);
+            self.footprint(ctx, layer, &st.body, opacity, blank)
         } else {
             self.composite_styled(ctx, layer, &st, canvas, opacity);
-        }
+            Region::Full
+        };
         if let (Some(prof), Some(mut timing)) = (self.profile, timing) {
             timing.process_ms = (t1 - t0).as_secs_f64() * 1e3;
             timing.composite_ms = t1.elapsed().as_secs_f64() * 1e3;
@@ -952,6 +1013,7 @@ impl<'a> Renderer<'a> {
                 v.push(timing);
             }
         }
+        changed
     }
 
     /// Composite a styled layer: exterior passes with their own modes, then the body with the
@@ -1043,7 +1105,7 @@ impl<'a> Renderer<'a> {
     /// Adjustment layer: effects applied to the comp below, limited to the layer's footprint.
     fn draw_adjustment(&self, ctx: &EvalCtx, layer: &Layer, canvas: &mut Image, opacity: f32) {
         let Some(mut foot) = self.source(ctx, layer) else { return };
-        masks::apply(ctx, layer, &mut foot);
+        let _ = masks::apply(ctx, layer, &mut foot);
         let mut matte = Image::new(canvas.width, canvas.height);
         self.place(ctx, layer, &foot, &mut matte, BlendMode::Normal, 1.0);
         let o = self.roi_offset().map(|(x, y, _, _)| [-x, -y]).unwrap_or([0.0; 2]);
@@ -1130,12 +1192,12 @@ impl<'a> Renderer<'a> {
 
     /// Draw one 2D layer into `canvas` on the CPU (any kind: adjustment, wireframe, styled…).
     pub fn draw_layer_cpu(&self, ctx: &EvalCtx, layer: &Layer, canvas: &mut Image) {
-        self.draw_layer(ctx, layer, canvas);
+        self.draw_layer(ctx, layer, canvas, false);
     }
 
     /// Draw a collapsed precomp layer into `canvas` on the CPU.
     pub fn draw_collapsed_cpu(&self, ctx: &EvalCtx<'a>, layer: &Layer, item: ItemId, canvas: &mut Image) {
-        self.draw_collapsed(ctx, layer, item, canvas);
+        self.draw_collapsed(ctx, layer, item, canvas, false);
     }
 
     /// The layer's finished buffers (styles included) in the blending space.

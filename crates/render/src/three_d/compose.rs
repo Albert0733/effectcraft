@@ -316,7 +316,7 @@ pub(crate) fn draw_run(r: &Renderer, ctx: &EvalCtx, run: &[&Layer], canvas: &mut
     // 3D adjustment layers act on everything below them in the stack (like 2D ones): split.
     if let Some(k) = run.iter().position(|l| l.switches.adjustment) {
         draw_run(r, ctx, &run[..k], canvas);
-        r.draw_layer(ctx, run[k], canvas);
+        r.draw_layer(ctx, run[k], canvas, false);
         draw_run(r, ctx, &run[k + 1..], canvas);
         return;
     }
@@ -363,7 +363,7 @@ pub(crate) fn draw_run(r: &Renderer, ctx: &EvalCtx, run: &[&Layer], canvas: &mut
     let casters: Vec<&Item> = items.iter().chain(extra.iter()).filter(|i| i.mat.casts_shadows != 0 && !i.geos.is_empty()).collect();
     composite(canvas, &items, &lights, &casters, run[0].id.0 as u32);
     for l in run.iter().filter(|l| l.switches.quality == effectcraft_project::Quality::Wireframe) {
-        r.draw_layer(ctx, l, canvas);
+        r.draw_layer(ctx, l, canvas, false);
     }
 }
 
