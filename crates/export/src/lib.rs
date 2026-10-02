@@ -17,9 +17,9 @@
 //! output is a single pixel wide/high).
 
 mod encode;
+mod out;
 
-use std::path::Path;
-use std::time::Instant;
+use web_time::Instant;
 
 use effectcraft_project::render_queue::{AudioOutput, Channels, OutputFormat, OutputModule, RenderQuality, RenderSettings, sequence_path};
 use effectcraft_project::{Comp, ItemId, Project};
@@ -29,6 +29,7 @@ use effectcraft_time::Tick;
 use rayon::prelude::*;
 
 pub use effectcraft_project::render_queue;
+pub use out::Sink;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ExportError {
@@ -61,6 +62,8 @@ pub struct Job<'a> {
     /// Output file. For image sequences a run of `#` (or `[#####]`) becomes the frame number; a
     /// path without one gets `_NNNNN` before the extension.
     pub path: &'a str,
+    /// Hand finished files to this instead of writing them to disk (web downloads, tests).
+    pub sink: Option<&'a Sink>,
 }
 
 /// Progress after a batch of frames.
@@ -122,9 +125,6 @@ pub fn export(job: &Job, progress: &mut dyn FnMut(&Progress) -> bool) -> Result<
     let total = job.settings.frame_count(comp);
     let mut st = State { t0, total, done: 0, progress };
     st.advance(0)?;
-    if let Some(dir) = Path::new(job.path).parent().filter(|d| !d.as_os_str().is_empty()) {
-        std::fs::create_dir_all(dir).map_err(io)?;
-    }
     let (w, h) = output_size(comp, job.settings, job.output);
     let mut report = match job.output.format {
         OutputFormat::H264 | OutputFormat::ProRes => encode::movie(job, comp, w, h, &mut st)?,
@@ -218,12 +218,13 @@ fn sequence(job: &Job, comp: &Comp, w: u32, h: u32, st: &mut State) -> Result<Re
             .into_par_iter()
             .map(|k| {
                 let path = sequence_path(job.path, f0 + k as i64);
-                if job.settings.skip_existing && Path::new(&path).exists() {
+                if job.settings.skip_existing && out::exists(job.sink, &path) {
                     return Ok(0);
                 }
                 let img = render_frame(job, comp, k);
-                write_still(&path, fmt, &img, comp, channels, w, h, job.output.quality)?;
-                Ok(std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0))
+                let mut f = out::create(job.sink, &path)?;
+                write_still(&mut f, fmt, &img, comp, channels, w, h, job.output.quality)?;
+                f.finish()
             })
             .collect();
         for r in written {
@@ -236,9 +237,8 @@ fn sequence(job: &Job, comp: &Comp, w: u32, h: u32, st: &mut State) -> Result<Re
 }
 
 #[allow(clippy::too_many_arguments)]
-fn write_still(path: &str, fmt: OutputFormat, img: &Image, comp: &Comp, channels: Channels, w: u32, h: u32, quality: u8) -> Result<()> {
+fn write_still(file: &mut out::Out, fmt: OutputFormat, img: &Image, comp: &Comp, channels: Channels, w: u32, h: u32, quality: u8) -> Result<()> {
     use image::{ExtendedColorType, ImageEncoder, ImageFormat};
-    let file = || std::fs::File::create(path).map(std::io::BufWriter::new).map_err(io);
     match fmt {
         OutputFormat::ExrSequence => {
             // Linear light, premultiplied (the EXR convention); RGB keeps alpha = 1 over the background.
@@ -263,12 +263,12 @@ fn write_still(path: &str, fmt: OutputFormat, img: &Image, comp: &Comp, channels
                 }
             }
             let buf = image::Rgba32FImage::from_raw(w, h, data).ok_or_else(|| ExportError::Encode("exr buffer".into()))?;
-            image::DynamicImage::ImageRgba32F(buf).save_with_format(path, ImageFormat::OpenExr).map_err(|e| ExportError::Encode(e.to_string()))
+            image::DynamicImage::ImageRgba32F(buf).write_to(file, ImageFormat::OpenExr).map_err(|e| ExportError::Encode(e.to_string()))
         }
         OutputFormat::JpegSequence => {
             let px = rgba8(img, comp, Channels::Rgb, w, h);
             let rgb: Vec<u8> = px.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
-            image::codecs::jpeg::JpegEncoder::new_with_quality(file()?, quality.clamp(1, 100))
+            image::codecs::jpeg::JpegEncoder::new_with_quality(file, quality.clamp(1, 100))
                 .write_image(&rgb, w, h, ExtendedColorType::Rgb8)
                 .map_err(|e| ExportError::Encode(e.to_string()))
         }
@@ -279,11 +279,10 @@ fn write_still(path: &str, fmt: OutputFormat, img: &Image, comp: &Comp, channels
                 Channels::Rgb => (px.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect(), ExtendedColorType::Rgb8),
             };
             if fmt == OutputFormat::PngSequence {
-                image::codecs::png::PngEncoder::new(file()?).write_image(&data, w, h, ct).map_err(|e| ExportError::Encode(e.to_string()))
+                image::codecs::png::PngEncoder::new(file).write_image(&data, w, h, ct).map_err(|e| ExportError::Encode(e.to_string()))
             } else {
-                // The TIFF encoder needs Seek.
-                let f = std::fs::File::create(path).map_err(io)?;
-                image::codecs::tiff::TiffEncoder::new(std::io::BufWriter::new(f)).write_image(&data, w, h, ct).map_err(|e| ExportError::Encode(e.to_string()))
+                // (the TIFF encoder needs Seek)
+                image::codecs::tiff::TiffEncoder::new(file).write_image(&data, w, h, ct).map_err(|e| ExportError::Encode(e.to_string()))
             }
         }
         f => Err(ExportError::Unsupported(format!("{} is not a still format", f.label()))),
@@ -294,8 +293,8 @@ fn gif_export(job: &Job, comp: &Comp, w: u32, h: u32, st: &mut State) -> Result<
     if w > u16::MAX as u32 || h > u16::MAX as u32 {
         return Err(ExportError::Unsupported("GIF frames are limited to 65535 px".into()));
     }
-    let file = std::fs::File::create(job.path).map_err(io)?;
-    let mut enc = gif::Encoder::new(std::io::BufWriter::new(file), w as u16, h as u16, &[]).map_err(|e| ExportError::Encode(e.to_string()))?;
+    let mut file = out::create(job.sink, job.path)?;
+    let mut enc = gif::Encoder::new(&mut file, w as u16, h as u16, &[]).map_err(|e| ExportError::Encode(e.to_string()))?;
     enc.set_repeat(if job.output.gif_loop { gif::Repeat::Infinite } else { gif::Repeat::Finite(0) }).map_err(|e| ExportError::Encode(e.to_string()))?;
     let rate = job.settings.rate(comp);
     // GIF delays are in 1/100 s: carry the rounding error so long animations keep their timing.
@@ -328,7 +327,7 @@ fn gif_export(job: &Job, comp: &Comp, w: u32, h: u32, st: &mut State) -> Result<
         i = end;
     }
     drop(enc);
-    let bytes = std::fs::metadata(job.path).map(|m| m.len()).unwrap_or(0);
+    let bytes = file.finish()?;
     Ok(Report { path: job.path.to_string(), frames: 0, width: w, height: h, seconds: 0.0, bytes, audio: false })
 }
 

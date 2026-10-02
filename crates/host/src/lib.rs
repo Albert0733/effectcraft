@@ -16,8 +16,12 @@ impl Importer for MediaImporter {
     }
 }
 
-/// Render Queue export via `effectcraft-export`.
-pub struct FileExporter;
+/// Render Queue export via `effectcraft-export`: to the file system, or to `sink` (the web app
+/// turns written files into downloads).
+#[derive(Default)]
+pub struct FileExporter {
+    pub sink: Option<Arc<effectcraft_export::Sink>>,
+}
 
 impl Exporter for FileExporter {
     fn formats(&self) -> Vec<OutputFormat> {
@@ -32,6 +36,7 @@ impl Exporter for FileExporter {
             settings: &job.item.settings,
             output: &job.item.output,
             path: job.path,
+            sink: self.sink.as_deref(),
         };
         match effectcraft_export::export(&j, &mut |p| progress(p.done, p.total)) {
             Ok(r) => Ok(ExportResult { path: r.path, frames: r.frames, width: r.width, height: r.height, bytes: r.bytes, seconds: r.seconds, audio: r.audio }),
@@ -44,7 +49,7 @@ impl Exporter for FileExporter {
 /// A new session with media, import, expressions and export enabled.
 pub fn session() -> Session {
     Session {
-        exporter: Some(Arc::new(FileExporter)),
+        exporter: Some(Arc::new(FileExporter::default())),
         footage: Arc::new(effectcraft_media::MediaPool::new()),
         importer: Some(Arc::new(MediaImporter)),
         expr: Some(Arc::new(effectcraft_expr::Expressions)),
@@ -66,6 +71,37 @@ mod tests {
         s.execute("prop.setExpression", json!({"layer": lid, "path": "transform/rotation", "expression": "time * 90"})).unwrap();
         let img = s.render(cid, s.time(), effectcraft_engine::render::RenderOpts { scale: 0.25, ..Default::default() });
         assert!(img.data.iter().any(|p| p[3] > 0.5));
+    }
+
+    /// The web app's path: outputs go to a sink (downloads), never to the file system.
+    #[test]
+    fn render_queue_exports_to_a_sink() {
+        use std::sync::{Arc, Mutex};
+        let got: Arc<Mutex<Vec<(String, Vec<u8>)>>> = Arc::default();
+        let g = got.clone();
+        let mut s = super::session();
+        s.exporter = Some(Arc::new(super::FileExporter { sink: Some(Arc::new(move |p: &str, d: Vec<u8>| g.lock().unwrap().push((p.to_string(), d)))) }));
+        s.execute("file.openDemoProject", json!({})).unwrap();
+        let dir = "/no-such-dir-effectcraft-sink-test";
+        s.execute(
+            "renderQueue.add",
+            json!({"format": "gif", "output": format!("{dir}/a.gif"), "resolution": 0.0625, "timeSpan": "custom", "start": 0.0, "end": 0.2}),
+        )
+        .unwrap();
+        s.execute(
+            "renderQueue.add",
+            json!({"format": "png", "output": format!("{dir}/seq_[##].png"), "resolution": 0.0625, "timeSpan": "custom", "start": 0.0, "end": 0.1}),
+        )
+        .unwrap();
+        s.execute("renderQueue.render", json!({"wait": true})).unwrap();
+        s.poll_render();
+        let mut got = got.lock().unwrap().clone();
+        got.sort_by(|a, b| a.0.cmp(&b.0));
+        let names: Vec<&str> = got.iter().map(|(p, _)| p.as_str()).collect();
+        assert_eq!(names, [format!("{dir}/a.gif"), format!("{dir}/seq_00.png"), format!("{dir}/seq_01.png"), format!("{dir}/seq_02.png")]);
+        assert!(got[0].1.starts_with(b"GIF89a"));
+        assert!(got[1].1.starts_with(b"\x89PNG"));
+        assert!(!std::path::Path::new(dir).exists());
     }
 
     #[test]

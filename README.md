@@ -166,6 +166,7 @@ git clone https://github.com/storytold/effectcraft
 cd effectcraft
 cargo run --release -p effectcraft          # the app, with the demo project open
 cargo run --release -p effectcraft-cli -- render --out intro.mp4    # render the demo headless
+cargo xtask web --serve 8765                # the browser build on http://127.0.0.1:8765/ (docs/web.md)
 ```
 
 To work on it: `cargo test --workspace`, and `cargo xtask ci` before every commit (format, lints,
@@ -176,8 +177,8 @@ tests, layering, asset attribution and the WebAssembly build). See [CONTRIBUTING
 
 EffectCraft is young. The core of After Effects is in place and gets deeper every week: what is
 done and what comes next is in the [ROADMAP](ROADMAP.md). Not there yet: layer styles, time and
-audio effects, audio playback, motion tracking, puppet and paint tools, the web build and GPU
-compositing. Projects are saved as `.ecproj`, readable versioned JSON; After Effects `.aep`
+audio effects, audio playback, motion tracking, puppet and paint tools, and GPU compositing. The
+web build runs the full app in the browser, single-threaded for now. Projects are saved as `.ecproj`, readable versioned JSON; After Effects `.aep`
 files cannot be opened.
 
 ## How it's made

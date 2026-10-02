@@ -55,7 +55,7 @@ fn settings() -> RenderSettings {
 fn run(p: &Project, cid: ItemId, footage: &dyn FootageSource, om: &OutputModule, path: &Path) -> effectcraft_export::Report {
     let s = settings();
     let path = path.to_string_lossy().to_string();
-    let job = Job { project: p, footage, expr: None, comp: cid, settings: &s, output: om, path: &path };
+    let job = Job { project: p, footage, expr: None, comp: cid, settings: &s, output: om, path: &path, sink: None };
     let mut last = Progress::default();
     let mut calls = 0;
     let r = export(&job, &mut |pr| {
@@ -167,7 +167,7 @@ fn h264_odd_size_is_cropped_even() {
     let comp = p.comp(cid).expect("comp");
     assert_eq!(s.output_size(comp).0 % 2, 1);
     let path = d.join("odd.mp4").to_string_lossy().to_string();
-    let job = Job { project: &p, footage: &NoFootage, expr: None, comp: cid, settings: &s, output: &om, path: &path };
+    let job = Job { project: &p, footage: &NoFootage, expr: None, comp: cid, settings: &s, output: &om, path: &path, sink: None };
     let r = export(&job, &mut |_| true).expect("export");
     assert_eq!((r.width % 2, r.height % 2), (0, 0));
 }
@@ -287,7 +287,7 @@ fn cancel_stops_early() {
     let om = OutputModule::for_format(OutputFormat::PngSequence);
     let s = settings();
     let path = d.join("c_[#####].png").to_string_lossy().to_string();
-    let job = Job { project: &p, footage: &NoFootage, expr: None, comp: cid, settings: &s, output: &om, path: &path };
+    let job = Job { project: &p, footage: &NoFootage, expr: None, comp: cid, settings: &s, output: &om, path: &path, sink: None };
     let r = export(&job, &mut |_| false);
     assert!(matches!(r, Err(effectcraft_export::ExportError::Cancelled)));
     let written = std::fs::read_dir(&d).map(|r| r.count()).unwrap_or(0);

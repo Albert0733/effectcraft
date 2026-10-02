@@ -36,6 +36,8 @@ serde = { version = "1", features = ["derive", "rc"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
 log = "0.4"
 rayon = "1"
+# std::time::Instant/SystemTime on native; the browser clock on wasm32 (std's panic there).
+web-time = "1"
 gif = "0.14"
 proptest = "1"
 

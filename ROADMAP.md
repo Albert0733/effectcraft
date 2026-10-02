@@ -6,7 +6,7 @@ once.
 
 | | Milestone | State |
 |---|---|---|
-| M0 | Skeleton: crates, compositor, the After Effects style shell, control channel, `cargo xtask` | Done (web build pending) |
+| M0 | Skeleton: crates, compositor, the After Effects style shell, control channel, `cargo xtask` | Done (web build: [docs/web.md](docs/web.md)) |
 | M1 | Keyframes: temporal and spatial interpolation, Easy Ease, roving, velocity | Done |
 | M2 | Compositing: 38 blend modes, track mattes, parenting, adjustment layers | Done |
 | M3 | Project operations: settings dialogs, layer commands, `.ecproj`, undo, After Effects menu bar | Mostly done |

@@ -21,6 +21,7 @@ filmcraft-isobmff = { workspace = true }
 image = { workspace = true, features = ["png", "jpeg", "tiff", "exr"] }
 gif = { workspace = true }
 rayon = { workspace = true }
+web-time = { workspace = true }
 thiserror = { workspace = true }
 log = { workspace = true }
 

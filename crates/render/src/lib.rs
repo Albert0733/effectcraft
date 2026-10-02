@@ -208,7 +208,7 @@ impl<'a> Renderer<'a> {
             let Some(spec) = effectcraft_effects::find(effect) else { continue };
             let params = self.effect_params(ctx, layer, g);
             let ectx = EffectCtx { params: &params, time: lt.seconds(), layer_size, seed: g.uid as u32, adjustment, env };
-            let t0 = std::time::Instant::now();
+            let t0 = web_time::Instant::now();
             buf = effectcraft_effects::apply(spec, &ectx, buf);
             if let Some(v) = timing.as_deref_mut() {
                 v.push((spec.id.to_string(), t0.elapsed().as_secs_f64() * 1e3));
@@ -348,9 +348,9 @@ impl<'a> Renderer<'a> {
             return;
         };
         let mut timing = LayerTiming { depth: self.depth, layer: layer.name.clone(), ..Default::default() };
-        let t0 = std::time::Instant::now();
+        let t0 = web_time::Instant::now();
         let Some(buf) = self.layer_buf_timed(ctx, layer, Some(&mut timing)) else { return };
-        let t1 = std::time::Instant::now();
+        let t1 = web_time::Instant::now();
         self.composite_layer(ctx, layer, &buf, canvas, opacity);
         timing.process_ms = (t1 - t0).as_secs_f64() * 1e3;
         timing.composite_ms = t1.elapsed().as_secs_f64() * 1e3;

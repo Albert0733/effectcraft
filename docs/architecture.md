@@ -8,7 +8,8 @@ and drive it through the same command registry.
 
 Dependencies only point downward (or along the few same-layer edges listed below). `cargo xtask
 layers` enforces this, and fails the build if a crate below L5 depends on egui, eframe, winit, rfd,
-cpal or muda. Everything in L0 to L4 also builds for `wasm32-unknown-unknown` (`cargo xtask wasm`).
+cpal or muda. Everything in L0 to L4, the egui UI and the web app also build for
+`wasm32-unknown-unknown` (`cargo xtask wasm`); see [web.md](web.md).
 
 | Layer | Crate (`effectcraft-…`) | Responsibility |
 |---|---|---|
@@ -29,7 +30,7 @@ cpal or muda. Everything in L0 to L4 also builds for `wasm32-unknown-unknown` (`
 | L4 | `host` | A fully wired `Session` (media, expressions, exporter) for the frontends |
 | L5 | `ui-egui` | The desktop interface: docking, panels, viewer, timeline, graph editor, dialogs, control channel |
 | L5 | `automation` | The MCP server, headless or bridged to the running app |
-| L6 | apps `effectcraft`, `effectcraft-cli` | Desktop app; command-line tool (render, exec, get/set, MCP) |
+| L6 | apps `effectcraft`, `effectcraft-cli`, `effectcraft-web` | Desktop app; command-line tool (render, exec, get/set, MCP); the browser app (wasm32, [web.md](web.md)) |
 
 Allowed same-layer edges: `path → keyframe, raster`, `text → path`, `effects → project, text, path`,
 `media / expr / export → render`, `export → media`, `host → engine`.

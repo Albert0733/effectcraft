@@ -3,6 +3,9 @@
 //! Frames render on a dedicated thread pool from immutable `Arc<Project>` snapshots, so the UI
 //! never waits for the compositor. Results land in a memory-budgeted cache keyed by (project
 //! revision, comp, frame, scale); the timeline draws the cached range as the green cache bar.
+//!
+//! wasm32 has no threads: jobs wait in the same priority queue and [`Frames::pump`] renders them
+//! on the UI thread between egui frames, within a time budget.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -61,6 +64,7 @@ pub struct Frames {
     inflight: Arc<Mutex<HashSet<FrameKey>>>,
     /// Pending jobs, picked by priority when a pool thread frees up (the viewer's frame first).
     queue: Arc<Mutex<Queue>>,
+    #[cfg(not(target_arch = "wasm32"))]
     pool: rayon::ThreadPool,
     ctx: Option<egui::Context>,
     /// Render time of the last viewer (urgent) frame in ms, for the Info panel / perf readout.
@@ -69,11 +73,13 @@ pub struct Frames {
 
 impl Default for Frames {
     fn default() -> Self {
+        #[cfg(not(target_arch = "wasm32"))]
         let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(2, 16);
         Frames {
             cache: Arc::new(Mutex::new(Cache { map: HashMap::new(), order: VecDeque::new(), bytes: 0, budget: 3 << 30 })),
             inflight: Arc::new(Mutex::new(HashSet::new())),
             queue: Arc::new(Mutex::new(Queue::default())),
+            #[cfg(not(target_arch = "wasm32"))]
             pool: rayon::ThreadPoolBuilder::new().num_threads(threads).thread_name(|i| format!("ec-frame-{i}")).build().expect("frame pool"),
             ctx: None,
             last_ms: Arc::new(Mutex::new(0.0)),
@@ -176,52 +182,95 @@ impl Frames {
         let seq = q.seq;
         q.jobs.push(Job { key, src: src.clone(), comp, t, opts, urgent, seq });
         drop(q);
-        let queue = self.queue.clone();
-        let cache = self.cache.clone();
-        let inflight = self.inflight.clone();
-        let ctx = self.ctx.clone();
-        let last = self.last_ms.clone();
-        // One spawn per job; each spawn renders whichever queued job matters most right now.
-        self.pool.spawn(move || {
-            let job = {
-                let Ok(mut q) = queue.lock() else { return };
-                // Urgent first (newest), then prefetch in request order.
-                let best = q.jobs.iter().enumerate().max_by_key(|(_, j)| (j.urgent, if j.urgent { j.seq as i64 } else { -(j.seq as i64) })).map(|(i, _)| i);
-                let Some(i) = best else { return };
-                let job = q.jobs.swap_remove(i);
-                q.running.insert(job.key);
-                if job.urgent {
-                    q.urgent_running += 1;
-                }
-                job
-            };
-            let t0 = std::time::Instant::now();
-            let mut r = Renderer::new(&job.src.project, job.src.footage.as_ref(), job.opts);
-            r.expr = job.src.expr.as_deref();
-            r.cache = Some(&job.src.layer_cache);
-            let img = r.comp_frame(job.comp, job.t);
-            let ci = Arc::new(to_color_image(&img));
-            if job.urgent
-                && let Ok(mut l) = last.lock()
-            {
-                *l = t0.elapsed().as_secs_f64() * 1000.0;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let w = self.worker();
+            // One spawn per job; each spawn renders whichever queued job matters most right now.
+            self.pool.spawn(move || {
+                w.run_next();
+            });
+        }
+        #[cfg(target_arch = "wasm32")]
+        if let Some(ctx) = &self.ctx {
+            // rendered by `pump` after this UI frame
+            ctx.request_repaint();
+        }
+    }
+
+    fn worker(&self) -> Worker {
+        Worker { queue: self.queue.clone(), cache: self.cache.clone(), inflight: self.inflight.clone(), ctx: self.ctx.clone(), last: self.last_ms.clone() }
+    }
+
+    /// Render queued frames on this thread, most important first, until the queue is empty or
+    /// `budget` has passed (at least one frame). Returns whether frames are still queued. Only
+    /// wasm32 needs this (native frames render on the pool); elsewhere it does nothing.
+    pub fn pump(&self, budget: std::time::Duration) -> bool {
+        if cfg!(not(target_arch = "wasm32")) {
+            return false;
+        }
+        let t0 = web_time::Instant::now();
+        let w = self.worker();
+        while w.run_next() {
+            if t0.elapsed() >= budget {
+                break;
             }
-            if let Ok(mut c) = cache.lock() {
-                c.insert(job.key, ci);
+        }
+        self.queue.lock().map(|q| !q.jobs.is_empty()).unwrap_or(false)
+    }
+}
+
+/// Renders queued jobs (on a pool thread, or the UI thread on wasm32).
+struct Worker {
+    queue: Arc<Mutex<Queue>>,
+    cache: Arc<Mutex<Cache>>,
+    inflight: Arc<Mutex<HashSet<FrameKey>>>,
+    ctx: Option<egui::Context>,
+    last: Arc<Mutex<f64>>,
+}
+
+impl Worker {
+    /// Render the queued job that matters most right now. `false` when the queue was empty.
+    fn run_next(&self) -> bool {
+        let Worker { queue, cache, inflight, ctx, last } = self;
+        let job = {
+            let Ok(mut q) = queue.lock() else { return false };
+            // Urgent first (newest), then prefetch in request order.
+            let best = q.jobs.iter().enumerate().max_by_key(|(_, j)| (j.urgent, if j.urgent { j.seq as i64 } else { -(j.seq as i64) })).map(|(i, _)| i);
+            let Some(i) = best else { return false };
+            let job = q.jobs.swap_remove(i);
+            q.running.insert(job.key);
+            if job.urgent {
+                q.urgent_running += 1;
             }
-            if let Ok(mut inf) = inflight.lock() {
-                inf.remove(&job.key);
+            job
+        };
+        let t0 = web_time::Instant::now();
+        let mut r = Renderer::new(&job.src.project, job.src.footage.as_ref(), job.opts);
+        r.expr = job.src.expr.as_deref();
+        r.cache = Some(&job.src.layer_cache);
+        let img = r.comp_frame(job.comp, job.t);
+        let ci = Arc::new(to_color_image(&img));
+        if job.urgent
+            && let Ok(mut l) = last.lock()
+        {
+            *l = t0.elapsed().as_secs_f64() * 1000.0;
+        }
+        if let Ok(mut c) = cache.lock() {
+            c.insert(job.key, ci);
+        }
+        if let Ok(mut inf) = inflight.lock() {
+            inf.remove(&job.key);
+        }
+        if let Ok(mut q) = queue.lock() {
+            q.running.remove(&job.key);
+            if job.urgent {
+                q.urgent_running -= 1;
             }
-            if let Ok(mut q) = queue.lock() {
-                q.running.remove(&job.key);
-                if job.urgent {
-                    q.urgent_running -= 1;
-                }
-            }
-            if let Some(ctx) = ctx {
-                ctx.request_repaint();
-            }
-        });
+        }
+        if let Some(ctx) = ctx {
+            ctx.request_repaint();
+        }
+        true
     }
 }
 

@@ -1,7 +1,7 @@
 //! Movie export: FilmCraft H.264 → MP4 (+ AAC) and ProRes → MOV (+ PCM), muxed by
 //! FilmCraft's ISO BMFF / QuickTime writer.
 
-use std::io::{BufWriter, Write};
+use std::io::Write;
 
 use effectcraft_project::Comp;
 use effectcraft_project::render_queue::{Channels, OutputFormat, ProResProfile};
@@ -218,7 +218,7 @@ fn deinterleave(buf: &[f32]) -> [Vec<f32>; 2] {
 
 // ---------------------------------------------------------------- the movie
 
-type Writer = Mp4Writer<BufWriter<std::fs::File>>;
+type Writer<'f, 's> = Mp4Writer<&'f mut crate::out::Out<'s>>;
 
 pub(crate) fn movie(job: &Job, comp: &Comp, w: u32, h: u32, st: &mut State) -> Result<Report> {
     let rate = job.settings.rate(comp);
@@ -242,10 +242,10 @@ pub(crate) fn movie(job: &Job, comp: &Comp, w: u32, h: u32, st: &mut State) -> R
     drop(first);
     st.advance(first_end)?;
 
-    let file = std::fs::File::create(job.path).map_err(mux_err)?;
+    let mut file = crate::out::create(job.sink, job.path)?;
     let opts = WriterOptions::new(brand);
     let movie_ts = opts.movie_timescale.max(1) as i128;
-    let mut mux: Writer = Mp4Writer::new(BufWriter::new(file), opts).map_err(mux_err)?;
+    let mut mux: Writer = Mp4Writer::new(&mut file, opts).map_err(mux_err)?;
     let mut vcfg = TrackConfig::new(venc.sample_entry(), rate.num as u32);
     if let Some(start) = venc.media_start() {
         // An explicit edit: the convenience `media_start` edit would subtract the B-frame delay
@@ -333,10 +333,9 @@ pub(crate) fn movie(job: &Job, comp: &Comp, w: u32, h: u32, st: &mut State) -> R
             mux.write_sample(*at, WriteSample { data: &au, duration: 1024, composition_offset: 0, is_sync: true }).map_err(mux_err)?;
         }
     }
-    let mut out = mux.finish().map_err(mux_err)?;
+    let out = mux.finish().map_err(mux_err)?;
     out.flush().map_err(mux_err)?;
-    drop(out);
-    let bytes = std::fs::metadata(job.path).map(|m| m.len()).unwrap_or(0);
+    let bytes = file.finish()?;
     Ok(Report { path: job.path.to_string(), frames: 0, width: w, height: h, seconds: 0.0, bytes, audio: with_audio })
 }
 

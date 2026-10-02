@@ -327,6 +327,10 @@ impl EffectcraftApp {
     }
 
     fn frames_parallelism(&self) -> usize {
+        if cfg!(target_arch = "wasm32") {
+            // frames render one at a time on the UI thread (`Frames::pump`)
+            return 1;
+        }
         std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4)
     }
 
@@ -625,6 +629,10 @@ impl eframe::App for EffectcraftApp {
         }
         self.frame(ui);
         let ctx = ui.ctx().clone();
+        // wasm32: no frame threads; render queued frames now, between UI frames.
+        if cfg!(target_arch = "wasm32") && self.frames.pump(std::time::Duration::from_millis(if self.playback.playing { 24 } else { 40 })) {
+            ctx.request_repaint();
+        }
         self.last_ui_time = ctx.input(|i| i.time);
         if !self.synthetic.is_empty() {
             ctx.request_repaint();
