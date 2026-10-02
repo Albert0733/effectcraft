@@ -733,7 +733,10 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let vertex_at = |pos: Pos2, tangents: bool| -> Option<VertexHit> {
         vertex_hits.iter().rev().filter(|h| h.tangent.is_some() == tangents).find(|h| h.pos.distance(pos) < 6.0).copied()
     };
+    // On-canvas text editing (Type tool, double-click a text layer) owns its clicks and drags.
+    let text_owns = super::viewer_text::hook(app, ui, &painter, &map, &ectx, &resp, space_pan);
     if resp.drag_started()
+        && !text_owns
         && let Some(pos) = resp.interact_pointer_pos()
     {
         let cpt = map.to_comp(pos);
@@ -1014,6 +1017,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         });
     }
     if resp.clicked()
+        && !text_owns
         && let Some(pos) = resp.interact_pointer_pos()
     {
         let cpt = map.to_comp(pos);
@@ -1026,12 +1030,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 app.ui.viewer.zoom = Some(nz);
                 app.ui.viewer.pan = [pan.x, pan.y];
             }
-            Tool::Type | Tool::TypeVertical => {
-                let r = app.session.execute("layer.newText", json!({"text": "Text", "size": 96, "position": [cpt[0], cpt[1]], "justify": "left"}));
-                if let Ok(v) = r {
-                    ui.data_mut(|d| d.insert_temp(egui::Id::new("viewer-text-edit"), (v["layer"].as_u64().unwrap_or(0), "Text".to_string())));
-                }
-            }
+            Tool::Type | Tool::TypeVertical => {}
             Tool::Pen => {}
             t if t.puppet_kind().is_some() => {
                 if pin_hits.iter().all(|h| h.pos.distance(pos) >= 8.0)
@@ -1059,22 +1058,17 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         }
     }
     if resp.double_clicked()
+        && !text_owns
         && app.ui.tool != Tool::Pen
         && let Some(pos) = resp.interact_pointer_pos()
     {
         let cpt = map.to_comp(pos);
-        if let Some(l) = pick(app, &ectx, cpt, false).and_then(|l| comp.layer(l)) {
-            match &l.source {
-                effectcraft_engine::project::LayerSource::Comp { item } => app.session.open_comp(*item),
-                effectcraft_engine::project::LayerSource::Text => {
-                    let doc = effectcraft_engine::render::text::source_text(&ectx, l).map(|d| d.text).unwrap_or_default();
-                    ui.data_mut(|d| d.insert_temp(egui::Id::new("viewer-text-edit"), (l.id.0, doc)));
-                }
-                _ => {}
-            }
+        if let Some(l) = pick(app, &ectx, cpt, false).and_then(|l| comp.layer(l))
+            && let effectcraft_engine::project::LayerSource::Comp { item } = &l.source
+        {
+            app.session.open_comp(*item);
         }
     }
-    text_edit_overlay(app, ui, &map);
     // Effect point controls and crosshair/eyedropper picks (on top of the viewer's gestures).
     crate::panels::effect_controls::viewer_hook(app, ui, &painter, &map, &ectx, &|c, l| l2c(c, l).0);
 
@@ -1297,40 +1291,6 @@ fn create_shape(app: &mut EffectcraftApp, tool: Tool, a: [f64; 2], b: [f64; 2], 
         "layer.newShape",
         json!({"kind": kind, "size": [w, h], "position": [cx, cy], "fill": [fill[0], fill[1], fill[2]], "stroke": [stroke[0], stroke[1], stroke[2]], "strokeWidth": app.ui.stroke_width}),
     );
-}
-
-/// Inline text editing for a text layer (double-click or Type tool click).
-fn text_edit_overlay(app: &mut EffectcraftApp, ui: &mut egui::Ui, map: &ViewerMap) {
-    let id = egui::Id::new("viewer-text-edit");
-    let Some((lid, mut text)) = ui.data(|d| d.get_temp::<(u64, String)>(id)) else { return };
-    let comp = app.session.active_comp().cloned();
-    let Some(comp) = comp else { return };
-    let Some(layer) = comp.layer(LayerId(lid)).cloned() else {
-        ui.data_mut(|d| d.remove::<(u64, String)>(id));
-        return;
-    };
-    let pos = layer.transform().and_then(|tr| tr.get("position")).map(|p| p.value_at(layer.layer_time(app.session.time())).as_vec2()).unwrap_or([0.0, 0.0]);
-    let at = map.to_screen(pos) + vec2(-20.0, 10.0);
-    let mut done = false;
-    egui::Area::new(id.with("area")).order(egui::Order::Foreground).fixed_pos(at).show(ui.ctx(), |ui| {
-        egui::Frame::popup(ui.style()).show(ui, |ui| {
-            ui.label(egui::RichText::new("Edit text — Enter to commit, Esc to cancel").small());
-            let r = ui.add(egui::TextEdit::multiline(&mut text).desired_width(320.0).desired_rows(2).font(Tokens::ui(16.0)));
-            r.request_focus();
-            if ui.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift) {
-                let _ = app.session.execute("layer.setText", json!({"layer": lid, "text": text.trim_end_matches('\n')}));
-                done = true;
-            }
-            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                done = true;
-            }
-        });
-    });
-    if done {
-        ui.data_mut(|d| d.remove::<(u64, String)>(id));
-    } else {
-        ui.data_mut(|d| d.insert_temp(id, (lid, text)));
-    }
 }
 
 fn bottom_bar(app: &mut EffectcraftApp, ui: &mut egui::Ui, bar: Rect, zoom: f32, fit: f32, time: Tick, comp: &effectcraft_engine::project::Comp) {

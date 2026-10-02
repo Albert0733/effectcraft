@@ -23,6 +23,7 @@ pub mod text_panels;
 pub mod timeline;
 pub mod tracker;
 pub mod viewer;
+pub mod viewer_text;
 pub mod waveform;
 
 use effectcraft_engine::Session;

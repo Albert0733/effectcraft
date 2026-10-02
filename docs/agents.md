@@ -100,6 +100,29 @@ effectcraft-cli run clip.ecproj track.motion '{"layer":"#2"}' \
   track.analyze '{"wait":true}' track.apply '{}' --save
 ```
 
+### Text: styles and editing
+
+Source Text holds character style runs and per-paragraph settings. `layer.setText` changes the
+whole layer, or only characters `range: [start, end]` (character indices): character attributes
+(`font`, `size`, `fill`, `tracking`, `kerning: metrics|optical|<1/1000 em>`, `tsume`,
+`baseline: superscript|subscript`, `allCaps`…) split the text into runs; paragraph attributes
+(`justify`, `indentLeft`, `indentFirst`, `spaceBefore`, `direction`, `composer`,
+`hangingPunctuation`…) apply to the paragraphs the range touches. Editing mirrors the Type tool:
+
+1. `layer.newText {"text":"", "box":[100,100,600,300], "edit":true}` makes paragraph text and
+   starts editing (`position` instead of `box` makes point text; `vertical: true` vertical type).
+2. `text.insert {"text":"Hello world"}` types at the caret (replacing the selection);
+   `text.setSelection {"start":6,"end":11}` selects "world"; `text.moveCaret {"to":"wordLeft",
+   "extend":true}` moves like the arrow keys; `text.delete {"word":true}` is Alt+Backspace.
+3. `layer.setText {"range":[6,11], "size":40, "fill":"#ff5500"}` styles the selection (the
+   Character panel does the same); with an empty range it sets the style the next typed text takes.
+4. `edit.copy`, `edit.paste`, `edit.pasteTextMatchFormatting` and `edit.pasteTextFormattingOnly`
+   work on the selected text; `text.endEdit` commits (an empty Type-tool layer is removed).
+
+In expressions, `text.sourceText.style` / `getStyleAt(i, t)` read styles and the setters
+(`setFontSize(v, start?, count?)`, `setFillColor`, `setText`, `setJustification`…) return a
+styled document.
+
 ## CLI
 
 Each invocation runs a headless engine with no window. It opens the demo project unless you pass

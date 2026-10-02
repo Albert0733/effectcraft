@@ -16,6 +16,10 @@ fn can_redo(s: &Session) -> std::result::Result<(), String> {
 }
 fn has_clip(s: &Session) -> std::result::Result<(), String> {
     has_comp(s)?;
+    if s.state.text_edit.is_some() {
+        // Text editing pastes the system clipboard's text (passed as `text`) or copied text.
+        return Ok(());
+    }
     if s.state.clipboard.is_empty() && s.state.key_clipboard.is_empty() && s.state.effect_clipboard.is_empty() && s.state.link_clipboard.is_none() {
         Err("the clipboard is empty".into())
     } else {
@@ -49,6 +53,9 @@ fn redo(s: &mut Session, _: &Value) -> Result<Value> {
 }
 
 fn select_all(s: &mut Session, _: &Value) -> Result<Value> {
+    if s.state.text_edit.is_some() {
+        return s.execute("text.setSelection", json!({"select": "all"}));
+    }
     if let Some(c) = s.active_comp() {
         s.state.selected_layers = c.layers.iter().map(|l| l.id).collect();
     }
@@ -103,6 +110,9 @@ fn duplicate(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 fn delete(s: &mut Session, p: &Value) -> Result<Value> {
+    if s.state.text_edit.is_some() && p.get("layers").is_none() {
+        return s.execute("text.delete", json!({}));
+    }
     // Keyframes selected → delete keys; mask vertices → delete them; else layers.
     if !s.state.selected_keys.is_empty() && p.get("layers").is_none() {
         return s.execute("keys.delete", json!({}));
@@ -144,6 +154,9 @@ fn clear_clipboards(s: &mut Session) {
 
 /// Edit ▸ Copy: selected keyframes (when any) go to the keyframe clipboard, else layers.
 fn copy(s: &mut Session, p: &Value) -> Result<Value> {
+    if s.state.text_edit.is_some() && p.get("layers").is_none() {
+        return super::text_edit::copy(s);
+    }
     // Keyframes selected → copy keys (pasted at the CTI).
     if !s.state.selected_keys.is_empty() && p.get("layers").is_none() {
         s.state.link_clipboard = None;
@@ -322,6 +335,9 @@ fn paste_links(s: &mut Session, clip: LinkClip) -> Result<Value> {
 }
 
 fn cut(s: &mut Session, p: &Value) -> Result<Value> {
+    if s.state.text_edit.is_some() && p.get("layers").is_none() {
+        return super::text_edit::cut(s);
+    }
     if !s.state.selected_keys.is_empty() && p.get("layers").is_none() {
         s.execute("keys.copy", json!({}))?;
         return s.execute("keys.delete", json!({}));
@@ -331,6 +347,9 @@ fn cut(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 fn paste(s: &mut Session, p: &Value) -> Result<Value> {
+    if s.state.text_edit.is_some() {
+        return super::text_edit::paste(s, p);
+    }
     if let Some(clip) = s.state.link_clipboard.clone() {
         return paste_links(s, clip);
     }
