@@ -218,7 +218,7 @@ pub fn open_form(app: &mut EffectcraftApp, id: &str, p: &Value) -> bool {
                 ),
             ],
         ),
-        "file.interpretFootage" if !has(p, &["frameRate", "alpha", "loop", "pixelAspect"]) => {
+        "file.interpretFootage" if !has(p, &["frameRate", "alpha", "loop", "pixelAspect", "colorProfile"]) => {
             let f = s.state.project_selection.first().and_then(|i| s.project.item(*i)).and_then(|it| match &it.kind {
                 effectcraft_engine::project::ItemKind::Footage(f) => Some(f.clone()),
                 _ => None,
@@ -236,6 +236,18 @@ pub fn open_form(app: &mut EffectcraftApp, id: &str, p: &Value) -> bool {
                     ),
                     Field::num("loop", "Loop (times)", f.loop_count as f64),
                     Field::num("pixelAspect", "Pixel aspect ratio", f.pixel_aspect),
+                    Field::choice(
+                        "colorProfile",
+                        "Color profile",
+                        &[
+                            ("Embedded / sRGB", json!("auto")),
+                            ("sRGB IEC61966-2.1", json!("srgb")),
+                            ("HDTV (Rec. 709)", json!("rec709")),
+                            ("Rec. 2020", json!("rec2020")),
+                            ("Display P3", json!("p3")),
+                        ],
+                        f.color_profile.map_or(0, |c| 1 + effectcraft_engine::project::ColorSpace::ALL.iter().position(|x| *x == c).unwrap_or(0)),
+                    ),
                 ],
             )
         }
@@ -261,7 +273,20 @@ pub fn open_form(app: &mut EffectcraftApp, id: &str, p: &Value) -> bool {
                         &[("Timecode", json!("timecode")), ("Frames", json!("frames"))],
                         usize::from(matches!(st.time_display, effectcraft_engine::project::TimeDisplayStyle::Frames)),
                     ),
+                    Field::choice(
+                        "workingSpace",
+                        "Working space",
+                        &[
+                            ("None", json!("none")),
+                            ("sRGB IEC61966-2.1", json!("srgb")),
+                            ("HDTV (Rec. 709)", json!("rec709")),
+                            ("Rec. 2020", json!("rec2020")),
+                            ("Display P3", json!("p3")),
+                        ],
+                        st.working_space.map_or(0, |c| 1 + effectcraft_engine::project::ColorSpace::ALL.iter().position(|x| *x == c).unwrap_or(0)),
+                    ),
                     Field::bool("linearize", "Linearize working space", st.linearize),
+                    Field::bool("blendLinear", "Blend colors using 1.0 gamma", st.blend_linear),
                 ],
             )
         }

@@ -106,6 +106,7 @@ fn placeholder_footage(p: &Value) -> Footage {
         codec: "Placeholder".into(),
         missing: true,
         sequence: vec![],
+        color_profile: None,
     }
 }
 
@@ -413,6 +414,15 @@ fn interpret(s: &mut Session, p: &Value) -> Result<Value> {
     };
     let loops = p.get("loop").and_then(Value::as_u64).map(|v| v.max(1) as u32);
     let par = f_p(p, "pixelAspect");
+    // Color ▸ Assign Profile: a colour space id, or "auto"/"none" for the file's own (sRGB).
+    let profile = match str_p(p, "colorProfile") {
+        Some("auto" | "none" | "") => Some(None),
+        Some(c) => match effectcraft_project::ColorSpace::parse(c) {
+            Some(cs) => Some(Some(cs)),
+            None => return Err(bad("file.interpretFootage", format!("colorProfile: srgb|rec709|rec2020|p3|auto, not `{c}`"))),
+        },
+        None => None,
+    };
     s.edit("Interpret Footage", None, |proj, _| {
         for i in &items {
             if let Some(ItemKind::Footage(f)) = proj.item_mut(*i).map(|x| &mut x.kind) {
@@ -430,6 +440,9 @@ fn interpret(s: &mut Session, p: &Value) -> Result<Value> {
                 }
                 if let Some(x) = par {
                     f.pixel_aspect = x;
+                }
+                if let Some(c) = profile {
+                    f.color_profile = c;
                 }
             }
         }
@@ -634,7 +647,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Main...",
             ["File", "Interpret Footage"],
             Some("Cmd+Alt+G"),
-            "{items?, frameRate?, alpha?: straight|premultiplied|ignore, loop?, pixelAspect?}",
+            "{items?, frameRate?, alpha?: straight|premultiplied|ignore, loop?, pixelAspect?, colorProfile?: srgb|rec709|rec2020|p3|auto}",
             has_footage_selection,
             interpret
         ),

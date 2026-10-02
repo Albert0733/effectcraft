@@ -629,6 +629,57 @@ fn timing(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(Value::Null)
 }
 
+/// Slip edit: move a layer's source (footage or precomp) under its fixed in and out points, like
+/// dragging the source-duration bar in After Effects. `delta` in seconds or `frames`; positive
+/// moves the source later. Clamped so the source still covers the in–out span. Keyframes and
+/// layer markers are in layer time, so they travel with the source.
+fn slip(s: &mut Session, p: &Value) -> Result<Value> {
+    let (cid, ids) = layers_p(s, p)?;
+    let comp = s.project.comp(cid).ok_or(EngineError::NoComp)?;
+    let fr = comp.frame_rate;
+    let delta = match (p.get("frames").and_then(Value::as_i64), f_p(p, "delta")) {
+        (Some(f), _) => fr.tick_of(f),
+        (None, Some(d)) => fr.snap_nearest(Tick::from_seconds_f64(d)),
+        _ => return Err(bad("layer.slip", "delta (seconds) or frames required")),
+    };
+    // Allowed shift per layer: the source span [lo, hi] in comp time must keep covering in..out.
+    let mut shifts: Vec<(LayerId, Tick)> = Vec::new();
+    for l in comp.layers.iter().filter(|l| ids.contains(&l.id)) {
+        if l.props.get("timeRemap").is_some() {
+            continue;
+        }
+        let dur = match &l.source {
+            LayerSource::Footage { item } => match s.project.item(*item).map(|i| &i.kind) {
+                Some(ItemKind::Footage(f)) if f.kind != effectcraft_project::FootageKind::Still => Some(Tick(f.duration.0 * f.loop_count.max(1) as i64)),
+                _ => None,
+            },
+            LayerSource::Comp { item } => s.project.comp(*item).map(|c| c.duration),
+            _ => None,
+        };
+        let Some(dur) = dur else { continue };
+        let (a, b) = (l.comp_time(Tick::ZERO), l.comp_time(dur));
+        let (lo, hi) = (a.min(b), a.max(b));
+        let (min_d, max_d) = (l.out_point - hi, l.in_point - lo);
+        if min_d > max_d {
+            continue;
+        }
+        shifts.push((l.id, delta.max(min_d).min(max_d)));
+    }
+    if shifts.is_empty() {
+        return Err(bad("layer.slip", "select a footage or precomp layer (without time remapping)"));
+    }
+    s.edit("Slip Edit", merge_p(p), |proj, _| {
+        let comp = proj.comp_mut(cid).ok_or(EngineError::NoComp)?;
+        for (id, d) in &shifts {
+            if let Some(l) = comp.layer_mut(*id) {
+                l.start_time += *d;
+            }
+        }
+        Ok(())
+    })?;
+    Ok(json!({"slipped": shifts.iter().map(|(id, d)| json!({"layer": id.0, "delta": d.seconds()})).collect::<Vec<_>>()}))
+}
+
 fn arrange(s: &mut Session, p: &Value) -> Result<Value> {
     let (cid, ids) = layers_p(s, p)?;
     let how = str_p(p, "to").unwrap_or("front").to_string();
@@ -970,6 +1021,17 @@ pub fn specs() -> Vec<CommandSpec> {
             has_layers,
             timing
         ),
+        cmd!("layer.slip", "Slip Edit", [], None, "{layers?, delta? (seconds) | frames?, merge?}", has_layers, slip),
+        cmd!("layer.slipBack", "Slip Edit 1 Frame Earlier", [], Some("Alt+PageUp"), "{layers?}", has_layers, |s, p| {
+            let mut p = p.clone();
+            p["frames"] = json!(-1);
+            slip(s, &p)
+        }),
+        cmd!("layer.slipForward", "Slip Edit 1 Frame Later", [], Some("Alt+PageDown"), "{layers?}", has_layers, |s, p| {
+            let mut p = p.clone();
+            p["frames"] = json!(1);
+            slip(s, &p)
+        }),
         cmd!("layer.arrange", "Arrange", ["Layer", "Arrange"], None, "{layers?, to: front|forward|backward|back, index?}", has_layers, arrange),
         cmd!("layer.precompose", "Pre-compose...", ["Layer"], Some("Cmd+Shift+C"), "{layers?, name?}", has_layers, precompose),
         cmd!(

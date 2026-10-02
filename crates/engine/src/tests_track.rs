@@ -100,6 +100,7 @@ fn setup(make: impl Fn(u32) -> Image + Send + Sync + 'static) -> (Session, Layer
                 codec: String::new(),
                 missing: false,
                 sequence: vec![],
+                color_profile: None,
             };
             let item = p.add_item("clip", Label::Aqua, None, ItemKind::Footage(footage));
             let comp = p.comp(cid).unwrap().clone();
@@ -408,6 +409,7 @@ fn analyze_1080p_single_point_speed() {
                 codec: String::new(),
                 missing: false,
                 sequence: vec![],
+                color_profile: None,
             };
             let item = p.add_item("hd", Label::Aqua, None, ItemKind::Footage(footage));
             let comp = p.comp(cid).unwrap().clone();

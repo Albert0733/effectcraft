@@ -520,6 +520,8 @@ mod tests_3d;
 #[cfg(test)]
 mod tests_effects;
 #[cfg(test)]
+mod tests_fidelity;
+#[cfg(test)]
 mod tests_lottie;
 #[cfg(test)]
 mod tests_menu_cmds;
