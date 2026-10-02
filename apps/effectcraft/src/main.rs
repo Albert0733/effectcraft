@@ -5,6 +5,7 @@
 //! `--control <port>` (or `EFFECTCRAFT_CONTROL_PORT`) starts a localhost JSON-lines control server;
 //! see `effectcraft_ui_egui::control` for the methods.
 
+mod audio_out;
 mod control_server;
 
 use effectcraft_ui_egui::EffectcraftApp;
@@ -69,6 +70,7 @@ fn main() -> eframe::Result {
             }));
             app.hooks.pick_open_project =
                 Some(Box::new(|| rfd::FileDialog::new().add_filter("EffectCraft Project", &["ecproj"]).pick_file().map(|p| p.to_string_lossy().to_string())));
+            app.hooks.audio_device = Some(Box::new(audio_out::open));
             if let Some(port) = control_port {
                 disable_app_nap();
                 let rx = control_server::start(port, cc.egui_ctx.clone());

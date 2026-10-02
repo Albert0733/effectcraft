@@ -1,6 +1,6 @@
 //! Smaller panels: Preview, Audio, History, Markers, Wiggler, the Home screen and placeholders.
 
-use egui::{Align2, Color32, Rect, Sense, pos2, vec2};
+use egui::{Align2, Color32, Rect, Sense, Stroke, pos2, vec2};
 use serde_json::json;
 
 use crate::dock::PanelKind;
@@ -51,6 +51,12 @@ pub fn preview(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     }
     app.auto.add("preview.loop", lr, "Loop");
     p.text(pos2(lr.max.x + 6.0, yy), Align2::LEFT_CENTER, "Loop", Tokens::ui(12.0), t.text);
+    let ar = Rect::from_min_size(pos2(rect.min.x + 90.0, yy - 8.0), vec2(16.0, 16.0));
+    if widgets::checkbox(ui, ar, app.ui.preview_audio, &t, egui::Id::new("pv-audio")).clicked() {
+        let _ = crate::menus::invoke(app, &ctx, "playback.muteAudio", json!({}));
+    }
+    app.auto.add("preview.audio", ar, "Include Audio");
+    p.text(pos2(ar.max.x + 6.0, yy), Align2::LEFT_CENTER, "Include Audio", Tokens::ui(12.0), t.text);
     yy += 24.0;
     row(&p, yy, "Range", "Work Area Extended By Current Time");
     yy += 22.0;
@@ -74,19 +80,92 @@ pub fn preview(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     }
 }
 
+/// Audio panel: L/R VU meters (dBFS, 0 to -48) with peak hold and clip indicators, fed by the
+/// audio preview; the selected layer's Audio Levels on the right.
 pub fn audio(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
+    use crate::audio::METER_FLOOR;
     let t = app.tokens;
     let p = ui.painter().with_clip_rect(rect);
-    // Level meters (silent until audio playback lands).
-    for (i, x) in [rect.min.x + 20.0, rect.min.x + 34.0].into_iter().enumerate() {
-        let r = Rect::from_min_max(pos2(x, rect.min.y + 14.0), pos2(x + 10.0, rect.max.y - 20.0));
-        p.rect_filled(r, 1.0, t.field_bg);
-        let _ = i;
+    let top = rect.min.y + 26.0;
+    let bottom = rect.max.y - 22.0;
+    if bottom - top < 40.0 {
+        return;
     }
-    for (k, db) in [0, -6, -12, -18, -24, -36, -48].iter().enumerate() {
-        let y = rect.min.y + 14.0 + (rect.height() - 34.0) * (-*db as f32 / 48.0);
-        p.text(pos2(rect.min.x + 52.0, y), Align2::LEFT_CENTER, format!("{db} dB"), Tokens::ui(10.0), t.text_faint);
-        let _ = k;
+    let y_of = |db: f32| top + (bottom - top) * (db.clamp(METER_FLOOR, 0.0) / METER_FLOOR);
+    let m = app.meter;
+    let green = Color32::from_rgb(0x3c, 0xc8, 0x5a);
+    let yellow = Color32::from_rgb(0xe6, 0xc8, 0x3c);
+    let red = Color32::from_rgb(0xe6, 0x46, 0x3c);
+    let seg_col = |db: f32| {
+        if db > -3.0 {
+            red
+        } else if db > -12.0 {
+            yellow
+        } else {
+            green
+        }
+    };
+    for c in 0..2 {
+        let x = rect.min.x + 18.0 + c as f32 * 16.0;
+        let bar = Rect::from_min_max(pos2(x, top), pos2(x + 12.0, bottom));
+        p.rect_filled(bar, 1.0, t.field_bg);
+        // Lit segments, 1.5 dB each, coloured by their level.
+        let lvl = m.level_db[c];
+        let mut db = METER_FLOOR;
+        while db < lvl.min(0.0) {
+            let hi = (db + 1.5).min(lvl);
+            p.rect_filled(Rect::from_min_max(pos2(bar.min.x + 1.0, y_of(hi)), pos2(bar.max.x - 1.0, y_of(db) - 0.5)), 0.0, seg_col(db));
+            db += 1.5;
+        }
+        if m.peak_db[c] > METER_FLOOR {
+            let py = y_of(m.peak_db[c]);
+            p.line_segment([pos2(bar.min.x, py), pos2(bar.max.x, py)], Stroke::new(2.0, seg_col(m.peak_db[c])));
+        }
+        // Clip indicator (click to reset).
+        let clip = Rect::from_min_max(pos2(bar.min.x, top - 14.0), pos2(bar.max.x, top - 4.0));
+        p.rect_filled(clip, 1.0, if m.clipped[c] { red } else { t.field_bg });
+        let id = if c == 0 { "audio.clipLeft" } else { "audio.clipRight" };
+        if ui.interact(clip, egui::Id::new(id), Sense::click()).clicked() {
+            app.meter.clipped[c] = false;
+        }
+        app.auto.add(id, clip, if c == 0 { "Left clip indicator" } else { "Right clip indicator" });
+        app.auto.add(if c == 0 { "audio.meterLeft" } else { "audio.meterRight" }, bar, &format!("{:.1} dB", m.level_db[c]));
+        p.text(pos2(bar.center().x, bottom + 9.0), Align2::CENTER_CENTER, if c == 0 { "L" } else { "R" }, Tokens::ui(10.0), t.text_dim);
+    }
+    let sx = rect.min.x + 54.0;
+    for db in [0, -6, -12, -18, -24, -30, -36, -42, -48] {
+        let y = y_of(db as f32);
+        p.line_segment([pos2(sx - 4.0, y), pos2(sx - 1.0, y)], Stroke::new(1.0, t.text_faint));
+        p.text(pos2(sx + 2.0, y), Align2::LEFT_CENTER, format!("{db:.1}"), Tokens::ui(10.0), t.text_faint);
+    }
+    p.text(pos2(sx + 30.0, top - 9.0), Align2::LEFT_CENTER, "dB", Tokens::ui(10.0), t.text_dim);
+    // Selected layer's Audio Levels.
+    let lx = rect.min.x + 120.0;
+    if rect.max.x - lx < 80.0 {
+        return;
+    }
+    let sel = app.session.state.selected_layers.first().copied();
+    let levels = sel.and_then(|id| {
+        let c = app.session.active_comp()?;
+        let l = c.layer(id)?;
+        let pr = l.props.sub("audio")?.get("levels")?;
+        Some((l.name.clone(), pr.value.as_vec2()))
+    });
+    match levels {
+        Some((name, [a, b])) => {
+            p.text(pos2(lx, top - 9.0), Align2::LEFT_CENTER, &name, Tokens::ui(11.0), t.text_dim);
+            for (i, (k, v)) in [("Left", a), ("Right", b)].into_iter().enumerate() {
+                let y = top + 12.0 + i as f32 * 20.0;
+                p.text(pos2(lx, y), Align2::LEFT_CENTER, k, Tokens::ui(12.0), t.text_dim);
+                p.text(pos2(lx + 44.0, y), Align2::LEFT_CENTER, format!("{v:+.1} dB"), Tokens::ui(12.0), t.hot_text);
+            }
+        }
+        None => {
+            p.text(pos2(lx, top + 12.0), Align2::LEFT_CENTER, "No audio layer selected", Tokens::ui(11.0), t.text_faint);
+        }
+    }
+    if app.meter.active() || app.audio.is_some() {
+        ui.ctx().request_repaint();
     }
 }
 

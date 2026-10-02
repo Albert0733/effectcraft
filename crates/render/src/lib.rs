@@ -522,4 +522,6 @@ pub fn kurbo_path(sp: &effectcraft_keyframe::ShapePath) -> kurbo::BezPath {
     effectcraft_path::to_kurbo(sp)
 }
 #[cfg(test)]
+mod tests_audio_fx;
+#[cfg(test)]
 mod tests_time;

@@ -17,6 +17,7 @@ egui = { workspace = true }
 eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit", "wayland", "x11"] }
 serde_json = { workspace = true }
 rfd = { workspace = true }
+cpal = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Same winit as eframe: macOS event-loop options (no app activation when driven by an agent).

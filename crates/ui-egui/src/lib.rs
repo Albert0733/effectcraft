@@ -5,6 +5,7 @@
 //! Everything goes through `effectcraft_engine::Session::execute` (or `menus::invoke` for
 //! frontend-only commands) so every gesture is also available to agents.
 
+pub mod audio;
 pub mod automation;
 pub mod control;
 pub mod dock;
@@ -54,6 +55,8 @@ pub struct Hooks {
     pub pick_files: Option<Box<dyn Fn(&[&str]) -> Vec<String>>>,
     pub pick_save: Option<Box<dyn Fn(&str) -> Option<String>>>,
     pub pick_open_project: Option<Box<dyn Fn() -> Option<String>>>,
+    /// Opens the audio output for preview playback (the desktop app uses cpal).
+    pub audio_device: Option<audio::AudioDeviceFactory>,
 }
 
 #[derive(Default)]
@@ -101,6 +104,14 @@ pub struct EffectcraftApp {
     pub(crate) pointer_comp: Option<[f32; 2]>,
     pub(crate) dialog_state: panels::dialogs::DialogState,
     pub integrated_titlebar: bool,
+    /// Audio preview while playing (audio clock drives playback).
+    pub audio: Option<audio::AudioPlayback>,
+    /// Audio panel VU meters.
+    pub meter: audio::Meter,
+    /// Waveform peak summaries per footage item (see `panels::waveform`).
+    pub(crate) waveforms: panels::waveform::Cache,
+    /// Last reveal shortcut and when (double-press shortcuts such as LL).
+    pub(crate) last_reveal: Option<(String, f64)>,
 }
 
 impl EffectcraftApp {
@@ -133,6 +144,10 @@ impl EffectcraftApp {
             pointer_comp: None,
             dialog_state: Default::default(),
             integrated_titlebar: false,
+            audio: None,
+            meter: Default::default(),
+            waveforms: Default::default(),
+            last_reveal: None,
         }
     }
 
@@ -244,10 +259,32 @@ impl EffectcraftApp {
             waiting: false,
             fps: c.frame_rate.as_f64(),
         };
+        self.start_audio(t);
+    }
+
+    /// Start audio preview from comp time `t` when the Preview panel includes audio, the comp
+    /// has something audible and an output device opens.
+    fn start_audio(&mut self, t: Tick) {
+        self.audio = None;
+        self.meter.clipped = [false; 2];
+        if !self.ui.preview_audio {
+            return;
+        }
+        let Some(cid) = self.session.active_comp_id() else { return };
+        let Some(c) = self.session.project.comp(cid).cloned() else { return };
+        if !effectcraft_engine::render::audio::comp_has_audio(&self.session.project, cid) {
+            return;
+        }
+        let Some(dev) = self.hooks.audio_device.as_ref().and_then(|f| f()) else { return };
+        match audio::AudioPlayback::start(dev, self.render_source(), cid, t, c.work_area.0, c.work_area.1, self.ui.preview_loop) {
+            Ok(a) => self.audio = Some(a),
+            Err(e) => log::warn!("audio preview: {e}"),
+        }
     }
 
     pub fn stop(&mut self) {
         self.playback.playing = false;
+        self.audio = None;
     }
 
     pub fn toggle_play(&mut self, now: f64) {
@@ -291,7 +328,30 @@ impl EffectcraftApp {
                 queued += 1;
             }
         }
+        if let Some(a) = &self.audio {
+            self.meter.update(a.feed.take_peaks(), now);
+        } else if self.meter.active() {
+            self.meter.update([0.0; 2], now);
+            ctx.request_repaint();
+        }
         if !self.playback.playing {
+            return;
+        }
+        // Audio clock drives playback: show the frame under the audible sample (frames that
+        // are not rendered yet are dropped, never delayed).
+        if let Some(a) = &self.audio {
+            if a.finished() {
+                self.session.set_time(fr.tick_of(wb));
+                self.stop();
+                return;
+            }
+            let target = audio::frame_of_sample(a.clock(), a.rate, fr).clamp(wa, wb);
+            self.playback.waiting = !self.frames.is_cached(&self.frame_key(cid, target, scale));
+            if target != cur {
+                self.session.set_time(fr.tick_of(target));
+                self.playback.shown += 1;
+            }
+            ctx.request_repaint();
             return;
         }
         let elapsed = now - self.playback.start_wall;

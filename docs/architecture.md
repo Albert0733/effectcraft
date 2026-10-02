@@ -71,6 +71,16 @@ its evaluated inputs, excluding the transform. Static and transform-only layers 
 editing one layer re-renders only that layer. Effects that read the clock directly are declared in
 `effects::TIME_DEPENDENT`, and a test checks every registered effect against that list.
 
+**Time effects** (Echo, Posterize Time, Timewarp…) read the layer at other times through
+`EffectHost::self_at`: the renderer renders the layer's source and masks (plus, optionally, the
+effects before it) at that layer time via `Renderer::layer_input`, cached under separate *input*
+keys, with a nesting-depth guard.
+
+**Audio** is mixed by `render::audio::mix_comp` in blocks: Audio switch, solo, Audio Levels and
+the Effect > Audio effects (`effects::audio_fx`, applied per layer with a pre-roll so blocks are
+independent). Export and preview playback share it; the desktop app plays it through cpal and the
+audio clock drives preview playback (`ui-egui::audio`).
+
 Half, Third and Quarter resolution render proportionally fewer pixels end to end.
 
 ## 5. Expressions

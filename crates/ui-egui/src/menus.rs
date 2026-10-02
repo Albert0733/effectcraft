@@ -64,6 +64,9 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("timeline.reveal.effects", "Reveal Effects", [], Some("E")),
     uic!("timeline.reveal.masks", "Reveal Masks", [], Some("M")),
     uic!("timeline.reveal.feather", "Reveal Mask Feather", [], Some("F")),
+    uic!("timeline.reveal.levels", "Reveal Audio Levels (press twice: Waveform)", [], Some("L")),
+    uic!("timeline.reveal.waveform", "Reveal Audio Waveform", [], None),
+    uic!("playback.muteAudio", "Mute Audio", ["Composition", "Preview"], None),
     uic!("timeline.collapseAll", "Collapse All", [], Some("Cmd+`")),
     uic!("window.workspace.default", "Default", ["Window", "Workspace"], Some("Shift+F10")),
     uic!("window.workspace.standard", "Standard", ["Window", "Workspace"], Some("Shift+F11")),
@@ -102,7 +105,13 @@ pub fn panel_command_id(p: PanelKind) -> String {
     format!("window.panel.{}", p.id())
 }
 
-fn reveal(app: &mut EffectcraftApp, kind: &str) {
+fn reveal(app: &mut EffectcraftApp, kind: &str, now: f64) {
+    // AE's double-press shortcuts: L then L again quickly reveals the Waveform (LL).
+    let kind = match app.last_reveal.take() {
+        Some((k, t)) if k == "levels" && kind == "levels" && now - t < 0.6 => "waveform",
+        _ => kind,
+    };
+    app.last_reveal = Some((kind.to_string(), now));
     let add = app.ui.timeline.reveal.contains(&kind.to_string());
     if add && app.ui.timeline.reveal.len() == 1 {
         app.ui.timeline.reveal.clear();
@@ -169,7 +178,7 @@ pub fn invoke(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, params: V
         return Ok(json!({"tool": tool}));
     }
     if let Some(k) = id.strip_prefix("timeline.reveal.") {
-        reveal(app, k);
+        reveal(app, k, now);
         return Ok(Value::Null);
     }
     if let Some(r) = id.strip_prefix("view.res.") {
@@ -190,6 +199,13 @@ pub fn invoke(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, params: V
         "playback.stop" => {
             app.stop();
             return Ok(Value::Null);
+        }
+        "playback.muteAudio" => {
+            app.ui.preview_audio = !app.ui.preview_audio;
+            if !app.ui.preview_audio {
+                app.audio = None;
+            }
+            return Ok(json!({"muted": !app.ui.preview_audio}));
         }
         "view.zoomIn" | "view.zoomOut" => {
             let cur = app.ui.viewer.zoom.unwrap_or_else(|| crate::panels::viewer::last_fit(ctx));

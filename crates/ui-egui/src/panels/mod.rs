@@ -15,6 +15,7 @@ pub mod render_queue;
 pub mod text_panels;
 pub mod timeline;
 pub mod viewer;
+pub mod waveform;
 
 use effectcraft_engine::Session;
 use effectcraft_engine::project::{Comp, TimeDisplayStyle};
