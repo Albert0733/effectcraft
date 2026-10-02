@@ -42,6 +42,7 @@ pub fn specs() -> Vec<CommandSpec> {
         fe!("view.res.half", "Half", ["View", "Resolution"], Some("Cmd+Shift+J"), "{}", has_comp),
         fe!("view.res.third", "Third", ["View", "Resolution"], None, "{}", has_comp),
         fe!("view.res.quarter", "Quarter", ["View", "Resolution"], Some("Cmd+Alt+Shift+J"), "{}", has_comp),
+        fe!("view.res.custom", "Custom...", ["View", "Resolution"], None, "{factor?: 1..40 (render every n-th pixel)}", has_comp),
         fe!("view.rulers", "Show Rulers", ["View"], Some("Cmd+R"), "{value?}", always),
         fe!("view.panelBackground", "Panel Background Color", [], None, "{color?: black|darkGray|mediumGray|lightGray|white|custom|#hex, pick?: true}", always),
         fe!("view.guides", "Show Guides", ["View"], Some("Cmd+;"), "{value?}", always),

@@ -24,6 +24,10 @@ pub enum Tool {
     Polygon,
     Star,
     Pen,
+    PenAdd,
+    PenDelete,
+    PenConvert,
+    MaskFeather,
     Type,
     TypeVertical,
     Brush,
@@ -49,7 +53,7 @@ impl Tool {
         &[Tool::Rotate],
         &[Tool::PanBehind],
         &[Tool::Rectangle, Tool::RoundedRect, Tool::Ellipse, Tool::Polygon, Tool::Star],
-        &[Tool::Pen],
+        &[Tool::Pen, Tool::PenAdd, Tool::PenDelete, Tool::PenConvert, Tool::MaskFeather],
         &[Tool::Type, Tool::TypeVertical],
         &[Tool::Brush],
         &[Tool::Clone],
@@ -57,7 +61,7 @@ impl Tool {
         &[Tool::RotoBrush],
         &[Tool::Puppet, Tool::PuppetStarch, Tool::PuppetBend, Tool::PuppetAdvanced, Tool::PuppetOverlap],
     ];
-    pub const ALL: [Tool; 25] = [
+    pub const ALL: [Tool; 29] = [
         Tool::Selection,
         Tool::Hand,
         Tool::Zoom,
@@ -72,6 +76,10 @@ impl Tool {
         Tool::Polygon,
         Tool::Star,
         Tool::Pen,
+        Tool::PenAdd,
+        Tool::PenDelete,
+        Tool::PenConvert,
+        Tool::MaskFeather,
         Tool::Type,
         Tool::TypeVertical,
         Tool::Brush,
@@ -100,6 +108,10 @@ impl Tool {
             Tool::Polygon => "Polygon Tool",
             Tool::Star => "Star Tool",
             Tool::Pen => "Pen Tool",
+            Tool::PenAdd => "Add Vertex Tool",
+            Tool::PenDelete => "Delete Vertex Tool",
+            Tool::PenConvert => "Convert Vertex Tool",
+            Tool::MaskFeather => "Mask Feather Tool",
             Tool::Type => "Horizontal Type Tool",
             Tool::TypeVertical => "Vertical Type Tool",
             Tool::Brush => "Brush Tool",
@@ -124,7 +136,7 @@ impl Tool {
             Tool::Rotate => Some("W"),
             Tool::PanBehind => Some("Y"),
             Tool::Rectangle | Tool::RoundedRect | Tool::Ellipse | Tool::Polygon | Tool::Star => Some("Q"),
-            Tool::Pen => Some("G"),
+            Tool::Pen | Tool::PenAdd | Tool::PenDelete | Tool::PenConvert | Tool::MaskFeather => Some("G"),
             Tool::Type | Tool::TypeVertical => Some("Cmd+T"),
             Tool::Brush | Tool::Clone | Tool::Eraser => Some("Cmd+B"),
             Tool::RotoBrush => Some("Alt+W"),
@@ -147,6 +159,10 @@ impl Tool {
             Tool::Polygon => Icon::Polygon,
             Tool::Star => Icon::Star,
             Tool::Pen => Icon::Pen,
+            Tool::PenAdd => Icon::PenAdd,
+            Tool::PenDelete => Icon::PenDelete,
+            Tool::PenConvert => Icon::PenConvert,
+            Tool::MaskFeather => Icon::MaskFeather,
             Tool::Type => Icon::Type,
             Tool::TypeVertical => Icon::TypeVertical,
             Tool::Brush => Icon::Brush,
@@ -180,6 +196,10 @@ impl Tool {
             _ => return None,
         })
     }
+    /// The Pen slot's tools (Pen, Add / Delete / Convert Vertex, Mask Feather).
+    pub fn is_pen(self) -> bool {
+        matches!(self, Tool::Pen | Tool::PenAdd | Tool::PenDelete | Tool::PenConvert | Tool::MaskFeather)
+    }
     pub fn is_shape(self) -> bool {
         matches!(self, Tool::Rectangle | Tool::RoundedRect | Tool::Ellipse | Tool::Polygon | Tool::Star)
     }
@@ -194,6 +214,8 @@ pub enum Resolution {
     Half,
     Third,
     Quarter,
+    /// View ▸ Resolution ▸ Custom: render every n-th pixel (2..=40).
+    Custom(u8),
 }
 
 impl Resolution {
@@ -205,6 +227,7 @@ impl Resolution {
             Resolution::Half => "Half",
             Resolution::Third => "Third",
             Resolution::Quarter => "Quarter",
+            Resolution::Custom(_) => "Custom",
         }
     }
     /// Render scale for a viewer magnification (and display pixel density).
@@ -226,6 +249,7 @@ impl Resolution {
             Resolution::Half => 0.5,
             Resolution::Third => 1.0 / 3.0,
             Resolution::Quarter => 0.25,
+            Resolution::Custom(n) => 1.0 / n.max(1) as f64,
         }
     }
 }
@@ -251,6 +275,15 @@ pub struct ViewerState {
     pub snap_guides: bool,
     pub lock_guides: bool,
     pub snap_grid: bool,
+    /// Grid and guide options ▸ Proportional Grid.
+    pub proportional_grid: bool,
+    /// Rulers zero point (comp pixels), moved by dragging the ruler corner.
+    pub ruler_origin: [f64; 2],
+    /// Region of Interest button armed: the next drag in the viewer draws the region.
+    pub roi_draw: bool,
+    /// The pointer is dragging in the viewer this frame (Adaptive Resolution).
+    #[serde(skip)]
+    pub interacting: bool,
     /// View ▸ Panel Background Color (`None` = theme default).
     pub pasteboard: Option<[u8; 3]>,
     pub custom_pasteboard: [u8; 3],
@@ -274,6 +307,10 @@ impl Default for ViewerState {
             snap_guides: false,
             lock_guides: false,
             snap_grid: false,
+            proportional_grid: false,
+            ruler_origin: [0.0, 0.0],
+            roi_draw: false,
+            interacting: false,
             pasteboard: None,
             custom_pasteboard: [0x80, 0x80, 0x80],
         }
@@ -311,6 +348,15 @@ pub struct TimelineState {
     /// Manual graph value range (when auto-zoom is off).
     #[serde(default)]
     pub graph_range: Option<(f64, f64)>,
+    /// Graph Editor ▸ Snap: key drags snap to the current time, other keys and frames.
+    #[serde(default = "yes")]
+    pub graph_snap: bool,
+    /// Graph Editor ▸ Show Reference Graph (the other graph type, faint, behind).
+    #[serde(default)]
+    pub graph_reference: bool,
+    /// Graph Editor ▸ Show Transform Box When Multiple Keys Are Selected.
+    #[serde(default = "yes")]
+    pub graph_transform_box: bool,
     /// Properties whose inline expression editor is collapsed.
     #[serde(default)]
     pub expr_closed: BTreeSet<u64>,
@@ -341,6 +387,9 @@ impl Default for TimelineState {
             graph_show_selected: true,
             graph_auto_zoom: true,
             graph_range: None,
+            graph_snap: true,
+            graph_reference: false,
+            graph_transform_box: true,
             expr_closed: BTreeSet::new(),
         }
     }

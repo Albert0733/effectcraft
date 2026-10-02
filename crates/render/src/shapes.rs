@@ -72,6 +72,28 @@ fn group_matrix(ctx: &EvalCtx, layer: &Layer, tr: &PropGroup) -> (Mat3, f32) {
     (m, (ctx.f(layer, tr, "opacity", 100.0) / 100.0) as f32)
 }
 
+/// Shape item (a Path, Rectangle… inside nested Shape groups) → layer space: the product of the
+/// enclosing groups' transforms. `None` when `uid` is not in the layer's contents.
+pub fn item_matrix(ctx: &EvalCtx, layer: &Layer, uid: u64) -> Option<Mat3> {
+    fn walk(ctx: &EvalCtx, layer: &Layer, g: &PropGroup, uid: u64, m: Mat3) -> Option<Mat3> {
+        for sub in g.groups() {
+            if sub.uid == uid {
+                return Some(m);
+            }
+            if sub.match_id == "group"
+                && let Some(inner) = sub.sub("contents")
+            {
+                let gm = sub.sub("transform").map(|t| group_matrix(ctx, layer, t).0).unwrap_or(Mat3::IDENTITY);
+                if let Some(r) = walk(ctx, layer, inner, uid, m * gm) {
+                    return Some(r);
+                }
+            }
+        }
+        None
+    }
+    walk(ctx, layer, layer.props.sub("contents")?, uid, Mat3::IDENTITY)
+}
+
 fn rule(ctx: &EvalCtx, layer: &Layer, g: &PropGroup) -> FillRule {
     if ctx.e(layer, g, "rule") == 1 { FillRule::EvenOdd } else { FillRule::NonZero }
 }

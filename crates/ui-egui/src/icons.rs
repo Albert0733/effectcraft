@@ -23,6 +23,10 @@ pub enum Icon {
     Polygon,
     Star,
     Pen,
+    PenAdd,
+    PenDelete,
+    PenConvert,
+    MaskFeather,
     Type,
     TypeVertical,
     Brush,
@@ -556,6 +560,25 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
         }
         Sparkle => {
             pen.fill(&[(8.0, 1.5), (9.4, 6.6), (14.5, 8.0), (9.4, 9.4), (8.0, 14.5), (6.6, 9.4), (1.5, 8.0), (6.6, 6.6)]);
+        }
+        PenAdd | PenDelete => {
+            // A small pen nib with a plus or minus beside it.
+            pen.closed(&[(6.0, 2.5), (9.0, 8.0), (6.0, 12.0), (3.0, 8.0)]);
+            pen.line(&[(6.0, 2.5), (6.0, 7.0)]);
+            pen.line(&[(10.0, 11.5), (14.5, 11.5)]);
+            if icon == PenAdd {
+                pen.line(&[(12.25, 9.25), (12.25, 13.75)]);
+            }
+        }
+        PenConvert => {
+            // An open caret: a corner vertex with two straight sides.
+            pen.line(&[(2.5, 13.0), (8.0, 3.5), (13.5, 13.0)]);
+            pen.dot(8.0, 3.5, 1.4);
+        }
+        MaskFeather => {
+            pen.closed(&[(6.0, 2.5), (9.0, 8.0), (6.0, 12.0), (3.0, 8.0)]);
+            pen.line(&[(6.0, 2.5), (6.0, 7.0)]);
+            pen.line(&[(10.5, 4.0), (12.5, 6.5), (13.5, 10.0), (12.5, 13.5)]);
         }
     }
 }
