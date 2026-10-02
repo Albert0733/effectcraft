@@ -222,6 +222,26 @@ pub fn instantiate(spec: &EffectSpec, ids: &mut Ids, instance_name: &str, layer_
     g
 }
 
+/// Effects whose output depends on [`EffectCtx::time`] directly (not only through animated
+/// parameters). The renderer's layer cache folds the layer time into the key for these.
+/// The `time_dependence_is_declared` test checks the list against every registered effect.
+pub const TIME_DEPENDENT: &[&str] = &[
+    "ec.distort.wavewarp",
+    "ec.distort.ripple",
+    "ec.generate.radiowaves",
+    "ec.stylize.scatter",
+    "ec.stylize.strobe",
+    "ec.noise.noise",
+    "ec.noise.addgrain",
+    "ec.noise.noisealpha",
+    "ec.noise.noisehlsauto",
+];
+
+/// See [`TIME_DEPENDENT`].
+pub fn is_time_dependent(id: &str) -> bool {
+    TIME_DEPENDENT.contains(&id)
+}
+
 /// Run an effect on a buffer.
 pub fn apply(spec: &EffectSpec, ctx: &EffectCtx, buf: Buf) -> Buf {
     (spec.render)(ctx, buf)
@@ -263,6 +283,36 @@ mod tests {
             let out = apply(s, &ctx, Buf { img: img.clone(), offset: [0.0, 0.0], scale: 1.0 });
             assert!(!out.img.is_empty(), "{}", s.id);
             assert!(out.img.data.iter().all(|p| p[3].is_finite() && p[3] >= -1e-4 && p[3] <= 1.0001), "{} alpha out of range", s.id);
+        }
+    }
+
+    /// Effects that read the clock must be listed in `TIME_DEPENDENT`, or the layer cache would
+    /// serve stale pixels. Render every effect at two times with default parameters (plus
+    /// "random…" switches turned on) and require identical output from unlisted ones.
+    #[test]
+    fn time_dependence_is_declared() {
+        let mut img = Image::new(40, 30);
+        for y in 0..30 {
+            for x in 0..40 {
+                let a = if (6..34).contains(&x) && (5..25).contains(&y) { 1.0 } else { 0.3 };
+                img.set(x, y, [((x * 7 + y * 3) % 11) as f32 / 11.0 * a, y as f32 / 30.0 * a, 0.4 * a, a]);
+            }
+        }
+        for s in registry() {
+            let mut params = Params { values: s.params.iter().map(|p| (p.id.to_string(), p.default.clone())).collect() };
+            for (k, v) in params.values.iter_mut() {
+                if k.to_lowercase().contains("random") && matches!(v, Value::Bool(_)) {
+                    *v = Value::Bool(true);
+                }
+            }
+            let run = |t: f64| {
+                let ctx = EffectCtx { params: &params, time: t, layer_size: [40.0, 30.0], seed: 7, adjustment: false };
+                apply(s, &ctx, Buf { img: img.clone(), offset: [0.0, 0.0], scale: 1.0 }).img
+            };
+            let (a, b) = (run(0.0), run(1.37));
+            if a != b {
+                assert!(is_time_dependent(s.id), "{} depends on time but is not in TIME_DEPENDENT", s.id);
+            }
         }
     }
 }

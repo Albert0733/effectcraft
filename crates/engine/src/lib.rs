@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use effectcraft_project::{Comp, ItemId, Layer, LayerId, Project, Uid};
 use effectcraft_raster::Image;
-use effectcraft_render::{ExprHost, FootageSource, NoFootage, RenderOpts, Renderer};
+use effectcraft_render::{ExprHost, FootageSource, LayerCache, NoFootage, RenderOpts, Renderer};
 use effectcraft_time::Tick;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -141,6 +141,8 @@ pub struct Session {
     pub events: Vec<Event>,
     /// Commands executed: (id, params).
     pub journal: Vec<(String, Value)>,
+    /// Processed-layer pixels reused across frames and edits (content-keyed, never stale).
+    pub layer_cache: Arc<LayerCache>,
 }
 
 impl Default for Session {
@@ -160,6 +162,7 @@ impl Default for Session {
             render_job: None,
             events: vec![],
             journal: vec![],
+            layer_cache: Arc::new(LayerCache::default()),
         }
     }
 }
@@ -319,6 +322,7 @@ impl Session {
     pub fn render(&self, comp: ItemId, t: Tick, opts: RenderOpts) -> Image {
         let mut r = Renderer::new(&self.project, self.footage.as_ref(), opts);
         r.expr = self.expr.as_deref();
+        r.cache = Some(&self.layer_cache);
         r.comp_frame(comp, t)
     }
 

@@ -162,7 +162,12 @@ impl EffectcraftApp {
     }
 
     pub fn render_source(&self) -> RenderSource {
-        RenderSource { project: self.session.project.clone(), footage: self.session.footage.clone(), expr: self.session.expr.clone() }
+        RenderSource {
+            project: self.session.project.clone(),
+            footage: self.session.footage.clone(),
+            expr: self.session.expr.clone(),
+            layer_cache: self.session.layer_cache.clone(),
+        }
     }
 
     /// The render scale used by the viewer right now.
@@ -178,13 +183,26 @@ impl EffectcraftApp {
         FrameKey { revision: self.session.revision, comp: comp.0, frame, scale: (scale * 1000.0).round() as u32 }
     }
 
-    /// Request a frame render (no-op if cached/in flight).
+    /// Request a prefetch frame render (no-op if cached/in flight).
     pub fn request_frame(&self, comp: ItemId, frame: i64, scale: f64) {
+        self.request_frame_with(comp, frame, scale, false);
+    }
+
+    /// Request the frame on screen: rendered before any queued prefetch.
+    pub fn request_frame_urgent(&self, comp: ItemId, frame: i64, scale: f64) {
+        self.request_frame_with(comp, frame, scale, true);
+    }
+
+    fn request_frame_with(&self, comp: ItemId, frame: i64, scale: f64, urgent: bool) {
         let Some(c) = self.session.project.comp(comp) else { return };
         let key = self.frame_key(comp, frame, scale);
         let t = c.frame_rate.tick_of(frame);
         let opts = RenderOpts { scale, motion_blur: true, guides: true, draft: self.ui.viewer.fast_preview };
-        self.frames.request(&self.render_source(), key, comp, t, opts);
+        if urgent {
+            self.frames.request_urgent(&self.render_source(), key, comp, t, opts);
+        } else {
+            self.frames.request(&self.render_source(), key, comp, t, opts);
+        }
     }
 
     // ---------------------------------------------------------------- playback
@@ -226,7 +244,15 @@ impl EffectcraftApp {
         let (wa, wb) = (fr.frame_at(c.work_area.0), fr.frame_at(c.work_area.1 - c.frame_duration()));
         // Prefetch ahead.
         let cur = fr.frame_at(self.session.time());
-        let ahead = (self.frames_parallelism() * 2).max(4) as i64;
+        // While paused (scrubbing, editing) the viewer's frame comes first: prefetch only a few
+        // frames, and only once it is done, so prefetch never delays what is on screen.
+        let ahead = if self.playback.playing {
+            (self.frames_parallelism() * 2).max(4) as i64
+        } else if self.frames.urgent_pending() {
+            0
+        } else {
+            (self.frames_parallelism() / 2).max(2) as i64
+        };
         let mut queued = self.frames.inflight();
         for k in 0..ahead * 3 {
             if queued >= ahead as usize {

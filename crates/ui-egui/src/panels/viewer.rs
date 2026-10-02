@@ -184,11 +184,15 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     // Frame.
     let ppp = ctx.pixels_per_point();
     let scale = app.viewer_scale(zoom, ppp);
+    if !app.playback.playing {
+        // Queue the frame on screen before any prefetch.
+        app.request_frame_urgent(cid, comp.frame_rate.frame_at(app.session.time()), scale);
+    }
     crate::tick_playback(app, &ctx, scale);
     let time = app.session.time();
     let frame = comp.frame_rate.frame_at(time);
     let key = app.frame_key(cid, frame, scale);
-    app.request_frame(cid, frame, scale);
+    app.request_frame_urgent(cid, frame, scale);
     if let Some(img) = app.frames.get(&key) {
         let stale = app.viewer_tex.as_ref().is_none_or(|(_, k)| *k != key);
         if stale {

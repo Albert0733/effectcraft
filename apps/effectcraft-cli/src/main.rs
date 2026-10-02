@@ -13,6 +13,7 @@
 //!     [--work-area] [--fps N] [--resolution full|half|third|quarter|K] [--quality best|draft] [--channels rgb|rgba]
 //!     [--jpeg-quality N] [--bitrate KBPS] [--prores proxy|lt|standard|hq|4444|4444xq] [--audio auto|on|off]
 //! effectcraft-cli render F.ecproj --queue                    render the project's Render Queue
+//! effectcraft-cli bench [--comp C] [--time S] [--scale K] [--n N] [--play N]   render timings
 //! effectcraft-cli mcp [--bridge PORT]                         MCP server on stdio
 //!
 //! Project:  --project F.ecproj (or a positional *.ecproj) | --demo | --empty   (default: demo; mcp: empty)
@@ -40,12 +41,16 @@ const USAGE: &str = "usage: effectcraft-cli <info|commands|exec|run|props|get|se
   render [--comp C] --out FILE [--format F] [--start S] [--end S] [--work-area] [--fps N]
          [--resolution full|half|third|quarter|K] [--quality best|draft] [--channels rgb|rgba]
          [--jpeg-quality N] [--bitrate KBPS] [--prores PROFILE] [--audio auto|on|off] | --queue
+  bench [--comp C] [--time S] [--scale K] [--n N] [--play N]   per-layer/effect render timings;
+                                           --play N renders N consecutive frames with/without the layer cache
   mcp [--bridge PORT]                      MCP server (JSON-RPC over stdio)
 options: --project F.ecproj | --demo | --empty   --save | --save-as F   --bridge PORT   --json
 <comp>: id or name, '-' = active comp; <layer>: id, '#n' or name; <value>: JSON or bare string";
 
 /// Options that take a value.
 const VALUED: &[&str] = &[
+    "--n",
+    "--play",
     "--params",
     "--project",
     "--bridge",
@@ -231,6 +236,7 @@ fn emit(v: &Value, json_out: bool) {
 fn run(cmd: &str, args: &Args, json_out: bool) -> Result<(), Failure> {
     match cmd {
         "render" => render(args, json_out)?,
+        "bench" => bench_cmd(args)?,
         "info" => {
             let mut b = backend(args, true)?;
             let p = tool(&mut b, "get_project", json!({}))?;
@@ -529,4 +535,132 @@ fn render(args: &Args, json_out: bool) -> Result<(), Failure> {
         emit(&json!({"rendered": results}), true);
     }
     Ok(())
+}
+
+/// `bench`: time one frame N times without the layer cache (per-layer and per-effect breakdown),
+/// and optionally `--play N` consecutive frames with and without the cache.
+fn bench_cmd(args: &Args) -> Result<(), Failure> {
+    let mut s = effectcraft_host::session();
+    match &args.project {
+        Some(p) => s.execute("file.open", json!({"path": p})),
+        None => s.execute("file.openDemoProject", json!({})),
+    }
+    .map_err(|e| Failure::Error(e.to_string()))?;
+    if let Some(c) = args.opt("--comp") {
+        s.execute("comp.open", json!({"comp": c})).map_err(|e| Failure::Error(e.to_string()))?;
+    }
+    let cid = s.active_comp_id().ok_or_else(|| Failure::Error("no composition".into()))?;
+    let t = Tick::from_seconds_f64(args.num("--time")?.unwrap_or(3.0));
+    let opts = RenderOpts { scale: args.num("--scale")?.unwrap_or(1.0), ..Default::default() };
+    bench(&s, cid, t, opts.clone(), args.num("--n")?.unwrap_or(10.0).max(1.0) as usize);
+    if let Some(n) = args.num("--play")? {
+        bench_play(&s, cid, t, opts, n.max(1.0) as usize);
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------- benchmark helpers
+
+use effectcraft_engine::Session;
+use effectcraft_engine::project::ItemId;
+use effectcraft_render::{LayerCache, LayerTiming, RenderOpts, Renderer};
+use effectcraft_time::Tick;
+
+fn median(v: &mut [f64]) -> f64 {
+    v.sort_by(f64::total_cmp);
+    if v.is_empty() { 0.0 } else { v[v.len() / 2] }
+}
+
+fn min(v: &[f64]) -> f64 {
+    v.iter().copied().fold(f64::INFINITY, f64::min)
+}
+
+/// CPU time of the whole process (all threads) in ms: a load-independent measure of work.
+fn cpu_ms() -> f64 {
+    cpu_time::ProcessTime::try_now().map(|t| t.as_duration().as_secs_f64() * 1e3).unwrap_or(0.0)
+}
+
+/// One frame: (wall ms, CPU ms, per-layer timings).
+fn render_timed(s: &Session, cid: ItemId, t: Tick, opts: RenderOpts, cache: Option<&LayerCache>) -> (f64, f64, Vec<LayerTiming>) {
+    let prof = std::sync::Mutex::new(Vec::<LayerTiming>::new());
+    let mut r = Renderer::new(&s.project, s.footage.as_ref(), opts);
+    r.expr = s.expr.as_deref();
+    r.cache = cache;
+    r.profile = Some(&prof);
+    let c0 = cpu_ms();
+    let t0 = std::time::Instant::now();
+    let img = r.comp_frame(cid, t);
+    let ms = t0.elapsed().as_secs_f64() * 1e3;
+    let cpu = cpu_ms() - c0;
+    std::hint::black_box(&img);
+    (ms, cpu, prof.into_inner().unwrap_or_default())
+}
+
+type LayerRow = (usize, String, Vec<f64>, Vec<f64>, Vec<(String, Vec<f64>)>);
+
+/// `frame --bench N`: render the same frame N times without the layer cache (the full cost of a
+/// frame) and print min/median frame time plus min per-layer and per-effect times.
+fn bench(s: &Session, cid: ItemId, t: Tick, opts: RenderOpts, n: usize) {
+    let mut totals = Vec::with_capacity(n);
+    let mut cpus = Vec::with_capacity(n);
+    let mut per_layer: Vec<LayerRow> = Vec::new();
+    for _ in 0..n {
+        let (ms, cpu, prof) = render_timed(s, cid, t, opts, None);
+        totals.push(ms);
+        cpus.push(cpu);
+        for (i, lt) in prof.into_iter().enumerate() {
+            if per_layer.len() <= i {
+                per_layer.push((lt.depth, lt.layer.clone(), vec![], vec![], vec![]));
+            }
+            let e = &mut per_layer[i];
+            e.2.push(lt.process_ms);
+            e.3.push(lt.composite_ms);
+            for (j, (id, ms)) in lt.effects.into_iter().enumerate() {
+                if e.4.len() <= j {
+                    e.4.push((id, vec![]));
+                }
+                e.4[j].1.push(ms);
+            }
+        }
+    }
+    eprintln!(
+        "bench (no cache): {n} runs at scale {}: wall min {:.2} ms, median {:.2} ms; CPU (all threads) min {:.2} ms",
+        opts.scale,
+        min(&totals),
+        median(&mut totals),
+        min(&cpus)
+    );
+    for (d, name, p, c, fx) in per_layer {
+        eprintln!("  {:indent$}{name:<28} process {:8.2} ms  composite {:8.2} ms  (min)", "", min(&p), min(&c), indent = d * 2);
+        for (id, v) in fx {
+            eprintln!("  {:indent$}  fx {id:<30} {:8.2} ms", "", min(&v), indent = d * 2);
+        }
+    }
+}
+
+/// `frame --bench-play N`: render N consecutive frames from `t` as playback does, without and
+/// with the layer cache, and print per-frame times.
+fn bench_play(s: &Session, cid: ItemId, t: Tick, opts: RenderOpts, n: usize) {
+    let Some(comp) = s.project.comp(cid) else { return };
+    let f0 = comp.frame_rate.frame_at(t);
+    let cache = LayerCache::default();
+    for (label, c) in [("no cache", None), ("layer cache", Some(&cache))] {
+        let runs: Vec<(f64, f64)> = (0..n as i64)
+            .map(|i| {
+                let (ms, cpu, _) = render_timed(s, cid, comp.frame_rate.tick_of(f0 + i), opts, c);
+                (ms, cpu)
+            })
+            .collect();
+        let mut v: Vec<f64> = runs.iter().map(|r| r.0).collect();
+        let mean = v.iter().sum::<f64>() / n as f64;
+        let cpu = runs.iter().map(|r| r.1).sum::<f64>() / n as f64;
+        eprintln!(
+            "bench-play ({label}): {n} frames at scale {}: wall mean {mean:.2} ms, median {:.2} ms, min {:.2} ms; CPU mean {cpu:.2} ms",
+            opts.scale,
+            median(&mut v),
+            min(&v)
+        );
+    }
+    let st = cache.stats();
+    eprintln!("  layer cache: {} hits, {} misses, {} entries, {:.1} MB", st.hits, st.misses, st.entries, st.bytes as f64 / 1e6);
 }
