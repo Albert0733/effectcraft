@@ -107,8 +107,11 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     }
 
     // ---------------------------------------------------------------- Text / Paragraph / Animation
+    // While the layer's text is edited in the viewer, the text sections show and change the
+    // selected characters.
+    let text_target = crate::panels::text_panels::text_target(app).filter(|tt| tt.layer == layer.id.0);
     if matches!(layer.source, LayerSource::Text)
-        && let Some(doc) = effectcraft_engine::render::text::source_text(&ectx, &layer)
+        && let Some(doc) = text_target.as_ref().map(|tt| tt.doc.clone()).or_else(|| effectcraft_engine::render::text::source_text(&ectx, &layer))
     {
         divider(&p, x0, w, y - 4.0, &t);
         y = text_section(app, ui, &p, &layer, &doc, x0, w, y + 4.0, &mut actions);
@@ -166,6 +169,10 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         p.rect_filled(Rect::from_min_size(pos2(rect.max.x - 5.0, by), vec2(3.0, bar_h)), 1.5, t.text_faint.gamma_multiply(0.6));
     }
     for (id, params) in actions {
+        let params = match &text_target {
+            Some(tt) if id == "layer.setText" => tt.params(params),
+            _ => params,
+        };
         if let Err(e) = crate::menus::invoke(app, &ctx, &id, params) {
             app.ui.status = e;
         }

@@ -9,6 +9,7 @@ pub mod audio;
 pub mod automation;
 pub mod control;
 pub mod dock;
+pub mod dock_ui;
 pub mod frames;
 pub mod header;
 pub mod icons;
@@ -65,6 +66,10 @@ pub enum Dialog {
     TrackApply,
     /// Crash recovery: offer the latest auto-save (`EffectcraftApp::recovery`).
     Recovery,
+    /// Composition/Layer Marker (double-click a marker).
+    Marker,
+    /// Layer ▸ Pre-compose.
+    Precompose,
 }
 
 /// Host hooks provided by the native app (file pickers etc.).
@@ -140,6 +145,9 @@ pub struct EffectcraftApp {
     applied_prefs: Option<u64>,
     /// A previous run that didn't exit cleanly (shown by `Dialog::Recovery`).
     pub recovery: Option<effectcraft_engine::autosave::Recovery>,
+    /// Docked groups laid out last frame: (active panel, group rect) — `~` maximizes the one
+    /// under the pointer.
+    pub(crate) dock_rects: Vec<(PanelKind, egui::Rect)>,
 }
 
 impl EffectcraftApp {
@@ -178,6 +186,7 @@ impl EffectcraftApp {
             last_reveal: None,
             applied_prefs: None,
             recovery: None,
+            dock_rects: vec![],
         }
         .with_ui_commands()
     }
@@ -243,6 +252,8 @@ impl EffectcraftApp {
     pub fn set_workspace(&mut self, name: &str) {
         self.ui.workspace = name.to_string();
         self.ui.dock = self.ui.saved_workspaces.get(name).cloned().unwrap_or_else(|| dock::workspace(name));
+        self.ui.floating = self.ui.saved_floating.get(name).cloned().unwrap_or_default();
+        self.ui.maximized = None;
     }
 
     /// Built-in workspaces followed by the saved ones (Window ▸ Workspace ▸ Save as New Workspace).
@@ -253,6 +264,14 @@ impl EffectcraftApp {
     }
 
     pub fn show_panel(&mut self, p: PanelKind) {
+        if let Some(f) = self.ui.floating.iter_mut().find(|f| f.panels.contains(&p)) {
+            f.active = f.panels.iter().position(|x| *x == p).unwrap_or(0);
+            self.ui.focused = p;
+            return;
+        }
+        if self.ui.maximized.is_some_and(|m| m != p) {
+            self.ui.maximized = None;
+        }
         if !self.ui.dock.contains(p) {
             let near = match p {
                 PanelKind::Layer | PanelKind::Flowchart => PanelKind::Composition,
@@ -283,7 +302,13 @@ impl EffectcraftApp {
             let full = self.ui.viewer.res.scale(zoom, ppp);
             return full.min((full * 0.5).max(self.session.prefs.adaptive_limit()));
         }
-        self.ui.viewer.res.scale(zoom, ppp)
+        let full = self.ui.viewer.res.scale(zoom, ppp);
+        // Fast Previews ▸ Adaptive Resolution / Fast Draft: lower resolution while dragging.
+        let (_, k) = self.session.state.viewer.fast_previews.render(self.ui.viewer.interacting);
+        if k < 1.0 && self.ui.viewer.res == state::Resolution::Auto {
+            return full.min((full * 0.5).max(self.session.prefs.adaptive_limit()));
+        }
+        full
     }
 
     pub fn frame_key(&self, comp: ItemId, frame: i64, scale: f64) -> FrameKey {
@@ -293,8 +318,13 @@ impl EffectcraftApp {
     /// Hash of the comp viewer's 3D view camera (0 for the active camera view).
     pub fn view_hash(&self, comp: ItemId) -> u64 {
         use std::hash::{Hash, Hasher};
-        let Some(cam) = self.session.view_camera(comp) else { return 0 };
         let mut h = std::collections::hash_map::DefaultHasher::new();
+        // The region of interest changes what is rendered too.
+        let roi = self.session.state.region_of_interest.filter(|_| self.session.active_comp_id() == Some(comp));
+        if let Some(r) = roi {
+            r.map(f64::to_bits).hash(&mut h);
+        }
+        let Some(cam) = self.session.view_camera(comp) else { return if roi.is_some() { h.finish() | 1 } else { 0 } };
         for row in cam.view.0 {
             for v in row {
                 v.to_bits().hash(&mut h);
@@ -319,7 +349,10 @@ impl EffectcraftApp {
         let Some(c) = self.session.project.comp(comp) else { return };
         let key = self.frame_key(comp, frame, scale);
         let t = c.frame_rate.tick_of(frame);
-        let opts = RenderOpts { scale, motion_blur: true, guides: true, draft: self.ui.viewer.fast_preview, view: self.session.view_camera(comp) };
+        let (draft, _) = self.session.state.viewer.fast_previews.render(self.ui.viewer.interacting);
+        let roi = self.session.state.region_of_interest.filter(|_| self.session.active_comp_id() == Some(comp));
+        let opts =
+            RenderOpts { scale, motion_blur: true, guides: true, draft: self.ui.viewer.fast_preview || draft, view: self.session.view_camera(comp), roi };
         if urgent {
             self.frames.request_urgent(&self.render_source(), key, comp, t, opts);
         } else {
@@ -646,6 +679,7 @@ impl EffectcraftApp {
         header::show(self, ui, header);
         let body = egui::Rect::from_min_max(egui::pos2(full.min.x + 4.0, header.max.y + 2.0), egui::pos2(full.max.x - 4.0, full.max.y - 4.0));
         self.dock_area(ui, body);
+        panels::precomp::mini_flowchart(self, &ctx);
         panels::dialogs::show(self, &ctx);
         self.draw_toast(ui, full);
     }
@@ -679,61 +713,6 @@ impl EffectcraftApp {
                 }
             }
         }
-    }
-
-    /// Tab labels that name what the panel shows, as After Effects does: "Composition Intro",
-    /// "Effect Controls Title", "Properties: Title", and the Timeline tab named after its comp.
-    fn tab_titles(&self) -> Vec<(PanelKind, String)> {
-        let mut out = Vec::new();
-        let Some(comp) = self.session.active_comp() else { return out };
-        let cname = self.session.active_comp_id().and_then(|id| self.session.project.item(id)).map(|i| i.name.clone()).unwrap_or_default();
-        out.push((PanelKind::Composition, format!("Composition {cname}")));
-        out.push((PanelKind::Timeline, cname));
-        if let Some(l) = self.session.state.selected_layers.first().and_then(|id| comp.layer(*id)) {
-            out.push((PanelKind::EffectControls, format!("Effect Controls {}", l.name)));
-            out.push((PanelKind::Properties, format!("Properties: {}", l.name)));
-        }
-        out
-    }
-
-    fn dock_area(&mut self, ui: &mut egui::Ui, body: egui::Rect) {
-        let t = self.tokens;
-        let mut dock = std::mem::replace(&mut self.ui.dock, dock::DockNode::Tabs { panels: vec![], active: 0 });
-        let mut groups = Vec::new();
-        dock::layout(ui, &mut dock, body, &t, "", &mut groups, &mut self.auto);
-        let mut actions = Vec::new();
-        let titles = self.tab_titles();
-        let title = |p: PanelKind| titles.iter().find(|(k, _)| *k == p).map(|(_, s)| s.clone()).unwrap_or_else(|| p.title().to_string());
-        for g in &groups {
-            actions.extend(dock::draw_group_chrome(ui, g, self.ui.focused, &t, &mut self.auto, &title));
-        }
-        self.ui.dock = dock;
-        for g in &groups {
-            let Some(p) = g.panels.get(g.active).copied() else { continue };
-            if g.content.height() < 2.0 {
-                continue; // a collapsed stacked panel: header only
-            }
-            self.auto.add(&format!("panel.{}", p.id()), g.content, p.title());
-            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(g.content).id_salt(("panel", p.id())));
-            child.set_clip_rect(g.content.intersect(ui.clip_rect()));
-            panels::show(self, &mut child, p, g.content);
-        }
-        for a in actions {
-            match a {
-                dock::DockAction::Activate(p) => {
-                    self.ui.dock.activate(p);
-                }
-                dock::DockAction::ToggleStacked(p) => {
-                    self.ui.dock.toggle_stacked(p);
-                }
-                dock::DockAction::Focus(p) => self.ui.focused = p,
-                dock::DockAction::Close(p) => self.ui.dock.close(p),
-                dock::DockAction::PanelMenu(p, pos) => {
-                    ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("panel-menu"), (p, pos)));
-                }
-            }
-        }
-        panels::panel_menu_popup(self, ui);
     }
 }
 

@@ -724,6 +724,60 @@ fn source_text_reading_and_string_methods() {
 }
 
 #[test]
+fn source_text_style_api() {
+    let mut f = fx();
+    let doc = |f: &Fx, e: &str| -> TextDoc {
+        match f.ev(f.title, "text/sourceText", e, 0.0) {
+            Ok(Value::Text(d)) => *d,
+            r => panic!("{e}: {r:?}"),
+        }
+    };
+    // Getters read the first character's style.
+    assert_close!(f.num("thisComp.layer('Title').text.sourceText.style.fontSize", 0.0), 40.0);
+    assert_close!(f.num("thisComp.layer('Title').text.sourceText.style.isAllCaps ? 1 : 0", 0.0), 0.0);
+    assert_close!(f.num("thisComp.layer('Title').text.sourceText.style.autoLeading ? 1 : 0", 0.0), 1.0);
+    assert_close!(f.num("thisComp.layer('Title').text.sourceText.style.leading", 0.0), 48.0);
+    assert_close!(f.num("thisComp.layer('Title').text.sourceText.style.fillColor[1]", 0.0), 1.0);
+    assert_close!(f.num("thisComp.layer('Title').text.sourceText.style.setFontSize(12).fontSize", 0.0), 12.0);
+    // Setters chain and return a styled document.
+    let d = doc(&f, "text.sourceText.style.setFontSize(80).setFillColor([1, 0, 0]).setAllCaps(true)");
+    assert_eq!(d.text, "Hello");
+    assert!(d.is_uniform());
+    assert_eq!((d.size, d.fill, d.all_caps), (80.0, [1.0, 0.0, 0.0, 1.0], true));
+    // Character ranges create runs; setText replaces the text.
+    let d = doc(&f, "text.sourceText.style.setText('Hi there').setFontSize(20, 3, 5).setFauxBold(true, 0, 2)");
+    assert_eq!(d.text, "Hi there");
+    let sizes: Vec<(usize, f64, bool)> = d.runs().iter().map(|r| (r.len, r.style.size, r.style.faux_bold)).collect();
+    assert_eq!(sizes, vec![(2, 40.0, true), (1, 40.0, false), (5, 20.0, false)]);
+    // getStyleAt reads a styled document per character (and at a time).
+    {
+        let l = f.layer_mut(f.title);
+        let p = l.props.prop_mut("text/sourceText").unwrap();
+        let Value::Text(d) = &mut p.value else { panic!() };
+        d.apply_style(1..3, |s| s.size = 99.0);
+    }
+    assert_close!(f.num("thisComp.layer('Title').text.sourceText.getStyleAt(2, 0).fontSize", 0.0), 99.0);
+    assert_close!(f.num("thisComp.layer('Title').text.sourceText.getStyleAt(4).fontSize", 0.0), 40.0);
+    // Returning the own style keeps its runs; plain strings keep the first character's style.
+    let d = doc(&f, "text.sourceText.style");
+    assert_eq!(d.runs().len(), 3);
+    let d = doc(&f, "'Bye'");
+    assert_eq!((d.text.as_str(), d.size), ("Bye", 40.0));
+    // Paragraph setters.
+    let d = doc(&f, "text.sourceText.style.setJustification('CENTER_JUSTIFY').setStartIndent(12).setSpaceBefore(4).setEveryLineComposer(false)");
+    assert_eq!(d.justify, effectcraft_keyframe::Justify::Center);
+    assert_eq!((d.indent_left, d.space_before), (12.0, 4.0));
+    assert_close!(f.num("thisComp.layer('Title').text.sourceText.style.setStartIndent(7).startIndent", 0.0), 7.0);
+    // createStyle sets only what's given and keeps the existing runs.
+    let d = doc(&f, "thisComp.layer('Title').text.sourceText.createStyle().setTsume(50).setBaselineOption('superscript')");
+    assert_eq!(d.text, "Hello");
+    assert!(d.runs().iter().all(|r| r.style.tsume == 50.0 && r.style.baseline == effectcraft_keyframe::BaselineOption::Superscript));
+    assert_eq!(d.runs().len(), 3);
+    // Non-text properties have no style.
+    assert!(f.ev(f.a, ROT, "transform.rotation.style.fontSize", 0.0).is_err());
+}
+
+#[test]
 fn numbers_to_source_text() {
     let f = fx();
     assert_eq!(f.text("Math.round(time * 10) / 10", 1.25), "1.3");

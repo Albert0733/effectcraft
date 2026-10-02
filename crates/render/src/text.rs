@@ -13,7 +13,7 @@ use effectcraft_project::{Layer, PropGroup};
 use effectcraft_raster::Image;
 use effectcraft_text::path_text::{self, PathMeasure};
 use effectcraft_text::selectors::{self, BasedOn, Mode, Range, Shape, Wiggly};
-use effectcraft_text::{CharGlyph, TextLayout, char_glyph, layout_doc};
+use effectcraft_text::{CharGlyph, TextLayout, char_glyph_style, layout_doc};
 
 use crate::eval::EvalCtx;
 
@@ -402,6 +402,8 @@ pub struct PlacedGlyph {
     pub fill: [f32; 4],
     pub stroke: [f32; 4],
     pub stroke_width: f64,
+    /// The character's style fills it (Character panel fill on).
+    pub apply_fill: bool,
 }
 
 impl PlacedGlyph {
@@ -479,14 +481,14 @@ pub fn text_geom(ctx: &EvalCtx, layer: &Layer) -> Option<TextGeom> {
     let mut subs: Vec<Option<char>> = lay.glyphs.iter().zip(&xfs).map(|(g, x)| substitute(g.ch, x)).collect();
     let relayout = subs.iter().zip(&xfs).any(|(s, x)| s.is_some() && x.char_align == 3);
     let (lay, xfs) = if relayout {
-        let src: Vec<char> = (if doc.all_caps { doc.text.to_uppercase() } else { doc.text.clone() }).chars().collect();
-        let mut chars = src.clone();
+        let mut chars: Vec<char> = doc.text.chars().collect();
         for (g, s) in lay.glyphs.iter().zip(&subs) {
             if let (Some(c), Some(slot)) = (s, chars.get_mut(g.char_index)) {
                 *slot = *c;
             }
         }
-        let d2 = TextDoc { text: chars.into_iter().collect(), all_caps: false, ..doc.clone() };
+        // Same character count: the style runs still line up.
+        let d2 = TextDoc { text: chars.into_iter().collect(), ..doc.clone() };
         let l2 = layout_doc(&d2);
         let by_char: std::collections::HashMap<usize, CharXf> = lay.glyphs.iter().zip(&xfs).map(|(g, x)| (g.char_index, *x)).collect();
         let x2: Vec<CharXf> = l2.glyphs.iter().map(|g| by_char.get(&g.char_index).copied().unwrap_or_default()).collect();
@@ -506,11 +508,11 @@ pub fn text_geom(ctx: &EvalCtx, layer: &Layer) -> Option<TextGeom> {
         while li_end < n && lay.glyphs[li_end].line_index == line {
             li_end += 1;
         }
-        let em = doc.size / 1000.0;
         let mut pen = 0.0;
         let (mut la, mut la_k) = (0.0, 0.0);
         for gi in li_start..li_end {
             let x = &xfs[gi];
+            let em = lay.styles.get(lay.glyphs[gi].run).map_or(doc.size, |s| s.size) / 1000.0;
             pen += x.track_before * em;
             shift[gi] = pen;
             pen += x.track_after * em;
@@ -581,7 +583,7 @@ pub fn text_geom(ctx: &EvalCtx, layer: &Layer) -> Option<TextGeom> {
         }
     }
 
-    let base_stroke_w = if doc.apply_stroke { doc.stroke_width } else { 0.0 };
+    let base = doc.base_style();
     let mut glyphs = Vec::with_capacity(n);
     for gi in 0..n {
         let g = &lay.glyphs[gi];
@@ -597,10 +599,12 @@ pub fn text_geom(ctx: &EvalCtx, layer: &Layer) -> Option<TextGeom> {
             x.rotation_y = 0.0;
         }
         let o = origin(gi);
+        let st = lay.styles.get(g.run).unwrap_or(&base);
+        let size = st.size;
         // Outline (substituted characters aligned in the original slot).
         let (outline, adv) = match subs[gi] {
             Some(c) => {
-                let (p, a) = char_glyph(&doc, c);
+                let (p, a) = char_glyph_style(st, c);
                 let dx = match x.char_align {
                     0 => 0.0,
                     2 => g.advance - a,
@@ -614,8 +618,8 @@ pub fn text_geom(ctx: &EvalCtx, layer: &Layer) -> Option<TextGeom> {
             continue;
         }
         let pivot = match extents.get(&group_key(g)) {
-            Some(e) if grouping != 0 => [(e[0] + e[2]) / 2.0 + galign[0] / 100.0 * (e[2] - e[0]), (e[1] + e[3]) / 2.0 + galign[1] / 100.0 * doc.size],
-            _ => [o[0] + adv / 2.0 + galign[0] / 100.0 * adv, o[1] + galign[1] / 100.0 * doc.size],
+            Some(e) if grouping != 0 => [(e[0] + e[2]) / 2.0 + galign[0] / 100.0 * (e[2] - e[0]), (e[1] + e[3]) / 2.0 + galign[1] / 100.0 * size],
+            _ => [o[0] + adv / 2.0 + galign[0] / 100.0 * adv, o[1] + galign[1] / 100.0 * size],
         };
         // Outline relative to the pivot.
         let local = kurbo::Affine::translate((o[0] - pivot[0], o[1] - pivot[1])) * outline;
@@ -635,9 +639,10 @@ pub fn text_geom(ctx: &EvalCtx, layer: &Layer) -> Option<TextGeom> {
             }
             None => Mat4::translate(vec3(pivot[0] + x.offset[0], pivot[1] + x.offset[1], x.offset[2])) * char_m,
         };
-        let fill = adjust_color(doc.fill, x.fill, x.fill_k, x.fill_hsb, x.fill_opacity);
-        let stroke = adjust_color(doc.stroke, x.stroke, x.stroke_k, x.stroke_hsb, x.stroke_opacity);
-        glyphs.push(PlacedGlyph { local, m, xf: x, fill, stroke, stroke_width: (base_stroke_w + x.stroke_width).max(0.0) });
+        let fill = adjust_color(st.fill, x.fill, x.fill_k, x.fill_hsb, x.fill_opacity);
+        let stroke = adjust_color(st.stroke, x.stroke, x.stroke_k, x.stroke_hsb, x.stroke_opacity);
+        let base_stroke_w = if st.apply_stroke { st.stroke_width } else { 0.0 };
+        glyphs.push(PlacedGlyph { local, m, xf: x, fill, stroke, stroke_width: (base_stroke_w + x.stroke_width).max(0.0), apply_fill: st.apply_fill });
     }
     Some(TextGeom { doc, glyphs, fill_stroke, blend })
 }
@@ -654,21 +659,21 @@ type Pass = (usize, bool);
 fn passes(geom: &TextGeom) -> Vec<Pass> {
     let doc = &geom.doc;
     let n = geom.glyphs.len();
-    let fill_on = doc.apply_fill;
+    let fill_on = |i: usize| geom.glyphs[i].apply_fill;
     let has_stroke = |i: usize| geom.glyphs[i].stroke_width > 0.0;
     let mut v = Vec::with_capacity(n * 2);
     match geom.fill_stroke {
         1 => {
             v.extend((0..n).filter(|i| has_stroke(*i)).map(|i| (i, true)));
-            v.extend((0..n).filter(|_| fill_on).map(|i| (i, false)));
+            v.extend((0..n).filter(|i| fill_on(*i)).map(|i| (i, false)));
         }
         2 => {
-            v.extend((0..n).filter(|_| fill_on).map(|i| (i, false)));
+            v.extend((0..n).filter(|i| fill_on(*i)).map(|i| (i, false)));
             v.extend((0..n).filter(|i| has_stroke(*i)).map(|i| (i, true)));
         }
         _ => {
             for i in 0..n {
-                let f = fill_on.then_some((i, false));
+                let f = fill_on(i).then_some((i, false));
                 let s = has_stroke(i).then_some((i, true));
                 if doc.stroke_over_fill {
                     v.extend(f);

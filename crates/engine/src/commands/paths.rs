@@ -63,6 +63,13 @@ fn masks_for(s: &Session, p: &Value) -> Result<(ItemId, Vec<(LayerId, Uid)>)> {
         v.dedup();
         return Ok((cid, v));
     }
+    // A shape layer's Path item by uid.
+    if let Some(uid) = p.get("mask").and_then(Value::as_u64) {
+        let (cid, lid) = layer_p(s, p, "path")?;
+        if s.project.comp(cid).and_then(|c| c.layer(lid)).and_then(|l| l.props.find_group(uid)).is_some_and(|g| g.match_id == "path") {
+            return Ok((cid, vec![(lid, uid)]));
+        }
+    }
     target_masks(s, p)
 }
 
@@ -230,7 +237,7 @@ fn free_transform(s: &mut Session, p: &Value) -> Result<Value> {
         for (lid, uid) in &targets {
             let l = layer_mut(proj, cid, *lid)?;
             let lt = l.layer_time(t);
-            let Some(g) = l.props.sub_mut("masks").and_then(|m| m.find_group_mut(*uid)) else { continue };
+            let Some(g) = l.props.find_group_mut(*uid).filter(|g| super::mask::is_path_group(g)) else { continue };
             let roto = is_roto(g);
             let Some(pr) = g.get_mut("path") else { continue };
             let KV::Path(mut sp) = pr.value_at(lt) else { continue };

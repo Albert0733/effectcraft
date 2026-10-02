@@ -140,11 +140,14 @@ pub struct RenderOpts {
     pub draft: bool,
     /// 3D view camera override (viewer Front/Top/Custom views); None = the comp's active camera.
     pub view: Option<three_d::CameraState>,
+    /// Region of interest `[x, y, w, h]` in comp pixels (viewer only): the top-level frame covers
+    /// just this rectangle, and only its pixels are composited.
+    pub roi: Option<[f64; 4]>,
 }
 
 impl Default for RenderOpts {
     fn default() -> Self {
-        RenderOpts { scale: 1.0, motion_blur: true, guides: false, draft: false, view: None }
+        RenderOpts { scale: 1.0, motion_blur: true, guides: false, draft: false, view: None, roi: None }
     }
 }
 
@@ -346,6 +349,26 @@ impl<'a> Renderer<'a> {
         let s = self.opts.scale;
         let w = ((comp.width as f64 * s).round() as u32).max(1);
         let h = ((comp.height as f64 * s).round() as u32).max(1);
+        // Region of interest on a comp with 3D layers: render the frame and crop it.
+        if self.depth == 0
+            && let Some(r) = self.opts.roi
+            && comp.has_3d()
+        {
+            let full = Renderer { opts: RenderOpts { roi: None, ..self.opts }, ..*self }.comp_frame(comp_id, t);
+            let (x0, y0) = ((r[0] * s).round().max(0.0) as u32, (r[1] * s).round().max(0.0) as u32);
+            let (rw, rh) = (((r[2] * s).round() as u32).max(1), ((r[3] * s).round() as u32).max(1));
+            let mut out = Image::new(rw, rh);
+            for y in 0..rh.min(full.height.saturating_sub(y0)) {
+                for x in 0..rw.min(full.width.saturating_sub(x0)) {
+                    out.data[(y * rw + x) as usize] = full.data[((y + y0) * full.width + x + x0) as usize];
+                }
+            }
+            return out;
+        }
+        let (w, h) = match self.roi_offset() {
+            Some((_, _, rw, rh)) => (rw, rh),
+            None => (w, h),
+        };
         let mut canvas = Image::new(w, h);
         if self.depth > 16 {
             return canvas;
@@ -739,12 +762,35 @@ impl<'a> Renderer<'a> {
         }
     }
 
+    /// The region of interest of a top-level 2D frame: (x, y) offset of the output in output
+    /// pixels and its size. `None` renders the whole comp (no ROI, or a nested comp).
+    fn roi_offset(&self) -> Option<(f64, f64, u32, u32)> {
+        let r = self.opts.roi.filter(|_| self.depth == 0)?;
+        let s = self.opts.scale;
+        if r[2] <= 0.0 || r[3] <= 0.0 {
+            return None;
+        }
+        Some(((r[0] * s).round(), (r[1] * s).round(), ((r[2] * s).round() as u32).max(1), ((r[3] * s).round() as u32).max(1)))
+    }
+
+    /// Scaled comp pixel → output pixel: the region of interest's offset.
+    fn out_matrix(&self) -> Mat3 {
+        match self.roi_offset() {
+            Some((x, y, _, _)) => Mat3::translate(vec2(-x, -y)),
+            None => Mat3::IDENTITY,
+        }
+    }
+
     /// Buffer pixel → output pixel matrix for the layer at the context time.
     fn buf_matrix(&self, ctx: &EvalCtx, layer: &Layer, buf: &Buf) -> Mat3 {
         let s = self.opts.scale;
         let (l2c, _) = ctx.layer_to_comp(layer);
         let l2c = self.outer.map_or(l2c, |o| o * l2c);
-        Mat3::scale(vec2(s, s)) * l2c * Mat3::scale(vec2(1.0 / buf.scale, 1.0 / buf.scale)) * Mat3::translate(vec2(-buf.offset[0], -buf.offset[1]))
+        self.out_matrix()
+            * Mat3::scale(vec2(s, s))
+            * l2c
+            * Mat3::scale(vec2(1.0 / buf.scale, 1.0 / buf.scale))
+            * Mat3::translate(vec2(-buf.offset[0], -buf.offset[1]))
     }
 
     /// Motion-blur sub-samples for a layer (1 = no motion blur).
@@ -947,7 +993,8 @@ impl<'a> Renderer<'a> {
         let _ = masks::apply(ctx, layer, &mut foot);
         let mut matte = Image::new(canvas.width, canvas.height);
         self.place(ctx, layer, &foot, &mut matte, BlendMode::Normal, 1.0);
-        let mut below = Buf { img: canvas.clone(), offset: [0.0; 2], scale: self.opts.scale };
+        let o = self.roi_offset().map(|(x, y, _, _)| [-x, -y]).unwrap_or([0.0; 2]);
+        let mut below = Buf { img: canvas.clone(), offset: o, scale: self.opts.scale };
         // Effects run in the working space, not the linear blending space.
         if let Some(c) = self.pipe.from_blend() {
             color::convert(&mut below.img, &c);
@@ -1014,6 +1061,8 @@ pub fn render_frame(project: &Project, comp: ItemId, t: Tick, scale: f64) -> Ima
 mod tests;
 #[cfg(test)]
 mod tests_remap;
+#[cfg(test)]
+mod tests_roi;
 #[cfg(test)]
 mod tests_styles;
 

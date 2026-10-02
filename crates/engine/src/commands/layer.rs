@@ -67,92 +67,65 @@ fn new_adjustment(s: &mut Session, p: &Value) -> Result<Value> {
     new_solid_like(s, p, true)
 }
 
-fn text_doc_from(p: &Value, base: TextDoc) -> TextDoc {
-    let mut d = base;
+/// Parameters of `layer.setText` / `layer.newText` that aren't text attributes.
+const NOT_ATTRS: &[&str] = &["layer", "layers", "comp", "merge", "text", "range", "position", "edit"];
+
+/// Apply `layer.setText` keys to `d`: `text` replaces characters `r` (or everything), then each
+/// character / paragraph / document attribute applies to `r` (or everything).
+fn apply_text_params(cmd: &str, p: &Value, d: &mut TextDoc, r: Option<std::ops::Range<usize>>) -> Result<()> {
+    let mut r = r;
     if let Some(t) = str_p(p, "text") {
-        d.text = t.to_string();
+        match r.clone() {
+            Some(rr) => {
+                d.replace_range(rr.clone(), t, None);
+                r = Some(rr.start..rr.start + t.chars().count());
+            }
+            None => d.set_text(t),
+        }
     }
-    if let Some(v) = f_p(p, "size") {
-        d.size = v.max(1.0);
+    let Some(obj) = p.as_object() else { return Ok(()) };
+    for (k, v) in obj {
+        if NOT_ATTRS.contains(&k.as_str()) {
+            continue;
+        }
+        if !d.set_attr(k, v, r.clone()).map_err(|e| bad(cmd, e))? {
+            return Err(bad(cmd, format!("unknown text attribute {k}")));
+        }
     }
-    if let Some(v) = str_p(p, "font") {
-        d.font = v.to_string();
-    }
-    if let Some(v) = str_p(p, "style") {
-        d.style = v.to_string();
-    }
-    if let Some(c) = color_p(p, "fill") {
-        d.fill = [c[0], c[1], c[2], 1.0];
-    }
-    if let Some(c) = color_p(p, "stroke") {
-        d.stroke = [c[0], c[1], c[2], 1.0];
-        d.apply_stroke = true;
-    }
-    if let Some(v) = f_p(p, "strokeWidth") {
-        d.stroke_width = v.max(0.0);
-        d.apply_stroke = v > 0.0;
-    }
-    if let Some(v) = f_p(p, "tracking") {
-        d.tracking = v;
-    }
-    match p.get("leading") {
-        Some(Value::Number(n)) => d.leading = n.as_f64(),
-        // "auto" or null: Auto Leading (120% of the font size).
-        Some(Value::String(_) | Value::Null) => d.leading = None,
-        _ => {}
-    }
-    if let Some(v) = b_p(p, "applyFill") {
-        d.apply_fill = v;
-    }
-    if let Some(v) = b_p(p, "applyStroke") {
-        d.apply_stroke = v;
-    }
-    if let Some(v) = b_p(p, "allCaps") {
-        d.all_caps = v;
-    }
-    if let Some(v) = b_p(p, "smallCaps") {
-        d.small_caps = v;
-    }
-    if let Some(v) = f_p(p, "hScale") {
-        d.h_scale = v.clamp(1.0, 1000.0);
-    }
-    if let Some(v) = f_p(p, "vScale") {
-        d.v_scale = v.clamp(1.0, 1000.0);
-    }
-    if let Some(v) = f_p(p, "baselineShift") {
-        d.baseline_shift = v;
-    }
-    if let Some(v) = b_p(p, "strokeOverFill") {
-        d.stroke_over_fill = v;
-    }
-    if let Some(v) = b_p(p, "fauxBold") {
-        d.faux_bold = v;
-    }
-    if let Some(v) = b_p(p, "fauxItalic") {
-        d.faux_italic = v;
-    }
-    if let Some(j) = str_p(p, "justify") {
-        // AE's seven Paragraph alignment buttons.
-        d.justify = match j.to_ascii_lowercase().as_str() {
-            "center" | "centre" => Justify::Center,
-            "right" => Justify::Right,
-            "justify" | "justifyleft" | "justifylastleft" => Justify::JustifyLastLeft,
-            "justifycenter" | "justifylastcenter" => Justify::JustifyLastCenter,
-            "justifyright" | "justifylastright" => Justify::JustifyLastRight,
-            "justifyall" => Justify::JustifyAll,
-            _ => Justify::Left,
-        };
-    }
-    d
+    Ok(())
+}
+
+fn text_range_p(p: &Value) -> Option<std::ops::Range<usize>> {
+    let a = p.get("range")?.as_array()?;
+    let g = |i: usize| a.get(i).and_then(Value::as_u64).map(|x| x as usize);
+    let (x, y) = (g(0)?, g(1).or(g(0))?);
+    Some(x.min(y)..x.max(y))
 }
 
 fn new_text(s: &mut Session, p: &Value) -> Result<Value> {
     let cid = comp_id(s, p)?;
     let comp = s.project.comp(cid).ok_or(EngineError::NoComp)?.clone();
-    let doc = text_doc_from(p, TextDoc { text: "Text".into(), justify: Justify::Center, ..Default::default() });
-    let pos = p.get("position").and_then(|v| v.as_array()).map(|a| [a[0].as_f64().unwrap_or(0.0), a.get(1).and_then(Value::as_f64).unwrap_or(0.0)]);
+    let mut doc = TextDoc { text: "Text".into(), justify: Justify::Center, ..Default::default() };
+    // A paragraph box given in comp space: the layer sits at its centre.
+    let bx = p.get("box").and_then(Value::as_array).map(|a| [0, 1, 2, 3].map(|i| a.get(i).and_then(Value::as_f64).unwrap_or(0.0)));
+    let mut q = p.clone();
+    if let Some(o) = q.as_object_mut() {
+        o.remove("box");
+    }
+    apply_text_params("layer.newText", &q, &mut doc, None)?;
+    let mut pos = p.get("position").and_then(|v| v.as_array()).map(|a| [a[0].as_f64().unwrap_or(0.0), a.get(1).and_then(Value::as_f64).unwrap_or(0.0)]);
+    if let Some([x, y, w, h]) = bx {
+        let (w, h) = (w.abs().max(1.0), h.abs().max(1.0));
+        doc.box_size = Some([w, h]);
+        doc.box_pos = [-w / 2.0, -h / 2.0];
+        pos = Some([x + w / 2.0, y + h / 2.0]);
+        if p.get("justify").is_none() {
+            doc.set_attr("justify", &json!("left"), None).map_err(|e| bad("layer.newText", e))?;
+        }
+    }
+    let edit = b_p(p, "edit").unwrap_or(false);
     let id = s.edit("New Text Layer", None, |proj, st| {
-        let name: String = doc.text.lines().next().unwrap_or("Text").chars().take(40).collect();
+        let name: String = doc.text.lines().next().unwrap_or("").chars().take(40).collect();
         let mut l = build::layer(proj, &comp, if name.is_empty() { "Text" } else { &name }, LayerSource::Text, (comp.width, comp.height), None);
         if let Some(pr) = l.props.prop_mut("text/sourceText") {
             pr.value = KV::Text(Box::new(doc.clone()));
@@ -162,7 +135,12 @@ fn new_text(s: &mut Session, p: &Value) -> Result<Value> {
         {
             pr.value = KV::Vec3([pos[0], pos[1], 0.0]);
         }
-        insert_layer(proj, st, cid, l)
+        let n = doc.char_len();
+        let id = insert_layer(proj, st, cid, l)?;
+        if edit {
+            st.text_edit = Some(super::text_edit::TextEdit { layer: id, anchor: 0, caret: n, created: true, ..Default::default() });
+        }
+        Ok(id)
     })?;
     Ok(json!({"layer": id.0}))
 }
@@ -715,15 +693,65 @@ fn arrange(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(Value::Null)
 }
 
+/// Layer ▸ Pre-compose. `mode: move` (default; "Move all attributes into the new composition")
+/// nests the selected layers as they are; `mode: leave` ("Leave all attributes in", one footage,
+/// solid or precomp layer) nests only the layer's source, sized to it, and keeps the layer's
+/// transform, masks, effects and timing in the current comp. `adjustDuration` (move) trims the
+/// new comp to the selected layers' span; `open` opens the new comp.
 fn precompose(s: &mut Session, p: &Value) -> Result<Value> {
+    let c = "layer.precompose";
     let (cid, ids) = layers_p(s, p)?;
     if ids.is_empty() {
-        return Err(bad("layer.precompose", "no layers"));
+        return Err(bad(c, "no layers"));
     }
     let name = str_p(p, "name").unwrap_or("Pre-comp 1").to_string();
     let comp = s.project.comp(cid).ok_or(EngineError::NoComp)?.clone();
+    let leave = match str_p(p, "mode").unwrap_or("move") {
+        "move" => false,
+        "leave" => true,
+        x => return Err(bad(c, format!("mode: move|leave, got `{x}`"))),
+    };
+    let adjust = b_p(p, "adjustDuration").unwrap_or(false);
+    if leave {
+        let [lid] = ids[..] else { return Err(bad(c, "\"Leave all attributes\" needs exactly one layer")) };
+        let layer = comp.layer(lid).ok_or(EngineError::NoComp)?.clone();
+        let Some(src_item) = layer.source.item() else {
+            return Err(bad(c, "\"Leave all attributes\" is available for footage, solid and precomp layers only"));
+        };
+        let (w, h) = effectcraft_render::source_size(&s.project, &layer);
+        let (w, h) = if w == 0 || h == 0 { (comp.width, comp.height) } else { (w, h) };
+        let dur = match s.project.item(src_item).map(|i| &i.kind) {
+            Some(ItemKind::Comp(nc)) => nc.duration,
+            Some(ItemKind::Footage(f)) if f.duration > Tick(0) => f.duration,
+            _ => comp.duration,
+        };
+        let new = s.edit("Pre-compose", None, |proj, st| {
+            let mut inner = Comp::new(w, h, comp.frame_rate, dur);
+            inner.background = comp.background;
+            let mut il = build::layer(proj, &inner, &layer.name, layer.source.clone(), (w, h), Some(dur));
+            il.name = layer.name.clone();
+            inner.layers.push(il);
+            let iid = proj.add_item(&name, Label::Sandstone, None, ItemKind::Comp(inner.into()));
+            let l = layer_mut(proj, cid, lid)?;
+            l.source = LayerSource::Comp { item: iid };
+            l.name = name.clone();
+            st.selected_layers = vec![lid];
+            Ok((iid, lid))
+        })?;
+        if b_p(p, "open").unwrap_or(false) {
+            s.open_comp(new.0);
+        }
+        return Ok(json!({"comp": new.0.0, "layer": new.1.0}));
+    }
+    let span = {
+        let sel: Vec<&effectcraft_project::Layer> = comp.layers.iter().filter(|l| ids.contains(&l.id)).collect();
+        let a = sel.iter().map(|l| l.in_point).min().unwrap_or(Tick(0)).max(Tick(0));
+        let b = sel.iter().map(|l| l.out_point).max().unwrap_or(comp.duration).min(comp.duration);
+        (a, b)
+    };
+    let (offset, dur) = if adjust && span.1 > span.0 { (span.0, span.1 - span.0) } else { (Tick(0), comp.duration) };
     let new = s.edit("Pre-compose", None, |proj, st| {
-        let mut inner = Comp::new(comp.width, comp.height, comp.frame_rate, comp.duration);
+        let mut inner = Comp::new(comp.width, comp.height, comp.frame_rate, dur);
         inner.background = comp.background;
         inner.layers = comp.layers.iter().filter(|l| ids.contains(&l.id)).cloned().collect();
         for l in &mut inner.layers {
@@ -733,10 +761,16 @@ fn precompose(s: &mut Session, p: &Value) -> Result<Value> {
             if l.track_matte.is_some_and(|m| !ids.contains(&m.layer)) {
                 l.track_matte = None;
             }
+            l.start_time -= offset;
+            l.in_point -= offset;
+            l.out_point -= offset;
         }
         let iid = proj.add_item(&name, Label::Sandstone, None, ItemKind::Comp(inner.into()));
-        let mut l = build::layer(proj, &comp, &name, LayerSource::Comp { item: iid }, (comp.width, comp.height), Some(comp.duration));
+        let mut l = build::layer(proj, &comp, &name, LayerSource::Comp { item: iid }, (comp.width, comp.height), Some(dur));
         l.name = name.clone();
+        l.start_time = offset;
+        l.in_point = offset;
+        l.out_point = offset + dur;
         let c = proj.comp_mut(cid).ok_or(EngineError::NoComp)?;
         let at = c.layers.iter().position(|l| ids.contains(&l.id)).unwrap_or(0);
         c.layers.retain(|l| !ids.contains(&l.id));
@@ -745,6 +779,9 @@ fn precompose(s: &mut Session, p: &Value) -> Result<Value> {
         st.selected_layers = vec![lid];
         Ok((iid, lid))
     })?;
+    if b_p(p, "open").unwrap_or(false) {
+        s.open_comp(new.0);
+    }
     Ok(json!({"comp": new.0.0, "layer": new.1.0}))
 }
 
@@ -852,20 +889,40 @@ fn add_shape_item(s: &mut Session, p: &Value) -> Result<Value> {
 fn set_text(s: &mut Session, p: &Value) -> Result<Value> {
     let (cid, lid) = layer_p(s, p, "layer.setText")?;
     let t = s.time();
+    let range = text_range_p(p);
+    // Character attributes with only a caret (no selected text) set the insertion style.
+    if let Some(r) = range.clone().filter(|r| r.is_empty() && str_p(p, "text").is_none())
+        && s.state.text_edit.as_ref().is_some_and(|e| e.layer == lid)
+        && let Some(doc) = super::text_edit::layer_doc(s, lid)
+        && doc.char_len() > 0
+        && let Some(obj) = p.as_object()
+    {
+        let e = s.state.text_edit.as_mut().expect("checked");
+        let mut st = e.pending.clone().unwrap_or_else(|| doc.insertion_style(r.start));
+        let mut any = false;
+        for (k, v) in obj {
+            any |= effectcraft_keyframe::text_doc::apply_char_attr(&mut st, k, v).map_err(|m| bad("layer.setText", m))?;
+        }
+        if any {
+            e.pending = Some(st);
+        }
+        s.bump();
+    }
     s.edit("Edit Text", merge_p(p), |proj, _| {
         let l = layer_mut(proj, cid, lid)?;
         let lt = l.layer_time(t);
         let pr = l.props.prop_mut("text/sourceText").ok_or_else(|| bad("layer.setText", "not a text layer"))?;
-        let cur = match pr.value_at(lt) {
+        let mut doc = match pr.value_at(lt) {
             KV::Text(d) => *d,
+            KV::Str(t) => TextDoc::plain(&t),
             _ => TextDoc::default(),
         };
-        let doc = text_doc_from(p, cur);
+        apply_text_params("layer.setText", p, &mut doc, range.clone())?;
         pr.set_value_at(lt, KV::Text(Box::new(doc.clone())));
         if let Some(first) = doc.text.lines().next()
             && str_p(p, "text").is_some()
             && !first.is_empty()
-            && l.name.starts_with("Text")
+            && (l.name.starts_with("Text") || l.name.is_empty())
         {
             l.name = first.chars().take(40).collect();
         }
@@ -973,7 +1030,15 @@ fn with_layer(p: &Value, lid: LayerId) -> Value {
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
-        cmd!("layer.newText", "Text", ["Layer", "New"], Some("Cmd+Alt+Shift+T"), "{text?, size?, font?, fill?, position? [x,y], justify?}", has_comp, new_text),
+        cmd!(
+            "layer.newText",
+            "Text",
+            ["Layer", "New"],
+            Some("Cmd+Alt+Shift+T"),
+            "{text?, position? [x,y], box? [x,y,w,h] (paragraph text, comp space), vertical?, edit? (start editing), font?, style?, size?, fill?, stroke?, applyFill?, applyStroke?, strokeWidth?, tracking?, leading?, baselineShift?, hScale?, vScale?, tsume?, fauxBold?, fauxItalic?, allCaps?, smallCaps?, baseline?, superscript?, subscript?, kerning?, ligatures?, justify?, indentLeft?, indentRight?, indentFirst?, spaceBefore?, spaceAfter?, direction?, composer?, hangingPunctuation?, strokeOverFill?} (attributes as layer.setText)",
+            has_comp,
+            new_text
+        ),
         cmd!("layer.newSolid", "Solid...", ["Layer", "New"], Some("Cmd+Y"), "{name?, color? #hex|[r,g,b], width?, height?}", has_comp, new_solid),
         cmd!("layer.newNull", "Null Object", ["Layer", "New"], Some("Cmd+Alt+Shift+Y"), "{name?}", has_comp, new_null),
         cmd!(
@@ -1033,7 +1098,15 @@ pub fn specs() -> Vec<CommandSpec> {
             slip(s, &p)
         }),
         cmd!("layer.arrange", "Arrange", ["Layer", "Arrange"], None, "{layers?, to: front|forward|backward|back, index?}", has_layers, arrange),
-        cmd!("layer.precompose", "Pre-compose...", ["Layer"], Some("Cmd+Shift+C"), "{layers?, name?}", has_layers, precompose),
+        cmd!(
+            "layer.precompose",
+            "Pre-compose...",
+            ["Layer"],
+            Some("Cmd+Shift+C"),
+            "{layers?, name?, mode?: move|leave, adjustDuration?, open?}",
+            has_layers,
+            precompose
+        ),
         cmd!(
             "layer.addMask",
             "New Mask",
@@ -1058,7 +1131,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Edit Text",
             [],
             None,
-            "{layer?, text?, size?, font?, style?, fill?, stroke?, applyFill?, applyStroke?, strokeWidth?, tracking?, leading?: px|\"auto\", justify?: left|center|right|justifyLeft|justifyCenter|justifyRight|justifyAll, allCaps?, smallCaps?, fauxBold?, fauxItalic?, hScale? %, vScale? %, baselineShift? px, strokeOverFill?}",
+            "{layer?, range?: [start, end] (characters; default all), text?, font?, style?, size?, fill?, stroke?, applyFill?, applyStroke?, strokeWidth?, tracking?, leading?: px|\"auto\", baselineShift? px, hScale? %, vScale? %, tsume? %, fauxBold?, fauxItalic?, allCaps?, smallCaps?, baseline?: normal|superscript|subscript, superscript?, subscript?, kerning?: metrics|optical|number, ligatures?, justify?: left|center|right|justifyLeft|justifyCenter|justifyRight|justifyAll, indentLeft?, indentRight?, indentFirst?, spaceBefore?, spaceAfter?, direction?: ltr|rtl, composer?: everyLine|singleLine, hangingPunctuation?, strokeOverFill?, box?: [x,y,w,h]|null (layer space), vertical?}",
             has_layers,
             set_text
         ),

@@ -52,76 +52,7 @@ impl ShapePath {
     }
 }
 
-/// Horizontal paragraph alignment.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Justify {
-    #[default]
-    Left,
-    Center,
-    Right,
-    JustifyLastLeft,
-    JustifyLastCenter,
-    JustifyLastRight,
-    JustifyAll,
-}
-
-/// The value of a text layer's Source Text (hold-interpolated).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct TextDoc {
-    pub text: String,
-    pub font: String,
-    pub style: String,
-    pub size: f64,
-    pub fill: [f32; 4],
-    pub stroke: [f32; 4],
-    pub stroke_width: f64,
-    pub apply_fill: bool,
-    pub apply_stroke: bool,
-    pub stroke_over_fill: bool,
-    pub tracking: f64,
-    /// None = auto (120% of size).
-    pub leading: Option<f64>,
-    pub justify: Justify,
-    pub baseline_shift: f64,
-    pub h_scale: f64,
-    pub v_scale: f64,
-    pub faux_bold: bool,
-    pub faux_italic: bool,
-    pub all_caps: bool,
-    pub small_caps: bool,
-    /// Paragraph text box (width, height) with top-left at `box_pos`; None = point text.
-    pub box_size: Option<[f64; 2]>,
-    pub box_pos: [f64; 2],
-}
-
-impl Default for TextDoc {
-    fn default() -> Self {
-        TextDoc {
-            text: String::new(),
-            font: "Inter".into(),
-            style: "Regular".into(),
-            size: 72.0,
-            fill: [1.0, 1.0, 1.0, 1.0],
-            stroke: [0.0, 0.0, 0.0, 1.0],
-            stroke_width: 0.0,
-            apply_fill: true,
-            apply_stroke: false,
-            stroke_over_fill: true,
-            tracking: 0.0,
-            leading: None,
-            justify: Justify::Left,
-            baseline_shift: 0.0,
-            h_scale: 100.0,
-            v_scale: 100.0,
-            faux_bold: false,
-            faux_italic: false,
-            all_caps: false,
-            small_caps: false,
-            box_size: None,
-            box_pos: [0.0, 0.0],
-        }
-    }
-}
+pub use crate::text_doc::{Justify, TextDoc};
 
 /// A gradient: colour stops `(position 0..1, rgba)` and opacity stops `(position, alpha)`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -345,10 +276,13 @@ impl Value {
             Value::Text(t) => {
                 if let Some(s) = j.as_str() {
                     let mut t = (**t).clone();
-                    t.text = s.to_string();
+                    t.set_text(s);
                     Some(Value::Text(Box::new(t)))
                 } else {
-                    serde_json::from_value::<TextDoc>(j.clone()).ok().map(|t| Value::Text(Box::new(t)))
+                    serde_json::from_value::<TextDoc>(j.clone()).ok().map(|mut t| {
+                        t.normalize();
+                        Value::Text(Box::new(t))
+                    })
                 }
             }
             Value::Layer(_) => Some(Value::Layer(j.as_u64())),

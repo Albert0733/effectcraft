@@ -1,0 +1,305 @@
+//! Composition viewer state that agents and the CLI can drive too: snapping, Show Channel and
+//! exposure, snapshots, Fast Previews, guides dragged out of the rulers, and the Pen tool for
+//! shape layers (`shape.newPath`).
+
+use effectcraft_keyframe::ShapePath;
+use effectcraft_project::LayerSource;
+use effectcraft_project::build::{self, Ids};
+use effectcraft_render::RenderOpts;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+
+use super::{CommandSpec, always, b_p, bad, comp_id, f_p, has_comp, merge_p, str_p};
+use crate::viewer::{Channel, Snapshot};
+use crate::{EngineError, Result, Session, VertexRef, cmd};
+
+/// Composition ▸ Preview ▸ Fast Previews modes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FastPreviews {
+    #[default]
+    Off,
+    AdaptiveResolution,
+    Draft,
+    FastDraft,
+    Wireframe,
+}
+
+impl FastPreviews {
+    pub const ALL: [FastPreviews; 5] =
+        [FastPreviews::Off, FastPreviews::AdaptiveResolution, FastPreviews::Draft, FastPreviews::FastDraft, FastPreviews::Wireframe];
+    pub fn id(self) -> &'static str {
+        match self {
+            FastPreviews::Off => "off",
+            FastPreviews::AdaptiveResolution => "adaptive",
+            FastPreviews::Draft => "draft",
+            FastPreviews::FastDraft => "fastDraft",
+            FastPreviews::Wireframe => "wireframe",
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            FastPreviews::Off => "Off (Final Quality)",
+            FastPreviews::AdaptiveResolution => "Adaptive Resolution",
+            FastPreviews::Draft => "Draft",
+            FastPreviews::FastDraft => "Fast Draft",
+            FastPreviews::Wireframe => "Wireframe",
+        }
+    }
+    pub fn from_name(s: &str) -> Option<FastPreviews> {
+        let n = s.to_ascii_lowercase().replace([' ', '_', '-'], "");
+        FastPreviews::ALL.into_iter().find(|m| m.id().to_ascii_lowercase() == n || m.label().to_ascii_lowercase().replace(' ', "").starts_with(&n))
+    }
+    /// Render options for the viewer: (draft quality, resolution factor while interacting).
+    pub fn render(self, interacting: bool) -> (bool, f64) {
+        match self {
+            FastPreviews::Off => (false, 1.0),
+            FastPreviews::AdaptiveResolution => (false, if interacting { 0.25 } else { 1.0 }),
+            FastPreviews::Draft => (true, 1.0),
+            FastPreviews::FastDraft => (true, if interacting { 0.25 } else { 1.0 }),
+            FastPreviews::Wireframe => (true, 1.0),
+        }
+    }
+}
+
+/// Viewer display options (Show Channel, exposure, snapshot, Fast Previews).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ViewOptions {
+    pub channel: Channel,
+    /// Show Channel ▸ Colorize: single channels shown in their colour instead of gray.
+    pub colorized: bool,
+    /// Adjust Exposure, in stops.
+    pub exposure: f32,
+    /// Show Snapshot (F5 held): the viewer shows the snapshot instead of the frame.
+    pub show_snapshot: bool,
+    pub fast_previews: FastPreviews,
+}
+
+fn snapping(s: &mut Session, p: &Value) -> Result<Value> {
+    s.state.snapping = b_p(p, "value").unwrap_or(!s.state.snapping);
+    Ok(json!(s.state.snapping))
+}
+
+fn channel(s: &mut Session, p: &Value) -> Result<Value> {
+    let name = str_p(p, "channel").unwrap_or("rgb");
+    let c = Channel::from_name(name).ok_or_else(|| bad("view.channel", format!("unknown channel `{name}` (rgb|red|green|blue|alpha|rgbStraight)")))?;
+    // Choosing the active single channel again returns to RGB, as in After Effects.
+    let c = if c == s.state.viewer.channel && c != Channel::Rgb && b_p(p, "toggle").unwrap_or(false) { Channel::Rgb } else { c };
+    s.state.viewer.channel = c;
+    if let Some(v) = b_p(p, "colorized") {
+        s.state.viewer.colorized = v;
+    }
+    Ok(json!({"channel": c.id(), "colorized": s.state.viewer.colorized}))
+}
+
+fn exposure(s: &mut Session, p: &Value) -> Result<Value> {
+    let cur = s.state.viewer.exposure as f64;
+    let v = match (f_p(p, "stops"), f_p(p, "delta")) {
+        (Some(v), _) => v,
+        (None, Some(d)) => cur + d,
+        _ => return Err(bad("view.exposure", "pass `stops` or `delta`")),
+    };
+    s.state.viewer.exposure = v.clamp(-40.0, 40.0) as f32;
+    Ok(json!(s.state.viewer.exposure))
+}
+
+fn reset_exposure(s: &mut Session, _: &Value) -> Result<Value> {
+    s.state.viewer.exposure = 0.0;
+    Ok(json!(0.0))
+}
+
+fn take_snapshot(s: &mut Session, p: &Value) -> Result<Value> {
+    let cid = comp_id(s, p)?;
+    let comp = s.project.comp(cid).ok_or(EngineError::NoComp)?;
+    let t = s.time_of(cid);
+    let scale = f_p(p, "scale").unwrap_or(1.0).clamp(0.05, 1.0);
+    let img = s.render(cid, t, RenderOpts { scale, guides: true, view: s.view_camera(cid).filter(|_| comp.has_3d()), ..Default::default() });
+    let (w, h) = (img.width, img.height);
+    s.snapshot = Some(Snapshot { comp: cid, time: t, scale, image: std::sync::Arc::new(img) });
+    s.events.push(crate::Event::ProjectChanged { revision: s.revision });
+    Ok(json!({"width": w, "height": h, "time": t.seconds()}))
+}
+
+fn has_snapshot(s: &Session) -> std::result::Result<(), String> {
+    if s.snapshot.is_some() { Ok(()) } else { Err("take a snapshot first (Shift+F5)".into()) }
+}
+
+fn show_snapshot(s: &mut Session, p: &Value) -> Result<Value> {
+    s.state.viewer.show_snapshot = b_p(p, "value").unwrap_or(!s.state.viewer.show_snapshot);
+    Ok(json!(s.state.viewer.show_snapshot))
+}
+
+fn fast_previews(s: &mut Session, p: &Value) -> Result<Value> {
+    let name = str_p(p, "mode").unwrap_or("off");
+    let m =
+        FastPreviews::from_name(name).ok_or_else(|| bad("view.fastPreviewMode", format!("unknown mode `{name}` (off|adaptive|draft|fastDraft|wireframe)")))?;
+    s.state.viewer.fast_previews = m;
+    Ok(json!(m.id()))
+}
+
+fn guide_index(s: &Session, p: &Value, cmd: &str) -> Result<(effectcraft_project::ItemId, usize)> {
+    let cid = comp_id(s, p)?;
+    let n = s.project.comp(cid).ok_or(EngineError::NoComp)?.guides.len();
+    let i = p.get("index").and_then(Value::as_u64).ok_or_else(|| bad(cmd, "missing `index`"))? as usize;
+    if i >= n {
+        return Err(bad(cmd, format!("no guide {i} (the comp has {n})")));
+    }
+    Ok((cid, i))
+}
+
+fn move_guide(s: &mut Session, p: &Value) -> Result<Value> {
+    let (cid, i) = guide_index(s, p, "view.moveGuide")?;
+    let pos = f_p(p, "position").ok_or_else(|| bad("view.moveGuide", "missing `position` (comp px)"))?;
+    s.edit("Move Guide", merge_p(p), |proj, _| {
+        proj.comp_mut(cid).ok_or(EngineError::NoComp)?.guides[i].position = pos;
+        Ok(())
+    })?;
+    Ok(json!(pos))
+}
+
+fn remove_guide(s: &mut Session, p: &Value) -> Result<Value> {
+    let (cid, i) = guide_index(s, p, "view.removeGuide")?;
+    s.edit("Remove Guide", None, |proj, _| {
+        proj.comp_mut(cid).ok_or(EngineError::NoComp)?.guides.remove(i);
+        Ok(())
+    })?;
+    Ok(Value::Null)
+}
+
+fn pts(v: Option<&Value>) -> Vec<[f64; 2]> {
+    v.and_then(Value::as_array).map(|a| a.iter().filter_map(|p| Some([p.get(0)?.as_f64()?, p.get(1)?.as_f64()?])).collect()).unwrap_or_default()
+}
+
+fn rgba(v: Option<&Value>, d: [f64; 4]) -> [f64; 4] {
+    match v {
+        Some(Value::Array(a)) => {
+            let g = |i: usize, d: f64| a.get(i).and_then(Value::as_f64).unwrap_or(d);
+            [g(0, d[0]), g(1, d[1]), g(2, d[2]), g(3, 1.0)]
+        }
+        Some(Value::String(h)) => effectcraft_color::Rgba::from_hex(h).map(|c| [c.r as f64, c.g as f64, c.b as f64, 1.0]).unwrap_or(d),
+        _ => d,
+    }
+}
+
+/// Pen tool on a shape layer: a new Shape group ("Shape n" with Path 1, Stroke 1 and Fill 1) on
+/// the given / selected shape layer, or on a new shape layer when none is given. Vertices are
+/// in the layer's space, or comp space (`space: "comp"`, the default for a new layer).
+fn new_path(s: &mut Session, p: &Value) -> Result<Value> {
+    let cid = comp_id(s, p)?;
+    let comp = s.project.comp(cid).ok_or(EngineError::NoComp)?.clone();
+    let mut v = pts(p.get("vertices"));
+    if v.is_empty() {
+        return Err(bad("shape.newPath", "need `vertices` [[x,y], …]"));
+    }
+    let n = v.len();
+    let mut ins = pts(p.get("inTangents"));
+    let mut outs = pts(p.get("outTangents"));
+    ins.resize(n, [0.0; 2]);
+    outs.resize(n, [0.0; 2]);
+    let target = match p.get("layer") {
+        Some(l) => Some(super::resolve_layer(&comp, l).ok_or_else(|| bad("shape.newPath", format!("no layer {l}")))?),
+        None => s.state.selected_layers.iter().copied().find(|l| comp.layer(*l).is_some_and(|l| matches!(l.source, LayerSource::Shape) && !l.switches.locked)),
+    };
+    if let Some(l) = target.and_then(|l| comp.layer(l))
+        && !matches!(l.source, LayerSource::Shape)
+    {
+        return Err(bad("shape.newPath", "the layer is not a shape layer"));
+    }
+    let comp_space = str_p(p, "space").map(|s| s == "comp").unwrap_or(target.is_none());
+    if comp_space {
+        // Comp → layer space of the target (a new layer sits at the comp centre, unrotated).
+        let inv = match target.and_then(|l| comp.layer(l)) {
+            Some(l) => {
+                let ctx = effectcraft_render::EvalCtx::new(&s.project, cid, &comp, s.time_of(cid));
+                ctx.layer_to_comp(l).0.inverse().unwrap_or(effectcraft_geom::Mat3::IDENTITY)
+            }
+            None => effectcraft_geom::Mat3::translate(effectcraft_geom::vec2(-(comp.width as f64) / 2.0, -(comp.height as f64) / 2.0)),
+        };
+        for q in &mut v {
+            let r = inv.apply(effectcraft_geom::vec2(q[0], q[1]));
+            *q = [r.x, r.y];
+        }
+        for t in ins.iter_mut().chain(outs.iter_mut()) {
+            let r = inv.apply_vec(effectcraft_geom::vec2(t[0], t[1]));
+            *t = [r.x, r.y];
+        }
+    }
+    let path = ShapePath { vertices: v, in_tangents: ins, out_tangents: outs, closed: b_p(p, "closed").unwrap_or(false) };
+    let fill = (!matches!(p.get("fill"), Some(Value::Null) | Some(Value::Bool(false)))).then(|| rgba(p.get("fill"), [0.25, 0.55, 1.0, 1.0]));
+    let width = f_p(p, "strokeWidth").unwrap_or(2.0);
+    let stroke = (width > 0.0).then(|| rgba(p.get("stroke"), [1.0, 1.0, 1.0, 1.0]));
+    let name = str_p(p, "name").map(str::to_string);
+    let (lid, group, path_uid) = s.edit("Pen Tool", None, |proj, st| {
+        let lid = match target {
+            Some(l) => l,
+            None => {
+                let count = comp.layers.iter().filter(|l| matches!(l.source, LayerSource::Shape)).count();
+                let lname = name.clone().unwrap_or_else(|| format!("Shape Layer {}", count + 1));
+                let l = build::layer(proj, &comp, &lname, LayerSource::Shape, (comp.width, comp.height), None);
+                super::layer::insert_layer(proj, st, cid, l)?
+            }
+        };
+        let mut next = proj.next_id;
+        let l = super::layer_mut(proj, cid, lid)?;
+        let contents = l.props.sub_mut("contents").ok_or_else(|| bad("shape.newPath", "the layer has no contents"))?;
+        let k = contents.groups().filter(|g| g.match_id == "group").count();
+        let mut ids = Ids(&mut next);
+        let pg = build::shape_path(&mut ids, path);
+        let path_uid = pg.uid;
+        let mut items = vec![pg];
+        if let Some(c) = stroke {
+            items.push(build::shape_stroke(&mut ids, c, width));
+        }
+        if let Some(c) = fill {
+            items.push(build::shape_fill(&mut ids, c));
+        }
+        let g = build::shape_group(&mut ids, &format!("Shape {}", k + 1), items);
+        let group = g.uid;
+        contents.children.insert(0, g.into());
+        proj.next_id = next;
+        st.selected_layers = vec![lid];
+        st.selected_vertices = vec![VertexRef { layer: lid, mask: path_uid, index: n - 1 }];
+        Ok((lid, group, path_uid))
+    })?;
+    Ok(json!({"layer": lid.0, "group": group, "path": path_uid}))
+}
+
+/// Snapshot image as straight 8-bit RGBA rows (for frontends / `--out`).
+pub fn snapshot_rgba8(s: &Session) -> Option<(u32, u32, Vec<u8>)> {
+    let snap = s.snapshot.as_ref()?;
+    let img = &snap.image;
+    let mut out = Vec::with_capacity(img.data.len() * 4);
+    for p in &img.data {
+        let a = p[3].clamp(0.0, 1.0);
+        let un = |c: f32| if a > 0.0 { (c / a).clamp(0.0, 1.0) } else { 0.0 };
+        out.extend([un(p[0]), un(p[1]), un(p[2]), a].map(|v| (v * 255.0 + 0.5) as u8));
+    }
+    Some((img.width, img.height, out))
+}
+
+fn shape_layer_or_none(s: &Session) -> std::result::Result<(), String> {
+    has_comp(s)
+}
+
+pub fn specs() -> Vec<CommandSpec> {
+    vec![
+        cmd!("view.snapping", "Snapping", ["View"], None, "{value?}", always, snapping),
+        cmd!("view.channel", "Show Channel", [], None, "{channel: rgb|red|green|blue|alpha|rgbStraight, colorized?, toggle?}", always, channel),
+        cmd!("view.exposure", "Adjust Exposure", [], None, "{stops? | delta?}", always, exposure),
+        cmd!("view.resetExposure", "Reset Exposure", [], None, "{}", always, reset_exposure),
+        cmd!("view.takeSnapshot", "Take Snapshot", [], Some("Shift+F5"), "{comp?, scale?: 0.05..1}", has_comp, take_snapshot),
+        cmd!("view.showSnapshot", "Show Snapshot", [], None, "{value?}", has_snapshot, show_snapshot),
+        cmd!("view.fastPreviewMode", "Fast Previews", [], None, "{mode: off|adaptive|draft|fastDraft|wireframe}", always, fast_previews),
+        cmd!("view.moveGuide", "Move Guide", [], None, "{comp?, index, position (comp px), merge?}", has_comp, move_guide),
+        cmd!("view.removeGuide", "Remove Guide", [], None, "{comp?, index}", has_comp, remove_guide),
+        cmd!(
+            "shape.newPath",
+            "Pen Tool (Shape Path)",
+            [],
+            None,
+            "{layer?, vertices: [[x,y]…], inTangents?, outTangents?, closed?, space?: comp|layer, fill?: [r,g,b]|#hex|false, stroke?, strokeWidth?, name?}",
+            shape_layer_or_none,
+            new_path
+        ),
+    ]
+}

@@ -11,13 +11,15 @@ pub mod path_text;
 pub mod selectors;
 pub mod sfnt;
 
+pub use kurbo;
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use effectcraft_keyframe::{Justify, TextDoc};
+use effectcraft_keyframe::{BaselineOption, CharStyle, Composer, Direction, Justify, Kerning, ParaStyle, TextDoc};
 pub use fonts::{FaceId, Resolved, families, resolve};
 use kurbo::{Affine, BezPath, Point};
-pub use layout::{Align, Caps, Glyph, Layout, Line, ParagraphStyle, TextStyle, layout as layout_text, measure};
+pub use layout::{Align, Caps, Glyph, Layout, Line, ParagraphStyle, Script, TextStyle, layout as layout_text, layout_rich, measure};
 use skrifa::instance::{LocationRef, Size};
 use skrifa::outline::{DrawSettings, OutlinePen};
 use skrifa::{GlyphId, MetadataProvider};
@@ -43,7 +45,7 @@ impl OutlinePen for Pen {
 }
 
 /// Glyph outline in font units (y up), cached.
-fn outline_units(face: FaceId, gid: u32) -> Option<Arc<BezPath>> {
+pub(crate) fn outline_units(face: FaceId, gid: u32) -> Option<Arc<BezPath>> {
     static C: OnceLock<Mutex<HashMap<(FaceId, u32), Option<Arc<BezPath>>>>> = OnceLock::new();
     let c = C.get_or_init(Default::default);
     if let Some(v) = c.lock().unwrap_or_else(|e| e.into_inner()).get(&(face, gid)) {
@@ -64,12 +66,14 @@ fn outline_units(face: FaceId, gid: u32) -> Option<Arc<BezPath>> {
     v
 }
 
-/// The outline of a laid-out glyph in pixels, origin on its baseline (y down).
+/// The outline of a laid-out glyph in pixels, origin on its baseline (y down), with its
+/// horizontal / vertical scale and faux italic.
 pub fn glyph_outline(g: &Glyph) -> BezPath {
     let Some(units) = outline_units(g.face, g.id) else { return BezPath::new() };
     let k = g.size as f64 / fonts::face(g.face).units_per_em() as f64;
     let slant = if g.synth_italic { 0.21 } else { 0.0 };
-    Affine::new([k, 0.0, slant * k, -k, 0.0, 0.0]) * (*units).clone()
+    let (hs, vs) = (g.h_scale as f64, g.v_scale as f64);
+    Affine::new([k * hs, 0.0, slant * k * vs * hs, -k * vs, 0.0, 0.0]) * (*units).clone()
 }
 
 /// One character of laid-out text.
@@ -89,7 +93,10 @@ pub struct CharGlyph {
     /// The source character (after All Caps).
     pub ch: char,
     pub synth_bold: bool,
+    /// The glyph's drawn size (superscript / small caps are smaller than the run's size).
     pub size: f64,
+    /// Index into [`TextLayout::styles`].
+    pub run: usize,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -101,27 +108,111 @@ pub struct TextLayout {
     pub lines: usize,
     /// Bounds in layer space (x0, y0, x1, y1).
     pub bounds: [f64; 4],
-    /// Line baselines (layer space) and widths for the viewer's text cursor.
+    /// Line origins (layer space) `[x, baseline, width, height]`.
     pub line_boxes: Vec<[f64; 4]>,
+    /// The character style of each run (glyphs refer to them by index).
+    pub styles: Vec<CharStyle>,
+    /// The paragraph layout (layout space) and its map into layer space.
+    pub layout: Arc<Layout>,
+    pub to_layer: Affine,
+    /// Byte offset of every character, plus the text length.
+    pub byte_of_char: Vec<usize>,
+    pub vertical: bool,
 }
+
+/// A character style → [`TextStyle`].
+pub fn text_style(s: &CharStyle) -> TextStyle {
+    TextStyle {
+        family: s.font.clone(),
+        style: s.style.clone(),
+        size: s.size as f32,
+        tracking: s.tracking as f32,
+        kerning: true,
+        optical: s.kerning == Kerning::Optical,
+        manual_kern: if let Kerning::Manual(v) = s.kerning { Some(v as f32) } else { None },
+        ligatures: s.ligatures,
+        baseline_shift: s.baseline_shift as f32,
+        faux_bold: s.faux_bold,
+        faux_italic: s.faux_italic,
+        caps: if s.all_caps {
+            Caps::All
+        } else if s.small_caps {
+            Caps::Small
+        } else {
+            Caps::Normal
+        },
+        underline: false,
+        h_scale: (s.h_scale / 100.0) as f32,
+        v_scale: (s.v_scale / 100.0) as f32,
+        tsume: (s.tsume / 100.0) as f32,
+        script: match s.baseline {
+            BaselineOption::Normal => Script::Normal,
+            BaselineOption::Superscript => Script::Super,
+            BaselineOption::Subscript => Script::Sub,
+        },
+        leading: s.leading.map(|l| l as f32),
+    }
+}
+
+/// Paragraph settings → [`ParagraphStyle`] (wrap `width` for paragraph text).
+pub fn paragraph_style(p: &ParaStyle, width: Option<f32>) -> ParagraphStyle {
+    let (align, justify_last) = match p.justify {
+        Justify::Left => (Align::Left, Align::Left),
+        Justify::Center => (Align::Center, Align::Center),
+        Justify::Right => (Align::Right, Align::Right),
+        Justify::JustifyLastLeft => (Align::Justify, Align::Left),
+        Justify::JustifyLastCenter => (Align::Justify, Align::Center),
+        Justify::JustifyLastRight => (Align::Justify, Align::Right),
+        Justify::JustifyAll => (Align::Justify, Align::Justify),
+    };
+    ParagraphStyle {
+        align,
+        justify_last,
+        leading: 0.0,
+        width,
+        // Left-to-right paragraphs keep the Unicode default (first strong character).
+        rtl: (p.direction == Direction::Rtl).then_some(true),
+        indent_start: p.indent_left as f32,
+        indent_end: p.indent_right as f32,
+        indent_first: p.indent_first as f32,
+        space_before: p.space_before as f32,
+        space_after: p.space_after as f32,
+        every_line: p.composer == Composer::EveryLine,
+        hanging: p.hanging_punctuation,
+    }
+}
+
+/// Vertical type: the horizontal layout turned a quarter clockwise (lines become columns
+/// running right to left), characters kept upright.
+const ROT90: Affine = Affine::new([0.0, 1.0, -1.0, 0.0, 0.0, 0.0]);
 
 /// Lay out a Source Text value in layer space. Point text: the origin is the start of the first
 /// baseline (left), its centre (centre) or end (right). Paragraph text fills `box_size` from
-/// `box_pos`.
+/// `box_pos`. Vertical text runs down from the origin (point) or the box's top-right corner.
 pub fn layout_doc(doc: &TextDoc) -> TextLayout {
-    let text = if doc.all_caps { doc.text.to_uppercase() } else { doc.text.clone() };
-    let (style, para) = styles(doc);
-    let lay = layout_text(&text, &style, &para);
-    let first_base = lay.lines.first().map(|l| l.baseline as f64).unwrap_or(0.0);
-    // Point text origin: (0, 0) at the first baseline; alignment pivots around x = 0.
-    let (dx, dy) = match doc.box_size {
-        Some(_) => (doc.box_pos[0], doc.box_pos[1]),
-        // The layout already pivots point text around x = 0 by alignment.
-        None => (0.0, -first_base),
+    let text = doc.text.as_str();
+    let byte_of_char: Vec<usize> = text.char_indices().map(|(b, _)| b).chain(std::iter::once(text.len())).collect();
+    let nchars = byte_of_char.len() - 1;
+    let mut runs = Vec::new();
+    let mut styles = Vec::new();
+    let mut ci = 0;
+    for r in doc.runs() {
+        let a = byte_of_char[ci.min(nchars)];
+        ci += r.len;
+        let b = byte_of_char[ci.min(nchars)];
+        runs.push((a..b, text_style(&r.style)));
+        styles.push(r.style);
+    }
+    let width = doc.box_size.map(|b| if doc.vertical { b[1] } else { b[0] } as f32);
+    let paras: Vec<ParagraphStyle> = doc.paras().iter().map(|p| paragraph_style(p, width)).collect();
+    let lay = layout::layout_rich(text, &runs, &paras);
+    let to_layer = match (doc.vertical, doc.box_size) {
+        (false, Some(_)) => Affine::translate((doc.box_pos[0], doc.box_pos[1])),
+        (false, None) => Affine::IDENTITY,
+        (true, Some(b)) => Affine::translate((doc.box_pos[0] + b[0], doc.box_pos[1])) * ROT90,
+        (true, None) => ROT90,
     };
-    let hs = doc.h_scale / 100.0;
-    let vs = doc.v_scale / 100.0;
-    let mut out = TextLayout { lines: lay.lines.len(), ..Default::default() };
+    let mut out = TextLayout { lines: lay.lines.len(), to_layer, vertical: doc.vertical, ..Default::default() };
     // Map byte clusters → char/word indices.
     let mut char_of_byte = vec![0usize; text.len() + 1];
     let mut word_of_char = Vec::new();
@@ -144,22 +235,30 @@ pub fn layout_doc(doc: &TextDoc) -> TextLayout {
             nospace += 1;
         }
     }
-    out.chars = text.chars().count();
+    char_of_byte[text.len()] = nchars;
+    out.chars = nchars;
     out.chars_no_space = nospace;
     out.words = words;
     let mut b = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
     for (li, line) in lay.lines.iter().enumerate() {
-        out.line_boxes.push([line.x as f64 + dx, line.baseline as f64 + dy, line.width as f64, (line.ascent + line.descent) as f64]);
+        let o = to_layer * Point::new(line.x as f64, line.baseline as f64);
+        out.line_boxes.push([o.x, o.y, line.width as f64, (line.ascent + line.descent) as f64]);
         for gi in line.glyphs.clone() {
             let g = &lay.glyphs[gi];
             let ci = char_of_byte.get(g.cluster).copied().unwrap_or(0);
-            let ch = text[g.cluster..].chars().next().unwrap_or(' ');
+            let src = text[g.cluster..].chars().next().unwrap_or(' ');
+            let st = styles.get(g.run);
+            let ch = if st.is_some_and(|s| s.all_caps) { src.to_uppercase().next().unwrap_or(src) } else { src };
             let mut path = glyph_outline(g);
-            if hs != 1.0 || vs != 1.0 {
-                path = Affine::scale_non_uniform(hs, vs) * path;
-            }
             let next_x = lay.glyphs.get(gi + 1).filter(|_| line.glyphs.contains(&(gi + 1))).map(|n| n.x).unwrap_or(line.x + line.width);
-            let origin = Point::new(g.x as f64 * hs + dx, g.y as f64 + dy);
+            let advance = (next_x - g.x) as f64;
+            if doc.vertical {
+                // Keep the character upright around its centre.
+                let c = Point::new(advance / 2.0, -0.35 * g.size as f64);
+                let rc = ROT90 * c;
+                path = Affine::translate((rc.x - c.x, rc.y - c.y)) * path;
+            }
+            let origin = to_layer * Point::new(g.x as f64, g.y as f64);
             if let Some(r) = (!path.elements().is_empty()).then(|| kurbo::Shape::bounding_box(&path)) {
                 b[0] = b[0].min(origin.x + r.x0);
                 b[1] = b[1].min(origin.y + r.y0);
@@ -169,62 +268,102 @@ pub fn layout_doc(doc: &TextDoc) -> TextLayout {
             out.glyphs.push(CharGlyph {
                 path,
                 origin,
-                advance: (next_x - g.x) as f64 * hs,
+                advance,
                 char_index: ci,
                 char_index_no_space: nospace_of_char.get(ci).copied().unwrap_or(0),
                 word_index: word_of_char.get(ci).copied().unwrap_or(0),
                 line_index: li,
-                is_space: ch.is_whitespace(),
+                is_space: src.is_whitespace(),
                 ch,
                 synth_bold: g.synth_bold,
                 size: g.size as f64,
+                run: g.run,
             });
         }
     }
     if b[0].is_finite() {
         out.bounds = b;
     }
+    out.styles = styles;
+    out.byte_of_char = byte_of_char;
+    out.layout = lay;
     out
 }
 
-/// Character and paragraph styles of a Source Text value.
-fn styles(doc: &TextDoc) -> (TextStyle, ParagraphStyle) {
-    let style = TextStyle {
-        family: doc.font.clone(),
-        style: doc.style.clone(),
-        size: doc.size as f32,
-        tracking: doc.tracking as f32,
-        baseline_shift: doc.baseline_shift as f32,
-        faux_bold: doc.faux_bold,
-        faux_italic: doc.faux_italic,
-        caps: if doc.small_caps { Caps::Small } else { Caps::Normal },
-        ..Default::default()
-    };
-    let align = match doc.justify {
-        Justify::Left | Justify::JustifyLastLeft => Align::Left,
-        Justify::Center | Justify::JustifyLastCenter => Align::Center,
-        Justify::Right | Justify::JustifyLastRight => Align::Right,
-        Justify::JustifyAll => Align::Justify,
-    };
-    let natural = doc.size * 1.2;
-    let leading = doc.leading.map(|l| (l - natural) as f32).unwrap_or(0.0);
-    (style, ParagraphStyle { align, leading, width: doc.box_size.map(|b| b[0] as f32), rtl: None })
+impl TextLayout {
+    /// Character index of byte offset `b`.
+    pub fn char_of_byte(&self, b: usize) -> usize {
+        self.byte_of_char.partition_point(|x| *x < b).min(self.chars)
+    }
+    fn byte(&self, ci: usize) -> usize {
+        self.byte_of_char.get(ci.min(self.chars)).copied().unwrap_or(0)
+    }
+    /// Layout line holding caret `ci`.
+    pub fn line_of_char(&self, ci: usize) -> usize {
+        self.layout.line_of(self.byte(ci))
+    }
+    /// The caret at character boundary `ci` as a segment (top, bottom) in layer space.
+    pub fn caret(&self, ci: usize) -> (Point, Point) {
+        let (x, base, li) = self.layout.caret(self.byte(ci));
+        let (asc, desc) = self.layout.lines.get(li).map_or((10.0, 3.0), |l| (l.ascent, l.descent));
+        (self.to_layer * Point::new(x as f64, (base - asc) as f64), self.to_layer * Point::new(x as f64, (base + desc) as f64))
+    }
+    /// The caret's position along its line (layout space), for up / down movement.
+    pub fn caret_x(&self, ci: usize) -> f64 {
+        self.layout.caret(self.byte(ci)).0 as f64
+    }
+    /// The character boundary nearest a layer-space point.
+    pub fn hit(&self, p: Point) -> usize {
+        let q = self.to_layer.inverse() * p;
+        self.char_of_byte(self.layout.hit(q.x as f32, q.y as f32))
+    }
+    /// The caret one line up (`dir` < 0) or down from `ci`, keeping the line position `goal`.
+    /// Past the first / last line it goes to the start / end of the text.
+    pub fn move_vertical(&self, ci: usize, dir: i32, goal: Option<f64>) -> (usize, f64) {
+        let goal = goal.unwrap_or_else(|| self.caret_x(ci));
+        let li = self.line_of_char(ci) as i64 + dir as i64;
+        if li < 0 {
+            return (0, goal);
+        }
+        match self.layout.lines.get(li as usize) {
+            Some(l) => (self.char_of_byte(self.layout.hit_line(l, goal as f32)), goal),
+            None => (self.chars, goal),
+        }
+    }
+    /// Start and end carets of the visual line holding `ci`.
+    pub fn line_span(&self, ci: usize) -> (usize, usize) {
+        let li = self.line_of_char(ci);
+        match self.layout.lines.get(li) {
+            Some(l) => (self.char_of_byte(l.range.start), self.char_of_byte(self.layout.line_end(l))),
+            None => (0, self.chars),
+        }
+    }
+    /// Selection highlight quads (layer space) for characters `a..b`.
+    pub fn selection_quads(&self, a: usize, b: usize) -> Vec<[Point; 4]> {
+        self.layout
+            .selection_rects(self.byte(a.min(b)), self.byte(a.max(b)))
+            .into_iter()
+            .map(|r| {
+                let m = |x: f32, y: f32| self.to_layer * Point::new(x as f64, y as f64);
+                [m(r[0], r[1]), m(r[2], r[1]), m(r[2], r[3]), m(r[0], r[3])]
+            })
+            .collect()
+    }
 }
 
-/// Outline (origin on the baseline) and advance of a single character in a Source Text's
-/// style: used by Character Offset / Character Value substitutions.
-pub fn char_glyph(doc: &TextDoc, ch: char) -> (BezPath, f64) {
-    let (style, _) = styles(doc);
+/// Outline (origin on the baseline) and advance of a single character in a character style:
+/// used by Character Offset / Character Value substitutions.
+pub fn char_glyph_style(s: &CharStyle, ch: char) -> (BezPath, f64) {
+    let style = text_style(s);
     let lay = layout_text(&ch.to_string(), &style, &ParagraphStyle::default());
-    let hs = doc.h_scale / 100.0;
-    let vs = doc.v_scale / 100.0;
     let Some(g) = lay.glyphs.first() else { return (BezPath::new(), 0.0) };
-    let mut path = glyph_outline(g);
-    if hs != 1.0 || vs != 1.0 {
-        path = Affine::scale_non_uniform(hs, vs) * path;
-    }
-    let adv = lay.lines.first().map(|l| l.width as f64).unwrap_or(0.0) * hs;
-    (Affine::translate((-(g.x as f64) * hs, 0.0)) * path, adv)
+    let adv = lay.lines.first().map(|l| l.width as f64).unwrap_or(0.0);
+    (Affine::translate((-(g.x as f64), 0.0)) * glyph_outline(g), adv)
+}
+
+/// [`char_glyph_style`] in a Source Text's base style.
+pub fn char_glyph(doc: &TextDoc, ch: char) -> (BezPath, f64) {
+    char_glyph_style(&doc.base_style(), ch)
 }
 
 #[cfg(test)]
@@ -242,6 +381,61 @@ mod tests {
         // Baseline at y = 0: caps rise above it.
         assert!(l.bounds[1] < -60.0 && l.bounds[3] < 30.0, "{:?}", l.bounds);
         assert!(l.glyphs.iter().filter(|g| !g.is_space).all(|g| !g.path.elements().is_empty()));
+    }
+
+    #[test]
+    fn styled_runs_carets_and_hit_testing() {
+        let mut doc = TextDoc { text: "Hello big\nworld".into(), size: 40.0, ..Default::default() };
+        doc.apply_style(6..9, |s| {
+            s.size = 80.0;
+            s.fill = [1.0, 0.0, 0.0, 1.0];
+        });
+        let l = layout_doc(&doc);
+        let g = l.glyphs.iter().find(|g| g.char_index == 7).unwrap();
+        assert_eq!(l.styles[g.run].size, 80.0);
+        assert_eq!(l.styles[g.run].fill, [1.0, 0.0, 0.0, 1.0]);
+        assert_eq!(g.size, 80.0);
+        let small = l.glyphs.iter().find(|g| g.char_index == 1).unwrap();
+        assert_eq!(small.origin.y, g.origin.y, "one baseline for mixed sizes");
+        // Line 2 sits one 40 px auto leading (48 px) below line 1.
+        let w = l.glyphs.iter().find(|g| g.char_index == 10).unwrap();
+        assert!((w.origin.y - g.origin.y - 48.0).abs() < 1e-6);
+        // Every caret hit-tests back to itself; carets advance along each line.
+        for ci in 0..=doc.char_len() {
+            let (a, b) = l.caret(ci);
+            assert!(b.y > a.y);
+            assert_eq!(l.hit(a.midpoint(b)), ci, "caret {ci}");
+        }
+        assert!(l.caret(8).0.x > l.caret(7).0.x);
+        // Up / down keep the line position; line spans and selections.
+        let (down, goal) = l.move_vertical(2, 1, None);
+        assert_eq!(l.line_of_char(down), 1);
+        assert!((goal - l.caret_x(2)).abs() < 1e-6);
+        assert_eq!(l.move_vertical(down, -1, Some(goal)).0, 2);
+        assert_eq!(l.move_vertical(2, -1, None).0, 0);
+        assert_eq!(l.move_vertical(12, 1, None).0, 15);
+        assert_eq!(l.line_span(3), (0, 9));
+        assert_eq!(l.line_span(12), (10, 15));
+        let q = l.selection_quads(3, 12);
+        assert_eq!(q.len(), 2);
+        assert_eq!(l.char_of_byte(doc.byte_of(12)), 12);
+    }
+
+    #[test]
+    fn paragraph_box_offset_and_vertical_type() {
+        let doc = TextDoc { text: "ab cd".into(), size: 20.0, box_size: Some([200.0, 100.0]), box_pos: [-100.0, -50.0], ..Default::default() };
+        let l = layout_doc(&doc);
+        let (a, _) = l.caret(0);
+        assert!((a.x + 100.0).abs() < 1e-6 && (a.y + 50.0).abs() < 1.0, "{a:?}");
+        // Vertical: characters run down a column, carets are horizontal.
+        let v = layout_doc(&TextDoc { text: "abc\nde".into(), size: 20.0, vertical: true, ..Default::default() });
+        let ys: Vec<f64> = v.glyphs.iter().filter(|g| g.line_index == 0).map(|g| g.origin.y).collect();
+        assert!(ys.windows(2).all(|w| w[1] > w[0]), "{ys:?}");
+        let col2 = v.glyphs.iter().find(|g| g.line_index == 1).unwrap();
+        assert!(col2.origin.x < v.glyphs[0].origin.x - 10.0, "next column to the left");
+        let (p0, p1) = v.caret(1);
+        assert!((p0.y - p1.y).abs() < 1e-6 && (p0.x - p1.x).abs() > 5.0);
+        assert_eq!(v.hit(p0.midpoint(p1)), 1);
     }
 
     #[test]

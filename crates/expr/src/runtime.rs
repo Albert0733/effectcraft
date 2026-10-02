@@ -70,7 +70,14 @@ pub enum Out {
     Num(f64),
     Str(String),
     Arr(Vec<Out>),
-    Path { points: Vec<[f64; 2]>, ins: Vec<[f64; 2]>, outs: Vec<[f64; 2]>, closed: bool },
+    Path {
+        points: Vec<[f64; 2]>,
+        ins: Vec<[f64; 2]>,
+        outs: Vec<[f64; 2]>,
+        closed: bool,
+    },
+    /// A text style object: JSON `{doc: TextDoc | null, ops: [[key, value, start, count], …]}`.
+    Style(String),
     Object(String),
 }
 
@@ -131,6 +138,13 @@ fn native_host(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsV
             let l = num(args, 2, ctx)?;
             Req::Markers { comp: id(args, 1, ctx)?, layer: (l >= 0.0).then_some(l as u64) }
         }
+        10 => Req::Doc {
+            comp: id(args, 1, ctx)?,
+            layer: id(args, 2, ctx)?,
+            path: string(args, 3, ctx)?,
+            t: secs(num(args, 4, ctx)?),
+            pre: arg(args, 5).to_boolean(),
+        },
         _ => return Err(JsNativeError::typ().with_message("unknown host request").into()),
     };
     let found = FRAMES.with(|f| {
@@ -278,6 +292,10 @@ fn detach(v: &JsValue, ctx: &mut Context, depth: usize) -> Result<Out, String> {
             }
             return Ok(Out::Arr(out));
         }
+        if o.get(js_string!("__style"), ctx).map_err(err)?.to_boolean() {
+            let j = o.get(js_string!("__json"), ctx).map_err(err)?;
+            return Ok(Out::Style(j.as_string().map(|s| s.to_std_string_escaped()).unwrap_or_default()));
+        }
         if o.get(js_string!("__path"), ctx).map_err(err)?.to_boolean() {
             let pts = |name: JsString, ctx: &mut Context| -> Result<Vec<[f64; 2]>, String> {
                 let v = o.get(name, ctx).map_err(err)?;
@@ -408,6 +426,9 @@ pub fn to_value(out: &Out, current: &Value) -> Result<Value, String> {
             Out::Arr(a) => a.iter().map(|x| if let Out::Num(n) = x { js_number(*n) } else { String::new() }).collect::<Vec<_>>().join(","),
             Out::Undefined | Out::Null => String::new(),
             Out::Path { .. } => "[object Path]".into(),
+            Out::Style(j) => {
+                serde_json::from_str::<serde_json::Value>(j).ok().map(|v| styled_doc(&v, &effectcraft_keyframe::TextDoc::default()).text).unwrap_or_default()
+            }
             Out::Object(s) => s.clone(),
         }
     };
@@ -428,11 +449,17 @@ pub fn to_value(out: &Out, current: &Value) -> Result<Value, String> {
         }
         Value::Bool(_) => Value::Bool(truthy(out)),
         Value::Enum(_) => Value::Enum((finite(numeric(out).unwrap_or(1.0))? - 1.0).round().max(0.0) as u32),
-        Value::Text(doc) => {
-            let mut d = doc.clone();
-            d.text = text(out);
-            Value::Text(d)
-        }
+        Value::Text(doc) => match out {
+            Out::Style(j) => {
+                let v: serde_json::Value = serde_json::from_str(j).map_err(|e| format!("Error: bad text style: {e}"))?;
+                Value::Text(Box::new(styled_doc(&v, doc)))
+            }
+            _ => {
+                let mut d = doc.clone();
+                d.set_text(&text(out));
+                Value::Text(d)
+            }
+        },
         Value::Str(_) => Value::Str(text(out)),
         Value::Path(_) => match out {
             Out::Path { points, ins, outs, closed } => {
@@ -448,6 +475,48 @@ pub fn to_value(out: &Out, current: &Value) -> Result<Value, String> {
         },
         Value::Layer(_) | Value::Gradient(_) => current.clone(),
     })
+}
+
+/// Apply a returned text style (`{doc, ops}`) to the property's own document `own`: the style's
+/// source document (another layer's, or this one's) gives the formatting, then the setter calls
+/// apply in order. Without `setText` the text stays `own`'s.
+pub fn styled_doc(v: &serde_json::Value, own: &effectcraft_keyframe::TextDoc) -> effectcraft_keyframe::TextDoc {
+    use effectcraft_keyframe::TextDoc;
+    let mut d = own.clone();
+    if let Some(src) = v.get("doc").filter(|s| !s.is_null()).and_then(|s| serde_json::from_value::<TextDoc>(s.clone()).ok()) {
+        if src.text == own.text {
+            // The same text (this layer's own style, or an identical one): every run carries over.
+            d = TextDoc { box_size: own.box_size, box_pos: own.box_pos, vertical: own.vertical, ..src };
+        } else {
+            let first = src.style_at(0);
+            d.runs.clear();
+            d.apply_style_all(|s| *s = first.clone());
+            let p0 = src.para(0);
+            d.set_paras(vec![p0; d.para_count()]);
+            d.stroke_over_fill = src.stroke_over_fill;
+        }
+    }
+    for op in v.get("ops").and_then(|o| o.as_array()).into_iter().flatten() {
+        let Some(key) = op.get(0).and_then(|k| k.as_str()) else { continue };
+        let val = op.get(1).cloned().unwrap_or_default();
+        let start = op.get(2).and_then(|x| x.as_i64()).unwrap_or(-1);
+        let count = op.get(3).and_then(|x| x.as_i64()).unwrap_or(-1);
+        let n = d.char_len();
+        let range = (start >= 0).then(|| {
+            let a = (start as usize).min(n);
+            a..if count < 0 { n } else { (a + count as usize).min(n) }
+        });
+        if key == "text" {
+            let s = val.as_str().unwrap_or_default();
+            match range {
+                Some(r) => d.replace_range(r, s, None),
+                None => d.set_text(s),
+            }
+            continue;
+        }
+        let _ = d.set_attr(key, &val, range);
+    }
+    d
 }
 
 /// Number → string like JS (`3`, not `3.0`).

@@ -63,17 +63,17 @@ rendering, on-canvas text editing) are where the conservative figure is most lik
 | Audio | 85% | 0.5 | audio to keyframes |
 | Import | 78% | 4.5 | PSD, SVG as shapes, Lottie |
 | Automation | 76% | 3.3 | a JavaScript scripting object model |
-| Shapes | 68% | 3.9 | pen tool for shape paths, vertex editing, taper and wave strokes |
+| Shapes | 68% | 3.9 | taper and wave strokes (pen tool for shape paths and vertex editing landed in M6.5) |
 | Compositions | 67% | 7.4 | marker dialog, flowchart, Essential Graphics |
-| Animation | 65% | 10.4 | motion-path handles in the viewer, graph editor transform box, puppet, Wiggler/Smoother/Motion Sketch |
-| Text | 63% | 5.8 | on-canvas editing with a cursor, per-character styles, paragraph spacing and indents |
+| Animation | 65% | 10.4 | puppet, Wiggler/Smoother/Motion Sketch (motion-path handles and the graph editor transform box landed in M5.8) |
+| Text | ≈ 85% | 1.5 | vertical type is basic (upright characters, no tate-chu-yoko), no OpenType feature panel, no text on 3D bevels; per-character styles, paragraph settings, on-canvas editing and the `sourceText` style API landed (M9.9–M9.10) |
 | Web | 60% | 2.5 | threads, browser storage, audio |
 | 3D | 58% | 20.5 | Advanced 3D (models, PBR, image-based light), 3D camera tracker, multi-view layouts |
 | Effects | 56% | 14.6 | Effect Controls widgets (angle dial, point crosshair, eyedropper, curves), GPU effects, 41 missing effects |
-| Interface | 55% | 10.4 | drag-to-dock and floating panels, viewer rulers/snapping/channels/snapshots, preferences, native macOS menus |
+| Interface | 55% | 10.4 | drag-to-dock and floating panels, preferences, native macOS menus (viewer rulers/snapping/channels/snapshots landed in M0.13) |
 | Project | 53% | 8.1 | 8/16/32-bit pipeline and colour management, auto-save, proxies, folder moves |
-| Masks & roto | 44% | 13.0 | mask tracking, Roto Brush, free transform and RotoBezier |
-| Preview | 43% | 8.1 | GPU compositor, disk cache, region of interest, snapshots and exposure |
+| Masks & roto | 44% | 13.0 | mask tracking, Roto Brush, variable-width mask feather points |
+| Preview | 43% | 8.1 | GPU compositor, disk cache (region of interest, snapshots, exposure and Fast Previews landed in M0.13) |
 | Tracking | 0% | 13.0 | point tracker, Warp Stabilizer, mask and face tracking |
 | Paint | 0% | 4.0 | Brush, Clone Stamp, Eraser |
 
@@ -87,18 +87,18 @@ Mocha and Cineware are third-party and not counted.
 
 ## Highest-value gaps, in order
 
-1. On-canvas text editing and per-character styles.
+1. ~~On-canvas text editing and per-character styles~~ (landed: M9.9–M9.10).
 2. Effect Controls widgets: angle dial, point crosshair, eyedropper, curves and levels editors.
-3. Viewer basics: snapping, rulers, channel view, snapshots, exposure, a drawable region of interest.
+3. ~~Viewer basics: snapping, rulers, channel view, snapshots, exposure, a drawable region of interest.~~ (M0.13)
 4. A GPU (wgpu) compositor, then GPU effects.
-5. Pen tool for shape paths, shape vertex editing, the Layer viewer, free transform and RotoBezier.
-6. Motion-path handles in the viewer; graph editor transform box and snapping.
+5. ~~Pen tool for shape paths, shape vertex editing, free transform~~ (M6.5); the Layer viewer.
+6. ~~Motion-path handles in the viewer; graph editor transform box and snapping.~~ (M5.8)
 7. Point tracking and stabilization (in progress).
 8. Frame blending, collapse transformations, slip edit.
 9. A real 8/16/32-bit pipeline with linear blending and colour management.
 10. Drag-to-dock and floating panels, saved workspaces, native macOS menus.
 11. Auto-save, crash recovery, recent projects (in progress).
-12. Expression gaps: `sampleImage`, the `sourceText` style API, `footage()`.
+12. Expression gaps: `sampleImage`, `footage()` (the `sourceText` style API landed in M9.9).
 13. Lottie (in progress), WebM, SVG and PSD import.
 14. Puppet and paint tools (in progress).
 15. Preferences and a shortcut editor that can rebind (in progress); real Wiggler, Smoother and Motion Sketch; the marker dialog.

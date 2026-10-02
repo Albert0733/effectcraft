@@ -78,6 +78,11 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("app.compSettings", "Composition Settings...", [], None),
     uic!("app.solidSettings", "New Solid...", [], None),
     uic!("app.home", "Home", [], None),
+    uic!("markers.dialog", "Marker Settings...", [], None),
+    uic!("window.maximizePanel", "Maximize Panel Under Pointer", [], Some("`")),
+    uic!("window.dockPanel", "Dock Panel", [], None),
+    uic!("window.floatPanel", "Undock Panel", [], None),
+    uic!("window.closePanel", "Close Panel", [], None),
 ];
 
 pub fn panel_command_id(p: PanelKind) -> String {
@@ -131,6 +136,7 @@ pub fn invoke(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, params: V
         // Slot shortcuts cycle through the slot's tools.
         let slot = match t {
             "shape" => Some(8),
+            "pen" => Some(9),
             "type" => Some(10),
             "brush" => Some(11),
             "puppet" => Some(15),
@@ -162,6 +168,58 @@ pub fn invoke(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, params: V
         }
         reveal(app, k, now);
         return Ok(Value::Null);
+    }
+    // Docking: {panel, anchor, zone: center|left|right|top|bottom}, {panel, rect?}, {panel?}.
+    if let Some(op) = id.strip_prefix("window.").filter(|o| matches!(*o, "maximizePanel" | "dockPanel" | "floatPanel" | "closePanel")) {
+        let panel_of = |k: &str| params.get(k).and_then(Value::as_str).map(|s| PanelKind::from_name(s).ok_or(format!("unknown panel `{s}`")));
+        match op {
+            "maximizePanel" => {
+                let p = match panel_of("panel") {
+                    Some(p) => p?,
+                    None => app.panel_at(ctx.pointer_hover_pos()),
+                };
+                app.toggle_maximize(p);
+                return Ok(json!({"maximized": app.ui.maximized}));
+            }
+            "closePanel" => {
+                let p = panel_of("panel").ok_or("closePanel: need `panel`")??;
+                app.close_panel(p);
+                return Ok(Value::Null);
+            }
+            "floatPanel" => {
+                let p = panel_of("panel").ok_or("floatPanel: need `panel`")??;
+                let r = params.get("rect").and_then(Value::as_array).map(|a| {
+                    let g = |i: usize| a.get(i).and_then(Value::as_f64).unwrap_or(0.0) as f32;
+                    [g(0), g(1), g(2), g(3)]
+                });
+                let r = r.unwrap_or_else(|| crate::dock_ui::default_float_rect(ctx.content_rect()));
+                if !app.edit_layout(|l| l.float(p, r)) {
+                    return Err(format!("can't undock {}", p.title()));
+                }
+                return Ok(Value::Null);
+            }
+            _ => {
+                let p = panel_of("panel").ok_or("dockPanel: need `panel`")??;
+                let anchor = panel_of("anchor").ok_or("dockPanel: need `anchor` (a docked panel)")??;
+                let zone = params
+                    .get("zone")
+                    .and_then(Value::as_str)
+                    .map_or(Some(crate::dock::Zone::Center), crate::dock::Zone::from_name)
+                    .ok_or("zone: center|left|right|top|bottom")?;
+                if !app.edit_layout(|l| l.dock(p, anchor, zone)) {
+                    return Err(format!("can't dock {} at {} ({zone:?})", p.title(), anchor.title()));
+                }
+                app.show_panel(p);
+                return Ok(Value::Null);
+            }
+        }
+    }
+    if id == "markers.dialog" {
+        // The Composition/Layer Marker dialog (double-click a marker): {layer?, index}.
+        let index = params.get("index").and_then(Value::as_u64).ok_or("markers.dialog: need `index`")? as usize;
+        let layer = params.get("layer").and_then(Value::as_u64);
+        crate::panels::markers_ui::open_dialog(app, crate::panels::markers_ui::MarkerRef { layer, index })?;
+        return Ok(json!({"dialog": id}));
     }
     if id == "view.res.auto" {
         app.ui.viewer.res = Resolution::Auto;
@@ -195,6 +253,11 @@ pub fn invoke(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, params: V
         "view.safeMargins" => app.ui.viewer.safe_margins = !app.ui.viewer.safe_margins,
         "view.transparencyGrid" => app.ui.viewer.transparency_grid = !app.ui.viewer.transparency_grid,
         "view.fastPreviews" => {
+            // With a mode: Fast Previews ▸ Off / Adaptive Resolution / Draft / Fast Draft /
+            // Wireframe; without: toggle Draft quality (Settings ▸ Previews).
+            if params.get("mode").is_some() {
+                return run_engine(app, ctx, "view.fastPreviewMode", params);
+            }
             let on = !app.ui.viewer.fast_preview;
             app.set_pref("previews.fastPreviews", json!(on))?;
             app.ui.viewer.fast_preview = on;
@@ -247,6 +310,10 @@ pub fn invoke(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, params: V
             }
             if let Some(r) = file_dialog(app, id, &params) {
                 return r;
+            }
+            if id == "layer.precompose" && params.get("name").is_none() {
+                crate::panels::precomp::open(app, &params)?;
+                return Ok(json!({"dialog": id}));
             }
             if crate::panels::dialogs::open_form(app, id, &params) {
                 return Ok(json!({"dialog": id}));
@@ -395,6 +462,30 @@ pub fn frontend(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, p: Valu
             v.res = Resolution::ALL.into_iter().find(|x| x.label().eq_ignore_ascii_case(r)).ok_or("unknown resolution")?;
             Value::Null
         }
+        "view.res.custom" => {
+            match p.get("factor").and_then(Value::as_u64) {
+                Some(n) => {
+                    v.res = match n.clamp(1, 40) {
+                        1 => Resolution::Full,
+                        n => Resolution::Custom(n as u8),
+                    };
+                }
+                None => {
+                    let cur = match v.res {
+                        Resolution::Custom(n) => n as f64,
+                        _ => 2.0,
+                    };
+                    crate::panels::dialogs::form(
+                        app,
+                        "Custom Resolution",
+                        "view.res.custom",
+                        json!({}),
+                        vec![crate::panels::dialogs::Field::num("factor", "Render every n-th pixel", cur)],
+                    );
+                }
+            }
+            Value::Null
+        }
         "view.rulers" => toggle(&mut v.rulers, &p),
         "view.guides" => toggle(&mut v.guides, &p),
         "view.snapToGuides" => toggle(&mut v.snap_guides, &p),
@@ -468,6 +559,7 @@ pub fn frontend(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, p: Valu
         "window.saveWorkspace" => {
             let name = app.ui.workspace.clone();
             app.ui.saved_workspaces.insert(name.clone(), app.ui.dock.clone());
+            app.ui.saved_floating.insert(name.clone(), app.ui.floating.clone());
             json!({"workspace": name})
         }
         "window.saveWorkspaceAs" => {
@@ -482,6 +574,7 @@ pub fn frontend(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, p: Valu
                 return Ok(Value::Null);
             };
             app.ui.saved_workspaces.insert(name.clone(), app.ui.dock.clone());
+            app.ui.saved_floating.insert(name.clone(), app.ui.floating.clone());
             app.ui.workspace = name.clone();
             json!({"workspace": name})
         }
@@ -503,6 +596,7 @@ pub fn frontend(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, p: Valu
             };
             let builtin = crate::dock::WORKSPACES.contains(&name.as_str());
             if p.get("delete").and_then(Value::as_bool) == Some(true) {
+                app.ui.saved_floating.remove(&name);
                 if app.ui.saved_workspaces.remove(&name).is_none() && !builtin {
                     return Err(format!("no workspace `{name}`"));
                 }
@@ -517,6 +611,9 @@ pub fn frontend(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, p: Valu
                 }
                 let dock = app.ui.saved_workspaces.remove(&name).ok_or_else(|| format!("no workspace `{name}`"))?;
                 app.ui.saved_workspaces.insert(new.to_string(), dock);
+                if let Some(f) = app.ui.saved_floating.remove(&name) {
+                    app.ui.saved_floating.insert(new.to_string(), f);
+                }
                 if app.ui.workspace == name {
                     app.ui.workspace = new.to_string();
                 }
@@ -539,8 +636,13 @@ pub fn frontend(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, p: Valu
             }
             Value::Null
         }
-        "comp.flowchart" | "comp.miniFlowchart" => {
+        "comp.flowchart" => {
             app.show_panel(PanelKind::Flowchart);
+            Value::Null
+        }
+        "comp.miniFlowchart" => {
+            let at = ctx.input(|i| i.pointer.hover_pos()).unwrap_or_else(|| ctx.content_rect().center());
+            app.ui.mini_flowchart = Some([at.x, at.y]);
             Value::Null
         }
         "track.editTargetDialog" => {
@@ -883,6 +985,10 @@ pub fn handle_shortcuts(app: &mut EffectcraftApp, ctx: &egui::Context) {
             continue;
         }
         if app.dialog.is_some() {
+            continue;
+        }
+        // Enter in the Project panel renames the selected item (handled by the panel).
+        if key == egui::Key::Enter && !mods.any() && app.ui.focused == PanelKind::Project {
             continue;
         }
         // Delete/Backspace clears selection.
