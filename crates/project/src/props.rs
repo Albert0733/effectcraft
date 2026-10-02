@@ -32,6 +32,9 @@ pub enum ParamUi {
         options: Vec<String>,
     },
     Layer,
+    /// A mask of the effect's own layer by 1-based index, 0 = none (a scalar value): an effect's
+    /// "Path" popup.
+    Mask,
     Path,
     Text,
     Gradient,

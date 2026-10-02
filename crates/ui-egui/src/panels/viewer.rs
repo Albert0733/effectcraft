@@ -880,6 +880,8 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         }
     }
     text_edit_overlay(app, ui, &map);
+    // Effect point controls and crosshair/eyedropper picks (on top of the viewer's gestures).
+    crate::panels::effect_controls::viewer_hook(app, ui, &painter, &map, &ectx, &|c, l| l2c(c, l).0);
 
     // Status chips (render time / caching).
     if app.playback.playing && app.playback.waiting {
