@@ -136,6 +136,7 @@ pub fn invoke(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, params: V
         // Slot shortcuts cycle through the slot's tools.
         let slot = match t {
             "shape" => Some(8),
+            "pen" => Some(9),
             "type" => Some(10),
             "brush" => Some(11),
             "puppet" => Some(15),
@@ -252,6 +253,11 @@ pub fn invoke(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, params: V
         "view.safeMargins" => app.ui.viewer.safe_margins = !app.ui.viewer.safe_margins,
         "view.transparencyGrid" => app.ui.viewer.transparency_grid = !app.ui.viewer.transparency_grid,
         "view.fastPreviews" => {
+            // With a mode: Fast Previews ▸ Off / Adaptive Resolution / Draft / Fast Draft /
+            // Wireframe; without: toggle Draft quality (Settings ▸ Previews).
+            if params.get("mode").is_some() {
+                return run_engine(app, ctx, "view.fastPreviewMode", params);
+            }
             let on = !app.ui.viewer.fast_preview;
             app.set_pref("previews.fastPreviews", json!(on))?;
             app.ui.viewer.fast_preview = on;
@@ -454,6 +460,30 @@ pub fn frontend(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, p: Valu
         "view.res.full" | "view.res.half" | "view.res.third" | "view.res.quarter" => {
             let r = id.trim_start_matches("view.res.");
             v.res = Resolution::ALL.into_iter().find(|x| x.label().eq_ignore_ascii_case(r)).ok_or("unknown resolution")?;
+            Value::Null
+        }
+        "view.res.custom" => {
+            match p.get("factor").and_then(Value::as_u64) {
+                Some(n) => {
+                    v.res = match n.clamp(1, 40) {
+                        1 => Resolution::Full,
+                        n => Resolution::Custom(n as u8),
+                    };
+                }
+                None => {
+                    let cur = match v.res {
+                        Resolution::Custom(n) => n as f64,
+                        _ => 2.0,
+                    };
+                    crate::panels::dialogs::form(
+                        app,
+                        "Custom Resolution",
+                        "view.res.custom",
+                        json!({}),
+                        vec![crate::panels::dialogs::Field::num("factor", "Render every n-th pixel", cur)],
+                    );
+                }
+            }
             Value::Null
         }
         "view.rulers" => toggle(&mut v.rulers, &p),

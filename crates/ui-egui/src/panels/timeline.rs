@@ -1337,7 +1337,15 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                                 }
                             }
                         });
-                        if kresp.dragged() {
+                        // Alt-drag the first or last key of a selected group: scale the group in time.
+                        if kresp.drag_started()
+                            && ui.input(|i| i.modifiers.alt)
+                            && let Some(c) = app.session.active_comp().cloned()
+                        {
+                            super::graph_tools::alt_scale_begin(app, &ctx, &c, ct.seconds());
+                        }
+                        let alt_scaling = super::graph_tools::alt_scale_active(&ctx);
+                        if kresp.dragged() && !alt_scaling {
                             let acc_id = egui::Id::new("key-drag-acc");
                             let mut acc: f32 = ctx.data(|d| d.get_temp(acc_id).unwrap_or(0.0));
                             acc += kresp.drag_delta().x;
@@ -1380,6 +1388,10 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 _ => {}
             }
         }
+    }
+    // Alt-drag key group scaling (follows the pointer until release).
+    if let Some(c) = app.session.active_comp().cloned() {
+        super::graph_tools::alt_scale_update(app, &ctx, &c, tm, &mut actions);
     }
     // Graph editor.
     if graph_on {

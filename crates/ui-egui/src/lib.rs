@@ -302,7 +302,13 @@ impl EffectcraftApp {
             let full = self.ui.viewer.res.scale(zoom, ppp);
             return full.min((full * 0.5).max(self.session.prefs.adaptive_limit()));
         }
-        self.ui.viewer.res.scale(zoom, ppp)
+        let full = self.ui.viewer.res.scale(zoom, ppp);
+        // Fast Previews ▸ Adaptive Resolution / Fast Draft: lower resolution while dragging.
+        let (_, k) = self.session.state.viewer.fast_previews.render(self.ui.viewer.interacting);
+        if k < 1.0 && self.ui.viewer.res == state::Resolution::Auto {
+            return full.min((full * 0.5).max(self.session.prefs.adaptive_limit()));
+        }
+        full
     }
 
     pub fn frame_key(&self, comp: ItemId, frame: i64, scale: f64) -> FrameKey {
@@ -312,8 +318,13 @@ impl EffectcraftApp {
     /// Hash of the comp viewer's 3D view camera (0 for the active camera view).
     pub fn view_hash(&self, comp: ItemId) -> u64 {
         use std::hash::{Hash, Hasher};
-        let Some(cam) = self.session.view_camera(comp) else { return 0 };
         let mut h = std::collections::hash_map::DefaultHasher::new();
+        // The region of interest changes what is rendered too.
+        let roi = self.session.state.region_of_interest.filter(|_| self.session.active_comp_id() == Some(comp));
+        if let Some(r) = roi {
+            r.map(f64::to_bits).hash(&mut h);
+        }
+        let Some(cam) = self.session.view_camera(comp) else { return if roi.is_some() { h.finish() | 1 } else { 0 } };
         for row in cam.view.0 {
             for v in row {
                 v.to_bits().hash(&mut h);
@@ -338,7 +349,10 @@ impl EffectcraftApp {
         let Some(c) = self.session.project.comp(comp) else { return };
         let key = self.frame_key(comp, frame, scale);
         let t = c.frame_rate.tick_of(frame);
-        let opts = RenderOpts { scale, motion_blur: true, guides: true, draft: self.ui.viewer.fast_preview, view: self.session.view_camera(comp) };
+        let (draft, _) = self.session.state.viewer.fast_previews.render(self.ui.viewer.interacting);
+        let roi = self.session.state.region_of_interest.filter(|_| self.session.active_comp_id() == Some(comp));
+        let opts =
+            RenderOpts { scale, motion_blur: true, guides: true, draft: self.ui.viewer.fast_preview || draft, view: self.session.view_camera(comp), roi };
         if urgent {
             self.frames.request_urgent(&self.render_source(), key, comp, t, opts);
         } else {

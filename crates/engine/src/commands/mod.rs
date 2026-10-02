@@ -12,6 +12,7 @@ mod file;
 mod file_more;
 mod frontend;
 mod help;
+mod key_transform;
 mod layer;
 mod layer_menu;
 mod layer_time;
@@ -30,10 +31,14 @@ mod settings;
 mod stubs;
 mod styles;
 mod text_anim;
+pub mod text_edit;
 mod three_d;
 mod time;
 mod track;
 mod view;
+pub mod viewer_cmds;
+#[cfg(test)]
+pub(crate) use mask::split_segment as split_segment_for_tests;
 
 use std::sync::OnceLock;
 
@@ -95,6 +100,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(styles::specs());
         v.extend(three_d::specs());
         v.extend(text_anim::specs());
+        v.extend(text_edit::specs());
         v.extend(layer_time::specs());
         v.extend(prop::specs());
         v.extend(project_items::specs());
@@ -112,6 +118,8 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(layer_menu::specs());
         v.extend(animation::specs());
         v.extend(view::specs());
+        v.extend(viewer_cmds::specs());
+        v.extend(key_transform::specs());
         v.extend(file_more::specs());
         v.extend(lottie::specs());
         v.extend(comp_more::specs());
