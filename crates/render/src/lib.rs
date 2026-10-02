@@ -14,7 +14,7 @@ pub mod text;
 use std::sync::Arc;
 
 use effectcraft_color::BlendMode;
-use effectcraft_effects::{Buf, EffectCtx, Params};
+use effectcraft_effects::{Buf, EffectCtx, EffectEnv, EffectHost, LayerPixels, Params};
 use effectcraft_geom::{Mat3, vec2};
 use effectcraft_project::{Comp, Footage, GroupKind, ItemId, ItemKind, Layer, LayerSource, MatteKind, Node, Project, Quality, Sampling};
 pub use effectcraft_raster::Image;
@@ -27,6 +27,43 @@ use rayon::prelude::*;
 pub trait FootageSource: Send + Sync {
     /// The frame of `item` at source time `t`, straight from the file (any size).
     fn frame(&self, item: ItemId, footage: &Footage, t: Tick) -> Option<Arc<Image>>;
+    /// `frames` interleaved stereo sample frames of `item`'s audio from source time `t` at
+    /// `rate` Hz (`None` when unavailable).
+    fn audio(&self, _item: ItemId, _footage: &Footage, _t: Tick, _frames: usize, _rate: u32) -> Option<Vec<f32>> {
+        None
+    }
+}
+
+/// Layer parameters and audio for effects (see [`effectcraft_effects::EffectHost`]).
+struct FxHost<'r, 'a, 'c> {
+    r: &'r Renderer<'a>,
+    ctx: &'c EvalCtx<'a>,
+    layer: &'c Layer,
+}
+
+impl EffectHost for FxHost<'_, '_, '_> {
+    fn layer(&self, id: u64, masks_and_effects: bool) -> Option<LayerPixels> {
+        let other = self.ctx.layer(effectcraft_project::LayerId(id))?;
+        if other.id == self.layer.id || self.r.depth > 8 {
+            return None;
+        }
+        let sub = Renderer { project: self.r.project, footage: self.r.footage, expr: self.r.expr, opts: self.r.opts, depth: self.r.depth + 1 };
+        let buf = if masks_and_effects { sub.layer_buf(self.ctx, other)? } else { sub.source(self.ctx, other)? };
+        let size = source_size(self.r.project, other);
+        let size = if size.0 == 0 { [self.ctx.comp.width as f64, self.ctx.comp.height as f64] } else { [size.0 as f64, size.1 as f64] };
+        Some(LayerPixels { buf, size })
+    }
+
+    fn audio(&self, id: u64, start: f64, frames: usize, rate: u32) -> Option<Vec<f32>> {
+        let other = self.ctx.layer(effectcraft_project::LayerId(id))?;
+        let LayerSource::Footage { item } = &other.source else { return None };
+        let ItemKind::Footage(f) = &self.r.project.item(*item)?.kind else { return None };
+        if !f.has_audio {
+            return None;
+        }
+        let st = other.layer_time(Tick::from_seconds_f64(start));
+        self.r.footage.audio(*item, f, st, frames, rate)
+    }
 }
 
 /// No footage available (renders footage layers as transparent).
@@ -134,6 +171,9 @@ impl<'a> Renderer<'a> {
         let lt = layer.layer_time(ctx.time);
         let size = source_size(self.project, layer);
         let layer_size = if size.0 == 0 { [ctx.comp.width as f64, ctx.comp.height as f64] } else { [size.0 as f64, size.1 as f64] };
+        let mask_shapes = masks::shapes(ctx, layer);
+        let host = FxHost { r: self, ctx, layer };
+        let env = EffectEnv { masks: &mask_shapes, host: Some(&host), comp_time: ctx.time.seconds(), frame_rate: ctx.comp.frame_rate.as_f64() };
         for g in fx.groups() {
             if !g.enabled {
                 continue;
@@ -141,7 +181,7 @@ impl<'a> Renderer<'a> {
             let GroupKind::Effect { effect } = &g.kind else { continue };
             let Some(spec) = effectcraft_effects::find(effect) else { continue };
             let params = self.effect_params(ctx, layer, g);
-            let ectx = EffectCtx { params: &params, time: lt.seconds(), layer_size, seed: g.uid as u32, adjustment };
+            let ectx = EffectCtx { params: &params, time: lt.seconds(), layer_size, seed: g.uid as u32, adjustment, env };
             buf = effectcraft_effects::apply(spec, &ectx, buf);
         }
         buf

@@ -454,6 +454,13 @@ impl FootageSource for MediaPool {
             }
         }
     }
+
+    fn audio(&self, _item: ItemId, footage: &Footage, t: Tick, frames: usize, rate: u32) -> Option<Vec<f32>> {
+        if !footage.has_audio || footage.missing {
+            return None;
+        }
+        Some(self.audio_samples(footage, t, frames, rate))
+    }
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
