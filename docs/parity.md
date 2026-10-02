@@ -32,6 +32,28 @@ Work in progress at the time of the audit, not yet counted: motion tracking, pre
 keyboard shortcut editor, auto-save and crash recovery, paint and puppet tools, Lottie import and
 export.
 
+## Update after the second wave (same day, commit `e1f7241`)
+
+Motion tracking (1-, 2- and 4-point, stabilize, corner pin), paint (Brush, Clone Stamp, Eraser
+with write-on) and the puppet tools, preferences, a keyboard shortcut editor that rebinds,
+auto-save and crash recovery, Lottie import and export, Effect Controls widgets (angle dial,
+point crosshair, eyedropper, curves and levels editors, effect copy/paste) and 20 more menu
+commands landed. Re-scoring only the features they touch:
+
+| Measure | Before | After |
+|---|---|---|
+| Feature parity, weighted | 63.7% | **≈ 70%** |
+| P0 / P1 / P2 | 75% / 38% / 17% | 78% / 56% / 17% |
+| Remaining, audit estimate | 167 agent-hours | ≈ 141 agent-hours |
+
+**Calibration.** The audit priced this wave at about 21 agent-hours; five agents delivered it in
+about 1.5 hours of wall-clock time (roughly 6 agent-hours of actual work), though some features
+landed at 80–90% rather than fully done. So the per-feature estimates above are conservative.
+Remaining wall-clock time with five parallel agents is therefore somewhere between **≈ 12–15
+hours** at the pace observed so far and **≈ 35–40 hours** if the audit's figures hold. The
+hardest remaining systems (Roto Brush, Warp Stabilizer, the 3D camera tracker, Advanced 3D, GPU
+rendering, on-canvas text editing) are where the conservative figure is most likely to be right.
+
 ## By area
 
 | Area | Weighted parity | Remaining (agent-hours) | Biggest gaps |

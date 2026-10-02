@@ -27,10 +27,12 @@ once.
 
 Measured feature by feature in [docs/parity.md](docs/parity.md) (2 October 2026):
 
-- **≈ 64% of After Effects' features, weighted by importance** (75% of the essentials, 38% of
+- **≈ 70% of After Effects' features, weighted by importance** (78% of the essentials, 56% of
   professional daily-use features, 17% of the long tail); 257 of 298 effects.
-- **≈ 167 agent-hours of work remain**, about **42–50 hours of wall-clock time** with five Claude
-  Opus 5.5 agents working in parallel (≈ 31–35 hours for the essentials and daily-use features).
+- **≈ 141 agent-hours of work remain by the audit's estimate.** With five Claude Opus 5.5 agents
+  working in parallel that is **≈ 12–15 hours of wall-clock time at the pace measured so far, and
+  up to ≈ 35–40 hours** if the audit's conservative per-feature figures hold (see the calibration
+  note in docs/parity.md).
 - Hardest remaining pieces: on-canvas text editing, GPU rendering, tracking and roto, Advanced 3D.
 
 Come tell us what matters most to you on [Discord](https://discord.gg/artcraft).
