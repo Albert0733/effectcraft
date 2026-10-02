@@ -53,6 +53,31 @@ impl ExprHost for Expressions {
             None => Ok(value.clone()),
         }
     }
+
+    fn eval_text_selector(&self, ctx: &EvalCtx, layer: &Layer, prop: &Property, index: usize, total: usize, selector: [f64; 3]) -> Result<[f64; 3], String> {
+        let Some(e) = prop.expr.as_ref().filter(|_| prop.has_expression()) else {
+            let v = prop.value_at(layer.layer_time(ctx.time)).components();
+            return Ok([v.first().copied().unwrap_or(100.0), v.get(1).copied().unwrap_or(100.0), v.get(2).copied().unwrap_or(100.0)]);
+        };
+        let value = prop.value_at(layer.layer_time(ctx.time));
+        let out = evaluate_out(self, ctx, layer, prop, &value, &e.text, [index as f64 + 1.0, total as f64], selector)?;
+        let num = |o: &runtime::Out| match o {
+            runtime::Out::Num(x) => Some(*x),
+            runtime::Out::Bool(b) => Some(if *b { 100.0 } else { 0.0 }),
+            _ => None,
+        };
+        let r = match &out {
+            runtime::Out::Arr(items) => {
+                let g = |i: usize| items.get(i).and_then(num).or_else(|| items.first().and_then(num));
+                [g(0), g(1), g(2)]
+            }
+            o => [num(o); 3],
+        };
+        match r {
+            [Some(a), Some(b), Some(c)] if a.is_finite() && b.is_finite() && c.is_finite() => Ok([a, b, c]),
+            _ => Err("Error: expression selector amount must be a number or an array of numbers".into()),
+        }
+    }
 }
 
 /// Pops the evaluation frame on every exit path.
@@ -66,6 +91,23 @@ impl Drop for FrameGuard {
 /// Evaluate `text` as the expression of `prop` on `layer` at `ctx.time`, given its keyframed
 /// `value`. Other properties' expressions are evaluated through `host`.
 pub fn evaluate(host: &dyn ExprHost, ctx: &EvalCtx, layer: &Layer, prop: &Property, value: &Value, text: &str) -> Result<Value, String> {
+    let out = evaluate_out(host, ctx, layer, prop, value, text, [1.0, 1.0], [100.0; 3])?;
+    runtime::to_value(&out, value)
+}
+
+/// Run an expression and return the raw script result. `text_sel` / `selector` are the text
+/// Expression Selector's `[textIndex, textTotal]` and `selectorValue`.
+#[allow(clippy::too_many_arguments)]
+fn evaluate_out(
+    host: &dyn ExprHost,
+    ctx: &EvalCtx,
+    layer: &Layer,
+    prop: &Property,
+    value: &Value,
+    text: &str,
+    text_sel: [f64; 2],
+    selector: [f64; 3],
+) -> Result<runtime::Out, String> {
     let depth = FRAMES.with(|f| f.borrow().len());
     if depth >= MAX_DEPTH {
         return Err("Error: expressions reference each other too deeply (circular reference?)".into());
@@ -84,6 +126,8 @@ pub fn evaluate(host: &dyn ExprHost, ctx: &EvalCtx, layer: &Layer, prop: &Proper
         uid: prop.uid,
         index: ctx.comp.index_of(layer.id).unwrap_or(0) as f64,
         frame_duration: ctx.comp.frame_duration().seconds(),
+        text_sel,
+        selector,
     };
     // Answer the requests nearly every expression makes up front.
     let mut frame = Frame::default();
@@ -95,7 +139,7 @@ pub fn evaluate(host: &dyn ExprHost, ctx: &EvalCtx, layer: &Layer, prop: &Proper
     let _guard = FrameGuard;
     for _ in 0..MAX_PASSES {
         match runtime::run(text, &begin) {
-            Run::Done(r) => return r.and_then(|o| runtime::to_value(&o, value)),
+            Run::Done(r) => return r,
             Run::Pending => {
                 let misses = FRAMES.with(|f| f.borrow_mut().get_mut(depth).map(|fr| std::mem::take(&mut fr.misses)).unwrap_or_default());
                 for m in misses {

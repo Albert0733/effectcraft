@@ -14,6 +14,7 @@ mod mask;
 mod prop;
 mod query;
 mod render_queue;
+mod text_anim;
 mod three_d;
 mod time;
 
@@ -75,6 +76,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(comp::specs());
         v.extend(layer::specs());
         v.extend(three_d::specs());
+        v.extend(text_anim::specs());
         v.extend(layer_time::specs());
         v.extend(prop::specs());
         v.extend(anim::specs());

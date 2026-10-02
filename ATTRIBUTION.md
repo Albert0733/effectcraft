@@ -21,6 +21,8 @@ iconography, images or other Adobe assets; open licences only; every asset attri
 
 - UI icons drawn in code: `crates/ui-egui/src/icons.rs`.
 - Procedural demo content (solids, shapes, gradients, text animations): `crates/engine/src/demo.rs`.
+- Text animator presets (Typewriter, Fade Up Characters, Bounce In Words, Tracking In, Scramble, Blur In, Jitter,
+  Drop In Lines): `crates/engine/presets/text_animators.json` (sidecar `.attribution`).
 
 ## First-party brand marks
 

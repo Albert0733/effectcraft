@@ -1,95 +1,204 @@
-//! Text layers: Source Text layout + text animators (range selectors) → per-character outlines.
+//! Text layers: Source Text layout → text animators (Range / Wiggly / Expression selectors,
+//! combined by mode) → per-character transforms and paint → outlines, optionally placed on a mask
+//! path (Path Options) and drawn with More Options (anchor point grouping, fill & stroke order,
+//! inter-character blending). Per-character 3D characters are handed to the 3D compositor as
+//! separate planes (see [`per_char_planes`]).
 
+use effectcraft_color::BlendMode;
 use effectcraft_effects::Buf;
-use effectcraft_geom::{Mat3, vec2};
-use effectcraft_keyframe::{TextDoc, Value};
+use effectcraft_geom::{Mat3, Mat4, Vec3, vec2, vec3};
+use effectcraft_keyframe::{Justify, TextDoc, Value};
 use effectcraft_path::{BezPath, FillRule, StrokeStyle};
 use effectcraft_project::{Layer, PropGroup};
 use effectcraft_raster::Image;
-use effectcraft_text::{TextLayout, layout_doc};
+use effectcraft_text::path_text::{self, PathMeasure};
+use effectcraft_text::selectors::{self, BasedOn, Mode, Range, Shape, Wiggly};
+use effectcraft_text::{CharGlyph, TextLayout, char_glyph, layout_doc};
 
 use crate::eval::EvalCtx;
 
-/// Evaluated per-character animation state.
+/// Evaluated per-character animation state (sums of every animator, weighted by selection).
 #[derive(Clone, Copy, Debug)]
 pub struct CharXf {
-    pub offset: [f64; 2],
-    pub anchor: [f64; 2],
-    pub scale: [f64; 2],
+    pub offset: [f64; 3],
+    pub anchor: [f64; 3],
+    pub scale: [f64; 3],
+    /// Z rotation (2D rotation).
     pub rotation: f64,
+    pub rotation_x: f64,
+    pub rotation_y: f64,
     pub skew: f64,
+    pub skew_axis: f64,
     pub opacity: f64,
     pub fill: Option<[f32; 4]>,
     pub fill_k: f32,
+    /// Hue (degrees), saturation and brightness (percent) offsets.
+    pub fill_hsb: [f64; 3],
+    pub fill_opacity: f64,
     pub stroke: Option<[f32; 4]>,
     pub stroke_k: f32,
+    pub stroke_hsb: [f64; 3],
+    pub stroke_opacity: f64,
     pub stroke_width: f64,
-    pub tracking: f64,
+    /// Tracking (1/1000 em) added before / after the character.
+    pub track_before: f64,
+    pub track_after: f64,
+    /// Line Anchor (percent) and the selection weight it was set with.
+    pub line_anchor: f64,
+    pub line_anchor_k: f64,
+    pub line_spacing: [f64; 2],
+    pub char_offset: f64,
+    /// Character Value (code point) and its selection.
+    pub char_value: Option<(f64, f64)>,
+    pub char_range: u32,
+    pub char_align: u32,
+    pub blur: [f64; 2],
 }
 
 impl Default for CharXf {
     fn default() -> Self {
         CharXf {
-            offset: [0.0; 2],
-            anchor: [0.0; 2],
-            scale: [100.0; 2],
+            offset: [0.0; 3],
+            anchor: [0.0; 3],
+            scale: [100.0; 3],
             rotation: 0.0,
+            rotation_x: 0.0,
+            rotation_y: 0.0,
             skew: 0.0,
+            skew_axis: 0.0,
             opacity: 100.0,
             fill: None,
             fill_k: 0.0,
+            fill_hsb: [0.0; 3],
+            fill_opacity: 100.0,
             stroke: None,
             stroke_k: 0.0,
+            stroke_hsb: [0.0; 3],
+            stroke_opacity: 100.0,
             stroke_width: 0.0,
-            tracking: 0.0,
+            track_before: 0.0,
+            track_after: 0.0,
+            line_anchor: 0.0,
+            line_anchor_k: 0.0,
+            line_spacing: [0.0; 2],
+            char_offset: 0.0,
+            char_value: None,
+            char_range: 0,
+            char_align: 1,
+            blur: [0.0; 2],
         }
     }
 }
 
-fn shape_value(shape: u32, f: f64) -> f64 {
-    let f = f.clamp(0.0, 1.0);
-    match shape {
-        1 => f,                                      // ramp up
-        2 => 1.0 - f,                                // ramp down
-        3 => 1.0 - (2.0 * f - 1.0).abs(),            // triangle
-        4 => (1.0 - (2.0 * f - 1.0).powi(2)).sqrt(), // round
-        5 => {
-            let t = 1.0 - (2.0 * f - 1.0).abs();
-            t * t * (3.0 - 2.0 * t)
-        } // smooth
-        _ => 1.0,
+/// The unit a glyph belongs to for a selector's Based On, and the unit count.
+fn unit_of(based: BasedOn, g: &CharGlyph, lay: &TextLayout) -> (usize, usize) {
+    match based {
+        BasedOn::Characters => (g.char_index, lay.chars),
+        BasedOn::CharactersExcludingSpaces => (g.char_index_no_space.min(lay.chars_no_space.saturating_sub(1)), lay.chars_no_space),
+        BasedOn::Words => (g.word_index, lay.words),
+        BasedOn::Lines => (g.line_index, lay.lines),
     }
 }
 
-/// Selection amount (0..1) of unit `i` of `n` for a range selector.
-fn range_amount(ctx: &EvalCtx, layer: &Layer, sel: &PropGroup, i: usize, n: usize) -> f64 {
+fn unit_count(based: BasedOn, lay: &TextLayout) -> usize {
+    match based {
+        BasedOn::Characters => lay.chars,
+        BasedOn::CharactersExcludingSpaces => lay.chars_no_space,
+        BasedOn::Words => lay.words,
+        BasedOn::Lines => lay.lines,
+    }
+}
+
+fn layer_seed(layer: &Layer, seed: f64) -> u64 {
+    (seed as i64 as u64) ^ layer.id.0.wrapping_mul(0x9E37_79B9)
+}
+
+/// Range Selector parameters at the context time (fractions of `n` units).
+fn range_params(ctx: &EvalCtx, layer: &Layer, sel: &PropGroup, n: usize) -> Range {
     let adv = sel.sub("advanced");
+    let af = |m: &str, d: f64| adv.map(|a| ctx.f(layer, a, m, d)).unwrap_or(d);
     let units_index = adv.map(|a| ctx.e(layer, a, "units") == 1).unwrap_or(false);
-    let shape = adv.map(|a| ctx.e(layer, a, "shape")).unwrap_or(0);
-    let amount = adv.map(|a| ctx.f(layer, a, "amount", 100.0)).unwrap_or(100.0) / 100.0;
-    let n = n.max(1) as f64;
-    let (mut s, mut e, o) = if units_index {
-        (ctx.f(layer, sel, "start", 0.0) / n, ctx.f(layer, sel, "end", n) / n, ctx.f(layer, sel, "offset", 0.0) / n)
-    } else {
-        (ctx.f(layer, sel, "start", 0.0) / 100.0, ctx.f(layer, sel, "end", 100.0) / 100.0, ctx.f(layer, sel, "offset", 0.0) / 100.0)
-    };
-    if s > e {
-        std::mem::swap(&mut s, &mut e);
+    let div = if units_index { n.max(1) as f64 } else { 100.0 };
+    Range {
+        start: ctx.f(layer, sel, "start", 0.0) / div,
+        end: ctx.f(layer, sel, "end", if units_index { n as f64 } else { 100.0 }) / div,
+        offset: ctx.f(layer, sel, "offset", 0.0) / div,
+        amount: af("amount", 100.0) / 100.0,
+        shape: Shape::from_index(adv.map(|a| ctx.e(layer, a, "shape")).unwrap_or(0)),
+        smoothness: af("smoothness", 100.0) / 100.0,
+        ease_high: af("easeHigh", 0.0) / 100.0,
+        ease_low: af("easeLow", 0.0) / 100.0,
     }
-    s += o;
-    e += o;
-    let (a, b) = (i as f64 / n, (i as f64 + 1.0) / n);
-    let v = if shape == 0 {
-        // Square: the fraction of this unit covered by the range (smooth partial selection).
-        ((b.min(e) - a.max(s)) / (b - a)).clamp(0.0, 1.0)
-    } else {
-        if e - s <= 1e-9 {
-            return 0.0;
+}
+
+/// Selection of every glyph by an animator's selectors, per dimension.
+pub fn animator_selection(ctx: &EvalCtx, layer: &Layer, anim: &PropGroup, lay: &TextLayout) -> Vec<[f64; 3]> {
+    let sels: Vec<&PropGroup> = anim.sub("selectors").map(|s| s.groups().filter(|g| g.enabled).collect()).unwrap_or_default();
+    if sels.is_empty() {
+        // No selectors: every character is fully affected.
+        return vec![[1.0; 3]; lay.glyphs.len()];
+    }
+    let mut acc: Vec<[f64; 3]> = vec![[0.0; 3]; lay.glyphs.len()];
+    let lt = layer.layer_time(ctx.time).seconds();
+    for (si, sel) in sels.iter().enumerate() {
+        let (mode, based) = match sel.match_id.as_str() {
+            "rangeSelector" => {
+                let adv = sel.sub("advanced");
+                (adv.map(|a| ctx.e(layer, a, "mode")).unwrap_or(0), adv.map(|a| ctx.e(layer, a, "basedOn")).unwrap_or(0))
+            }
+            _ => (ctx.e(layer, sel, "mode"), ctx.e(layer, sel, "basedOn")),
+        };
+        let mode = Mode::from_index(mode);
+        let based = BasedOn::from_index(based);
+        let n = unit_count(based, lay);
+        let values: Box<dyn Fn(usize, usize, [f64; 3]) -> [f64; 3]> = match sel.match_id.as_str() {
+            "rangeSelector" => {
+                let r = range_params(ctx, layer, sel, n);
+                let adv = sel.sub("advanced");
+                let perm =
+                    adv.filter(|a| ctx.b(layer, a, "randomize")).map(|a| selectors::random_order(n, layer_seed(layer, ctx.f(layer, a, "randomSeed", 0.0))));
+                Box::new(move |i, n, _| {
+                    let i = perm.as_ref().and_then(|p| p.get(i).copied()).unwrap_or(i);
+                    [selectors::range_value(&r, i, n); 3]
+                })
+            }
+            "wigglySelector" => {
+                let w = Wiggly {
+                    max: ctx.f(layer, sel, "maxAmount", 100.0) / 100.0,
+                    min: ctx.f(layer, sel, "minAmount", -100.0) / 100.0,
+                    wiggles_per_second: ctx.f(layer, sel, "wigglesPerSecond", 2.0),
+                    correlation: ctx.f(layer, sel, "correlation", 50.0) / 100.0,
+                    temporal_phase: ctx.f(layer, sel, "temporalPhase", 0.0),
+                    spatial_phase: ctx.f(layer, sel, "spatialPhase", 0.0),
+                    lock_dimensions: ctx.b(layer, sel, "lockDimensions"),
+                    seed: layer_seed(layer, ctx.f(layer, sel, "randomSeed", 0.0)),
+                };
+                Box::new(move |i, _, _| [0, 1, 2].map(|d| selectors::wiggly_value(&w, lt, i, d)))
+            }
+            "expressionSelector" => {
+                let Some(prop) = sel.get("amount") else { continue };
+                let stat = ctx.v3(layer, sel, "amount", [100.0; 3]);
+                Box::new(move |i, n, prev| {
+                    let pv = prev.map(|x| x * 100.0);
+                    let r = match ctx.expr.filter(|_| prop.has_expression()) {
+                        Some(h) => h.eval_text_selector(ctx, layer, prop, i, n, pv).unwrap_or(stat),
+                        None => stat,
+                    };
+                    r.map(|x| (x / 100.0).clamp(-1.0, 1.0))
+                })
+            }
+            _ => continue,
+        };
+        let mut memo: std::collections::HashMap<(usize, [u64; 3]), [f64; 3]> = std::collections::HashMap::new();
+        for (gi, g) in lay.glyphs.iter().enumerate() {
+            let (i, n) = unit_of(based, g, lay);
+            let prev = if si == 0 { [mode.initial(); 3] } else { acc[gi] };
+            let key = (i, prev.map(f64::to_bits));
+            let v = *memo.entry(key).or_insert_with(|| values(i, n, prev));
+            acc[gi] = [0, 1, 2].map(|d| mode.combine(prev[d], v[d]));
         }
-        let c = (a + b) * 0.5;
-        if c < s || c > e { 0.0 } else { shape_value(shape, (c - s) / (e - s)) }
-    };
-    v * amount
+    }
+    acc
 }
 
 /// Evaluate animators for every glyph.
@@ -98,78 +207,164 @@ pub fn char_transforms(ctx: &EvalCtx, layer: &Layer, text: &PropGroup, lay: &Tex
     let Some(anims) = text.sub("animators") else { return out };
     for anim in anims.groups().filter(|g| g.enabled) {
         let Some(props) = anim.sub("properties") else { continue };
-        let sels: Vec<&PropGroup> = anim.sub("selectors").map(|s| s.groups().filter(|g| g.enabled).collect()).unwrap_or_default();
-        let get = |m: &str| props.get(m).map(|p| ctx.value(layer, p));
-        let pos = get("position").map(|v| v.as_vec2());
-        let anchor = get("anchor").map(|v| v.as_vec2());
-        let scale = get("scale").map(|v| v.as_vec2());
-        let rot = get("rotation").map(|v| v.as_f64());
-        let skew = get("skew").map(|v| v.as_f64());
-        let op = get("opacity").map(|v| v.as_f64());
-        let fill = get("fillColor").map(|v| v.as_color());
-        let stroke = get("strokeColor").map(|v| v.as_color());
-        let sw = get("strokeWidth").map(|v| v.as_f64());
-        let tracking = get("tracking").map(|v| v.as_f64());
-        for (gi, g) in lay.glyphs.iter().enumerate() {
-            let mut k = 1.0;
-            for sel in &sels {
-                let based = sel.sub("advanced").map(|a| ctx.e(layer, a, "basedOn")).unwrap_or(0);
-                let (i, n) = match based {
-                    1 => {
-                        if g.is_space {
-                            k = 0.0;
-                            continue;
-                        }
-                        (g.char_index_no_space, lay.chars_no_space)
-                    }
-                    2 => (g.word_index, lay.words),
-                    3 => (g.line_index, lay.lines),
-                    _ => (g.char_index, lay.chars),
-                };
-                k *= range_amount(ctx, layer, sel, i, n);
-            }
-            if k <= 0.0 {
+        let sel = animator_selection(ctx, layer, anim, lay);
+        let get = |m: &str| props.get(m).map(|p| ctx.value(layer, p).components());
+        let get1 = |m: &str| props.get(m).map(|p| ctx.value(layer, p).as_f64());
+        let c3 = |v: Vec<f64>, d: f64| [v.first().copied().unwrap_or(d), v.get(1).copied().unwrap_or(d), v.get(2).copied().unwrap_or(d)];
+        let pos = get("position").map(|v| c3(v, 0.0));
+        let anchor = get("anchor").map(|v| c3(v, 0.0));
+        let scale = get("scale").map(|v| c3(v, 100.0));
+        let rot = get1("rotation");
+        let rx = get1("rotationX");
+        let ry = get1("rotationY");
+        let skew = get1("skew");
+        let skew_axis = get1("skewAxis");
+        let op = get1("opacity");
+        let fill = props.get("fillColor").map(|p| ctx.value(layer, p).as_color());
+        let stroke = props.get("strokeColor").map(|p| ctx.value(layer, p).as_color());
+        let fill_hsb = [get1("fillHue"), get1("fillSaturation"), get1("fillBrightness")];
+        let stroke_hsb = [get1("strokeHue"), get1("strokeSaturation"), get1("strokeBrightness")];
+        let fill_op = get1("fillOpacity");
+        let stroke_op = get1("strokeOpacity");
+        let sw = get1("strokeWidth");
+        let tracking = get1("tracking");
+        let tracking_type = props.get("trackingType").map(|p| ctx.value(layer, p).as_enum()).unwrap_or(0);
+        let line_anchor = get1("lineAnchor");
+        let line_spacing = props.get("lineSpacing").map(|p| ctx.value(layer, p).as_vec2());
+        let char_offset = get1("characterOffset");
+        let char_value = get1("characterValue");
+        let char_range = props.get("characterRange").map(|p| ctx.value(layer, p).as_enum());
+        let char_align = props.get("characterAlignment").map(|p| ctx.value(layer, p).as_enum());
+        let blur = props.get("blur").map(|p| ctx.value(layer, p).as_vec2());
+        for (gi, k3) in sel.iter().enumerate() {
+            let k = k3[0];
+            if k3.iter().all(|x| *x == 0.0) {
                 continue;
             }
             let c = &mut out[gi];
-            if let Some(p) = pos {
-                c.offset[0] += p[0] * k;
-                c.offset[1] += p[1] * k;
-            }
-            if let Some(a) = anchor {
-                c.anchor[0] += a[0] * k;
-                c.anchor[1] += a[1] * k;
-            }
-            if let Some(s) = scale {
-                c.scale[0] *= 1.0 + (s[0] / 100.0 - 1.0) * k;
-                c.scale[1] *= 1.0 + (s[1] / 100.0 - 1.0) * k;
+            for d in 0..3 {
+                if let Some(p) = pos {
+                    c.offset[d] += p[d] * k3[d];
+                }
+                if let Some(a) = anchor {
+                    c.anchor[d] += a[d] * k3[d];
+                }
+                if let Some(s) = scale {
+                    c.scale[d] *= 1.0 + (s[d] / 100.0 - 1.0) * k3[d];
+                }
             }
             if let Some(r) = rot {
                 c.rotation += r * k;
             }
+            if let Some(r) = rx {
+                c.rotation_x += r * k;
+            }
+            if let Some(r) = ry {
+                c.rotation_y += r * k;
+            }
             if let Some(s) = skew {
                 c.skew += s * k;
+            }
+            if let Some(a) = skew_axis {
+                c.skew_axis = a;
             }
             if let Some(o) = op {
                 c.opacity *= 1.0 + (o / 100.0 - 1.0) * k;
             }
             if let Some(f) = fill {
                 c.fill = Some(f);
-                c.fill_k = (c.fill_k + k as f32).min(1.0);
+                c.fill_k = (c.fill_k + k as f32).clamp(0.0, 1.0);
             }
             if let Some(f) = stroke {
                 c.stroke = Some(f);
-                c.stroke_k = (c.stroke_k + k as f32).min(1.0);
+                c.stroke_k = (c.stroke_k + k as f32).clamp(0.0, 1.0);
+            }
+            for d in 0..3 {
+                if let Some(v) = fill_hsb[d] {
+                    c.fill_hsb[d] += v * k;
+                }
+                if let Some(v) = stroke_hsb[d] {
+                    c.stroke_hsb[d] += v * k;
+                }
+            }
+            if let Some(o) = fill_op {
+                c.fill_opacity *= 1.0 + (o / 100.0 - 1.0) * k;
+            }
+            if let Some(o) = stroke_op {
+                c.stroke_opacity *= 1.0 + (o / 100.0 - 1.0) * k;
             }
             if let Some(w) = sw {
                 c.stroke_width += w * k;
             }
             if let Some(t) = tracking {
-                c.tracking += t * k;
+                let t = t * k;
+                match tracking_type {
+                    1 => c.track_before += t,
+                    2 => c.track_after += t,
+                    _ => {
+                        c.track_before += t * 0.5;
+                        c.track_after += t * 0.5;
+                    }
+                }
+            }
+            if let Some(a) = line_anchor
+                && k.abs() >= c.line_anchor_k
+            {
+                c.line_anchor = a;
+                c.line_anchor_k = k.abs();
+            }
+            if let Some(l) = line_spacing {
+                c.line_spacing[0] += l[0] * k;
+                c.line_spacing[1] += l[1] * k;
+            }
+            if let Some(o) = char_offset {
+                c.char_offset += o * k;
+            }
+            if let Some(v) = char_value {
+                c.char_value = Some((v, k));
+            }
+            if let Some(r) = char_range {
+                c.char_range = r;
+            }
+            if let Some(a) = char_align {
+                c.char_align = a;
+            }
+            if let Some(b) = blur {
+                c.blur[0] += (b[0] * k3[0]).abs();
+                c.blur[1] += (b[1] * k3[1]).abs();
             }
         }
     }
     out
+}
+
+/// Character Offset / Character Value substitution (None = unchanged).
+pub fn substitute(ch: char, x: &CharXf) -> Option<char> {
+    if ch.is_whitespace() {
+        return None;
+    }
+    let mut code = ch as u32 as f64;
+    if let Some((v, k)) = x.char_value {
+        code += (v - code) * k;
+    }
+    let off = x.char_offset.round() as i64;
+    let base = code.round().max(0.0) as u32;
+    let out = if x.char_range == 1 {
+        char::from_u32((base as i64 + off).max(0) as u32)
+    } else {
+        let c = char::from_u32(base)?;
+        let wrap = |lo: char, n: i64| char::from_u32((lo as i64 + ((c as i64 - lo as i64 + off).rem_euclid(n))) as u32);
+        if c.is_ascii_lowercase() {
+            wrap('a', 26)
+        } else if c.is_ascii_uppercase() {
+            wrap('A', 26)
+        } else if c.is_ascii_digit() {
+            wrap('0', 10)
+        } else {
+            Some(c)
+        }
+    }?;
+    (out != ch).then_some(out)
 }
 
 /// The Source Text value at the current time.
@@ -182,108 +377,427 @@ pub fn source_text(ctx: &EvalCtx, layer: &Layer) -> Option<TextDoc> {
     }
 }
 
-/// Outlines of all glyphs in layer space with their paint (for text → shapes and hit testing).
-pub fn glyph_paths(ctx: &EvalCtx, layer: &Layer) -> Vec<(BezPath, CharXf)> {
-    let Some(doc) = source_text(ctx, layer) else { return vec![] };
-    let Some(text) = layer.props.sub("text") else { return vec![] };
-    let lay = layout_doc(&doc);
-    let xfs = char_transforms(ctx, layer, text, &lay);
-    let mut track = 0.0;
-    let mut out = Vec::with_capacity(lay.glyphs.len());
-    let mut last_line = usize::MAX;
-    for (g, x) in lay.glyphs.iter().zip(&xfs) {
-        if g.line_index != last_line {
-            track = 0.0;
-            last_line = g.line_index;
-        }
-        let pivot = [g.origin.x + g.advance / 2.0 + track, g.origin.y];
-        track += x.tracking / 1000.0 * doc.size;
-        if g.is_space || g.path.elements().is_empty() {
-            continue;
-        }
-        let m = Mat3::translate(vec2(pivot[0] + x.offset[0], pivot[1] + x.offset[1]))
-            * Mat3::rotate_deg(x.rotation)
-            * Mat3::skew_deg(-x.skew, 0.0)
-            * Mat3::scale(vec2(x.scale[0] / 100.0, x.scale[1] / 100.0))
-            * Mat3::translate(vec2(-g.advance / 2.0 - x.anchor[0], -x.anchor[1]));
-        out.push((effectcraft_path::transform(std::slice::from_ref(&g.path), &m).remove(0), *x));
-    }
-    out
+/// Per-character 3D is on for this layer (and the layer is 3D).
+pub fn per_char_3d(ctx: &EvalCtx, layer: &Layer) -> bool {
+    layer.is_3d() && layer.props.sub("text").is_some_and(|t| ctx.b(layer, t, "perChar3d"))
 }
 
-fn lerp4(a: [f32; 4], b: [f32; 4], k: f32) -> [f32; 4] {
-    [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k, a[2] + (b[2] - a[2]) * k, a[3] + (b[3] - a[3]) * k]
+/// One drawn character.
+#[derive(Clone, Debug)]
+pub struct PlacedGlyph {
+    /// Outline in character space (the anchor pivot at the origin).
+    pub local: BezPath,
+    /// Character space → layer space.
+    pub m: Mat4,
+    pub xf: CharXf,
+    pub fill: [f32; 4],
+    pub stroke: [f32; 4],
+    pub stroke_width: f64,
+}
+
+impl PlacedGlyph {
+    /// Character space → layer space, flattened to 2D (ignores Z).
+    pub fn m2(&self) -> Mat3 {
+        let m = &self.m.0;
+        Mat3([[m[0][0], m[0][1], m[0][3]], [m[1][0], m[1][1], m[1][3]], [0.0, 0.0, 1.0]])
+    }
+    /// Outline in layer space (2D).
+    pub fn path(&self) -> BezPath {
+        effectcraft_path::transform(std::slice::from_ref(&self.local), &self.m2()).remove(0)
+    }
+}
+
+/// Laid-out, animated text of a layer at the context time.
+pub struct TextGeom {
+    pub doc: TextDoc,
+    pub glyphs: Vec<PlacedGlyph>,
+    /// Fill & Stroke: 0 per character palette, 1 all fills over all strokes, 2 all strokes over
+    /// all fills.
+    pub fill_stroke: u32,
+    pub blend: BlendMode,
+}
+
+fn adjust_color(base: [f32; 4], rgb: Option<[f32; 4]>, k: f32, hsb: [f64; 3], opacity: f64) -> [f32; 4] {
+    let mut c = match rgb {
+        Some(f) => [base[0] + (f[0] - base[0]) * k, base[1] + (f[1] - base[1]) * k, base[2] + (f[2] - base[2]) * k, base[3] + (f[3] - base[3]) * k],
+        None => base,
+    };
+    if hsb != [0.0; 3] {
+        let (h, s, v) = effectcraft_color::rgb_to_hsv(c[0], c[1], c[2]);
+        let h = h + (hsb[0] / 360.0) as f32;
+        let s = (s + (hsb[1] / 100.0) as f32).clamp(0.0, 1.0);
+        let v = (v + (hsb[2] / 100.0) as f32).clamp(0.0, 1.0);
+        let (r, g, b) = effectcraft_color::hsv_to_rgb(h, s, v);
+        c = [r, g, b, c[3]];
+    }
+    c[3] *= (opacity / 100.0).clamp(0.0, 1.0) as f32;
+    c
+}
+
+/// The mask path chosen in Path Options (layer space), measured.
+fn text_path(ctx: &EvalCtx, layer: &Layer, text: &PropGroup) -> Option<(PathMeasure, bool, bool, f64, f64)> {
+    let po = text.sub("pathOptions")?;
+    let k = ctx.e(layer, po, "path") as usize;
+    if k == 0 {
+        return None;
+    }
+    let mask = layer.masks()?.groups().nth(k - 1)?;
+    let Some(Value::Path(sp)) = ctx.group_value(layer, mask, "path") else { return None };
+    let bp = effectcraft_path::to_kurbo(&sp);
+    let pm = PathMeasure::new(&bp, ctx.b(layer, po, "reversePath"));
+    if pm.is_empty() {
+        return None;
+    }
+    let perpendicular = po.get("perpendicular").map(|p| ctx.value(layer, p).as_bool()).unwrap_or(true);
+    Some((pm, perpendicular, ctx.b(layer, po, "forceAlignment"), ctx.f(layer, po, "firstMargin", 0.0), ctx.f(layer, po, "lastMargin", 0.0)))
+}
+
+/// Lay out and animate a text layer.
+pub fn text_geom(ctx: &EvalCtx, layer: &Layer) -> Option<TextGeom> {
+    let doc = source_text(ctx, layer)?;
+    let text = layer.props.sub("text")?;
+    let lay = layout_doc(&doc);
+    let xfs = char_transforms(ctx, layer, text, &lay);
+    let three = per_char_3d(ctx, layer);
+    let more = text.sub("moreOptions");
+    let grouping = more.map(|m| ctx.e(layer, m, "anchorGrouping")).unwrap_or(0);
+    let galign = more.map(|m| ctx.v2(layer, m, "groupingAlignment", [0.0; 2])).unwrap_or([0.0; 2]);
+    let fill_stroke = more.map(|m| ctx.e(layer, m, "fillStroke")).unwrap_or(0);
+    let blend_idx = more.map(|m| ctx.e(layer, m, "interCharBlend")).unwrap_or(0) as usize;
+    let blend = effectcraft_project::build::INTER_CHAR_BLEND_MODES.get(blend_idx).and_then(|n| BlendMode::from_name(n)).unwrap_or_default();
+
+    // Character substitutions (Character Offset / Value). Adjust Kerning re-lays out the text.
+    let mut subs: Vec<Option<char>> = lay.glyphs.iter().zip(&xfs).map(|(g, x)| substitute(g.ch, x)).collect();
+    let relayout = subs.iter().zip(&xfs).any(|(s, x)| s.is_some() && x.char_align == 3);
+    let (lay, xfs) = if relayout {
+        let src: Vec<char> = (if doc.all_caps { doc.text.to_uppercase() } else { doc.text.clone() }).chars().collect();
+        let mut chars = src.clone();
+        for (g, s) in lay.glyphs.iter().zip(&subs) {
+            if let (Some(c), Some(slot)) = (s, chars.get_mut(g.char_index)) {
+                *slot = *c;
+            }
+        }
+        let d2 = TextDoc { text: chars.into_iter().collect(), all_caps: false, ..doc.clone() };
+        let l2 = layout_doc(&d2);
+        let by_char: std::collections::HashMap<usize, CharXf> = lay.glyphs.iter().zip(&xfs).map(|(g, x)| (g.char_index, *x)).collect();
+        let x2: Vec<CharXf> = l2.glyphs.iter().map(|g| by_char.get(&g.char_index).copied().unwrap_or_default()).collect();
+        subs = vec![None; l2.glyphs.len()];
+        (l2, x2)
+    } else {
+        (lay, xfs)
+    };
+
+    // Tracking (before / after each character) and Line Anchor, per line.
+    let n = lay.glyphs.len();
+    let mut shift = vec![0.0f64; n];
+    let mut li_start = 0;
+    while li_start < n {
+        let line = lay.glyphs[li_start].line_index;
+        let mut li_end = li_start;
+        while li_end < n && lay.glyphs[li_end].line_index == line {
+            li_end += 1;
+        }
+        let em = doc.size / 1000.0;
+        let mut pen = 0.0;
+        let (mut la, mut la_k) = (0.0, 0.0);
+        for gi in li_start..li_end {
+            let x = &xfs[gi];
+            pen += x.track_before * em;
+            shift[gi] = pen;
+            pen += x.track_after * em;
+            if x.line_anchor_k > la_k {
+                la = x.line_anchor;
+                la_k = x.line_anchor_k;
+            }
+        }
+        let back = pen * la / 100.0;
+        for s in &mut shift[li_start..li_end] {
+            *s -= back;
+        }
+        li_start = li_end;
+    }
+
+    // Glyph origins after tracking / line spacing, and pivots by anchor point grouping.
+    let origin = |gi: usize| -> [f64; 2] {
+        let g = &lay.glyphs[gi];
+        let x = &xfs[gi];
+        [g.origin.x + shift[gi] + x.line_spacing[0] * g.line_index as f64, g.origin.y + x.line_spacing[1] * g.line_index as f64]
+    };
+    let group_key = |g: &CharGlyph| -> usize {
+        match grouping {
+            1 => g.word_index * 4096 + g.line_index,
+            2 => g.line_index,
+            3 => 0,
+            _ => usize::MAX,
+        }
+    };
+    let mut extents: std::collections::HashMap<usize, [f64; 4]> = std::collections::HashMap::new();
+    if grouping != 0 {
+        for gi in 0..n {
+            let g = &lay.glyphs[gi];
+            if g.is_space && grouping == 1 {
+                continue;
+            }
+            let o = origin(gi);
+            let e = extents.entry(group_key(g)).or_insert([f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY]);
+            e[0] = e[0].min(o[0]);
+            e[2] = e[2].max(o[0] + g.advance);
+            e[1] = e[1].min(o[1]);
+            e[3] = e[3].max(o[1]);
+        }
+    }
+
+    // Path Options.
+    let on_path = text_path(ctx, layer, text);
+    let align = match doc.justify {
+        Justify::Center | Justify::JustifyLastCenter => 1,
+        Justify::Right | Justify::JustifyLastRight => 2,
+        _ => 0,
+    };
+    let first_baseline = lay.line_boxes.first().map(|b| b[1]).unwrap_or(0.0);
+    let mut arc = vec![0.0f64; n];
+    if let Some((pm, _, force, fm, lm)) = &on_path {
+        let mut i = 0;
+        while i < n {
+            let line = lay.glyphs[i].line_index;
+            let mut j = i;
+            while j < n && lay.glyphs[j].line_index == line {
+                j += 1;
+            }
+            let xs: Vec<f64> = (i..j).map(|gi| origin(gi)[0] + lay.glyphs[gi].advance / 2.0).collect();
+            let lb = lay.line_boxes.get(line).copied().unwrap_or([0.0; 4]);
+            let pos = path_text::arc_positions(&xs, [lb[0], lb[0] + lb[2]], align, pm.length(), *fm, *lm, *force);
+            arc[i..j].copy_from_slice(&pos);
+            i = j;
+        }
+    }
+
+    let base_stroke_w = if doc.apply_stroke { doc.stroke_width } else { 0.0 };
+    let mut glyphs = Vec::with_capacity(n);
+    for gi in 0..n {
+        let g = &lay.glyphs[gi];
+        let mut x = xfs[gi];
+        if g.is_space {
+            continue;
+        }
+        if !three {
+            x.offset[2] = 0.0;
+            x.anchor[2] = 0.0;
+            x.scale[2] = 100.0;
+            x.rotation_x = 0.0;
+            x.rotation_y = 0.0;
+        }
+        let o = origin(gi);
+        // Outline (substituted characters aligned in the original slot).
+        let (outline, adv) = match subs[gi] {
+            Some(c) => {
+                let (p, a) = char_glyph(&doc, c);
+                let dx = match x.char_align {
+                    0 => 0.0,
+                    2 => g.advance - a,
+                    _ => (g.advance - a) / 2.0,
+                };
+                (kurbo::Affine::translate((dx, 0.0)) * p, g.advance)
+            }
+            None => (g.path.clone(), g.advance),
+        };
+        if outline.elements().is_empty() {
+            continue;
+        }
+        let pivot = match extents.get(&group_key(g)) {
+            Some(e) if grouping != 0 => [(e[0] + e[2]) / 2.0 + galign[0] / 100.0 * (e[2] - e[0]), (e[1] + e[3]) / 2.0 + galign[1] / 100.0 * doc.size],
+            _ => [o[0] + adv / 2.0 + galign[0] / 100.0 * adv, o[1] + galign[1] / 100.0 * doc.size],
+        };
+        // Outline relative to the pivot.
+        let local = kurbo::Affine::translate((o[0] - pivot[0], o[1] - pivot[1])) * outline;
+        let char_m = Mat4::rotate_z(x.rotation)
+            * Mat4::rotate_y(x.rotation_y)
+            * Mat4::rotate_x(x.rotation_x)
+            * Mat4::from_mat3_affine(&Mat3::skew_deg(-x.skew, x.skew_axis))
+            * Mat4::scale(Vec3::from(x.scale) / 100.0)
+            * Mat4::translate(-Vec3::from(x.anchor));
+        let m = match &on_path {
+            Some((pm, perp, ..)) => {
+                // Position X slides along the path, Y moves off it.
+                let char_center = o[0] + adv / 2.0;
+                let s = arc[gi] + (pivot[0] - char_center) + x.offset[0];
+                let (p, ang) = path_text::place(pm, s, pivot[1] - first_baseline + x.offset[1], *perp);
+                Mat4::translate(vec3(p.x, p.y, x.offset[2])) * Mat4::rotate_z(ang) * char_m
+            }
+            None => Mat4::translate(vec3(pivot[0] + x.offset[0], pivot[1] + x.offset[1], x.offset[2])) * char_m,
+        };
+        let fill = adjust_color(doc.fill, x.fill, x.fill_k, x.fill_hsb, x.fill_opacity);
+        let stroke = adjust_color(doc.stroke, x.stroke, x.stroke_k, x.stroke_hsb, x.stroke_opacity);
+        glyphs.push(PlacedGlyph { local, m, xf: x, fill, stroke, stroke_width: (base_stroke_w + x.stroke_width).max(0.0) });
+    }
+    Some(TextGeom { doc, glyphs, fill_stroke, blend })
+}
+
+/// Outlines of all glyphs in layer space with their animation state (for text → shapes, bounds
+/// and hit testing).
+pub fn glyph_paths(ctx: &EvalCtx, layer: &Layer) -> Vec<(BezPath, CharXf)> {
+    text_geom(ctx, layer).map(|t| t.glyphs.iter().map(|g| (g.path(), g.xf)).collect()).unwrap_or_default()
+}
+
+/// One paint pass of a glyph: fill (false) or stroke (true).
+type Pass = (usize, bool);
+
+fn passes(geom: &TextGeom) -> Vec<Pass> {
+    let doc = &geom.doc;
+    let n = geom.glyphs.len();
+    let fill_on = doc.apply_fill;
+    let has_stroke = |i: usize| geom.glyphs[i].stroke_width > 0.0;
+    let mut v = Vec::with_capacity(n * 2);
+    match geom.fill_stroke {
+        1 => {
+            v.extend((0..n).filter(|i| has_stroke(*i)).map(|i| (i, true)));
+            v.extend((0..n).filter(|_| fill_on).map(|i| (i, false)));
+        }
+        2 => {
+            v.extend((0..n).filter(|_| fill_on).map(|i| (i, false)));
+            v.extend((0..n).filter(|i| has_stroke(*i)).map(|i| (i, true)));
+        }
+        _ => {
+            for i in 0..n {
+                let f = fill_on.then_some((i, false));
+                let s = has_stroke(i).then_some((i, true));
+                if doc.stroke_over_fill {
+                    v.extend(f);
+                    v.extend(s);
+                } else {
+                    v.extend(s);
+                    v.extend(f);
+                }
+            }
+        }
+    }
+    v
+}
+
+/// Rasterize one pass of a glyph (path already in target pixels via `m`) into a premultiplied
+/// patch over the target rect, blurred when the character has Blur.
+fn raster_pass(g: &PlacedGlyph, stroke: bool, path: &BezPath, m: &Mat3, rect: [i64; 4], blur_px: [f64; 2]) -> Image {
+    let (w, h) = ((rect[2] - rect[0]) as u32, (rect[3] - rect[1]) as u32);
+    let mm = Mat3::translate(vec2(-rect[0] as f64, -rect[1] as f64)) * *m;
+    let cov = if stroke {
+        let st = StrokeStyle { width: g.stroke_width, join: effectcraft_path::Join::Round, ..Default::default() };
+        effectcraft_path::stroke_coverage(std::slice::from_ref(path), &st, &mm, w, h)
+    } else {
+        effectcraft_path::fill_coverage(std::slice::from_ref(path), &mm, w, h, FillRule::NonZero)
+    };
+    let col = if stroke { g.stroke } else { g.fill };
+    let op = (g.xf.opacity / 100.0).clamp(0.0, 1.0) as f32;
+    let a = col[3] * op;
+    let mut img = Image::new(w, h);
+    for (px, c) in img.data.iter_mut().zip(&cov.data) {
+        let k = c * a;
+        if k > 0.0 {
+            *px = [col[0] * k, col[1] * k, col[2] * k, k];
+        }
+    }
+    if blur_px[0] > 0.05 || blur_px[1] > 0.05 {
+        img = effectcraft_raster::gaussian_blur(&img, blur_px[0] / 2.0, blur_px[1] / 2.0, false);
+    }
+    img
+}
+
+fn blit(dst: &mut Image, src: &Image, at: [i64; 2], mode: BlendMode) {
+    for y in 0..src.height as i64 {
+        let ty = y + at[1];
+        if ty < 0 || ty >= dst.height as i64 {
+            continue;
+        }
+        for x in 0..src.width as i64 {
+            let tx = x + at[0];
+            if tx < 0 || tx >= dst.width as i64 {
+                continue;
+            }
+            let s = src.data[(y * src.width as i64 + x) as usize];
+            if s[3] <= 0.0 && s[0] == 0.0 && s[1] == 0.0 && s[2] == 0.0 {
+                continue;
+            }
+            let d = &mut dst.data[(ty * dst.width as i64 + tx) as usize];
+            *d = effectcraft_color::blend_pixel(mode, *d, s, 0.5);
+        }
+    }
+}
+
+/// Draw glyphs (paths mapped by `to_px` from layer space into `img`).
+fn draw_glyphs(geom: &TextGeom, img: &mut Image, to_px: &Mat3, s: f64, only: Option<usize>) {
+    let (w, h) = (img.width as i64, img.height as i64);
+    for (gi, stroke) in passes(geom) {
+        if only.is_some_and(|o| o != gi) {
+            continue;
+        }
+        let g = &geom.glyphs[gi];
+        if g.xf.opacity <= 0.0 {
+            continue;
+        }
+        let m = *to_px * if only.is_some() { Mat3::IDENTITY } else { g.m2() };
+        let path = &g.local;
+        let Some(b) = effectcraft_path::bounds(std::slice::from_ref(path)) else { continue };
+        let blur = [g.xf.blur[0] * s, g.xf.blur[1] * s];
+        let pad = g.stroke_width * m.mean_scale() + 2.0 + blur[0].max(blur[1]) * 1.5;
+        let r = m.map_rect(&effectcraft_geom::Rect::new(b.x0, b.y0, b.x1, b.y1));
+        let rect = [
+            ((r.x0 - pad).floor() as i64).max(0),
+            ((r.y0 - pad).floor() as i64).max(0),
+            ((r.x1 + pad).ceil() as i64).min(w),
+            ((r.y1 + pad).ceil() as i64).min(h),
+        ];
+        if rect[2] <= rect[0] || rect[3] <= rect[1] {
+            continue;
+        }
+        let patch = raster_pass(g, stroke, path, &m, rect, blur);
+        blit(img, &patch, [rect[0], rect[1]], if only.is_some() { BlendMode::Normal } else { geom.blend });
+    }
 }
 
 /// Render a text layer into a layer-space buffer at scale `s`.
 pub fn render(ctx: &EvalCtx, layer: &Layer, s: f64) -> Buf {
-    let Some(doc) = source_text(ctx, layer) else { return Buf { img: Image::new(1, 1), offset: [0.0; 2], scale: s } };
-    let glyphs = glyph_paths(ctx, layer);
-    let stroke_w = if doc.apply_stroke { doc.stroke_width } else { 0.0 };
+    let empty = || Buf { img: Image::new(1, 1), offset: [0.0; 2], scale: s };
+    let Some(geom) = text_geom(ctx, layer) else { return empty() };
     let mut bounds: Option<kurbo::Rect> = None;
-    for (p, x) in &glyphs {
-        if let Some(b) = effectcraft_path::bounds(std::slice::from_ref(p)) {
-            let b = b.inflate(stroke_w + x.stroke_width + 2.0, stroke_w + x.stroke_width + 2.0);
+    for g in &geom.glyphs {
+        if let Some(b) = effectcraft_path::bounds(&[g.path()]) {
+            let pad = g.stroke_width + 2.0 + g.xf.blur[0].max(g.xf.blur[1]) * 1.5;
+            let b = b.inflate(pad, pad);
             bounds = Some(bounds.map_or(b, |a| a.union(b)));
         }
     }
-    let Some(b) = bounds else { return Buf { img: Image::new(1, 1), offset: [0.0; 2], scale: s } };
+    let Some(b) = bounds else { return empty() };
     let b = b.intersect(kurbo::Rect::new(-20000.0, -20000.0, 20000.0, 20000.0));
     let w = ((b.width() * s).ceil() as u32 + 4).clamp(1, 16384);
     let h = ((b.height() * s).ceil() as u32 + 4).clamp(1, 16384);
     let offset = [-b.x0 * s + 2.0, -b.y0 * s + 2.0];
     let mut img = Image::new(w, h);
     let base = Mat3::translate(vec2(offset[0], offset[1])) * Mat3::scale(vec2(s, s));
-    for (p, x) in &glyphs {
-        let op = (x.opacity / 100.0).clamp(0.0, 1.0) as f32;
-        if op <= 0.0 {
-            continue;
-        }
-        let Some(gb) = effectcraft_path::bounds(std::slice::from_ref(p)) else { continue };
-        let sw = stroke_w + x.stroke_width;
-        let gb = gb.inflate(sw + 1.0, sw + 1.0);
-        let x0 = ((gb.x0 * s + offset[0]).floor() as i64).max(0);
-        let y0 = ((gb.y0 * s + offset[1]).floor() as i64).max(0);
-        let x1 = ((gb.x1 * s + offset[0]).ceil() as i64).min(w as i64);
-        let y1 = ((gb.y1 * s + offset[1]).ceil() as i64).min(h as i64);
-        if x1 <= x0 || y1 <= y0 {
-            continue;
-        }
-        let (gw, gh) = ((x1 - x0) as u32, (y1 - y0) as u32);
-        let m = Mat3::translate(vec2(-x0 as f64, -y0 as f64)) * base;
-        let fill_col = x.fill.map(|f| lerp4(doc.fill, f, x.fill_k)).unwrap_or(doc.fill);
-        let stroke_col = x.stroke.map(|f| lerp4(doc.stroke, f, x.stroke_k)).unwrap_or(doc.stroke);
-        let mut layers: Vec<(effectcraft_raster::Mask, [f32; 4])> = Vec::new();
-        let fill_cov = doc.apply_fill.then(|| (effectcraft_path::fill_coverage(std::slice::from_ref(p), &m, gw, gh, FillRule::NonZero), fill_col));
-        let stroke_cov = (sw > 0.0).then(|| {
-            let st = StrokeStyle { width: sw, join: effectcraft_path::Join::Round, ..Default::default() };
-            (effectcraft_path::stroke_coverage(std::slice::from_ref(p), &st, &m, gw, gh), stroke_col)
-        });
-        if doc.stroke_over_fill {
-            layers.extend(fill_cov);
-            layers.extend(stroke_cov);
-        } else {
-            layers.extend(stroke_cov);
-            layers.extend(fill_cov);
-        }
-        for (cov, col) in layers {
-            for yy in 0..gh as usize {
-                let row = (y0 as usize + yy) * w as usize + x0 as usize;
-                for xx in 0..gw as usize {
-                    let c = cov.data[yy * gw as usize + xx];
-                    if c <= 0.0 {
-                        continue;
-                    }
-                    let a = c * op * col[3];
-                    let px = &mut img.data[row + xx];
-                    let k = 1.0 - a;
-                    px[0] = col[0] * a + px[0] * k;
-                    px[1] = col[1] * a + px[1] * k;
-                    px[2] = col[2] * a + px[2] * k;
-                    px[3] = a + px[3] * k;
-                }
-            }
-        }
-    }
+    draw_glyphs(&geom, &mut img, &base, s, None);
     Buf { img, offset, scale: s }
 }
+
+/// Per-character 3D: each character as its own plane — (buffer in character space, character
+/// space → layer space matrix).
+pub fn per_char_planes(ctx: &EvalCtx, layer: &Layer, s: f64) -> Vec<(Buf, Mat4)> {
+    let Some(geom) = text_geom(ctx, layer) else { return vec![] };
+    let mut out = Vec::with_capacity(geom.glyphs.len());
+    for (gi, g) in geom.glyphs.iter().enumerate() {
+        if g.xf.opacity <= 0.0 {
+            continue;
+        }
+        let Some(b) = effectcraft_path::bounds(std::slice::from_ref(&g.local)) else { continue };
+        let pad = g.stroke_width + 2.0 + g.xf.blur[0].max(g.xf.blur[1]) * 1.5;
+        let b = b.inflate(pad, pad);
+        let w = ((b.width() * s).ceil() as u32 + 4).clamp(1, 4096);
+        let h = ((b.height() * s).ceil() as u32 + 4).clamp(1, 4096);
+        let offset = [-b.x0 * s + 2.0, -b.y0 * s + 2.0];
+        let mut img = Image::new(w, h);
+        let base = Mat3::translate(vec2(offset[0], offset[1])) * Mat3::scale(vec2(s, s));
+        draw_glyphs(&geom, &mut img, &base, s, Some(gi));
+        out.push((Buf { img, offset, scale: s }, g.m));
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests;

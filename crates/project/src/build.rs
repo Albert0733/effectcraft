@@ -78,12 +78,52 @@ pub fn mask(ids: &mut Ids, name: &str, path: ShapePath, mode: MaskMode, color: [
         .with(ids.prop("expansion", "Mask Expansion", Value::Scalar(0.0)).with_ui(ParamUi::Pixels))
 }
 
-pub fn text(ids: &mut Ids, doc: TextDoc) -> PropGroup {
-    let mut st = ids.prop("sourceText", "Source Text", Value::Text(Box::new(doc))).with_ui(ParamUi::Text);
-    st.hold_only = true;
-    let path_opts = ids.group("pathOptions", "Path Options").with(ids.prop("path", "Path", Value::Enum(0)).with_ui(popup(&["None"])));
-    let more = ids
-        .group("moreOptions", "More Options")
+/// Inter-Character Blending modes (blend mode names, see `BlendMode::from_name`).
+pub const INTER_CHAR_BLEND_MODES: &[&str] = &[
+    "Normal",
+    "Darken",
+    "Multiply",
+    "Color Burn",
+    "Linear Burn",
+    "Darker Color",
+    "Add",
+    "Lighten",
+    "Screen",
+    "Color Dodge",
+    "Lighter Color",
+    "Overlay",
+    "Soft Light",
+    "Hard Light",
+    "Linear Light",
+    "Vivid Light",
+    "Pin Light",
+    "Hard Mix",
+    "Difference",
+    "Exclusion",
+    "Subtract",
+    "Divide",
+    "Hue",
+    "Saturation",
+    "Color",
+    "Luminosity",
+];
+
+/// Path Options group (Path popup: 0 = None, k = mask k).
+pub fn path_options(ids: &mut Ids) -> PropGroup {
+    let mut path = ids.prop("path", "Path", Value::Enum(0)).with_ui(popup(&["None"]));
+    path.static_only = true;
+    ids.group("pathOptions", "Path Options")
+        .with(path)
+        .with(ids.prop("reversePath", "Reverse Path", Value::Bool(false)).with_ui(ParamUi::Checkbox))
+        .with(ids.prop("perpendicular", "Perpendicular To Path", Value::Bool(true)).with_ui(ParamUi::Checkbox))
+        .with(ids.prop("forceAlignment", "Force Alignment", Value::Bool(false)).with_ui(ParamUi::Checkbox))
+        .with(ids.prop("firstMargin", "First Margin", Value::Scalar(0.0)).with_ui(ParamUi::Pixels))
+        .with(ids.prop("lastMargin", "Last Margin", Value::Scalar(0.0)).with_ui(ParamUi::Pixels))
+}
+
+/// More Options group.
+pub fn more_options(ids: &mut Ids) -> PropGroup {
+    ids.group("moreOptions", "More Options")
         .with(ids.prop("anchorGrouping", "Anchor Point Grouping", Value::Enum(0)).with_ui(popup(&["Character", "Word", "Line", "All"])))
         .with(ids.prop("groupingAlignment", "Grouping Alignment", Value::Vec2([0.0, 0.0])).with_ui(ParamUi::Percent))
         .with(ids.prop("fillStroke", "Fill & Stroke", Value::Enum(0)).with_ui(popup(&[
@@ -91,8 +131,18 @@ pub fn text(ids: &mut Ids, doc: TextDoc) -> PropGroup {
             "All Fills Over All Strokes",
             "All Strokes Over All Fills",
         ])))
-        .with(ids.prop("interCharBlend", "Inter-Character Blending", Value::Enum(0)).with_ui(popup(&["Normal", "Multiply", "Screen", "Overlay"])));
-    ids.group("text", "Text").with(st).with(path_opts).with(more).with(ids.group("animators", "Animators"))
+        .with(ids.prop("interCharBlend", "Inter-Character Blending", Value::Enum(0)).with_ui(popup(INTER_CHAR_BLEND_MODES)))
+}
+
+pub fn text(ids: &mut Ids, doc: TextDoc) -> PropGroup {
+    let mut st = ids.prop("sourceText", "Source Text", Value::Text(Box::new(doc))).with_ui(ParamUi::Text);
+    st.hold_only = true;
+    // Animation ▸ Animate Text ▸ Enable Per-character 3D (layer-level flag, not keyframable).
+    let mut pc3 = ids.prop("perChar3d", "Per-character 3D", Value::Bool(false)).with_ui(ParamUi::Hidden);
+    pc3.static_only = true;
+    let path_opts = path_options(ids);
+    let more = more_options(ids);
+    ids.group("text", "Text").with(st).with(pc3).with(path_opts).with(more).with(ids.group("animators", "Animators"))
 }
 
 /// A text animator with one range selector and the given properties.
@@ -108,19 +158,22 @@ pub fn text_animator(ids: &mut Ids, name: &str, props: Vec<Property>) -> PropGro
     g.with(sels).with(pg)
 }
 
+const BASED_ON: &[&str] = &["Characters", "Characters Excluding Spaces", "Words", "Lines"];
+const SEL_MODES: &[&str] = &["Add", "Subtract", "Intersect", "Min", "Max", "Difference"];
+
 pub fn range_selector(ids: &mut Ids, name: &str) -> PropGroup {
     let mut g = ids.group("rangeSelector", name);
     g.kind = GroupKind::Indexed;
     let adv = ids
         .group("advanced", "Advanced")
         .with(ids.prop("units", "Units", Value::Enum(0)).with_ui(popup(&["Percentage", "Index"])))
-        .with(ids.prop("basedOn", "Based On", Value::Enum(0)).with_ui(popup(&["Characters", "Characters Excluding Spaces", "Words", "Lines"])))
-        .with(ids.prop("mode", "Mode", Value::Enum(0)).with_ui(popup(&["Add", "Subtract", "Intersect", "Min", "Max", "Difference"])))
-        .with(ids.prop("amount", "Amount", Value::Scalar(100.0)).with_ui(ParamUi::Percent))
+        .with(ids.prop("basedOn", "Based On", Value::Enum(0)).with_ui(popup(BASED_ON)))
+        .with(ids.prop("mode", "Mode", Value::Enum(0)).with_ui(popup(SEL_MODES)))
+        .with(ids.prop("amount", "Amount", Value::Scalar(100.0)).with_ui(slider(-100.0, 100.0, -100.0, 100.0, 0)))
         .with(ids.prop("shape", "Shape", Value::Enum(0)).with_ui(popup(&["Square", "Ramp Up", "Ramp Down", "Triangle", "Round", "Smooth"])))
-        .with(ids.prop("smoothness", "Smoothness", Value::Scalar(100.0)).with_ui(ParamUi::Percent))
-        .with(ids.prop("easeHigh", "Ease High", Value::Scalar(0.0)).with_ui(ParamUi::Percent))
-        .with(ids.prop("easeLow", "Ease Low", Value::Scalar(0.0)).with_ui(ParamUi::Percent))
+        .with(ids.prop("smoothness", "Smoothness", Value::Scalar(100.0)).with_ui(slider(0.0, 100.0, 0.0, 100.0, 0)))
+        .with(ids.prop("easeHigh", "Ease High", Value::Scalar(0.0)).with_ui(slider(-100.0, 100.0, -100.0, 100.0, 0)))
+        .with(ids.prop("easeLow", "Ease Low", Value::Scalar(0.0)).with_ui(slider(-100.0, 100.0, -100.0, 100.0, 0)))
         .with(ids.prop("randomize", "Randomize Order", Value::Bool(false)).with_ui(ParamUi::Checkbox))
         .with(ids.prop("randomSeed", "Random Seed", Value::Scalar(0.0)));
     g.with(ids.prop("start", "Start", Value::Scalar(0.0)).with_ui(ParamUi::Percent))
@@ -129,24 +182,150 @@ pub fn range_selector(ids: &mut Ids, name: &str) -> PropGroup {
         .with(adv)
 }
 
-/// Text animator properties by id (Animate ▸ …).
-pub fn text_anim_prop(ids: &mut Ids, kind: &str) -> Option<Property> {
+/// Wiggly Selector (Mode defaults to Intersect, so it varies the selectors above it).
+pub fn wiggly_selector(ids: &mut Ids, name: &str) -> PropGroup {
+    let mut g = ids.group("wigglySelector", name);
+    g.kind = GroupKind::Indexed;
+    g.with(ids.prop("mode", "Mode", Value::Enum(2)).with_ui(popup(SEL_MODES)))
+        .with(ids.prop("maxAmount", "Max Amount", Value::Scalar(100.0)).with_ui(slider(-100.0, 100.0, -100.0, 100.0, 0)))
+        .with(ids.prop("minAmount", "Min Amount", Value::Scalar(-100.0)).with_ui(slider(-100.0, 100.0, -100.0, 100.0, 0)))
+        .with(ids.prop("basedOn", "Based On", Value::Enum(0)).with_ui(popup(BASED_ON)))
+        .with(ids.prop("wigglesPerSecond", "Wiggles/Second", Value::Scalar(2.0)).with_ui(slider(0.0, 1000.0, 0.0, 10.0, 1)))
+        .with(ids.prop("correlation", "Correlation", Value::Scalar(50.0)).with_ui(slider(0.0, 100.0, 0.0, 100.0, 0)))
+        .with(ids.prop("temporalPhase", "Temporal Phase", Value::Scalar(0.0)).with_ui(ParamUi::Angle))
+        .with(ids.prop("spatialPhase", "Spatial Phase", Value::Scalar(0.0)).with_ui(ParamUi::Angle))
+        .with(ids.prop("lockDimensions", "Lock Dimensions", Value::Bool(false)).with_ui(ParamUi::Checkbox))
+        .with(ids.prop("randomSeed", "Random Seed", Value::Scalar(0.0)))
+}
+
+/// Default Expression Selector amount: a ramp across the units.
+pub const EXPRESSION_SELECTOR_DEFAULT: &str = "selectorValue * textIndex / textTotal";
+
+/// Expression Selector: Amount is computed per unit by its expression (`textIndex`,
+/// `textTotal`, `selectorValue`).
+pub fn expression_selector(ids: &mut Ids, name: &str) -> PropGroup {
+    let mut g = ids.group("expressionSelector", name);
+    g.kind = GroupKind::Indexed;
+    let mut amount = ids.prop("amount", "Amount", Value::Vec3([100.0, 100.0, 100.0])).with_ui(ParamUi::Percent);
+    amount.expr = Some(crate::props::Expression { text: EXPRESSION_SELECTOR_DEFAULT.into(), enabled: true });
+    g.with(ids.prop("basedOn", "Based On", Value::Enum(0)).with_ui(popup(BASED_ON)))
+        .with(ids.prop("mode", "Mode", Value::Enum(2)).with_ui(popup(SEL_MODES)))
+        .with(amount)
+}
+
+/// A selector by kind (`range`, `wiggly`, `expression`).
+pub fn text_selector(ids: &mut Ids, kind: &str, name: &str) -> Option<PropGroup> {
     Some(match kind {
-        "anchor" => ids.prop("anchor", "Anchor Point", Value::Vec2([0.0, 0.0])).with_ui(ParamUi::Point),
-        "position" => ids.prop("position", "Position", Value::Vec2([0.0, 0.0])).with_ui(ParamUi::Point),
-        "scale" => ids.prop("scale", "Scale", Value::Vec2([100.0, 100.0])).with_ui(ParamUi::Percent),
-        "skew" => ids.prop("skew", "Skew", Value::Scalar(0.0)),
-        "rotation" => ids.prop("rotation", "Rotation", Value::Scalar(0.0)).with_ui(ParamUi::Angle),
-        "opacity" => ids.prop("opacity", "Opacity", Value::Scalar(100.0)).with_ui(ParamUi::Percent),
-        "fillColor" => ids.prop("fillColor", "Fill Color", Value::Color([1.0, 0.0, 0.0, 1.0])).with_ui(ParamUi::Color),
-        "strokeColor" => ids.prop("strokeColor", "Stroke Color", Value::Color([1.0, 0.0, 0.0, 1.0])).with_ui(ParamUi::Color),
-        "strokeWidth" => ids.prop("strokeWidth", "Stroke Width", Value::Scalar(0.0)).with_ui(ParamUi::Pixels),
-        "tracking" => ids.prop("tracking", "Tracking Amount", Value::Scalar(0.0)),
-        "lineSpacing" => ids.prop("lineSpacing", "Line Spacing", Value::Vec2([0.0, 0.0])),
-        "characterOffset" => ids.prop("characterOffset", "Character Offset", Value::Scalar(0.0)),
-        "blur" => ids.prop("blur", "Blur", Value::Vec2([0.0, 0.0])),
+        "range" => range_selector(ids, name),
+        "wiggly" => wiggly_selector(ids, name),
+        "expression" => expression_selector(ids, name),
         _ => return None,
     })
+}
+
+/// Animation ▸ Animate Text entries: (`layer.addTextAnimator` property kind, menu label);
+/// `"-"` is a separator.
+pub const TEXT_ANIMATOR_KINDS: &[(&str, &str)] = &[
+    ("anchor", "Anchor Point"),
+    ("position", "Position"),
+    ("scale", "Scale"),
+    ("skew", "Skew"),
+    ("rotation", "Rotation"),
+    ("opacity", "Opacity"),
+    ("transformAll", "All Transform Properties"),
+    ("-", "-"),
+    ("lineAnchor", "Line Anchor"),
+    ("lineSpacing", "Line Spacing"),
+    ("characterOffset", "Character Offset"),
+    ("characterValue", "Character Value"),
+    ("blur", "Blur"),
+    ("-", "-"),
+    ("fillColor", "Fill Color: RGB"),
+    ("fillHue", "Fill Color: Hue"),
+    ("fillSaturation", "Fill Color: Saturation"),
+    ("fillBrightness", "Fill Color: Brightness"),
+    ("fillOpacity", "Fill Color: Opacity"),
+    ("strokeColor", "Stroke Color: RGB"),
+    ("strokeHue", "Stroke Color: Hue"),
+    ("strokeSaturation", "Stroke Color: Saturation"),
+    ("strokeBrightness", "Stroke Color: Brightness"),
+    ("strokeOpacity", "Stroke Color: Opacity"),
+    ("strokeWidth", "Stroke Width"),
+    ("tracking", "Tracking"),
+];
+
+fn vec3_prop(ids: &mut Ids, m: &str, name: &str, v: [f64; 3], ui: ParamUi, three_d: bool) -> Property {
+    let mut p = ids.prop(m, name, Value::Vec3(v)).with_ui(ui);
+    p.shown_dims = if three_d { 3 } else { 2 };
+    p
+}
+
+fn pct_slider(ids: &mut Ids, m: &str, name: &str, v: f64, min: f64) -> Property {
+    ids.prop(m, name, Value::Scalar(v)).with_ui(slider(min, 100.0, min, 100.0, 0))
+}
+
+/// The properties one Animate / Add ▸ Property entry adds (AE adds companions: Skew Axis with
+/// Skew, Tracking Type with Tracking, Character Alignment / Range with Character Offset, X / Y
+/// Rotation with Rotation when per-character 3D is on). `three_d` shows Z components.
+pub fn text_anim_props(ids: &mut Ids, kind: &str, three_d: bool) -> Vec<Property> {
+    match kind {
+        "anchor" => vec![vec3_prop(ids, "anchor", "Anchor Point", [0.0; 3], ParamUi::Point, three_d)],
+        "position" => vec![vec3_prop(ids, "position", "Position", [0.0; 3], ParamUi::Point, three_d)],
+        "scale" => vec![vec3_prop(ids, "scale", "Scale", [100.0; 3], ParamUi::Percent, three_d)],
+        "skew" => vec![
+            ids.prop("skew", "Skew", Value::Scalar(0.0)).with_ui(slider(-85.0, 85.0, -70.0, 70.0, 1)),
+            ids.prop("skewAxis", "Skew Axis", Value::Scalar(0.0)).with_ui(ParamUi::Angle),
+        ],
+        "rotation" => {
+            if three_d {
+                vec![
+                    ids.prop("rotationX", "X Rotation", Value::Scalar(0.0)).with_ui(ParamUi::Angle),
+                    ids.prop("rotationY", "Y Rotation", Value::Scalar(0.0)).with_ui(ParamUi::Angle),
+                    ids.prop("rotation", "Z Rotation", Value::Scalar(0.0)).with_ui(ParamUi::Angle),
+                ]
+            } else {
+                vec![ids.prop("rotation", "Rotation", Value::Scalar(0.0)).with_ui(ParamUi::Angle)]
+            }
+        }
+        "opacity" => vec![pct_slider(ids, "opacity", "Opacity", 100.0, 0.0)],
+        "transformAll" => ["anchor", "position", "scale", "skew", "rotation", "opacity"].iter().flat_map(|k| text_anim_props(ids, k, three_d)).collect(),
+        "lineAnchor" => vec![ids.prop("lineAnchor", "Line Anchor", Value::Scalar(0.0)).with_ui(ParamUi::Percent)],
+        "lineSpacing" => vec![ids.prop("lineSpacing", "Line Spacing", Value::Vec2([0.0, 0.0]))],
+        "characterOffset" => vec![char_alignment(ids), char_range(ids), ids.prop("characterOffset", "Character Offset", Value::Scalar(0.0))],
+        "characterValue" => vec![char_range(ids), ids.prop("characterValue", "Character Value", Value::Scalar(0.0))],
+        "blur" => vec![ids.prop("blur", "Blur", Value::Vec2([0.0, 0.0]))],
+        "fillColor" => vec![ids.prop("fillColor", "Fill Color", Value::Color([1.0, 0.0, 0.0, 1.0])).with_ui(ParamUi::Color)],
+        "fillHue" => vec![ids.prop("fillHue", "Fill Hue", Value::Scalar(0.0)).with_ui(ParamUi::Angle)],
+        "fillSaturation" => vec![pct_slider(ids, "fillSaturation", "Fill Saturation", 0.0, -100.0)],
+        "fillBrightness" => vec![pct_slider(ids, "fillBrightness", "Fill Brightness", 0.0, -100.0)],
+        "fillOpacity" => vec![pct_slider(ids, "fillOpacity", "Fill Opacity", 100.0, 0.0)],
+        "strokeColor" => vec![ids.prop("strokeColor", "Stroke Color", Value::Color([1.0, 0.0, 0.0, 1.0])).with_ui(ParamUi::Color)],
+        "strokeHue" => vec![ids.prop("strokeHue", "Stroke Hue", Value::Scalar(0.0)).with_ui(ParamUi::Angle)],
+        "strokeSaturation" => vec![pct_slider(ids, "strokeSaturation", "Stroke Saturation", 0.0, -100.0)],
+        "strokeBrightness" => vec![pct_slider(ids, "strokeBrightness", "Stroke Brightness", 0.0, -100.0)],
+        "strokeOpacity" => vec![pct_slider(ids, "strokeOpacity", "Stroke Opacity", 100.0, 0.0)],
+        "strokeWidth" => vec![ids.prop("strokeWidth", "Stroke Width", Value::Scalar(0.0)).with_ui(ParamUi::Pixels)],
+        "tracking" => {
+            let tt = ids.prop("trackingType", "Tracking Type", Value::Enum(0)).with_ui(popup(&["Before & After", "Before", "After"]));
+            vec![tt, ids.prop("tracking", "Tracking Amount", Value::Scalar(0.0))]
+        }
+        _ => vec![],
+    }
+}
+
+fn char_alignment(ids: &mut Ids) -> Property {
+    ids.prop("characterAlignment", "Character Alignment", Value::Enum(1)).with_ui(popup(&["Left or Top", "Center", "Right or Bottom", "Adjust Kerning"]))
+}
+
+fn char_range(ids: &mut Ids) -> Property {
+    ids.prop("characterRange", "Character Range", Value::Enum(0)).with_ui(popup(&["Preserve Case & Digits", "Full Unicode"]))
+}
+
+/// The main property of an animator kind (the last of [`text_anim_props`]; kept for callers
+/// that add one property).
+pub fn text_anim_prop(ids: &mut Ids, kind: &str) -> Option<Property> {
+    let mut v = text_anim_props(ids, kind, false);
+    v.pop()
 }
 
 // ---------------------------------------------------------------- shape layer contents

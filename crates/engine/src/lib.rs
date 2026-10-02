@@ -419,6 +419,8 @@ mod tests;
 #[cfg(test)]
 mod tests_3d;
 #[cfg(test)]
+mod tests_text;
+#[cfg(test)]
 mod tests_timeline;
 
 /// Font families available to text layers (bundled + scanned system fonts).

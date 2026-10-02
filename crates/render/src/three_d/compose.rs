@@ -54,7 +54,7 @@ pub(crate) struct Item<'a> {
     /// Drawn (false for "Casts Shadows: Only" and shadow-only casters outside the run).
     draw: bool,
     /// Screen-space track matte factor (output size).
-    matte: Option<Vec<f32>>,
+    matte: Option<Arc<Vec<f32>>>,
     preserve: bool,
     /// World → layer (for shadow rays) and the buffer's layer-space bounds.
     winv: Mat4,
@@ -76,6 +76,11 @@ fn geo(cam: &CameraState, world: Mat4, buf: &Buf, comp: (f64, f64), scale: f64, 
     let proj = Mat4::scale(vec3(scale, scale, 1.0)) * cam.projection(comp.0, comp.1);
     let full = proj * world;
     let h = full.plane_to_mat3();
+    // Edge-on planes project to a line (singular homography): nothing to draw.
+    let col = |j: usize| (h.0[0][j].powi(2) + h.0[1][j].powi(2) + h.0[2][j].powi(2)).sqrt();
+    if h.determinant().abs() <= 1e-10 * col(0) * col(1) * col(2) {
+        return None;
+    }
     let hinv = h.inverse()?;
     let cv = cam.view * world;
     let depth = [cv.0[2][0], cv.0[2][1], cv.0[2][3]];
@@ -162,14 +167,40 @@ fn mb_samples(r: &Renderer, ctx: &EvalCtx, layer: &Layer) -> usize {
 
 /// Prepare a layer (buffer, geometry, material). `None` when it shows nothing.
 pub(crate) fn prepare<'a>(r: &Renderer, ctx: &EvalCtx<'a>, layer: &'a Layer, order: usize, out: (u32, u32), in_run: bool) -> Option<Item<'a>> {
-    let mut buf = r.layer_buf(ctx, layer)?;
+    let buf = r.layer_buf(ctx, layer)?;
+    prepare_with(r, ctx, layer, order, out, in_run, buf, Mat4::IDENTITY)
+}
+
+/// Prepare a layer as planes: one per character for per-character 3D text, else one.
+pub(crate) fn prepare_all<'a>(r: &Renderer, ctx: &EvalCtx<'a>, layer: &'a Layer, order: usize, out: (u32, u32), in_run: bool) -> Vec<Item<'a>> {
+    if crate::text::per_char_3d(ctx, layer) {
+        return crate::text::per_char_planes(ctx, layer, r.opts.scale)
+            .into_iter()
+            .filter_map(|(buf, m)| prepare_with(r, ctx, layer, order, out, in_run, Arc::new(buf), m))
+            .collect();
+    }
+    prepare(r, ctx, layer, order, out, in_run).into_iter().collect()
+}
+
+/// Prepare a plane showing `buf`, whose space maps into the layer through `local`.
+#[allow(clippy::too_many_arguments)]
+fn prepare_with<'a>(
+    r: &Renderer,
+    ctx: &EvalCtx<'a>,
+    layer: &'a Layer,
+    order: usize,
+    out: (u32, u32),
+    in_run: bool,
+    mut buf: Arc<Buf>,
+    local: Mat4,
+) -> Option<Item<'a>> {
     if buf.img.is_empty() {
         return None;
     }
     let comp = (ctx.comp.width as f64, ctx.comp.height as f64);
     let s = r.opts.scale;
     let cam = camera_for(r, ctx);
-    let world = ctx.world_matrix(layer);
+    let world = ctx.world_matrix(layer) * local;
     // Depth of field: blur the layer by its circle of confusion at its centre.
     if let Some(dof) = cam.dof.filter(|_| !ctx.comp.draft_3d && !r.opts.draft) {
         let b = buf_bounds(&buf);
@@ -203,7 +234,7 @@ pub(crate) fn prepare<'a>(r: &Renderer, ctx: &EvalCtx<'a>, layer: &'a Layer, ord
                 let f = phase + angle * i as f64 / (n - 1) as f64;
                 let sub = ctx.at(ctx.time + Tick::from_seconds_f64(f * fd));
                 let c = camera_for(r, &sub);
-                geo(&c, sub.world_matrix(layer), &buf, comp, s, out)
+                geo(&c, sub.world_matrix(layer) * local, &buf, comp, s, out)
             })
             .collect()
     };
@@ -234,7 +265,7 @@ pub(crate) fn prepare<'a>(r: &Renderer, ctx: &EvalCtx<'a>, layer: &'a Layer, ord
 }
 
 /// Screen-space track matte factor for a layer, or None.
-fn matte_for(r: &Renderer, ctx: &EvalCtx, layer: &Layer, out: (u32, u32)) -> Option<Vec<f32>> {
+fn matte_for(r: &Renderer, ctx: &EvalCtx, layer: &Layer, out: (u32, u32)) -> Option<Arc<Vec<f32>>> {
     let tm = layer.track_matte?;
     let m = ctx.comp.layer(tm.layer).filter(|m| m.id != layer.id)?;
     let mut img = Image::new(out.0, out.1);
@@ -245,15 +276,16 @@ fn matte_for(r: &Renderer, ctx: &EvalCtx, layer: &Layer, out: (u32, u32)) -> Opt
             solo.track_matte = None;
             solo.preserve_transparency = false;
             solo.blend_mode = BlendMode::Normal;
-            if let Some(it) = prepare(r, ctx, &solo, 0, out, true) {
+            let its = prepare_all(r, ctx, &solo, 0, out, true);
+            if !its.is_empty() {
                 let lights = scene_lights(ctx);
-                composite(&mut img, &[it], &lights, &[], m.id.0 as u32);
+                composite(&mut img, &its, &lights, &[], m.id.0 as u32);
             }
         } else if let Some(mb) = r.layer_buf(ctx, m) {
             r.place(ctx, m, &mb, &mut img, BlendMode::Normal, ctx.opacity(m) as f32);
         }
     }
-    Some(
+    Some(Arc::new(
         img.data
             .par_iter()
             .map(|q| {
@@ -266,7 +298,7 @@ fn matte_for(r: &Renderer, ctx: &EvalCtx, layer: &Layer, out: (u32, u32)) -> Opt
                 .clamp(0.0, 1.0)
             })
             .collect(),
-    )
+    ))
 }
 
 /// Lights used for shading: none in Draft 3D (which also turns off shadows and depth of field).
@@ -292,10 +324,15 @@ pub(crate) fn draw_run(r: &Renderer, ctx: &EvalCtx, run: &[&Layer], canvas: &mut
         .par_iter()
         .enumerate()
         .filter(|(_, l)| ctx.opacity(l) > 0.0)
-        .filter_map(|(i, l)| {
-            let mut it = prepare(r, ctx, l, i, out, true)?;
-            it.matte = matte_for(r, ctx, l, out);
-            Some(it)
+        .flat_map_iter(|(i, l)| {
+            let mut its = prepare_all(r, ctx, l, i, out, true);
+            if !its.is_empty() {
+                let m = matte_for(r, ctx, l, out);
+                for it in &mut its {
+                    it.matte = m.clone();
+                }
+            }
+            its
         })
         .collect();
     // Shadow casters outside this run (other 3D layers of the comp).
@@ -308,7 +345,7 @@ pub(crate) fn draw_run(r: &Renderer, ctx: &EvalCtx, run: &[&Layer], canvas: &mut
             .par_iter()
             .filter(|l| l.switches.three_d && l.has_video() && l.is_active_at(ctx.time) && !in_run.contains(&l.id) && !l.switches.adjustment)
             .filter(|l| Material::of(ctx, l).casts_shadows != 0)
-            .filter_map(|l| prepare(r, ctx, l, 0, out, false))
+            .flat_map_iter(|l| prepare_all(r, ctx, l, 0, out, false))
             .collect();
     }
     items.sort_by_key(|i| i.order);

@@ -11,13 +11,20 @@ var __S = null;
 var __rc = 0;
 var __seed = 0;
 var __timeless = false;
+// Text Expression Selector inputs (1, 1, [100, 100, 100] outside a selector).
+var textIndex = 1;
+var textTotal = 1;
+var selectorValue = [100, 100, 100];
 
 // Request ops (must match runtime.rs).
 var __COMP = 0, __COMPNAME = 1, __LAYER = 2, __LINFO = 3, __CHILD = 4, __PINFO = 5, __VALUE = 6, __XFORM = 7, __RECT = 8, __MARKERS = 9;
 
-function __begin(t, v, c, l, path, uid, idx, fd) {
+function __begin(t, v, c, l, path, uid, idx, fd, ti, tt, sv) {
   time = t;
   value = v;
+  textIndex = ti;
+  textTotal = tt;
+  selectorValue = sv;
   __S = { c: c, l: l, path: path, uid: uid, idx: idx, fd: fd, comp: null, layer: null, prop: null, vars: {} };
   __rc = 0;
   __seed = 0;
