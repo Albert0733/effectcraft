@@ -1,8 +1,8 @@
-asset:        favicon.svg
-title:        EffectCraft web app icon (favicon)
+asset:        effectcraft.ico
+title:        EffectCraft Windows app icon
 author:       EffectCraft contributors (drawing by the project owner in ArtCraft)
 source:       original work
 license:      MIT OR Apache-2.0
 license-file: assets/app-icon/LICENSE.txt
 added:        2026-10-02 by EffectCraft contributors (Claude agent, app icon)
-notes:        Copy of assets/app-icon/effectcraft-small.svg (the lighter vector trace of the app icon). Replaces the earlier code-drawn split-square mark.
+notes:        Rendered from effectcraft.svg (16-256 px) with resvg and packed by cargo xtask ico (packaging/icons.sh).

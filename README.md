@@ -7,6 +7,10 @@
   </a>
 </p>
 
+<p align="center">
+  <img alt="EffectCraft app icon: an engraved unicorn on EffectCraft pink (#e0368f)" src="assets/app-icon/effectcraft-1024.png" width="128">
+</p>
+
 <h1 align="center">EffectCraft</h1>
 
 <p align="center">

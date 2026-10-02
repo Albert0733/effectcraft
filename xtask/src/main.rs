@@ -1,4 +1,4 @@
-//! Workspace automation: `cargo xtask <layers|assets|wasm|web|ci>`.
+//! Workspace automation: `cargo xtask <layers|assets|wasm|web|ico|ci>`.
 //!
 //! - `layers`: enforces the dependency layering of `docs/architecture.md` §1 (downward-only edges,
 //!   listed same-layer edges, no UI/OS crates below L5).
@@ -8,7 +8,10 @@
 //!   `<target>/web/dist` with `wasm-bindgen` (docs/web.md); `--serve` serves it on localhost.
 //! - `assets`: every asset file (image, icon, font, LUT, audio, video…) has a complete
 //!   `<file>.attribution` sidecar and an entry in `ATTRIBUTION.md` (AGENTS.md §1).
+//! - `ico <out.ico> <in.png>…`: pack PNGs into a Windows `.ico` (used by `packaging/icons.sh`).
 //! - `ci`: fmt check, clippy -D warnings, tests, layers, assets, wasm.
+
+mod ico;
 
 use std::process::{Command, ExitCode};
 
@@ -357,7 +360,11 @@ fn main() -> ExitCode {
         "assets" => assets(),
         "ci" => ci(),
         "web" => web(&std::env::args().skip(2).collect::<Vec<_>>()),
-        _ => Err("usage: cargo xtask <layers|assets|wasm|web [--dev] [--serve PORT]|ci>".into()),
+        "ico" => {
+            let rest: Vec<String> = std::env::args().skip(2).collect();
+            ico::run(&rest.iter().map(String::as_str).collect::<Vec<_>>())
+        }
+        _ => Err("usage: cargo xtask <layers|assets|wasm|web [--dev] [--serve PORT]|ico OUT.ico IN.png…|ci>".into()),
     };
     match r {
         Ok(()) => ExitCode::SUCCESS,
@@ -366,4 +373,9 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// The workspace root (the parent of `xtask/`).
+pub fn root() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().expect("xtask has a parent dir").to_path_buf()
 }

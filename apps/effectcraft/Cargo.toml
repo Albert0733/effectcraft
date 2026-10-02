@@ -19,6 +19,10 @@ serde_json = { workspace = true }
 rfd = { workspace = true }
 cpal = { workspace = true }
 
+[build-dependencies]
+# Icon + VERSIONINFO for effectcraft.exe; build.rs only uses it when targeting Windows.
+winresource = "0.1"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 # Same winit as eframe: macOS event-loop options (no app activation when driven by an agent).
 winit = { version = "0.30", default-features = false }

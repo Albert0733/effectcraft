@@ -1,8 +1,8 @@
-asset:        favicon.svg
-title:        EffectCraft web app icon (favicon)
+asset:        effectcraft-small.svg
+title:        EffectCraft app icon, light vector
 author:       EffectCraft contributors (drawing by the project owner in ArtCraft)
 source:       original work
 license:      MIT OR Apache-2.0
 license-file: assets/app-icon/LICENSE.txt
 added:        2026-10-02 by EffectCraft contributors (Claude agent, app icon)
-notes:        Copy of assets/app-icon/effectcraft-small.svg (the lighter vector trace of the app icon). Replaces the earlier code-drawn split-square mark.
+notes:        The same drawing vectorised at 1024 px with craftrules vectorize_tile.py, about 350 KB, for places where size matters.
