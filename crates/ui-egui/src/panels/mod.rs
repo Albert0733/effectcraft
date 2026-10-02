@@ -8,6 +8,7 @@ pub mod effects_presets;
 pub mod forms;
 pub mod fx_widgets;
 pub mod graph;
+pub mod graph_tools;
 pub mod info;
 pub mod key_dialogs;
 pub mod layer_panel;
@@ -23,6 +24,8 @@ pub mod text_panels;
 pub mod timeline;
 pub mod tracker;
 pub mod viewer;
+pub mod viewer_overlays;
+pub mod viewer_tools;
 pub mod waveform;
 
 use effectcraft_engine::Session;

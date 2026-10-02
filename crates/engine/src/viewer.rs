@@ -1,0 +1,372 @@
+//! Composition viewer maths shared by the frontends and tests: snapping (targets, tolerance and
+//! priority), the Show Channel / Exposure display transforms, and the viewer snapshot.
+//!
+//! Nothing here touches the project; edits go through commands.
+
+use std::sync::Arc;
+
+use effectcraft_geom::vec2;
+use effectcraft_project::{Layer, LayerId};
+use effectcraft_raster::Image;
+use effectcraft_render::EvalCtx;
+use effectcraft_time::Tick;
+use serde::{Deserialize, Serialize};
+
+// ---------------------------------------------------------------- snapping
+
+/// What a snap target is: a point (snaps both axes) or an axis-aligned line.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub enum SnapKind {
+    Point,
+    /// A vertical line at `pos[0]` (snaps x only).
+    VLine,
+    /// A horizontal line at `pos[1]` (snaps y only).
+    HLine,
+}
+
+/// Where a snap target comes from (for feedback: the highlighted box / cross).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub enum SnapSource {
+    Layer(LayerId),
+    Comp,
+    Guide,
+    Grid,
+    /// A mask or shape path vertex of a layer.
+    Vertex(LayerId),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SnapTarget {
+    pub kind: SnapKind,
+    /// Comp pixels.
+    pub pos: [f64; 2],
+    /// Lower wins when two targets are equally near (vertices and layer features before
+    /// guides, guides before the grid).
+    pub priority: u8,
+    pub source: SnapSource,
+}
+
+impl SnapTarget {
+    pub fn point(pos: [f64; 2], priority: u8, source: SnapSource) -> SnapTarget {
+        SnapTarget { kind: SnapKind::Point, pos, priority, source }
+    }
+    pub fn vline(x: f64, priority: u8, source: SnapSource) -> SnapTarget {
+        SnapTarget { kind: SnapKind::VLine, pos: [x, 0.0], priority, source }
+    }
+    pub fn hline(y: f64, priority: u8, source: SnapSource) -> SnapTarget {
+        SnapTarget { kind: SnapKind::HLine, pos: [0.0, y], priority, source }
+    }
+}
+
+/// Priorities of the standard targets.
+pub const PRI_VERTEX: u8 = 0;
+pub const PRI_LAYER: u8 = 1;
+pub const PRI_COMP: u8 = 2;
+pub const PRI_GUIDE: u8 = 3;
+pub const PRI_GRID: u8 = 4;
+
+/// A snap: move the dragged feature by `delta` (comp pixels); `hits` are the targets it lands on.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Snap {
+    pub delta: [f64; 2],
+    pub hits: Vec<SnapTarget>,
+    /// The snapped feature position.
+    pub at: [f64; 2],
+}
+
+fn better(a: (f64, u8), b: (f64, u8)) -> bool {
+    if (a.0 - b.0).abs() < 1e-6 { a.1 < b.1 } else { a.0 < b.0 }
+}
+
+/// Snap feature points `sources` (comp pixels) to the nearest target within `tol` comp pixels.
+/// A point target snaps both axes and wins when it is at least as near as the best lines;
+/// otherwise the nearest vertical and horizontal lines snap x and y independently. Ties go to
+/// the lower priority value.
+pub fn snap(sources: &[[f64; 2]], targets: &[SnapTarget], tol: f64) -> Option<Snap> {
+    let mut best_pt: Option<((f64, u8), [f64; 2], SnapTarget)> = None;
+    let mut best_x: Option<((f64, u8), [f64; 2], SnapTarget)> = None;
+    let mut best_y: Option<((f64, u8), [f64; 2], SnapTarget)> = None;
+    for s in sources {
+        for t in targets {
+            let (d, slot) = match t.kind {
+                SnapKind::Point => (((t.pos[0] - s[0]).powi(2) + (t.pos[1] - s[1]).powi(2)).sqrt(), &mut best_pt),
+                SnapKind::VLine => ((t.pos[0] - s[0]).abs(), &mut best_x),
+                SnapKind::HLine => ((t.pos[1] - s[1]).abs(), &mut best_y),
+            };
+            if d > tol {
+                continue;
+            }
+            let key = (d, t.priority);
+            if slot.as_ref().is_none_or(|(k, _, _)| better(key, *k)) {
+                *slot = Some((key, *s, *t));
+            }
+        }
+    }
+    let line_best = [best_x.map(|b| b.0.0), best_y.map(|b| b.0.0)].into_iter().flatten().fold(f64::INFINITY, f64::min);
+    if let Some((k, s, t)) = best_pt
+        && k.0 <= line_best + 1e-9
+    {
+        return Some(Snap { delta: [t.pos[0] - s[0], t.pos[1] - s[1]], hits: vec![t], at: t.pos });
+    }
+    if best_x.is_none() && best_y.is_none() {
+        return None;
+    }
+    let mut delta = [0.0; 2];
+    let mut hits = vec![];
+    let mut at = [f64::NAN; 2];
+    if let Some((_, s, t)) = best_x {
+        delta[0] = t.pos[0] - s[0];
+        at = [t.pos[0], s[1]];
+        hits.push(t);
+    }
+    if let Some((_, s, t)) = best_y {
+        delta[1] = t.pos[1] - s[1];
+        at = if at[0].is_nan() { [s[0], t.pos[1]] } else { [at[0], t.pos[1]] };
+        hits.push(t);
+    }
+    Some(Snap { delta, hits, at })
+}
+
+/// Snap features of a layer in comp space: corners, edge midpoints, centre and anchor point
+/// (2D layers; `None` for layers without bounds).
+pub fn layer_features(ctx: &EvalCtx, layer: &Layer) -> Vec<[f64; 2]> {
+    let mut out = vec![];
+    let (m, _) = ctx.layer_to_comp(layer);
+    if let Some(b) = effectcraft_render::content_bounds(ctx, layer) {
+        let (cx, cy) = ((b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0);
+        for p in [[b[0], b[1]], [b[2], b[1]], [b[2], b[3]], [b[0], b[3]], [cx, b[1]], [b[2], cy], [cx, b[3]], [b[0], cy], [cx, cy]] {
+            let q = m.apply(vec2(p[0], p[1]));
+            out.push([q.x, q.y]);
+        }
+    }
+    if let Some(tr) = layer.transform() {
+        let a = ctx.v3(layer, tr, "anchor", [0.0; 3]);
+        let q = m.apply(vec2(a[0], a[1]));
+        out.push([q.x, q.y]);
+    }
+    out
+}
+
+/// Mask and shape-path vertices of a layer in comp space.
+pub fn layer_vertices(ctx: &EvalCtx, layer: &Layer) -> Vec<[f64; 2]> {
+    let (m, _) = ctx.layer_to_comp(layer);
+    let mut out = vec![];
+    if let Some(masks) = layer.masks() {
+        for g in masks.groups() {
+            if let Some(sp) = g.get("path").map(|pr| ctx.value(layer, pr)).and_then(|v| v.as_path().cloned()) {
+                out.extend(sp.vertices.iter().map(|v| {
+                    let q = m.apply(vec2(v[0], v[1]));
+                    [q.x, q.y]
+                }));
+            }
+        }
+    }
+    for (uid, sp) in shape_paths(ctx, layer) {
+        let pm = m * effectcraft_render::shapes::item_matrix(ctx, layer, uid).unwrap_or(effectcraft_geom::Mat3::IDENTITY);
+        out.extend(sp.vertices.iter().map(|v| {
+            let q = pm.apply(vec2(v[0], v[1]));
+            [q.x, q.y]
+        }));
+    }
+    out
+}
+
+/// Shape-layer Path items (uid, evaluated path in the item's group space).
+pub fn shape_paths(ctx: &EvalCtx, layer: &Layer) -> Vec<(u64, effectcraft_keyframe::ShapePath)> {
+    let mut out = vec![];
+    let Some(c) = layer.props.sub("contents") else { return out };
+    fn walk(ctx: &EvalCtx, layer: &Layer, g: &effectcraft_project::PropGroup, out: &mut Vec<(u64, effectcraft_keyframe::ShapePath)>) {
+        for sub in g.groups() {
+            if sub.match_id == "path"
+                && let Some(sp) = sub.get("path").map(|pr| ctx.value(layer, pr)).and_then(|v| v.as_path().cloned())
+            {
+                out.push((sub.uid, sp));
+            } else if sub.match_id == "group" || sub.match_id == "contents" {
+                walk(ctx, layer, sub, out);
+            }
+        }
+    }
+    walk(ctx, layer, c, &mut out);
+    out
+}
+
+/// Which target families are on.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SnapOptions {
+    pub guides: bool,
+    pub grid: bool,
+    pub grid_spacing: f64,
+}
+
+/// Snap targets of a comp at the context time: other layers' features and vertices, comp edges
+/// and centre, and (when on) guides and grid lines. Layers in `exclude` (the dragged ones) are
+/// skipped.
+pub fn targets(ctx: &EvalCtx, exclude: &[LayerId], opts: SnapOptions) -> Vec<SnapTarget> {
+    let comp = ctx.comp;
+    let (w, h) = (comp.width as f64, comp.height as f64);
+    let mut out = vec![
+        SnapTarget::vline(0.0, PRI_COMP, SnapSource::Comp),
+        SnapTarget::vline(w, PRI_COMP, SnapSource::Comp),
+        SnapTarget::vline(w / 2.0, PRI_COMP, SnapSource::Comp),
+        SnapTarget::hline(0.0, PRI_COMP, SnapSource::Comp),
+        SnapTarget::hline(h, PRI_COMP, SnapSource::Comp),
+        SnapTarget::hline(h / 2.0, PRI_COMP, SnapSource::Comp),
+        SnapTarget::point([w / 2.0, h / 2.0], PRI_COMP, SnapSource::Comp),
+    ];
+    for l in comp.layers.iter().filter(|l| l.is_active_at(ctx.time) && !exclude.contains(&l.id) && !l.is_camera() && !l.is_light() && !l.is_3d()) {
+        let f = layer_features(ctx, l);
+        // Edges of unrotated layers are lines too.
+        if f.len() >= 9 && (f[0][1] - f[1][1]).abs() < 1e-6 && (f[0][0] - f[3][0]).abs() < 1e-6 {
+            for x in [f[0][0], f[1][0]] {
+                out.push(SnapTarget { kind: SnapKind::VLine, pos: [x, f[0][1]], priority: PRI_LAYER, source: SnapSource::Layer(l.id) });
+            }
+            for y in [f[0][1], f[3][1]] {
+                out.push(SnapTarget { kind: SnapKind::HLine, pos: [f[0][0], y], priority: PRI_LAYER, source: SnapSource::Layer(l.id) });
+            }
+        }
+        out.extend(f.into_iter().map(|p| SnapTarget::point(p, PRI_LAYER, SnapSource::Layer(l.id))));
+        out.extend(layer_vertices(ctx, l).into_iter().map(|p| SnapTarget::point(p, PRI_VERTEX, SnapSource::Vertex(l.id))));
+    }
+    if opts.guides {
+        for g in &comp.guides {
+            out.push(if g.vertical {
+                SnapTarget::vline(g.position, PRI_GUIDE, SnapSource::Guide)
+            } else {
+                SnapTarget::hline(g.position, PRI_GUIDE, SnapSource::Guide)
+            });
+        }
+    }
+    if opts.grid && opts.grid_spacing >= 1.0 {
+        let s = opts.grid_spacing;
+        let mut x = 0.0;
+        while x <= w + 1e-9 && out.len() < 20_000 {
+            out.push(SnapTarget::vline(x, PRI_GRID, SnapSource::Grid));
+            x += s;
+        }
+        let mut y = 0.0;
+        while y <= h + 1e-9 && out.len() < 40_000 {
+            out.push(SnapTarget::hline(y, PRI_GRID, SnapSource::Grid));
+            y += s;
+        }
+    }
+    out
+}
+
+// ---------------------------------------------------------------- channels and exposure
+
+/// Show Channel and Color Management Settings.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Channel {
+    #[default]
+    Rgb,
+    Red,
+    Green,
+    Blue,
+    Alpha,
+    RgbStraight,
+}
+
+impl Channel {
+    pub const ALL: [Channel; 6] = [Channel::Rgb, Channel::Red, Channel::Green, Channel::Blue, Channel::Alpha, Channel::RgbStraight];
+    pub fn id(self) -> &'static str {
+        match self {
+            Channel::Rgb => "rgb",
+            Channel::Red => "red",
+            Channel::Green => "green",
+            Channel::Blue => "blue",
+            Channel::Alpha => "alpha",
+            Channel::RgbStraight => "rgbStraight",
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Channel::Rgb => "RGB",
+            Channel::Red => "Red",
+            Channel::Green => "Green",
+            Channel::Blue => "Blue",
+            Channel::Alpha => "Alpha",
+            Channel::RgbStraight => "RGB Straight",
+        }
+    }
+    pub fn from_name(s: &str) -> Option<Channel> {
+        let n = s.to_ascii_lowercase().replace([' ', '_', '-'], "");
+        Channel::ALL.into_iter().find(|c| c.id().to_ascii_lowercase() == n || c.label().to_ascii_lowercase().replace(' ', "") == n)
+    }
+}
+
+fn srgb_to_linear(v: f32) -> f32 {
+    if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+}
+fn linear_to_srgb(v: f32) -> f32 {
+    let v = v.max(0.0);
+    if v <= 0.003_130_8 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 }
+}
+
+/// 8-bit exposure lookup table: `stops` applied in linear light.
+pub fn exposure_lut(stops: f32) -> [u8; 256] {
+    let k = 2f32.powf(stops);
+    let mut lut = [0u8; 256];
+    for (i, o) in lut.iter_mut().enumerate() {
+        let lin = srgb_to_linear(i as f32 / 255.0) * k;
+        *o = (linear_to_srgb(lin).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+    }
+    lut
+}
+
+/// Apply the viewer's channel and exposure to premultiplied 8-bit RGBA pixels in place.
+/// RGB shows the image (exposure only); Red/Green/Blue/Alpha show one channel as an opaque
+/// grayscale image (or tinted in that channel's colour when `colorized`); RGB Straight shows the
+/// unpremultiplied colour, opaque.
+pub fn display_transform(px: &mut [[u8; 4]], channel: Channel, colorized: bool, stops: f32) {
+    let lut = (stops != 0.0).then(|| exposure_lut(stops));
+    let ex = |v: u8| lut.as_ref().map(|l| l[v as usize]).unwrap_or(v);
+    for p in px.iter_mut() {
+        let [r, g, b, a] = *p;
+        *p = match channel {
+            Channel::Rgb => {
+                if lut.is_none() {
+                    continue;
+                }
+                // Exposure on straight colour, re-premultiplied.
+                let un = |c: u8| if a == 0 { 0 } else { ((c as u32 * 255 + a as u32 / 2) / a as u32).min(255) as u8 };
+                let pm = |c: u8| ((ex(un(c)) as u32 * a as u32 + 127) / 255) as u8;
+                [pm(r), pm(g), pm(b), a]
+            }
+            Channel::Red | Channel::Green | Channel::Blue => {
+                let (i, c) = match channel {
+                    Channel::Red => (0, r),
+                    Channel::Green => (1, g),
+                    _ => (2, b),
+                };
+                let v = ex(c);
+                if colorized {
+                    let mut o = [0, 0, 0, 255];
+                    o[i] = v;
+                    o
+                } else {
+                    [v, v, v, 255]
+                }
+            }
+            Channel::Alpha => {
+                let v = ex(a);
+                [v, v, v, 255]
+            }
+            Channel::RgbStraight => {
+                let un = |c: u8| if a == 0 { 0 } else { ((c as u32 * 255 + a as u32 / 2) / a as u32).min(255) as u8 };
+                [ex(un(r)), ex(un(g)), ex(un(b)), 255]
+            }
+        };
+    }
+}
+
+// ---------------------------------------------------------------- snapshot
+
+/// Take Snapshot (Shift+F5): a rendered frame kept for comparison (Show Snapshot, F5).
+#[derive(Clone, Debug)]
+pub struct Snapshot {
+    pub comp: effectcraft_project::ItemId,
+    pub time: Tick,
+    /// Render scale the image was taken at.
+    pub scale: f64,
+    pub image: Arc<Image>,
+}

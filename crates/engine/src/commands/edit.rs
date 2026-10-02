@@ -502,6 +502,10 @@ fn select_label_group(s: &mut Session, _: &Value) -> Result<Value> {
 
 fn purge_caches(s: &mut Session, p: &Value) -> Result<Value> {
     let what = str_p(p, "what").unwrap_or("all").to_string();
+    if matches!(what.as_str(), "all" | "snapshot") {
+        s.snapshot = None;
+        s.state.viewer.show_snapshot = false;
+    }
     s.events.push(crate::Event::PurgeCaches);
     s.toast(format!("Purged {what} cache"));
     Ok(json!({"purged": what}))
