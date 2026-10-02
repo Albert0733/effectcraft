@@ -434,6 +434,15 @@ pub struct UiState {
     /// Saved workspace layouts (Save Changes to this Workspace / Save as New Workspace).
     #[serde(default)]
     pub saved_workspaces: std::collections::BTreeMap<String, DockNode>,
+    /// Undocked (floating) panel groups.
+    #[serde(default)]
+    pub floating: Vec<crate::dock::Floating>,
+    /// Floating panels of the saved workspaces.
+    #[serde(default)]
+    pub saved_floating: std::collections::BTreeMap<String, Vec<crate::dock::Floating>>,
+    /// The panel maximized to fill the dock area (`~`), if any.
+    #[serde(default)]
+    pub maximized: Option<PanelKind>,
     pub focused: PanelKind,
     pub viewer: ViewerState,
     pub timeline: TimelineState,
@@ -522,6 +531,9 @@ impl Default for UiState {
             workspace: "Default".into(),
             dock: crate::dock::workspace("Default"),
             saved_workspaces: Default::default(),
+            floating: vec![],
+            saved_floating: Default::default(),
+            maximized: None,
             focused: PanelKind::Composition,
             viewer: ViewerState::default(),
             timeline: TimelineState::default(),

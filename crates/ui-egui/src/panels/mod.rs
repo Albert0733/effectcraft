@@ -98,11 +98,17 @@ pub fn panel_menu_popup(app: &mut EffectcraftApp, ui: &mut egui::Ui) {
         egui::Frame::popup(ui.style()).show(ui, |ui| {
             ui.set_min_width(200.0);
             if ui.button("Close Panel").clicked() {
-                app.ui.dock.close(panel);
+                app.close_panel(panel);
                 close = true;
             }
-            if ui.button("Maximize Panel").clicked() {
-                app.ui.dock = crate::dock::DockNode::Tabs { panels: vec![panel], active: 0 };
+            let floating = app.ui.floating.iter().any(|f| f.panels.contains(&panel));
+            if !floating && ui.button("Undock Panel").clicked() {
+                let r = crate::dock_ui::default_float_rect(ui.ctx().content_rect());
+                app.edit_layout(|l| l.float(panel, r));
+                close = true;
+            }
+            if !floating && ui.button(if app.ui.maximized == Some(panel) { "Restore Panel Size" } else { "Maximize Panel" }).clicked() {
+                app.toggle_maximize(panel);
                 close = true;
             }
             ui.separator();

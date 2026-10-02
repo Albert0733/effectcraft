@@ -9,6 +9,7 @@ pub mod audio;
 pub mod automation;
 pub mod control;
 pub mod dock;
+pub mod dock_ui;
 pub mod frames;
 pub mod header;
 pub mod icons;
@@ -144,6 +145,9 @@ pub struct EffectcraftApp {
     applied_prefs: Option<u64>,
     /// A previous run that didn't exit cleanly (shown by `Dialog::Recovery`).
     pub recovery: Option<effectcraft_engine::autosave::Recovery>,
+    /// Docked groups laid out last frame: (active panel, group rect) — `~` maximizes the one
+    /// under the pointer.
+    pub(crate) dock_rects: Vec<(PanelKind, egui::Rect)>,
 }
 
 impl EffectcraftApp {
@@ -182,6 +186,7 @@ impl EffectcraftApp {
             last_reveal: None,
             applied_prefs: None,
             recovery: None,
+            dock_rects: vec![],
         }
         .with_ui_commands()
     }
@@ -247,6 +252,8 @@ impl EffectcraftApp {
     pub fn set_workspace(&mut self, name: &str) {
         self.ui.workspace = name.to_string();
         self.ui.dock = self.ui.saved_workspaces.get(name).cloned().unwrap_or_else(|| dock::workspace(name));
+        self.ui.floating = self.ui.saved_floating.get(name).cloned().unwrap_or_default();
+        self.ui.maximized = None;
     }
 
     /// Built-in workspaces followed by the saved ones (Window ▸ Workspace ▸ Save as New Workspace).
@@ -257,6 +264,14 @@ impl EffectcraftApp {
     }
 
     pub fn show_panel(&mut self, p: PanelKind) {
+        if let Some(f) = self.ui.floating.iter_mut().find(|f| f.panels.contains(&p)) {
+            f.active = f.panels.iter().position(|x| *x == p).unwrap_or(0);
+            self.ui.focused = p;
+            return;
+        }
+        if self.ui.maximized.is_some_and(|m| m != p) {
+            self.ui.maximized = None;
+        }
         if !self.ui.dock.contains(p) {
             let near = match p {
                 PanelKind::Layer | PanelKind::Flowchart => PanelKind::Composition,
@@ -684,73 +699,6 @@ impl EffectcraftApp {
                 }
             }
         }
-    }
-
-    /// Tab labels that name what the panel shows, as After Effects does: "Composition Intro",
-    /// "Effect Controls Title", "Properties: Title", and the Timeline tab named after its comp.
-    fn tab_titles(&self) -> Vec<(PanelKind, String)> {
-        let mut out = Vec::new();
-        let Some(comp) = self.session.active_comp() else { return out };
-        let cname = self.session.active_comp_id().and_then(|id| self.session.project.item(id)).map(|i| i.name.clone()).unwrap_or_default();
-        out.push((PanelKind::Composition, format!("Composition {cname}")));
-        out.push((PanelKind::Timeline, cname));
-        if let Some(l) = self.session.state.selected_layers.first().and_then(|id| comp.layer(*id)) {
-            out.push((PanelKind::EffectControls, format!("Effect Controls {}", l.name)));
-            out.push((PanelKind::Properties, format!("Properties: {}", l.name)));
-        }
-        out
-    }
-
-    fn dock_area(&mut self, ui: &mut egui::Ui, body: egui::Rect) {
-        let t = self.tokens;
-        let mut dock = std::mem::replace(&mut self.ui.dock, dock::DockNode::Tabs { panels: vec![], active: 0 });
-        let mut groups = Vec::new();
-        dock::layout(ui, &mut dock, body, &t, "", &mut groups, &mut self.auto);
-        let mut actions = Vec::new();
-        let titles = self.tab_titles();
-        let title = |p: PanelKind| titles.iter().find(|(k, _)| *k == p).map(|(_, s)| s.clone()).unwrap_or_else(|| p.title().to_string());
-        for g in &groups {
-            actions.extend(dock::draw_group_chrome(ui, g, self.ui.focused, &t, &mut self.auto, &title));
-        }
-        self.ui.dock = dock;
-        for g in &groups {
-            let Some(p) = g.panels.get(g.active).copied() else { continue };
-            if g.content.height() < 2.0 {
-                continue; // a collapsed stacked panel: header only
-            }
-            self.auto.add(&format!("panel.{}", p.id()), g.content, p.title());
-            let mut content = g.content;
-            if p == PanelKind::Composition && !self.ui.start_screen && panels::precomp::has_flow(self) {
-                // Composition Navigator: the flow of nested comps above the viewer.
-                let nav = egui::Rect::from_min_size(content.min, egui::vec2(content.width(), panels::precomp::NAV_H));
-                let mut child = ui.new_child(egui::UiBuilder::new().max_rect(nav).id_salt("comp-navigator"));
-                child.set_clip_rect(nav.intersect(ui.clip_rect()));
-                panels::precomp::navigator(self, &mut child, nav);
-                content.min.y = nav.max.y;
-            }
-            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(content).id_salt(("panel", p.id())));
-            child.set_clip_rect(content.intersect(ui.clip_rect()));
-            panels::show(self, &mut child, p, content);
-            if p == PanelKind::Composition && !self.ui.start_screen {
-                panels::anim_tools::sketch_overlay(self, &mut child);
-            }
-        }
-        for a in actions {
-            match a {
-                dock::DockAction::Activate(p) => {
-                    self.ui.dock.activate(p);
-                }
-                dock::DockAction::ToggleStacked(p) => {
-                    self.ui.dock.toggle_stacked(p);
-                }
-                dock::DockAction::Focus(p) => self.ui.focused = p,
-                dock::DockAction::Close(p) => self.ui.dock.close(p),
-                dock::DockAction::PanelMenu(p, pos) => {
-                    ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("panel-menu"), (p, pos)));
-                }
-            }
-        }
-        panels::panel_menu_popup(self, ui);
     }
 }
 
