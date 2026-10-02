@@ -34,7 +34,6 @@ pub fn specs() -> Vec<CommandSpec> {
         // Time (timeline milestone).
         stub!("layer.alignVideoToData", "Align Video to Data", ["Layer", "Time"], "{}"),
         stub!("layer.environment", "Environment Layer", ["Layer"], "{}"),
-        stub!("layer.updateMarkersFromSource", "Update Markers From Source", ["Layer", "Markers"], "{}"),
         stub!("layer.create", "Create", [], "{op}"),
         stub!("layer.autoTrace", "Auto-trace...", ["Layer"], "{}"),
         stub!("layer.sceneEditDetection", "Scene Edit Detection...", ["Layer"], "{}"),

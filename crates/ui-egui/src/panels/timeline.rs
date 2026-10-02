@@ -630,15 +630,6 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         }
         s += secs_per_label;
     }
-    // Comp markers.
-    for m in &comp.markers {
-        let x = tm.x(m.time.seconds());
-        pr.add(egui::Shape::convex_polygon(
-            vec![pos2(x - 4.0, ruler.max.y - 10.0), pos2(x + 4.0, ruler.max.y - 10.0), pos2(x, ruler.max.y - 4.0)],
-            t.label(m.label),
-            Stroke::NONE,
-        ));
-    }
     // Scrub in the ruler.
     let rresp = ui.interact(Rect::from_min_max(pos2(graph_x0, ruler.min.y + 12.0), ruler.max), egui::Id::new("tl-ruler"), Sense::click_and_drag());
     if (rresp.dragged() || rresp.clicked())
@@ -1031,15 +1022,9 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                             ui_actions.push(UiAct::EndMerge);
                         }
                     }
-                    // Markers on the layer.
-                    for m in &layer.markers {
-                        let x = tm.x(layer.comp_time(m.time).seconds());
-                        gp.add(egui::Shape::convex_polygon(
-                            vec![pos2(x - 3.5, r.min.y + 3.0), pos2(x + 3.5, r.min.y + 3.0), pos2(x, r.min.y + 9.0)],
-                            Color32::from_rgb(0xd8, 0xd8, 0x60),
-                            Stroke::NONE,
-                        ));
-                    }
+                    // Markers on the layer (drag, Alt-drag duration, Cmd-click delete, dialog).
+                    let gclip = rows_rect.intersect(Rect::from_min_max(pos2(graph_x0, rows_rect.min.y), rows_rect.max));
+                    super::markers_ui::layer_markers(app, ui, gclip, &comp, layer, tm, r);
                 }
             }
             RowKind::Group { uid, name, open, has_children, fx, eye } => {
@@ -1501,6 +1486,11 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         app.ui.timeline.pps = Some(npps);
     }
 
+    // Composition markers in the ruler; protected regions shade the layer rows.
+    let mstrip = Rect::from_min_max(pos2(graph_x0, ruler.max.y - 12.0), pos2(graph_x1 + 10.0, ruler.max.y));
+    let mrows = rows_rect.intersect(Rect::from_min_max(pos2(graph_x0, rows_rect.min.y), rows_rect.max));
+    super::markers_ui::comp_markers(app, ui, &comp, tm, mstrip, mrows);
+
     // Drop targets: footage/comps from the Project panel, effects from Effects & Presets.
     if let Some(payload) = egui::DragAndDrop::payload::<crate::panels::DragPayload>(&ctx)
         && ui.rect_contains_pointer(rows_rect)
@@ -1720,7 +1710,7 @@ fn layer_context_menu(resp: &egui::Response, layer: &Layer, actions: &mut Vec<(S
             item(ui, "Send Layer to Back", "layer.arrange", json!({"layers": [id], "to": "back"}));
         });
         ui.separator();
-        item(ui, "Pre-compose…", "layer.precompose", json!({"layers": [id], "name": format!("{} Comp 1", layer.name)}));
+        item(ui, "Pre-compose…", "layer.precompose", json!({"layers": [id]}));
         item(ui, "Duplicate", "edit.duplicate", json!({"layers": [id]}));
         item(ui, "Split Layer", "edit.splitLayer", json!({"layers": [id]}));
         item(ui, "Delete", "edit.clear", json!({"layers": [id]}));

@@ -290,10 +290,6 @@ pub fn open_form(app: &mut EffectcraftApp, id: &str, p: &Value) -> bool {
                 ],
             )
         }
-        "layer.precompose" if !has(p, &["name"]) => {
-            let n = s.project.comps().count() + 1;
-            ("Pre-compose".into(), vec![Field::text("name", "New composition name", &format!("Pre-comp {n}"))])
-        }
         "file.importPlaceholder" | "file.replaceWithPlaceholder" if p.as_object().is_none_or(|m| m.is_empty()) => (
             "New Placeholder".into(),
             vec![
