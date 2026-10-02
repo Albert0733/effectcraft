@@ -21,7 +21,7 @@ pub use cache::{CacheStats, LayerCache};
 use effectcraft_color::BlendMode;
 use effectcraft_effects::{Buf, EffectCtx, EffectEnv, EffectHost, LayerPixels, Params};
 use effectcraft_geom::{Mat3, vec2};
-use effectcraft_project::{Comp, Footage, GroupKind, ItemId, ItemKind, Layer, LayerSource, MatteKind, Node, Project, Quality, Sampling};
+use effectcraft_project::{Comp, Footage, GroupKind, ItemId, ItemKind, Layer, LayerSource, MatteKind, Project, Quality, Sampling};
 pub use effectcraft_raster::Image;
 use effectcraft_raster::{WarpOpts, composite_warp};
 use effectcraft_time::Tick;
@@ -217,13 +217,8 @@ impl<'a> Renderer<'a> {
 
     /// Evaluate an effect instance's parameters.
     fn effect_params(&self, ctx: &EvalCtx, layer: &Layer, g: &effectcraft_project::PropGroup) -> Params {
-        let mut p = Params::default();
-        for c in &g.children {
-            if let Node::Prop(pr) = c {
-                p.values.insert(pr.match_id.clone(), ctx.value(layer, pr));
-            }
-        }
-        p
+        // Nested groups (Paint strokes, Puppet meshes and pins) are flattened too.
+        effectcraft_effects::flatten_params(g, &mut |pr| ctx.value(layer, pr))
     }
 
     fn apply_effects(&self, ctx: &EvalCtx, layer: &Layer, buf: Buf, adjustment: bool) -> Buf {
@@ -656,5 +651,7 @@ pub fn kurbo_path(sp: &effectcraft_keyframe::ShapePath) -> kurbo::BezPath {
 }
 #[cfg(test)]
 mod tests_audio_fx;
+#[cfg(test)]
+mod tests_paint;
 #[cfg(test)]
 mod tests_time;

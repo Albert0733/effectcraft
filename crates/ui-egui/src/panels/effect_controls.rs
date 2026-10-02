@@ -485,6 +485,10 @@ fn group_rows(
                 }
             }
             Node::Group(sg) => {
+                // Paint strokes live in the Timeline only (AE's Paint shows Paint on Transparent).
+                if effectcraft_engine::effects::paint::is_paint(g) {
+                    continue;
+                }
                 *y += ROW;
                 let open = !app.ui.fx_closed.contains(&sg.uid);
                 let tw = Rect::from_center_size(pos2(r.min.x + 12.0 + 14.0 * depth as f32, r.center().y), vec2(12.0, 12.0));

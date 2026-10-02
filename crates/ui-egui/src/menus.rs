@@ -133,6 +133,7 @@ pub fn invoke(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, params: V
             "shape" => Some(8),
             "type" => Some(10),
             "brush" => Some(11),
+            "puppet" => Some(15),
             _ => None,
         };
         if let Some(si) = slot {
@@ -455,6 +456,9 @@ pub fn frontend(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, p: Valu
             Value::Null
         }
         "layer.openLayer" => {
+            let id = p.get("layer").and_then(Value::as_u64).or_else(|| app.session.state.selected_layers.first().map(|l| l.0));
+            app.ui.layer_panel = id;
+            app.ui.layer_view = None;
             app.show_panel(PanelKind::Layer);
             Value::Null
         }

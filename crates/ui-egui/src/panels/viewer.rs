@@ -110,6 +110,12 @@ enum Gesture {
         vertex: [f64; 2],
         inv: Mat3,
     },
+    /// Dragging a Puppet pin (comp → layer matrix inverse).
+    PuppetPin {
+        layer: LayerId,
+        pin: u64,
+        inv: Mat3,
+    },
     /// Pen tool: pulling the tangents of the vertex just placed.
     Pen {
         layer: LayerId,
@@ -159,7 +165,7 @@ fn cam_state(ctx: &EvalCtx) -> CameraState {
 }
 
 /// Layer → comp (viewer) matrix through the current 3D view.
-fn l2c(ctx: &EvalCtx, layer: &Layer) -> (Mat3, f64) {
+pub(crate) fn l2c(ctx: &EvalCtx, layer: &Layer) -> (Mat3, f64) {
     match VIEW_CAM.with(|c| c.get()) {
         Some(cam) if layer.is_3d() => (three_d::layer_to_view(ctx, layer, &cam), 0.0),
         _ => ctx.layer_to_comp(layer),
@@ -207,7 +213,7 @@ fn parent_inverse(ctx: &EvalCtx, layer: &Layer) -> Mat3 {
     }
 }
 
-fn checker(p: &egui::Painter, r: Rect) {
+pub(crate) fn checker(p: &egui::Painter, r: Rect) {
     let s = 10.0;
     p.rect_filled(r, 0.0, Color32::from_gray(0xcc));
     let mut y = r.min.y;
@@ -532,6 +538,22 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         painter.text(area.left_top() + vec2(12.0, 10.0), Align2::LEFT_TOP, label, Tokens::ui(12.0), t.text_dim);
     }
 
+    // Puppet pins and meshes of the selected layers (Puppet tools).
+    let mut pin_hits: Vec<super::puppet_tool::PinHit> = vec![];
+    if app.ui.tool.puppet_kind().is_some() {
+        let sel_props: Vec<u64> = app.session.state.selected_props.iter().map(|(_, u)| *u).collect();
+        for lid in &selected {
+            if let Some(l) = comp.layer(*lid)
+                && let Some(ov) = super::puppet_tool::overlay(app, &ctx, cid, l, time)
+            {
+                pin_hits.extend(super::puppet_tool::draw(&painter, &map, &ectx, l, &ov, app.session.state.puppet.show_mesh, &sel_props));
+            }
+        }
+        for h in &pin_hits {
+            app.auto.add(&format!("viewer.puppetPin.{}", h.pin), Rect::from_center_size(h.pos, vec2(10.0, 10.0)), "Puppet pin");
+        }
+    }
+
     // Interaction.
     let resp = ui.interact(area, egui::Id::new("viewer-interact"), Sense::click_and_drag());
     let gid = egui::Id::new("viewer-gesture");
@@ -548,6 +570,13 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
             Tool::PanCamera => egui::CursorIcon::Move,
             Tool::Dolly => egui::CursorIcon::ResizeVertical,
             t if t.is_shape() || t == Tool::Pen => egui::CursorIcon::Crosshair,
+            t if t.puppet_kind().is_some() => {
+                if pin_hits.iter().any(|h| h.pos.distance(hp) < 8.0) {
+                    egui::CursorIcon::Move
+                } else {
+                    egui::CursorIcon::Crosshair
+                }
+            }
             _ => {
                 if super::tracker::hit_at(&track_hits, hp).is_some() {
                     egui::CursorIcon::Move
@@ -630,6 +659,10 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 })
             }),
             t if t.is_shape() => Some(Gesture::Create { tool: t, start: cpt }),
+            t if t.puppet_kind().is_some() => pin_hits.iter().rev().find(|h| h.pos.distance(press) < 8.0).and_then(|h| {
+                let l = comp.layer(h.layer)?;
+                Some(Gesture::PuppetPin { layer: h.layer, pin: h.pin, inv: l2c(&ectx, l).0.inverse()? })
+            }),
             Tool::Orbit | Tool::PanCamera | Tool::Dolly => Some(Gesture::Camera { tool }),
             Tool::Selection if super::tracker::hit_at(&track_hits, press).is_some() => {
                 let hit = super::tracker::hit_at(&track_hits, press);
@@ -813,6 +846,12 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 }
                 let _ = app.session.execute("mask.setVertex", params);
             }
+            Gesture::PuppetPin { layer, pin, inv } => {
+                let lp = inv.apply(gv2(cpt[0], cpt[1]));
+                if let Err(e) = app.session.execute("puppet.movePin", json!({"layer": layer.0, "pin": pin, "position": [lp.x, lp.y], "merge": merge})) {
+                    app.ui.status = e.to_string();
+                }
+            }
             Gesture::Pen { layer, mask, index, vertex, inv, press } => {
                 if pos.distance(press) > 3.0 {
                     let lp = inv.apply(gv2(cpt[0], cpt[1]));
@@ -886,6 +925,18 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 }
             }
             Tool::Pen => {}
+            t if t.puppet_kind().is_some() => {
+                if pin_hits.iter().all(|h| h.pos.distance(pos) >= 8.0)
+                    && let Some(l) = pick(app, &ectx, cpt, false).and_then(|l| comp.layer(l))
+                    && let Some(inv) = l2c(&ectx, l).0.inverse()
+                {
+                    let lp = inv.apply(gv2(cpt[0], cpt[1]));
+                    let r = app.session.execute("puppet.addPin", json!({"layer": l.id.0, "kind": t.puppet_kind(), "position": [lp.x, lp.y]}));
+                    if let Err(e) = r {
+                        app.ui.status = e.to_string();
+                    }
+                }
+            }
             Tool::Selection if vertex_at(pos, false).is_some() => {
                 if let Some(h) = vertex_at(pos, false) {
                     let me = json!({"layer": h.layer.0, "mask": h.mask, "index": h.index});
@@ -1068,7 +1119,7 @@ fn pen_press(app: &mut EffectcraftApp, ui: &mut egui::Ui, ectx: &EvalCtx, map: &
 }
 
 /// Topmost layer under a comp point (selects it; shift toggles). Returns the hit layer.
-fn pick(app: &mut EffectcraftApp, ectx: &EvalCtx, cpt: [f64; 2], toggle: bool) -> Option<LayerId> {
+pub(crate) fn pick(app: &mut EffectcraftApp, ectx: &EvalCtx, cpt: [f64; 2], toggle: bool) -> Option<LayerId> {
     let hit = ectx
         .comp
         .layers

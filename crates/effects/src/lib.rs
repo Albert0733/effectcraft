@@ -27,8 +27,10 @@ mod misc;
 mod noise;
 mod noise2;
 mod obsolete;
+pub mod paint;
 mod perspective;
 mod perspective2;
+pub mod puppet;
 mod sim;
 mod sim2;
 mod stylize2;
@@ -65,6 +67,7 @@ pub const CATEGORIES: &[&str] = &[
     "Matte",
     "Noise & Grain",
     "Obsolete",
+    "Paint",
     "Perspective",
     "Simulation",
     "Stylize",
@@ -114,6 +117,53 @@ impl Params {
             _ => "",
         }
     }
+    /// Key prefixes (`{prefix}#1/`, `{prefix}#2/`, …) of the nested groups flattened under
+    /// `prefix` by [`flatten_params`], in order.
+    pub fn groups(&self, prefix: &str) -> Vec<String> {
+        let mut out = vec![];
+        for i in 1.. {
+            let pre = format!("{prefix}#{i}/");
+            if !self.values.contains_key(&format!("{pre}@match")) {
+                break;
+            }
+            out.push(pre);
+        }
+        out
+    }
+    /// The first nested group under `prefix` with match id `m`.
+    pub fn group(&self, prefix: &str, m: &str) -> Option<String> {
+        self.groups(prefix).into_iter().find(|g| self.s(&format!("{g}@match")) == m)
+    }
+}
+
+/// Evaluate an effect instance's parameters, including nested groups (Paint strokes, Puppet
+/// meshes and pins). Direct properties keep their match id as the key. The `i`-th child group
+/// (1-based, counting groups only) of a group with key prefix `pre` gets the prefix
+/// `{pre}#{i}/`, its properties `{pre}#{i}/{match}`, and metadata keys `@match`, `@name`
+/// (`Value::Str`), `@enabled` (`Value::Bool`) and `@uid` (`Value::Scalar`).
+pub fn flatten_params(g: &PropGroup, eval: &mut dyn FnMut(&Property) -> Value) -> Params {
+    fn walk(g: &PropGroup, pre: &str, eval: &mut dyn FnMut(&Property) -> Value, out: &mut HashMap<String, Value>) {
+        let mut gi = 0;
+        for c in &g.children {
+            match c {
+                effectcraft_project::Node::Prop(p) => {
+                    out.insert(format!("{pre}{}", p.match_id), eval(p));
+                }
+                effectcraft_project::Node::Group(sg) => {
+                    gi += 1;
+                    let sp = format!("{pre}#{gi}/");
+                    out.insert(format!("{sp}@match"), Value::Str(sg.match_id.clone()));
+                    out.insert(format!("{sp}@name"), Value::Str(sg.name.clone()));
+                    out.insert(format!("{sp}@enabled"), Value::Bool(sg.enabled));
+                    out.insert(format!("{sp}@uid"), Value::Scalar(sg.uid as f64));
+                    walk(sg, &sp, eval, out);
+                }
+            }
+        }
+    }
+    let mut values = HashMap::new();
+    walk(g, "", eval, &mut values);
+    Params { values }
 }
 
 /// A layer image in flight: layer-space point `p` sits at pixel `p * scale + offset`.
@@ -300,6 +350,8 @@ pub fn registry() -> &'static [EffectSpec] {
         v.extend(obsolete::specs());
         v.extend(time_fx::specs());
         v.extend(audio_fx::specs());
+        v.extend(paint::specs());
+        v.extend(puppet::specs());
         v.sort_by(|a, b| a.category.cmp(b.category).then(a.name.cmp(b.name)));
         v
     })

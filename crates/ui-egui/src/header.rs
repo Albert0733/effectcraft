@@ -109,6 +109,9 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         }
         x = r.max.x + 14.0;
     }
+    if app.ui.tool.puppet_kind().is_some() {
+        x = puppet_options(app, ui, &p, x, cy);
+    }
     let snap = Rect::from_min_size(pos2(x, cy - 10.0), vec2(20.0, 20.0));
     if widgets::checkbox(ui, snap, app.ui.snapping, &t, egui::Id::new("snapping")).clicked() {
         app.ui.snapping = !app.ui.snapping;
@@ -190,6 +193,33 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         }
         rx = r.min.x - 2.0;
     }
+}
+
+/// Puppet tool options: Mesh: Show, Expansion, Density (for new meshes and the selected
+/// layer's meshes). Returns the next x.
+fn puppet_options(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: &egui::Painter, mut x: f32, cy: f32) -> f32 {
+    let t = app.tokens;
+    let o = app.session.state.puppet.clone();
+    p.text(pos2(x, cy), Align2::LEFT_CENTER, "Mesh:", Tokens::ui(12.0), t.text_dim);
+    x += 40.0;
+    let show = Rect::from_min_size(pos2(x, cy - 10.0), vec2(20.0, 20.0));
+    if widgets::checkbox(ui, show, o.show_mesh, &t, egui::Id::new("puppet-show-mesh")).clicked() {
+        let _ = app.session.execute("puppet.mesh", json!({"showMesh": !o.show_mesh}));
+    }
+    app.auto.add("header.puppet.showMesh", show, "Show mesh");
+    p.text(pos2(show.max.x + 2.0, cy), Align2::LEFT_CENTER, "Show", Tokens::ui(12.0), t.text_dim);
+    x = show.max.x + 44.0;
+    for (label, key, v, range) in [("Expansion:", "expansion", o.expansion, (-100.0, 200.0)), ("Density:", "density", o.density, (0.0, 100.0))] {
+        p.text(pos2(x, cy), Align2::LEFT_CENTER, label, Tokens::ui(12.0), t.text_dim);
+        x += if key == "expansion" { 64.0 } else { 52.0 };
+        let (r, nv, _) = widgets::hot_number_at(ui, pos2(x, cy - 9.0), egui::Id::new(("puppet-opt", key)), v, 0.2, range, 0, "", &t);
+        app.auto.add(&format!("header.puppet.{key}"), r, label);
+        if let Some(nv) = nv {
+            let _ = app.session.execute("puppet.mesh", json!({key: nv, "merge": format!("puppet-opt-{key}")}));
+        }
+        x = r.max.x + 12.0;
+    }
+    x + 4.0
 }
 
 fn ws_menu(app: &mut EffectcraftApp, ui: &mut egui::Ui) {

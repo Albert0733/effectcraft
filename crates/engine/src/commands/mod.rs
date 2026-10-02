@@ -16,7 +16,9 @@ mod layer_menu;
 mod layer_time;
 mod link;
 mod mask;
+pub mod paint;
 mod prop;
+pub mod puppet;
 mod query;
 mod render_queue;
 mod stubs;
@@ -104,6 +106,8 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(comp_more::specs());
         v.extend(frontend::specs());
         v.extend(track::specs());
+        v.extend(paint::specs());
+        v.extend(puppet::specs());
         v.extend(stubs::specs());
         v
     })

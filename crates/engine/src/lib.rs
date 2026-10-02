@@ -161,6 +161,12 @@ pub struct EditorState {
     /// Tracker panel ▸ Current Track: (tracked layer, tracker group uid) in the active comp.
     #[serde(default)]
     pub current_track: Option<(LayerId, Uid)>,
+    /// Paint and Brushes panel options (Brush, Clone Stamp and Eraser tools).
+    #[serde(default)]
+    pub paint: commands::paint::PaintOptions,
+    /// Puppet tool options for new meshes.
+    #[serde(default)]
+    pub puppet: commands::puppet::PuppetOptions,
 }
 
 /// What Copy with Property Links / Copy Expression Only put on the clipboard.
@@ -494,3 +500,5 @@ pub fn text_presets() -> Vec<(String, String)> {
 pub fn text_families() -> Vec<String> {
     effectcraft_text::families().into_iter().map(|(f, _)| f).collect()
 }
+#[cfg(test)]
+mod tests_paint;
