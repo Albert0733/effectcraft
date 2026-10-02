@@ -454,6 +454,9 @@ impl FootageSource for MediaPool {
             }
         }
     }
+    fn audio(&self, _item: ItemId, footage: &Footage, start: Tick, frames: usize, rate: u32) -> Vec<f32> {
+        self.audio_samples(footage, start, frames, rate)
+    }
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {

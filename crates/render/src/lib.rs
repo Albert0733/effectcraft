@@ -6,6 +6,7 @@
 //! with motion blur sub-samples) → **track matte** → **blend** with the layer's mode and opacity.
 //! Adjustment layers run their effects on everything below, limited by their own bounds/masks.
 
+pub mod audio;
 pub mod eval;
 pub mod masks;
 pub mod shapes;
@@ -27,6 +28,11 @@ use rayon::prelude::*;
 pub trait FootageSource: Send + Sync {
     /// The frame of `item` at source time `t`, straight from the file (any size).
     fn frame(&self, item: ItemId, footage: &Footage, t: Tick) -> Option<Arc<Image>>;
+    /// `frames` stereo sample frames of `item`'s audio from source time `start` at `rate` Hz,
+    /// interleaved L R L R… (silence where there is none). Default: no audio.
+    fn audio(&self, _item: ItemId, _footage: &Footage, _start: Tick, frames: usize, _rate: u32) -> Vec<f32> {
+        vec![0.0; frames * 2]
+    }
 }
 
 /// No footage available (renders footage layers as transparent).

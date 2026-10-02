@@ -400,6 +400,10 @@ impl EffectcraftApp {
         let ctx = ui.ctx().clone();
         self.auto.begin_frame();
         self.frames.set_context(&ctx);
+        if self.session.render_job.is_some() {
+            self.session.poll_render();
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
         self.handle_events(&ctx);
         if let Some(rx) = self.command_inbox.take() {
             while let Ok(id) = rx.try_recv() {

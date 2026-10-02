@@ -256,6 +256,25 @@ pub fn invoke(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, params: V
             {
                 return file_dialog(app, id);
             }
+            if id == "renderQueue.render" && params.get("wait").is_none() {
+                // The UI renders in the background; the panel shows progress.
+                let mut p = params.clone();
+                if let Some(m) = p.as_object_mut() {
+                    m.insert("wait".into(), json!(false));
+                } else {
+                    p = json!({"wait": false});
+                }
+                app.show_panel(PanelKind::RenderQueue);
+                return app.session.execute(id, p).map_err(|e| e.to_string());
+            }
+            if id == "renderQueue.add" {
+                let r = app.session.execute(id, params).map_err(|e| e.to_string());
+                match &r {
+                    Ok(_) => app.show_panel(PanelKind::RenderQueue),
+                    Err(e) => app.ui.status = e.clone(),
+                }
+                return r;
+            }
             if id == "layer.rename" && params.get("name").is_none() {
                 crate::panels::timeline::begin_rename(app, ctx);
                 return Ok(Value::Null);
