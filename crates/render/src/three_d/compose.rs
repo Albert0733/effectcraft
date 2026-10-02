@@ -240,7 +240,7 @@ fn matte_for(r: &Renderer, ctx: &EvalCtx, layer: &Layer, out: (u32, u32)) -> Opt
             solo.preserve_transparency = false;
             solo.blend_mode = BlendMode::Normal;
             if let Some(it) = prepare(r, ctx, &solo, 0, out, true) {
-                let lights = lights_at(ctx);
+                let lights = scene_lights(ctx);
                 composite(&mut img, &[it], &lights, &[], m.id.0 as u32);
             }
         } else if let Some(mb) = r.layer_buf(ctx, m) {
@@ -263,6 +263,11 @@ fn matte_for(r: &Renderer, ctx: &EvalCtx, layer: &Layer, out: (u32, u32)) -> Opt
     )
 }
 
+/// Lights used for shading: none in Draft 3D (which also turns off shadows and depth of field).
+fn scene_lights(ctx: &EvalCtx) -> Vec<LightState> {
+    if ctx.comp.draft_3d { vec![] } else { lights_at(ctx) }
+}
+
 /// Draw a run of consecutive 3D layers (bottom-to-top order) into `canvas`.
 pub(crate) fn draw_run(r: &Renderer, ctx: &EvalCtx, run: &[&Layer], canvas: &mut Image) {
     // 3D adjustment layers act on everything below them in the stack (like 2D ones): split.
@@ -276,7 +281,7 @@ pub(crate) fn draw_run(r: &Renderer, ctx: &EvalCtx, run: &[&Layer], canvas: &mut
         return;
     }
     let out = (canvas.width, canvas.height);
-    let lights = lights_at(ctx);
+    let lights = scene_lights(ctx);
     let mut items: Vec<Item> = run
         .par_iter()
         .enumerate()

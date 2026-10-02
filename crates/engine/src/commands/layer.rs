@@ -363,10 +363,40 @@ fn set_switch_value(l: &mut Layer, name: &str, v: bool) {
         "frameBlend" => sw.frame_blend = if v { FrameBlend::FrameMix } else { FrameBlend::Off },
         "motionBlur" => sw.motion_blur = v,
         "adjustment" => sw.adjustment = v,
-        "threeD" | "3d" | "3D" => sw.three_d = v,
+        "threeD" | "3d" | "3D" => {
+            if sw.three_d && !v {
+                drop_3d_values(l);
+            }
+            l.switches.three_d = v;
+        }
         "guide" => sw.guide = v,
         "preserveTransparency" => l.preserve_transparency = v,
         _ => {}
+    }
+}
+
+/// Turning the 3D switch off discards Z values, Orientation and X/Y Rotation (as in AE).
+fn drop_3d_values(l: &mut Layer) {
+    let Some(tr) = l.transform_mut() else { return };
+    for (m, keep) in [("position", 0.0), ("anchor", 0.0), ("scale", 100.0)] {
+        if let Some(pr) = tr.get_mut(m) {
+            let flat = |v: &mut KV| {
+                if let KV::Vec3(a) = v {
+                    a[2] = keep;
+                }
+            };
+            flat(&mut pr.value);
+            for k in &mut pr.keys {
+                flat(&mut k.value);
+            }
+        }
+    }
+    for (m, zero) in [("orientation", KV::Vec3([0.0; 3])), ("rotationX", KV::Scalar(0.0)), ("rotationY", KV::Scalar(0.0))] {
+        if let Some(pr) = tr.get_mut(m) {
+            pr.keys.clear();
+            pr.expr = None;
+            pr.value = zero;
+        }
     }
 }
 

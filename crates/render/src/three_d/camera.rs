@@ -181,24 +181,102 @@ pub fn parent_world(ctx: &EvalCtx, layer: &Layer) -> Mat4 {
     }
 }
 
+/// Rotation (local → parent) of a frame whose +z is `fwd` and whose +y is as close to
+/// `down_hint` as possible.
+pub fn basis_rotation(fwd: Vec3, down_hint: Vec3) -> Mat4 {
+    let m = basis_view(Vec3::ZERO, fwd, down_hint).0;
+    Mat4([[m[0][0], m[1][0], m[2][0], 0.0], [m[0][1], m[1][1], m[2][1], 0.0], [m[0][2], m[1][2], m[2][2], 0.0], [0.0, 0.0, 0.0, 1.0]])
+}
+
+/// Local rotation (layer → parent) of a camera or light: auto-orient towards the Point of
+/// Interest (two-node), then Orientation and X/Y/Z Rotation.
+pub fn rig_rotation(ctx: &EvalCtx, layer: &Layer) -> Mat4 {
+    let rot = layer_rotation(ctx, layer);
+    match layer.transform().filter(|_| is_two_node(layer)) {
+        Some(tr) => {
+            let (w, h) = (ctx.comp.width as f64, ctx.comp.height as f64);
+            let pos = Vec3::from(ctx.v3(layer, tr, "position", [w / 2.0, h / 2.0, -1000.0]));
+            let poi = Vec3::from(ctx.v3(layer, tr, "poi", [w / 2.0, h / 2.0, 0.0]));
+            basis_rotation(poi - pos, vec3(0.0, 1.0, 0.0)) * rot
+        }
+        None => rot,
+    }
+}
+
+// ---------------------------------------------------------------- auto-orient
+
+/// Direction of travel of a layer's position (parent space) at the context time.
+fn path_tangent(ctx: &EvalCtx, layer: &Layer) -> Option<Vec3> {
+    let tr = layer.transform()?;
+    let p = tr.get("position")?;
+    if p.keys.len() < 2 && !p.has_expression() {
+        return None;
+    }
+    let dt = effectcraft_time::Tick::from_seconds_f64(0.005);
+    let a = Vec3::from(ctx.at(ctx.time - dt).v3(layer, tr, "position", [0.0; 3]));
+    let b = Vec3::from(ctx.at(ctx.time + dt).v3(layer, tr, "position", [0.0; 3]));
+    let d = b - a;
+    (d.length() > 1e-9).then(|| d.normalize())
+}
+
+/// Auto-Orient ▸ Orient Along Path for 2D layers: extra Z rotation in degrees.
+pub fn auto_orient_2d(ctx: &EvalCtx, layer: &Layer) -> f64 {
+    if layer.auto_orient != AutoOrient::AlongPath {
+        return 0.0;
+    }
+    path_tangent(ctx, layer).map(|t| t.y.atan2(t.x).to_degrees()).unwrap_or(0.0)
+}
+
+/// Whether `id` is `layer` or one of its parents.
+fn in_parent_chain(ctx: &EvalCtx, layer: &Layer, id: effectcraft_project::LayerId) -> bool {
+    let mut cur = Some(layer);
+    let mut guard = 0;
+    while let Some(l) = cur {
+        if l.id == id || guard > 64 {
+            return true;
+        }
+        guard += 1;
+        cur = l.parent.and_then(|p| ctx.comp.layer(p));
+    }
+    false
+}
+
+/// Auto-orient for 3D layers: the rotation that replaces Orientation (Along Path: the layer's x
+/// axis follows the motion path; Towards Camera: the layer faces the active camera).
+pub fn auto_orient_3d(ctx: &EvalCtx, layer: &Layer, pos: Vec3) -> Option<Mat4> {
+    match layer.auto_orient {
+        AutoOrient::AlongPath => {
+            let t = path_tangent(ctx, layer)?;
+            // x = tangent, y ≈ down, z = x × y.
+            let mut y = vec3(0.0, 1.0, 0.0) - t * t.y;
+            if y.length() < 1e-9 {
+                y = vec3(0.0, 0.0, 1.0) - t * t.z;
+            }
+            let y = y.normalize();
+            let z = t.cross(y);
+            Some(Mat4([[t.x, y.x, z.x, 0.0], [t.y, y.y, z.y, 0.0], [t.z, y.z, z.z, 0.0], [0.0, 0.0, 0.0, 1.0]]))
+        }
+        AutoOrient::TowardsCamera => {
+            // A camera parented (through any chain) to this layer would recurse.
+            if ctx.comp.active_camera(ctx.time).is_some_and(|c| in_parent_chain(ctx, c, layer.id)) {
+                return None;
+            }
+            let eye = active_camera(ctx).eye;
+            let e = parent_world(ctx, layer).inverse().unwrap_or(Mat4::IDENTITY).apply(eye);
+            let d = pos - e;
+            (d.length() > 1e-9).then(|| basis_rotation(d, vec3(0.0, 1.0, 0.0)))
+        }
+        _ => None,
+    }
+}
+
 /// (eye, forward, down) in world space of a camera or light layer.
 pub fn layer_frame(ctx: &EvalCtx, layer: &Layer) -> (Vec3, Vec3, Vec3) {
     let (w, h) = (ctx.comp.width as f64, ctx.comp.height as f64);
     let Some(tr) = layer.transform() else { return (vec3(w / 2.0, h / 2.0, -1000.0), vec3(0.0, 0.0, 1.0), vec3(0.0, 1.0, 0.0)) };
     let parent = parent_world(ctx, layer);
     let pos = Vec3::from(ctx.v3(layer, tr, "position", [w / 2.0, h / 2.0, -1000.0]));
-    let rot = layer_rotation(ctx, layer);
-    // Local frame: auto-orient (two-node) towards the POI, then the layer's own rotations.
-    let base = if is_two_node(layer) {
-        let poi = Vec3::from(ctx.v3(layer, tr, "poi", [w / 2.0, h / 2.0, 0.0]));
-        let v = basis_view(pos, poi - pos, vec3(0.0, 1.0, 0.0));
-        // Rotation part of the view, transposed = camera → parent.
-        let m = &v.0;
-        Mat4([[m[0][0], m[1][0], m[2][0], 0.0], [m[0][1], m[1][1], m[2][1], 0.0], [m[0][2], m[1][2], m[2][2], 0.0], [0.0, 0.0, 0.0, 1.0]])
-    } else {
-        Mat4::IDENTITY
-    };
-    let local = base * rot;
+    let local = rig_rotation(ctx, layer);
     let eye = parent.apply(pos);
     let fwd = parent.apply_vec(local.apply_vec(vec3(0.0, 0.0, 1.0))).normalize();
     let down = parent.apply_vec(local.apply_vec(vec3(0.0, 1.0, 0.0))).normalize();

@@ -74,7 +74,8 @@ impl<'a> EvalCtx<'a> {
         let pos = self.v3(layer, tr, "position", [0.0; 3]);
         let rz = self.f(layer, tr, "rotation", 0.0);
         if layer.is_camera() || layer.is_light() {
-            return Mat4::translate(Vec3::from(pos)) * Mat4::rotate_z(rz);
+            // Children of cameras/lights follow their position and full rotation.
+            return Mat4::translate(Vec3::from(pos)) * crate::three_d::camera::rig_rotation(self, layer);
         }
         let anchor = self.v3(layer, tr, "anchor", [0.0; 3]);
         let mut scale = self.v3(layer, tr, "scale", [100.0; 3]);
@@ -82,12 +83,22 @@ impl<'a> EvalCtx<'a> {
             scale[2] = 100.0;
             let a = Vec3::from([anchor[0], anchor[1], 0.0]);
             let p = Vec3::from([pos[0], pos[1], 0.0]);
+            let rz = rz + crate::three_d::camera::auto_orient_2d(self, layer);
             return Mat4::layer_3d(a, p, Vec3::from(scale), Vec3::ZERO, vec3(0.0, 0.0, rz));
         }
-        let o = self.v3(layer, tr, "orientation", [0.0; 3]);
         let rx = self.f(layer, tr, "rotationX", 0.0);
         let ry = self.f(layer, tr, "rotationY", 0.0);
-        Mat4::layer_3d(Vec3::from(anchor), Vec3::from(pos), Vec3::from(scale), Vec3::from(o), vec3(rx, ry, rz))
+        let p = Vec3::from(pos);
+        // Auto-orient (along path / towards camera) replaces Orientation.
+        let orient = crate::three_d::camera::auto_orient_3d(self, layer, p)
+            .unwrap_or_else(|| Mat4::orientation(Vec3::from(self.v3(layer, tr, "orientation", [0.0; 3]))));
+        Mat4::translate(p)
+            * orient
+            * Mat4::rotate_z(rz)
+            * Mat4::rotate_y(ry)
+            * Mat4::rotate_x(rx)
+            * Mat4::scale(Vec3::from(scale) / 100.0)
+            * Mat4::translate(-Vec3::from(anchor))
     }
 
     /// Layer space → comp (world) space, including parents.

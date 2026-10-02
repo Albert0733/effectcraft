@@ -12,6 +12,20 @@ fn session() -> Session {
     s
 }
 
+#[test]
+fn auto_orient_command() {
+    let mut s = session();
+    let id = s.execute("layer.newSolid", json!({"width": 100, "height": 100})).unwrap()["layer"].as_u64().unwrap();
+    s.execute("layer.autoOrient", json!({"layer": id, "mode": "towardsCamera"})).unwrap();
+    assert_eq!(s.active_comp().unwrap().layers[0].auto_orient, AutoOrient::TowardsCamera);
+    s.undo();
+    assert_eq!(s.active_comp().unwrap().layers[0].auto_orient, AutoOrient::Off);
+    let cam = s.execute("layer.newCamera", json!({})).unwrap()["layer"].as_u64().unwrap();
+    assert!(s.execute("layer.autoOrient", json!({"layer": cam, "mode": "towardsCamera"})).is_err());
+    s.execute("layer.autoOrient", json!({"layer": cam, "mode": "off"})).unwrap();
+    assert!(!effectcraft_render::three_d::camera::is_two_node(&s.active_comp().unwrap().layers[0]));
+}
+
 fn layer_count(s: &Session) -> usize {
     s.active_comp().unwrap().layers.len()
 }
@@ -102,6 +116,27 @@ fn three_d_switch_undo_redo() {
     assert!(!s.active_comp().unwrap().layers[0].is_3d());
     s.redo();
     assert!(s.active_comp().unwrap().layers[0].is_3d());
+    // Turning 3D off discards Z and the 3D-only rotations.
+    s.execute("prop.set", json!({"layer": id, "path": "transform/position", "value": [10, 20, 300]})).unwrap();
+    s.execute("prop.set", json!({"layer": id, "path": "transform/rotationX", "value": 45})).unwrap();
+    s.execute("layer.setSwitch", json!({"layer": id, "switch": "threeD", "value": false})).unwrap();
+    assert_eq!(prop(&s, id, "transform/position").as_vec3(), [10.0, 20.0, 0.0]);
+    assert_eq!(prop(&s, id, "transform/rotationX").as_f64(), 0.0);
+    s.undo();
+    assert_eq!(prop(&s, id, "transform/position").as_vec3(), [10.0, 20.0, 300.0]);
+}
+
+#[test]
+fn draft_3d_turns_off_lighting() {
+    let mut s = session();
+    let cid = s.active_comp_id().unwrap();
+    let id = s.execute("layer.newSolid", json!({"width": 640, "height": 360, "color": [1, 1, 1]})).unwrap()["layer"].as_u64().unwrap();
+    s.execute("layer.setSwitch", json!({"layer": id, "switch": "threeD", "value": true})).unwrap();
+    s.execute("layer.newLight", json!({"kind": "Point", "intensity": 50, "position": [320, 180, -400]})).unwrap();
+    let px = |s: &Session| s.render(cid, s.time(), effectcraft_render::RenderOpts::default()).get(320, 180)[0];
+    assert!(px(&s) < 0.5);
+    s.execute("comp.setSwitch", json!({"switch": "draft3d", "value": true})).unwrap();
+    assert!((px(&s) - 1.0).abs() < 1e-5);
 }
 
 #[test]

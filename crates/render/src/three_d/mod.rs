@@ -11,6 +11,8 @@ pub mod light;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_orient;
 
 pub use camera::{CameraState, Dof, Rig, View3D, ViewCam, Views3D, active_camera, default_camera, default_view_cam};
 pub use light::{LightState, Material, lights_at};

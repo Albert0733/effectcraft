@@ -494,8 +494,52 @@ fn dolly(s: &mut Session, p: &Value) -> Result<Value> {
     camera_tool(s, p, ToolOp::Dolly(f_p(p, "amount").or_else(|| f_p(p, "dz")).unwrap_or(0.0)), "camera.dolly", "Dolly Camera")
 }
 
+/// Layer ▸ Transform ▸ Auto-Orient: off | alongPath | towardsCamera (3D layers) |
+/// towardsPointOfInterest (cameras and spot/parallel lights).
+fn auto_orient(s: &mut Session, p: &Value) -> Result<Value> {
+    let (cid, ids) = super::layers_p(s, p)?;
+    if ids.is_empty() {
+        return Err(bad("layer.autoOrient", "select a layer first"));
+    }
+    let raw = str_p(p, "mode").ok_or_else(|| bad("layer.autoOrient", "missing `mode` (off|alongPath|towardsCamera|towardsPointOfInterest)"))?;
+    let k = raw.to_ascii_lowercase().replace([' ', '-', '_'], "");
+    let mode = match k.as_str() {
+        "off" => AutoOrient::Off,
+        "alongpath" | "orientalongpath" => AutoOrient::AlongPath,
+        "towardscamera" | "orienttowardscamera" => AutoOrient::TowardsCamera,
+        "towardspointofinterest" | "towardspoi" | "orienttowardspointofinterest" => AutoOrient::TowardsPointOfInterest,
+        _ => return Err(bad("layer.autoOrient", format!("unknown mode `{raw}`"))),
+    };
+    s.edit("Auto-Orient", None, |proj, _| {
+        let comp = proj.comp_mut(cid).ok_or(EngineError::NoComp)?;
+        for l in comp.layers.iter_mut().filter(|l| ids.contains(&l.id)) {
+            let rig = l.is_camera() || l.is_light();
+            let ok = match mode {
+                AutoOrient::Off | AutoOrient::AlongPath => true,
+                AutoOrient::TowardsCamera => !rig,
+                AutoOrient::TowardsPointOfInterest => rig && l.transform().is_some_and(|t| t.get("poi").is_some()),
+            };
+            if !ok {
+                return Err(bad("layer.autoOrient", format!("`{raw}` is not available for layer `{}`", l.name)));
+            }
+            l.auto_orient = mode;
+        }
+        Ok(())
+    })?;
+    Ok(Value::Null)
+}
+
 pub fn specs() -> Vec<CommandSpec> {
     vec![
+        cmd!(
+            "layer.autoOrient",
+            "Auto-Orient…",
+            ["Layer", "Transform"],
+            Some("Cmd+Alt+O"),
+            "{mode: off|alongPath|towardsCamera|towardsPointOfInterest, layers?}",
+            super::has_layers,
+            auto_orient
+        ),
         cmd!(
             "layer.newLight",
             "Light…",
