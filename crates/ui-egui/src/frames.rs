@@ -6,6 +6,11 @@
 //!
 //! wasm32 has no threads: jobs wait in the same priority queue and [`Frames::pump`] renders them
 //! on the UI thread between egui frames, within a time budget.
+//!
+//! With Mercury GPU Acceleration (a [`Gpu`] on egui-wgpu's device and the project's renderer set
+//! to the GPU) frames stay on the GPU: the compositor writes an RGBA8 texture that the viewer
+//! registers with egui-wgpu and draws directly; pixels are read back only when something needs
+//! them (Info panel, eyedroppers, histograms).
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -13,7 +18,33 @@ use std::sync::{Arc, Mutex};
 use effectcraft_engine::project::{ItemId, Project};
 use effectcraft_engine::render::{ExprHost, FootageSource, LayerCache, RenderOpts, Renderer};
 use effectcraft_engine::time::Tick;
+use effectcraft_gpu::{DisplayFrame, Gpu};
 use rayon::prelude::*;
+
+/// GPU frames kept for RAM preview (bytes of video memory).
+const GPU_BUDGET: usize = 1 << 30;
+
+/// A rendered viewer frame: CPU pixels or a GPU texture.
+#[derive(Clone)]
+pub enum FrameImage {
+    Cpu(Arc<egui::ColorImage>),
+    Gpu(Arc<DisplayFrame>),
+}
+
+impl FrameImage {
+    pub fn size(&self) -> [usize; 2] {
+        match self {
+            FrameImage::Cpu(c) => c.size,
+            FrameImage::Gpu(f) => [f.width as usize, f.height as usize],
+        }
+    }
+    fn bytes(&self) -> usize {
+        self.size()[0] * self.size()[1] * 4
+    }
+    fn is_gpu(&self) -> bool {
+        matches!(self, FrameImage::Gpu(_))
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct FrameKey {
@@ -27,24 +58,53 @@ pub struct FrameKey {
 }
 
 struct Cache {
-    map: HashMap<FrameKey, Arc<egui::ColorImage>>,
+    map: HashMap<FrameKey, FrameImage>,
     order: VecDeque<FrameKey>,
     bytes: usize,
+    /// Bytes of GPU frames (also counted in `bytes`).
+    gpu_bytes: usize,
     budget: usize,
 }
 
 impl Cache {
-    fn insert(&mut self, k: FrameKey, img: Arc<egui::ColorImage>) {
-        let sz = img.pixels.len() * 4;
-        if self.map.insert(k, img).is_none() {
+    fn insert(&mut self, k: FrameKey, img: FrameImage) {
+        let (sz, gpu) = (img.bytes(), img.is_gpu());
+        if let Some(old) = self.map.insert(k, img) {
+            self.forget(&old);
+        } else {
             self.order.push_back(k);
-            self.bytes += sz;
+        }
+        self.bytes += sz;
+        if gpu {
+            self.gpu_bytes += sz;
         }
         while self.bytes > self.budget {
             let Some(old) = self.order.pop_front() else { break };
-            if let Some(i) = self.map.remove(&old) {
-                self.bytes -= i.pixels.len() * 4;
+            self.remove(&old);
+        }
+        // Video memory: drop the oldest GPU frames past their own budget.
+        while self.gpu_bytes > GPU_BUDGET {
+            let Some(i) = self.order.iter().position(|k| self.map.get(k).is_some_and(FrameImage::is_gpu)) else { break };
+            if let Some(old) = self.order.remove(i) {
+                self.remove(&old);
             }
+        }
+    }
+    fn forget(&mut self, img: &FrameImage) {
+        self.bytes -= img.bytes();
+        if img.is_gpu() {
+            self.gpu_bytes -= img.bytes();
+        }
+    }
+    fn remove(&mut self, k: &FrameKey) {
+        if let Some(i) = self.map.remove(k) {
+            self.forget(&i);
+        }
+    }
+    fn evict_to_budget(&mut self) {
+        while self.bytes > self.budget {
+            let Some(old) = self.order.pop_front() else { break };
+            self.remove(&old);
         }
     }
 }
@@ -56,6 +116,8 @@ pub struct RenderSource {
     pub footage: Arc<dyn FootageSource>,
     pub expr: Option<Arc<dyn ExprHost>>,
     pub layer_cache: Arc<LayerCache>,
+    /// GPU compositor on the viewer's device (Mercury GPU Acceleration), if available.
+    pub gpu: Option<Gpu>,
 }
 
 pub struct Frames {
@@ -76,7 +138,7 @@ impl Default for Frames {
         #[cfg(not(target_arch = "wasm32"))]
         let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(2, 16);
         Frames {
-            cache: Arc::new(Mutex::new(Cache { map: HashMap::new(), order: VecDeque::new(), bytes: 0, budget: 3 << 30 })),
+            cache: Arc::new(Mutex::new(Cache { map: HashMap::new(), order: VecDeque::new(), bytes: 0, gpu_bytes: 0, budget: 3 << 30 })),
             inflight: Arc::new(Mutex::new(HashSet::new())),
             queue: Arc::new(Mutex::new(Queue::default())),
             #[cfg(not(target_arch = "wasm32"))]
@@ -109,7 +171,7 @@ impl Frames {
         }
     }
 
-    pub fn get(&self, k: &FrameKey) -> Option<Arc<egui::ColorImage>> {
+    pub fn get(&self, k: &FrameKey) -> Option<FrameImage> {
         self.cache.lock().ok()?.map.get(k).cloned()
     }
 
@@ -134,12 +196,7 @@ impl Frames {
     pub fn set_budget(&self, bytes: usize) {
         if let Ok(mut c) = self.cache.lock() {
             c.budget = bytes;
-            while c.bytes > c.budget {
-                let Some(old) = c.order.pop_front() else { break };
-                if let Some(i) = c.map.remove(&old) {
-                    c.bytes -= i.pixels.len() * 4;
-                }
-            }
+            c.evict_to_budget();
         }
     }
 
@@ -152,6 +209,7 @@ impl Frames {
             c.map.clear();
             c.order.clear();
             c.bytes = 0;
+            c.gpu_bytes = 0;
         }
     }
 
@@ -266,8 +324,17 @@ impl Worker {
         let mut r = Renderer::new(&job.src.project, job.src.footage.as_ref(), job.opts);
         r.expr = job.src.expr.as_deref();
         r.cache = Some(&job.src.layer_cache);
-        let img = r.comp_frame(job.comp, job.t);
-        let ci = Arc::new(to_color_image(&img));
+        r.accel = job.src.gpu.as_ref().map(|g| g as &dyn effectcraft_engine::render::Accelerator);
+        // The GPU leaves the frame in a texture for the viewer; otherwise (Software Only, no
+        // adapter, or a frame the GPU cannot finish here) the CPU renders it.
+        let gpu_frame = match (&job.src.gpu, r.active_accel()) {
+            (Some(g), Some(_)) => g.render_display(&r, job.comp, job.t),
+            _ => None,
+        };
+        let ci = match gpu_frame {
+            Some(f) => FrameImage::Gpu(Arc::new(f)),
+            None => FrameImage::Cpu(Arc::new(to_color_image(&r.comp_frame(job.comp, job.t)))),
+        };
         if job.urgent
             && let Ok(mut l) = last.lock()
         {

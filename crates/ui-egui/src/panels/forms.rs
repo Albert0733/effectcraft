@@ -253,6 +253,10 @@ pub fn open_form(app: &mut EffectcraftApp, id: &str, p: &Value) -> bool {
         }
         "file.projectSettings" if p.as_object().is_none_or(|m| m.is_empty()) => {
             let st = &s.project.settings;
+            let gpu_label = match &s.accel {
+                Some(a) => format!("Mercury GPU Acceleration ({})", a.name()),
+                None => "Mercury GPU Acceleration (no GPU: software)".to_string(),
+            };
             let depth = match st.bit_depth.label() {
                 l if l.starts_with("16") => 1,
                 l if l.starts_with("32") => 2,
@@ -287,6 +291,13 @@ pub fn open_form(app: &mut EffectcraftApp, id: &str, p: &Value) -> bool {
                     ),
                     Field::bool("linearize", "Linearize working space", st.linearize),
                     Field::bool("blendLinear", "Blend colors using 1.0 gamma", st.blend_linear),
+                    // Video Rendering and Effects ▸ Use.
+                    Field::choice(
+                        "renderer",
+                        "Video rendering and effects",
+                        &[(gpu_label.as_str(), json!("gpu")), ("Mercury Software Only", json!("software"))],
+                        usize::from(!st.gpu_acceleration),
+                    ),
                 ],
             )
         }

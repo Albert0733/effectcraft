@@ -381,16 +381,9 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let key = app.frame_key(cid, frame, scale);
     app.request_frame_urgent(cid, frame, scale);
     if let Some(img) = app.frames.get(&key) {
-        let stale = app.viewer_tex.as_ref().is_none_or(|(_, k)| *k != key);
+        let stale = app.viewer_shown.as_ref().is_none_or(|(_, k)| *k != key);
         if stale {
-            match &mut app.viewer_tex {
-                Some((tex, k)) if tex.size() == img.size => {
-                    tex.set((*img).clone(), egui::TextureOptions::LINEAR);
-                    *k = key;
-                }
-                _ => app.viewer_tex = Some((ctx.load_texture("viewer-frame", (*img).clone(), egui::TextureOptions::LINEAR), key)),
-            }
-            app.viewer_image = Some(img);
+            show_frame(app, &ctx, key, img);
         }
     }
     if app.ui.viewer.transparency_grid {
@@ -399,10 +392,10 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         let bg = comp.background;
         painter.rect_filled(comp_rect, 0.0, Color32::from_rgb((bg[0] * 255.0) as u8, (bg[1] * 255.0) as u8, (bg[2] * 255.0) as u8));
     }
-    if let Some((tex, k)) = &app.viewer_tex
+    if let Some((tex, k)) = &app.viewer_shown
         && k.comp == cid.0
     {
-        painter.image(tex.id(), comp_rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+        painter.image(*tex, comp_rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
     }
     painter.rect_stroke(comp_rect, 0.0, Stroke::new(1.0, Color32::from_black_alpha(160)), StrokeKind::Outside);
     app.auto.add("viewer.comp", comp_rect, &comp_name);
@@ -1489,4 +1482,40 @@ pub(crate) fn hex_rgb(s: &str) -> Option<[u8; 3]> {
     }
     let p = |i: usize| u8::from_str_radix(&h[i..i + 2], 16).ok();
     Some([p(0)?, p(2)?, p(4)?])
+}
+
+/// Put a rendered frame on screen: CPU pixels go into an egui texture; GPU frames are drawn
+/// straight from their wgpu texture (registered with egui-wgpu, no readback).
+fn show_frame(app: &mut EffectcraftApp, ctx: &egui::Context, key: crate::frames::FrameKey, img: crate::frames::FrameImage) {
+    use crate::frames::FrameImage;
+    match img {
+        FrameImage::Cpu(img) => {
+            match &mut app.viewer_tex {
+                Some((tex, k)) if tex.size() == img.size => {
+                    tex.set((*img).clone(), egui::TextureOptions::LINEAR);
+                    *k = key;
+                }
+                _ => app.viewer_tex = Some((ctx.load_texture("viewer-frame", (*img).clone(), egui::TextureOptions::LINEAR), key)),
+            }
+            app.viewer_shown = app.viewer_tex.as_ref().map(|(t, k)| (t.id(), *k));
+            app.viewer_image = Some(img);
+        }
+        FrameImage::Gpu(f) => {
+            let Some(rs) = &app.wgpu else { return };
+            let view = f.texture.create_view(&Default::default());
+            let mut ren = rs.renderer.write();
+            let id = match &app.viewer_native {
+                Some((id, _, _)) => {
+                    ren.update_egui_texture_from_wgpu_texture(&rs.device, &view, eframe::wgpu::FilterMode::Linear, *id);
+                    *id
+                }
+                None => ren.register_native_texture(&rs.device, &view, eframe::wgpu::FilterMode::Linear),
+            };
+            drop(ren);
+            app.viewer_native = Some((id, key, f));
+            app.viewer_shown = Some((id, key));
+            // Pixels are read back on demand (viewer_pixels).
+            app.viewer_image = None;
+        }
+    }
 }

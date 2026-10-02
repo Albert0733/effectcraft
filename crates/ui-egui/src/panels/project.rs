@@ -82,10 +82,10 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 p.rect_filled(thumb.shrink(4.0), 2.0, Color32::from_rgb((s.color[0] * 255.0) as u8, (s.color[1] * 255.0) as u8, (s.color[2] * 255.0) as u8));
             }
             ItemKind::Comp(_) => {
-                if let Some((tex, k)) = &app.viewer_tex
+                if let Some((tex, k)) = &app.viewer_shown
                     && k.comp == it.id.0
                 {
-                    p.image(tex.id(), thumb, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+                    p.image(*tex, thumb, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
                 } else {
                     icons::paint(&p, Rect::from_center_size(thumb.center(), vec2(24.0, 24.0)), Icon::Comp, t.text_dim);
                 }
