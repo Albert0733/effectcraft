@@ -971,7 +971,7 @@ fn text_expression_selector_values() {
         let anim = l.props.group("text/animators/#1").unwrap();
         effectcraft_render::text::animator_selection(&ctx, l, anim, &lay).into_iter().map(|v| (v[0] * 1000.0).round() / 1000.0).collect::<Vec<_>>()
     };
-    // Default: selectorValue * textIndex / textTotal, intersected with the full range selector.
+    // Default: selectorValue * textIndex / textTotal (selectorValue = the full range selector).
     assert_eq!(sel_of(&p), vec![0.25, 0.5, 0.75, 1.0]);
     let set_expr = |p: &mut Project, text: &str| {
         let l = p.comp_mut(cid).unwrap().layer_mut(lid).unwrap();
@@ -986,10 +986,8 @@ fn text_expression_selector_values() {
     assert_eq!(sel_of(&p), vec![0.0, 1.0, 0.0, 1.0]);
     set_expr(&mut p, "[50, 0, 0]");
     assert_eq!(sel_of(&p), vec![0.5; 4]);
-    // Mode Add after the range: 1 + v.
-    let l = p.comp_mut(cid).unwrap().layer_mut(lid).unwrap();
-    l.props.prop_mut("text/animators/#1/selectors/#2/mode").unwrap().value = Value::Enum(0);
-    set_expr(&mut p, "-textIndex / textTotal * 100");
+    // The result replaces the selection so far (which it reads as selectorValue).
+    set_expr(&mut p, "selectorValue - textIndex / textTotal * 100");
     assert_eq!(sel_of(&p), vec![0.75, 0.5, 0.25, 0.0]);
     // Errors fall back to the static amount (100%).
     set_expr(&mut p, "nope(");

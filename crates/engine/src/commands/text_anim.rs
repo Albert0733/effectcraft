@@ -17,6 +17,11 @@ fn presets() -> Vec<Value> {
     serde_json::from_str::<Value>(PRESETS_JSON).ok().and_then(|v| v.get("presets").and_then(Value::as_array).cloned()).unwrap_or_default()
 }
 
+/// (id, name) of every preset.
+pub fn preset_names() -> Vec<(String, String)> {
+    presets().iter().filter_map(|p| Some((p.get("id")?.as_str()?.to_string(), p.get("name")?.as_str()?.to_string()))).collect()
+}
+
 /// Enabled when a text layer is selected.
 fn has_text_layer(s: &Session) -> std::result::Result<(), String> {
     has_comp(s)?;

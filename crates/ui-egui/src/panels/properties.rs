@@ -24,22 +24,15 @@ type Actions = Vec<(String, serde_json::Value)>;
 const ROW_H: f32 = 22.0;
 const PAD: f32 = 12.0;
 
-/// Text Animation › Add Animator entries: (menu label, `layer.addTextAnimator` property).
-const ANIMATORS: &[(&str, &str)] = &[
-    ("Anchor Point", "anchor"),
-    ("Position", "position"),
-    ("Scale", "scale"),
-    ("Skew", "skew"),
-    ("Rotation", "rotation"),
-    ("Opacity", "opacity"),
-    ("Fill Color", "fillColor"),
-    ("Stroke Color", "strokeColor"),
-    ("Stroke Width", "strokeWidth"),
-    ("Tracking", "tracking"),
-    ("Line Spacing", "lineSpacing"),
-    ("Character Offset", "characterOffset"),
-    ("Blur", "blur"),
-];
+/// Text Animation › Add Animator entries: (menu label, `layer.addTextAnimator` property; `""`
+/// for separators). The engine's list (`build::TEXT_ANIMATOR_KINDS`) after Enable Per-character 3D.
+fn animator_entries(per_char: bool) -> Vec<(String, &'static str)> {
+    let mut v = vec![((if per_char { "Disable Per-character 3D" } else { "Enable Per-character 3D" }).to_string(), "perChar3d"), ("-".to_string(), "")];
+    for (k, l) in effectcraft_engine::project::build::TEXT_ANIMATOR_KINDS {
+        v.push((l.to_string(), if *k == "-" { "" } else { k }));
+    }
+    v
+}
 
 /// AE's seven Paragraph alignment buttons: (justify, `layer.setText` key).
 const ALIGNS: [(Justify, &str); 7] = [
@@ -134,9 +127,30 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         if resp.clicked() {
             widgets::open_popup(ui, pop);
         }
-        let labels: Vec<String> = ANIMATORS.iter().map(|(l, _)| l.to_string()).collect();
+        let per_char = layer.props.prop("text/perChar3d").is_some_and(|q| q.value.as_bool());
+        let entries = animator_entries(per_char);
+        let labels: Vec<String> = entries.iter().map(|(l, _)| l.clone()).collect();
         if let Some(i) = widgets::popup_menu(ui, pop, br.left_bottom(), &labels, None) {
-            actions.push(("layer.addTextAnimator".into(), json!({"layer": layer.id.0, "property": ANIMATORS[i].1})));
+            match entries[i].1 {
+                "" => {}
+                "perChar3d" => actions.push(("layer.enablePerChar3D".into(), json!({"layer": layer.id.0, "enabled": !per_char}))),
+                k => actions.push(("layer.addTextAnimator".into(), json!({"layer": layer.id.0, "property": k}))),
+            }
+        }
+        // Our own presets (original work, see presets/text_animators.json).
+        let pr = Rect::from_min_size(pos2(br.max.x + 8.0, y), vec2(84.0, 24.0));
+        let presp = ui.interact(pr, egui::Id::new("props-text-presets"), Sense::click());
+        p.rect_stroke(pr, 4.0, Stroke::new(1.0, if presp.hovered() { t.text_dim } else { t.field_border }), egui::StrokeKind::Inside);
+        p.text(pr.center(), Align2::CENTER_CENTER, "Presets", Tokens::ui(12.0), t.text);
+        app.auto.add("properties.textPresets", pr, "Text Animation Presets");
+        let ppop = egui::Id::new("props-text-presets-pop");
+        if presp.clicked() {
+            widgets::open_popup(ui, ppop);
+        }
+        let presets = effectcraft_engine::text_presets();
+        let names: Vec<String> = presets.iter().map(|(_, n)| n.clone()).collect();
+        if let Some(i) = widgets::popup_menu(ui, ppop, pr.left_bottom(), &names, None) {
+            actions.push(("layer.applyTextPreset".into(), json!({"layer": layer.id.0, "preset": presets[i].0})));
         }
         y += 24.0;
     }

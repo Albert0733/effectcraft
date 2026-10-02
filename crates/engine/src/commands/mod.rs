@@ -91,6 +91,11 @@ pub fn command_specs() -> &'static [CommandSpec] {
     })
 }
 
+/// (id, name) of the text animation presets.
+pub fn text_preset_list() -> Vec<(String, String)> {
+    text_anim::preset_names()
+}
+
 pub fn find(id: &str) -> Option<&'static CommandSpec> {
     command_specs().iter().find(|c| c.id == id)
 }

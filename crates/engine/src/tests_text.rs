@@ -66,9 +66,11 @@ fn add_property_and_selectors_with_undo_redo() {
     assert_eq!(matches(sels), ["rangeSelector", "wigglySelector", "expressionSelector", "rangeSelector"]);
     let names: Vec<&str> = sels.children.iter().map(Node::name).collect();
     assert_eq!(names, ["Range Selector 1", "Wiggly Selector 1", "Expression Selector 1", "Range Selector 2"]);
-    // Expression selector carries the default amount expression; wiggly defaults to Intersect.
+    // Expression selector carries the default amount expression (and no Mode); wiggly defaults to
+    // Intersect.
     let ex = sels.group("expressionSelector").unwrap();
     assert!(ex.get("amount").unwrap().has_expression());
+    assert!(ex.get("mode").is_none());
     assert_eq!(sels.group("wigglySelector").unwrap().get("mode").unwrap().value, KV::Enum(2));
     let cid = s.active_comp_id().unwrap();
     let a1 = s.render(cid, s.time(), Default::default());

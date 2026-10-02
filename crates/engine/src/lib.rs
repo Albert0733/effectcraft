@@ -424,6 +424,11 @@ mod tests_text;
 mod tests_timeline;
 
 /// Font families available to text layers (bundled + scanned system fonts).
+/// Text animation presets: (id, name), for menus.
+pub fn text_presets() -> Vec<(String, String)> {
+    commands::text_preset_list()
+}
+
 pub fn text_families() -> Vec<String> {
     effectcraft_text::families().into_iter().map(|(f, _)| f).collect()
 }

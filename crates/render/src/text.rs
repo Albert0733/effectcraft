@@ -146,7 +146,8 @@ pub fn animator_selection(ctx: &EvalCtx, layer: &Layer, anim: &PropGroup, lay: &
                 let adv = sel.sub("advanced");
                 (adv.map(|a| ctx.e(layer, a, "mode")).unwrap_or(0), adv.map(|a| ctx.e(layer, a, "basedOn")).unwrap_or(0))
             }
-            _ => (ctx.e(layer, sel, "mode"), ctx.e(layer, sel, "basedOn")),
+            "wigglySelector" => (ctx.e(layer, sel, "mode"), ctx.e(layer, sel, "basedOn")),
+            _ => (0, ctx.e(layer, sel, "basedOn")),
         };
         let mode = Mode::from_index(mode);
         let based = BasedOn::from_index(based);
@@ -180,22 +181,30 @@ pub fn animator_selection(ctx: &EvalCtx, layer: &Layer, anim: &PropGroup, lay: &
                 let stat = ctx.v3(layer, sel, "amount", [100.0; 3]);
                 Box::new(move |i, n, prev| {
                     let pv = prev.map(|x| x * 100.0);
+                    // Without an expression engine: the static amount scales the selection.
+                    let fallback = [0, 1, 2].map(|d| stat[d] * prev[d]);
                     let r = match ctx.expr.filter(|_| prop.has_expression()) {
-                        Some(h) => h.eval_text_selector(ctx, layer, prop, i, n, pv).unwrap_or(stat),
-                        None => stat,
+                        Some(h) => h.eval_text_selector(ctx, layer, prop, i, n, pv).unwrap_or(fallback),
+                        None => fallback,
                     };
                     r.map(|x| (x / 100.0).clamp(-1.0, 1.0))
                 })
             }
             _ => continue,
         };
+        // The Expression Selector's result replaces the selection (it reads it as selectorValue).
+        let replace = sel.match_id == "expressionSelector";
         let mut memo: std::collections::HashMap<(usize, [u64; 3]), [f64; 3]> = std::collections::HashMap::new();
         for (gi, g) in lay.glyphs.iter().enumerate() {
             let (i, n) = unit_of(based, g, lay);
-            let prev = if si == 0 { [mode.initial(); 3] } else { acc[gi] };
+            let prev = match si {
+                0 if replace => [1.0; 3],
+                0 => [mode.initial(); 3],
+                _ => acc[gi],
+            };
             let key = (i, prev.map(f64::to_bits));
             let v = *memo.entry(key).or_insert_with(|| values(i, n, prev));
-            acc[gi] = [0, 1, 2].map(|d| mode.combine(prev[d], v[d]));
+            acc[gi] = if replace { v } else { [0, 1, 2].map(|d| mode.combine(prev[d], v[d])) };
         }
     }
     acc

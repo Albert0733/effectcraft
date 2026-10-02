@@ -379,6 +379,40 @@ pub fn menu_items(app: &EffectcraftApp) -> Vec<MenuItem> {
             params: Value::Null,
         });
     }
+    // Animation ▸ Animate Text / Add Text Selector / Text Animation Presets.
+    let anim_on = app.session.is_enabled("layer.addTextAnimator");
+    for (k, l) in effectcraft_engine::project::build::TEXT_ANIMATOR_KINDS.iter().filter(|(k, _)| *k != "-") {
+        out.push(MenuItem {
+            id: "layer.addTextAnimator".into(),
+            label: (*l).into(),
+            path: vec!["Animation".into(), "Animate Text".into()],
+            shortcut: None,
+            enabled: anim_on,
+            params: json!({"property": k}),
+        });
+    }
+    let sel_on = app.session.is_enabled("layer.addTextSelector");
+    for (k, l) in [("range", "Range"), ("wiggly", "Wiggly"), ("expression", "Expression")] {
+        out.push(MenuItem {
+            id: "layer.addTextSelector".into(),
+            label: l.into(),
+            path: vec!["Animation".into(), "Add Text Selector".into()],
+            shortcut: None,
+            enabled: sel_on,
+            params: json!({"kind": k}),
+        });
+    }
+    let preset_on = app.session.is_enabled("layer.applyTextPreset");
+    for (id, name) in effectcraft_engine::text_presets() {
+        out.push(MenuItem {
+            id: "layer.applyTextPreset".into(),
+            label: name,
+            path: vec!["Animation".into(), "Text Animation Presets".into()],
+            shortcut: None,
+            enabled: preset_on,
+            params: json!({"preset": id}),
+        });
+    }
     let has_layer = !app.session.state.selected_layers.is_empty();
     for e in effectcraft_engine::effects::registry() {
         out.push(MenuItem {

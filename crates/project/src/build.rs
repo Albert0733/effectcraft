@@ -108,6 +108,12 @@ pub const INTER_CHAR_BLEND_MODES: &[&str] = &[
     "Luminosity",
 ];
 
+/// A non-keyframable header-like property (no stopwatch, as in AE's selector popups).
+fn fixed(mut p: Property) -> Property {
+    p.static_only = true;
+    p
+}
+
 /// Path Options group (Path popup: 0 = None, k = mask k).
 pub fn path_options(ids: &mut Ids) -> PropGroup {
     let mut path = ids.prop("path", "Path", Value::Enum(0)).with_ui(popup(&["None"]));
@@ -124,14 +130,14 @@ pub fn path_options(ids: &mut Ids) -> PropGroup {
 /// More Options group.
 pub fn more_options(ids: &mut Ids) -> PropGroup {
     ids.group("moreOptions", "More Options")
-        .with(ids.prop("anchorGrouping", "Anchor Point Grouping", Value::Enum(0)).with_ui(popup(&["Character", "Word", "Line", "All"])))
+        .with(fixed(ids.prop("anchorGrouping", "Anchor Point Grouping", Value::Enum(0)).with_ui(popup(&["Character", "Word", "Line", "All"]))))
         .with(ids.prop("groupingAlignment", "Grouping Alignment", Value::Vec2([0.0, 0.0])).with_ui(ParamUi::Percent))
-        .with(ids.prop("fillStroke", "Fill & Stroke", Value::Enum(0)).with_ui(popup(&[
+        .with(fixed(ids.prop("fillStroke", "Fill & Stroke", Value::Enum(0)).with_ui(popup(&[
             "Per Character Palette",
             "All Fills Over All Strokes",
             "All Strokes Over All Fills",
-        ])))
-        .with(ids.prop("interCharBlend", "Inter-Character Blending", Value::Enum(0)).with_ui(popup(INTER_CHAR_BLEND_MODES)))
+        ]))))
+        .with(fixed(ids.prop("interCharBlend", "Inter-Character Blending", Value::Enum(0)).with_ui(popup(INTER_CHAR_BLEND_MODES))))
 }
 
 pub fn text(ids: &mut Ids, doc: TextDoc) -> PropGroup {
@@ -166,15 +172,15 @@ pub fn range_selector(ids: &mut Ids, name: &str) -> PropGroup {
     g.kind = GroupKind::Indexed;
     let adv = ids
         .group("advanced", "Advanced")
-        .with(ids.prop("units", "Units", Value::Enum(0)).with_ui(popup(&["Percentage", "Index"])))
-        .with(ids.prop("basedOn", "Based On", Value::Enum(0)).with_ui(popup(BASED_ON)))
-        .with(ids.prop("mode", "Mode", Value::Enum(0)).with_ui(popup(SEL_MODES)))
+        .with(fixed(ids.prop("units", "Units", Value::Enum(0)).with_ui(popup(&["Percentage", "Index"]))))
+        .with(fixed(ids.prop("basedOn", "Based On", Value::Enum(0)).with_ui(popup(BASED_ON))))
+        .with(fixed(ids.prop("mode", "Mode", Value::Enum(0)).with_ui(popup(SEL_MODES))))
         .with(ids.prop("amount", "Amount", Value::Scalar(100.0)).with_ui(slider(-100.0, 100.0, -100.0, 100.0, 0)))
-        .with(ids.prop("shape", "Shape", Value::Enum(0)).with_ui(popup(&["Square", "Ramp Up", "Ramp Down", "Triangle", "Round", "Smooth"])))
+        .with(fixed(ids.prop("shape", "Shape", Value::Enum(0)).with_ui(popup(&["Square", "Ramp Up", "Ramp Down", "Triangle", "Round", "Smooth"]))))
         .with(ids.prop("smoothness", "Smoothness", Value::Scalar(100.0)).with_ui(slider(0.0, 100.0, 0.0, 100.0, 0)))
         .with(ids.prop("easeHigh", "Ease High", Value::Scalar(0.0)).with_ui(slider(-100.0, 100.0, -100.0, 100.0, 0)))
         .with(ids.prop("easeLow", "Ease Low", Value::Scalar(0.0)).with_ui(slider(-100.0, 100.0, -100.0, 100.0, 0)))
-        .with(ids.prop("randomize", "Randomize Order", Value::Bool(false)).with_ui(ParamUi::Checkbox))
+        .with(fixed(ids.prop("randomize", "Randomize Order", Value::Bool(false)).with_ui(ParamUi::Checkbox)))
         .with(ids.prop("randomSeed", "Random Seed", Value::Scalar(0.0)));
     g.with(ids.prop("start", "Start", Value::Scalar(0.0)).with_ui(ParamUi::Percent))
         .with(ids.prop("end", "End", Value::Scalar(100.0)).with_ui(ParamUi::Percent))
@@ -186,10 +192,10 @@ pub fn range_selector(ids: &mut Ids, name: &str) -> PropGroup {
 pub fn wiggly_selector(ids: &mut Ids, name: &str) -> PropGroup {
     let mut g = ids.group("wigglySelector", name);
     g.kind = GroupKind::Indexed;
-    g.with(ids.prop("mode", "Mode", Value::Enum(2)).with_ui(popup(SEL_MODES)))
+    g.with(fixed(ids.prop("mode", "Mode", Value::Enum(2)).with_ui(popup(SEL_MODES))))
         .with(ids.prop("maxAmount", "Max Amount", Value::Scalar(100.0)).with_ui(slider(-100.0, 100.0, -100.0, 100.0, 0)))
         .with(ids.prop("minAmount", "Min Amount", Value::Scalar(-100.0)).with_ui(slider(-100.0, 100.0, -100.0, 100.0, 0)))
-        .with(ids.prop("basedOn", "Based On", Value::Enum(0)).with_ui(popup(BASED_ON)))
+        .with(fixed(ids.prop("basedOn", "Based On", Value::Enum(0)).with_ui(popup(BASED_ON))))
         .with(ids.prop("wigglesPerSecond", "Wiggles/Second", Value::Scalar(2.0)).with_ui(slider(0.0, 1000.0, 0.0, 10.0, 1)))
         .with(ids.prop("correlation", "Correlation", Value::Scalar(50.0)).with_ui(slider(0.0, 100.0, 0.0, 100.0, 0)))
         .with(ids.prop("temporalPhase", "Temporal Phase", Value::Scalar(0.0)).with_ui(ParamUi::Angle))
@@ -202,15 +208,14 @@ pub fn wiggly_selector(ids: &mut Ids, name: &str) -> PropGroup {
 pub const EXPRESSION_SELECTOR_DEFAULT: &str = "selectorValue * textIndex / textTotal";
 
 /// Expression Selector: Amount is computed per unit by its expression (`textIndex`,
-/// `textTotal`, `selectorValue`).
+/// `textTotal`, `selectorValue` = the selection of the selectors above it) and replaces that
+/// selection (there is no Mode: the expression combines with `selectorValue` itself).
 pub fn expression_selector(ids: &mut Ids, name: &str) -> PropGroup {
     let mut g = ids.group("expressionSelector", name);
     g.kind = GroupKind::Indexed;
     let mut amount = ids.prop("amount", "Amount", Value::Vec3([100.0, 100.0, 100.0])).with_ui(ParamUi::Percent);
     amount.expr = Some(crate::props::Expression { text: EXPRESSION_SELECTOR_DEFAULT.into(), enabled: true });
-    g.with(ids.prop("basedOn", "Based On", Value::Enum(0)).with_ui(popup(BASED_ON)))
-        .with(ids.prop("mode", "Mode", Value::Enum(2)).with_ui(popup(SEL_MODES)))
-        .with(amount)
+    g.with(fixed(ids.prop("basedOn", "Based On", Value::Enum(0)).with_ui(popup(BASED_ON)))).with(amount)
 }
 
 /// A selector by kind (`range`, `wiggly`, `expression`).
@@ -306,7 +311,7 @@ pub fn text_anim_props(ids: &mut Ids, kind: &str, three_d: bool) -> Vec<Property
         "strokeOpacity" => vec![pct_slider(ids, "strokeOpacity", "Stroke Opacity", 100.0, 0.0)],
         "strokeWidth" => vec![ids.prop("strokeWidth", "Stroke Width", Value::Scalar(0.0)).with_ui(ParamUi::Pixels)],
         "tracking" => {
-            let tt = ids.prop("trackingType", "Tracking Type", Value::Enum(0)).with_ui(popup(&["Before & After", "Before", "After"]));
+            let tt = fixed(ids.prop("trackingType", "Tracking Type", Value::Enum(0)).with_ui(popup(&["Before & After", "Before", "After"])));
             vec![tt, ids.prop("tracking", "Tracking Amount", Value::Scalar(0.0))]
         }
         _ => vec![],
@@ -314,11 +319,11 @@ pub fn text_anim_props(ids: &mut Ids, kind: &str, three_d: bool) -> Vec<Property
 }
 
 fn char_alignment(ids: &mut Ids) -> Property {
-    ids.prop("characterAlignment", "Character Alignment", Value::Enum(1)).with_ui(popup(&["Left or Top", "Center", "Right or Bottom", "Adjust Kerning"]))
+    fixed(ids.prop("characterAlignment", "Character Alignment", Value::Enum(1)).with_ui(popup(&["Left or Top", "Center", "Right or Bottom", "Adjust Kerning"])))
 }
 
 fn char_range(ids: &mut Ids) -> Property {
-    ids.prop("characterRange", "Character Range", Value::Enum(0)).with_ui(popup(&["Preserve Case & Digits", "Full Unicode"]))
+    fixed(ids.prop("characterRange", "Character Range", Value::Enum(0)).with_ui(popup(&["Preserve Case & Digits", "Full Unicode"])))
 }
 
 /// The main property of an animator kind (the last of [`text_anim_props`]; kept for callers
