@@ -53,7 +53,7 @@ pub fn preview(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     p.text(pos2(lr.max.x + 6.0, yy), Align2::LEFT_CENTER, "Loop", Tokens::ui(12.0), t.text);
     let ar = Rect::from_min_size(pos2(rect.min.x + 90.0, yy - 8.0), vec2(16.0, 16.0));
     if widgets::checkbox(ui, ar, app.ui.preview_audio, &t, egui::Id::new("pv-audio")).clicked() {
-        let _ = crate::menus::invoke(app, &ctx, "playback.muteAudio", json!({}));
+        let _ = crate::menus::invoke(app, &ctx, "playback.audio", json!({}));
     }
     app.auto.add("preview.audio", ar, "Include Audio");
     p.text(pos2(ar.max.x + 6.0, yy), Align2::LEFT_CENTER, "Include Audio", Tokens::ui(12.0), t.text);

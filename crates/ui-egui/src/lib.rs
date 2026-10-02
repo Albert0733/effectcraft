@@ -42,6 +42,16 @@ pub enum Dialog {
     CompSettings,
     SolidSettings,
     CommandPalette,
+    /// Settings (Preferences) on `dialog_state.settings_page`.
+    Settings,
+    /// Edit ▸ Keyboard Shortcuts.
+    Shortcuts,
+    /// A generic parameter form for a command (`dialog_state.form`).
+    Form,
+    /// A message (`dialog_state.info`).
+    Info,
+    /// View ▸ View Options.
+    ViewOptions,
     CameraSettings,
     LightSettings,
     KeyVelocity,
@@ -504,6 +514,12 @@ impl EffectcraftApp {
                 effectcraft_engine::Event::Toast { message, .. } => self.toast = Some((message, ctx.input(|i| i.time))),
                 effectcraft_engine::Event::OpenUrl(url) => ctx.open_url(egui::OpenUrl::new_tab(url)),
                 effectcraft_engine::Event::ProjectChanged { .. } => {}
+                effectcraft_engine::Event::Frontend { command, params } => {
+                    if let Err(e) = crate::menus::frontend(self, ctx, &command, params) {
+                        self.ui.status = e;
+                    }
+                }
+                effectcraft_engine::Event::PurgeCaches => self.frames.clear(),
             }
         }
     }

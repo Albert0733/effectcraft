@@ -1197,6 +1197,7 @@ dependencies = [
  "effectcraft-render",
  "effectcraft-text",
  "effectcraft-time",
+ "image",
  "log",
  "serde",
  "serde_json",

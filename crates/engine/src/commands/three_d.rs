@@ -533,7 +533,7 @@ pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(
             "layer.autoOrient",
-            "Auto-Orient…",
+            "Auto-Orient...",
             ["Layer", "Transform"],
             Some("Cmd+Alt+O"),
             "{mode: off|alongPath|towardsCamera|towardsPointOfInterest, layers?}",
@@ -542,7 +542,7 @@ pub fn specs() -> Vec<CommandSpec> {
         ),
         cmd!(
             "layer.newLight",
-            "Light…",
+            "Light...",
             ["Layer", "New"],
             Some("Cmd+Alt+Shift+L"),
             "{kind?: Parallel|Spot|Point|Ambient (default Spot), name?, color?, intensity?, coneAngle?, coneFeather?, falloff?: None|Smooth|Inverse Square Clamped, radius?, falloffDistance?, castsShadows?, shadowDarkness?, shadowDiffusion?, position? [x,y,z], poi? [x,y,z]}",
@@ -551,7 +551,7 @@ pub fn specs() -> Vec<CommandSpec> {
         ),
         cmd!(
             "layer.newCamera",
-            "Camera…",
+            "Camera...",
             ["Layer", "New"],
             Some("Cmd+Alt+Shift+C"),
             "{name?, type?: oneNode|twoNode (default twoNode), preset?: 15mm|20mm|24mm|28mm|35mm|50mm|80mm|135mm|200mm, zoom?, focalLength? mm, angleOfView? deg, dof?, focusDistance?, aperture?, fStop?, blurLevel?, lockToZoom?, position? [x,y,z], poi? [x,y,z]}",
@@ -560,8 +560,8 @@ pub fn specs() -> Vec<CommandSpec> {
         ),
         cmd!(
             "layer.cameraSettings",
-            "Camera Settings…",
-            ["Layer"],
+            "Camera Settings...",
+            ["Layer", "Camera"],
             None,
             "{layer?, name?, type?, preset?, zoom?, focalLength?, angleOfView?, dof?, focusDistance?, aperture?, fStop?, blurLevel?, position?, poi?}",
             has_comp,
@@ -569,8 +569,8 @@ pub fn specs() -> Vec<CommandSpec> {
         ),
         cmd!(
             "layer.lightSettings",
-            "Light Settings…",
-            ["Layer"],
+            "Light Settings...",
+            [],
             None,
             "{layer?, name?, kind?, color?, intensity?, coneAngle?, coneFeather?, falloff?, radius?, falloffDistance?, castsShadows?, shadowDarkness?, shadowDiffusion?, position?, poi?}",
             has_comp,

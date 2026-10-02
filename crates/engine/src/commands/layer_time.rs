@@ -136,7 +136,7 @@ fn freeze(s: &mut Session, p: &Value, last: bool) -> Result<Value> {
             (l.id, at.source_time(l).seconds())
         })
         .collect();
-    s.edit(if last { "Freeze on Last Frame" } else { "Freeze Frame" }, None, |proj, _| {
+    s.edit(if last { "Freeze On Last Frame" } else { "Freeze Frame" }, None, |proj, _| {
         let mut next = proj.next_id;
         let comp = proj.comp_mut(cid).ok_or(EngineError::NoComp)?;
         for (lid, src) in &now {
@@ -169,7 +169,7 @@ pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(
             "layer.timeStretch",
-            "Time Stretch…",
+            "Time Stretch...",
             ["Layer", "Time"],
             None,
             "{layers?, percent?|duration? (s), hold?: in|current|out, op?: reverse}",
@@ -183,6 +183,6 @@ pub fn specs() -> Vec<CommandSpec> {
         }),
         cmd!("layer.enableTimeRemap", "Enable Time Remapping", ["Layer", "Time"], Some("Cmd+Alt+T"), "{layers?, value?}", has_layers, enable_time_remap),
         cmd!("layer.freezeFrame", "Freeze Frame", ["Layer", "Time"], None, "{layers?}", has_layers, |s, p| freeze(s, p, false)),
-        cmd!("layer.freezeOnLastFrame", "Freeze on Last Frame", ["Layer", "Time"], None, "{layers?}", has_layers, |s, p| freeze(s, p, true)),
+        cmd!("layer.freezeOnLastFrame", "Freeze On Last Frame", ["Layer", "Time"], None, "{layers?}", has_layers, |s, p| freeze(s, p, true)),
     ]
 }

@@ -11,6 +11,7 @@
 pub mod commands;
 pub mod demo;
 pub mod links;
+pub mod menus;
 pub mod render_queue;
 
 use std::sync::Arc;
@@ -139,18 +140,50 @@ pub struct EditorState {
     pub snapping: bool,
     /// Last applied effect id (Effect ▸ last effect).
     pub last_effect: Option<String>,
+    /// Viewer region of interest `[x, y, w, h]` in comp pixels (Composition ▸ Crop Comp to Region
+    /// of Interest).
+    #[serde(default)]
+    pub region_of_interest: Option<[f64; 4]>,
+    /// Property-link clipboard (Edit ▸ Copy with Property Links / Copy Expression Only).
+    #[serde(skip)]
+    pub link_clipboard: Option<LinkClip>,
+    /// File ▸ Interpret Footage ▸ Remember Interpretation.
+    #[serde(skip)]
+    pub interpretation: Option<effectcraft_project::Footage>,
     /// Viewer 3D view per comp (Active Camera / Front / … / Custom View 3 and edited view cameras).
     #[serde(default)]
     pub views3d: std::collections::BTreeMap<ItemId, effectcraft_render::three_d::Views3D>,
 }
 
+/// What Copy with Property Links / Copy Expression Only put on the clipboard.
+#[derive(Clone, Debug, PartialEq)]
+pub enum LinkClip {
+    /// Expressions that link back to the source properties: (match path, expression text).
+    Links { relative: bool, links: Vec<(String, String)> },
+    /// Expressions only: (match path, expression).
+    Expressions(Vec<(String, effectcraft_project::Expression)>),
+}
+
 /// Events for frontends (drained each frame).
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub enum Event {
-    ProjectChanged { revision: u64 },
-    Toast { message: String, error: bool },
+    ProjectChanged {
+        revision: u64,
+    },
+    Toast {
+        message: String,
+        error: bool,
+    },
     OpenComp(ItemId),
     OpenUrl(String),
+    /// A frontend-only command (viewer zoom, panels, dialogs…) ran: the UI performs it. Headless
+    /// sessions ignore these.
+    Frontend {
+        command: String,
+        params: Value,
+    },
+    /// Drop cached frames / renders (Edit ▸ Purge).
+    PurgeCaches,
 }
 
 pub struct Session {
@@ -243,6 +276,8 @@ impl Session {
         let mut p = (*self.project).clone();
         let mut st = self.state.clone();
         let r = f(&mut p, &mut st)?;
+        // Layer styles: one Global Light per comp, whichever layer edited it.
+        effectcraft_project::styles::sync_global_light(&before, &mut p);
         let same = merge.is_some() && merge.map(str::to_string) == self.history.merge_key;
         if !same {
             self.history.undo.push((label.to_string(), before));
@@ -418,6 +453,10 @@ mod rq_tests;
 mod tests;
 #[cfg(test)]
 mod tests_3d;
+#[cfg(test)]
+mod tests_menu_cmds;
+#[cfg(test)]
+mod tests_styles;
 #[cfg(test)]
 mod tests_timeline;
 

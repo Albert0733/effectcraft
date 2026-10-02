@@ -61,7 +61,7 @@ text animators and shape contents are groups in the same tree.
 
 `Renderer::comp_frame(comp, t)` walks the layers bottom to top. For each visible layer it renders
 the **source** (solid, footage frame, text, shape contents, or a nested comp), applies **masks**,
-then **effects** in order, then the **transform** into comp space (with motion blur sub-samples
+then **effects** in order, then **layer styles**, then the **transform** into comp space (with motion blur sub-samples
 when enabled), the **track matte**, and finally **blends** into the accumulator. Adjustment layers
 apply their effects to the accumulator. Runs of 3D layers are composited per pixel through the
 active camera, with lights, shadows and depth of field.
@@ -80,6 +80,14 @@ keys, with a nesting-depth guard.
 the Effect > Audio effects (`effects::audio_fx`, applied per layer with a pre-roll so blocks are
 independent). Export and preview playback share it; the desktop app plays it through cpal and the
 audio clock drives preview playback (`ui-egui::audio`).
+
+**Layer styles** (Layer ▸ Layer Styles; `crates/render/src/styles.rs`) render in layer space and
+may grow the layer's bounds. Drop Shadow and Outer Glow become separate passes composited below the
+layer with their own blend modes; the interior styles, Stroke and Bevel and Emboss are baked into
+the layer body. Layer opacity fades the whole stack; Knockout and the R/G/B channel switches apply
+at composite time. Styled pixels are cached separately from the layer content, so editing a style
+reuses the cached source/masks/effects. Global Light is one setting per comp, mirrored into every
+layer's Blending Options and kept in step after each edit.
 
 Half, Third and Quarter resolution render proportionally fewer pixels end to end.
 

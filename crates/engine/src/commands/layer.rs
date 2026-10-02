@@ -942,7 +942,7 @@ fn with_layer(p: &Value, lid: LayerId) -> Value {
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!("layer.newText", "Text", ["Layer", "New"], Some("Cmd+Alt+Shift+T"), "{text?, size?, font?, fill?, position? [x,y], justify?}", has_comp, new_text),
-        cmd!("layer.newSolid", "Solid…", ["Layer", "New"], Some("Cmd+Y"), "{name?, color? #hex|[r,g,b], width?, height?}", has_comp, new_solid),
+        cmd!("layer.newSolid", "Solid...", ["Layer", "New"], Some("Cmd+Y"), "{name?, color? #hex|[r,g,b], width?, height?}", has_comp, new_solid),
         cmd!("layer.newNull", "Null Object", ["Layer", "New"], Some("Cmd+Alt+Shift+Y"), "{name?}", has_comp, new_null),
         cmd!(
             "layer.newShape",
@@ -954,7 +954,7 @@ pub fn specs() -> Vec<CommandSpec> {
             new_shape
         ),
         cmd!("layer.newAdjustment", "Adjustment Layer", ["Layer", "New"], Some("Cmd+Alt+Y"), "{name?}", has_comp, new_adjustment),
-        cmd!("layer.settings", "Layer Settings…", ["Layer"], Some("Cmd+Shift+Y"), "{layer?, name?, color?, width?, height?}", has_layers, layer_settings),
+        cmd!("layer.settings", "Layer Settings...", ["Layer"], Some("Cmd+Shift+Y"), "{layer?, name?, color?, width?, height?}", has_layers, layer_settings),
         cmd!("layer.addItem", "Add Footage to Comp", ["File"], Some("Cmd+/"), "{item: id|name, time?}", has_comp, add_item),
         cmd!("layer.select", "Select Layers", [], None, "{layers: [id|name|#n], add?, toggle?}", has_comp, select),
         cmd!("layer.selectNext", "Select Next Layer", [], Some("Cmd+ArrowDown"), "{add?}", has_comp, select_next),
@@ -990,7 +990,7 @@ pub fn specs() -> Vec<CommandSpec> {
             timing
         ),
         cmd!("layer.arrange", "Arrange", ["Layer", "Arrange"], None, "{layers?, to: front|forward|backward|back, index?}", has_layers, arrange),
-        cmd!("layer.precompose", "Pre-compose…", ["Layer"], Some("Cmd+Shift+C"), "{layers?, name?}", has_layers, precompose),
+        cmd!("layer.precompose", "Pre-compose...", ["Layer"], Some("Cmd+Shift+C"), "{layers?, name?}", has_layers, precompose),
         cmd!(
             "layer.addMask",
             "New Mask",
@@ -1022,7 +1022,7 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(
             "layer.addTextAnimator",
             "Animate Text",
-            ["Animation"],
+            [],
             None,
             "{layer?, properties: [position|scale|rotation|opacity|fillColor|tracking|…]}",
             has_layers,

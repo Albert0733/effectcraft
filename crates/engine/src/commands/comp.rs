@@ -241,7 +241,7 @@ pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(
             "comp.new",
-            "New Composition…",
+            "New Composition...",
             ["Composition"],
             Some("Cmd+N"),
             "{name?, width?, height?, frameRate?, duration? (s), startTime? (s) | startTimecode?, background? [r,g,b]|#hex, pixelAspect?, shutterAngle?, shutterPhase?, motionBlurSamples?, renderer? classic3D|advanced3D, anchor?, open?}",
@@ -250,7 +250,7 @@ pub fn specs() -> Vec<CommandSpec> {
         ),
         cmd!(
             "comp.settings",
-            "Composition Settings…",
+            "Composition Settings...",
             ["Composition"],
             Some("Cmd+K"),
             "{comp?, name?, width?, height?, anchor? 0-8 (resize anchor, 4 = center), frameRate?, duration?, startTime? (s) | startTimecode?, background?, shutterAngle?, shutterPhase?, motionBlurSamples?, pixelAspect?, renderer? classic3D|advanced3D}",
@@ -260,7 +260,7 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!("comp.setPosterTime", "Set Poster Time", ["Composition"], None, "{}", has_comp, poster),
         cmd!("comp.trimToWorkArea", "Trim Comp to Work Area", ["Composition"], Some("Cmd+Shift+X"), "{comp?}", has_comp, trim_to_wa),
         cmd!("comp.open", "Open Composition", [], None, "{comp: id|name}", always, open),
-        cmd!("comp.close", "Close Composition", [], Some("Cmd+W"), "{comp?}", has_comp, close),
+        cmd!("comp.close", "Close Composition", [], None, "{comp?}", has_comp, close),
         cmd!("comp.workArea", "Set Work Area", [], None, "{start?, end?, set?: begin|end (at CTI)}", has_comp, work_area),
         cmd!("comp.setSwitch", "Composition Switch", [], None, "{switch: hideShy|motionBlur|frameBlending|draft3d, value?}", has_comp, comp_switch),
         cmd!("comp.addMarker", "Add Marker", [], Some("Num*"), "{time?, comment?}", has_comp, add_marker),

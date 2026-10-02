@@ -91,7 +91,7 @@ fn go(s: &mut Session, p: &Value) -> Result<Value> {
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
-        cmd!("time.set", "Go to Time…", ["View"], Some("Alt+Shift+J"), "{time? (s) | frame? | timecode?}", has_comp, set),
+        cmd!("time.set", "Go to Time...", ["View"], Some("Alt+Shift+J"), "{time? (s) | frame? | timecode?}", has_comp, set),
         cmd!("time.nextFrame", "Next Frame", [], Some("PageDown"), "{}", has_comp, |s, _| step(s, &json!({"frames": 1}))),
         cmd!("time.previousFrame", "Previous Frame", [], Some("PageUp"), "{}", has_comp, |s, _| step(s, &json!({"frames": -1}))),
         cmd!("time.forward10", "Forward 10 Frames", [], Some("Shift+PageDown"), "{}", has_comp, |s, _| step(s, &json!({"frames": 10}))),

@@ -27,6 +27,8 @@ enum RowKind {
         open: bool,
         has_children: bool,
         fx: Option<bool>,
+        /// Eye switch (layer styles).
+        eye: Option<bool>,
     },
     Prop {
         uid: u64,
@@ -256,6 +258,7 @@ fn build_rows(app: &EffectcraftApp, comp: &Comp) -> Vec<Row> {
                                     open: tl.open_groups.contains(&g.uid),
                                     has_children: true,
                                     fx: Some(g.enabled),
+                                    eye: None,
                                 },
                             });
                             if tl.open_groups.contains(&g.uid) {
@@ -270,12 +273,49 @@ fn build_rows(app: &EffectcraftApp, comp: &Comp) -> Vec<Row> {
                             rows.push(Row {
                                 layer: l.id,
                                 depth: 1,
-                                kind: RowKind::Group { uid: g.uid, name: g.name.clone(), open: tl.open_groups.contains(&g.uid), has_children: true, fx: None },
+                                kind: RowKind::Group {
+                                    uid: g.uid,
+                                    name: g.name.clone(),
+                                    open: tl.open_groups.contains(&g.uid),
+                                    has_children: true,
+                                    fx: None,
+                                    eye: None,
+                                },
                             });
                             if tl.open_groups.contains(&g.uid) {
                                 push_group(&mut rows, l, g, 2, &tl.open_groups);
                             }
                         }
+                    }
+                }
+                "props" => {
+                    // Animation ▸ Reveal Properties…: the engine picked the uids.
+                    fn groups_in<'a>(g: &'a PropGroup, set: &std::collections::BTreeSet<u64>, out: &mut Vec<&'a PropGroup>) {
+                        for sg in g.groups() {
+                            if set.contains(&sg.uid) {
+                                out.push(sg);
+                            } else {
+                                groups_in(sg, set, out);
+                            }
+                        }
+                    }
+                    let mut groups = vec![];
+                    groups_in(&l.props, &tl.reveal_props, &mut groups);
+                    for g in groups {
+                        let open = tl.open_groups.contains(&g.uid);
+                        rows.push(Row {
+                            layer: l.id,
+                            depth: 1,
+                            kind: RowKind::Group { uid: g.uid, name: g.name.clone(), open, has_children: !g.children.is_empty(), fx: None, eye: None },
+                        });
+                        if open {
+                            push_group(&mut rows, l, g, 2, &tl.open_groups);
+                        }
+                    }
+                    let mut found = vec![];
+                    collect_props(&l.props, &mut found, &|p| prop_visible(p, l) && tl.reveal_props.contains(&p.uid));
+                    for uid in found {
+                        rows.push(Row { layer: l.id, depth: 1, kind: RowKind::Prop { uid } });
                     }
                 }
                 _ => {
@@ -304,7 +344,14 @@ fn build_rows(app: &EffectcraftApp, comp: &Comp) -> Vec<Row> {
                     rows.push(Row {
                         layer: l.id,
                         depth: 1,
-                        kind: RowKind::Group { uid: g.uid, name: g.name.clone(), open, has_children: !g.children.is_empty(), fx: None },
+                        kind: RowKind::Group {
+                            uid: g.uid,
+                            name: g.name.clone(),
+                            open,
+                            has_children: !g.children.is_empty(),
+                            fx: None,
+                            eye: (g.match_id == effectcraft_engine::project::styles::GROUP).then_some(g.enabled),
+                        },
                     });
                     if open {
                         push_group(&mut rows, l, g, 2, &tl.open_groups);
@@ -317,7 +364,7 @@ fn build_rows(app: &EffectcraftApp, comp: &Comp) -> Vec<Row> {
                             rows.push(Row {
                                 layer: l.id,
                                 depth: 2,
-                                kind: RowKind::Group { uid: wuid, name: "Waveform".into(), open: wopen, has_children: true, fx: None },
+                                kind: RowKind::Group { uid: wuid, name: "Waveform".into(), open: wopen, has_children: true, fx: None, eye: None },
                             });
                             if wopen {
                                 rows.push(Row { layer: l.id, depth: 3, kind: RowKind::Waveform { item: item.0 } });
@@ -349,10 +396,13 @@ fn push_group(rows: &mut Vec<Row>, l: &Layer, g: &PropGroup, depth: usize, open:
             Node::Group(sg) => {
                 let o = open.contains(&sg.uid);
                 let fx = matches!(sg.kind, GroupKind::Effect { .. }).then_some(sg.enabled);
+                // Layer style groups have eye switches (not Blending Options).
+                let eye = (g.match_id == effectcraft_engine::project::styles::GROUP && sg.match_id != effectcraft_engine::project::styles::BLENDING)
+                    .then_some(sg.enabled);
                 rows.push(Row {
                     layer: l.id,
                     depth,
-                    kind: RowKind::Group { uid: sg.uid, name: sg.name.clone(), open: o, has_children: !sg.children.is_empty(), fx },
+                    kind: RowKind::Group { uid: sg.uid, name: sg.name.clone(), open: o, has_children: !sg.children.is_empty(), fx, eye },
                 });
                 if o {
                     push_group(rows, l, sg, depth + 1, open);
@@ -943,7 +993,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     }
                 }
             }
-            RowKind::Group { uid, name, open, has_children, fx } => {
+            RowKind::Group { uid, name, open, has_children, fx, eye } => {
                 lp.rect_filled(left, 0.0, if ri % 2 == 0 { t.row } else { t.row_alt });
                 gp.rect_filled(Rect::from_min_max(pos2(graph_x0, r.min.y), r.max), 0.0, t.tl_bg);
                 let indent = cw.name + 6.0 + 14.0 * row.depth as f32;
@@ -959,6 +1009,16 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     if widgets::icon_toggle(ui, fr_, Icon::Fx, *en, &t, egui::Id::new(("gfx", uid)), None).clicked() {
                         actions.push(("effect.toggle".into(), json!({"layer": layer.id.0, "effect": uid})));
                     }
+                    app.auto.add(&format!("timeline.group.{uid}.fx"), fr_, name);
+                }
+                if let Some(en) = eye {
+                    // Layer style eye switch in the A/V column, like AE.
+                    let er = Rect::from_center_size(pos2(cw.av + 10.0, cy), vec2(17.0, 17.0));
+                    lp.rect_stroke(er.shrink(1.5), 2.0, Stroke::new(1.0, t.separator), StrokeKind::Inside);
+                    if widgets::icon_toggle(ui, er, Icon::Eye, *en, &t, egui::Id::new(("geye", uid)), None).clicked() {
+                        actions.push(("layer.style.toggle".into(), json!({"layer": layer.id.0, "style": uid})));
+                    }
+                    app.auto.add(&format!("timeline.group.{uid}.eye"), er, name);
                 }
                 lp.text(pos2(indent + 10.0, cy), Align2::LEFT_CENTER, name, Tokens::ui(12.0), t.text);
                 // Mask mode + inverted inline.

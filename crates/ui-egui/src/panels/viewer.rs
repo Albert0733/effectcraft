@@ -263,7 +263,8 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let bar_h = 30.0;
     let bar = Rect::from_min_max(pos2(rect.min.x, rect.max.y - bar_h), rect.max);
     let area = Rect::from_min_max(pos2(rect.min.x, nav.max.y), pos2(rect.max.x, bar.min.y));
-    p.rect_filled(area, 0.0, t.pasteboard);
+    let pasteboard = app.ui.viewer.pasteboard.map(|[r, g, b]| Color32::from_rgb(r, g, b)).unwrap_or(t.pasteboard);
+    p.rect_filled(area, 0.0, pasteboard);
 
     let (cw, ch) = (comp.width as f32, comp.height as f32);
     let fit = ((area.width() - 40.0) / cw).min((area.height() - 40.0) / ch).max(0.01);
@@ -338,6 +339,24 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
             painter.line_segment([pos2(comp_rect.min.x, gy), pos2(comp_rect.max.x, gy)], Stroke::new(1.0, Color32::from_rgba_unmultiplied(120, 160, 255, 50)));
             gy += step;
         }
+    }
+
+    // Comp guides (View ▸ Show Guides) and the region of interest.
+    if app.ui.viewer.guides {
+        let stroke = Stroke::new(1.0, Color32::from_rgb(0x3c, 0xc8, 0xf0));
+        for g in &comp.guides {
+            if g.vertical {
+                let x = comp_rect.min.x + g.position as f32 * zoom;
+                painter.line_segment([pos2(x, area.min.y), pos2(x, area.max.y)], stroke);
+            } else {
+                let y = comp_rect.min.y + g.position as f32 * zoom;
+                painter.line_segment([pos2(area.min.x, y), pos2(area.max.x, y)], stroke);
+            }
+        }
+    }
+    if let Some([rx, ry, rw, rh]) = app.session.state.region_of_interest {
+        let r = Rect::from_min_size(comp_rect.min + vec2(rx as f32 * zoom, ry as f32 * zoom), vec2(rw as f32 * zoom, rh as f32 * zoom));
+        painter.rect_stroke(r, 0.0, Stroke::new(1.0, Color32::WHITE), StrokeKind::Middle);
     }
 
     // Overlays + interaction.
@@ -1207,7 +1226,16 @@ fn bottom_bar(app: &mut EffectcraftApp, ui: &mut egui::Ui, bar: Rect, zoom: f32,
         app.ui.viewer.res = Resolution::ALL[i];
     }
     x = r.max.x + 6.0;
-    let _ = tog(ui, &mut app.auto, &mut x, Icon::Region, false, "roi", "Region of Interest");
+    let has_roi = app.session.state.region_of_interest.is_some();
+    if tog(ui, &mut app.auto, &mut x, Icon::Region, has_roi, "roi", "Region of Interest") {
+        // Toggle a centred region of interest (Composition ▸ Crop Comp to Region of Interest).
+        let rect = if has_roi {
+            serde_json::Value::Null
+        } else {
+            json!([comp.width as f64 / 4.0, comp.height as f64 / 4.0, comp.width as f64 / 2.0, comp.height as f64 / 2.0])
+        };
+        let _ = app.session.execute("view.setRegionOfInterest", json!({"rect": rect}));
+    }
     if tog(ui, &mut app.auto, &mut x, Icon::Checker, app.ui.viewer.transparency_grid, "transparency", "Toggle Transparency Grid") {
         app.ui.viewer.transparency_grid = !app.ui.viewer.transparency_grid;
     }

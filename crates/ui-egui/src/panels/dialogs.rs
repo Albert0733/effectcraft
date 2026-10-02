@@ -4,6 +4,7 @@
 use egui::{Align2, Color32, Rect, Sense, pos2, vec2};
 use serde_json::json;
 
+pub use super::forms::{Field, form, info, open_form};
 use crate::icons::{self, Icon};
 use crate::theme::Tokens;
 use crate::{Dialog, EffectcraftApp};
@@ -19,6 +20,12 @@ pub struct DialogState {
     pub solid_size: [u32; 2],
     pub palette_query: String,
     pub palette_sel: usize,
+    /// Settings dialog page id (`general`, `appearance`…).
+    pub settings_page: String,
+    /// The open parameter form.
+    pub form: super::forms::Form,
+    /// Message box (title, body).
+    pub info: (String, String),
     pub camera: super::dialogs_3d::CameraDraft,
     pub light: super::dialogs_3d::LightDraft,
     pub velocity: super::key_dialogs::VelocityDraft,
@@ -91,6 +98,11 @@ pub fn show(app: &mut EffectcraftApp, ctx: &egui::Context) {
         Dialog::NewComp | Dialog::CompSettings => comp_settings(app, ctx, &t, d == Dialog::CompSettings),
         Dialog::SolidSettings => solid(app, ctx, &t),
         Dialog::CommandPalette => palette(app, ctx, &t),
+        Dialog::Settings => super::forms::show_settings(app, ctx, &t),
+        Dialog::Shortcuts => super::forms::show_shortcuts(app, ctx, &t),
+        Dialog::Form => super::forms::show_form(app, ctx, &t),
+        Dialog::Info => super::forms::show_info(app, ctx, &t),
+        Dialog::ViewOptions => super::forms::show_view_options(app, ctx, &t),
         Dialog::CameraSettings => super::dialogs_3d::camera(app, ctx, &t),
         Dialog::LightSettings => super::dialogs_3d::light(app, ctx, &t),
         Dialog::KeyVelocity => super::key_dialogs::velocity(app, ctx, &t),

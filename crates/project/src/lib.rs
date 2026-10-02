@@ -7,6 +7,7 @@
 pub mod build;
 pub mod props;
 pub mod render_queue;
+pub mod styles;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -150,6 +151,19 @@ pub struct Comp {
     pub draft_3d: bool,
     #[serde(default)]
     pub poster_time: Tick,
+    /// Global Light for layer styles (Layer ▸ Layer Styles ▸ Blending Options).
+    #[serde(default)]
+    pub global_light: styles::GlobalLight,
+    /// Viewer guides (View ▸ Add Guide…), in comp pixels.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub guides: Vec<Guide>,
+}
+
+/// A viewer guide line: vertical guides sit at an x position, horizontal ones at a y position.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Guide {
+    pub vertical: bool,
+    pub position: f64,
 }
 
 fn yes() -> bool {
@@ -178,6 +192,8 @@ impl Comp {
             enable_frame_blending: true,
             draft_3d: false,
             poster_time: Tick::ZERO,
+            guides: vec![],
+            global_light: styles::GlobalLight::default(),
         }
     }
     pub fn layer(&self, id: LayerId) -> Option<&Layer> {
@@ -411,6 +427,9 @@ pub struct Layer {
     pub parent: Option<LayerId>,
     #[serde(default)]
     pub markers: Vec<Marker>,
+    /// Layer ▸ Markers ▸ Lock Markers.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub markers_locked: bool,
     #[serde(default)]
     pub auto_orient: AutoOrient,
     /// The property tree (Masks, Effects, Transform, Text, Contents, Camera/Light options…).

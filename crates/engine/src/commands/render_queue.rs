@@ -393,7 +393,7 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!("renderQueue.setRender", "Render Queue: Render Checkbox", [], None, "{item?|index?, render?: bool (toggles)}", has_items, set_render),
         cmd!(
             "renderQueue.setRenderSettings",
-            "Render Settings…",
+            "Render Settings...",
             [],
             None,
             "{item?|index?, quality?: best|draft, resolution?: full|half|third|quarter|scale, timeSpan?: workArea|comp|custom, start?: s, end?: s, frameRate?: fps|null, motionBlur?: bool, skipExisting?: bool}",
@@ -402,7 +402,7 @@ pub fn specs() -> Vec<CommandSpec> {
         ),
         cmd!(
             "renderQueue.setOutputModule",
-            "Output Module Settings…",
+            "Output Module Settings...",
             [],
             None,
             "{item?|index?, format?, channels?: rgb|rgba, quality?: 1-100, bitrate?: kbps, proresProfile?: proxy|lt|standard|hq|4444|4444xq, audio?: auto|on|off, sampleRate?, loop?: bool, output?}",
@@ -411,7 +411,7 @@ pub fn specs() -> Vec<CommandSpec> {
         ),
         cmd!(
             "renderQueue.setOutput",
-            "Output To…",
+            "Output To...",
             [],
             None,
             "{item?|index?, path: file path or template like [compName].[fileExtension]}",
