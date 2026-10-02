@@ -103,6 +103,30 @@ groups into `Params` keys (`effects::flatten_params`). Commands: `paint.*`, `pup
 
 Half, Third and Quarter resolution render proportionally fewer pixels end to end.
 
+**Colour and bit depth** (`crates/render/src/color.rs`, `crates/color/src/space.rs`). Pixels are
+`f32`, but 8 and 16 bpc projects clamp and quantise each layer after its source and masks and
+after every effect, and the comp after every layer (16 bpc uses 0..32768), so over-range values
+(Add, Screen, Exposure…) only survive in 32 bpc; blend modes without HDR support clamp their
+inputs in 32 bpc. With a working space (sRGB, Rec. 709, Rec. 2020, Display P3; matrices derived
+from the published primaries), footage is converted from its colour profile (stream metadata or
+Interpret Footage, else sRGB) and the top-level comp is converted to the sRGB display. Linearize
+Working Space runs everything in linear light; Blend Colors Using 1.0 Gamma linearises only for
+blending. Layer cache keys include these settings.
+
+**Frame blending**: footage and precomp layers whose source time falls between source frames
+(rate conform, stretch, remap) blend the two neighbouring frames, by cross-fade (Frame Mix) or by
+hierarchical block-matching optical flow and a bidirectional warp (Pixel Motion,
+`raster::flow`).
+
+**Collapse Transformations**: a collapsed precomp layer without masks, effects or styles draws
+its nested layers straight into the parent with concatenated transforms (one resample), so
+nested blend modes and adjustment layers act on the parent's layers; nested 3D layers use the
+parent's camera and lights and, when the precomp layer is 3D, are depth-sorted with the parent's
+3D run. Masks, effects or styles force a flattened render. On text and shape layers the switch is
+Continuously Rasterize: the source is rasterised at its on-screen scale. Quality: Draft samples
+nearest-neighbour, Wireframe draws the layer bounds. Slip edit (`layer.slip`, Alt+PageUp/Down,
+dragging the source bar in the timeline) moves the source under fixed in/out points.
+
 **Motion tracking** (Animation ▸ Track Motion / Stabilize Motion, Window ▸ Tracker): a tracker
 is a `Tracker` group under the layer's Motion Trackers group, with Track Point groups (Feature
 Center, Feature Size, Search Offset, Search Size, Confidence, Attach Point, Attach Point Offset)

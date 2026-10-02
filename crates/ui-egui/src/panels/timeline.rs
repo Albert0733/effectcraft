@@ -953,8 +953,40 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     {
                         let xs = tm.x(layer.start_time.seconds());
                         let xe = tm.x(layer.comp_time(d).seconds());
-                        let ghost = Rect::from_min_max(pos2(xs, r.min.y + 9.0), pos2(xe, r.max.y - 9.0));
+                        let ghost = Rect::from_min_max(pos2(xs.min(xe), r.min.y + 9.0), pos2(xs.max(xe), r.max.y - 9.0));
                         gp.rect_filled(ghost, 1.0, lc.gamma_multiply(0.18));
+                        // Dragging the source bar outside the in/out span slips the source.
+                        for (side, gr) in [
+                            ("l", Rect::from_min_max(ghost.min, pos2(bar.min.x, ghost.max.y))),
+                            ("r", Rect::from_min_max(pos2(bar.max.x, ghost.min.y), ghost.max)),
+                        ] {
+                            if gr.width() < 2.0 {
+                                continue;
+                            }
+                            let gresp = ui.interact(gr, egui::Id::new(("ghost", side, layer.id.0)), Sense::drag()).on_hover_text("Drag to slip the source");
+                            app.auto.add(&format!("timeline.layer.{}.source{}", layer.id.0, side), gr, "Slip");
+                            if gresp.hovered() || gresp.dragged() {
+                                ctx.set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                            }
+                            let acc_id = egui::Id::new(("slip-acc", layer.id.0));
+                            if gresp.dragged() {
+                                let mut acc: f32 = ctx.data(|d| d.get_temp(acc_id).unwrap_or(0.0));
+                                acc += gresp.drag_delta().x;
+                                let frames = ((acc as f64 / pps) / fd).trunc() as i64;
+                                if frames != 0 {
+                                    acc -= (frames as f64 * fd * pps) as f32;
+                                    actions.push((
+                                        "layer.slip".into(),
+                                        json!({"layers": [layer.id.0], "frames": frames, "merge": format!("slip-{}", layer.id.0)}),
+                                    ));
+                                }
+                                ctx.data_mut(|d| d.insert_temp(acc_id, acc));
+                            }
+                            if gresp.drag_stopped() {
+                                ctx.data_mut(|d| d.remove::<f32>(acc_id));
+                                ui_actions.push(UiAct::EndMerge);
+                            }
+                        }
                     }
                     app.auto.add(&format!("timeline.layer.{}.bar", layer.id.0), bar, &layer.name);
                     // Interactions: move body, trim edges.

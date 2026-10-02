@@ -21,7 +21,7 @@ use std::sync::Arc;
 pub use cache::{CacheStats, LayerCache};
 use effectcraft_color::BlendMode;
 use effectcraft_effects::{Buf, EffectCtx, EffectEnv, EffectHost, LayerPixels, Params};
-use effectcraft_geom::{Mat3, vec2};
+use effectcraft_geom::{Mat3, Mat4, vec2};
 use effectcraft_project::{Comp, Footage, FootageKind, FrameBlend, GroupKind, ItemId, ItemKind, Layer, LayerSource, MatteKind, Project, Quality, Sampling};
 pub use effectcraft_raster::Image;
 use effectcraft_raster::{WarpOpts, composite_warp};
@@ -160,6 +160,24 @@ pub struct Renderer<'a> {
     depth: usize,
     /// The project's colour pipeline (bit depth, working space, linear blending).
     pub(crate) pipe: color::Pipe,
+    /// Collapsed precomp being drawn into its parent: nested comp pixels → parent comp pixels
+    /// (before the output scale).
+    outer: Option<Mat3>,
+    /// Opacity of the collapsed precomp layers this comp is drawn through.
+    opacity_mul: f32,
+    /// Collapsed precomp: nested 3D layers join the parent's 3D space.
+    pub(crate) collapse3d: Option<Collapse3d<'a>>,
+}
+
+/// How a collapsed precomp's 3D layers are placed in the parent (see `Renderer::collapse_into`).
+#[derive(Clone, Copy)]
+pub(crate) struct Collapse3d<'a> {
+    /// Nested comp world → parent world (the precomp layer's world transform).
+    pub world: Mat4,
+    /// The parent's camera.
+    pub cam: three_d::CameraState,
+    /// The outermost comp's context (its lights light the nested layers).
+    pub parent: EvalCtx<'a>,
 }
 
 /// Time spent on one layer of one frame (milliseconds).
@@ -179,12 +197,139 @@ pub struct LayerTiming {
 
 impl<'a> Renderer<'a> {
     pub fn new(project: &'a Project, footage: &'a dyn FootageSource, opts: RenderOpts) -> Renderer<'a> {
-        Renderer { project, footage, expr: None, opts, cache: None, profile: None, depth: 0, pipe: color::Pipe::of(&project.settings) }
+        Renderer {
+            project,
+            footage,
+            expr: None,
+            opts,
+            cache: None,
+            profile: None,
+            depth: 0,
+            pipe: color::Pipe::of(&project.settings),
+            outer: None,
+            opacity_mul: 1.0,
+            collapse3d: None,
+        }
     }
 
     /// A renderer for nested work (precomps, layers read by effects): one level deeper.
     fn nested(&self) -> Renderer<'a> {
-        Renderer { depth: self.depth + 1, ..*self }
+        Renderer { depth: self.depth + 1, outer: None, opacity_mul: 1.0, collapse3d: None, ..*self }
+    }
+
+    /// The nested comp of a precomp layer whose transformations collapse into this comp: the
+    /// Collapse Transformations switch is on and the layer has no masks, effects or layer
+    /// styles (those force a flattened render of the precomp, as in After Effects).
+    pub(crate) fn collapsed(&self, ctx: &EvalCtx, layer: &Layer) -> Option<ItemId> {
+        if !layer.switches.collapse || layer.switches.adjustment || self.depth > 12 {
+            return None;
+        }
+        let LayerSource::Comp { item } = &layer.source else { return None };
+        if self.project.comp_contains(*item, ctx.comp_id) || self.project.comp(*item).is_none() {
+            return None;
+        }
+        if layer.masks().is_some_and(|m| !m.children.is_empty()) {
+            return None;
+        }
+        if layer.switches.effects && layer.effects().is_some_and(|fx| fx.groups().any(|g| g.enabled)) {
+            return None;
+        }
+        if styles::active(ctx, layer) {
+            return None;
+        }
+        Some(*item)
+    }
+
+    /// A renderer and context that draw a collapsed precomp's layers straight into this comp:
+    /// their transforms are concatenated with the precomp layer's (one resample, no
+    /// rasterisation at the precomp's bounds), their opacity multiplied by `opacity`, and their
+    /// 3D layers use this comp's camera and lights.
+    pub(crate) fn collapse_into(&self, ctx: &EvalCtx<'a>, layer: &Layer, item: ItemId, opacity: f32) -> Option<(Renderer<'a>, EvalCtx<'a>)> {
+        let nc = self.project.comp(item)?;
+        let nctx = EvalCtx { comp_id: item, comp: nc, time: ctx.source_time(layer), ..*ctx };
+        let (l2c, _) = ctx.layer_to_comp(layer);
+        let outer = Some(self.outer.map_or(l2c, |o| o * l2c));
+        let world = ctx.world_matrix(layer);
+        let c3 = Collapse3d {
+            world: self.collapse3d.map_or(world, |c| c.world * world),
+            cam: three_d::compose::camera_for(self, ctx),
+            parent: self.collapse3d.map_or(*ctx, |c| c.parent),
+        };
+        Some((Renderer { depth: self.depth + 1, outer, opacity_mul: opacity, collapse3d: Some(c3), ..*self }, nctx))
+    }
+
+    pub(crate) fn opacity_mul(&self) -> f32 {
+        self.opacity_mul
+    }
+
+    /// Draw a collapsed 2D precomp layer: nested layers blend straight into `canvas` with their
+    /// own modes (Normal precomp, no matte); otherwise they are drawn into an isolated buffer
+    /// that then takes the precomp layer's track matte, Preserve Transparency and blend mode.
+    fn draw_collapsed(&self, ctx: &EvalCtx<'a>, layer: &Layer, item: ItemId, canvas: &mut Image) {
+        let opacity = ctx.opacity(layer) as f32 * self.opacity_mul;
+        if opacity <= 0.0 {
+            return;
+        }
+        let matte = layer.track_matte.is_some_and(|tm| tm.layer != layer.id && ctx.comp.layer(tm.layer).is_some());
+        if layer.blend_mode == BlendMode::Normal && !matte && !layer.preserve_transparency {
+            if let Some((sub, nctx)) = self.collapse_into(ctx, layer, item, opacity) {
+                sub.draw_comp(&nctx, canvas);
+            }
+            return;
+        }
+        let Some((sub, nctx)) = self.collapse_into(ctx, layer, item, 1.0) else { return };
+        let mut iso = Image::new(canvas.width, canvas.height);
+        sub.draw_comp(&nctx, &mut iso);
+        self.composite_iso(ctx, layer, iso, canvas, opacity);
+    }
+
+    /// Rasterisation scale of a layer's source: the output scale, or — for Continuously
+    /// Rasterize text and shape layers — the output scale times the layer's on-screen scale
+    /// (quarter-octave steps, rounded up, so vector content is drawn at its final size and
+    /// stays sharp when scaled up).
+    pub fn raster_scale(&self, ctx: &EvalCtx, layer: &Layer) -> f64 {
+        let s = self.opts.scale;
+        if !layer.switches.collapse || !matches!(layer.source, LayerSource::Text | LayerSource::Shape) {
+            return s;
+        }
+        let (l2c, _) = ctx.layer_to_comp(layer);
+        let m = self.outer.map_or(l2c, |o| o * l2c);
+        let a = layer.transform().map(|tr| ctx.v3(layer, tr, "anchor", [0.0; 3])).unwrap_or([0.0; 3]);
+        let p0 = m.apply(vec2(a[0], a[1]));
+        let px = m.apply(vec2(a[0] + 1.0, a[1]));
+        let py = m.apply(vec2(a[0], a[1] + 1.0));
+        let k = ((px.x - p0.x).hypot(px.y - p0.y)).max((py.x - p0.x).hypot(py.y - p0.y));
+        if !k.is_finite() || k <= 1e-6 {
+            return s;
+        }
+        let mut k = 2f64.powf((k.log2() * 4.0).ceil() / 4.0).clamp(1.0 / 16.0, 64.0);
+        // Keep the buffer within about 16 million pixels.
+        if let Some(b) = content_bounds(ctx, layer) {
+            let area = ((b[2] - b[0]) * (b[3] - b[1])).max(1.0) * s * s;
+            k = k.min((16.0e6 / area).sqrt().max(1.0));
+        }
+        s * k
+    }
+
+    /// Draw a Wireframe-quality layer: its bounds as a one-pixel outline.
+    fn draw_wireframe(&self, ctx: &EvalCtx, layer: &Layer, canvas: &mut Image) {
+        let Some(b) = content_bounds(ctx, layer) else { return };
+        let s = self.opts.scale;
+        let (l2c, _) = ctx.layer_to_comp(layer);
+        let m = Mat3::scale(vec2(s, s)) * self.outer.map_or(l2c, |o| o * l2c);
+        let c = [(b[0], b[1]), (b[2], b[1]), (b[2], b[3]), (b[0], b[3])].map(|(x, y)| m.apply(vec2(x, y)));
+        let (w, h) = (canvas.width as i64, canvas.height as i64);
+        for i in 0..4 {
+            let (p, q) = (c[i], c[(i + 1) % 4]);
+            let n = ((q.x - p.x).abs().max((q.y - p.y).abs()) * 2.0).ceil().clamp(1.0, 1.0e5) as usize;
+            for j in 0..=n {
+                let t = j as f64 / n as f64;
+                let (x, y) = ((p.x + (q.x - p.x) * t).floor() as i64, (p.y + (q.y - p.y) * t).floor() as i64);
+                if x >= 0 && y >= 0 && x < w && y < h {
+                    canvas.set(x as u32, y as u32, [1.0, 1.0, 1.0, 1.0]);
+                }
+            }
+        }
     }
 
     fn ctx(&self, comp_id: ItemId, comp: &'a Comp, t: Tick) -> EvalCtx<'a> {
@@ -238,7 +383,10 @@ impl<'a> Renderer<'a> {
                 three_d::compose::draw_run(self, ctx, &visible[i..j], canvas);
                 i = j;
             } else {
-                self.draw_layer(ctx, visible[i], canvas);
+                match self.collapsed(ctx, visible[i]) {
+                    Some(item) => self.draw_collapsed(ctx, visible[i], item, canvas),
+                    None => self.draw_layer(ctx, visible[i], canvas),
+                }
                 i += 1;
             }
             // 8/16 bpc: the comp is an integer buffer after every layer.
@@ -363,8 +511,8 @@ impl<'a> Renderer<'a> {
                 }
                 Some(buf)
             }
-            LayerSource::Text => Some(self.authored(text::render(ctx, layer, s))),
-            LayerSource::Shape => layer.props.sub("contents").map(|c| self.authored(shapes::render(ctx, layer, c, s))),
+            LayerSource::Text => Some(self.authored(text::render(ctx, layer, self.raster_scale(ctx, layer)))),
+            LayerSource::Shape => layer.props.sub("contents").map(|c| self.authored(shapes::render(ctx, layer, c, self.raster_scale(ctx, layer)))),
             _ => None,
         }
     }
@@ -480,7 +628,7 @@ impl<'a> Renderer<'a> {
     }
 
     fn content_buf_timed(&self, ctx: &EvalCtx, layer: &Layer, mut timing: Option<&mut LayerTiming>) -> Option<(Arc<Buf>, Option<u64>)> {
-        let key = self.cache.and_then(|_| cache::layer_key(ctx, layer, self.opts.scale, self.opts.draft));
+        let key = self.cache.and_then(|_| cache::layer_key(ctx, layer, self.raster_scale(ctx, layer), self.opts.draft));
         if let (Some(c), Some(k)) = (self.cache, key)
             && let Some(b) = c.get(k)
         {
@@ -501,7 +649,7 @@ impl<'a> Renderer<'a> {
     /// (what Time effects read at neighbouring times). Served from / stored in the layer cache
     /// under its own key, so scrubbing reuses frames rendered for earlier output frames.
     pub fn layer_input(&self, ctx: &EvalCtx, layer: &Layer, effects: usize) -> Option<Arc<Buf>> {
-        let key = self.cache.and_then(|_| cache::input_key(ctx, layer, self.opts.scale, self.opts.draft, effects));
+        let key = self.cache.and_then(|_| cache::input_key(ctx, layer, self.raster_scale(ctx, layer), self.opts.draft, effects));
         if let (Some(c), Some(k)) = (self.cache, key)
             && let Some(b) = c.get(k)
         {
@@ -565,7 +713,10 @@ impl<'a> Renderer<'a> {
     }
 
     fn sampling(&self, layer: &Layer) -> effectcraft_raster::Sampling {
-        if self.opts.draft || layer.switches.quality == Quality::Draft {
+        if layer.switches.quality == Quality::Draft {
+            // Draft quality: no interpolation (nearest neighbour), as After Effects' Draft.
+            effectcraft_raster::Sampling::Nearest
+        } else if self.opts.draft {
             effectcraft_raster::Sampling::Bilinear
         } else if layer.switches.sampling == Sampling::Bicubic {
             effectcraft_raster::Sampling::Bicubic
@@ -578,6 +729,7 @@ impl<'a> Renderer<'a> {
     fn buf_matrix(&self, ctx: &EvalCtx, layer: &Layer, buf: &Buf) -> Mat3 {
         let s = self.opts.scale;
         let (l2c, _) = ctx.layer_to_comp(layer);
+        let l2c = self.outer.map_or(l2c, |o| o * l2c);
         Mat3::scale(vec2(s, s)) * l2c * Mat3::scale(vec2(1.0 / buf.scale, 1.0 / buf.scale)) * Mat3::translate(vec2(-buf.offset[0], -buf.offset[1]))
     }
 
@@ -610,7 +762,11 @@ impl<'a> Renderer<'a> {
     }
 
     fn draw_layer(&self, ctx: &EvalCtx, layer: &Layer, canvas: &mut Image) {
-        let opacity = ctx.opacity(layer) as f32;
+        let opacity = ctx.opacity(layer) as f32 * self.opacity_mul;
+        if layer.switches.quality == Quality::Wireframe && !layer.switches.adjustment {
+            self.draw_wireframe(ctx, layer, canvas);
+            return;
+        }
         if opacity <= 0.0 && !layer.switches.adjustment {
             return;
         }
@@ -824,6 +980,8 @@ pub fn kurbo_path(sp: &effectcraft_keyframe::ShapePath) -> kurbo::BezPath {
 }
 #[cfg(test)]
 mod tests_audio_fx;
+#[cfg(test)]
+mod tests_collapse;
 #[cfg(test)]
 mod tests_color;
 #[cfg(test)]

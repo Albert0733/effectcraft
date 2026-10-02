@@ -150,6 +150,10 @@ fn unproject(g: &Geo, sx: f64, sy: f64) -> Option<(f64, f64, f64)> {
 
 /// The camera a renderer uses at a context time (view override only for the top-level comp).
 pub(crate) fn camera_for(r: &Renderer, ctx: &EvalCtx) -> CameraState {
+    // Collapsed precomps see through the parent's camera.
+    if let Some(c) = r.collapse3d {
+        return c.cam;
+    }
     match r.opts.view {
         Some(v) if r.depth == 0 => v,
         _ => active_camera(ctx),
@@ -200,7 +204,8 @@ fn prepare_with<'a>(
     let comp = (ctx.comp.width as f64, ctx.comp.height as f64);
     let s = r.opts.scale;
     let cam = camera_for(r, ctx);
-    let world = ctx.world_matrix(layer) * local;
+    let outer = r.collapse3d.map_or(Mat4::IDENTITY, |c| c.world);
+    let world = outer * ctx.world_matrix(layer) * local;
     // Depth of field: blur the layer by its circle of confusion at its centre.
     if let Some(dof) = cam.dof.filter(|_| !ctx.comp.draft_3d && !r.opts.draft) {
         let b = buf_bounds(&buf);
@@ -234,7 +239,7 @@ fn prepare_with<'a>(
                 let f = phase + angle * i as f64 / (n - 1) as f64;
                 let sub = ctx.at(ctx.time + Tick::from_seconds_f64(f * fd));
                 let c = camera_for(r, &sub);
-                geo(&c, sub.world_matrix(layer) * local, &buf, comp, s, out)
+                geo(&c, outer * sub.world_matrix(layer) * local, &buf, comp, s, out)
             })
             .collect()
     };
@@ -253,7 +258,7 @@ fn prepare_with<'a>(
         bicubic: matches!(r.sampling(layer), effectcraft_raster::Sampling::Bicubic),
         buf,
         geos,
-        opacity: ctx.opacity(layer) as f32,
+        opacity: ctx.opacity(layer) as f32 * r.opacity_mul(),
         draw: in_run && mat.casts_shadows != 2,
         mat,
         matte: None,
@@ -319,12 +324,18 @@ pub(crate) fn draw_run(r: &Renderer, ctx: &EvalCtx, run: &[&Layer], canvas: &mut
         return;
     }
     let out = (canvas.width, canvas.height);
-    let lights = scene_lights(ctx);
+    // A collapsed precomp's 3D layers are lit by the outer comp's lights.
+    let lights = scene_lights(&r.collapse3d.map_or(*ctx, |c| c.parent));
     let mut items: Vec<Item> = run
         .par_iter()
         .enumerate()
-        .filter(|(_, l)| ctx.opacity(l) > 0.0)
+        .filter(|(_, l)| ctx.opacity(l) > 0.0 && l.switches.quality != effectcraft_project::Quality::Wireframe)
         .flat_map_iter(|(i, l)| {
+            // Stack order with room for a collapsed precomp's layers in between.
+            let i = i * 1024;
+            if let Some(item) = r.collapsed(ctx, l) {
+                return collapsed_items(r, ctx, l, item, i, out);
+            }
             let mut its = prepare_all(r, ctx, l, i, out, true);
             if !its.is_empty() {
                 let m = matte_for(r, ctx, l, out);
@@ -351,6 +362,49 @@ pub(crate) fn draw_run(r: &Renderer, ctx: &EvalCtx, run: &[&Layer], canvas: &mut
     items.sort_by_key(|i| i.order);
     let casters: Vec<&Item> = items.iter().chain(extra.iter()).filter(|i| i.mat.casts_shadows != 0 && !i.geos.is_empty()).collect();
     composite(canvas, &items, &lights, &casters, run[0].id.0 as u32);
+    for l in run.iter().filter(|l| l.switches.quality == effectcraft_project::Quality::Wireframe) {
+        r.draw_layer(ctx, l, canvas);
+    }
+}
+
+/// A collapsed 3D precomp layer inside a 3D run: its nested layers become planes in this comp's
+/// 3D space (world = precomp layer's world × nested world), depth-sorted with the run, so they
+/// intersect the parent's 3D layers; nested 2D layers lie on the precomp layer's plane in stack
+/// order. (Nested adjustment layers are skipped here.)
+fn collapsed_items<'a>(
+    r: &Renderer<'a>,
+    ctx: &EvalCtx<'a>,
+    layer: &'a Layer,
+    item: effectcraft_project::ItemId,
+    order: usize,
+    out: (u32, u32),
+) -> Vec<Item<'a>> {
+    let op = ctx.opacity(layer) as f32 * r.opacity_mul();
+    let Some((sub, nctx)) = r.collapse_into(ctx, layer, item, op) else { return vec![] };
+    let t = nctx.time;
+    let any_solo = nctx.comp.layers.iter().any(|l| l.switches.solo && l.source.is_av() && l.is_active_at(t));
+    let nested: Vec<&'a Layer> = nctx
+        .comp
+        .layers
+        .iter()
+        .rev()
+        .filter(|l| l.is_active_at(t) && l.has_video() && !l.switches.adjustment && (!any_solo || l.switches.solo) && (r.opts.guides || !l.switches.guide))
+        .collect();
+    let mut items = Vec::new();
+    for (k, l) in nested.into_iter().enumerate() {
+        if nctx.opacity(l) <= 0.0 {
+            continue;
+        }
+        let mut its = prepare_all(&sub, &nctx, l, order + 1 + k.min(1022), out, true);
+        if !its.is_empty() {
+            let m = matte_for(&sub, &nctx, l, out);
+            for it in &mut its {
+                it.matte = m.clone();
+            }
+        }
+        items.extend(its);
+    }
+    items
 }
 
 /// Per-pixel depth-sorted compositing of prepared planes.
