@@ -8,10 +8,7 @@ use std::path::Path;
 /// The `version = "…"` value inside `[workspace.package]`.
 pub fn read(manifest: &str) -> Result<String, String> {
     let (_, line) = find_line(manifest)?;
-    let v = line
-        .split_once('=')
-        .map(|(_, v)| v.trim().trim_matches('"').to_string())
-        .unwrap_or_default();
+    let v = line.split_once('=').map(|(_, v)| v.trim().trim_matches('"').to_string()).unwrap_or_default();
     if v.is_empty() {
         return Err("empty [workspace.package] version".into());
     }
@@ -48,20 +45,11 @@ pub fn validate(v: &str) -> Result<(), String> {
         None => (v, None),
     };
     let nums: Vec<&str> = core.split('.').collect();
-    if nums.len() != 3
-        || nums.iter().any(|n| {
-            n.is_empty()
-                || !n.bytes().all(|b| b.is_ascii_digit())
-                || (n.len() > 1 && n.starts_with('0'))
-        })
-    {
+    if nums.len() != 3 || nums.iter().any(|n| n.is_empty() || !n.bytes().all(|b| b.is_ascii_digit()) || (n.len() > 1 && n.starts_with('0'))) {
         return bad();
     }
     if let Some(p) = pre
-        && (p.is_empty()
-            || p.split('.').any(|id| {
-                id.is_empty() || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
-            }))
+        && (p.is_empty() || p.split('.').any(|id| id.is_empty() || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')))
     {
         return bad();
     }
@@ -104,12 +92,9 @@ pub fn run(root: &Path, args: &[&str]) -> Result<(), String> {
             std::fs::write(&tmp, updated).map_err(|e| format!("write {}: {e}", tmp.display()))?;
             std::fs::rename(&tmp, &path).map_err(|e| format!("replace {}: {e}", path.display()))?;
             // Refresh the workspace members' entries in Cargo.lock (no dependency upgrades).
-            let mut c = crate::cargo();
-            c.args(["update", "--workspace", "--offline"]);
-            if crate::run(c, "cargo update --workspace --offline").is_err() {
-                let mut c = crate::cargo();
-                c.args(["update", "--workspace"]);
-                crate::run(c, "cargo update --workspace")?;
+            let cargo = || std::process::Command::new(env!("CARGO"));
+            if crate::run(cargo().args(["update", "--workspace", "--offline"])).is_err() {
+                crate::run(cargo().args(["update", "--workspace"]))?;
             }
             println!("version: {old} -> {new}");
             Ok(())

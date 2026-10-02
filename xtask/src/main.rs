@@ -360,12 +360,17 @@ fn main() -> ExitCode {
         "wasm" => wasm(),
         "assets" => assets(),
         "ci" => ci(),
+        "version" => {
+            let rest: Vec<String> = std::env::args().skip(2).collect();
+            let args: Vec<&str> = rest.iter().map(String::as_str).collect();
+            version::run(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap_or(std::path::Path::new(".")), &args)
+        }
         "web" => web(&std::env::args().skip(2).collect::<Vec<_>>()),
         "ico" => {
             let rest: Vec<String> = std::env::args().skip(2).collect();
             ico::run(&rest.iter().map(String::as_str).collect::<Vec<_>>())
         }
-        _ => Err("usage: cargo xtask <layers|assets|wasm|web [--dev] [--serve PORT]|ico OUT.ico IN.png…|ci>".into()),
+        _ => Err("usage: cargo xtask <layers|assets|wasm|web [--dev] [--serve PORT]|ico OUT.ico IN.png…|ci|version [set X.Y.Z[-pre]]>".into()),
     };
     match r {
         Ok(()) => ExitCode::SUCCESS,
