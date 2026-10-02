@@ -185,7 +185,8 @@ fn keyframe_clipboard_paste_and_paste_reversed() {
     s.execute("time.set", json!({"time": 1.0})).unwrap();
     s.execute("prop.set", json!({"layer": a, "path": "transform/opacity", "value": 0})).unwrap();
     s.execute("prop.select", json!({"layer": a, "path": "transform/opacity"})).unwrap();
-    assert_eq!(s.execute("edit.copy", json!({})).unwrap()["keys"], 2);
+    s.execute("edit.copy", json!({})).unwrap();
+    assert_eq!(s.state.key_clipboard.iter().map(|c| c.keys.len()).sum::<usize>(), 2);
     s.execute("layer.select", json!({"layers": [b]})).unwrap();
     s.execute("time.set", json!({"time": 2.0})).unwrap();
     s.execute("edit.paste", json!({})).unwrap();
@@ -484,7 +485,7 @@ fn frontend_commands_emit_events_and_stubs_are_disabled() {
     let ev = frontend_events(&mut s);
     assert_eq!(ev[0].0, "view.zoomIn");
     assert_eq!(ev[1], ("window.panel".to_string(), json!({"panel": "align"})));
-    for id in ["render.addToQueue", "layer.timeRemap", "camera.fromView", "view.3d", "layer.styles", "prop.separateDimensions"] {
+    for id in ["render.addOutputModule", "path.rotoBezier", "camera.fromView", "view.3d.default", "layer.styles", "track.motion"] {
         assert!(!s.is_enabled(id), "{id}");
         assert!(matches!(s.execute(id, json!({})), Err(EngineError::Disabled(..))), "{id}");
     }

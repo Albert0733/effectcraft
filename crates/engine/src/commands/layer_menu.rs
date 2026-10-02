@@ -2,9 +2,7 @@
 //! layers, markers, track matte shortcuts, open/reveal, and Keyframe Assistant ▸ Sequence Layers.
 
 use effectcraft_keyframe::{Keyframe, ShapePath, Value as KV};
-use effectcraft_project::{
-    AutoOrient, FrameBlend, GroupKind, ItemId, LayerId, LayerSource, Marker, MaskMode, MatteKind, Node, Quality, Sampling, TrackMatte, Uid,
-};
+use effectcraft_project::{FrameBlend, GroupKind, ItemId, LayerId, LayerSource, Marker, MaskMode, MatteKind, Node, Quality, Sampling, TrackMatte, Uid};
 use effectcraft_time::Tick;
 use serde_json::{Value, json};
 
@@ -252,24 +250,6 @@ fn center_anchor(s: &mut Session, p: &Value) -> Result<Value> {
         Ok(())
     })?;
     Ok(json!({"layers": centers.len()}))
-}
-
-fn auto_orient(s: &mut Session, p: &Value) -> Result<Value> {
-    let (cid, ids) = layers_p(s, p)?;
-    let mode = match str_p(p, "mode").ok_or_else(|| bad("layer.autoOrient", "missing `mode`"))? {
-        "off" => AutoOrient::Off,
-        "alongPath" => AutoOrient::AlongPath,
-        "towardsCamera" => AutoOrient::TowardsCamera,
-        "towardsPointOfInterest" => AutoOrient::TowardsPointOfInterest,
-        m => return Err(bad("layer.autoOrient", format!("mode: off|alongPath|towardsCamera|towardsPointOfInterest, not `{m}`"))),
-    };
-    s.edit("Auto-Orient", None, |proj, _| {
-        for l in proj.comp_mut(cid).ok_or(EngineError::NoComp)?.layers.iter_mut().filter(|l| ids.contains(&l.id)) {
-            l.auto_orient = mode;
-        }
-        Ok(())
-    })?;
-    Ok(Value::Null)
 }
 
 // ---------------------------------------------------------------- masks
@@ -784,15 +764,6 @@ pub fn specs() -> Vec<CommandSpec> {
             "{layers?}",
             has_layers,
             center_anchor
-        ),
-        cmd!(
-            "layer.autoOrient",
-            "Auto-Orient...",
-            ["Layer", "Transform"],
-            Some("Cmd+Alt+O"),
-            "{layers?, mode: off|alongPath|towardsCamera|towardsPointOfInterest}",
-            has_layers,
-            auto_orient
         ),
         cmd!(
             "layer.mask.shape",

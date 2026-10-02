@@ -6,6 +6,7 @@
 
 pub mod build;
 pub mod props;
+pub mod render_queue;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -600,11 +601,14 @@ pub struct Project {
     pub settings: ProjectSettings,
     pub items: BTreeMap<ItemId, Item>,
     pub next_id: u64,
+    /// The Render Queue (Composition ▸ Add to Render Queue).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub render_queue: Vec<render_queue::RenderQueueItem>,
 }
 
 impl Default for Project {
     fn default() -> Self {
-        Project { schema: SCHEMA_VERSION, settings: ProjectSettings::default(), items: BTreeMap::new(), next_id: 1 }
+        Project { schema: SCHEMA_VERSION, settings: ProjectSettings::default(), items: BTreeMap::new(), next_id: 1, render_queue: Vec::new() }
     }
 }
 

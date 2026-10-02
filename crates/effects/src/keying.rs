@@ -485,7 +485,7 @@ pub fn specs() -> Vec<EffectSpec> {
         spec(
             "ec.key.luma",
             "Luma Key",
-            "Keying",
+            "Obsolete",
             vec![
                 p("keyType", "Key Type", Value::Enum(1), popup(&["Key Out Brighter", "Key Out Darker", "Key Out Similar", "Key Out Dissimilar"])),
                 p("threshold", "Threshold", num(0.0), b255()),
@@ -560,7 +560,7 @@ pub fn specs() -> Vec<EffectSpec> {
         spec(
             "ec.key.spill",
             "Spill Suppressor",
-            "Keying",
+            "Obsolete",
             vec![
                 p("colorToSuppress", "Color To Suppress", col(0.0, 0.0, 1.0), ParamUi::Color),
                 p("suppression", "Suppression", num(100.0), slider(0.0, 200.0, 0.0, 100.0, 0)),
@@ -617,7 +617,8 @@ mod tests {
         for (k, v) in over {
             params.values.insert(k.to_string(), v.clone());
         }
-        let ctx = EffectCtx { params: &params, time: 0.0, layer_size: [img.width as f64, img.height as f64], seed: 1, adjustment: false };
+        let ctx =
+            EffectCtx { params: &params, time: 0.0, layer_size: [img.width as f64, img.height as f64], seed: 1, adjustment: false, env: Default::default() };
         apply(s, &ctx, Buf { img, offset: [0.0, 0.0], scale: 1.0 }).img
     }
 

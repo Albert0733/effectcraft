@@ -10,7 +10,7 @@ use effectcraft_color::{BlendMode, blend_pixel};
 use rayon::prelude::*;
 
 pub use blur::{box_blur, directional_blur, gaussian_blur, radial_blur};
-pub use warp::{Sampling, WarpOpts, composite_warp, resample};
+pub use warp::{Sampling, WarpOpts, accumulate_warp, composite_warp, composite_warp_reference, resample};
 
 pub type Px = [f32; 4];
 

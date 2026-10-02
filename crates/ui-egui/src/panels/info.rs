@@ -62,11 +62,32 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         let tc = crate::panels::timecode(&app.session, &c, app.session.time());
         p.text(pos2(x0, y), Align2::LEFT_CENTER, if sel.is_empty() { "No layer selected".to_string() } else { sel.join(", ") }, Tokens::semibold(12.0), t.text);
         p.text(pos2(x0, y + 18.0), Align2::LEFT_CENTER, format!("Time: {tc}"), Tokens::ui(12.0), t.text_dim);
+        // One layer selected: Duration, In and Out like AE's Info panel.
+        let mut ly = y + 36.0;
+        if let [id] = app.session.state.selected_layers.as_slice()
+            && let Some(l) = c.layer(*id)
+        {
+            let tc = |t| crate::panels::timecode(&app.session, &c, t);
+            let lines = [
+                // A length, so no start-timecode offset.
+                format!("Duration: {}", {
+                    let fr = c.frame_rate;
+                    let n = fr.frame_at(l.out_point) - fr.frame_at(l.in_point);
+                    let s = effectcraft_engine::time::format_timecode_frames(n, fr, fr.supports_drop_frame());
+                    if fr.supports_drop_frame() { s } else { s.replace(';', ":") }
+                }),
+                format!("In: {}, Out: {}", tc(l.in_point), tc(effectcraft_engine::time::Tick(l.out_point.0 - c.frame_duration().0))),
+            ];
+            for line in lines {
+                p.text(pos2(x0, ly), Align2::LEFT_CENTER, line, Tokens::ui(12.0), t.text_dim);
+                ly += 18.0;
+            }
+        }
         let ms = app.frames.last_ms.lock().map(|v| *v).unwrap_or(0.0);
-        p.text(pos2(x0, y + 36.0), Align2::LEFT_CENTER, format!("Render: {ms:.0} ms  •  UI {:.0} fps", app.fps), Tokens::ui(11.5), t.text_faint);
+        p.text(pos2(x0, ly), Align2::LEFT_CENTER, format!("Render: {ms:.0} ms  •  UI {:.0} fps", app.fps), Tokens::ui(11.5), t.text_faint);
         if !app.session.state.selected_keys.is_empty() {
             p.text(
-                pos2(x0, y + 54.0),
+                pos2(x0, ly + 18.0),
                 Align2::LEFT_CENTER,
                 format!("{} keyframes selected", app.session.state.selected_keys.len()),
                 Tokens::ui(11.5),

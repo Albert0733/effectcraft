@@ -308,7 +308,7 @@ File
     Placeholder... | file.importPlaceholder
     Solid... | file.importSolid
   Export
-    Add to Render Queue | render.addToQueue
+    Add to Render Queue | renderQueue.add
   ---
   Find | app.find
   ---
@@ -443,7 +443,7 @@ Composition
   Crop Comp to Region of Interest | comp.cropToRegionOfInterest
   Crop Comp to Selected Layer(s) Bounds | comp.cropToLayerBounds
   ---
-  Add to Render Queue | render.addToQueue
+  Add to Render Queue | renderQueue.add
   Add Output Module | render.addOutputModule
   ---
   Preview
@@ -515,7 +515,7 @@ Layer
     Hide Locked Masks | layer.mask.hideLocked
   Mask and Shape Path
     RotoBezier | path.rotoBezier
-    Closed | path.closed
+    Closed | mask.setClosed
     Convert To Bezier Path | path.convertToBezier
     Group Shapes | path.groupShapes
     Ungroup Shapes | path.ungroupShapes
@@ -563,8 +563,8 @@ Layer
     ---
     Auto-Orient... | layer.autoOrient
   Time
-    Enable Time Remapping | layer.timeRemap
-    Time-Reverse Layer | layer.timeStretch {"op":"reverse"} | Cmd+Alt+R
+    Enable Time Remapping | layer.enableTimeRemap
+    Time-Reverse Layer | layer.timeReverse
     Time Stretch... | layer.timeStretch
     Freeze Frame | layer.freezeFrame
     Freeze On Last Frame | layer.freezeOnLastFrame
@@ -687,8 +687,8 @@ Layer
     Link Focus Distance to Point of Interest | camera.linkFocusToPoi
     Link Focus Distance to Layer | camera.linkFocusToLayer
     Set Focus Distance to Layer | camera.setFocusToLayer
-    Camera Settings... | camera.settings
-    Reset 3D View | view.reset3dView
+    Camera Settings... | layer.cameraSettings
+    Reset 3D View | view.reset3DView
   Light
     Create Lights from 3D Model | light.fromModel
     Control Light with Camera | light.controlWithCamera
@@ -823,8 +823,8 @@ View
   View Options... | view.options
   Show Layer Controls | view.layerControls
   ---
-  Camera Settings... | camera.settings
-  Reset 3D View | view.reset3dView
+  Camera Settings... | layer.cameraSettings
+  Reset 3D View | view.reset3DView
   Create Camera from 3D View | camera.fromView
   Switch View Layout
     1 View | view.layout {"views":1}
@@ -833,22 +833,22 @@ View
     ---
     Share View Options | view.shareViewOptions
   Switch 3D View
-    Active Camera | view.3d {"view":"activeCamera"} | F12
-    Default | view.3d {"view":"default"}
+    Active Camera | view.3d.activeCamera
+    Default | view.3d.default
     ---
-    Front | view.3d {"view":"front"} | F10
-    Left | view.3d {"view":"left"}
-    Top | view.3d {"view":"top"}
-    Back | view.3d {"view":"back"}
-    Right | view.3d {"view":"right"}
-    Bottom | view.3d {"view":"bottom"}
+    Front | view.3d.front
+    Left | view.3d.left
+    Top | view.3d.top
+    Back | view.3d.back
+    Right | view.3d.right
+    Bottom | view.3d.bottom
     ---
-    Custom View 1 | view.3d {"view":"custom1"} | F11
-    Custom View 2 | view.3d {"view":"custom2"}
-    Custom View 3 | view.3d {"view":"custom3"}
+    Custom View 1 | view.3d.custom1
+    Custom View 2 | view.3d.custom2
+    Custom View 3 | view.3d.custom3
     ---
-    Reset 3D View | view.reset3dView
-  Switch to Last 3D View | view.last3dView
+    Reset 3D View | view.reset3DView
+  Switch to Last 3D View | view.3d.last | Escape
   Look at Selected Layers | view.lookAtSelected
   Look at All Layers | view.lookAtAll
   ---

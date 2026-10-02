@@ -16,7 +16,10 @@
 //! - `ui.timeline.locate {layer, time?}`: screen point of a layer bar (at a comp time)
 //! - `ui.playback {action: play|stop|toggle}`
 //! - `ui.screenshot {path?, panel?, id?}`: PNG of the window (or one panel / element)
+//! - `render.frame {comp?, time?, max_side?, path?, base64?}`: PNG of a comp frame rendered by the session
 //! - `ui.resize {width, height}` / `ui.focus` / `app.quit`
+//!
+//! The full reference with examples is `docs/control-protocol.md`.
 
 use std::sync::mpsc::Sender;
 
@@ -86,13 +89,24 @@ pub fn handle(app: &mut EffectcraftApp, ctx: &egui::Context, req: &ControlReques
     match req.method.as_str() {
         "engine.execute" | "ui.menu.invoke" => {
             let Some(id) = s("command").or(s("id")) else { return err("missing `command`") };
-            let params = p.get("params").cloned().unwrap_or(json!({}));
-            match crate::menus::invoke(app, ctx, id, params) {
+            let params = p.get("params").cloned().filter(|v| !v.is_null()).unwrap_or(json!({}));
+            // `engine.execute` runs engine commands exactly as headless (never opens a dialog, e.g.
+            // `comp.new {}` creates a default comp); UI-only ids (`tool.*`, `view.*`, `window.*`,
+            // `playback.*` …) and `ui.menu.invoke` go through the menu dispatcher like a click.
+            let r = if req.method == "engine.execute" && effectcraft_engine::find_command(id).is_some() {
+                app.session.execute_checked(id, params).map_err(|e| e.to_string())
+            } else {
+                crate::menus::invoke(app, ctx, id, params)
+            };
+            match r {
                 Ok(v) => ok(v),
-                Err(e) => err(e),
+                Err(e) => {
+                    app.ui.status = e.clone();
+                    err(e)
+                }
             }
         }
-        "engine.commands" => match app.session.execute("command.list", json!({})) {
+        "engine.commands" => match app.session.execute("command.list", json!({"filter": p.get("filter"), "enabledOnly": p.get("enabledOnly")})) {
             Ok(v) => ok(v),
             Err(e) => err(e),
         },
@@ -301,6 +315,7 @@ pub fn handle(app: &mut EffectcraftApp, ctx: &egui::Context, req: &ControlReques
             app.raise_for_control(ctx);
             Outcome::Screenshot { path: s("path").map(str::to_string), crop }
         }
+        "render.frame" => render_frame(app, p),
         "ui.resize" => {
             let w = p.get("width").and_then(Value::as_f64).unwrap_or(1600.0) as f32;
             let h = p.get("height").and_then(Value::as_f64).unwrap_or(1000.0) as f32;
@@ -318,6 +333,61 @@ pub fn handle(app: &mut EffectcraftApp, ctx: &egui::Context, req: &ControlReques
         }
         m => err(format!("unknown method `{m}`")),
     }
+}
+
+/// `render.frame {comp?, time?, max_side?, path?, base64?}`: render a comp frame through the session
+/// (independent of the viewer zoom/resolution) and return it as PNG, written to `path` (default a
+/// temp file) or inline as base64 when `base64: true`.
+fn render_frame(app: &EffectcraftApp, p: &Value) -> Outcome {
+    let s = &app.session;
+    let cid = match s.resolve_comp(p.get("comp")) {
+        Ok(c) => c,
+        Err(e) => return err(e),
+    };
+    let t = p.get("time").or(p.get("seconds")).and_then(Value::as_f64).map(effectcraft_time::Tick::from_seconds_f64).unwrap_or_else(|| s.time());
+    let max_side = p.get("max_side").or(p.get("maxSide")).and_then(Value::as_u64).unwrap_or(0) as u32;
+    let (w, h, rgba) = match s.render_rgba8(cid, t, max_side) {
+        Ok(r) => r,
+        Err(e) => return err(e),
+    };
+    let png = match encode_png(&rgba, w, h) {
+        Ok(p) => p,
+        Err(e) => return err(e),
+    };
+    let mut out = json!({"comp": cid.0, "time": t.seconds(), "width": w, "height": h});
+    if p.get("base64").and_then(Value::as_bool) == Some(true) {
+        out["png"] = json!(base64(&png));
+        return ok(out);
+    }
+    let path = p
+        .get("path")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| std::env::temp_dir().join(format!("effectcraft-frame-{}.png", std::process::id())).to_string_lossy().to_string());
+    match std::fs::write(&path, png) {
+        Ok(()) => {
+            out["path"] = json!(path);
+            ok(out)
+        }
+        Err(e) => err(format!("cannot write {path}: {e}")),
+    }
+}
+
+/// Standard base64 (RFC 4648, padded).
+pub fn base64(data: &[u8]) -> String {
+    const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut s = String::with_capacity(data.len().div_ceil(3) * 4);
+    for c in data.chunks(3) {
+        let n = (c[0] as u32) << 16 | (*c.get(1).unwrap_or(&0) as u32) << 8 | *c.get(2).unwrap_or(&0) as u32;
+        for i in 0..4 {
+            if i <= c.len() {
+                s.push(A[(n >> (18 - 6 * i) & 63) as usize] as char);
+            } else {
+                s.push('=');
+            }
+        }
+    }
+    s
 }
 
 pub fn inspect(app: &EffectcraftApp, ctx: &egui::Context) -> Value {
@@ -416,4 +486,14 @@ pub fn encode_png(rgba: &[u8], w: u32, h: u32) -> Result<Vec<u8>, String> {
     chunk(&mut out, b"IDAT", &z);
     chunk(&mut out, b"IEND", &[]);
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn base64_rfc4648_vectors() {
+        for (i, o) in [("", ""), ("f", "Zg=="), ("fo", "Zm8="), ("foo", "Zm9v"), ("foob", "Zm9vYg=="), ("fooba", "Zm9vYmE="), ("foobar", "Zm9vYmFy")] {
+            assert_eq!(super::base64(i.as_bytes()), o);
+        }
+    }
 }

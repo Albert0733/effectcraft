@@ -302,6 +302,110 @@ fn effective_ease(keys: &[Keyframe], i: usize, d: usize, spatial: bool, out: boo
     list.get(d).or(list.first()).copied().unwrap_or_default()
 }
 
+/// The ease a key side presents in the Graph Editor and the Keyframe Velocity dialog: stored
+/// Bezier eases, auto-Bezier slopes, or the equivalent of a linear side (speed of the straight
+/// segment, 33.3 % influence). `None` for hold sides and sides without a neighbour.
+pub fn side_ease(keys: &[Keyframe], i: usize, d: usize, spatial: bool, out: bool) -> Option<Ease> {
+    let k = keys.get(i)?;
+    let j = if out { i + 1 } else { i.checked_sub(1)? };
+    let n = keys.get(j)?;
+    let interp = if out { k.out_interp } else { k.in_interp };
+    if interp == Interp::Hold || (!out && n.out_interp == Interp::Hold) || !k.value.interpolates() {
+        return None;
+    }
+    let is_spatial = spatial && matches!(k.value, Value::Vec2(_) | Value::Vec3(_));
+    if interp == Interp::Linear {
+        let dur = (secs(k.time) - secs(n.time)).abs().max(1e-12);
+        let dv = if is_spatial {
+            let (a, b) = if out { (i, j) } else { (j, i) };
+            spatial_segment_length(keys, a.min(b))
+        } else {
+            let a = k.value.components();
+            let b = n.value.components();
+            let dv = b.get(d).unwrap_or(&0.0) - a.get(d).unwrap_or(&0.0);
+            if out { dv } else { -dv }
+        };
+        return Some(Ease { speed: dv / dur, influence: 1.0 / 3.0 });
+    }
+    Some(effective_ease(keys, i, if is_spatial { 0 } else { d }, is_spatial, out))
+}
+
+/// Arc length of the spatial segment `i` → `i + 1` (motion-path length).
+pub fn spatial_segment_length(keys: &[Keyframe], i: usize) -> f64 {
+    let (Some(a), Some(b)) = (keys.get(i), keys.get(i + 1)) else { return 0.0 };
+    let p0 = v3(&a.value);
+    let p3 = v3(&b.value);
+    let (_, out_t) = spatial_tangents(keys, i);
+    let (in_t, _) = spatial_tangents(keys, i + 1);
+    SpatialSeg::new([p0, [p0[0] + out_t[0], p0[1] + out_t[1], p0[2] + out_t[2]], [p3[0] + in_t[0], p3[1] + in_t[1], p3[2] + in_t[2]], p3]).length()
+}
+
+/// Re-time roving keyframes: each run of roving keys between two fixed (non-roving) keys gets
+/// times proportional to the motion-path length, so the layer moves through them at one
+/// constant speed (After Effects' "Rove Across Time"). The first and last keys never rove.
+/// Returns true when any key time changed. Key order is preserved.
+pub fn retime_roving(keys: &mut [Keyframe], spatial: bool) -> bool {
+    let n = keys.len();
+    if n < 3 {
+        for k in keys.iter_mut() {
+            k.roving = false;
+        }
+        return false;
+    }
+    keys[0].roving = false;
+    keys[n - 1].roving = false;
+    if !keys.iter().any(|k| k.roving) {
+        return false;
+    }
+    let mut changed = false;
+    let mut a = 0;
+    while a < n - 1 {
+        let Some(b) = (a + 1..n).find(|&j| !keys[j].roving) else { break };
+        if b > a + 1 {
+            // Cumulative path length (spatial) or value distance (other) of the run a..=b.
+            let mut acc = vec![0.0];
+            for i in a..b {
+                let len = if spatial && matches!(keys[i].value, Value::Vec2(_) | Value::Vec3(_)) {
+                    spatial_segment_length(keys, i)
+                } else {
+                    let x = keys[i].value.components();
+                    let y = keys[i + 1].value.components();
+                    x.iter().zip(&y).map(|(p, q)| (q - p) * (q - p)).sum::<f64>().sqrt()
+                };
+                acc.push(acc.last().unwrap_or(&0.0) + len);
+            }
+            let total = *acc.last().unwrap_or(&0.0);
+            let (t0, t1) = (keys[a].time, keys[b].time);
+            for (o, i) in (a + 1..b).enumerate() {
+                let f = if total > 1e-9 { acc[o + 1] / total } else { (o + 1) as f64 / (b - a) as f64 };
+                let nt = Tick(t0.0 + ((t1.0 - t0.0) as f64 * f).round() as i64);
+                if nt != keys[i].time {
+                    keys[i].time = nt;
+                    changed = true;
+                }
+                // Roving keys pass speed straight through.
+                keys[i].in_interp = Interp::Linear;
+                keys[i].out_interp = Interp::Linear;
+            }
+        }
+        a = b;
+    }
+    changed
+}
+
+/// Reverse a run of keys in time within `[first, last]` (Time-Reverse Keyframes): key `i` moves
+/// to `first + last - t` and in/out sides swap.
+pub fn time_reverse(keys: &mut [Keyframe]) {
+    let (Some(first), Some(last)) = (keys.first().map(|k| k.time), keys.last().map(|k| k.time)) else { return };
+    for k in keys.iter_mut() {
+        k.time = Tick(first.0 + last.0 - k.time.0);
+        std::mem::swap(&mut k.in_interp, &mut k.out_interp);
+        std::mem::swap(&mut k.in_ease, &mut k.out_ease);
+        std::mem::swap(&mut k.spatial_in, &mut k.spatial_out);
+    }
+    keys.reverse();
+}
+
 /// Evaluate a keyframed property at `t`. `spatial` selects motion-path semantics for 2D/3D values.
 pub fn evaluate(keys: &[Keyframe], t: Tick, spatial: bool) -> Option<Value> {
     let first = keys.first()?;
@@ -522,6 +626,50 @@ mod tests {
         let keys = vec![Keyframe::new(s(0.0), Value::Path(a)), Keyframe::new(s(1.0), Value::Path(b))];
         let v = evaluate(&keys, s(0.5), false).unwrap();
         assert_eq!(v.as_path().unwrap().vertices[0], [-7.5, -7.5]);
+    }
+
+    #[test]
+    fn roving_keys_get_constant_speed_times() {
+        let mut keys = vec![
+            Keyframe::new(s(0.0), Value::Vec2([0.0, 0.0])),
+            Keyframe::new(s(0.2), Value::Vec2([300.0, 0.0])),
+            Keyframe::new(s(2.0), Value::Vec2([400.0, 0.0])),
+        ];
+        for k in &mut keys {
+            k.spatial_auto = false;
+        }
+        keys[1].roving = true;
+        assert!(retime_roving(&mut keys, true));
+        // 300 of 400 px → 75 % of the 2 s span.
+        assert!((keys[1].time.seconds() - 1.5).abs() < 1e-6, "{}", keys[1].time.seconds());
+        let v0 = speed(&keys, s(0.5), true);
+        let v1 = speed(&keys, s(1.8), true);
+        assert!((v0 - 200.0).abs() < 1.0 && (v1 - 200.0).abs() < 1.0, "{v0} {v1}");
+        // First/last keys can't rove.
+        keys[0].roving = true;
+        retime_roving(&mut keys, true);
+        assert!(!keys[0].roving);
+    }
+
+    #[test]
+    fn side_ease_reports_linear_and_eased_sides() {
+        let keys = vec![Keyframe::new(s(0.0), Value::Scalar(0.0)), Keyframe::new(s(2.0), Value::Scalar(100.0)).eased()];
+        let out = side_ease(&keys, 0, 0, false, true).unwrap();
+        assert!((out.speed - 50.0).abs() < 1e-9);
+        let inn = side_ease(&keys, 1, 0, false, false).unwrap();
+        assert_eq!(inn, Ease::EASY);
+        assert!(side_ease(&keys, 0, 0, false, false).is_none());
+    }
+
+    #[test]
+    fn time_reverse_mirrors_keys() {
+        let mut keys =
+            vec![Keyframe::new(s(1.0), Value::Scalar(0.0)).eased(), Keyframe::new(s(2.0), Value::Scalar(5.0)), Keyframe::new(s(4.0), Value::Scalar(10.0))];
+        keys[0].out_interp = Interp::Hold;
+        time_reverse(&mut keys);
+        assert_eq!(keys.iter().map(|k| k.time.seconds().round() as i64).collect::<Vec<_>>(), vec![1, 3, 4]);
+        assert_eq!(keys[0].value, Value::Scalar(10.0));
+        assert_eq!(keys[2].in_interp, Interp::Hold);
     }
 
     proptest::proptest! {

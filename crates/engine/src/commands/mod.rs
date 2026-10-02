@@ -2,6 +2,7 @@
 //! shortcut and viewer/timeline gesture maps to one of these.
 
 mod anim;
+mod animation;
 mod comp;
 mod comp_more;
 mod edit;
@@ -12,9 +13,14 @@ mod frontend;
 mod help;
 mod layer;
 mod layer_menu;
+mod layer_time;
+mod link;
+mod mask;
 mod prop;
 mod query;
+mod render_queue;
 mod stubs;
+mod three_d;
 mod time;
 mod view;
 
@@ -75,13 +81,19 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(edit::specs());
         v.extend(comp::specs());
         v.extend(layer::specs());
+        v.extend(three_d::specs());
+        v.extend(layer_time::specs());
         v.extend(prop::specs());
+        v.extend(anim::specs());
+        v.extend(link::specs());
+        v.extend(mask::specs());
         v.extend(effect::specs());
         v.extend(time::specs());
+        v.extend(render_queue::specs());
         v.extend(help::specs());
         v.extend(query::specs());
         v.extend(layer_menu::specs());
-        v.extend(anim::specs());
+        v.extend(animation::specs());
         v.extend(view::specs());
         v.extend(file_more::specs());
         v.extend(comp_more::specs());
@@ -93,6 +105,65 @@ pub fn command_specs() -> &'static [CommandSpec] {
 
 pub fn find(id: &str) -> Option<&'static CommandSpec> {
     command_specs().iter().find(|c| c.id == id)
+}
+
+// ---------- parameter validation (agents) ----------
+
+/// Top-level keys accepted by a params doc such as `{layers: [id|name|#n], add?, toggle?}` or
+/// `{time? (s) | frame? | timecode?}`; `None` when the doc isn't a `{…}` key list.
+pub fn accepted_params(doc: &str) -> Option<Vec<String>> {
+    let body = doc.trim().strip_prefix('{')?;
+    // Top-level pieces up to the matching close brace, split at `,` and `|`; `:` starts a value.
+    let (mut keys, mut cur, mut depth, mut in_value) = (Vec::new(), String::new(), 0i32, false);
+    let push = |cur: &mut String, keys: &mut Vec<String>| {
+        let k: String = cur.trim().chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
+        if !k.is_empty() && !keys.contains(&k) {
+            keys.push(k);
+        }
+        cur.clear();
+    };
+    for c in body.chars() {
+        match c {
+            '{' | '[' | '(' => depth += 1,
+            ']' | ')' => depth -= 1,
+            '}' if depth == 0 => {
+                push(&mut cur, &mut keys);
+                return Some(keys);
+            }
+            '}' => depth -= 1,
+            ',' if depth == 0 => {
+                push(&mut cur, &mut keys);
+                in_value = false;
+            }
+            '|' if depth == 0 && !in_value => push(&mut cur, &mut keys),
+            ':' if depth == 0 => {
+                push(&mut cur, &mut keys);
+                in_value = true;
+            }
+            _ if depth == 0 && !in_value => cur.push(c),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Keys every command understands (comp targeting, gesture merging) and accepted aliases.
+const ALWAYS_OK: &[&str] = &["comp", "merge"];
+const ALIASES: &[(&str, &str)] = &[("layers", "layer"), ("layer", "layers"), ("time", "frame"), ("frameRate", "fps"), ("properties", "property")];
+
+/// Reject unknown top-level parameters (typos, guessed names) with the list of accepted keys.
+pub fn check_params(spec: &CommandSpec, params: &Value) -> Result<()> {
+    let (Some(obj), Some(accepted)) = (params.as_object(), accepted_params(spec.params)) else { return Ok(()) };
+    let ok = |k: &str| ALWAYS_OK.contains(&k) || accepted.iter().any(|a| a == k || ALIASES.iter().any(|(doc, alias)| doc == a && *alias == k));
+    let unknown: Vec<&str> = obj.keys().map(String::as_str).filter(|k| !ok(k)).collect();
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    let list = if accepted.is_empty() { "none".to_string() } else { accepted.join(", ") };
+    Err(bad(
+        spec.id,
+        format!("unknown parameter(s) {}; accepted: {list} (doc: {})", unknown.iter().map(|k| format!("`{k}`")).collect::<Vec<_>>().join(", "), spec.params),
+    ))
 }
 
 // ---------- enablement ----------

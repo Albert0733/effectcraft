@@ -352,6 +352,7 @@ impl Value {
                 }
             }
             Value::Layer(_) => Some(Value::Layer(j.as_u64())),
+            Value::Path(_) => serde_json::from_value::<ShapePath>(j.clone()).ok().map(Value::Path).or_else(|| serde_json::from_value::<Value>(j.clone()).ok()),
             _ => serde_json::from_value::<Value>(j.clone()).ok(),
         }
     }

@@ -76,33 +76,51 @@ fn comp_info(s: &mut Session, p: &Value) -> Result<Value> {
     }))
 }
 
-fn group_json(g: &PropGroup, l: &Layer, t: effectcraft_time::Tick, depth: usize, max_depth: usize) -> Value {
+/// The path segment that addresses child `i` of `g` (see `effectcraft_project::parse_path`): the match
+/// id (with `#n` when it is not the first sibling matching it), or `#index` when the match id is not
+/// path-safe (effects and other ids containing `.`).
+fn segment(g: &PropGroup, i: usize) -> String {
+    let c = &g.children[i];
+    let m = c.match_id();
+    if m.is_empty() || m.contains(['/', '.', '#', '@']) || m.parse::<u64>().is_ok() {
+        return format!("#{}", i + 1);
+    }
+    let n = g.children[..i].iter().filter(|x| x.match_id() == m || x.name().eq_ignore_ascii_case(m)).count() + 1;
+    if n == 1 { m.to_string() } else { format!("{m}#{n}") }
+}
+
+fn group_json(g: &PropGroup, path: &str, l: &Layer, t: effectcraft_time::Tick, depth: usize, max_depth: usize) -> Value {
     let children: Vec<Value> = if depth >= max_depth {
         vec![]
     } else {
         g.children
             .iter()
-            .map(|c| match c {
-                Node::Prop(p) => {
-                    let mut o = json!({"uid": p.uid, "match": p.match_id, "name": p.name, "value": p.value_at(l.layer_time(t)).to_json()});
-                    if !p.keys.is_empty() {
-                        o["keys"] = json!(
-                            p.keys
-                                .iter()
-                                .map(|k| json!({"time": k.time.seconds(), "value": k.value.to_json(), "in": k.in_interp.label(), "out": k.out_interp.label()}))
-                                .collect::<Vec<_>>()
-                        );
+            .enumerate()
+            .map(|(i, c)| {
+                let seg = segment(g, i);
+                let cpath = if path.is_empty() { seg } else { format!("{path}/{seg}") };
+                match c {
+                    Node::Prop(p) => {
+                        let mut o = json!({"path": cpath, "uid": p.uid, "match": p.match_id, "name": p.name, "type": p.value.kind_name(), "value": p.value_at(l.layer_time(t)).to_json()});
+                        if !p.keys.is_empty() {
+                            o["keys"] = json!(
+                                p.keys
+                                    .iter()
+                                    .map(|k| json!({"time": k.time.seconds(), "value": k.value.to_json(), "in": k.in_interp.label(), "out": k.out_interp.label()}))
+                                    .collect::<Vec<_>>()
+                            );
+                        }
+                        if let Some(e) = &p.expr {
+                            o["expression"] = json!(e.text);
+                        }
+                        o
                     }
-                    if let Some(e) = &p.expr {
-                        o["expression"] = json!(e.text);
-                    }
-                    o
+                    Node::Group(g) => group_json(g, &cpath, l, t, depth + 1, max_depth),
                 }
-                Node::Group(g) => group_json(g, l, t, depth + 1, max_depth),
             })
             .collect()
     };
-    let mut o = json!({"uid": g.uid, "match": g.match_id, "name": g.name, "enabled": g.enabled, "children": children});
+    let mut o = json!({"path": path, "uid": g.uid, "match": g.match_id, "name": g.name, "enabled": g.enabled, "children": children});
     match &g.kind {
         GroupKind::Mask { mode, inverted, .. } => {
             o["mask"] = json!({"mode": mode.label(), "inverted": inverted});
@@ -121,8 +139,10 @@ fn layer_tree(s: &mut Session, p: &Value) -> Result<Value> {
     let idx = c.index_of(lid).unwrap_or(0);
     let l = c.layer(lid).ok_or(EngineError::NoComp)?;
     let depth = p.get("depth").and_then(Value::as_u64).unwrap_or(16) as usize;
+    let t = p.get("time").and_then(Value::as_f64).map(effectcraft_time::Tick::from_seconds_f64).unwrap_or_else(|| s.time());
     let mut o = layer_json(l, idx);
-    o["properties"] = group_json(&l.props, l, s.time(), 0, depth);
+    o["time"] = json!(t.seconds());
+    o["properties"] = group_json(&l.props, "", l, t, 0, depth);
     Ok(o)
 }
 
@@ -135,7 +155,7 @@ pub fn specs() -> Vec<CommandSpec> {
         query!("command.list", "List Commands", "{filter?, enabledOnly?}", list),
         query!("project.summary", "Project Summary", "{}", summary),
         query!("comp.info", "Composition Info", "{comp?}", comp_info),
-        query!("layer.tree", "Layer Property Tree", "{layer?, depth?}", layer_tree),
+        query!("layer.tree", "Layer Property Tree", "{layer?, comp?, depth?, time? (comp s)} → nodes with `path`", layer_tree),
         query!("editor.state", "Editor State", "{}", state),
     ]
 }

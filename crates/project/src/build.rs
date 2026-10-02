@@ -350,12 +350,36 @@ pub fn shape_simple_op(ids: &mut Ids, kind: &str) -> Option<PropGroup> {
 // ---------------------------------------------------------------- camera / light / 3D
 
 pub fn camera_options(ids: &mut Ids, zoom: f64) -> PropGroup {
+    camera_options_for(ids, zoom, zoom * 36.0 / 50.0)
+}
+
+/// Camera Options for a comp `comp_w` wide (aperture from the 50 mm preset: 25.3 mm at 1920 px).
+pub fn camera_options_for(ids: &mut Ids, zoom: f64, comp_w: f64) -> PropGroup {
+    let dof = ids.prop("dof", "Depth of Field", Value::Bool(false)).with_ui(ParamUi::Checkbox);
     ids.group("cameraOptions", "Camera Options")
         .with(ids.prop("zoom", "Zoom", Value::Scalar(zoom)).with_ui(ParamUi::Pixels))
-        .with(ids.prop("dof", "Depth of Field", Value::Bool(false)).with_ui(ParamUi::Checkbox))
+        .with(dof)
         .with(ids.prop("focusDistance", "Focus Distance", Value::Scalar(zoom)).with_ui(ParamUi::Pixels))
-        .with(ids.prop("aperture", "Aperture", Value::Scalar(25.3)).with_ui(ParamUi::Pixels))
+        .with(ids.prop("aperture", "Aperture", Value::Scalar(25.3 * comp_w / 1920.0)).with_ui(ParamUi::Pixels))
         .with(ids.prop("blurLevel", "Blur Level", Value::Scalar(100.0)).with_ui(ParamUi::Percent))
+        .with(ids.prop("irisShape", "Iris Shape", Value::Enum(0)).with_ui(popup(&[
+            "Fast Rectangle",
+            "Triangle",
+            "Square",
+            "Pentagon",
+            "Hexagon",
+            "Heptagon",
+            "Octagon",
+            "Nonagon",
+            "Decagon",
+        ])))
+        .with(ids.prop("irisRotation", "Iris Rotation", Value::Scalar(0.0)).with_ui(ParamUi::Angle))
+        .with(ids.prop("irisRoundness", "Iris Roundness", Value::Scalar(0.0)).with_ui(ParamUi::Percent))
+        .with(ids.prop("irisAspectRatio", "Iris Aspect Ratio", Value::Scalar(1.0)).with_ui(slider(0.01, 100.0, 0.01, 4.0, 2)))
+        .with(ids.prop("irisDiffractionFringe", "Iris Diffraction Fringe", Value::Scalar(0.0)).with_ui(slider(0.0, 1000.0, 0.0, 100.0, 1)))
+        .with(ids.prop("highlightGain", "Highlight Gain", Value::Scalar(0.0)).with_ui(slider(0.0, 100.0, 0.0, 100.0, 1)))
+        .with(ids.prop("highlightThreshold", "Highlight Threshold", Value::Scalar(255.0)).with_ui(slider(0.0, 255.0, 0.0, 255.0, 0)))
+        .with(ids.prop("highlightSaturation", "Highlight Saturation", Value::Scalar(0.0)).with_ui(slider(0.0, 100.0, 0.0, 100.0, 1)))
 }
 
 pub fn light_options(ids: &mut Ids, kind: LightKind) -> PropGroup {
@@ -457,7 +481,7 @@ pub fn layer(project: &mut Project, comp: &Comp, name: &str, source: LayerSource
             .with(ids.prop("rotationY", "Y Rotation", Value::Scalar(0.0)).with_ui(ParamUi::Angle))
             .with(ids.prop("rotation", "Z Rotation", Value::Scalar(0.0)).with_ui(ParamUi::Angle));
         root.children.push(tr.into());
-        root.children.push(camera_options(&mut ids, zoom).into());
+        root.children.push(camera_options_for(&mut ids, zoom, cw).into());
     } else if let LayerSource::Light { kind } = source {
         let mut g = ids.group("transform", "Transform");
         if matches!(kind, LightKind::Spot | LightKind::Parallel) {
@@ -466,6 +490,10 @@ pub fn layer(project: &mut Project, comp: &Comp, name: &str, source: LayerSource
         if kind != LightKind::Ambient {
             g.children
                 .push(ids.prop("position", "Position", Value::Vec3([cw / 2.0 - 260.0, ch / 2.0 - 260.0, -440.0])).with_ui(ParamUi::Point3).spatial().into());
+            g.children.push(ids.prop("orientation", "Orientation", Value::Vec3([0.0; 3])).with_ui(ParamUi::Angle).into());
+            g.children.push(ids.prop("rotationX", "X Rotation", Value::Scalar(0.0)).with_ui(ParamUi::Angle).into());
+            g.children.push(ids.prop("rotationY", "Y Rotation", Value::Scalar(0.0)).with_ui(ParamUi::Angle).into());
+            g.children.push(ids.prop("rotation", "Z Rotation", Value::Scalar(0.0)).with_ui(ParamUi::Angle).into());
         }
         root.children.push(g.into());
         root.children.push(light_options(&mut ids, kind).into());
@@ -485,6 +513,12 @@ pub fn layer(project: &mut Project, comp: &Comp, name: &str, source: LayerSource
         root.children.push(audio(&mut ids).into());
     }
     let out = duration.map(|d| d.min(comp.duration)).unwrap_or(comp.duration);
+    // Two-node cameras and spot/parallel lights aim at their Point of Interest.
+    let auto_orient = if matches!(source, LayerSource::Camera | LayerSource::Light { kind: LightKind::Spot | LightKind::Parallel }) {
+        crate::AutoOrient::TowardsPointOfInterest
+    } else {
+        crate::AutoOrient::Off
+    };
     Layer {
         id,
         name: comp.unique_layer_name(name),
@@ -502,7 +536,7 @@ pub fn layer(project: &mut Project, comp: &Comp, name: &str, source: LayerSource
         parent: None,
         markers: vec![],
         markers_locked: false,
-        auto_orient: Default::default(),
+        auto_orient,
         props: root,
     }
 }

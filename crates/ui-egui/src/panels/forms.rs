@@ -255,9 +255,6 @@ pub fn open_form(app: &mut EffectcraftApp, id: &str, p: &Value) -> bool {
                 ],
             )
         }
-        "layer.timeStretch" if !has(p, &["percent", "op"]) => {
-            ("Time Stretch".into(), vec![Field::num("percent", "Stretch factor (%)", layer.map(|l| l.stretch).unwrap_or(100.0))])
-        }
         "layer.precompose" if !has(p, &["name"]) => {
             let n = s.project.comps().count() + 1;
             ("Pre-compose".into(), vec![Field::text("name", "New composition name", &format!("Pre-comp {n}"))])

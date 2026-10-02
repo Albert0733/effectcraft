@@ -399,6 +399,38 @@ impl PropGroup {
         }
         None
     }
+    /// Match-id path (`transform/position`, `effects/ec.blur.gaussian#2/blurriness`) of the node
+    /// with `uid`: portable between layers with the same structure (keyframe paste, pick-whip).
+    pub fn match_path_of(&self, uid: Uid) -> Option<String> {
+        for (i, c) in self.children.iter().enumerate() {
+            let n = self.children[..i].iter().filter(|o| o.match_id() == c.match_id()).count() + 1;
+            let seg = if n == 1 { c.match_id().to_string() } else { format!("{}#{n}", c.match_id()) };
+            if c.uid() == uid {
+                return Some(seg);
+            }
+            if let Node::Group(g) = c
+                && let Some(p) = g.match_path_of(uid)
+            {
+                return Some(format!("{seg}/{p}"));
+            }
+        }
+        None
+    }
+    /// Chain of nodes from this group's children down to `uid` (inclusive).
+    pub fn node_chain(&self, uid: Uid) -> Option<Vec<&Node>> {
+        for c in &self.children {
+            if c.uid() == uid {
+                return Some(vec![c]);
+            }
+            if let Node::Group(g) = c
+                && let Some(mut rest) = g.node_chain(uid)
+            {
+                rest.insert(0, c);
+                return Some(rest);
+            }
+        }
+        None
+    }
     /// Human path (`Transform/Position`) of the node with `uid`.
     pub fn name_path_of(&self, uid: Uid) -> Option<String> {
         for c in &self.children {

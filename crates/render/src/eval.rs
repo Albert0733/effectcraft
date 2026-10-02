@@ -3,7 +3,7 @@
 //! Keyframe times are stored in **layer time** (they move with the layer), so evaluating a
 //! property at comp time `t` first maps `t` through the layer's start time and stretch.
 
-use effectcraft_geom::{Mat3, Mat4, Vec3, look_at, vec3};
+use effectcraft_geom::{Mat3, Mat4, Vec3, vec3};
 use effectcraft_keyframe::Value;
 use effectcraft_project::{Comp, ItemId, Layer, LayerId, LayerSource, Project, PropGroup, Property};
 use effectcraft_time::Tick;
@@ -33,6 +33,16 @@ impl<'a> EvalCtx<'a> {
     }
     /// Value of a property at the context time (keyframes, then expression).
     pub fn value(&self, layer: &Layer, prop: &Property) -> Value {
+        // Separated Position reads as the combination of X/Y/Z Position.
+        if prop.match_id == "position"
+            && let Some(tr) = layer.transform()
+            && let Some(px) = tr.get("positionX")
+            && tr.get("position").is_some_and(|p| p.uid == prop.uid)
+        {
+            let z = tr.get("positionZ").map(|p| self.value(layer, p).as_f64()).unwrap_or(0.0);
+            let y = tr.get("positionY").map(|p| self.value(layer, p).as_f64()).unwrap_or(0.0);
+            return Value::Vec3([self.value(layer, px).as_f64(), y, z]);
+        }
         let lt = layer.layer_time(self.time);
         let v = prop.value_at(lt);
         if prop.has_expression()
@@ -63,6 +73,21 @@ impl<'a> EvalCtx<'a> {
     pub fn b(&self, layer: &Layer, g: &PropGroup, m: &str) -> bool {
         self.group_value(layer, g, m).map(|v| v.as_bool()).unwrap_or(false)
     }
+    /// Layer Position, honouring Separate Dimensions (X/Y/Z Position properties).
+    pub fn position(&self, layer: &Layer, tr: &PropGroup) -> [f64; 3] {
+        match tr.get("positionX") {
+            Some(px) => [self.value(layer, px).as_f64(), self.f(layer, tr, "positionY", 0.0), self.f(layer, tr, "positionZ", 0.0)],
+            None => self.v3(layer, tr, "position", [0.0; 3]),
+        }
+    }
+    /// Source time of a layer at the context time: Time Remap's value when enabled, else the
+    /// (stretch-aware) layer time.
+    pub fn source_time(&self, layer: &Layer) -> Tick {
+        if let Some(tr) = layer.props.get("timeRemap") {
+            return Tick::from_seconds_f64(self.value(layer, tr).as_f64());
+        }
+        layer.layer_time(self.time)
+    }
     pub fn layer(&self, id: LayerId) -> Option<&'a Layer> {
         self.comp.layer(id)
     }
@@ -71,10 +96,11 @@ impl<'a> EvalCtx<'a> {
     pub fn local_matrix(&self, layer: &Layer) -> Mat4 {
         let Some(tr) = layer.transform() else { return Mat4::IDENTITY };
         let three = layer.is_3d();
-        let pos = self.v3(layer, tr, "position", [0.0; 3]);
+        let pos = self.position(layer, tr);
         let rz = self.f(layer, tr, "rotation", 0.0);
         if layer.is_camera() || layer.is_light() {
-            return Mat4::translate(Vec3::from(pos)) * Mat4::rotate_z(rz);
+            // Children of cameras/lights follow their position and full rotation.
+            return Mat4::translate(Vec3::from(pos)) * crate::three_d::camera::rig_rotation(self, layer);
         }
         let anchor = self.v3(layer, tr, "anchor", [0.0; 3]);
         let mut scale = self.v3(layer, tr, "scale", [100.0; 3]);
@@ -82,12 +108,22 @@ impl<'a> EvalCtx<'a> {
             scale[2] = 100.0;
             let a = Vec3::from([anchor[0], anchor[1], 0.0]);
             let p = Vec3::from([pos[0], pos[1], 0.0]);
+            let rz = rz + crate::three_d::camera::auto_orient_2d(self, layer);
             return Mat4::layer_3d(a, p, Vec3::from(scale), Vec3::ZERO, vec3(0.0, 0.0, rz));
         }
-        let o = self.v3(layer, tr, "orientation", [0.0; 3]);
         let rx = self.f(layer, tr, "rotationX", 0.0);
         let ry = self.f(layer, tr, "rotationY", 0.0);
-        Mat4::layer_3d(Vec3::from(anchor), Vec3::from(pos), Vec3::from(scale), Vec3::from(o), vec3(rx, ry, rz))
+        let p = Vec3::from(pos);
+        // Auto-orient (along path / towards camera) replaces Orientation.
+        let orient = crate::three_d::camera::auto_orient_3d(self, layer, p)
+            .unwrap_or_else(|| Mat4::orientation(Vec3::from(self.v3(layer, tr, "orientation", [0.0; 3]))));
+        Mat4::translate(p)
+            * orient
+            * Mat4::rotate_z(rz)
+            * Mat4::rotate_y(ry)
+            * Mat4::rotate_x(rx)
+            * Mat4::scale(Vec3::from(scale) / 100.0)
+            * Mat4::translate(-Vec3::from(anchor))
     }
 
     /// Layer space → comp (world) space, including parents.
@@ -111,40 +147,10 @@ impl<'a> EvalCtx<'a> {
         layer.transform().map(|tr| self.f(layer, tr, "opacity", 100.0)).unwrap_or(100.0) / 100.0
     }
 
-    /// The comp's camera at this time: (view-projection to comp pixels, eye position).
+    /// The comp's active camera at this time: (view-projection to comp pixels, eye, zoom).
     pub fn camera(&self) -> (Mat4, Vec3, f64) {
-        let (w, h) = (self.comp.width as f64, self.comp.height as f64);
-        if let Some(cam) = self.comp.active_camera(self.time)
-            && let Some(tr) = cam.transform()
-        {
-            let pos = Vec3::from(self.v3(cam, tr, "position", [w / 2.0, h / 2.0, -1000.0]));
-            let zoom = cam.props.sub("cameraOptions").map(|g| self.f(cam, g, "zoom", 1000.0)).unwrap_or(1000.0);
-            let o = self.v3(cam, tr, "orientation", [0.0; 3]);
-            let rx = self.f(cam, tr, "rotationX", 0.0);
-            let ry = self.f(cam, tr, "rotationY", 0.0);
-            let rz = self.f(cam, tr, "rotation", 0.0);
-            // Extra camera rotation is applied in camera space (inverse, because it rotates the eye).
-            let extra = (Mat4::orientation(Vec3::from(o)) * Mat4::rotate_z(rz) * Mat4::rotate_y(ry) * Mat4::rotate_x(rx)).transpose();
-            let view = if let Some(poi) = tr.get("poi").map(|p| self.value(cam, p).as_vec3()) {
-                look_at(pos, Vec3::from(poi), extra)
-            } else {
-                look_at(pos, pos + vec3(0.0, 0.0, 1.0), extra)
-            };
-            let mut view = view;
-            // Parented cameras: apply the parent's world matrix inverse.
-            if let Some(pid) = cam.parent
-                && let Some(p) = self.comp.layer(pid)
-                && let Some(inv) = self.world_matrix(p).inverse()
-            {
-                view = view * inv;
-                let _ = pos;
-            }
-            return (effectcraft_geom::camera_matrix(w, h, pos, view, zoom), pos, zoom);
-        }
-        let zoom = effectcraft_geom::default_camera_zoom(w);
-        let pos = vec3(w / 2.0, h / 2.0, -zoom);
-        let view = look_at(pos, vec3(w / 2.0, h / 2.0, 0.0), Mat4::IDENTITY);
-        (effectcraft_geom::camera_matrix(w, h, pos, view, zoom), pos, zoom)
+        let c = crate::three_d::active_camera(self);
+        (c.projection(self.comp.width as f64, self.comp.height as f64), c.eye, c.zoom)
     }
 
     /// Layer space → comp pixel space as a 2D projective matrix, plus camera-space depth of the

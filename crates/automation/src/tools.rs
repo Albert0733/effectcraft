@@ -1,0 +1,609 @@
+//! The tool catalogue: names, descriptions, JSON input schemas and implementations. Shared by the
+//! MCP server (`tools/list`, `tools/call`) and the CLI's one-shot subcommands, so both behave the
+//! same. Every tool maps onto engine commands (`Session::execute`) or control-channel methods.
+
+use serde_json::{Map, Value, json};
+
+use crate::backend::NEED_BRIDGE;
+use crate::{Backend, Error, Result, recompress_png};
+
+/// A tool's output.
+pub enum Reply {
+    Json(Value),
+    /// A PNG plus a JSON description of it (comp, time, size, path).
+    Image {
+        png: Vec<u8>,
+        info: Value,
+    },
+}
+
+pub struct ToolDef {
+    pub name: &'static str,
+    pub description: &'static str,
+    /// Only listed (and usable) when bridged to the running app.
+    pub bridge_only: bool,
+    schema: fn() -> Value,
+    run: fn(&mut Backend, &Value) -> Result<Reply>,
+}
+
+impl ToolDef {
+    /// The JSON Schema of the tool's arguments.
+    pub fn input_schema(&self) -> Value {
+        (self.schema)()
+    }
+    /// The MCP `Tool` object.
+    pub fn descriptor(&self) -> Value {
+        json!({"name": self.name, "description": self.description, "inputSchema": self.input_schema()})
+    }
+}
+
+/// All tools (headless + bridge-only).
+pub fn catalogue() -> &'static [ToolDef] {
+    TOOLS
+}
+
+pub fn find(name: &str) -> Option<&'static ToolDef> {
+    TOOLS.iter().find(|t| t.name == name)
+}
+
+/// The tools available on a backend (bridge-only tools are hidden in headless mode).
+pub fn available(bridge: bool) -> impl Iterator<Item = &'static ToolDef> {
+    TOOLS.iter().filter(move |t| bridge || !t.bridge_only)
+}
+
+/// Run a tool by name.
+pub fn run(b: &mut Backend, name: &str, args: &Value) -> Result<Reply> {
+    let t = find(name).ok_or_else(|| Error::BadArgs(format!("unknown tool `{name}`")))?;
+    if t.bridge_only && !b.is_bridge() {
+        return Err(Error::BadArgs(NEED_BRIDGE.into()));
+    }
+    let empty = json!({});
+    (t.run)(b, if args.is_null() { &empty } else { args })
+}
+
+// ------------------------------------------------------------------ schema fragments
+
+fn schema(props: Value, required: &[&str]) -> Value {
+    json!({"type": "object", "properties": props, "required": required})
+}
+fn comp_s() -> Value {
+    json!({"type": ["integer", "string"], "description": "Composition item id or name; omit for the active comp."})
+}
+fn layer_s() -> Value {
+    json!({"type": ["integer", "string"], "description": "Layer id (from get_comp), \"#n\" (1-based index from the top) or layer name."})
+}
+fn path_s() -> Value {
+    json!({"type": "string", "description": "Property path from get_layer: match ids joined by `/`, `#n` for the nth child, or `@uid`. E.g. `transform/position`, `transform/opacity`, `transform/scale`, `transform/rotation`, `effects/#1/blurriness`, `masks/#1/feather`, `@57`."})
+}
+fn value_s() -> Value {
+    json!({"description": "Number for 1-D properties (50), array for vectors ([960,540]), \"#rrggbb\" or [r,g,b,a] (0-1) for colours, bool for checkboxes, string for text/menus."})
+}
+
+// ------------------------------------------------------------------ helpers
+
+/// Build a params object from the present, non-null entries.
+fn obj(entries: &[(&str, Option<&Value>)]) -> Value {
+    let mut m = Map::new();
+    for (k, v) in entries {
+        if let Some(v) = v.filter(|v| !v.is_null()) {
+            m.insert(k.to_string(), v.clone());
+        }
+    }
+    Value::Object(m)
+}
+
+fn get<'a>(a: &'a Value, k: &str) -> Option<&'a Value> {
+    a.get(k).filter(|v| !v.is_null())
+}
+
+fn need<'a>(a: &'a Value, k: &str) -> Result<&'a Value> {
+    get(a, k).ok_or_else(|| Error::BadArgs(format!("missing `{k}`")))
+}
+
+fn json_reply(v: Value) -> Result<Reply> {
+    Ok(Reply::Json(v))
+}
+
+/// Accept params given as a JSON string too (some clients stringify nested objects).
+fn params_of(v: Option<&Value>) -> Result<Value> {
+    match v {
+        None => Ok(json!({})),
+        Some(Value::String(s)) if s.trim().is_empty() => Ok(json!({})),
+        Some(Value::String(s)) => serde_json::from_str(s).map_err(|e| Error::BadArgs(format!("`params` is not valid JSON: {e}"))),
+        Some(v) => Ok(v.clone()),
+    }
+}
+
+// ------------------------------------------------------------------ engine tools
+
+fn list_commands(b: &mut Backend, a: &Value) -> Result<Reply> {
+    let r = b.exec("command.list", obj(&[("filter", get(a, "filter")), ("enabledOnly", get(a, "enabled_only"))]))?;
+    // Drop empty fields to keep the listing compact.
+    let list: Vec<Value> = r
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|mut c| {
+            if let Some(o) = c.as_object_mut() {
+                o.retain(|_, v| !(v.is_null() || v.as_array().is_some_and(Vec::is_empty) || v.as_str() == Some("{}")));
+            }
+            c
+        })
+        .collect();
+    json_reply(json!(list))
+}
+
+fn execute_command(b: &mut Backend, a: &Value) -> Result<Reply> {
+    let id = get(a, "command").or(get(a, "id")).and_then(Value::as_str).ok_or_else(|| Error::BadArgs("missing `command` (e.g. `comp.new`)".into()))?;
+    let params = params_of(get(a, "params"))?;
+    json_reply(b.exec(id, params)?)
+}
+
+fn get_project(b: &mut Backend, _: &Value) -> Result<Reply> {
+    json_reply(b.exec("project.summary", json!({}))?)
+}
+
+fn get_comp(b: &mut Backend, a: &Value) -> Result<Reply> {
+    json_reply(b.exec("comp.info", obj(&[("comp", get(a, "comp"))]))?)
+}
+
+/// Flatten a `layer.tree` property tree into `[{path, type, value, keys?, expression?}]`.
+fn flatten(node: &Value, out: &mut Vec<Value>) {
+    match node.get("children").and_then(Value::as_array) {
+        Some(ch) => ch.iter().for_each(|c| flatten(c, out)),
+        None => {
+            let mut o = json!({"path": node["path"], "type": node["type"], "value": node["value"]});
+            if let Some(k) = node.get("keys").and_then(Value::as_array) {
+                o["keys"] = json!(k.len());
+            }
+            if let Some(e) = node.get("expression") {
+                o["expression"] = e.clone();
+            }
+            out.push(o);
+        }
+    }
+}
+
+fn get_layer(b: &mut Backend, a: &Value) -> Result<Reply> {
+    let p = obj(&[("layer", Some(need(a, "layer")?)), ("comp", get(a, "comp")), ("depth", get(a, "depth")), ("time", get(a, "time"))]);
+    let mut r = b.exec("layer.tree", p)?;
+    if get(a, "flat").and_then(Value::as_bool) == Some(true) {
+        let mut props = vec![];
+        flatten(&r["properties"], &mut props);
+        r["properties"] = json!(props);
+    }
+    json_reply(r)
+}
+
+fn get_property(b: &mut Backend, a: &Value) -> Result<Reply> {
+    let p = obj(&[("layer", Some(need(a, "layer")?)), ("path", Some(need(a, "path")?)), ("comp", get(a, "comp")), ("time", get(a, "time"))]);
+    json_reply(b.exec("prop.get", p)?)
+}
+
+fn set_property(b: &mut Backend, a: &Value) -> Result<Reply> {
+    let (layer, path, comp, time) = (need(a, "layer")?, need(a, "path")?, get(a, "comp"), get(a, "time"));
+    let (value, expr) = (get(a, "value"), get(a, "expression"));
+    if value.is_none() && expr.is_none() {
+        return Err(Error::BadArgs("give `value` and/or `expression`".into()));
+    }
+    let base = [("layer", Some(layer)), ("path", Some(path)), ("comp", comp)];
+    if let Some(v) = value {
+        let mut p = obj(&base);
+        p["value"] = v.clone();
+        match time {
+            Some(t) => {
+                p["time"] = t.clone();
+                b.exec("prop.addKey", p)?;
+            }
+            None => {
+                b.exec("prop.set", p)?;
+            }
+        }
+    }
+    if let Some(e) = expr {
+        let mut p = obj(&base);
+        p["expression"] = e.clone();
+        b.exec("prop.setExpression", p)?;
+    }
+    json_reply(b.exec("prop.get", obj(&[("layer", Some(layer)), ("path", Some(path)), ("comp", comp), ("time", time)]))?)
+}
+
+fn add_keyframe(b: &mut Backend, a: &Value) -> Result<Reply> {
+    let (layer, path, comp) = (need(a, "layer")?, need(a, "path")?, get(a, "comp"));
+    let keys: Vec<Value> = match get(a, "keys") {
+        Some(Value::Array(k)) => k.clone(),
+        Some(_) => return Err(Error::BadArgs("`keys` must be an array of {time, value?}".into())),
+        None => vec![obj(&[("time", Some(need(a, "time")?)), ("value", get(a, "value"))])],
+    };
+    if keys.is_empty() {
+        return Err(Error::BadArgs("no keys".into()));
+    }
+    let base = [("layer", Some(layer)), ("path", Some(path)), ("comp", comp)];
+    for k in &keys {
+        let mut p = obj(&base);
+        p["time"] = need(k, "time")?.clone();
+        if let Some(v) = get(k, "value") {
+            p["value"] = v.clone();
+        }
+        b.exec("prop.addKey", p)?;
+    }
+    let info = b.exec("prop.get", obj(&base))?;
+    if let Some(interp) = get(a, "interpolation").and_then(Value::as_str) {
+        // Key selection works on the active comp.
+        if let Some(c) = comp {
+            b.exec("comp.open", json!({"comp": c}))?;
+        }
+        let sel: Vec<Value> = keys.iter().map(|k| json!({"layer": info["layer"], "prop": info["uid"], "time": k["time"]})).collect();
+        b.exec("keys.select", json!({"keys": sel}))?;
+        match interp.to_ascii_lowercase().as_str() {
+            "easyease" | "ease" => b.exec("keys.easyEase", json!({}))?,
+            "easyeasein" => b.exec("keys.easyEase", json!({"which": "in"}))?,
+            "easyeaseout" => b.exec("keys.easyEase", json!({"which": "out"}))?,
+            i @ ("linear" | "bezier" | "hold") => b.exec("keys.interpolation", json!({"interpolation": i}))?,
+            other => return Err(Error::BadArgs(format!("unknown interpolation `{other}` (linear, bezier, hold, easyEase, easyEaseIn, easyEaseOut)"))),
+        };
+        return json_reply(b.exec("prop.get", obj(&base))?);
+    }
+    json_reply(info)
+}
+
+fn render_frame(b: &mut Backend, a: &Value) -> Result<Reply> {
+    let max_side = get(a, "max_side").and_then(Value::as_u64).unwrap_or(960) as u32;
+    let f = b.render(get(a, "comp"), get(a, "time").and_then(Value::as_f64), max_side)?;
+    let mut info = json!({"comp": f.comp, "time": f.time, "width": f.width, "height": f.height});
+    if let Some(p) = get(a, "path").and_then(Value::as_str) {
+        std::fs::write(p, &f.png).map_err(|e| Error::Other(format!("cannot write {p}: {e}")))?;
+        info["path"] = json!(p);
+    }
+    if get(a, "inline").and_then(Value::as_bool) == Some(false) {
+        return json_reply(info);
+    }
+    Ok(Reply::Image { png: f.png, info })
+}
+
+fn open_project(b: &mut Backend, a: &Value) -> Result<Reply> {
+    if let Some(p) = get(a, "path") {
+        b.exec("file.open", json!({"path": p}))?;
+    } else if get(a, "demo").and_then(Value::as_bool) == Some(true) {
+        b.exec("file.openDemoProject", json!({}))?;
+    } else if get(a, "new").and_then(Value::as_bool) == Some(true) {
+        b.exec("file.newProject", json!({}))?;
+    } else {
+        return Err(Error::BadArgs("give `path` (.ecproj), `demo: true` or `new: true`".into()));
+    }
+    get_project(b, &json!({}))
+}
+
+fn save_project(b: &mut Backend, a: &Value) -> Result<Reply> {
+    match get(a, "path") {
+        Some(p) => b.exec("file.saveAs", json!({"path": p}))?,
+        None => b.exec("file.save", json!({}))?,
+    };
+    let s = b.exec("project.summary", json!({}))?;
+    json_reply(json!({"path": s["path"], "dirty": s["dirty"]}))
+}
+
+fn history(b: &mut Backend, a: &Value, id: &str) -> Result<Reply> {
+    let steps = get(a, "steps").and_then(Value::as_u64).unwrap_or(1).max(1);
+    let mut done = 0;
+    for _ in 0..steps {
+        match b.exec(id, json!({})) {
+            Ok(_) => done += 1,
+            Err(e) if done == 0 => return Err(e),
+            Err(_) => break,
+        }
+    }
+    let s = b.exec("project.summary", json!({}))?;
+    json_reply(json!({"steps": done, "undoStack": s["undo"]}))
+}
+
+fn undo(b: &mut Backend, a: &Value) -> Result<Reply> {
+    history(b, a, "edit.undo")
+}
+
+fn redo(b: &mut Backend, a: &Value) -> Result<Reply> {
+    history(b, a, "edit.redo")
+}
+
+// ------------------------------------------------------------------ bridge-only tools
+
+fn screenshot(b: &mut Backend, a: &Value) -> Result<Reply> {
+    let max_side = get(a, "max_side").and_then(Value::as_u64).unwrap_or(1600) as u32;
+    let keep = get(a, "path").and_then(Value::as_str).map(str::to_string);
+    let path =
+        keep.clone().unwrap_or_else(|| std::env::temp_dir().join(format!("effectcraft-mcp-shot-{}.png", std::process::id())).to_string_lossy().into_owned());
+    b.control("ui.screenshot", obj(&[("path", Some(&json!(path))), ("panel", get(a, "panel")), ("id", get(a, "id"))]))?;
+    let bytes = std::fs::read(&path).map_err(|e| Error::Other(format!("screenshot: {e}")))?;
+    if keep.is_none() {
+        let _ = std::fs::remove_file(&path);
+    }
+    let (png, w, h) = recompress_png(&bytes, max_side)?;
+    Ok(Reply::Image { png, info: json!({"width": w, "height": h, "path": keep}) })
+}
+
+fn passthrough(b: &mut Backend, method: &str, a: &Value) -> Result<Reply> {
+    json_reply(b.control(method, a.clone())?)
+}
+
+fn ui_inspect(b: &mut Backend, a: &Value) -> Result<Reply> {
+    passthrough(b, "ui.inspect", a)
+}
+fn ui_elements(b: &mut Backend, a: &Value) -> Result<Reply> {
+    passthrough(b, "ui.elements", a)
+}
+fn ui_click(b: &mut Backend, a: &Value) -> Result<Reply> {
+    passthrough(b, "ui.click", a)
+}
+fn ui_drag(b: &mut Backend, a: &Value) -> Result<Reply> {
+    passthrough(b, "ui.drag", a)
+}
+fn ui_key(b: &mut Backend, a: &Value) -> Result<Reply> {
+    passthrough(b, "ui.key", a)
+}
+fn ui_type(b: &mut Backend, a: &Value) -> Result<Reply> {
+    passthrough(b, "ui.type", a)
+}
+fn ui_set(b: &mut Backend, a: &Value) -> Result<Reply> {
+    passthrough(b, "ui.set", a)
+}
+fn control(b: &mut Backend, a: &Value) -> Result<Reply> {
+    let m = need(a, "method")?.as_str().ok_or_else(|| Error::BadArgs("`method` must be a string".into()))?;
+    let p = params_of(get(a, "params"))?;
+    json_reply(b.control(m, p)?)
+}
+
+// ------------------------------------------------------------------ the catalogue
+
+static TOOLS: &[ToolDef] = &[
+    ToolDef {
+        name: "list_commands",
+        description: "List engine commands: id, label, menu path, shortcut, `params` doc (e.g. `{name?, width?, height?, frameRate?, duration? (s)}`) and whether it can run now (`why` if not). Every menu item, shortcut and panel gesture maps to one of these ids; run them with execute_command. Narrow with `filter` (e.g. `layer.new`, `keys`, `effect`).",
+        bridge_only: false,
+        schema: || {
+            schema(
+                json!({
+                    "filter": {"type": "string", "description": "Only commands whose id or label contains this text (case-insensitive)."},
+                    "enabled_only": {"type": "boolean", "description": "Only commands that can run right now."}
+                }),
+                &[],
+            )
+        },
+        run: list_commands,
+    },
+    ToolDef {
+        name: "execute_command",
+        description: "Run any engine command by id with JSON params; edits are undoable. Examples: comp.new {\"name\":\"Main\",\"width\":1920,\"height\":1080,\"frameRate\":30,\"duration\":5}; layer.newText {\"text\":\"Hello\",\"size\":120,\"fill\":\"#ffffff\"} (returns {\"layer\":id}); layer.newSolid {\"color\":\"#3366ff\"}; layer.newShape; effect.apply {\"layer\":3,\"effect\":\"Gaussian Blur\"}; time.set {\"time\":2.5}; layer.select {\"layers\":[3]}. Layers are referenced by id, \"#n\" or name; times are seconds.",
+        bridge_only: false,
+        schema: || {
+            schema(
+                json!({
+                    "command": {"type": "string", "description": "Command id, e.g. `comp.new`, `layer.newText`, `effect.apply` (see list_commands)."},
+                    "params": {"type": "object", "description": "Command parameters as documented by list_commands.", "additionalProperties": true}
+                }),
+                &["command"],
+            )
+        },
+        run: execute_command,
+    },
+    ToolDef {
+        name: "get_project",
+        description: "Project overview: file path, dirty flag, bit depth, every item (id, name, type Composition/Footage/Solid/Folder, size, duration, layer count), the active comp id, current time (s), selected layers and the undo stack.",
+        bridge_only: false,
+        schema: || schema(json!({}), &[]),
+        run: get_project,
+    },
+    ToolDef {
+        name: "get_comp",
+        description: "A composition: id, name, size, frame rate, duration, work area, background and its layers top to bottom (id, index, name, type, in/out/start seconds, blend mode, parent, track matte, switches). Layer ids feed get_layer, get_property/set_property and commands.",
+        bridge_only: false,
+        schema: || schema(json!({"comp": comp_s()}), &[]),
+        run: get_comp,
+    },
+    ToolDef {
+        name: "get_layer",
+        description: "A layer's property tree (transform, masks, effects, text, shape contents, ...): every node has a `path` usable with get_property/set_property/add_keyframe, plus uid, match id, name, type, value at `time`, keyframes and expression. `flat: true` returns just a list of {path, type, value, keys, expression} (compact).",
+        bridge_only: false,
+        schema: || {
+            schema(
+                json!({
+                    "layer": layer_s(), "comp": comp_s(),
+                    "time": {"type": "number", "description": "Comp time in seconds for values (default: current time)."},
+                    "depth": {"type": "integer", "description": "Group depth to expand (default all)."},
+                    "flat": {"type": "boolean", "description": "Return a flat list of properties instead of the tree."}
+                }),
+                &["layer"],
+            )
+        },
+        run: get_layer,
+    },
+    ToolDef {
+        name: "get_property",
+        description: "Read one property: type, value at `time` (comp seconds; default the current time), whether it is animated, its keyframes (time, value, in/out interpolation) and expression.",
+        bridge_only: false,
+        schema: || {
+            schema(
+                json!({"layer": layer_s(), "path": path_s(), "comp": comp_s(), "time": {"type": "number", "description": "Comp time in seconds."}}),
+                &["layer", "path"],
+            )
+        },
+        run: get_property,
+    },
+    ToolDef {
+        name: "set_property",
+        description: "Set a property. Without `time`: sets the static value (or a key at the current time if already animated). With `time`: adds/replaces a keyframe there, turning the stopwatch on. `expression` sets an After Effects-style JS expression (\"\" removes it). Returns the property as get_property does. Examples: {\"layer\":3,\"path\":\"transform/opacity\",\"value\":50}; {\"layer\":\"Title\",\"path\":\"transform/position\",\"value\":[200,540],\"time\":0}; {\"layer\":3,\"path\":\"transform/rotation\",\"expression\":\"time*90\"}.",
+        bridge_only: false,
+        schema: || {
+            schema(
+                json!({
+                    "layer": layer_s(), "path": path_s(), "value": value_s(), "comp": comp_s(),
+                    "time": {"type": "number", "description": "Keyframe time in seconds (layer time; equals comp time unless the layer is offset/stretched)."},
+                    "expression": {"type": "string", "description": "Expression text; empty string removes the expression."}
+                }),
+                &["layer", "path"],
+            )
+        },
+        run: set_property,
+    },
+    ToolDef {
+        name: "add_keyframe",
+        description: "Add keyframes to a property (turns the stopwatch on): one with `time` (+ optional `value`, default the current value) or many with `keys: [{time, value}]`, then optionally set their `interpolation`: linear, bezier, hold, easyEase, easyEaseIn, easyEaseOut. Example: {\"layer\":1,\"path\":\"transform/position\",\"keys\":[{\"time\":0,\"value\":[0,540]},{\"time\":2,\"value\":[1920,540]}],\"interpolation\":\"easyEase\"}.",
+        bridge_only: false,
+        schema: || {
+            schema(
+                json!({
+                    "layer": layer_s(), "path": path_s(), "comp": comp_s(),
+                    "time": {"type": "number", "description": "Key time in seconds (layer time)."},
+                    "value": value_s(),
+                    "keys": {"type": "array", "items": {"type": "object", "properties": {"time": {"type": "number"}, "value": value_s()}, "required": ["time"]}, "description": "Several keys at once."},
+                    "interpolation": {"type": "string", "enum": ["linear", "bezier", "hold", "easyEase", "easyEaseIn", "easyEaseOut"]}
+                }),
+                &["layer", "path"],
+            )
+        },
+        run: add_keyframe,
+    },
+    ToolDef {
+        name: "render_frame",
+        description: "Render a composition frame (default: the active comp at the current time) and return it as a PNG image, longest side `max_side` (default 960, 0 = full size). `path` also writes the PNG to disk; `inline: false` returns only the metadata. Use it to check your work.",
+        bridge_only: false,
+        schema: || {
+            schema(
+                json!({
+                    "comp": comp_s(),
+                    "time": {"type": "number", "description": "Comp time in seconds (default: current time)."},
+                    "max_side": {"type": "integer", "description": "Longest side in pixels (default 960; 0 = full comp size)."},
+                    "path": {"type": "string", "description": "Also write the PNG here."},
+                    "inline": {"type": "boolean", "description": "Include the image in the reply (default true)."}
+                }),
+                &[],
+            )
+        },
+        run: render_frame,
+    },
+    ToolDef {
+        name: "open_project",
+        description: "Open a project: `path` to an .ecproj file, `demo: true` for the built-in demo project, or `new: true` for an empty project. Returns the project overview.",
+        bridge_only: false,
+        schema: || {
+            schema(json!({"path": {"type": "string", "description": "Path of an .ecproj file."}, "demo": {"type": "boolean"}, "new": {"type": "boolean"}}), &[])
+        },
+        run: open_project,
+    },
+    ToolDef {
+        name: "save_project",
+        description: "Save the project to its current file, or to `path` (Save As, .ecproj).",
+        bridge_only: false,
+        schema: || schema(json!({"path": {"type": "string", "description": "Destination .ecproj path (Save As)."}}), &[]),
+        run: save_project,
+    },
+    ToolDef {
+        name: "undo",
+        description: "Undo the last `steps` edits (default 1). Returns the remaining undo stack.",
+        bridge_only: false,
+        schema: || schema(json!({"steps": {"type": "integer", "minimum": 1}}), &[]),
+        run: undo,
+    },
+    ToolDef {
+        name: "redo",
+        description: "Redo `steps` undone edits (default 1).",
+        bridge_only: false,
+        schema: || schema(json!({"steps": {"type": "integer", "minimum": 1}}), &[]),
+        run: redo,
+    },
+    ToolDef {
+        name: "screenshot",
+        description: "Screenshot of the live app window, or one panel (`Composition`, `Timeline`, `EffectControls`, `Project`, ...) or element id, as PNG (longest side `max_side`, default 1600). Use it to check what the UI looks like after an action.",
+        bridge_only: true,
+        schema: || {
+            schema(
+                json!({
+                    "panel": {"type": "string", "description": "Panel to crop to."},
+                    "id": {"type": "string", "description": "Element id (from ui_elements) to crop to."},
+                    "max_side": {"type": "integer"},
+                    "path": {"type": "string", "description": "Keep the full-size PNG at this path."}
+                }),
+                &[],
+            )
+        },
+        run: screenshot,
+    },
+    ToolDef {
+        name: "ui_inspect",
+        description: "UI state: window size, tool, workspace, panels, viewer and timeline view state, playback, active comp, selection, open dialog, render time.",
+        bridge_only: true,
+        schema: || schema(json!({}), &[]),
+        run: ui_inspect,
+    },
+    ToolDef {
+        name: "ui_elements",
+        description: "Interactive elements drawn in the last frame: id, label, rect [x,y,w,h] in points. Stable ids such as `tools.Selection`, `panel.Timeline`, `panel.tab.EffectControls`, `project.item.<id>`, `viewer.comp`, `timeline.layer.<id>.bar`, `timeline.prop.<uid>.stopwatch`, `timeline.cti`, `effects.item.<name>`. Filter with `prefix`.",
+        bridge_only: true,
+        schema: || schema(json!({"prefix": {"type": "string", "description": "Only ids starting with this, e.g. `tools.`, `timeline.layer.`."}}), &[]),
+        run: ui_elements,
+    },
+    ToolDef {
+        name: "ui_click",
+        description: "Click an element by `id` (from ui_elements) or at `x`,`y` (points). `button`: left|right|middle, `count`: 2 for double-click, `modifiers`: {shift, alt, command, ctrl}.",
+        bridge_only: true,
+        schema: || {
+            schema(
+                json!({
+                    "id": {"type": "string"}, "x": {"type": "number"}, "y": {"type": "number"},
+                    "button": {"type": "string", "enum": ["left", "right", "middle"]},
+                    "count": {"type": "integer"}, "modifiers": {"type": "object"}
+                }),
+                &[],
+            )
+        },
+        run: ui_click,
+    },
+    ToolDef {
+        name: "ui_drag",
+        description: "Press-move-release from `from` to `to`; each is {\"id\": element} (add fx/fy 0-1 for a spot inside it) or {\"x\",\"y\"}. Moves layers in the viewer, drags layer bars/keyframes/the CTI (`timeline.cti`), scrubs values, draws shapes with a shape tool.",
+        bridge_only: true,
+        schema: || {
+            schema(
+                json!({"from": {"type": "object"}, "to": {"type": "object"}, "steps": {"type": "integer"}, "modifiers": {"type": "object"}}),
+                &["from", "to"],
+            )
+        },
+        run: ui_drag,
+    },
+    ToolDef {
+        name: "ui_key",
+        description: "Press a key or shortcut: `Space` (play), `F9` (Easy Ease), `Cmd+Z`, `Cmd+N`, `PageDown`, `Escape`, `Enter` (`Cmd` = Ctrl off macOS).",
+        bridge_only: true,
+        schema: || schema(json!({"key": {"type": "string"}}), &["key"]),
+        run: ui_key,
+    },
+    ToolDef {
+        name: "ui_type",
+        description: "Type text into the focused field (text layer editing, search boxes, value fields).",
+        bridge_only: true,
+        schema: || schema(json!({"text": {"type": "string"}}), &["text"]),
+        run: ui_type,
+    },
+    ToolDef {
+        name: "ui_set",
+        description: "Set UI state directly: tool, workspace, theme (dark|darker|light), focused panel, viewer {zoom, res, pan, grid, rulers, safeMargins, transparencyGrid}, timeline {pps, start, graphEditor, showModes, openLayers, openGroups}, menuBar, home.",
+        bridge_only: true,
+        schema: || {
+            schema(
+                json!({
+                    "tool": {"type": "string"}, "workspace": {"type": "string"}, "theme": {"type": "string"}, "focused": {"type": "string"},
+                    "viewer": {"type": "object"}, "timeline": {"type": "object"}, "menuBar": {"type": "boolean"}, "home": {"type": "boolean"}
+                }),
+                &[],
+            )
+        },
+        run: ui_set,
+    },
+    ToolDef {
+        name: "control",
+        description: "Call any control-channel method (docs/control-protocol.md) with its params, e.g. ui.menu.list, ui.menu.invoke {id}, ui.panel.show {panel}, ui.scroll, ui.viewer.locate {x,y}, ui.timeline.locate {layer,time}, ui.playback {action}, ui.resize.",
+        bridge_only: true,
+        schema: || schema(json!({"method": {"type": "string"}, "params": {"type": "object", "additionalProperties": true}}), &["method"]),
+        run: control,
+    },
+];

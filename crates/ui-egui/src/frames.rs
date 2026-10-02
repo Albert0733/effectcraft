@@ -8,8 +8,9 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use effectcraft_engine::project::{ItemId, Project};
-use effectcraft_engine::render::{ExprHost, FootageSource, RenderOpts, Renderer};
+use effectcraft_engine::render::{ExprHost, FootageSource, LayerCache, RenderOpts, Renderer};
 use effectcraft_engine::time::Tick;
+use rayon::prelude::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct FrameKey {
@@ -18,6 +19,8 @@ pub struct FrameKey {
     pub frame: i64,
     /// Render scale × 1000.
     pub scale: u32,
+    /// Hash of the 3D view camera (0 = the comp's active camera).
+    pub view: u64,
 }
 
 struct Cache {
@@ -49,14 +52,18 @@ pub struct RenderSource {
     pub project: Arc<Project>,
     pub footage: Arc<dyn FootageSource>,
     pub expr: Option<Arc<dyn ExprHost>>,
+    pub layer_cache: Arc<LayerCache>,
 }
 
 pub struct Frames {
     cache: Arc<Mutex<Cache>>,
+    /// Keys queued or rendering.
     inflight: Arc<Mutex<HashSet<FrameKey>>>,
+    /// Pending jobs, picked by priority when a pool thread frees up (the viewer's frame first).
+    queue: Arc<Mutex<Queue>>,
     pool: rayon::ThreadPool,
     ctx: Option<egui::Context>,
-    /// Last render time per frame (ms), for the Info panel / perf readout.
+    /// Render time of the last viewer (urgent) frame in ms, for the Info panel / perf readout.
     pub last_ms: Arc<Mutex<f64>>,
 }
 
@@ -66,6 +73,7 @@ impl Default for Frames {
         Frames {
             cache: Arc::new(Mutex::new(Cache { map: HashMap::new(), order: VecDeque::new(), bytes: 0, budget: 3 << 30 })),
             inflight: Arc::new(Mutex::new(HashSet::new())),
+            queue: Arc::new(Mutex::new(Queue::default())),
             pool: rayon::ThreadPoolBuilder::new().num_threads(threads).thread_name(|i| format!("ec-frame-{i}")).build().expect("frame pool"),
             ctx: None,
             last_ms: Arc::new(Mutex::new(0.0)),
@@ -78,7 +86,7 @@ impl Default for Frames {
 pub fn to_color_image(img: &effectcraft_engine::render::Image) -> egui::ColorImage {
     let px: Vec<egui::Color32> = img
         .data
-        .iter()
+        .par_iter()
         .map(|p| {
             let a = p[3].clamp(0.0, 1.0);
             let c = |v: f32| (v.clamp(0.0, a) * 255.0 + 0.5) as u8;
@@ -123,10 +131,40 @@ impl Frames {
         }
     }
 
-    /// Queue a frame (no-op if cached or already rendering).
+    /// Queue a prefetch frame (no-op if cached or already queued/rendering).
     pub fn request(&self, src: &RenderSource, key: FrameKey, comp: ItemId, t: Tick, opts: RenderOpts) {
+        self.request_with(src, key, comp, t, opts, false);
+    }
+
+    /// Queue the frame the viewer is showing: it jumps ahead of every prefetch job.
+    pub fn request_urgent(&self, src: &RenderSource, key: FrameKey, comp: ItemId, t: Tick, opts: RenderOpts) {
+        self.request_with(src, key, comp, t, opts, true);
+    }
+
+    /// An urgent (viewer) frame is queued or rendering.
+    pub fn urgent_pending(&self) -> bool {
+        self.queue.lock().map(|q| q.urgent_running > 0 || q.jobs.iter().any(|j| j.urgent)).unwrap_or(false)
+    }
+
+    fn request_with(&self, src: &RenderSource, key: FrameKey, comp: ItemId, t: Tick, opts: RenderOpts, urgent: bool) {
         if self.is_cached(&key) {
             return;
+        }
+        let Ok(mut q) = self.queue.lock() else { return };
+        // Jobs for an older project revision can never be shown: drop them.
+        let before = q.jobs.len();
+        q.jobs.retain(|j| j.key.revision >= key.revision);
+        let dropped = before - q.jobs.len();
+        if dropped > 0
+            && let Ok(mut inf) = self.inflight.lock()
+        {
+            inf.retain(|k| k.revision >= key.revision || q.running.contains(k));
+        }
+        if urgent {
+            // Only the newest viewer frame is urgent; earlier ones become prefetch.
+            for j in q.jobs.iter_mut() {
+                j.urgent = j.key == key;
+            }
         }
         {
             let Ok(mut inf) = self.inflight.lock() else { return };
@@ -134,29 +172,73 @@ impl Frames {
                 return;
             }
         }
-        let src = src.clone();
+        q.seq += 1;
+        let seq = q.seq;
+        q.jobs.push(Job { key, src: src.clone(), comp, t, opts, urgent, seq });
+        drop(q);
+        let queue = self.queue.clone();
         let cache = self.cache.clone();
         let inflight = self.inflight.clone();
         let ctx = self.ctx.clone();
         let last = self.last_ms.clone();
+        // One spawn per job; each spawn renders whichever queued job matters most right now.
         self.pool.spawn(move || {
+            let job = {
+                let Ok(mut q) = queue.lock() else { return };
+                // Urgent first (newest), then prefetch in request order.
+                let best = q.jobs.iter().enumerate().max_by_key(|(_, j)| (j.urgent, if j.urgent { j.seq as i64 } else { -(j.seq as i64) })).map(|(i, _)| i);
+                let Some(i) = best else { return };
+                let job = q.jobs.swap_remove(i);
+                q.running.insert(job.key);
+                if job.urgent {
+                    q.urgent_running += 1;
+                }
+                job
+            };
             let t0 = std::time::Instant::now();
-            let mut r = Renderer::new(&src.project, src.footage.as_ref(), opts);
-            r.expr = src.expr.as_deref();
-            let img = r.comp_frame(comp, t);
+            let mut r = Renderer::new(&job.src.project, job.src.footage.as_ref(), job.opts);
+            r.expr = job.src.expr.as_deref();
+            r.cache = Some(&job.src.layer_cache);
+            let img = r.comp_frame(job.comp, job.t);
             let ci = Arc::new(to_color_image(&img));
-            if let Ok(mut l) = last.lock() {
+            if job.urgent
+                && let Ok(mut l) = last.lock()
+            {
                 *l = t0.elapsed().as_secs_f64() * 1000.0;
             }
             if let Ok(mut c) = cache.lock() {
-                c.insert(key, ci);
+                c.insert(job.key, ci);
             }
             if let Ok(mut inf) = inflight.lock() {
-                inf.remove(&key);
+                inf.remove(&job.key);
+            }
+            if let Ok(mut q) = queue.lock() {
+                q.running.remove(&job.key);
+                if job.urgent {
+                    q.urgent_running -= 1;
+                }
             }
             if let Some(ctx) = ctx {
                 ctx.request_repaint();
             }
         });
     }
+}
+
+struct Job {
+    key: FrameKey,
+    src: RenderSource,
+    comp: ItemId,
+    t: Tick,
+    opts: RenderOpts,
+    urgent: bool,
+    seq: u64,
+}
+
+#[derive(Default)]
+struct Queue {
+    jobs: Vec<Job>,
+    running: HashSet<FrameKey>,
+    urgent_running: usize,
+    seq: u64,
 }

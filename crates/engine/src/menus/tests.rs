@@ -140,6 +140,15 @@ fn checked_reflects_layer_state() {
     assert_eq!(checked(&s, "file.save", &serde_json::json!({})), None);
 }
 
+/// `cargo test -p effectcraft-engine dump_specs -- --ignored --nocapture`: every command as TSV.
+#[test]
+#[ignore]
+fn dump_specs() {
+    for c in crate::command_specs() {
+        eprintln!("SPEC\t{}\t{}\t{}\t{}\t{}", c.id, c.label, c.menu.join(" > "), c.shortcut.unwrap_or(""), c.params);
+    }
+}
+
 #[test]
 fn parse_rejects_bad_trees() {
     assert!(parse("File\n  Empty\n", true).is_err());

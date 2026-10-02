@@ -13,18 +13,57 @@ pub(crate) fn rate_p(p: &Value) -> Option<FrameRate> {
 }
 
 fn apply_settings(c: &mut Comp, p: &Value) {
+    let (ow, oh) = (c.width, c.height);
     if let Some(w) = p.get("width").and_then(Value::as_u64) {
         c.width = (w as u32).clamp(4, 30000);
     }
     if let Some(h) = p.get("height").and_then(Value::as_u64) {
         c.height = (h as u32).clamp(4, 30000);
     }
+    // Advanced › Anchor: where the old frame sits in the resized one (0 = top left … 4 = center …
+    // 8 = bottom right). Unparented layers (and all their position keys) move by that offset.
+    if (c.width, c.height) != (ow, oh) {
+        let a = p.get("anchor").and_then(Value::as_u64).unwrap_or(4).min(8);
+        let dx = (c.width as f64 - ow as f64) * (a % 3) as f64 / 2.0;
+        let dy = (c.height as f64 - oh as f64) * (a / 3) as f64 / 2.0;
+        if dx != 0.0 || dy != 0.0 {
+            for l in c.layers.iter_mut().filter(|l| l.parent.is_none()) {
+                let Some(pr) = l.props.prop_mut("transform/position") else { continue };
+                let shift = |v: &mut effectcraft_keyframe::Value| {
+                    if let effectcraft_keyframe::Value::Vec2(x) = v {
+                        x[0] += dx;
+                        x[1] += dy;
+                    } else if let effectcraft_keyframe::Value::Vec3(x) = v {
+                        x[0] += dx;
+                        x[1] += dy;
+                    }
+                };
+                shift(&mut pr.value);
+                for k in &mut pr.keys {
+                    shift(&mut k.value);
+                }
+            }
+        }
+    }
+    if let Some(t) = f_p(p, "startTime") {
+        c.display_start = Tick::from_seconds_f64(t);
+    } else if let Some(tc) = str_p(p, "startTimecode")
+        && let Ok(f) = effectcraft_time::parse_timecode(tc, c.frame_rate, c.frame_rate.supports_drop_frame(), 0)
+    {
+        c.display_start = c.frame_rate.tick_of(f);
+    }
+    match str_p(p, "renderer").map(str::to_ascii_lowercase).as_deref() {
+        Some("classic3d" | "classic") => c.renderer = effectcraft_project::Renderer::Classic3D,
+        Some("advanced3d" | "advanced") => c.renderer = effectcraft_project::Renderer::Advanced3D,
+        _ => {}
+    }
     if let Some(r) = rate_p(p) {
         c.frame_rate = r;
     }
     if let Some(d) = f_p(p, "duration") {
         let old = c.duration;
-        c.duration = Tick::from_seconds_f64(d.max(c.frame_rate.frame_duration().seconds()));
+        // Whole frames, at least one.
+        c.duration = c.frame_rate.snap_nearest(Tick::from_seconds_f64(d)).max(c.frame_rate.frame_duration());
         if c.work_area.1 == old {
             c.work_area.1 = c.duration;
         }
@@ -53,7 +92,7 @@ fn apply_settings(c: &mut Comp, p: &Value) {
 fn new_comp(s: &mut Session, p: &Value) -> Result<Value> {
     let name = str_p(p, "name").unwrap_or("Comp 1").to_string();
     let rate = rate_p(p).unwrap_or(FrameRate::FPS_29_97);
-    let mut c = Comp::new(1920, 1080, rate, Tick::from_seconds_f64(10.0));
+    let mut c = Comp::new(1920, 1080, rate, rate.snap_nearest(Tick::from_seconds_f64(10.0)));
     apply_settings(&mut c, p);
     let id = s.edit("New Composition", None, |proj, st| {
         let mut name = name.clone();
@@ -205,7 +244,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "New Composition...",
             ["Composition"],
             Some("Cmd+N"),
-            "{name?, width?, height?, frameRate?, duration? (s), background? [r,g,b]|#hex, open?}",
+            "{name?, width?, height?, frameRate?, duration? (s), startTime? (s) | startTimecode?, background? [r,g,b]|#hex, pixelAspect?, shutterAngle?, shutterPhase?, motionBlurSamples?, renderer? classic3D|advanced3D, anchor?, open?}",
             always,
             new_comp
         ),
@@ -214,7 +253,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Composition Settings...",
             ["Composition"],
             Some("Cmd+K"),
-            "{comp?, name?, width?, height?, frameRate?, duration?, background?, shutterAngle?, shutterPhase?, motionBlurSamples?}",
+            "{comp?, name?, width?, height?, anchor? 0-8 (resize anchor, 4 = center), frameRate?, duration?, startTime? (s) | startTimecode?, background?, shutterAngle?, shutterPhase?, motionBlurSamples?, pixelAspect?, renderer? classic3D|advanced3D}",
             has_comp,
             settings
         ),

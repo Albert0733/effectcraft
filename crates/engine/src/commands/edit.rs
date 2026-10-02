@@ -6,7 +6,7 @@ use effectcraft_time::Tick;
 use serde_json::{Value, json};
 
 use super::{CommandSpec, has_comp, has_layers, layers_p, match_path_of, selected_leaf_props, str_p};
-use crate::{EngineError, KeyClip, LinkClip, Result, Session, cmd};
+use crate::{EngineError, LinkClip, Result, Session, cmd};
 
 fn can_undo(s: &Session) -> std::result::Result<(), String> {
     if s.history.undo.is_empty() { Err("nothing to undo".into()) } else { Ok(()) }
@@ -58,6 +58,7 @@ fn deselect_all(s: &mut Session, _: &Value) -> Result<Value> {
     s.state.selected_layers.clear();
     s.state.selected_props.clear();
     s.state.selected_keys.clear();
+    s.state.selected_vertices.clear();
     Ok(Value::Null)
 }
 
@@ -91,9 +92,12 @@ fn duplicate(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 fn delete(s: &mut Session, p: &Value) -> Result<Value> {
-    // Keyframes selected → delete keys; else layers.
+    // Keyframes selected → delete keys; mask vertices → delete them; else layers.
     if !s.state.selected_keys.is_empty() && p.get("layers").is_none() {
         return s.execute("keys.delete", json!({}));
+    }
+    if !s.state.selected_vertices.is_empty() && p.get("layers").is_none() {
+        return s.execute("mask.deleteVertices", json!({}));
     }
     let (cid, ids) = layers_p(s, p)?;
     s.edit("Clear", None, |proj, st| {
@@ -119,34 +123,18 @@ fn clear_clipboards(s: &mut Session) {
     s.state.clipboard.clear();
     s.state.key_clipboard.clear();
     s.state.link_clipboard = None;
+    s.state.clip_is_keys = false;
 }
 
 /// Edit ▸ Copy: selected keyframes (when any) go to the keyframe clipboard, else layers.
 fn copy(s: &mut Session, p: &Value) -> Result<Value> {
-    if !s.state.selected_keys.is_empty() && p.get("layers").is_none() && p.get("layer").is_none() {
-        let comp = s.active_comp().ok_or(EngineError::NoComp)?;
-        let mut clips: Vec<KeyClip> = vec![];
-        let earliest = s.state.selected_keys.iter().map(|k| k.time).min().unwrap_or(Tick::ZERO);
-        for k in &s.state.selected_keys {
-            let Some(l) = comp.layer(k.layer) else { continue };
-            let (Some(pr), Some(path)) = (l.props.find(k.prop), match_path_of(&l.props, k.prop)) else { continue };
-            let Some(key) = pr.keys.iter().find(|x| x.time == k.time) else { continue };
-            let mut key = key.clone();
-            key.time -= earliest;
-            match clips.iter_mut().find(|c| c.path == path) {
-                Some(c) => c.keys.push(key),
-                None => clips.push(KeyClip { path, keys: vec![key] }),
-            }
-        }
-        for c in &mut clips {
-            c.keys.sort_by_key(|k| k.time);
-        }
-        let n: usize = clips.iter().map(|c| c.keys.len()).sum();
-        clear_clipboards(s);
-        s.state.key_clipboard = clips;
-        return Ok(json!({"keys": n}));
+    // Keyframes selected → copy keys (pasted at the CTI).
+    if !s.state.selected_keys.is_empty() && p.get("layers").is_none() {
+        s.state.link_clipboard = None;
+        return s.execute("keys.copy", json!({}));
     }
     let (cid, ids) = layers_p(s, p)?;
+    s.state.clip_is_keys = false;
     let comp = s.project.comp(cid).ok_or(crate::EngineError::NoComp)?;
     let layers: Vec<Layer> = comp.layers.iter().filter(|l| ids.contains(&l.id)).cloned().collect();
     clear_clipboards(s);
@@ -313,6 +301,10 @@ fn paste_links(s: &mut Session, clip: LinkClip) -> Result<Value> {
 }
 
 fn cut(s: &mut Session, p: &Value) -> Result<Value> {
+    if !s.state.selected_keys.is_empty() && p.get("layers").is_none() {
+        s.execute("keys.copy", json!({}))?;
+        return s.execute("keys.delete", json!({}));
+    }
     copy(s, p)?;
     delete(s, p)
 }
@@ -321,8 +313,8 @@ fn paste(s: &mut Session, p: &Value) -> Result<Value> {
     if let Some(clip) = s.state.link_clipboard.clone() {
         return paste_links(s, clip);
     }
-    if !s.state.key_clipboard.is_empty() {
-        return paste_keys(s, false);
+    if s.state.clip_is_keys && !s.state.key_clipboard.is_empty() {
+        return s.execute("keys.paste", p.clone());
     }
     let cid = super::comp_id(s, p)?;
     let clip = s.state.clipboard.clone();
@@ -523,8 +515,8 @@ pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!("edit.undo", "Undo", ["Edit"], Some("Cmd+Z"), "{}", can_undo, undo),
         cmd!("edit.redo", "Redo", ["Edit"], Some("Cmd+Shift+Z"), "{}", can_redo, redo),
-        cmd!("edit.cut", "Cut", ["Edit"], Some("Cmd+X"), "{layers?}", has_layers, cut),
-        cmd!("edit.copy", "Copy", ["Edit"], Some("Cmd+C"), "{layers?} (copies the selected keyframes when any, else layers)", has_props_or_layers, copy),
+        cmd!("edit.cut", "Cut", ["Edit"], Some("Cmd+X"), "{layers?} (keyframes when keys are selected)", layers_or_keys, cut),
+        cmd!("edit.copy", "Copy", ["Edit"], Some("Cmd+C"), "{layers?} (keyframes when keys are selected)", layers_or_keys, copy),
         cmd!(
             "edit.copyWithPropertyLinks",
             "Copy with Property Links",
@@ -546,7 +538,7 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!("edit.copyExpressionOnly", "Copy Expression Only", ["Edit"], None, "{}", has_props_or_layers, copy_expression_only),
         cmd!("edit.paste", "Paste", ["Edit"], Some("Cmd+V"), "{} (layers, keyframes at the CTI, or property links / expressions)", has_clip, paste),
         cmd!("edit.pasteReversedKeyframes", "Paste Reversed Keyframes", ["Edit"], None, "{}", has_key_clip, paste_reversed),
-        cmd!("edit.clear", "Clear", ["Edit"], Some("Delete"), "{layers?}", has_layers, delete),
+        cmd!("edit.clear", "Clear", ["Edit"], Some("Delete"), "{layers?}", layers_or_keys, delete),
         cmd!("edit.duplicate", "Duplicate", ["Edit"], Some("Cmd+D"), "{layers?}", has_layers, duplicate),
         cmd!("edit.splitLayer", "Split Layer", ["Edit"], Some("Cmd+Shift+D"), "{layers?}", has_layers, split),
         cmd!("edit.liftWorkArea", "Lift Work Area", ["Edit"], None, "{layers?}", has_comp, lift),
@@ -559,6 +551,10 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!("edit.purge", "Purge", [], None, "{what?: all|memoryAndDisk|memory|disk|3d|image|snapshot}", always_ok, purge_caches),
         cmd!("edit.editOriginal", "Edit Original...", ["Edit"], Some("Cmd+E"), "{}", has_selected_footage, edit_original),
     ]
+}
+
+fn layers_or_keys(s: &Session) -> std::result::Result<(), String> {
+    if !s.state.selected_keys.is_empty() || !s.state.selected_vertices.is_empty() { super::has_comp(s) } else { has_layers(s) }
 }
 
 fn always_ok(_: &Session) -> std::result::Result<(), String> {

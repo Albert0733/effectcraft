@@ -105,6 +105,10 @@ fn no_params(p: &Value) -> bool {
 /// Execute a UI or engine command by id.
 pub fn invoke(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, params: Value) -> Result<Value, String> {
     let now = ctx.input(|i| i.time);
+    // New Camera/Light and Camera/Light Settings without parameters open their dialogs.
+    if crate::panels::dialogs_3d::route(app, id, &params)? {
+        return Ok(Value::Null);
+    }
     // Legacy per-panel / per-workspace ids (`window.panel.Project`, `window.workspace.default`).
     if let Some(rest) = id.strip_prefix("window.panel.") {
         return frontend(app, ctx, "window.panel", json!({"panel": rest}));
@@ -205,12 +209,53 @@ pub fn invoke(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, params: V
         "app.newComp" | "comp.new" if no_params(&params) => crate::panels::dialogs::open_new_comp(app),
         "app.compSettings" | "comp.settings" if no_params(&params) => crate::panels::dialogs::open_comp_settings(app)?,
         "app.solidSettings" | "layer.newSolid" if no_params(&params) => crate::panels::dialogs::open_new_solid(app)?,
+        "keys.velocity" if no_params(&params) => crate::panels::key_dialogs::open_velocity(app)?,
+        "keys.interpolation" if no_params(&params) => crate::panels::key_dialogs::open_interpolation(app)?,
+        "layer.timeStretch" if no_params(&params) => crate::panels::key_dialogs::open_time_stretch(app)?,
         _ => {
+            if id == "renderQueue.render" && params.get("wait").is_none() {
+                // The UI renders in the background; the panel shows progress.
+                let mut p = params.clone();
+                if let Some(m) = p.as_object_mut() {
+                    m.insert("wait".into(), json!(false));
+                } else {
+                    p = json!({"wait": false});
+                }
+                app.show_panel(PanelKind::RenderQueue);
+                return app.session.execute(id, p).map_err(|e| e.to_string());
+            }
+            if id == "renderQueue.add" {
+                let r = app.session.execute(id, params).map_err(|e| e.to_string());
+                match &r {
+                    Ok(_) => app.show_panel(PanelKind::RenderQueue),
+                    Err(e) => app.ui.status = e.clone(),
+                }
+                return r;
+            }
             if let Some(r) = file_dialog(app, id, &params) {
                 return r;
             }
             if crate::panels::dialogs::open_form(app, id, &params) {
                 return Ok(json!({"dialog": id}));
+            }
+            if id == "renderQueue.render" && params.get("wait").is_none() {
+                // The UI renders in the background; the panel shows progress.
+                let mut p = params.clone();
+                if let Some(m) = p.as_object_mut() {
+                    m.insert("wait".into(), json!(false));
+                } else {
+                    p = json!({"wait": false});
+                }
+                app.show_panel(PanelKind::RenderQueue);
+                return app.session.execute(id, p).map_err(|e| e.to_string());
+            }
+            if id == "renderQueue.add" {
+                let r = app.session.execute(id, params).map_err(|e| e.to_string());
+                match &r {
+                    Ok(_) => app.show_panel(PanelKind::RenderQueue),
+                    Err(e) => app.ui.status = e.clone(),
+                }
+                return r;
             }
             if id == "layer.rename" && params.get("name").is_none() {
                 crate::panels::timeline::begin_rename(app, ctx);

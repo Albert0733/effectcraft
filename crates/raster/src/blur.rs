@@ -1,20 +1,23 @@
 //! Blurs: separable box passes (exact running sums) approximating Gaussians, plus directional
 //! and radial (spin/zoom) blurs.
+//!
+//! Box passes run straight on row-major pixels: horizontal passes per row, vertical passes over
+//! blocks of rows with a per-column running sum (no transposes), ping-ponging between two
+//! buffers so a Gaussian allocates two images regardless of the number of passes.
 
 use rayon::prelude::*;
 
 use crate::{Image, Px};
 
-/// One horizontal box pass of radius `r` (window 2r+1) over each row; `repeat` = edge pixels
-/// extend, otherwise transparent.
-fn box_h(img: &Image, r: usize, repeat: bool) -> Image {
+/// One horizontal box pass of radius `r` (window 2r+1) over each row of `src` (width `w`) into
+/// `out`; `repeat` = edge pixels extend, otherwise transparent.
+fn box_h_into(src: &[Px], out: &mut [Px], w: usize, r: usize, repeat: bool) {
     if r == 0 {
-        return img.clone();
+        out.copy_from_slice(src);
+        return;
     }
-    let w = img.width as usize;
-    let mut out = Image::new(img.width, img.height);
     let norm = 1.0 / (2 * r + 1) as f32;
-    out.data.par_chunks_mut(w).zip(img.data.par_chunks(w)).for_each(|(o, row)| {
+    out.par_chunks_mut(w).zip(src.par_chunks(w)).for_each(|(o, row)| {
         let get = |i: isize| -> Px {
             if i < 0 {
                 if repeat { row[0] } else { [0.0; 4] }
@@ -40,18 +43,89 @@ fn box_h(img: &Image, r: usize, repeat: bool) -> Image {
             }
         }
     });
-    out
 }
 
-fn transpose(img: &Image) -> Image {
-    let (w, h) = (img.width as usize, img.height as usize);
-    let mut out = Image::new(img.height, img.width);
-    out.data.par_chunks_mut(h.max(1)).enumerate().for_each(|(x, col)| {
-        for y in 0..h {
-            col[y] = img.data[y * w + x];
+/// One vertical box pass (same semantics as [`box_h_into`] along columns).
+fn box_v_into(src: &[Px], out: &mut [Px], w: usize, h: usize, r: usize, repeat: bool) {
+    if r == 0 {
+        out.copy_from_slice(src);
+        return;
+    }
+    let norm = 1.0 / (2 * r + 1) as f32;
+    let block = (4 * r).clamp(32, 256);
+    let row = |i: isize| -> Option<&[Px]> {
+        if i < 0 {
+            repeat.then(|| &src[0..w])
+        } else if i as usize >= h {
+            repeat.then(|| &src[(h - 1) * w..h * w])
+        } else {
+            Some(&src[i as usize * w..(i as usize + 1) * w])
+        }
+    };
+    out.par_chunks_mut(w * block).enumerate().for_each(|(bi, chunk)| {
+        let ya = (bi * block) as isize;
+        let mut acc = vec![[0.0f32; 4]; w];
+        for i in ya - r as isize..=ya + r as isize {
+            if let Some(rw) = row(i) {
+                for (a, p) in acc.iter_mut().zip(rw) {
+                    for c in 0..4 {
+                        a[c] += p[c];
+                    }
+                }
+            }
+        }
+        for (yy, o) in chunk.chunks_mut(w).enumerate() {
+            let y = ya + yy as isize;
+            for (o, a) in o.iter_mut().zip(&acc) {
+                *o = a.map(|v| v * norm);
+            }
+            match (row(y + r as isize + 1), row(y - r as isize)) {
+                (Some(add), Some(sub)) => {
+                    for ((a, p), q) in acc.iter_mut().zip(add).zip(sub) {
+                        for c in 0..4 {
+                            a[c] += p[c] - q[c];
+                        }
+                    }
+                }
+                (Some(add), None) => {
+                    for (a, p) in acc.iter_mut().zip(add) {
+                        for c in 0..4 {
+                            a[c] += p[c];
+                        }
+                    }
+                }
+                (None, Some(sub)) => {
+                    for (a, q) in acc.iter_mut().zip(sub) {
+                        for c in 0..4 {
+                            a[c] -= q[c];
+                        }
+                    }
+                }
+                (None, None) => {}
+            }
         }
     });
-    out
+}
+
+/// Run horizontal passes with radii `rx` then vertical passes with radii `ry`.
+fn box_passes(img: &Image, rx: &[usize], ry: &[usize], repeat: bool) -> Image {
+    let (w, h) = (img.width as usize, img.height as usize);
+    let passes: Vec<(bool, usize)> = rx.iter().map(|&r| (false, r)).chain(ry.iter().map(|&r| (true, r))).filter(|p| p.1 > 0).collect();
+    if passes.is_empty() || w == 0 || h == 0 {
+        return img.clone();
+    }
+    let mut a = Image::new(img.width, img.height);
+    let mut b = Image::new(img.width, img.height);
+    for (i, &(vertical, r)) in passes.iter().enumerate() {
+        let src: &[Px] = if i == 0 { &img.data } else { &a.data };
+        if vertical {
+            box_v_into(src, &mut b.data, w, h, r, repeat);
+        } else {
+            box_h_into(src, &mut b.data, w, r, repeat);
+        }
+        std::mem::swap(&mut a, &mut b);
+    }
+    a
 }
 
 /// Box radii for `n` passes approximating a Gaussian of `sigma` (Kovesi / "boxes for Gauss").
@@ -72,36 +146,15 @@ fn box_radii(sigma: f64, n: usize) -> Vec<usize> {
 
 /// Separable box blur with given radii, `iterations` passes.
 pub fn box_blur(img: &Image, rx: usize, ry: usize, iterations: usize, repeat: bool) -> Image {
-    let mut cur = img.clone();
-    for _ in 0..iterations.max(1) {
-        cur = box_h(&cur, rx, repeat);
-    }
-    if ry > 0 {
-        let mut t = transpose(&cur);
-        for _ in 0..iterations.max(1) {
-            t = box_h(&t, ry, repeat);
-        }
-        cur = transpose(&t);
-    }
-    cur
+    let n = iterations.max(1);
+    box_passes(img, &vec![rx; n], &vec![ry; n], repeat)
 }
 
 /// Gaussian blur with standard deviations in pixels (3 box passes per axis).
 pub fn gaussian_blur(img: &Image, sigma_x: f64, sigma_y: f64, repeat: bool) -> Image {
-    let mut cur = img.clone();
-    if sigma_x > 0.05 {
-        for r in box_radii(sigma_x, 3) {
-            cur = box_h(&cur, r, repeat);
-        }
-    }
-    if sigma_y > 0.05 {
-        let mut t = transpose(&cur);
-        for r in box_radii(sigma_y, 3) {
-            t = box_h(&t, r, repeat);
-        }
-        cur = transpose(&t);
-    }
-    cur
+    let rx = if sigma_x > 0.05 { box_radii(sigma_x, 3) } else { vec![] };
+    let ry = if sigma_y > 0.05 { box_radii(sigma_y, 3) } else { vec![] };
+    box_passes(img, &rx, &ry, repeat)
 }
 
 /// Motion blur along `angle_deg` (0 = vertical in AE's Directional Blur, measured clockwise from
@@ -180,6 +233,54 @@ mod tests {
         let img = Image::filled(20, 10, [0.5, 0.5, 0.5, 1.0]);
         let b = gaussian_blur(&img, 3.0, 3.0, true);
         assert!(b.data.iter().all(|p| (p[0] - 0.5).abs() < 1e-5));
+    }
+
+    /// Direct (windowed sum) box filter along x or y: the definition the passes must match.
+    fn box_ref(img: &Image, r: usize, vertical: bool, repeat: bool) -> Image {
+        let mut out = Image::new(img.width, img.height);
+        let (w, h) = (img.width as i64, img.height as i64);
+        for y in 0..h {
+            for x in 0..w {
+                let mut acc = [0.0f64; 4];
+                for k in -(r as i64)..=(r as i64) {
+                    let (sx, sy) = if vertical { (x, y + k) } else { (x + k, y) };
+                    let p = if repeat { img.get_clamped(sx, sy) } else { img.get(sx, sy) };
+                    for c in 0..4 {
+                        acc[c] += p[c] as f64;
+                    }
+                }
+                out.set(x as u32, y as u32, acc.map(|v| (v / (2 * r + 1) as f64) as f32));
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn passes_match_direct_box_filter() {
+        let mut img = Image::new(53, 301);
+        for y in 0..301 {
+            for x in 0..53 {
+                let v = crate::hash_noise(x, y, 3);
+                img.set(x, y, [v * 0.5, v * 0.25, v, v]);
+            }
+        }
+        for repeat in [false, true] {
+            for (rx, ry) in [(0, 3), (2, 0), (5, 9), (40, 70), (1, 200)] {
+                let fast = box_passes(&img, &[rx, rx + 1], &[ry, ry / 2], repeat);
+                let mut slow = img.clone();
+                for r in [rx, rx + 1] {
+                    slow = box_ref(&slow, r, false, repeat);
+                }
+                for r in [ry, ry / 2] {
+                    slow = box_ref(&slow, r, true, repeat);
+                }
+                for (i, (p, q)) in fast.data.iter().zip(&slow.data).enumerate() {
+                    for c in 0..4 {
+                        assert!((p[c] - q[c]).abs() < 1e-4, "r {rx},{ry} repeat {repeat} px {i}: {p:?} vs {q:?}");
+                    }
+                }
+            }
+        }
     }
 
     #[test]

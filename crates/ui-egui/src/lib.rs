@@ -51,6 +51,11 @@ pub enum Dialog {
     Info,
     /// View ▸ View Options.
     ViewOptions,
+    CameraSettings,
+    LightSettings,
+    KeyVelocity,
+    KeyInterpolation,
+    TimeStretch,
 }
 
 /// Host hooks provided by the native app (file pickers etc.).
@@ -172,7 +177,12 @@ impl EffectcraftApp {
     }
 
     pub fn render_source(&self) -> RenderSource {
-        RenderSource { project: self.session.project.clone(), footage: self.session.footage.clone(), expr: self.session.expr.clone() }
+        RenderSource {
+            project: self.session.project.clone(),
+            footage: self.session.footage.clone(),
+            expr: self.session.expr.clone(),
+            layer_cache: self.session.layer_cache.clone(),
+        }
     }
 
     /// The render scale used by the viewer right now.
@@ -185,16 +195,44 @@ impl EffectcraftApp {
     }
 
     pub fn frame_key(&self, comp: ItemId, frame: i64, scale: f64) -> FrameKey {
-        FrameKey { revision: self.session.revision, comp: comp.0, frame, scale: (scale * 1000.0).round() as u32 }
+        FrameKey { revision: self.session.revision, comp: comp.0, frame, scale: (scale * 1000.0).round() as u32, view: self.view_hash(comp) }
     }
 
-    /// Request a frame render (no-op if cached/in flight).
+    /// Hash of the comp viewer's 3D view camera (0 for the active camera view).
+    pub fn view_hash(&self, comp: ItemId) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let Some(cam) = self.session.view_camera(comp) else { return 0 };
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        for row in cam.view.0 {
+            for v in row {
+                v.to_bits().hash(&mut h);
+            }
+        }
+        cam.zoom.to_bits().hash(&mut h);
+        cam.ortho.hash(&mut h);
+        h.finish() | 1
+    }
+
+    /// Request a prefetch frame render (no-op if cached/in flight).
     pub fn request_frame(&self, comp: ItemId, frame: i64, scale: f64) {
+        self.request_frame_with(comp, frame, scale, false);
+    }
+
+    /// Request the frame on screen: rendered before any queued prefetch.
+    pub fn request_frame_urgent(&self, comp: ItemId, frame: i64, scale: f64) {
+        self.request_frame_with(comp, frame, scale, true);
+    }
+
+    fn request_frame_with(&self, comp: ItemId, frame: i64, scale: f64, urgent: bool) {
         let Some(c) = self.session.project.comp(comp) else { return };
         let key = self.frame_key(comp, frame, scale);
         let t = c.frame_rate.tick_of(frame);
-        let opts = RenderOpts { scale, motion_blur: true, guides: true, draft: self.ui.viewer.fast_preview };
-        self.frames.request(&self.render_source(), key, comp, t, opts);
+        let opts = RenderOpts { scale, motion_blur: true, guides: true, draft: self.ui.viewer.fast_preview, view: self.session.view_camera(comp) };
+        if urgent {
+            self.frames.request_urgent(&self.render_source(), key, comp, t, opts);
+        } else {
+            self.frames.request(&self.render_source(), key, comp, t, opts);
+        }
     }
 
     // ---------------------------------------------------------------- playback
@@ -236,7 +274,15 @@ impl EffectcraftApp {
         let (wa, wb) = (fr.frame_at(c.work_area.0), fr.frame_at(c.work_area.1 - c.frame_duration()));
         // Prefetch ahead.
         let cur = fr.frame_at(self.session.time());
-        let ahead = (self.frames_parallelism() * 2).max(4) as i64;
+        // While paused (scrubbing, editing) the viewer's frame comes first: prefetch only a few
+        // frames, and only once it is done, so prefetch never delays what is on screen.
+        let ahead = if self.playback.playing {
+            (self.frames_parallelism() * 2).max(4) as i64
+        } else if self.frames.urgent_pending() {
+            0
+        } else {
+            (self.frames_parallelism() / 2).max(2) as i64
+        };
         let mut queued = self.frames.inflight();
         for k in 0..ahead * 3 {
             if queued >= ahead as usize {
@@ -422,6 +468,10 @@ impl EffectcraftApp {
         let ctx = ui.ctx().clone();
         self.auto.begin_frame();
         self.frames.set_context(&ctx);
+        if self.session.render_job.is_some() {
+            self.session.poll_render();
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
         self.handle_events(&ctx);
         if let Some(rx) = self.command_inbox.take() {
             while let Ok(id) = rx.try_recv() {
@@ -530,6 +580,14 @@ impl EffectcraftApp {
             }
         }
         panels::panel_menu_popup(self, ui);
+    }
+}
+
+impl EffectcraftApp {
+    /// Take the pending synthetic input (from `ui.click`, `ui.key`, …). Hosts that don't call
+    /// [`eframe::App::raw_input_hook`] (the headless test harness) feed these in themselves.
+    pub fn take_synthetic_input(&mut self) -> Vec<egui::Event> {
+        std::mem::take(&mut self.synthetic)
     }
 }
 

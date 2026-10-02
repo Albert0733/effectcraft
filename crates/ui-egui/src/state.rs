@@ -267,6 +267,28 @@ pub struct TimelineState {
     /// Properties / groups (uids) shown by the `props` reveal (Animation ▸ Reveal Properties…).
     #[serde(default)]
     pub reveal_props: BTreeSet<u64>,
+    /// Graph Editor: `value` or `speed` graph.
+    #[serde(default = "value_graph")]
+    pub graph_mode: String,
+    /// Show only the selected properties (else every animated property of the selected layers).
+    #[serde(default = "yes")]
+    pub graph_show_selected: bool,
+    /// Auto-zoom the graph height to the visible curves.
+    #[serde(default = "yes")]
+    pub graph_auto_zoom: bool,
+    /// Manual graph value range (when auto-zoom is off).
+    #[serde(default)]
+    pub graph_range: Option<(f64, f64)>,
+    /// Properties whose inline expression editor is collapsed.
+    #[serde(default)]
+    pub expr_closed: BTreeSet<u64>,
+}
+
+fn value_graph() -> String {
+    "value".into()
+}
+fn yes() -> bool {
+    true
 }
 
 impl Default for TimelineState {
@@ -276,15 +298,24 @@ impl Default for TimelineState {
             pps: None,
             scroll_y: 0.0,
             columns_w: 560.0,
-            show_modes: true,
+            show_modes: false,
             graph_editor: false,
             search: String::new(),
             open_layers: BTreeSet::new(),
             open_groups: BTreeSet::new(),
             reveal: vec![],
             reveal_props: BTreeSet::new(),
+            graph_mode: value_graph(),
+            graph_show_selected: true,
+            graph_auto_zoom: true,
+            graph_range: None,
+            expr_closed: BTreeSet::new(),
         }
     }
+}
+
+fn default_project_sort() -> String {
+    "name".into()
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -305,8 +336,17 @@ pub struct UiState {
     pub effects_open: BTreeSet<String>,
     pub project_search: String,
     pub project_open_folders: BTreeSet<u64>,
+    /// Project panel sort column (`name`, `type`, `size`, `fps`) and direction, as in AE's
+    /// clickable column headers. Folders sort with everything else.
+    #[serde(default = "default_project_sort")]
+    pub project_sort: String,
+    #[serde(default)]
+    pub project_sort_desc: bool,
     /// Effect Controls twirl state (group uids that are collapsed).
     pub fx_closed: BTreeSet<u64>,
+    /// Slider params whose slider row is twirled open (AE hides sliders by default).
+    #[serde(default)]
+    pub fx_slider_open: BTreeSet<u64>,
     /// Shape tool options.
     pub fill_color: [f32; 3],
     pub stroke_color: [f32; 3],
@@ -339,7 +379,10 @@ impl Default for UiState {
             effects_open: BTreeSet::new(),
             project_search: String::new(),
             project_open_folders: BTreeSet::new(),
+            project_sort: default_project_sort(),
+            project_sort_desc: false,
             fx_closed: BTreeSet::new(),
+            fx_slider_open: BTreeSet::new(),
             fill_color: [0.24, 0.55, 0.96],
             stroke_color: [1.0, 1.0, 1.0],
             stroke_width: 0.0,
