@@ -196,17 +196,35 @@ pub(crate) struct Work {
 }
 
 /// The layer's source frame at comp time `t` at 100 % (layer pixels + offset = image pixels).
-fn source_frame(r: &Renderer, project: &Project, cid: ItemId, comp: &Comp, layer: &Layer, t: Tick, expr: Option<&dyn ExprHost>) -> Option<(Image, [f64; 2])> {
+/// Footage at its native size is used straight from the footage source (no copy).
+fn source_frame(
+    r: &Renderer,
+    project: &Project,
+    cid: ItemId,
+    comp: &Comp,
+    layer: &Layer,
+    t: Tick,
+    expr: Option<&dyn ExprHost>,
+) -> Option<(Arc<Image>, [f64; 2])> {
     let ctx = EvalCtx { project, comp_id: cid, comp, time: t, expr };
+    if let effectcraft_project::LayerSource::Footage { item } = &layer.source
+        && let Some(effectcraft_project::ItemKind::Footage(f)) = project.item(*item).map(|i| &i.kind)
+        && f.has_video
+        && let Some(img) = r.footage.frame(*item, f, ctx.source_time(layer))
+        && img.width == f.width
+        && img.height == f.height
+    {
+        return Some((img, [0.0; 2]));
+    }
     let buf = r.layer_source(&ctx, layer)?;
     if (buf.scale - 1.0).abs() > 1e-9 && buf.scale > 0.0 {
         // Footage decoded at another size: bring it to layer pixels.
         let w = (buf.img.width as f64 / buf.scale).round().max(1.0) as u32;
         let h = (buf.img.height as f64 / buf.scale).round().max(1.0) as u32;
         let off = [buf.offset[0] / buf.scale, buf.offset[1] / buf.scale];
-        return Some((effectcraft_raster::resample(&buf.img, w, h), off));
+        return Some((Arc::new(effectcraft_raster::resample(&buf.img, w, h)), off));
     }
-    Some((buf.img, buf.offset))
+    Some((Arc::new(buf.img), buf.offset))
 }
 
 pub(crate) fn run_work(w: Work, shared: &TrackShared) {

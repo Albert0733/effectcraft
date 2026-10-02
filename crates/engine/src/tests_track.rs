@@ -354,3 +354,78 @@ fn backward_frame_steps_options_and_reset() {
     assert!(s.active_comp().unwrap().layer(clip).unwrap().motion_trackers().is_none());
     assert!(s.execute("track.analyze", json!({})).is_err());
 }
+
+/// End-to-end analysis speed at 1080p for one track point: footage frames through the renderer's
+/// layer source and the tracker (frames are prepared before timing).
+#[test]
+fn analyze_1080p_single_point_speed() {
+    let (w, h) = (1920u32, 1080u32);
+    let mut base = Image::new(w + 64, h + 64);
+    for y in 0..base.height {
+        for x in 0..base.width {
+            let v = 0.5 + 0.25 * ((x as f32 * 0.21).sin() * (y as f32 * 0.13).cos()) + 0.15 * ((x + 2 * y) as f32 * 0.07).sin();
+            base.set(x, y, [v, v, v, 1.0]);
+        }
+    }
+    let frames: Vec<Arc<Image>> = (0..31u32)
+        .map(|f| {
+            let (dx, dy) = (f as i64, (f / 2) as i64);
+            let mut img = Image::new(w, h);
+            for y in 0..h {
+                for x in 0..w {
+                    img.set(x, y, base.get(x as i64 + 32 - dx, y as i64 + 32 - dy));
+                }
+            }
+            Arc::new(img)
+        })
+        .collect();
+    struct Pre(Vec<Arc<Image>>);
+    impl FootageSource for Pre {
+        fn frame(&self, _: ItemId, _: &Footage, t: Tick) -> Option<Arc<Image>> {
+            let f = (t.seconds() * FPS as f64).round().max(0.0) as usize;
+            self.0.get(f.min(self.0.len() - 1)).cloned()
+        }
+    }
+    let mut s = Session::default();
+    s.execute("comp.new", json!({"name": "HD", "width": w, "height": h, "frameRate": FPS, "duration": 2})).unwrap();
+    let cid = s.active_comp_id().unwrap();
+    let clip = s
+        .edit("clip", None, |p, _| {
+            let footage = Footage {
+                path: "hd.mov".into(),
+                kind: FootageKind::Video,
+                width: w,
+                height: h,
+                pixel_aspect: 1.0,
+                frame_rate: FrameRate::new(FPS as i64, 1),
+                native_rate: None,
+                duration: Tick::from_seconds_f64(2.0),
+                has_video: true,
+                has_audio: false,
+                alpha: Default::default(),
+                premul_color: [0.0; 3],
+                loop_count: 1,
+                codec: String::new(),
+                missing: false,
+                sequence: vec![],
+            };
+            let item = p.add_item("hd", Label::Aqua, None, ItemKind::Footage(footage));
+            let comp = p.comp(cid).unwrap().clone();
+            let l = build::layer(p, &comp, "HD", LayerSource::Footage { item }, (w, h), None);
+            let id = l.id;
+            p.comp_mut(cid).unwrap().layers.insert(0, l);
+            Ok(id)
+        })
+        .unwrap();
+    s.footage = Arc::new(Pre(frames));
+    s.execute("track.motion", json!({"layer": clip.0})).unwrap();
+    s.execute("track.setPoint", json!({"point": 1, "center": [960, 540], "featureSize": [48, 48], "searchSize": [128, 128]})).unwrap();
+    let t0 = std::time::Instant::now();
+    s.execute("track.analyze", json!({"wait": true, "end": 30.0 / FPS as f64})).unwrap();
+    let secs = t0.elapsed().as_secs_f64();
+    let fps = 30.0 / secs;
+    eprintln!("1080p single-point analysis: {fps:.0} frames/s end to end ({:.1} ms/frame)", secs * 1e3 / 30.0);
+    let fc = tracker_points(&s, clip)[0].get("featureCenter").unwrap().clone();
+    assert!(dist(fc.value_at(frame_time(30)).as_vec2(), [990.0, 555.0]) < 0.25);
+    assert!(fps > 30.0, "{fps} frames/s");
+}
