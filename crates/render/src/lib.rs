@@ -43,12 +43,17 @@ struct FxHost<'r, 'a, 'c> {
     r: &'r Renderer<'a>,
     ctx: &'c EvalCtx<'a>,
     layer: &'c Layer,
+    /// Index of the effect being rendered (bounds `self_at` to effects before it).
+    index: std::sync::atomic::AtomicUsize,
 }
+
+/// Nesting limit for effects that render layers (other layers, other times).
+const MAX_FX_DEPTH: usize = 8;
 
 impl EffectHost for FxHost<'_, '_, '_> {
     fn layer(&self, id: u64, masks_and_effects: bool) -> Option<LayerPixels> {
         let other = self.ctx.layer(effectcraft_project::LayerId(id))?;
-        if other.id == self.layer.id || self.r.depth > 8 {
+        if other.id == self.layer.id || self.r.depth > MAX_FX_DEPTH {
             return None;
         }
         let sub = Renderer { depth: self.r.depth + 1, ..*self.r };
@@ -68,6 +73,29 @@ impl EffectHost for FxHost<'_, '_, '_> {
         }
         let st = other.layer_time(Tick::from_seconds_f64(start));
         self.r.footage.audio(*item, f, st, frames, rate)
+    }
+
+    fn self_at(&self, layer_time: f64, effects: usize) -> Option<Buf> {
+        if self.r.depth > MAX_FX_DEPTH || self.layer.switches.adjustment {
+            return None;
+        }
+        let n = effects.min(self.index.load(std::sync::atomic::Ordering::Relaxed));
+        let t = self.layer.comp_time(Tick::from_seconds_f64(layer_time));
+        let sub = Renderer { depth: self.r.depth + 1, ..*self.r };
+        sub.layer_input(&self.ctx.at(t), self.layer, n).map(|b| (*b).clone())
+    }
+
+    fn layer_at(&self, id: u64, comp_time: f64, masks_and_effects: bool) -> Option<LayerPixels> {
+        let other = self.ctx.layer(effectcraft_project::LayerId(id))?;
+        if other.id == self.layer.id || self.r.depth > MAX_FX_DEPTH {
+            return None;
+        }
+        let ctx = self.ctx.at(Tick::from_seconds_f64(comp_time));
+        let sub = Renderer { depth: self.r.depth + 1, ..*self.r };
+        let buf = if masks_and_effects { (*sub.layer_buf(&ctx, other)?).clone() } else { (*sub.layer_input(&ctx, other, 0)?).clone() };
+        let size = source_size(self.r.project, other);
+        let size = if size.0 == 0 { [self.ctx.comp.width as f64, self.ctx.comp.height as f64] } else { [size.0 as f64, size.1 as f64] };
+        Some(LayerPixels { buf, size })
     }
 }
 
@@ -186,10 +214,19 @@ impl<'a> Renderer<'a> {
     }
 
     fn apply_effects(&self, ctx: &EvalCtx, layer: &Layer, buf: Buf, adjustment: bool) -> Buf {
-        self.apply_effects_timed(ctx, layer, buf, adjustment, None)
+        self.apply_effects_timed(ctx, layer, buf, adjustment, usize::MAX, None)
     }
 
-    fn apply_effects_timed(&self, ctx: &EvalCtx, layer: &Layer, mut buf: Buf, adjustment: bool, mut timing: Option<&mut Vec<(String, f64)>>) -> Buf {
+    /// Run the first `limit` effects of the layer's stack (by position; disabled ones count).
+    fn apply_effects_timed(
+        &self,
+        ctx: &EvalCtx,
+        layer: &Layer,
+        mut buf: Buf,
+        adjustment: bool,
+        limit: usize,
+        mut timing: Option<&mut Vec<(String, f64)>>,
+    ) -> Buf {
         if !layer.switches.effects {
             return buf;
         }
@@ -198,15 +235,24 @@ impl<'a> Renderer<'a> {
         let size = source_size(self.project, layer);
         let layer_size = if size.0 == 0 { [ctx.comp.width as f64, ctx.comp.height as f64] } else { [size.0 as f64, size.1 as f64] };
         let mask_shapes = masks::shapes(ctx, layer);
-        let host = FxHost { r: self, ctx, layer };
-        let env = EffectEnv { masks: &mask_shapes, host: Some(&host), comp_time: ctx.time.seconds(), frame_rate: ctx.comp.frame_rate.as_f64() };
-        for g in fx.groups() {
+        let host = FxHost { r: self, ctx, layer, index: Default::default() };
+        let env =
+            EffectEnv { masks: &mask_shapes, host: Some(&host), comp_time: ctx.time.seconds(), frame_rate: ctx.comp.frame_rate.as_f64(), effect_index: 0 };
+        for (i, g) in fx.groups().enumerate() {
+            if i >= limit {
+                break;
+            }
             if !g.enabled {
                 continue;
             }
             let GroupKind::Effect { effect } = &g.kind else { continue };
             let Some(spec) = effectcraft_effects::find(effect) else { continue };
+            if effectcraft_effects::audio_fx::is_audio_effect(spec.id) {
+                continue;
+            }
             let params = self.effect_params(ctx, layer, g);
+            host.index.store(i, std::sync::atomic::Ordering::Relaxed);
+            let env = EffectEnv { effect_index: i, ..env };
             let ectx = EffectCtx { params: &params, time: lt.seconds(), layer_size, seed: g.uid as u32, adjustment, env };
             let t0 = std::time::Instant::now();
             buf = effectcraft_effects::apply(spec, &ectx, buf);
@@ -280,7 +326,29 @@ impl<'a> Renderer<'a> {
         }
         let mut buf = self.source(ctx, layer)?;
         masks::apply(ctx, layer, &mut buf);
-        let buf = Arc::new(self.apply_effects_timed(ctx, layer, buf, false, timing.map(|t| &mut t.effects)));
+        let buf = Arc::new(self.apply_effects_timed(ctx, layer, buf, false, usize::MAX, timing.map(|t| &mut t.effects)));
+        if let (Some(c), Some(k)) = (self.cache, key) {
+            c.insert(k, buf.clone());
+        }
+        Some(buf)
+    }
+
+    /// A layer's input at the context time: source → masks → its first `effects` effects
+    /// (what Time effects read at neighbouring times). Served from / stored in the layer cache
+    /// under its own key, so scrubbing reuses frames rendered for earlier output frames.
+    pub fn layer_input(&self, ctx: &EvalCtx, layer: &Layer, effects: usize) -> Option<Arc<Buf>> {
+        let key = self.cache.and_then(|_| cache::input_key(ctx, layer, self.opts.scale, self.opts.draft, effects));
+        if let (Some(c), Some(k)) = (self.cache, key)
+            && let Some(b) = c.get(k)
+        {
+            return Some(b);
+        }
+        let mut buf = self.source(ctx, layer)?;
+        masks::apply(ctx, layer, &mut buf);
+        if effects > 0 {
+            buf = self.apply_effects_timed(ctx, layer, buf, false, effects, None);
+        }
+        let buf = Arc::new(buf);
         if let (Some(c), Some(k)) = (self.cache, key) {
             c.insert(k, buf.clone());
         }
@@ -453,3 +521,5 @@ pub fn content_bounds(ctx: &EvalCtx, layer: &effectcraft_project::Layer) -> Opti
 pub fn kurbo_path(sp: &effectcraft_keyframe::ShapePath) -> kurbo::BezPath {
     effectcraft_path::to_kurbo(sp)
 }
+#[cfg(test)]
+mod tests_time;
