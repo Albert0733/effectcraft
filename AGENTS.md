@@ -73,7 +73,7 @@ a command, everything is agent-drivable, and the quality gates (`cargo xtask ci`
 
 ## See also
 
-- [CONTRIBUTING.md](CONTRIBUTING.md) and [docs/contributing.md](docs/contributing.md): setup, gates, commits, how to add things
+- [CONTRIBUTING.md](CONTRIBUTING.md): setup, gates, commits, how to add things
 - [docs/architecture.md](docs/architecture.md): layers, data model, commands, pipeline
 - [docs/testing.md](docs/testing.md): oracle tests, criteria, benchmarks
 - [docs/agents.md](docs/agents.md): driving EffectCraft over MCP / the control channel, and the agent work loop
