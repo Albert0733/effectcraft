@@ -357,6 +357,9 @@ pub struct UiState {
     /// Preview panel options.
     pub preview_loop: bool,
     pub preview_cache_first: bool,
+    /// Preview panel "Include Audio" (Mute Audio off).
+    #[serde(default = "yes")]
+    pub preview_audio: bool,
     pub start_screen: bool,
     /// Composition ▸ Preview ▸ Cache Frames When Idle.
     pub cache_when_idle: bool,
@@ -390,6 +393,7 @@ impl Default for UiState {
             tool_creates_shape: true,
             preview_loop: true,
             preview_cache_first: false,
+            preview_audio: true,
             start_screen: false,
             cache_when_idle: false,
         }

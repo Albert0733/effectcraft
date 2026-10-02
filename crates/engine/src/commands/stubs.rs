@@ -33,8 +33,6 @@ pub fn specs() -> Vec<CommandSpec> {
         stub!("edit.pasteTextMatchFormatting", "Paste Text and Match Formatting", ["Edit"], "{}"),
         stub!("edit.pasteTextFormattingOnly", "Paste Text Formatting Only", ["Edit"], "{}"),
         stub!("keys.selectLabelGroup", "Select Keyframe Label Group", [], "{scope}"),
-        // Preview audio.
-        stub!("playback.audio", "Audio", ["Composition", "Preview"], "{}"),
         // Layer ▸ New (3D / content-aware fill).
         stub!("layer.newContentAwareFill", "Content-Aware Fill Layer...", ["Layer", "New"], "{}"),
         stub!("layer.new3dPrimitive", "3D Primitive", [], "{kind: cube|sphere|plane|torus|cone|cylinder}"),

@@ -202,6 +202,41 @@ fn hash_values(h: &mut KeyHasher, ctx: &EvalCtx, layer: &Layer, g: &PropGroup) {
 /// time, or `None` when the layer must not be cached (footage, precomps, cameras, adjustment
 /// layers…).
 pub fn layer_key(ctx: &EvalCtx, layer: &Layer, scale: f64, draft: bool) -> Option<u64> {
+    // Time effects see property values at other times. Keyframes are part of the hashed
+    // structure (and the layer time is folded in), but expressions may read other layers at
+    // those times, which the key cannot see: such layers are not cached.
+    if reads_other_times(layer) && layer.props.children.iter().any(|c| matches!(c, Node::Group(g) if g.match_id != "transform" && has_expression(g))) {
+        return None;
+    }
+    key_with(ctx, layer, scale, draft, false)
+}
+
+/// Cache key for a layer's *input* at the context time: source → masks → its first `effects`
+/// effects (see `Renderer::layer_input`). Unlike [`layer_key`], footage layers are cached here
+/// (keyed by item and source time), since Time effects read many neighbouring frames.
+pub fn input_key(ctx: &EvalCtx, layer: &Layer, scale: f64, draft: bool, effects: usize) -> Option<u64> {
+    let base = key_with(ctx, layer, scale, draft, true)?;
+    let mut h = KeyHasher(base ^ 0x5bd1_e995_7a3c_11d3);
+    effects.hash(&mut h);
+    Some(h.finish())
+}
+
+/// Does the layer run an effect that reads the layer at other times (Echo, Timewarp…)?
+fn reads_other_times(layer: &Layer) -> bool {
+    layer.switches.effects
+        && layer.effects().is_some_and(|fx| {
+            fx.groups().any(|g| g.enabled && matches!(&g.kind, effectcraft_project::GroupKind::Effect { effect } if effect.starts_with("ec.time.")))
+        })
+}
+
+fn has_expression(g: &PropGroup) -> bool {
+    g.children.iter().any(|c| match c {
+        Node::Prop(p) => p.has_expression(),
+        Node::Group(sub) => has_expression(sub),
+    })
+}
+
+fn key_with(ctx: &EvalCtx, layer: &Layer, scale: f64, draft: bool, footage: bool) -> Option<u64> {
     if layer.switches.adjustment {
         return None;
     }
@@ -213,6 +248,13 @@ pub fn layer_key(ctx: &EvalCtx, layer: &Layer, scale: f64, draft: bool) -> Optio
             hash_debug(&mut h, s);
         }
         LayerSource::Text | LayerSource::Shape => {}
+        LayerSource::Footage { item } if footage => {
+            let it = ctx.project.item(*item)?;
+            let ItemKind::Footage(f) = &it.kind else { return None };
+            hash_debug(&mut h, f);
+            item.hash(&mut h);
+            ctx.source_time(layer).0.hash(&mut h);
+        }
         _ => return None,
     }
     ctx.comp_id.hash(&mut h);

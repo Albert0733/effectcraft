@@ -57,6 +57,8 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("timeline.reveal.effects", "Reveal Effects", [], Some("E")),
     uic!("timeline.reveal.masks", "Reveal Masks", [], Some("M")),
     uic!("timeline.reveal.feather", "Reveal Mask Feather", [], Some("F")),
+    uic!("timeline.reveal.levels", "Reveal Audio Levels (press twice: Waveform)", [], Some("L")),
+    uic!("timeline.reveal.waveform", "Reveal Audio Waveform", [], None),
     uic!("timeline.collapseAll", "Collapse All", [], Some("Cmd+`")),
     uic!("tool.selection", "Selection Tool", [], Some("V")),
     uic!("tool.hand", "Hand Tool", [], Some("H")),
@@ -82,7 +84,13 @@ pub fn panel_command_id(p: PanelKind) -> String {
     format!("window.panel.{}", p.id())
 }
 
-fn reveal(app: &mut EffectcraftApp, kind: &str) {
+fn reveal(app: &mut EffectcraftApp, kind: &str, now: f64) {
+    // AE's double-press shortcuts: L then L again quickly reveals the Waveform (LL).
+    let kind = match app.last_reveal.take() {
+        Some((k, t)) if k == "levels" && kind == "levels" && now - t < 0.6 => "waveform",
+        _ => kind,
+    };
+    app.last_reveal = Some((kind.to_string(), now));
     let add = app.ui.timeline.reveal.contains(&kind.to_string());
     if add && app.ui.timeline.reveal.len() == 1 {
         app.ui.timeline.reveal.clear();
@@ -151,7 +159,7 @@ pub fn invoke(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, params: V
         if k == "animated" {
             return run_engine(app, ctx, "anim.reveal", json!({"kind": "keyframes"}));
         }
-        reveal(app, k);
+        reveal(app, k, now);
         return Ok(Value::Null);
     }
     if id == "view.res.auto" {
@@ -342,6 +350,13 @@ pub fn frontend(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, p: Valu
             json!({"playing": app.playback.playing})
         }
         "playback.cacheWhenIdle" => toggle(&mut app.ui.cache_when_idle, &p),
+        "playback.audio" => {
+            let r = toggle(&mut app.ui.preview_audio, &p);
+            if !app.ui.preview_audio {
+                app.audio = None;
+            }
+            r
+        }
         "view.zoomIn" | "view.zoomOut" => {
             let cur = v.zoom.unwrap_or_else(|| crate::panels::viewer::last_fit(ctx));
             const STEPS: [f32; 16] = [0.015, 0.03, 0.0625, 0.125, 0.25, 0.333, 0.5, 0.66, 1.0, 1.5, 2.0, 3.0, 4.0, 8.0, 16.0, 32.0];
@@ -561,6 +576,7 @@ fn entry_checked(app: &EffectcraftApp, e: &MenuEntry) -> Option<bool> {
         "view.snapToGrid" => Some(v.snap_grid),
         "view.layerControls" => Some(v.show_layer_controls),
         "playback.cacheWhenIdle" => Some(app.ui.cache_when_idle),
+        "playback.audio" => Some(app.ui.preview_audio),
         "view.res.full" | "view.res.half" | "view.res.third" | "view.res.quarter" => {
             Some(v.res.label().eq_ignore_ascii_case(e.command.trim_start_matches("view.res.")))
         }

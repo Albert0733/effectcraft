@@ -6,6 +6,7 @@
 //! [`instantiate`]), so parameters animate, take expressions and are addressable like any other
 //! property.
 
+pub mod audio_fx;
 mod blur2;
 mod channel;
 mod channel2;
@@ -33,6 +34,7 @@ mod sim2;
 mod stylize2;
 mod stylize3;
 mod textfx;
+mod time_fx;
 mod transition;
 mod transition2;
 pub mod util;
@@ -161,6 +163,18 @@ pub trait EffectHost: Sync {
     /// `frames` stereo sample frames (interleaved L R …) of layer `id`'s audio starting at comp
     /// time `start` seconds, at `rate` Hz. `None` when the layer has no audio.
     fn audio(&self, id: u64, start: f64, frames: usize, rate: u32) -> Option<Vec<f32>>;
+    /// The effect's own layer at another **layer time** `layer_time` (seconds): its source with
+    /// masks applied, followed by the first `effects` effects of its stack (0 = none, which is
+    /// what After Effects' Time effects see). `None` when unavailable (no host, recursion
+    /// limit, adjustment layers). Time effects use this to read neighbouring frames.
+    fn self_at(&self, _layer_time: f64, _effects: usize) -> Option<Buf> {
+        None
+    }
+    /// Layer `id` of the same composition at comp time `comp_time` (seconds), like
+    /// [`EffectHost::layer`] but at another time.
+    fn layer_at(&self, _id: u64, _comp_time: f64, _masks_and_effects: bool) -> Option<LayerPixels> {
+        None
+    }
 }
 
 /// Extra context the renderer may supply (all optional; `Default` is "nothing known").
@@ -173,6 +187,8 @@ pub struct EffectEnv<'a> {
     pub comp_time: f64,
     /// Composition frame rate (0 when unknown).
     pub frame_rate: f64,
+    /// Index of the running effect in its layer's stack (for [`EffectHost::self_at`]).
+    pub effect_index: usize,
 }
 
 /// What an effect gets to render with.
@@ -268,6 +284,8 @@ pub fn registry() -> &'static [EffectSpec] {
         v.extend(noise2::specs());
         v.extend(color3::specs());
         v.extend(obsolete::specs());
+        v.extend(time_fx::specs());
+        v.extend(audio_fx::specs());
         v.sort_by(|a, b| a.category.cmp(b.category).then(a.name.cmp(b.name)));
         v
     })
@@ -319,6 +337,15 @@ pub const TIME_DEPENDENT: &[&str] = &[
     "ec.obsolete.lightning",
     "ec.text.timecode",
     "ec.text.numbers",
+    // Time effects read neighbouring frames of the layer.
+    "ec.time.echo",
+    "ec.time.posterizetime",
+    "ec.time.timedifference",
+    "ec.time.timedisplacement",
+    "ec.time.timewarp",
+    "ec.time.ccforcemotionblur",
+    "ec.time.ccwidetime",
+    "ec.time.pixelmotionblur",
 ];
 
 /// See [`TIME_DEPENDENT`].

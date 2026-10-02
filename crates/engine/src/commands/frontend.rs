@@ -33,6 +33,7 @@ pub fn specs() -> Vec<CommandSpec> {
         // Preview.
         fe!("playback.toggle", "Play Current Preview", ["Composition", "Preview"], Some("Space"), "{}", has_comp),
         fe!("playback.cacheWhenIdle", "Cache Frames When Idle", ["Composition", "Preview"], None, "{value?}", always),
+        fe!("playback.audio", "Audio", ["Composition", "Preview"], None, "{value?: include audio in previews}", always),
         // Viewer.
         fe!("view.zoomIn", "Zoom In", ["View"], Some("."), "{}", has_comp),
         fe!("view.zoomOut", "Zoom Out", ["View"], Some(","), "{}", has_comp),
