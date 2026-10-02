@@ -37,6 +37,7 @@ pub use effectcraft_geom as geom;
 pub use effectcraft_keyframe as keyframe;
 pub use effectcraft_project as project;
 pub use effectcraft_render as render;
+pub use effectcraft_text as text;
 pub use effectcraft_time as time;
 pub use render_queue::{ExportJob, ExportResult, Exporter, JobState};
 
@@ -179,6 +180,12 @@ pub struct EditorState {
     /// Layer ▸ Mask ▸ Hide Locked Masks (viewer outlines).
     #[serde(default)]
     pub hide_locked_masks: bool,
+    /// On-canvas text editing (Type tool): the edited layer, selection and insertion style.
+    #[serde(default)]
+    pub text_edit: Option<commands::text_edit::TextEdit>,
+    /// Text copied while editing (with its formatting), for Paste / Paste Text Formatting Only.
+    #[serde(skip)]
+    pub text_clipboard: Option<effectcraft_keyframe::TextDoc>,
     /// Composition viewer display options (Show Channel, exposure, snapshot, Fast Previews).
     #[serde(default)]
     pub viewer: commands::viewer_cmds::ViewOptions,
@@ -401,6 +408,7 @@ impl Session {
             self.state.current_track = None;
         }
         self.state.project_selection.retain(|i| p.item(*i).is_some());
+        commands::text_edit::sanitize(self);
     }
 
     pub fn is_dirty(&self) -> bool {
@@ -545,6 +553,8 @@ mod tests_stubs;
 mod tests_styles;
 #[cfg(test)]
 mod tests_text;
+#[cfg(test)]
+mod tests_text_edit;
 #[cfg(test)]
 mod tests_timeline;
 #[cfg(test)]

@@ -28,6 +28,7 @@ mod settings;
 mod stubs;
 mod styles;
 mod text_anim;
+pub mod text_edit;
 mod three_d;
 mod time;
 mod track;
@@ -96,6 +97,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(styles::specs());
         v.extend(three_d::specs());
         v.extend(text_anim::specs());
+        v.extend(text_edit::specs());
         v.extend(layer_time::specs());
         v.extend(prop::specs());
         v.extend(anim::specs());

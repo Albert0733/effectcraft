@@ -26,9 +26,6 @@ pub fn specs() -> Vec<CommandSpec> {
         stub!("file.setProxy", "File...", ["File", "Set Proxy"], "{path}"),
         stub!("file.setProxyNone", "None", ["File", "Set Proxy"], "{}"),
         stub!("file.interpretProxy", "Proxy...", ["File", "Interpret Footage"], "{}"),
-        // Text editing in the viewer.
-        stub!("edit.pasteTextMatchFormatting", "Paste Text and Match Formatting", ["Edit"], "{}"),
-        stub!("edit.pasteTextFormattingOnly", "Paste Text Formatting Only", ["Edit"], "{}"),
         stub!("keys.selectLabelGroup", "Select Keyframe Label Group", [], "{scope}"),
         // Layer ▸ New (3D / content-aware fill).
         stub!("layer.newContentAwareFill", "Content-Aware Fill Layer...", ["Layer", "New"], "{}"),

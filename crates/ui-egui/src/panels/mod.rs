@@ -25,6 +25,7 @@ pub mod timeline;
 pub mod tracker;
 pub mod viewer;
 pub mod viewer_overlays;
+pub mod viewer_text;
 pub mod viewer_tools;
 pub mod waveform;
 
