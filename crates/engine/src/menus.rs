@@ -307,8 +307,10 @@ File
     Multiple Files... | file.importMultiple
     Placeholder... | file.importPlaceholder
     Solid... | file.importSolid
+    Lottie... | file.importLottie
   Export
     Add to Render Queue | renderQueue.add
+    Lottie JSON... | file.exportLottie
   ---
   Find | app.find
   ---

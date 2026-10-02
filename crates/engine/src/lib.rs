@@ -454,6 +454,8 @@ mod tests;
 #[cfg(test)]
 mod tests_3d;
 #[cfg(test)]
+mod tests_lottie;
+#[cfg(test)]
 mod tests_menu_cmds;
 #[cfg(test)]
 mod tests_styles;

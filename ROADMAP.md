@@ -17,7 +17,7 @@ once.
 | M8 | Expressions with the After Effects object model | Done |
 | M9 | Text and effects: text animators, layer styles, 259 effects incl. time and audio effects | Done (range, wiggly and expression selectors, per-character 3D, text on a path) |
 | M10 | Export: render queue, H.264, ProRes, image sequences, GIF, audio | Done |
-| M11 | Animation tools: audio playback, meters and waveforms (done); presets, Motion Sketch, Wiggler, Lottie | In progress |
+| M11 | Animation tools: audio playback, meters and waveforms, Lottie import and export (done); presets, Motion Sketch, Wiggler | In progress |
 | M12 | Performance: layer cache and parallel compositing (done), GPU compositing, disk cache, motion tracking | In progress |
 | M13+ | Puppet, paint, roto, motion tracking, preferences and shortcut editor, a plugin API | Planned |
 | M15 | The web app (WebAssembly, WebGPU) | Done, single-threaded |

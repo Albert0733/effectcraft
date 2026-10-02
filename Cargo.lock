@@ -1191,6 +1191,7 @@ dependencies = [
  "effectcraft-effects",
  "effectcraft-geom",
  "effectcraft-keyframe",
+ "effectcraft-lottie",
  "effectcraft-path",
  "effectcraft-project",
  "effectcraft-raster",
@@ -1273,6 +1274,23 @@ dependencies = [
  "proptest",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "effectcraft-lottie"
+version = "0.1.0"
+dependencies = [
+ "effectcraft-color",
+ "effectcraft-effects",
+ "effectcraft-keyframe",
+ "effectcraft-path",
+ "effectcraft-project",
+ "effectcraft-render",
+ "effectcraft-text",
+ "effectcraft-time",
+ "kurbo",
+ "serde_json",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

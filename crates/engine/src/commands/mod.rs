@@ -15,6 +15,7 @@ mod layer;
 mod layer_menu;
 mod layer_time;
 mod link;
+mod lottie;
 mod mask;
 mod prop;
 mod query;
@@ -100,6 +101,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(animation::specs());
         v.extend(view::specs());
         v.extend(file_more::specs());
+        v.extend(lottie::specs());
         v.extend(comp_more::specs());
         v.extend(frontend::specs());
         v.extend(stubs::specs());
