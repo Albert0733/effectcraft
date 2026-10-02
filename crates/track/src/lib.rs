@@ -372,7 +372,11 @@ impl PointState {
                 })
             })
             .collect();
-        cands.sort_by(|a, b| b.0.total_cmp(&a.0));
+        // Best score first; ties (flat or repetitive regions) go to the candidate nearest the
+        // prediction so featureless areas don't drift.
+        let cp = crop.to_level(predicted, top);
+        let d2 = |c: &[f64; 2]| (c[0] - cp[0]).powi(2) + (c[1] - cp[1]).powi(2);
+        cands.sort_by(|a, b| if (a.0 - b.0).abs() < 1e-9 { d2(&a.1).total_cmp(&d2(&b.1)) } else { b.0.total_cmp(&a.0) });
         let mut seeds: Vec<[f64; 2]> = vec![];
         for (_, c) in &cands {
             if seeds.iter().all(|q| (q[0] - c[0]).abs() > 1.5 || (q[1] - c[1]).abs() > 1.5) {
@@ -390,12 +394,16 @@ impl PointState {
             for k in (0..top).rev() {
                 c = [c[0] * 2.0, c[1] * 2.0];
                 let (pl, tp) = (&crop.levels[k], &self.templates[k]);
-                let mut lb = (f64::MIN, c);
+                // Start from the projected match; neighbours must beat it (no drift on ties).
+                let mut lb = (ncc(pl, tp, c, shape), c);
                 for j in -2..=2 {
                     for i in -2..=2 {
+                        if i == 0 && j == 0 {
+                            continue;
+                        }
                         let q = [c[0] + i as f64, c[1] + j as f64];
                         let v = ncc(pl, tp, q, shape);
-                        if v > lb.0 {
+                        if v > lb.0 + 1e-9 {
                             lb = (v, q);
                         }
                     }
@@ -405,7 +413,7 @@ impl PointState {
             if top == 0 {
                 score = ncc(&crop.levels[0], &self.templates[0], c, shape);
             }
-            if score > best.0 {
+            if score > best.0 + 1e-9 {
                 best = (score, crop.level_to_image(c, 0));
             }
         }
@@ -427,6 +435,10 @@ impl PointState {
                     c = parabolic(&crop.levels[0], &self.templates[0], c0, shape);
                 }
             }
+        }
+        // A featureless template can't be matched: stay put.
+        if self.templates[0].ss < 1e-6 {
+            (c, a) = (crop.to_level(predicted, 0), shape);
         }
         let mut conf = ncc(&crop.levels[0], &self.templates[0], c, a);
         // Keep the coarse match if refinement made it worse.
@@ -451,7 +463,8 @@ impl PointState {
                 ConfidenceAction::Adapt => status = Status::Adapted,
             }
         }
-        self.velocity = [found[0] - prev[0], found[1] - prev[1]];
+        // Only confident matches predict the next search position.
+        self.velocity = if low { [0.0; 2] } else { [found[0] - prev[0], found[1] - prev[1]] };
         self.center = found;
         self.shape = a;
         if opts.adapt_every_frame || status == Status::Adapted {

@@ -77,6 +77,29 @@ instead of being ignored.
 4. `execute_command {"command":"effect.apply","params":{"layer":2,"effect":"Gaussian Blur"}}`, then `set_property {"layer":2,"path":"effects/#1/blurriness","value":8}`
 5. `render_frame {"time":1.0}` lets you look at the result, and `save_project {"path":"intro.ecproj"}` saves it.
 
+### Motion tracking
+
+Trackers live on the tracked layer (`Motion Trackers ▸ Tracker n ▸ Track Point n`) and are driven
+with `track.*` commands. `track.analyze` runs in the background in the app (poll `track.status`);
+pass `"wait": true` to block until it finishes, which is what the CLI and headless MCP want.
+
+1. `execute_command {"command":"track.motion","params":{"layer":"clip.mov"}}` creates a Transform
+   tracker (Motion Target: the layer above). Use `track.stabilize` for Stabilize, or `track.new` with
+   `kind` `transform|stabilize|affine|perspective|raw` and `rotation`/`scale`.
+2. `execute_command {"command":"track.setPoint","params":{"point":1,"center":[812,440],"featureSize":[40,40],"searchSize":[96,96]}}`
+3. `execute_command {"command":"track.analyze","params":{"direction":"forward","wait":true}}` keys Feature
+   Center, Confidence and Attach Point on every frame from the current time to the layer's end.
+4. `execute_command {"command":"track.apply","params":{"dimensions":"xy"}}` keys the target's Position
+   (and Rotation/Scale), the layer's own Anchor Point and Position for Stabilize, or a Corner Pin
+   effect for `affine`/`perspective` tracks. `track.options` sets the channel, blur/enhance,
+   adapt-feature and "If Confidence is Below" behaviour; `track.status` reports the track points.
+
+```sh
+effectcraft-cli run clip.ecproj track.motion '{"layer":"#2"}' \
+  track.setPoint '{"point":1,"center":[812,440]}' \
+  track.analyze '{"wait":true}' track.apply '{}' --save
+```
+
 ## CLI
 
 Each invocation runs a headless engine with no window. It opens the demo project unless you pass

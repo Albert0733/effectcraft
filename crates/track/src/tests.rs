@@ -240,3 +240,17 @@ fn performance_1080p_single_point() {
     assert!(dist(last.center, [c0[0] + 2.3 * 5.0, c0[1] + 1.1 * 5.0]) < 0.25, "{:?}", last.center);
     assert!(per < 0.1, "{per} s per frame");
 }
+
+#[test]
+fn featureless_regions_stay_put() {
+    let flat = Image::filled(200, 160, [0.3, 0.3, 0.3, 1.0]);
+    for action in ConfidenceAction::ALL {
+        let opts = TrackOptions { action, ..Default::default() };
+        let mut tr = Tracker::new(opts, &[spec([100.0, 80.0], 21.0, 61.0)], &Frame::new(&flat));
+        for _ in 0..10 {
+            let r = tr.step(&Frame::new(&flat))[0];
+            assert!(dist(r.center, [100.0, 80.0]) < 1e-9, "{action:?}: drifted to {:?}", r.center);
+            assert!(r.confidence < 1.0);
+        }
+    }
+}

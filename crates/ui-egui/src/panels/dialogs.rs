@@ -31,6 +31,9 @@ pub struct DialogState {
     pub velocity: super::key_dialogs::VelocityDraft,
     pub interp: super::key_dialogs::InterpDraft,
     pub stretch: super::key_dialogs::StretchDraft,
+    pub track_options: super::tracker::OptionsDraft,
+    pub track_target: super::tracker::TargetDraft,
+    pub track_apply: super::tracker::ApplyDraft,
 }
 
 pub fn open_new_comp(app: &mut EffectcraftApp) {
@@ -108,6 +111,9 @@ pub fn show(app: &mut EffectcraftApp, ctx: &egui::Context) {
         Dialog::KeyVelocity => super::key_dialogs::velocity(app, ctx, &t),
         Dialog::KeyInterpolation => super::key_dialogs::interpolation(app, ctx, &t),
         Dialog::TimeStretch => super::key_dialogs::time_stretch(app, ctx, &t),
+        Dialog::TrackOptions => super::tracker::options_dialog(app, ctx, &t),
+        Dialog::TrackTarget => super::tracker::target_dialog(app, ctx, &t),
+        Dialog::TrackApply => super::tracker::apply_dialog(app, ctx, &t),
     }
 }
 

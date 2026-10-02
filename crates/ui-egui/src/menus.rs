@@ -446,6 +446,14 @@ pub fn frontend(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, p: Valu
             app.show_panel(PanelKind::Flowchart);
             Value::Null
         }
+        "track.editTargetDialog" => {
+            crate::panels::tracker::open_target(app)?;
+            Value::Null
+        }
+        "track.optionsDialog" => {
+            crate::panels::tracker::open_options(app)?;
+            Value::Null
+        }
         "layer.openLayer" => {
             app.show_panel(PanelKind::Layer);
             Value::Null
