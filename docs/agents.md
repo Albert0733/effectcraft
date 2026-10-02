@@ -26,6 +26,11 @@ Code, add a `.mcp.json` at the project root:
 }
 ```
 
+This repository ships a ready-made [`.mcp.json`](../.mcp.json): `effectcraft` (headless, demo
+project loaded) and `effectcraft-app` (bridged to a desktop app started with `--control 9877`). Both
+run through `cargo run --release`, so the first start compiles; run
+`cargo build --release -p effectcraft-cli` once beforehand to avoid an MCP startup timeout.
+
 You can also register it from the command line:
 `claude mcp add effectcraft -- /path/to/target/release/effectcraft-cli mcp`. Other clients (Claude
 Desktop, Cursor and the like) take the same `command` and `args`.
