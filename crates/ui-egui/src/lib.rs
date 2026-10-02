@@ -319,7 +319,14 @@ impl EffectcraftApp {
         let Some(c) = self.session.project.comp(comp) else { return };
         let key = self.frame_key(comp, frame, scale);
         let t = c.frame_rate.tick_of(frame);
-        let opts = RenderOpts { scale, motion_blur: true, guides: true, draft: self.ui.viewer.fast_preview, view: self.session.view_camera(comp) };
+        let opts = RenderOpts {
+            scale,
+            motion_blur: true,
+            guides: true,
+            draft: self.ui.viewer.fast_preview,
+            view: self.session.view_camera(comp),
+            backend: effectcraft_engine::render::Backend::Auto,
+        };
         if urgent {
             self.frames.request_urgent(&self.render_source(), key, comp, t, opts);
         } else {

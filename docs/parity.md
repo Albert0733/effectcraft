@@ -69,11 +69,11 @@ rendering, on-canvas text editing) are where the conservative figure is most lik
 | Text | 63% | 5.8 | on-canvas editing with a cursor, per-character styles, paragraph spacing and indents |
 | Web | 60% | 2.5 | threads, browser storage, audio |
 | 3D | 58% | 20.5 | Advanced 3D (models, PBR, image-based light), 3D camera tracker, multi-view layouts |
-| Effects | 56% | 14.6 | Effect Controls widgets (angle dial, point crosshair, eyedropper, curves), GPU effects, 41 missing effects |
+| Effects | 58% | 13.6 | Effect Controls widgets (angle dial, point crosshair, eyedropper, curves), GPU versions of more effects, 41 missing effects |
 | Interface | 55% | 10.4 | drag-to-dock and floating panels, viewer rulers/snapping/channels/snapshots, preferences, native macOS menus |
 | Project | 53% | 8.1 | 8/16/32-bit pipeline and colour management, auto-save, proxies, folder moves |
 | Masks & roto | 44% | 13.0 | mask tracking, Roto Brush, free transform and RotoBezier |
-| Preview | 43% | 8.1 | GPU compositor, disk cache, region of interest, snapshots and exposure |
+| Preview | 55% | 6.1 | GPU 3D and adjustment layers, disk cache, region of interest, snapshots and exposure |
 | Tracking | 0% | 13.0 | point tracker, Warp Stabilizer, mask and face tracking |
 | Paint | 0% | 4.0 | Brush, Clone Stamp, Eraser |
 
@@ -90,7 +90,8 @@ Mocha and Cineware are third-party and not counted.
 1. On-canvas text editing and per-character styles.
 2. Effect Controls widgets: angle dial, point crosshair, eyedropper, curves and levels editors.
 3. Viewer basics: snapping, rulers, channel view, snapshots, exposure, a drawable region of interest.
-4. A GPU (wgpu) compositor, then GPU effects.
+4. ~~A GPU (wgpu) compositor, then GPU effects~~ (done: 2D compositing and 16 GPU effects; 3D runs
+   and adjustment layers still composite on the CPU).
 5. Pen tool for shape paths, shape vertex editing, the Layer viewer, free transform and RotoBezier.
 6. Motion-path handles in the viewer; graph editor transform box and snapping.
 7. Point tracking and stabilization (in progress).
