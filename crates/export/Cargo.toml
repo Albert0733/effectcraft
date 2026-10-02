@@ -1,0 +1,29 @@
+[package]
+name = "effectcraft-export"
+description = "Render Queue jobs and output modules: H.264 MP4 (+AAC) and ProRes MOV (+PCM) via FilmCraft's pure-Rust encoders, PNG/JPEG/TIFF/EXR sequences, animated GIF"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+effectcraft-time = { workspace = true }
+effectcraft-project = { workspace = true }
+effectcraft-raster = { workspace = true }
+effectcraft-render = { workspace = true }
+filmcraft-h264enc = { workspace = true }
+filmcraft-prores = { workspace = true }
+filmcraft-aac = { workspace = true }
+filmcraft-isobmff = { workspace = true }
+image = { workspace = true, features = ["png", "jpeg", "tiff", "exr"] }
+gif = { workspace = true }
+rayon = { workspace = true }
+thiserror = { workspace = true }
+log = { workspace = true }
+
+[dev-dependencies]
+effectcraft-media = { workspace = true }
+effectcraft-color = { workspace = true }

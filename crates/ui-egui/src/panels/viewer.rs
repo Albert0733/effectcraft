@@ -71,7 +71,6 @@ enum Gesture {
         start_scale: [f64; 3],
         start_local: [f64; 2],
         inv: Mat3,
-        uniform: bool,
     },
     Rotate {
         layer: LayerId,
@@ -97,6 +96,48 @@ enum Gesture {
     Marquee {
         start: Pos2,
     },
+    /// Dragging selected mask vertices (comp-space point of the previous frame, comp → layer).
+    Vertices {
+        last: [f64; 2],
+        inv: Mat3,
+    },
+    /// Dragging a vertex's Bezier tangent (both sides symmetric unless Alt breaks them).
+    Tangent {
+        layer: LayerId,
+        mask: u64,
+        index: usize,
+        out: bool,
+        vertex: [f64; 2],
+        inv: Mat3,
+    },
+    /// Pen tool: pulling the tangents of the vertex just placed.
+    Pen {
+        layer: LayerId,
+        mask: u64,
+        index: usize,
+        vertex: [f64; 2],
+        inv: Mat3,
+        press: Pos2,
+    },
+}
+
+/// Pen tool path in progress: (layer, mask uid).
+fn pen_id() -> egui::Id {
+    egui::Id::new("viewer-pen")
+}
+
+/// Mask vertex / tangent hit targets drawn this frame.
+#[derive(Clone, Copy)]
+struct VertexHit {
+    layer: LayerId,
+    mask: u64,
+    index: usize,
+    pos: Pos2,
+    /// None = the vertex itself, Some(out?) = a tangent handle.
+    tangent: Option<bool>,
+    /// Layer-space vertex position and layer → comp matrix.
+    vertex: [f64; 2],
+    l2c: Mat3,
 }
 
 const HANDLE: f32 = 7.0;
@@ -238,11 +279,15 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     // Frame.
     let ppp = ctx.pixels_per_point();
     let scale = app.viewer_scale(zoom, ppp);
+    if !app.playback.playing {
+        // Queue the frame on screen before any prefetch.
+        app.request_frame_urgent(cid, comp.frame_rate.frame_at(app.session.time()), scale);
+    }
     crate::tick_playback(app, &ctx, scale);
     let time = app.session.time();
     let frame = comp.frame_rate.frame_at(time);
     let key = app.frame_key(cid, frame, scale);
-    app.request_frame(cid, frame, scale);
+    app.request_frame_urgent(cid, frame, scale);
     if let Some(img) = app.frames.get(&key) {
         let stale = app.viewer_tex.as_ref().is_none_or(|(_, k)| *k != key);
         if stale {
@@ -301,6 +346,12 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let ectx = EvalCtx { project: &snap_project, comp_id: cid, comp: &comp, time, expr: snap_expr.as_deref() };
     let selected = app.session.state.selected_layers.clone();
     let mut handle_hits: Vec<(LayerId, usize, Pos2)> = Vec::new();
+    let mut vertex_hits: Vec<VertexHit> = Vec::new();
+    let sel_vertices = app.session.state.selected_vertices.clone();
+    // Pen path in progress ends when the tool changes or its mask is gone.
+    if app.ui.tool != Tool::Pen || ui.input(|i| i.key_pressed(egui::Key::Escape) || i.key_pressed(egui::Key::Enter)) {
+        ui.data_mut(|d| d.remove::<(LayerId, u64)>(pen_id()));
+    }
     if app.ui.viewer.show_layer_controls {
         for l in comp.layers.iter().filter(|l| selected.contains(&l.id) && l.is_active_at(time)) {
             let col = Tokens::label(l.label);
@@ -350,14 +401,37 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     if sp.closed && !pts.is_empty() {
                         pts.push(pts[0]);
                     }
-                    painter.add(egui::Shape::line(pts, Stroke::new(1.0, Color32::from_rgb(color[0], color[1], color[2]))));
-                    for v in &sp.vertices {
-                        let c = m.apply(gv2(v[0], v[1]));
-                        painter.rect_filled(
-                            Rect::from_center_size(map.to_screen([c.x, c.y]), vec2(5.0, 5.0)),
-                            0.0,
-                            Color32::from_rgb(color[0], color[1], color[2]),
-                        );
+                    let mc = Color32::from_rgb(color[0], color[1], color[2]);
+                    painter.add(egui::Shape::line(pts, Stroke::new(1.0, mc)));
+                    let scr = |p: [f64; 2]| {
+                        let c = m.apply(gv2(p[0], p[1]));
+                        map.to_screen([c.x, c.y])
+                    };
+                    for (i, v) in sp.vertices.iter().enumerate() {
+                        let s = scr(*v);
+                        let selected = sel_vertices.iter().any(|x| x.layer == l.id && x.mask == g.uid && x.index == i);
+                        // Selected vertices: filled with their tangent handles; others hollow.
+                        if selected {
+                            for (out, tg) in [(false, sp.in_tangents.get(i)), (true, sp.out_tangents.get(i))] {
+                                let Some(tg) = tg.filter(|t| t[0] != 0.0 || t[1] != 0.0) else { continue };
+                                let h = scr([v[0] + tg[0], v[1] + tg[1]]);
+                                painter.line_segment([s, h], Stroke::new(1.0, mc));
+                                painter.circle_filled(h, 3.0, mc);
+                                vertex_hits.push(VertexHit { layer: l.id, mask: g.uid, index: i, pos: h, tangent: Some(out), vertex: *v, l2c: m });
+                            }
+                            painter.rect_filled(Rect::from_center_size(s, vec2(6.0, 6.0)), 0.0, mc);
+                        } else {
+                            painter.rect_filled(Rect::from_center_size(s, vec2(6.0, 6.0)), 0.0, Color32::from_black_alpha(160));
+                            painter.rect_stroke(Rect::from_center_size(s, vec2(6.0, 6.0)), 0.0, Stroke::new(1.0, mc), StrokeKind::Inside);
+                        }
+                        app.auto.add(&format!("viewer.mask.{}.vertex.{i}", g.uid), Rect::from_center_size(s, vec2(8.0, 8.0)), &g.name);
+                        vertex_hits.push(VertexHit { layer: l.id, mask: g.uid, index: i, pos: s, tangent: None, vertex: *v, l2c: m });
+                    }
+                    // Pen rubber band from the last vertex to the pointer.
+                    if ui.data(|d| d.get_temp::<(LayerId, u64)>(pen_id())) == Some((l.id, g.uid))
+                        && let (Some(last), Some(hp)) = (sp.vertices.last(), ui.input(|i| i.pointer.hover_pos()))
+                    {
+                        painter.line_segment([scr(*last), hp], Stroke::new(1.0, mc.gamma_multiply(0.6)));
                     }
                 }
             }
@@ -462,10 +536,31 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     }
     let mods = ui.input(|i| i.modifiers);
     let space_pan = ui.input(|i| i.key_down(egui::Key::Space)) && !ctx.egui_wants_keyboard_input();
+    // Pen tool: each press places a vertex (dragging pulls Bezier tangents); pressing on the
+    // first vertex closes the path.
+    if app.ui.tool == Tool::Pen
+        && !space_pan
+        && resp.hovered()
+        && ui.input(|i| i.pointer.primary_pressed())
+        && let Some(pos) = ui.input(|i| i.pointer.press_origin())
+    {
+        pen_press(app, ui, &ectx, &map, &vertex_hits, pos);
+    }
+    // A pen click (press + release without a drag) ends its tangent gesture on release.
+    if ui.input(|i| i.pointer.primary_released())
+        && matches!(ui.data(|d| d.get_temp::<Gesture>(egui::Id::new("viewer-gesture"))), Some(Gesture::Pen { .. }))
+        && !resp.drag_stopped()
+    {
+        ui.data_mut(|d| d.remove::<Gesture>(egui::Id::new("viewer-gesture")));
+    }
+    let vertex_at = |pos: Pos2, tangents: bool| -> Option<VertexHit> {
+        vertex_hits.iter().rev().filter(|h| h.tangent.is_some() == tangents).find(|h| h.pos.distance(pos) < 6.0).copied()
+    };
     if resp.drag_started()
         && let Some(pos) = resp.interact_pointer_pos()
     {
         let cpt = map.to_comp(pos);
+        let press = ui.input(|i| i.pointer.press_origin()).unwrap_or(pos);
         let tool = if space_pan || resp.dragged_by(egui::PointerButton::Middle) { Tool::Hand } else { app.ui.tool };
         let g = match tool {
             Tool::Hand => Some(Gesture::Pan { start_pan: app.ui.viewer.pan }),
@@ -496,6 +591,22 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
             }),
             t if t.is_shape() => Some(Gesture::Create { tool: t, start: cpt }),
             Tool::Orbit | Tool::PanCamera | Tool::Dolly => Some(Gesture::Camera { tool }),
+            Tool::Selection if vertex_at(press, true).is_some() => vertex_at(press, true).map(|h| Gesture::Tangent {
+                layer: h.layer,
+                mask: h.mask,
+                index: h.index,
+                out: h.tangent == Some(true),
+                vertex: h.vertex,
+                inv: h.l2c.inverse().unwrap_or(Mat3::IDENTITY),
+            }),
+            Tool::Selection if vertex_at(press, false).is_some() => vertex_at(press, false).map(|h| {
+                let me = json!({"layer": h.layer.0, "mask": h.mask, "index": h.index});
+                let selected = app.session.state.selected_vertices.iter().any(|v| v.layer == h.layer && v.mask == h.mask && v.index == h.index);
+                if !selected {
+                    let _ = app.session.execute("mask.selectVertices", json!({"vertices": [me], "add": mods.shift}));
+                }
+                Gesture::Vertices { last: cpt, inv: h.l2c.inverse().unwrap_or(Mat3::IDENTITY) }
+            }),
             Tool::Selection => {
                 if let Some((lid, hi, _)) = handle_hits.iter().find(|(_, _, h)| h.distance(pos) < HANDLE + 2.0).cloned() {
                     let layer = comp.layer(lid).cloned();
@@ -506,13 +617,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                         let a = ectx.v3(&layer, tr, "anchor", [0.0; 3]);
                         let lp = inv.apply(gv2(cpt[0], cpt[1]));
                         let _ = hi;
-                        Some(Gesture::Scale {
-                            layer: lid,
-                            start_scale: ectx.v3(&layer, tr, "scale", [100.0; 3]),
-                            start_local: [lp.x - a[0], lp.y - a[1]],
-                            inv,
-                            uniform: hi < 4,
-                        })
+                        Some(Gesture::Scale { layer: lid, start_scale: ectx.v3(&layer, tr, "scale", [100.0; 3]), start_local: [lp.x - a[0], lp.y - a[1]], inv })
                     })
                 } else if let Some(l) = pick(app, &ectx, cpt, mods.shift) {
                     let layers: Vec<(LayerId, [f64; 3], [f64; 3], [f64; 3])> = app
@@ -560,14 +665,13 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     let _ = app.session.execute("prop.set", json!({"layer": lid.0, "path": "transform/position", "value": v, "merge": merge}));
                 }
             }
-            Gesture::Scale { layer, start_scale, start_local, inv, uniform, .. } => {
+            Gesture::Scale { layer, start_scale, start_local, inv, .. } => {
                 let lp = inv.apply(gv2(cpt[0], cpt[1]));
                 // Local point relative to the anchor in *unscaled* layer space.
                 let a = comp.layer(layer).and_then(|l| l.transform().map(|tr| ectx.v3(l, tr, "anchor", [0.0; 3]))).unwrap_or([0.0; 3]);
                 let cur = [lp.x - a[0], lp.y - a[1]];
                 let fx = if start_local[0].abs() > 1e-6 { cur[0] / start_local[0] } else { 1.0 };
                 let fy = if start_local[1].abs() > 1e-6 { cur[1] / start_local[1] } else { 1.0 };
-                let _ = uniform;
                 let (fx, fy) = if mods.shift {
                     let f = (fx + fy) / 2.0;
                     (f, f)
@@ -644,6 +748,32 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 let r = Rect::from_two_pos(a, pos);
                 painter.rect_stroke(r, 0.0, Stroke::new(1.0, t.accent), StrokeKind::Middle);
             }
+            Gesture::Vertices { last, inv } => {
+                let d = inv.apply_vec(gv2(cpt[0] - last[0], cpt[1] - last[1]));
+                if d.x != 0.0 || d.y != 0.0 {
+                    let _ = app.session.execute("mask.moveVertices", json!({"delta": [d.x, d.y], "merge": merge}));
+                }
+                ui.data_mut(|dd| dd.insert_temp(gid, Gesture::Vertices { last: cpt, inv }));
+            }
+            Gesture::Tangent { layer, mask, index, out, vertex, inv } => {
+                let lp = inv.apply(gv2(cpt[0], cpt[1]));
+                let t = [lp.x - vertex[0], lp.y - vertex[1]];
+                let mut params = json!({"layer": layer.0, "mask": mask, "index": index, "merge": merge});
+                params[if out { "out" } else { "in" }] = json!(t);
+                if !mods.alt {
+                    params[if out { "in" } else { "out" }] = json!([-t[0], -t[1]]);
+                }
+                let _ = app.session.execute("mask.setVertex", params);
+            }
+            Gesture::Pen { layer, mask, index, vertex, inv, press } => {
+                if pos.distance(press) > 3.0 {
+                    let lp = inv.apply(gv2(cpt[0], cpt[1]));
+                    let t = [lp.x - vertex[0], lp.y - vertex[1]];
+                    let _ = app
+                        .session
+                        .execute("mask.setVertex", json!({"layer": layer.0, "mask": mask, "index": index, "out": t, "in": [-t[0], -t[1]], "merge": merge}));
+                }
+            }
             Gesture::Marquee { start } => {
                 let r = Rect::from_two_pos(start, pos);
                 painter.rect_filled(r, 0.0, t.accent.gamma_multiply(0.12));
@@ -700,6 +830,13 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     ui.data_mut(|d| d.insert_temp(egui::Id::new("viewer-text-edit"), (v["layer"].as_u64().unwrap_or(0), "Text".to_string())));
                 }
             }
+            Tool::Pen => {}
+            Tool::Selection if vertex_at(pos, false).is_some() => {
+                if let Some(h) = vertex_at(pos, false) {
+                    let me = json!({"layer": h.layer.0, "mask": h.mask, "index": h.index});
+                    let _ = app.session.execute("mask.selectVertices", json!({"vertices": [me], "add": mods.shift, "toggle": mods.shift}));
+                }
+            }
             _ => {
                 if pick(app, &ectx, cpt, mods.shift).is_none() {
                     let _ = app.session.execute("edit.deselectAll", json!({}));
@@ -708,6 +845,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         }
     }
     if resp.double_clicked()
+        && app.ui.tool != Tool::Pen
         && let Some(pos) = resp.interact_pointer_pos()
     {
         let cpt = map.to_comp(pos);
@@ -824,6 +962,51 @@ fn draw_rigs(app: &mut EffectcraftApp, painter: &egui::Painter, map: &ViewerMap,
             }
             app.auto.add(&format!("viewer.light.{}", l.id.0), Rect::from_center_size(s, vec2(16.0, 16.0)), &l.name);
         }
+    }
+}
+
+/// Pen tool press at `pos`: start a mask on the selected layer, add a vertex, or close the path.
+fn pen_press(app: &mut EffectcraftApp, ui: &mut egui::Ui, ectx: &EvalCtx, map: &ViewerMap, hits: &[VertexHit], pos: Pos2) {
+    let gid = egui::Id::new("viewer-gesture");
+    let current: Option<(LayerId, u64)> = ui.data(|d| d.get_temp(pen_id()));
+    let target = current.map(|c| c.0).or_else(|| {
+        app.session.state.selected_layers.iter().copied().find(|id| ectx.comp.layer(*id).is_some_and(|l| l.masks().is_some() && !l.switches.locked))
+    });
+    let Some(lid) = target else {
+        app.ui.status = "Select a layer to draw a mask with the Pen tool".into();
+        return;
+    };
+    let Some(layer) = ectx.comp.layer(lid) else { return };
+    let l2c = l2c(ectx, layer).0;
+    let Some(inv) = l2c.inverse() else { return };
+    let c = map.to_comp(pos);
+    let lp = inv.apply(gv2(c[0], c[1]));
+    let lp = [lp.x, lp.y];
+    let still_there = current.is_some_and(|(l, m)| layer.masks().is_some_and(|ms| ms.find_group(m).is_some()) && l == lid);
+    if let (true, Some((_, mask))) = (still_there, current) {
+        let count = hits.iter().filter(|h| h.layer == lid && h.mask == mask && h.tangent.is_none()).count();
+        let first = hits.iter().find(|h| h.layer == lid && h.mask == mask && h.index == 0 && h.tangent.is_none());
+        if count >= 2 && first.is_some_and(|f| f.pos.distance(pos) < 8.0) {
+            let _ = app.session.execute("mask.setClosed", json!({"layer": lid.0, "mask": mask, "closed": true}));
+            ui.data_mut(|d| {
+                d.remove::<(LayerId, u64)>(pen_id());
+                d.remove::<Gesture>(gid);
+            });
+            return;
+        }
+        if let Ok(v) = app.session.execute("mask.addVertex", json!({"layer": lid.0, "mask": mask, "point": lp})) {
+            let index = v.as_u64().unwrap_or(0) as usize;
+            ui.data_mut(|d| d.insert_temp(gid, Gesture::Pen { layer: lid, mask, index, vertex: lp, inv, press: pos }));
+        }
+        return;
+    }
+    if let Ok(v) = app.session.execute("mask.new", json!({"layer": lid.0, "vertices": [lp]}))
+        && let Some(mask) = v["mask"].as_u64()
+    {
+        ui.data_mut(|d| {
+            d.insert_temp(pen_id(), (lid, mask));
+            d.insert_temp(gid, Gesture::Pen { layer: lid, mask, index: 0, vertex: lp, inv, press: pos });
+        });
     }
 }
 

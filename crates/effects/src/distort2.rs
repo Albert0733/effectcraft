@@ -690,7 +690,7 @@ mod tests {
         for (k, v) in set {
             params.values.insert(k.to_string(), v.clone());
         }
-        let ctx = EffectCtx { params: &params, time: 0.5, layer_size: ls, seed: 3, adjustment: false };
+        let ctx = EffectCtx { params: &params, time: 0.5, layer_size: ls, seed: 3, adjustment: false, env: Default::default() };
         crate::apply(s, &ctx, Buf { img, offset: [0.0, 0.0], scale: 1.0 })
     }
 

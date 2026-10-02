@@ -39,6 +39,34 @@ fn coverage(ctx: &EvalCtx, layer: &Layer, g: &effectcraft_project::PropGroup, bu
     Some(cov)
 }
 
+/// The layer's enabled masks at the context time, flattened to polylines in layer space (for
+/// effects that use masks as paths: Stroke, Scribble, Inner/Outer Key, Reshape…).
+pub fn shapes(ctx: &EvalCtx, layer: &Layer) -> Vec<effectcraft_effects::MaskShape> {
+    let Some(masks) = layer.masks() else { return Vec::new() };
+    let mut out = Vec::new();
+    for g in masks.groups().filter(|g| g.enabled) {
+        let GroupKind::Mask { inverted, .. } = g.kind else { continue };
+        let Some(Value::Path(sp)) = ctx.group_value(layer, g, "path") else { continue };
+        let path = effectcraft_path::to_kurbo(&sp);
+        let mut pts: Vec<[f64; 2]> = Vec::new();
+        let mut closed = false;
+        kurbo::flatten(path.iter(), 0.25, |el| match el {
+            effectcraft_path::PathEl::MoveTo(p) | effectcraft_path::PathEl::LineTo(p) => {
+                if pts.last() != Some(&[p.x, p.y]) {
+                    pts.push([p.x, p.y]);
+                }
+            }
+            effectcraft_path::PathEl::ClosePath => closed = true,
+            _ => {}
+        });
+        if closed && pts.len() > 1 && pts.first() == pts.last() {
+            pts.pop();
+        }
+        out.push(effectcraft_effects::MaskShape { name: g.name.clone(), points: pts, closed: closed || sp.closed, inverted });
+    }
+    out
+}
+
 /// Apply the layer's masks to its buffer.
 pub fn apply(ctx: &EvalCtx, layer: &Layer, buf: &mut Buf) {
     let Some(masks) = layer.masks() else { return };

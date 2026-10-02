@@ -33,6 +33,16 @@ impl<'a> EvalCtx<'a> {
     }
     /// Value of a property at the context time (keyframes, then expression).
     pub fn value(&self, layer: &Layer, prop: &Property) -> Value {
+        // Separated Position reads as the combination of X/Y/Z Position.
+        if prop.match_id == "position"
+            && let Some(tr) = layer.transform()
+            && let Some(px) = tr.get("positionX")
+            && tr.get("position").is_some_and(|p| p.uid == prop.uid)
+        {
+            let z = tr.get("positionZ").map(|p| self.value(layer, p).as_f64()).unwrap_or(0.0);
+            let y = tr.get("positionY").map(|p| self.value(layer, p).as_f64()).unwrap_or(0.0);
+            return Value::Vec3([self.value(layer, px).as_f64(), y, z]);
+        }
         let lt = layer.layer_time(self.time);
         let v = prop.value_at(lt);
         if prop.has_expression()
@@ -63,6 +73,21 @@ impl<'a> EvalCtx<'a> {
     pub fn b(&self, layer: &Layer, g: &PropGroup, m: &str) -> bool {
         self.group_value(layer, g, m).map(|v| v.as_bool()).unwrap_or(false)
     }
+    /// Layer Position, honouring Separate Dimensions (X/Y/Z Position properties).
+    pub fn position(&self, layer: &Layer, tr: &PropGroup) -> [f64; 3] {
+        match tr.get("positionX") {
+            Some(px) => [self.value(layer, px).as_f64(), self.f(layer, tr, "positionY", 0.0), self.f(layer, tr, "positionZ", 0.0)],
+            None => self.v3(layer, tr, "position", [0.0; 3]),
+        }
+    }
+    /// Source time of a layer at the context time: Time Remap's value when enabled, else the
+    /// (stretch-aware) layer time.
+    pub fn source_time(&self, layer: &Layer) -> Tick {
+        if let Some(tr) = layer.props.get("timeRemap") {
+            return Tick::from_seconds_f64(self.value(layer, tr).as_f64());
+        }
+        layer.layer_time(self.time)
+    }
     pub fn layer(&self, id: LayerId) -> Option<&'a Layer> {
         self.comp.layer(id)
     }
@@ -71,7 +96,7 @@ impl<'a> EvalCtx<'a> {
     pub fn local_matrix(&self, layer: &Layer) -> Mat4 {
         let Some(tr) = layer.transform() else { return Mat4::IDENTITY };
         let three = layer.is_3d();
-        let pos = self.v3(layer, tr, "position", [0.0; 3]);
+        let pos = self.position(layer, tr);
         let rz = self.f(layer, tr, "rotation", 0.0);
         if layer.is_camera() || layer.is_light() {
             // Children of cameras/lights follow their position and full rotation.

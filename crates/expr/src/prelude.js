@@ -27,6 +27,9 @@ function __begin(t, v, c, l, path, uid, idx, fd) {
 function __finish(r) {
   r = __v(r);
   if (r !== null && typeof r === 'object' && r.__isLayer) return r.index;
+  // `[temp, temp]` where temp is a property (pick-whip 1D → 2D): read the values here, while
+  // host requests can still be answered and the script re-run.
+  if (Array.isArray(r)) return r.map(function (x) { return __v(x); });
   return r;
 }
 

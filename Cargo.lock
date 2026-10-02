@@ -876,6 +876,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "417bef24afe1460300965a25ff4a24b8b45ad011948302ec221e8a0a81eb2c79"
 
 [[package]]
+name = "cpu-time"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e9e393a7668fe1fad3075085b86c781883000b4ede868f43627b34a87c8b7ded"
+dependencies = [
+ "libc",
+ "winapi",
+]
+
+[[package]]
 name = "cpufeatures"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1048,16 +1058,30 @@ dependencies = [
  "effectcraft-ui-egui",
  "eframe",
  "egui",
+ "objc2-foundation 0.3.2",
  "rfd",
  "serde_json",
  "winit",
 ]
 
 [[package]]
-name = "effectcraft-cli"
+name = "effectcraft-automation"
 version = "0.1.0"
 dependencies = [
  "effectcraft-engine",
+ "image",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "effectcraft-cli"
+version = "0.1.0"
+dependencies = [
+ "cpu-time",
+ "effectcraft-automation",
+ "effectcraft-engine",
+ "effectcraft-host",
  "effectcraft-render",
  "effectcraft-time",
  "image",
@@ -1105,6 +1129,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "effectcraft-export"
+version = "0.1.0"
+dependencies = [
+ "effectcraft-color",
+ "effectcraft-media",
+ "effectcraft-project",
+ "effectcraft-raster",
+ "effectcraft-render",
+ "effectcraft-time",
+ "filmcraft-aac",
+ "filmcraft-h264enc",
+ "filmcraft-isobmff",
+ "filmcraft-prores",
+ "gif",
+ "image",
+ "log",
+ "rayon",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "effectcraft-expr"
 version = "0.1.0"
 dependencies = [
@@ -1132,6 +1177,7 @@ name = "effectcraft-host"
 version = "0.1.0"
 dependencies = [
  "effectcraft-engine",
+ "effectcraft-export",
  "effectcraft-expr",
  "effectcraft-media",
  "effectcraft-project",
@@ -1249,6 +1295,7 @@ dependencies = [
  "effectcraft-color",
  "effectcraft-engine",
  "effectcraft-geom",
+ "effectcraft-host",
  "effectcraft-keyframe",
  "effectcraft-path",
  "effectcraft-project",
@@ -1689,6 +1736,16 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-h264"
+version = "0.1.0"
+source = "git+https://github.com/storytold/filmcraft?rev=89cfbf24f698b0f0e538eb7795929f19bbfb1dbb#89cfbf24f698b0f0e538eb7795929f19bbfb1dbb"
+dependencies = [
+ "filmcraft-bitstream",
+ "rayon",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "filmcraft-h264enc"
 version = "0.1.0"
 source = "git+https://github.com/storytold/filmcraft?rev=89cfbf24f698b0f0e538eb7795929f19bbfb1dbb#89cfbf24f698b0f0e538eb7795929f19bbfb1dbb"
 dependencies = [
@@ -5042,6 +5099,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "winapi"
+version = "0.3.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c839a674fcd7a98952e593242ea400abe93992746761e38641405d28b00f419"
+dependencies = [
+ "winapi-i686-pc-windows-gnu",
+ "winapi-x86_64-pc-windows-gnu",
+]
+
+[[package]]
+name = "winapi-i686-pc-windows-gnu"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac3b87c63620426dd9b991e5ce0329eff545bccbbb34f3be09ff6fb6ab51b7b6"
+
+[[package]]
 name = "winapi-util"
 version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5049,6 +5122,12 @@ checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
  "windows-sys 0.61.2",
 ]
+
+[[package]]
+name = "winapi-x86_64-pc-windows-gnu"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "712e227841d057c1ee1cd2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f"
 
 [[package]]
 name = "windows"
@@ -5465,6 +5544,13 @@ name = "xml-rs"
 version = "0.8.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
+
+[[package]]
+name = "xtask"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
 
 [[package]]
 name = "yoke"

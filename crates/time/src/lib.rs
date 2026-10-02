@@ -330,6 +330,16 @@ pub fn format_timecode_frames(frame: i64, rate: FrameRate, drop_frame: bool) -> 
     format!("{}{h:02}{sep}{m:02}{sep}{s:02}{sep}{f:0fw$}", if neg { "-" } else { "" })
 }
 
+/// Format a frame count the way After Effects displays the current time: hours not padded
+/// (`0:00:02:15`, or `0;00;02;15` for drop-frame).
+pub fn format_timecode_ae(frame: i64, rate: FrameRate, drop_frame: bool) -> String {
+    let df = drop_frame && rate.supports_drop_frame();
+    let (neg, h, m, s, f) = frames_to_fields(frame, rate, df);
+    let sep = if df { ';' } else { ':' };
+    let fw = if rate.timecode_base() >= 100 { 3 } else { 2 };
+    format!("{}{h}{sep}{m:02}{sep}{s:02}{sep}{f:0fw$}", if neg { "-" } else { "" })
+}
+
 /// Format a tick according to a display mode.
 pub fn format_time(t: Tick, rate: FrameRate, drop_frame: bool, display: TimeDisplay, sample_rate: i64) -> String {
     let frame = rate.frame_at(t);

@@ -249,6 +249,9 @@ pub fn invoke(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, params: V
         "app.compSettings" | "comp.settings" if params.as_object().is_none_or(|m| m.is_empty()) => {
             crate::panels::dialogs::open_comp_settings(app)?;
         }
+        "keys.velocity" if params.as_object().is_none_or(|m| m.is_empty()) => crate::panels::key_dialogs::open_velocity(app)?,
+        "keys.interpolation" if params.as_object().is_none_or(|m| m.is_empty()) => crate::panels::key_dialogs::open_interpolation(app)?,
+        "layer.timeStretch" if params.as_object().is_none_or(|m| m.is_empty()) => crate::panels::key_dialogs::open_time_stretch(app)?,
         "app.solidSettings" | "layer.newSolid" if params.as_object().is_none_or(|m| m.is_empty()) => {
             crate::panels::dialogs::open_new_solid(app)?;
         }
@@ -259,6 +262,25 @@ pub fn invoke(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, params: V
                 || (id == "file.save" && params.get("path").is_none() && app.session.path.is_none())
             {
                 return file_dialog(app, id);
+            }
+            if id == "renderQueue.render" && params.get("wait").is_none() {
+                // The UI renders in the background; the panel shows progress.
+                let mut p = params.clone();
+                if let Some(m) = p.as_object_mut() {
+                    m.insert("wait".into(), json!(false));
+                } else {
+                    p = json!({"wait": false});
+                }
+                app.show_panel(PanelKind::RenderQueue);
+                return app.session.execute(id, p).map_err(|e| e.to_string());
+            }
+            if id == "renderQueue.add" {
+                let r = app.session.execute(id, params).map_err(|e| e.to_string());
+                match &r {
+                    Ok(_) => app.show_panel(PanelKind::RenderQueue),
+                    Err(e) => app.ui.status = e.clone(),
+                }
+                return r;
             }
             if id == "layer.rename" && params.get("name").is_none() {
                 crate::panels::timeline::begin_rename(app, ctx);

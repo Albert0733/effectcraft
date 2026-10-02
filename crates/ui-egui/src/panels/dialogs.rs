@@ -8,22 +8,7 @@ use crate::icons::{self, Icon};
 use crate::theme::Tokens;
 use crate::{Dialog, EffectcraftApp};
 
-#[derive(Clone, Debug)]
-pub struct CompDraft {
-    pub name: String,
-    pub width: u32,
-    pub height: u32,
-    pub fps: f64,
-    pub duration: f64,
-    pub bg: [f32; 3],
-    pub lock_aspect: bool,
-}
-
-impl Default for CompDraft {
-    fn default() -> Self {
-        CompDraft { name: "Comp 1".into(), width: 1920, height: 1080, fps: 29.97, duration: 10.0, bg: [0.0, 0.0, 0.0], lock_aspect: true }
-    }
-}
+pub use super::comp_settings::CompDraft;
 
 #[derive(Clone, Debug, Default)]
 pub struct DialogState {
@@ -36,6 +21,9 @@ pub struct DialogState {
     pub palette_sel: usize,
     pub camera: super::dialogs_3d::CameraDraft,
     pub light: super::dialogs_3d::LightDraft,
+    pub velocity: super::key_dialogs::VelocityDraft,
+    pub interp: super::key_dialogs::InterpDraft,
+    pub stretch: super::key_dialogs::StretchDraft,
 }
 
 pub fn open_new_comp(app: &mut EffectcraftApp) {
@@ -52,10 +40,16 @@ pub fn open_comp_settings(app: &mut EffectcraftApp) -> Result<(), String> {
         name: app.session.project.item(cid).map(|i| i.name.clone()).unwrap_or_default(),
         width: c.width,
         height: c.height,
+        pixel_aspect: c.pixel_aspect,
         fps: c.frame_rate.as_f64(),
         duration: c.duration.seconds(),
+        start: c.display_start.seconds(),
         bg: c.background,
-        lock_aspect: true,
+        shutter_angle: c.shutter_angle,
+        shutter_phase: c.shutter_phase,
+        samples: c.motion_blur_samples,
+        advanced_3d: c.renderer == effectcraft_engine::project::Renderer::Advanced3D,
+        ..Default::default()
     };
     app.dialog_state.editing_existing = true;
     app.dialog = Some(Dialog::CompSettings);
@@ -99,6 +93,9 @@ pub fn show(app: &mut EffectcraftApp, ctx: &egui::Context) {
         Dialog::CommandPalette => palette(app, ctx, &t),
         Dialog::CameraSettings => super::dialogs_3d::camera(app, ctx, &t),
         Dialog::LightSettings => super::dialogs_3d::light(app, ctx, &t),
+        Dialog::KeyVelocity => super::key_dialogs::velocity(app, ctx, &t),
+        Dialog::KeyInterpolation => super::key_dialogs::interpolation(app, ctx, &t),
+        Dialog::TimeStretch => super::key_dialogs::time_stretch(app, ctx, &t),
     }
 }
 
@@ -176,93 +173,25 @@ fn about(app: &mut EffectcraftApp, ctx: &egui::Context, t: &Tokens) {
 }
 
 fn comp_settings(app: &mut EffectcraftApp, ctx: &egui::Context, t: &Tokens, existing: bool) {
-    let mut close = false;
-    let mut ok = false;
     let mut d = app.dialog_state.comp.clone();
-    modal(ctx, if existing { "Composition Settings" } else { "Composition Settings — New" }, vec2(520.0, 420.0), t, |ui| {
-        egui::Grid::new("comp-grid").num_columns(2).spacing([14.0, 10.0]).show(ui, |ui| {
-            ui.label("Composition Name");
-            ui.add(egui::TextEdit::singleline(&mut d.name).desired_width(260.0));
-            ui.end_row();
-            ui.label("Preset");
-            egui::ComboBox::from_id_salt("comp-preset").selected_text(format!("{}x{} {:.2}", d.width, d.height, d.fps)).show_ui(ui, |ui| {
-                for (label, w, h, f) in [
-                    ("HD · 1920x1080 · 29.97 fps", 1920, 1080, 29.97),
-                    ("HD · 1920x1080 · 25 fps", 1920, 1080, 25.0),
-                    ("HD · 1920x1080 · 23.976 fps", 1920, 1080, 23.976),
-                    ("HD · 1280x720 · 29.97 fps", 1280, 720, 29.97),
-                    ("UHD 4K · 3840x2160 · 29.97 fps", 3840, 2160, 29.97),
-                    ("Social 9:16 · 1080x1920 · 30 fps", 1080, 1920, 30.0),
-                    ("Social 1:1 · 1080x1080 · 30 fps", 1080, 1080, 30.0),
-                    ("Social 4:5 · 1080x1350 · 30 fps", 1080, 1350, 30.0),
-                    ("Cinema 4K · 4096x2160 · 24 fps", 4096, 2160, 24.0),
-                ] {
-                    if ui.selectable_label(false, label).clicked() {
-                        d.width = w;
-                        d.height = h;
-                        d.fps = f;
-                    }
-                }
-            });
-            ui.end_row();
-            ui.label("Width / Height");
-            ui.horizontal(|ui| {
-                let ow = d.width;
-                ui.add(egui::DragValue::new(&mut d.width).range(4..=30000).suffix(" px"));
-                ui.label("×");
-                let oh = d.height;
-                ui.add(egui::DragValue::new(&mut d.height).range(4..=30000).suffix(" px"));
-                ui.checkbox(&mut d.lock_aspect, "Lock aspect");
-                if d.lock_aspect && ow != d.width && ow > 0 {
-                    d.height = ((d.width as f64) * oh as f64 / ow as f64).round().max(4.0) as u32;
-                }
-            });
-            ui.end_row();
-            ui.label("Frame Rate");
-            egui::ComboBox::from_id_salt("comp-fps").selected_text(format!("{:.3}", d.fps).trim_end_matches('0').trim_end_matches('.').to_string()).show_ui(
-                ui,
-                |ui| {
-                    for f in [23.976, 24.0, 25.0, 29.97, 30.0, 50.0, 59.94, 60.0, 120.0] {
-                        if ui.selectable_label((d.fps - f).abs() < 1e-3, format!("{f}")).clicked() {
-                            d.fps = f;
-                        }
-                    }
-                },
-            );
-            ui.end_row();
-            ui.label("Duration");
-            ui.add(egui::DragValue::new(&mut d.duration).range(0.04..=86400.0).speed(0.1).suffix(" s"));
-            ui.end_row();
-            ui.label("Background Color");
-            ui.color_edit_button_rgb(&mut d.bg);
-            ui.end_row();
-        });
-        ui.add_space(18.0);
-        ui.horizontal(|ui| {
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.add(egui::Button::new(egui::RichText::new("   OK   ").color(Color32::WHITE)).fill(t.accent)).clicked() {
-                    ok = true;
-                }
-                if ui.button("Cancel").clicked() {
-                    close = true;
-                }
-            });
-        });
+    let mut result = None;
+    modal(ctx, "Composition Settings", vec2(600.0, 470.0), t, |ui| {
+        result = super::comp_settings::show(ui, &mut d, t);
     });
-    if ui_enter(ctx) {
-        ok = true;
+    if result.is_none() && ui_enter(ctx) {
+        result = Some(super::comp_settings::params(&d));
     }
-    app.dialog_state.comp = d.clone();
-    if ok {
-        let params = json!({"name": d.name, "width": d.width, "height": d.height, "frameRate": d.fps, "duration": d.duration, "background": [d.bg[0], d.bg[1], d.bg[2]]});
-        let r = if existing { app.session.execute("comp.settings", params) } else { app.session.execute("comp.new", params) };
-        if let Err(e) = r {
-            app.ui.status = e.to_string();
+    app.dialog_state.comp = d;
+    match result {
+        Some(serde_json::Value::Null) => app.dialog = None,
+        Some(params) => {
+            let r = if existing { app.session.execute("comp.settings", params) } else { app.session.execute("comp.new", params) };
+            if let Err(e) = r {
+                app.ui.status = e.to_string();
+            }
+            app.dialog = None;
         }
-        close = true;
-    }
-    if close {
-        app.dialog = None;
+        None => {}
     }
 }
 
@@ -276,23 +205,55 @@ fn solid(app: &mut EffectcraftApp, ctx: &egui::Context, t: &Tokens) {
     let mut name = app.dialog_state.solid_name.clone();
     let mut col = app.dialog_state.solid_color;
     let mut size = app.dialog_state.solid_size;
-    modal(ctx, "Solid Settings", vec2(420.0, 300.0), t, |ui| {
-        egui::Grid::new("solid-grid").num_columns(2).spacing([14.0, 10.0]).show(ui, |ui| {
-            ui.label("Name");
-            ui.add(egui::TextEdit::singleline(&mut name).desired_width(220.0));
-            ui.end_row();
-            ui.label("Size");
+    let comp_size = app.session.active_comp().map(|c| (c.width, c.height)).unwrap_or((1920, 1080));
+    let lock_id = egui::Id::new("solid-lock-aspect");
+    let mut lock = ctx.data(|d| d.get_temp::<bool>(lock_id)).unwrap_or(true);
+    modal(ctx, "Solid Settings", vec2(460.0, 360.0), t, |ui| {
+        ui.horizontal(|ui| {
+            ui.label("Name:");
+            ui.add(egui::TextEdit::singleline(&mut name).desired_width(320.0));
+        });
+        ui.add_space(8.0);
+        ui.label(egui::RichText::new("Size").strong());
+        egui::Grid::new("solid-grid").num_columns(2).spacing([14.0, 8.0]).show(ui, |ui| {
+            let (ow, oh) = (size[0], size[1]);
+            ui.label("Width:");
             ui.horizontal(|ui| {
-                ui.add(egui::DragValue::new(&mut size[0]).range(1..=30000));
-                ui.label("×");
-                ui.add(egui::DragValue::new(&mut size[1]).range(1..=30000));
+                ui.add(egui::DragValue::new(&mut size[0]).range(1..=30000).suffix(" px"));
+                ui.checkbox(&mut lock, format!("Lock Aspect Ratio to {}", super::comp_settings::aspect_label(ow as f64, oh as f64)));
             });
             ui.end_row();
-            ui.label("Color");
-            ui.color_edit_button_rgb(&mut col);
+            ui.label("Height:");
+            ui.add(egui::DragValue::new(&mut size[1]).range(1..=30000).suffix(" px"));
             ui.end_row();
+            if lock && ow > 0 && oh > 0 {
+                if size[0] != ow {
+                    size[1] = ((size[0] as f64) * oh as f64 / ow as f64).round().max(1.0) as u32;
+                } else if size[1] != oh {
+                    size[0] = ((size[1] as f64) * ow as f64 / oh as f64).round().max(1.0) as u32;
+                }
+            }
         });
-        ui.add_space(18.0);
+        let pct = |a: u32, b: u32| 100.0 * a as f64 / b.max(1) as f64;
+        ui.label(
+            egui::RichText::new(format!(
+                "Width: {:.1}% of comp\nHeight: {:.1}% of comp\nFrame Aspect Ratio: {}",
+                pct(size[0], comp_size.0),
+                pct(size[1], comp_size.1),
+                super::comp_settings::aspect_label(size[0] as f64, size[1] as f64)
+            ))
+            .color(Color32::GRAY),
+        );
+        ui.add_space(4.0);
+        if ui.button("Make Comp Size").clicked() {
+            size = [comp_size.0, comp_size.1];
+        }
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            ui.label("Color:");
+            ui.color_edit_button_rgb(&mut col);
+        });
+        ui.add_space(14.0);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui.add(egui::Button::new(egui::RichText::new("   OK   ").color(Color32::WHITE)).fill(t.accent)).clicked() {
                 ok = true;
@@ -302,6 +263,7 @@ fn solid(app: &mut EffectcraftApp, ctx: &egui::Context, t: &Tokens) {
             }
         });
     });
+    ctx.data_mut(|d| d.insert_temp(lock_id, lock));
     app.dialog_state.solid_name = name.clone();
     app.dialog_state.solid_color = col;
     app.dialog_state.solid_size = size;

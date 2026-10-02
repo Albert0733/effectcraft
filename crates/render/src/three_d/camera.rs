@@ -208,8 +208,9 @@ pub fn rig_rotation(ctx: &EvalCtx, layer: &Layer) -> Mat4 {
 /// Direction of travel of a layer's position (parent space) at the context time.
 fn path_tangent(ctx: &EvalCtx, layer: &Layer) -> Option<Vec3> {
     let tr = layer.transform()?;
-    let p = tr.get("position")?;
-    if p.keys.len() < 2 && !p.has_expression() {
+    // Position (or its separated X/Y/Z dimensions) must be animated.
+    let moving = ["position", "positionX", "positionY", "positionZ"].iter().any(|m| tr.get(m).is_some_and(|p| p.keys.len() > 1 || p.has_expression()));
+    if !moving {
         return None;
     }
     let dt = effectcraft_time::Tick::from_seconds_f64(0.005);

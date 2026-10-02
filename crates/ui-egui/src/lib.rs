@@ -43,6 +43,9 @@ pub enum Dialog {
     CommandPalette,
     CameraSettings,
     LightSettings,
+    KeyVelocity,
+    KeyInterpolation,
+    TimeStretch,
 }
 
 /// Host hooks provided by the native app (file pickers etc.).
@@ -164,7 +167,12 @@ impl EffectcraftApp {
     }
 
     pub fn render_source(&self) -> RenderSource {
-        RenderSource { project: self.session.project.clone(), footage: self.session.footage.clone(), expr: self.session.expr.clone() }
+        RenderSource {
+            project: self.session.project.clone(),
+            footage: self.session.footage.clone(),
+            expr: self.session.expr.clone(),
+            layer_cache: self.session.layer_cache.clone(),
+        }
     }
 
     /// The render scale used by the viewer right now.
@@ -195,13 +203,26 @@ impl EffectcraftApp {
         h.finish() | 1
     }
 
-    /// Request a frame render (no-op if cached/in flight).
+    /// Request a prefetch frame render (no-op if cached/in flight).
     pub fn request_frame(&self, comp: ItemId, frame: i64, scale: f64) {
+        self.request_frame_with(comp, frame, scale, false);
+    }
+
+    /// Request the frame on screen: rendered before any queued prefetch.
+    pub fn request_frame_urgent(&self, comp: ItemId, frame: i64, scale: f64) {
+        self.request_frame_with(comp, frame, scale, true);
+    }
+
+    fn request_frame_with(&self, comp: ItemId, frame: i64, scale: f64, urgent: bool) {
         let Some(c) = self.session.project.comp(comp) else { return };
         let key = self.frame_key(comp, frame, scale);
         let t = c.frame_rate.tick_of(frame);
         let opts = RenderOpts { scale, motion_blur: true, guides: true, draft: self.ui.viewer.fast_preview, view: self.session.view_camera(comp) };
-        self.frames.request(&self.render_source(), key, comp, t, opts);
+        if urgent {
+            self.frames.request_urgent(&self.render_source(), key, comp, t, opts);
+        } else {
+            self.frames.request(&self.render_source(), key, comp, t, opts);
+        }
     }
 
     // ---------------------------------------------------------------- playback
@@ -243,7 +264,15 @@ impl EffectcraftApp {
         let (wa, wb) = (fr.frame_at(c.work_area.0), fr.frame_at(c.work_area.1 - c.frame_duration()));
         // Prefetch ahead.
         let cur = fr.frame_at(self.session.time());
-        let ahead = (self.frames_parallelism() * 2).max(4) as i64;
+        // While paused (scrubbing, editing) the viewer's frame comes first: prefetch only a few
+        // frames, and only once it is done, so prefetch never delays what is on screen.
+        let ahead = if self.playback.playing {
+            (self.frames_parallelism() * 2).max(4) as i64
+        } else if self.frames.urgent_pending() {
+            0
+        } else {
+            (self.frames_parallelism() / 2).max(2) as i64
+        };
         let mut queued = self.frames.inflight();
         for k in 0..ahead * 3 {
             if queued >= ahead as usize {
@@ -330,6 +359,12 @@ impl EffectcraftApp {
                 }
                 control::Outcome::AfterInput => self.input_waiters.push(reply),
                 control::Outcome::Screenshot { path, crop } => {
+                    // A covered or minimized window presents no frames (macOS skips its redraws), so
+                    // a screenshot would never arrive and nothing would tick its timeout.
+                    if ctx.input(|i| i.viewport().occluded == Some(true) || i.viewport().minimized == Some(true)) {
+                        let _ = reply.send(json!({"ok": false, "error": "window is covered or minimized: call ui.focus first (render.frame renders comp pixels without the window)"}));
+                        continue;
+                    }
                     let token = self.next_token;
                     self.next_token += 1;
                     let settle = now + 0.35;
@@ -417,6 +452,10 @@ impl EffectcraftApp {
         let ctx = ui.ctx().clone();
         self.auto.begin_frame();
         self.frames.set_context(&ctx);
+        if self.session.render_job.is_some() {
+            self.session.poll_render();
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
         self.handle_events(&ctx);
         if let Some(rx) = self.command_inbox.take() {
             while let Ok(id) = rx.try_recv() {
@@ -478,14 +517,31 @@ impl EffectcraftApp {
         }
     }
 
+    /// Tab labels that name what the panel shows, as After Effects does: "Composition Intro",
+    /// "Effect Controls Title", "Properties: Title", and the Timeline tab named after its comp.
+    fn tab_titles(&self) -> Vec<(PanelKind, String)> {
+        let mut out = Vec::new();
+        let Some(comp) = self.session.active_comp() else { return out };
+        let cname = self.session.active_comp_id().and_then(|id| self.session.project.item(id)).map(|i| i.name.clone()).unwrap_or_default();
+        out.push((PanelKind::Composition, format!("Composition {cname}")));
+        out.push((PanelKind::Timeline, cname));
+        if let Some(l) = self.session.state.selected_layers.first().and_then(|id| comp.layer(*id)) {
+            out.push((PanelKind::EffectControls, format!("Effect Controls {}", l.name)));
+            out.push((PanelKind::Properties, format!("Properties: {}", l.name)));
+        }
+        out
+    }
+
     fn dock_area(&mut self, ui: &mut egui::Ui, body: egui::Rect) {
         let t = self.tokens;
         let mut dock = std::mem::replace(&mut self.ui.dock, dock::DockNode::Tabs { panels: vec![], active: 0 });
         let mut groups = Vec::new();
         dock::layout(ui, &mut dock, body, &t, "", &mut groups, &mut self.auto);
         let mut actions = Vec::new();
+        let titles = self.tab_titles();
+        let title = |p: PanelKind| titles.iter().find(|(k, _)| *k == p).map(|(_, s)| s.clone()).unwrap_or_else(|| p.title().to_string());
         for g in &groups {
-            actions.extend(dock::draw_group_chrome(ui, g, self.ui.focused, &t, &mut self.auto));
+            actions.extend(dock::draw_group_chrome(ui, g, self.ui.focused, &t, &mut self.auto, &title));
         }
         self.ui.dock = dock;
         for g in &groups {
@@ -508,6 +564,14 @@ impl EffectcraftApp {
             }
         }
         panels::panel_menu_popup(self, ui);
+    }
+}
+
+impl EffectcraftApp {
+    /// Take the pending synthetic input (from `ui.click`, `ui.key`, …). Hosts that don't call
+    /// [`eframe::App::raw_input_hook`] (the headless test harness) feed these in themselves.
+    pub fn take_synthetic_input(&mut self) -> Vec<egui::Event> {
+        std::mem::take(&mut self.synthetic)
     }
 }
 

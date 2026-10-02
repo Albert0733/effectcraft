@@ -11,12 +11,13 @@
 pub mod commands;
 pub mod demo;
 pub mod links;
+pub mod render_queue;
 
 use std::sync::Arc;
 
 use effectcraft_project::{Comp, ItemId, Layer, LayerId, Project, Uid};
 use effectcraft_raster::Image;
-use effectcraft_render::{ExprHost, FootageSource, NoFootage, RenderOpts, Renderer};
+use effectcraft_render::{ExprHost, FootageSource, LayerCache, NoFootage, RenderOpts, Renderer};
 use effectcraft_time::Tick;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -29,6 +30,7 @@ pub use effectcraft_keyframe as keyframe;
 pub use effectcraft_project as project;
 pub use effectcraft_render as render;
 pub use effectcraft_time as time;
+pub use render_queue::{ExportJob, ExportResult, Exporter, JobState};
 
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
@@ -91,6 +93,24 @@ pub struct KeyRef {
     pub time: Tick,
 }
 
+/// Keyframes of one property on the keyframe clipboard.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct KeyClip {
+    pub layer: LayerId,
+    /// Match-id path relative to the layer (`transform/position`), portable between layers.
+    pub path: String,
+    /// Keys with times relative to the earliest copied key (layer time).
+    pub keys: Vec<effectcraft_keyframe::Keyframe>,
+}
+
+/// A selected mask vertex: layer, mask group uid, vertex index.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct VertexRef {
+    pub layer: LayerId,
+    pub mask: Uid,
+    pub index: usize,
+}
+
 /// Editing state that commands depend on (headless-relevant, serde for agents).
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct EditorState {
@@ -107,6 +127,15 @@ pub struct EditorState {
     /// Layer clipboard (serialized layers) and keyframe clipboard.
     #[serde(skip)]
     pub clipboard: Vec<Layer>,
+    /// Copied keyframes (times relative to the earliest copied key).
+    #[serde(skip)]
+    pub key_clipboard: Vec<KeyClip>,
+    /// The last copy was keyframes (Paste pastes keys at the CTI).
+    #[serde(skip)]
+    pub clip_is_keys: bool,
+    /// Selected mask vertices (viewer Selection tool / pen).
+    #[serde(default)]
+    pub selected_vertices: Vec<VertexRef>,
     pub snapping: bool,
     /// Last applied effect id (Effect ▸ last effect).
     pub last_effect: Option<String>,
@@ -134,10 +163,18 @@ pub struct Session {
     pub services: Arc<dyn Services>,
     pub footage: Arc<dyn FootageSource>,
     pub expr: Option<Arc<dyn ExprHost>>,
+    /// Expression syntax checker (set by the host that links the expression engine).
+    pub expr_check: Option<fn(&str) -> std::result::Result<(), String>>,
     pub importer: Option<Arc<dyn Importer>>,
+    /// Render Queue encoder (the export layer); `None` = export unavailable.
+    pub exporter: Option<Arc<dyn Exporter>>,
+    /// The running (or finished, not yet polled) render.
+    pub render_job: Option<render_queue::RenderJob>,
     pub events: Vec<Event>,
     /// Commands executed: (id, params).
     pub journal: Vec<(String, Value)>,
+    /// Processed-layer pixels reused across frames and edits (content-keyed, never stale).
+    pub layer_cache: Arc<LayerCache>,
 }
 
 impl Default for Session {
@@ -152,9 +189,13 @@ impl Default for Session {
             services: Arc::new(FsServices),
             footage: Arc::new(NoFootage),
             expr: None,
+            expr_check: None,
             importer: None,
+            exporter: None,
+            render_job: None,
             events: vec![],
             journal: vec![],
+            layer_cache: Arc::new(LayerCache::default()),
         }
     }
 }
@@ -182,6 +223,14 @@ impl Session {
             }
         }
         Ok(r)
+    }
+
+    /// [`Session::execute`] for agents and scripts (MCP, CLI, control channel): unknown top-level
+    /// parameters are rejected with the accepted keys instead of being silently ignored.
+    pub fn execute_checked(&mut self, id: &str, params: Value) -> Result<Value> {
+        let spec = commands::find(id).ok_or_else(|| EngineError::UnknownCommand(id.to_string()))?;
+        commands::check_params(spec, &params)?;
+        self.execute(id, params)
     }
 
     pub fn is_enabled(&self, id: &str) -> bool {
@@ -246,6 +295,7 @@ impl Session {
             self.state.selected_layers.retain(|l| ids.contains(l));
             self.state.selected_props.retain(|(l, _)| ids.contains(l));
             self.state.selected_keys.retain(|k| ids.contains(&k.layer));
+            self.state.selected_vertices.retain(|v| ids.contains(&v.layer));
         }
         self.state.project_selection.retain(|i| p.item(*i).is_some());
     }
@@ -270,7 +320,7 @@ impl Session {
         if let Some(c) = self.state.active_comp {
             let comp = self.project.comp(c);
             let t = match comp {
-                Some(comp) => comp.frame_rate.snap(t.clamp(Tick::ZERO, comp.duration - comp.frame_duration())),
+                Some(comp) => comp.frame_rate.snap_nearest(t.clamp(Tick::ZERO, comp.duration - comp.frame_duration())),
                 None => t,
             };
             self.state.times.insert(c, t);
@@ -290,6 +340,7 @@ impl Session {
             self.state.selected_layers.clear();
             self.state.selected_props.clear();
             self.state.selected_keys.clear();
+            self.state.selected_vertices.clear();
         }
         self.events.push(Event::OpenComp(id));
     }
@@ -315,11 +366,38 @@ impl Session {
     pub fn render(&self, comp: ItemId, t: Tick, opts: RenderOpts) -> Image {
         let mut r = Renderer::new(&self.project, self.footage.as_ref(), opts);
         r.expr = self.expr.as_deref();
+        r.cache = Some(&self.layer_cache);
         r.comp_frame(comp, t)
+    }
+
+    /// Resolve a comp reference (item id number or name; `None`/null = the active comp).
+    pub fn resolve_comp(&self, comp: Option<&Value>) -> Result<ItemId> {
+        let p = match comp {
+            Some(v) if !v.is_null() => serde_json::json!({ "comp": v }),
+            _ => serde_json::json!({}),
+        };
+        commands::comp_id(self, &p)
+    }
+
+    /// Render a comp frame (comp time `t`) as opaque 8-bit RGBA over the comp background, scaled
+    /// so the longest side is at most `max_side` pixels (0 = full size). Returns (width, height, rgba).
+    pub fn render_rgba8(&self, comp: ItemId, t: Tick, max_side: u32) -> Result<(u32, u32, Vec<u8>)> {
+        let c = self.project.comp(comp).ok_or(EngineError::NoComp)?;
+        let long = c.width.max(c.height).max(1) as f64;
+        let scale = if max_side == 0 { 1.0 } else { (max_side as f64 / long).min(1.0) };
+        let img = self.render(comp, t, RenderOpts { scale, ..Default::default() });
+        Ok((img.width, img.height, img.to_rgba8_over(c.background)))
     }
 
     /// Replace the whole project (open/new), resetting history and state.
     pub fn replace_project(&mut self, mut p: Project, path: Option<String>) {
+        if self.stop_render()
+            && let Some(mut job) = self.render_job.take()
+        {
+            // Let the worker notice the cancel; its updates refer to the old project.
+            job.wait();
+        }
+        self.render_job = None;
         p.fix_next_id();
         self.project = Arc::new(p);
         self.history = History::default();
@@ -335,9 +413,13 @@ impl Session {
 }
 
 #[cfg(test)]
+mod rq_tests;
+#[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod tests_3d;
+#[cfg(test)]
+mod tests_timeline;
 
 /// Font families available to text layers (bundled + scanned system fonts).
 pub fn text_families() -> Vec<String> {

@@ -596,7 +596,15 @@ pub fn specs() -> Vec<EffectSpec> {
             ],
             vector_blur,
         ),
-        spec("ec.blur.reduceflicker", "Reduce Interlace Flicker", vec![p("softness", "Softness", num(0.0), slider(0.0, 100.0, 0.0, 10.0, 2))], reduce_flicker),
+        EffectSpec {
+            category: "Obsolete",
+            ..spec(
+                "ec.blur.reduceflicker",
+                "Reduce Interlace Flicker",
+                vec![p("softness", "Softness", num(0.0), slider(0.0, 100.0, 0.0, 10.0, 2))],
+                reduce_flicker,
+            )
+        },
         spec(
             "ec.blur.cccross",
             "CC Cross Blur",
@@ -621,7 +629,8 @@ mod tests {
         for (k, v) in over {
             params.values.insert(k.to_string(), v.clone());
         }
-        let ctx = EffectCtx { params: &params, time: 0.0, layer_size: [img.width as f64, img.height as f64], seed: 1, adjustment: false };
+        let ctx =
+            EffectCtx { params: &params, time: 0.0, layer_size: [img.width as f64, img.height as f64], seed: 1, adjustment: false, env: Default::default() };
         (s.render)(&ctx, Buf { img: img.clone(), offset: [0.0, 0.0], scale: 1.0 })
     }
 

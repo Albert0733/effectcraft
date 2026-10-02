@@ -240,19 +240,12 @@ pub fn workspace(name: &str) -> DockNode {
             ),
             tabs(&[Timeline, RenderQueue], 0),
         ),
-        // Default: Project/Effect Controls | Composition | Info, Audio, Preview, Effects & Presets…
-        _ => vsplit(
-            Ratio(0.56),
-            hsplit(
-                FixedA(300.0),
-                tabs(&[Project, EffectControls], 0),
-                hsplit(
-                    FixedB(290.0),
-                    tabs(&[Composition, Layer], 0),
-                    vsplit(Ratio(0.42), tabs(&[Info, Audio, Preview], 2), tabs(&[EffectsPresets, Properties, Character, Paragraph, Align], 0)),
-                ),
-            ),
-            tabs(&[Timeline, RenderQueue], 0),
+        // Default (as in After Effects): Project/Effect Controls | Composition over the Timeline,
+        // and a full-height right column with Preview above the Properties panel.
+        _ => hsplit(
+            FixedB(300.0),
+            vsplit(Ratio(0.56), hsplit(FixedA(300.0), tabs(&[Project, EffectControls], 0), tabs(&[Composition, Layer], 0)), tabs(&[Timeline, RenderQueue], 0)),
+            vsplit(FixedA(250.0), tabs(&[Preview, Info, Audio], 0), tabs(&[Properties, EffectsPresets, Character, Paragraph, Align], 0)),
         ),
     }
 }
@@ -411,7 +404,15 @@ pub fn layout(ui: &mut egui::Ui, node: &mut DockNode, rect: Rect, t: &Tokens, pa
 }
 
 /// Draw a group's frame + tab strip. Returns actions (tab clicks, panel menu, focus).
-pub fn draw_group_chrome(ui: &mut egui::Ui, g: &Group, focused: PanelKind, t: &Tokens, reg: &mut crate::automation::Registry) -> Vec<DockAction> {
+/// `title` gives a tab's label, which may name the comp or layer it shows (After Effects style).
+pub fn draw_group_chrome(
+    ui: &mut egui::Ui,
+    g: &Group,
+    focused: PanelKind,
+    t: &Tokens,
+    reg: &mut crate::automation::Registry,
+    title: &dyn Fn(PanelKind) -> String,
+) -> Vec<DockAction> {
     let mut actions = Vec::new();
     let painter = ui.painter().clone();
     painter.rect_filled(g.rect, t.radius, t.panel_bg);
@@ -429,7 +430,8 @@ pub fn draw_group_chrome(ui: &mut egui::Ui, g: &Group, focused: PanelKind, t: &T
         let text_y = strip.min.y + 16.0;
         for (i, p) in g.panels.iter().enumerate() {
             let is_active = i == g.active;
-            let galley = painter.layout_no_wrap(p.title().to_string(), Tokens::ui(12.0), if is_active { t.tab_text_active } else { t.tab_text });
+            let label = title(*p);
+            let galley = painter.layout_no_wrap(label.clone(), Tokens::ui(12.0), if is_active { t.tab_text_active } else { t.tab_text });
             let menu_w = if is_active { 20.0 } else { 0.0 };
             let w = galley.size().x + 16.0 + menu_w;
             if x + w > strip.max.x - 20.0 && i > g.active {
@@ -445,7 +447,7 @@ pub fn draw_group_chrome(ui: &mut egui::Ui, g: &Group, focused: PanelKind, t: &T
             }
             let tab = Rect::from_min_size(pos2(x, strip.min.y), vec2(w, t.tab_h));
             let resp = ui.interact(tab, egui::Id::new(("tab", g.path.clone(), i)), Sense::click());
-            reg.add(&format!("panel.tab.{}", p.id()), tab, p.title());
+            reg.add(&format!("panel.tab.{}", p.id()), tab, &label);
             let label_x = tab.min.x + 8.0;
             let label_w = galley.size().x;
             let col = if is_active || resp.hovered() { t.tab_text_active } else { t.tab_text };

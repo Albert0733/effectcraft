@@ -13,6 +13,8 @@
 //! alpha-shaped and coloured shadows through Light Transmission); Shadow Diffusion softens them
 //! with a penumbra that grows with the distance between caster and receiver.
 
+use std::sync::Arc;
+
 use effectcraft_color::{BlendMode, blend_pixel};
 use effectcraft_effects::Buf;
 use effectcraft_geom::{Mat3, Mat4, Vec3, vec3};
@@ -44,7 +46,7 @@ pub(crate) struct Item<'a> {
     pub layer: &'a Layer,
     /// Position in the layer stack (higher = above).
     order: usize,
-    buf: Buf,
+    buf: Arc<Buf>,
     bicubic: bool,
     geos: Vec<Geo>,
     mat: Material,
@@ -181,8 +183,12 @@ pub(crate) fn prepare<'a>(r: &Renderer, ctx: &EvalCtx<'a>, layer: &'a Layer, ord
             let sigma = radius / 1.5;
             let pad = (sigma * 3.0).ceil() as u32 + 1;
             let padded = buf.img.padded(pad);
-            buf.img = effectcraft_raster::gaussian_blur(&padded, sigma, sigma, false);
-            buf.offset = [buf.offset[0] + pad as f64, buf.offset[1] + pad as f64];
+            // The (cached, shared) layer buffer stays untouched; the blurred copy is per frame.
+            buf = Arc::new(Buf {
+                img: effectcraft_raster::gaussian_blur(&padded, sigma, sigma, false),
+                offset: [buf.offset[0] + pad as f64, buf.offset[1] + pad as f64],
+                scale: buf.scale,
+            });
         }
     }
     let n = if in_run { mb_samples(r, ctx, layer) } else { 1 };

@@ -8,22 +8,36 @@
 
 mod blur2;
 mod channel;
+mod channel2;
 mod color2;
+mod color3;
 mod color_fx;
 mod controls;
 mod distort;
 mod distort2;
+mod distort3;
 mod generate;
 mod generate2;
+mod generate3;
 mod keying;
+mod keying2;
 mod matte;
 mod misc;
 mod noise;
+mod noise2;
+mod obsolete;
 mod perspective;
+mod perspective2;
+mod sim;
+mod sim2;
 mod stylize2;
+mod stylize3;
+mod textfx;
 mod transition;
+mod transition2;
 pub mod util;
 mod utility;
+mod utility2;
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -122,6 +136,45 @@ impl Buf {
     }
 }
 
+/// A layer mask at the current time, flattened to a polyline in layer coordinates.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MaskShape {
+    pub name: String,
+    pub points: Vec<[f64; 2]>,
+    pub closed: bool,
+    pub inverted: bool,
+}
+
+/// Pixels of another layer referenced by a layer parameter: its buffer (layer space, see
+/// [`Buf`]) and its source size in layer pixels.
+#[derive(Clone, Debug, Default)]
+pub struct LayerPixels {
+    pub buf: Buf,
+    pub size: [f64; 2],
+}
+
+/// Services the renderer offers effects that look beyond their own pixels.
+pub trait EffectHost: Sync {
+    /// Layer `id` of the same composition at the current comp time. `masks_and_effects`
+    /// selects "Effects & Masks" over "Source". `None` for missing/self/recursive references.
+    fn layer(&self, id: u64, masks_and_effects: bool) -> Option<LayerPixels>;
+    /// `frames` stereo sample frames (interleaved L R …) of layer `id`'s audio starting at comp
+    /// time `start` seconds, at `rate` Hz. `None` when the layer has no audio.
+    fn audio(&self, id: u64, start: f64, frames: usize, rate: u32) -> Option<Vec<f32>>;
+}
+
+/// Extra context the renderer may supply (all optional; `Default` is "nothing known").
+#[derive(Clone, Copy, Default)]
+pub struct EffectEnv<'a> {
+    /// The layer's masks (enabled ones, top to bottom).
+    pub masks: &'a [MaskShape],
+    pub host: Option<&'a dyn EffectHost>,
+    /// Composition time in seconds.
+    pub comp_time: f64,
+    /// Composition frame rate (0 when unknown).
+    pub frame_rate: f64,
+}
+
 /// What an effect gets to render with.
 pub struct EffectCtx<'a> {
     pub params: &'a Params,
@@ -133,6 +186,20 @@ pub struct EffectCtx<'a> {
     pub seed: u32,
     /// Rendering for an adjustment layer (operating on the comp below).
     pub adjustment: bool,
+    /// Masks, other layers, audio, comp timing.
+    pub env: EffectEnv<'a>,
+}
+
+impl EffectCtx<'_> {
+    /// The layer chosen in layer parameter `id`, via the host.
+    pub fn layer_param(&self, id: &str, masks_and_effects: bool) -> Option<LayerPixels> {
+        let lid = self.params.get(id)?.as_layer()?;
+        self.env.host?.layer(lid, masks_and_effects)
+    }
+    /// Frame rate for frame-based maths (comp rate, else 30).
+    pub fn fps(&self) -> f64 {
+        if self.env.frame_rate > 0.0 { self.env.frame_rate } else { 30.0 }
+    }
 }
 
 pub type RenderFn = fn(&EffectCtx, Buf) -> Buf;
@@ -187,6 +254,20 @@ pub fn registry() -> &'static [EffectSpec] {
         v.extend(perspective::specs());
         v.extend(transition::specs());
         v.extend(utility::specs());
+        v.extend(sim::specs());
+        v.extend(sim2::specs());
+        v.extend(distort3::specs());
+        v.extend(perspective2::specs());
+        v.extend(utility2::specs());
+        v.extend(generate3::specs());
+        v.extend(textfx::specs());
+        v.extend(stylize3::specs());
+        v.extend(transition2::specs());
+        v.extend(channel2::specs());
+        v.extend(keying2::specs());
+        v.extend(noise2::specs());
+        v.extend(color3::specs());
+        v.extend(obsolete::specs());
         v.sort_by(|a, b| a.category.cmp(b.category).then(a.name.cmp(b.name)));
         v
     })
@@ -222,14 +303,68 @@ pub fn instantiate(spec: &EffectSpec, ids: &mut Ids, instance_name: &str, layer_
     g
 }
 
+/// Effects whose output depends on [`EffectCtx::time`] directly (not only through animated
+/// parameters). The renderer's layer cache folds the layer time into the key for these.
+/// The `time_dependence_is_declared` test checks the list against every registered effect.
+pub const TIME_DEPENDENT: &[&str] = &[
+    "ec.distort.wavewarp",
+    "ec.distort.ripple",
+    "ec.generate.radiowaves",
+    "ec.stylize.scatter",
+    "ec.stylize.strobe",
+    "ec.noise.noise",
+    "ec.noise.addgrain",
+    "ec.noise.noisealpha",
+    "ec.noise.noisehlsauto",
+    "ec.obsolete.lightning",
+    "ec.text.timecode",
+    "ec.text.numbers",
+];
+
+/// See [`TIME_DEPENDENT`].
+pub fn is_time_dependent(id: &str) -> bool {
+    // Simulations replay from layer time 0, so every frame differs even when the defaults
+    // happen to look static at the test's two sample times.
+    id.starts_with("ec.sim.") || TIME_DEPENDENT.contains(&id)
+}
+
 /// Run an effect on a buffer.
 pub fn apply(spec: &EffectSpec, ctx: &EffectCtx, buf: Buf) -> Buf {
     (spec.render)(ctx, buf)
 }
 
+/// Test helper: run effect `id` on `img` (scale 1, layer size = image size) with its defaults
+/// overridden by `vals`, at layer time `time`, with an optional environment.
+#[cfg(test)]
+pub(crate) fn run_fx(id: &str, vals: &[(&str, Value)], img: Image, time: f64, env: EffectEnv) -> Buf {
+    let s = find(id).unwrap_or_else(|| panic!("no effect {id}"));
+    let mut params = Params { values: s.params.iter().map(|p| (p.id.to_string(), p.default.clone())).collect() };
+    for (k, v) in vals {
+        assert!(params.values.contains_key(*k), "{id}: unknown param {k}");
+        params.values.insert(k.to_string(), v.clone());
+    }
+    let ctx = EffectCtx { params: &params, time, layer_size: [img.width as f64, img.height as f64], seed: 1, adjustment: false, env };
+    apply(s, &ctx, Buf { img, offset: [0.0, 0.0], scale: 1.0 })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn run_fx_passthrough() {
+        let img = Image::filled(4, 3, [0.5, 0.25, 0.125, 1.0]);
+        let out = run_fx("ec.control.slider", &[("slider", num(3.0))], img.clone(), 0.0, EffectEnv::default());
+        assert_eq!(out.img.data, img.data);
+    }
+
+    #[test]
+    #[ignore]
+    fn dump_registry() {
+        for s in registry() {
+            println!("{} | {} | {}", s.category, s.name, s.id);
+        }
+    }
 
     #[test]
     fn registry_is_consistent() {
@@ -259,10 +394,42 @@ mod tests {
         }
         for s in registry() {
             let params = Params { values: s.params.iter().map(|p| (p.id.to_string(), p.default.clone())).collect() };
-            let ctx = EffectCtx { params: &params, time: 0.5, layer_size: [48.0, 32.0], seed: 1, adjustment: false };
+            let ctx = EffectCtx { params: &params, time: 0.5, layer_size: [48.0, 32.0], seed: 1, adjustment: false, env: Default::default() };
             let out = apply(s, &ctx, Buf { img: img.clone(), offset: [0.0, 0.0], scale: 1.0 });
             assert!(!out.img.is_empty(), "{}", s.id);
             assert!(out.img.data.iter().all(|p| p[3].is_finite() && p[3] >= -1e-4 && p[3] <= 1.0001), "{} alpha out of range", s.id);
         }
+    }
+
+    /// Effects that read the clock must be listed in `TIME_DEPENDENT`, or the layer cache would
+    /// serve stale pixels. Render every effect at two times with default parameters (plus
+    /// "random…" switches turned on) and require identical output from unlisted ones.
+    #[test]
+    fn time_dependence_is_declared() {
+        let mut img = Image::new(40, 30);
+        for y in 0..30 {
+            for x in 0..40 {
+                let a = if (6..34).contains(&x) && (5..25).contains(&y) { 1.0 } else { 0.3 };
+                img.set(x, y, [((x * 7 + y * 3) % 11) as f32 / 11.0 * a, y as f32 / 30.0 * a, 0.4 * a, a]);
+            }
+        }
+        let mut missing = vec![];
+        for s in registry() {
+            let mut params = Params { values: s.params.iter().map(|p| (p.id.to_string(), p.default.clone())).collect() };
+            for (k, v) in params.values.iter_mut() {
+                if k.to_lowercase().contains("random") && matches!(v, Value::Bool(_)) {
+                    *v = Value::Bool(true);
+                }
+            }
+            let run = |t: f64| {
+                let ctx = EffectCtx { params: &params, time: t, layer_size: [40.0, 30.0], seed: 7, adjustment: false, env: Default::default() };
+                apply(s, &ctx, Buf { img: img.clone(), offset: [0.0, 0.0], scale: 1.0 }).img
+            };
+            let (a, b) = (run(0.0), run(1.37));
+            if a != b && !is_time_dependent(s.id) {
+                missing.push(s.id);
+            }
+        }
+        assert!(missing.is_empty(), "these depend on time but are not in TIME_DEPENDENT: {missing:?}");
     }
 }

@@ -160,3 +160,211 @@ fn effects_run_in_pipeline() {
     let c = img.get(100, 50);
     assert!(c[1] > 0.99 && c[0] < 0.01, "{c:?}");
 }
+
+// ------------------------------------------------------------------------------ layer cache
+
+fn render_cached(p: &Project, cid: ItemId, t: Tick, cache: Option<&crate::LayerCache>) -> crate::Image {
+    let mut r = crate::Renderer::new(p, &crate::NoFootage, crate::RenderOpts::default());
+    r.cache = cache;
+    r.comp_frame(cid, t)
+}
+
+/// [`add_effect`] for a 200×100 layer.
+fn add_effect_200(p: &mut Project, l: &mut effectcraft_project::Layer, id: &str, vals: &[(&str, Value)]) {
+    add_effect(p, l, id, [200.0, 100.0], vals);
+}
+
+fn add_effect(p: &mut Project, l: &mut effectcraft_project::Layer, id: &str, size: [f64; 2], vals: &[(&str, Value)]) {
+    let spec = effectcraft_effects::find(id).unwrap();
+    let mut next = p.next_id;
+    let mut g = effectcraft_effects::instantiate(spec, &mut Ids(&mut next), spec.name, size);
+    p.next_id = next;
+    for (k, v) in vals {
+        g.prop_mut(k).unwrap().value = v.clone();
+    }
+    l.props.sub_mut("effects").unwrap().children.push(g.into());
+}
+
+/// A comp with a static effected solid, an animated-trim shape, a moving text layer with a blur.
+fn cache_scene() -> (Project, ItemId) {
+    let (mut p, cid, comp) = setup();
+    let mut bg = solid(&mut p, &comp, [0.2, 0.3, 0.4], 200, 100);
+    add_effect_200(&mut p, &mut bg, "ec.color.tint", &[("white", Value::Color([1.0, 0.5, 0.0, 1.0]))]);
+    let mut shape = build::layer(&mut p, &comp, "Shape", LayerSource::Shape, (200, 100), None);
+    let mut next = p.next_id;
+    {
+        let mut ids = Ids(&mut next);
+        let e = build::shape_ellipse(&mut ids, [60.0, 60.0], [0.0, 0.0]);
+        let tr = build::shape_trim(&mut ids, 0.0, 0.0, 0.0);
+        let s = build::shape_stroke(&mut ids, [1.0, 1.0, 1.0, 1.0], 4.0);
+        let g = build::shape_group(&mut ids, "Ring", vec![e, tr, s]);
+        shape.props.sub_mut("contents").unwrap().children.push(g.into());
+    }
+    p.next_id = next;
+    shape.props.prop_mut("contents/group#1/contents/trim/end").unwrap().keys =
+        vec![Keyframe::new(Tick::ZERO, Value::Scalar(10.0)), Keyframe::new(Tick::from_seconds_f64(1.0), Value::Scalar(100.0))];
+    let mut text = build::layer(&mut p, &comp, "Text", LayerSource::Text, (200, 100), None);
+    text.props.prop_mut("text/sourceText").unwrap().value = Value::Text(Box::new(TextDoc { text: "AB".into(), size: 40.0, ..Default::default() }));
+    text.props.prop_mut("transform/position").unwrap().keys =
+        vec![Keyframe::new(Tick::ZERO, Value::Vec3([20.0, 70.0, 0.0])), Keyframe::new(Tick::from_seconds_f64(1.0), Value::Vec3([120.0, 70.0, 0.0]))];
+    add_effect_200(&mut p, &mut text, "ec.blur.gaussian", &[("blurriness", Value::Scalar(6.0))]);
+    let c = p.comp_mut(cid).unwrap();
+    c.layers = vec![text, shape, bg];
+    (p, cid)
+}
+
+fn assert_same(a: &crate::Image, b: &crate::Image, what: &str) {
+    assert_eq!((a.width, a.height), (b.width, b.height), "{what}");
+    for (i, (p, q)) in a.data.iter().zip(&b.data).enumerate() {
+        for c in 0..4 {
+            assert!((p[c] - q[c]).abs() < 1e-6, "{what}: pixel {i}: {p:?} vs {q:?}");
+        }
+    }
+}
+
+#[test]
+fn cached_frames_match_uncached() {
+    let (p, cid) = cache_scene();
+    let cache = crate::LayerCache::default();
+    for f in [0.0, 0.25, 0.5, 0.5, 1.2, 1.5, 0.25] {
+        let t = Tick::from_seconds_f64(f);
+        assert_same(&render_cached(&p, cid, t, Some(&cache)), &render_cached(&p, cid, t, None), &format!("t={f}"));
+    }
+    // bg is static, text only moves (transform), the shape is static after 1 s: lots of reuse.
+    let st = cache.stats();
+    assert!(st.hits >= 10, "{st:?}");
+}
+
+#[test]
+fn static_and_transform_only_layers_are_reused() {
+    let (p, cid) = cache_scene();
+    let cache = crate::LayerCache::default();
+    render_cached(&p, cid, Tick::from_seconds_f64(0.2), Some(&cache));
+    let before = cache.stats();
+    render_cached(&p, cid, Tick::from_seconds_f64(0.4), Some(&cache));
+    let after = cache.stats();
+    // bg (static) + text (only its position animates) hit; the shape's trim animates: miss.
+    assert_eq!(after.hits - before.hits, 2, "{before:?} {after:?}");
+    assert_eq!(after.misses - before.misses, 1, "{before:?} {after:?}");
+}
+
+type Edit = Box<dyn Fn(&mut Project, ItemId)>;
+
+/// Every kind of edit re-renders the affected layer: the cached render of the edited project
+/// equals a fresh uncached render, and differs from the unedited frame.
+#[test]
+fn edits_invalidate_cached_layers() {
+    let (p, cid) = cache_scene();
+    let t = Tick::from_seconds_f64(0.5);
+    let edits: Vec<(&str, Edit)> = vec![
+        (
+            "effect param value",
+            Box::new(|p, cid| p.comp_mut(cid).unwrap().layers[2].props.prop_mut("effects/#1/white").unwrap().value = Value::Color([0.0, 1.0, 0.0, 1.0])),
+        ),
+        (
+            "effect param keyframes",
+            Box::new(|p, cid| {
+                p.comp_mut(cid).unwrap().layers[0].props.prop_mut("effects/#1/blurriness").unwrap().keys =
+                    vec![Keyframe::new(Tick::ZERO, Value::Scalar(0.0)), Keyframe::new(Tick::from_seconds_f64(1.0), Value::Scalar(30.0))]
+            }),
+        ),
+        ("effect disabled", Box::new(|p, cid| p.comp_mut(cid).unwrap().layers[2].props.group_mut("effects/#1").unwrap().enabled = false)),
+        ("effects switch off", Box::new(|p, cid| p.comp_mut(cid).unwrap().layers[0].switches.effects = false)),
+        (
+            "effect added",
+            Box::new(|p, cid| {
+                let mut l = p.comp_mut(cid).unwrap().layers[2].clone();
+                add_effect_200(p, &mut l, "ec.channel.invert", &[]);
+                p.comp_mut(cid).unwrap().layers[2] = l;
+            }),
+        ),
+        (
+            "shape keyframe moved",
+            Box::new(|p, cid| {
+                p.comp_mut(cid).unwrap().layers[1].props.prop_mut("contents/group#1/contents/trim/end").unwrap().keys[1].time = Tick::from_seconds_f64(2.0)
+            }),
+        ),
+        (
+            "text changed",
+            Box::new(|p, cid| {
+                p.comp_mut(cid).unwrap().layers[0].props.prop_mut("text/sourceText").unwrap().value =
+                    Value::Text(Box::new(TextDoc { text: "XYZ".into(), size: 40.0, ..Default::default() }))
+            }),
+        ),
+        (
+            "solid colour",
+            Box::new(|p, cid| {
+                let LayerSource::Solid { item } = p.comp(cid).unwrap().layers[2].source else { unreachable!() };
+                if let ItemKind::Solid(s) = &mut p.item_mut(item).unwrap().kind {
+                    s.color = [0.9, 0.1, 0.1];
+                }
+                p.comp_mut(cid).unwrap().layers[2].props.group_mut("effects/#1").unwrap().enabled = false;
+            }),
+        ),
+        (
+            "mask added",
+            Box::new(|p, cid| {
+                let mut next = p.next_id;
+                let m = build::mask(&mut Ids(&mut next), "Mask 1", ShapePath::rect([50.0, 50.0], 40.0, 40.0), MaskMode::Add, [255, 255, 0]);
+                p.next_id = next;
+                p.comp_mut(cid).unwrap().layers[2].props.sub_mut("masks").unwrap().children.push(m.into());
+            }),
+        ),
+        ("layer time shifted", Box::new(|p, cid| p.comp_mut(cid).unwrap().layers[1].start_time = Tick::from_seconds_f64(0.3))),
+    ];
+    for (what, edit) in edits {
+        let cache = crate::LayerCache::default();
+        let orig = render_cached(&p, cid, t, Some(&cache));
+        let mut q = p.clone();
+        edit(&mut q, cid);
+        let cached = render_cached(&q, cid, t, Some(&cache));
+        let fresh = render_cached(&q, cid, t, None);
+        assert_same(&cached, &fresh, what);
+        assert!(orig.data.iter().zip(&fresh.data).any(|(a, b)| (a[0] - b[0]).abs() + (a[3] - b[3]).abs() > 1e-3), "{what}: edit had no visible effect");
+    }
+}
+
+#[test]
+fn time_dependent_effects_rerender_every_frame() {
+    let (mut p, cid, comp) = setup();
+    let mut l = solid(&mut p, &comp, [0.5, 0.5, 0.5], 200, 100);
+    add_effect_200(&mut p, &mut l, "ec.noise.noise", &[("amount", Value::Scalar(50.0))]);
+    p.comp_mut(cid).unwrap().layers.push(l);
+    let cache = crate::LayerCache::default();
+    let a = render_cached(&p, cid, Tick::from_seconds_f64(0.1), Some(&cache));
+    let b = render_cached(&p, cid, Tick::from_seconds_f64(0.2), Some(&cache));
+    assert_same(&b, &render_cached(&p, cid, Tick::from_seconds_f64(0.2), None), "noise at 0.2");
+    assert!(a != b, "noise must animate");
+}
+
+#[test]
+fn effects_see_layer_masks() {
+    let (mut p, cid, comp) = setup();
+    let mut l = solid(&mut p, &comp, [0.0, 0.0, 0.0], 200, 100);
+    let mut next = p.next_id;
+    let m = build::mask(&mut Ids(&mut next), "Mask 1", ShapePath::rect([50.0, 50.0], 40.0, 40.0), MaskMode::None, [255, 255, 0]);
+    p.next_id = next;
+    l.props.sub_mut("masks").unwrap().children.push(m.into());
+    add_effect(&mut p, &mut l, "ec.generate.stroke", [200.0, 100.0], &[("brushSize", Value::Scalar(6.0))]);
+    p.comp_mut(cid).unwrap().layers.push(l);
+    let img = render_frame(&p, cid, Tick::ZERO, 1.0);
+    assert!(img.get(30, 50)[0] > 0.5, "stroke on the mask edge: {:?}", img.get(30, 50));
+    assert!(img.get(50, 50)[0] < 0.01, "inside untouched");
+    assert!(img.get(150, 50)[3] > 0.99, "mode None mask does not cut the layer");
+}
+
+#[test]
+fn effects_read_layer_params() {
+    let (mut p, cid, comp) = setup();
+    let mut src = solid(&mut p, &comp, [0.0, 0.0, 1.0], 200, 100);
+    src.switches.video = false;
+    let src_id = src.id.0;
+    let mut top = solid(&mut p, &comp, [1.0, 0.0, 0.0], 200, 100);
+    add_effect(&mut p, &mut top, "ec.channel.blend", [200.0, 100.0], &[("blendWithLayer", Value::Layer(Some(src_id)))]);
+    let c = p.comp_mut(cid).unwrap();
+    c.layers.push(top);
+    c.layers.push(src);
+    let img = render_frame(&p, cid, Tick::ZERO, 1.0);
+    let px = img.get(100, 50);
+    assert!(px[2] > 0.99 && px[0] < 0.01, "{px:?}");
+}

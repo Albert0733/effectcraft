@@ -86,3 +86,45 @@ fn camera_parented_to_towards_camera_layer_does_not_recurse() {
     c.layers.push(l);
     let _ = crate::render_frame(&p, cid, Tick::ZERO, 0.5);
 }
+
+/// The layer cache holds layer pixels only; camera, lights, DOF and the view override act at
+/// compositing time, so cached renders must match uncached ones after any of them change.
+#[test]
+fn layer_cache_is_independent_of_camera_lights_and_view() {
+    let (mut p, cid, comp) = setup();
+    let mut cam = build::layer(&mut p, &comp, "Camera", LayerSource::Camera, (200, 100), None);
+    cam.props.prop_mut("cameraOptions/dof").unwrap().value = Value::Bool(true);
+    cam.props.prop_mut("cameraOptions/aperture").unwrap().value = Value::Scalar(40.0);
+    let light = build::layer(&mut p, &comp, "Light", LayerSource::Light { kind: effectcraft_project::LightKind::Point }, (200, 100), None);
+    let a = solid(&mut p, &comp, true, [80.0, 50.0, 0.0]);
+    let b = solid(&mut p, &comp, true, [120.0, 50.0, 150.0]);
+    let c = p.comp_mut(cid).unwrap();
+    c.layers.extend([cam, light, a, b]);
+    let cache = crate::LayerCache::new(64 << 20);
+    let render = |p: &Project, cached: bool, view: Option<super::CameraState>| {
+        let opts = crate::RenderOpts { view, motion_blur: false, ..Default::default() };
+        let mut r = crate::Renderer::new(p, &crate::NoFootage, opts);
+        if cached {
+            r.cache = Some(&cache);
+        }
+        r.comp_frame(cid, Tick::ZERO)
+    };
+    let check = |p: &Project, view: Option<super::CameraState>| {
+        let warm = render(p, true, view);
+        assert_eq!(render(p, true, view), warm);
+        assert_eq!(render(p, false, view), warm, "cached render differs from uncached");
+        warm
+    };
+    let first = check(&p, None);
+    // Move the camera, refocus, change the light: cached pixels must follow.
+    let c = p.comp_mut(cid).unwrap();
+    c.layers[0].props.prop_mut("transform/position").unwrap().value = Value::Vec3([40.0, 20.0, -250.0]);
+    c.layers[0].props.prop_mut("cameraOptions/focusDistance").unwrap().value = Value::Scalar(400.0);
+    c.layers[1].props.prop_mut("lightOptions/intensity").unwrap().value = Value::Scalar(40.0);
+    let second = check(&p, None);
+    assert_ne!(first, second, "camera/light changes re-render");
+    let top = super::default_view_cam(super::View3D::Top, 200.0, 100.0).state();
+    let third = check(&p, Some(top));
+    assert_ne!(third, second);
+    assert!(cache.stats().hits > 0, "the cache was actually used");
+}

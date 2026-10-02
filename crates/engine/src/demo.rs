@@ -14,8 +14,9 @@ use effectcraft_time::{FrameRate, Tick};
 pub const MAIN_COMP: &str = "EffectCraft Intro";
 pub const SHOWCASE_3D: &str = "3D Showcase";
 
+/// Seconds → the nearest frame of the demo's 29.97 fps comps (AE keeps times frame-aligned).
 fn t(s: f64) -> Tick {
-    Tick::from_seconds_f64(s)
+    FrameRate::FPS_29_97.snap_nearest(Tick::from_seconds_f64(s))
 }
 
 fn hex(h: &str) -> [f64; 4] {
