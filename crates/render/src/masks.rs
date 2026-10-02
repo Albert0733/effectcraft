@@ -113,11 +113,12 @@ pub fn shapes(ctx: &EvalCtx, layer: &Layer) -> Vec<effectcraft_effects::MaskShap
 }
 
 /// Apply the layer's masks to its buffer.
-pub fn apply(ctx: &EvalCtx, layer: &Layer, buf: &mut Buf) {
-    let Some(masks) = layer.masks() else { return };
+/// Returns whether any mask was applied.
+pub fn apply(ctx: &EvalCtx, layer: &Layer, buf: &mut Buf) -> bool {
+    let Some(masks) = layer.masks() else { return false };
     let list: Vec<_> = masks.groups().filter(|g| g.enabled && matches!(g.kind, GroupKind::Mask { mode, .. } if mode != MaskMode::None)).collect();
     if list.is_empty() {
-        return;
+        return false;
     }
     // Masks may extend past the source: grow the buffer to cover them when feather/expansion pads.
     let n = (buf.img.width * buf.img.height) as usize;
@@ -146,4 +147,5 @@ pub fn apply(ctx: &EvalCtx, layer: &Layer, buf: &mut Buf) {
         });
     }
     buf.img.mul_mask(&acc);
+    true
 }
