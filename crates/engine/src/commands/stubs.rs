@@ -83,9 +83,7 @@ pub fn specs() -> Vec<CommandSpec> {
         stub!("text.animatorFontAxes", "Variable Font Axes", ["Animation", "Animate Text"], "{}"),
         stub!("track.camera", "Track Camera", ["Animation"], "{}"),
         stub!("track.warpStabilizer", "Warp Stabilizer VFX", ["Animation"], "{}"),
-        stub!("track.motion", "Track Motion", ["Animation"], "{}"),
         stub!("track.mask", "Track Mask", ["Animation"], "{}"),
-        stub!("track.property", "Track this Property", ["Animation"], "{}"),
         // Workspaces and panels that don't exist yet.
         stub!("window.saveWorkspace", "Save Changes to this Workspace", ["Window", "Workspace"], "{}"),
         stub!("window.saveWorkspaceAs", "Save as New Workspace...", ["Window", "Workspace"], "{name}"),

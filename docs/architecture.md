@@ -22,6 +22,7 @@ cpal or muda. Everything in L0 to L4, the egui UI and the web app also build for
 | L2 | `project` | The document: items, compositions, layers, the property tree, render queue model, `.ecproj` serde |
 | L2 | `text` | Fonts, shaping, layout, per-glyph geometry, text animators and selectors |
 | L2 | `effects` | The effect registry (241 effects) and their CPU implementations |
+| L2 | `track` | Motion tracking: feature/search region point tracking (pyramid normalized cross-correlation, Lucas–Kanade sub-pixel refinement), confidence, homography/affine/similarity solves |
 | L3 | `render` | Evaluation and compositing: sources, masks, effects, transforms, 3D, motion blur, mattes, blending, layer cache, audio mixdown |
 | L3 | `media` | Footage decoding (FilmCraft's pure-Rust codecs), image sequences, frame cache |
 | L3 | `expr` | The expression engine (JavaScript via boa) with the After Effects object model |
@@ -91,6 +92,15 @@ reuses the cached source/masks/effects. Global Light is one setting per comp, mi
 layer's Blending Options and kept in step after each edit.
 
 Half, Third and Quarter resolution render proportionally fewer pixels end to end.
+
+**Motion tracking** (Animation ▸ Track Motion / Stabilize Motion, Window ▸ Tracker): a tracker
+is a `Tracker` group under the layer's Motion Trackers group, with Track Point groups (Feature
+Center, Feature Size, Search Offset, Search Size, Confidence, Attach Point, Attach Point Offset)
+keyframed per analysed frame. `track.analyze` renders the layer's source frames
+(`Renderer::layer_source`) on a background thread (`engine::tracking`, polled like the render
+queue; blocking with `wait`), and `effectcraft-track` matches each point in parallel. One undo step
+covers an analysis. `track.apply` keys the target's Position/Rotation/Scale, the tracked layer's
+Anchor Point and Position (Stabilize), or a Corner Pin effect (Parallel / Perspective).
 
 ## 5. Expressions
 

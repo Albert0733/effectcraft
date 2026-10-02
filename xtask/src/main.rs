@@ -26,6 +26,7 @@ const LAYERS: &[(&str, u8)] = &[
     ("project", 2),
     ("text", 2),
     ("effects", 2),
+    ("track", 2),
     ("render", 3),
     ("media", 3),
     ("expr", 3),
