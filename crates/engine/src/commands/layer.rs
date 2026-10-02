@@ -816,32 +816,6 @@ fn set_text(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(Value::Null)
 }
 
-fn add_animator(s: &mut Session, p: &Value) -> Result<Value> {
-    let (cid, lid) = layer_p(s, p, "layer.addTextAnimator")?;
-    let props: Vec<String> = match p.get("properties").or(p.get("property")) {
-        Some(Value::Array(a)) => a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect(),
-        Some(Value::String(x)) => vec![x.clone()],
-        _ => vec!["opacity".into()],
-    };
-    let uid = s.edit("Add Text Animator", None, |proj, _| {
-        let mut next = proj.next_id;
-        let mut ids = Ids(&mut next);
-        let list: Vec<_> = props.iter().filter_map(|k| build::text_anim_prop(&mut ids, k)).collect();
-        if list.is_empty() {
-            return Err(bad("layer.addTextAnimator", "unknown animator property"));
-        }
-        let l = layer_mut(proj, cid, lid)?;
-        let anims = l.props.group_mut("text/animators").ok_or_else(|| bad("layer.addTextAnimator", "not a text layer"))?;
-        let name = format!("Animator {}", anims.children.len() + 1);
-        let g = build::text_animator(&mut ids, &name, list);
-        let uid = g.uid;
-        anims.children.push(g.into());
-        proj.next_id = next;
-        Ok(uid)
-    })?;
-    Ok(json!({"animator": uid}))
-}
-
 fn transform_op(s: &mut Session, p: &Value) -> Result<Value> {
     let (cid, ids) = layers_p(s, p)?;
     let op = str_p(p, "op").unwrap_or("reset").to_string();
@@ -1018,15 +992,6 @@ pub fn specs() -> Vec<CommandSpec> {
             "{layer?, text?, size?, font?, style?, fill?, stroke?, applyFill?, applyStroke?, strokeWidth?, tracking?, leading?: px|\"auto\", justify?: left|center|right|justifyLeft|justifyCenter|justifyRight|justifyAll, allCaps?, smallCaps?, fauxBold?, fauxItalic?, hScale? %, vScale? %, baselineShift? px, strokeOverFill?}",
             has_layers,
             set_text
-        ),
-        cmd!(
-            "layer.addTextAnimator",
-            "Animate Text",
-            [],
-            None,
-            "{layer?, properties: [position|scale|rotation|opacity|fillColor|tracking|…]}",
-            has_layers,
-            add_animator
         ),
         cmd!(
             "layer.transform",

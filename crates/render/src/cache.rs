@@ -172,6 +172,13 @@ fn time_dependent(layer: &Layer) -> bool {
     {
         return group_has(c, "wiggle");
     }
+    // Wiggly selectors move with time; Expression selectors evaluate per character (their
+    // property value alone doesn't capture the result).
+    if matches!(layer.source, LayerSource::Text)
+        && let Some(t) = layer.props.sub("text")
+    {
+        return group_has(t, "wigglySelector") || group_has(t, "expressionSelector");
+    }
     false
 }
 

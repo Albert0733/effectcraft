@@ -21,6 +21,7 @@ mod query;
 mod render_queue;
 mod stubs;
 mod styles;
+mod text_anim;
 mod three_d;
 mod time;
 mod view;
@@ -84,6 +85,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(layer::specs());
         v.extend(styles::specs());
         v.extend(three_d::specs());
+        v.extend(text_anim::specs());
         v.extend(layer_time::specs());
         v.extend(prop::specs());
         v.extend(anim::specs());
@@ -103,6 +105,11 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(stubs::specs());
         v
     })
+}
+
+/// (id, name) of the text animation presets.
+pub fn text_preset_list() -> Vec<(String, String)> {
+    text_anim::preset_names()
 }
 
 pub fn find(id: &str) -> Option<&'static CommandSpec> {

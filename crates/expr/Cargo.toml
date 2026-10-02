@@ -25,3 +25,4 @@ boa_engine = { workspace = true, features = ["js"] }
 [dev-dependencies]
 effectcraft-color = { workspace = true }
 effectcraft-effects = { workspace = true }
+effectcraft-text = { workspace = true }

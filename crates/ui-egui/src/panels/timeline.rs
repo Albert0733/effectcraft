@@ -190,6 +190,14 @@ fn prop_visible(p: &Property, layer: &Layer) -> bool {
     if matches!(p.ui, ParamUi::Hidden) {
         return false;
     }
+    // Path Options show only the Path popup until a mask path is chosen.
+    if let Some(po) = layer.props.group("text/pathOptions")
+        && p.match_id != "path"
+        && po.get(&p.match_id).is_some_and(|q| q.uid == p.uid)
+        && po.get("path").is_some_and(|q| q.value.as_enum() == 0 && q.keys.is_empty())
+    {
+        return false;
+    }
     if p.three_d_only && !layer.is_3d() {
         return false;
     }
@@ -393,6 +401,10 @@ fn collect_props(g: &PropGroup, out: &mut Vec<u64>, f: &dyn Fn(&Property) -> boo
 fn push_group(rows: &mut Vec<Row>, l: &Layer, g: &PropGroup, depth: usize, open: &std::collections::BTreeSet<u64>) {
     for c in &g.children {
         match c {
+            // Text animators list their selectors and properties directly (as in AE).
+            Node::Group(sg) if g.match_id == "animator" && matches!(sg.match_id.as_str(), "selectors" | "properties") => {
+                push_group(rows, l, sg, depth, open);
+            }
             Node::Group(sg) => {
                 let o = open.contains(&sg.uid);
                 let fx = matches!(sg.kind, GroupKind::Effect { .. }).then_some(sg.enabled);
@@ -1021,6 +1033,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     app.auto.add(&format!("timeline.group.{uid}.eye"), er, name);
                 }
                 lp.text(pos2(indent + 10.0, cy), Align2::LEFT_CENTER, name, Tokens::ui(12.0), t.text);
+                text_anim_popups(app, ui, &lp, layer, *uid, cw.switches, cy, &mut actions);
                 // Mask mode + inverted inline.
                 if let Some(g) = layer.props.find_group(*uid)
                     && let GroupKind::Mask { mode, inverted, .. } = g.kind
@@ -1517,6 +1530,77 @@ fn walk_groups(g: &PropGroup, out: &mut Vec<u64>) {
     }
 }
 
+/// The Text group's "Animate:" and an animator's "Add:" pop-up menus (AE's twirl-down menus).
+#[allow(clippy::too_many_arguments)]
+fn text_anim_popups(
+    app: &mut EffectcraftApp,
+    ui: &mut egui::Ui,
+    p: &egui::Painter,
+    layer: &Layer,
+    uid: u64,
+    x: f32,
+    cy: f32,
+    actions: &mut Vec<(String, serde_json::Value)>,
+) {
+    use effectcraft_engine::project::build::TEXT_ANIMATOR_KINDS;
+    if !matches!(layer.source, LayerSource::Text) {
+        return;
+    }
+    let Some(g) = layer.props.find_group(uid) else { return };
+    let t = app.tokens;
+    let (label, key) = match g.match_id.as_str() {
+        "text" if layer.props.sub("text").is_some_and(|tg| tg.uid == uid) => ("Animate:", "animate"),
+        "animator" => ("Add:", "add"),
+        _ => return,
+    };
+    p.text(pos2(x + 6.0, cy), Align2::LEFT_CENTER, label, Tokens::ui(11.5), t.text_dim);
+    let br = Rect::from_center_size(pos2(x + 6.0 + if key == "add" { 34.0 } else { 62.0 }, cy), vec2(16.0, 16.0));
+    let resp = ui.interact(br, egui::Id::new(("tl-textanim", uid)), Sense::click()).on_hover_text(if key == "add" {
+        "Add property or selector"
+    } else {
+        "Animate text"
+    });
+    icons::paint(p, br.shrink(3.0), Icon::ChevronRight, if resp.hovered() { t.text } else { t.text_dim });
+    app.auto.add(&format!("timeline.group.{uid}.{key}"), br, label);
+    let pop = egui::Id::new(("tl-textanim-pop", uid));
+    if resp.clicked() {
+        widgets::open_popup(ui, pop);
+    }
+    let per_char = layer.props.prop("text/perChar3d").is_some_and(|q| q.value.as_bool());
+    let mut opts: Vec<String> = Vec::new();
+    let mut acts: Vec<(String, serde_json::Value)> = Vec::new();
+    if key == "animate" {
+        opts.push(if per_char { "Disable Per-character 3D" } else { "Enable Per-character 3D" }.into());
+        acts.push(("layer.enablePerChar3D".into(), json!({"layer": layer.id.0, "enabled": !per_char})));
+        opts.push("-".into());
+        acts.push((String::new(), json!(null)));
+        for (k, l) in TEXT_ANIMATOR_KINDS {
+            opts.push(l.to_string());
+            acts.push(if *k == "-" { (String::new(), json!(null)) } else { ("layer.addTextAnimator".into(), json!({"layer": layer.id.0, "property": k})) });
+        }
+    } else {
+        for (kind, l) in [("range", "Selector: Range"), ("wiggly", "Selector: Wiggly"), ("expression", "Selector: Expression")] {
+            opts.push(l.into());
+            acts.push(("layer.addTextSelector".into(), json!({"layer": layer.id.0, "animator": uid, "kind": kind})));
+        }
+        opts.push("-".into());
+        acts.push((String::new(), json!(null)));
+        for (k, l) in TEXT_ANIMATOR_KINDS {
+            opts.push(if *k == "-" { "-".into() } else { format!("Property: {l}") });
+            acts.push(if *k == "-" {
+                (String::new(), json!(null))
+            } else {
+                ("layer.addTextAnimatorProperty".into(), json!({"layer": layer.id.0, "animator": uid, "property": k}))
+            });
+        }
+    }
+    if let Some(i) = widgets::popup_menu(ui, pop, br.left_bottom(), &opts, None)
+        && let Some((id, params)) = acts.get(i).filter(|a| !a.0.is_empty())
+    {
+        actions.push((id.clone(), params.clone()));
+    }
+}
+
 fn kind_name(k: MatteKind) -> &'static str {
     match k {
         MatteKind::Alpha => "alpha",
@@ -1695,7 +1779,14 @@ fn value_editor(
             app.auto.add(&format!("timeline.prop.{uid}.value"), r, &prop.name);
         }
         Value::Enum(i) => {
-            if let ParamUi::Popup { options } = &prop.ui {
+            // Text Path Options ▸ Path lists the layer's masks.
+            let mask_opts: Option<Vec<String>> = layer
+                .props
+                .prop("text/pathOptions/path")
+                .filter(|q| q.uid == uid)
+                .map(|_| std::iter::once("None".to_string()).chain(layer.masks().into_iter().flat_map(|m| m.groups().map(|g| g.name.clone()))).collect());
+            let ui_opts = mask_opts.map(|options| ParamUi::Popup { options });
+            if let ParamUi::Popup { options } = ui_opts.as_ref().unwrap_or(&prop.ui) {
                 let r = Rect::from_min_size(pos2(x, at.y - 9.0), vec2(150.0, 18.0));
                 let label = options.get(*i as usize).cloned().unwrap_or_default();
                 let pop = egui::Id::new(("epop", uid));

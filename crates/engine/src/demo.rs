@@ -383,7 +383,7 @@ pub fn demo_project() -> Project {
     {
         let mut ids = Ids(&mut next);
         let pos = build::text_anim_prop(&mut ids, "position").map(|mut pr| {
-            pr.value = Value::Vec2([0.0, 90.0]);
+            pr.value = Value::Vec3([0.0, 90.0, 0.0]);
             pr
         });
         let op = build::text_anim_prop(&mut ids, "opacity").map(|mut pr| {
@@ -391,7 +391,7 @@ pub fn demo_project() -> Project {
             pr
         });
         let sc = build::text_anim_prop(&mut ids, "scale").map(|mut pr| {
-            pr.value = Value::Vec2([60.0, 60.0]);
+            pr.value = Value::Vec3([60.0, 60.0, 100.0]);
             pr
         });
         let mut a = build::text_animator(&mut ids, "Animator 1", [pos, op, sc].into_iter().flatten().collect());

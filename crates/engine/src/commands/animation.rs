@@ -5,12 +5,11 @@
 use std::collections::BTreeMap;
 
 use effectcraft_keyframe::{Interp, Keyframe, Value as KV};
-use effectcraft_project::build::{self, Ids};
 use effectcraft_project::{GroupKind, LayerId, Node, PropGroup, Property, Uid};
 use effectcraft_time::Tick;
 use serde_json::{Value, json};
 
-use super::{CommandSpec, bad, frontend, has_comp, has_keys, has_layers, layer_mut, layer_p, layers_p, match_path_of, selected_leaf_props, str_p};
+use super::{CommandSpec, bad, frontend, has_comp, has_keys, has_layers, layer_mut, layers_p, match_path_of, selected_leaf_props, str_p};
 use crate::{EngineError, KeyRef, Result, Session, cmd};
 
 /// Preset file format version tag (`*.ecpreset`, JSON).
@@ -257,36 +256,9 @@ fn exponential_scale(s: &mut Session, _: &Value) -> Result<Value> {
 
 // ---------------------------------------------------------------- text animators
 
+/// Animation ▸ Add Text Selector ▸ Range / Wiggly / Expression (see `layer.addTextSelector`).
 fn add_selector(s: &mut Session, p: &Value) -> Result<Value> {
-    let kind = str_p(p, "kind").unwrap_or("range");
-    if kind != "range" {
-        return Err(bad("text.addSelector", "only Range selectors are available"));
-    }
-    let (cid, lid) = layer_p(s, p, "text.addSelector")?;
-    // Target: a selected animator (or anything inside one), else the last animator.
-    let sel: Vec<Uid> = s.state.selected_props.iter().filter(|(l, _)| *l == lid).map(|(_, u)| *u).collect();
-    let uid = s.edit("Add Text Selector", None, |proj, _| {
-        let mut next = proj.next_id;
-        let l = layer_mut(proj, cid, lid)?;
-        let anims = l.props.group_mut("text/animators").ok_or_else(|| bad("text.addSelector", "not a text layer"))?;
-        if anims.children.is_empty() {
-            return Err(bad("text.addSelector", "the layer has no text animators (use Animate Text first)"));
-        }
-        let idx = anims
-            .children
-            .iter()
-            .position(|c| c.as_group().is_some_and(|g| sel.contains(&g.uid) || sel.iter().any(|u| g.find(*u).is_some() || g.find_group(*u).is_some())))
-            .unwrap_or(anims.children.len() - 1);
-        let Some(Node::Group(anim)) = anims.children.get_mut(idx) else { return Err(bad("text.addSelector", "no animator")) };
-        let sels = anim.sub_mut("selectors").ok_or_else(|| bad("text.addSelector", "animator has no selectors group"))?;
-        let mut ids = Ids(&mut next);
-        let g = build::range_selector(&mut ids, &format!("Range Selector {}", sels.children.len() + 1));
-        let uid = g.uid;
-        sels.children.push(g.into());
-        proj.next_id = next;
-        Ok(uid)
-    })?;
-    Ok(json!({"selector": uid}))
+    super::text_anim::add_selector(s, p)
 }
 
 fn remove_all_animators(s: &mut Session, p: &Value) -> Result<Value> {
@@ -392,7 +364,7 @@ pub fn specs() -> Vec<CommandSpec> {
             has_keys,
             exponential_scale
         ),
-        cmd!("text.addSelector", "Add Text Selector", [], None, "{layer?, kind: range}", has_text_layer, add_selector),
+        cmd!("text.addSelector", "Add Text Selector", [], None, "{layer?, animator?: uid|index, kind: range|wiggly|expression}", has_text_layer, add_selector),
         cmd!("text.removeAllAnimators", "Remove All Text Animators", ["Animation"], None, "{layers?}", has_text_layer, remove_all_animators),
         cmd!("anim.reveal", "Reveal Properties", [], None, "{kind: keyframes|animation|modified}", has_comp, reveal),
     ]

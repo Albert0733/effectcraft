@@ -942,3 +942,58 @@ fn error_messages_point_at_the_users_line() {
     // An unfinished last line is reported on that line, not on the hidden wrapper.
     assert!(f.err("5 +").starts_with("Error at line 1: SyntaxError"));
 }
+
+/// Text Expression Selector: Amount evaluated per unit with textIndex / textTotal /
+/// selectorValue.
+#[test]
+fn text_expression_selector_values() {
+    let mut p = Project::default();
+    let comp = Comp::new(400, 200, FrameRate::FPS_30, Tick::from_seconds_f64(2.0));
+    let cid = p.add_item("Main", Label::Sandstone, None, ItemKind::Comp(comp.clone().into()));
+    let mut l = build::layer(&mut p, &comp, "T", LayerSource::Text, (400, 200), None);
+    l.props.prop_mut("text/sourceText").unwrap().value = Value::Text(Box::new(TextDoc { text: "ABCD".into(), size: 40.0, ..Default::default() }));
+    let mut next = p.next_id;
+    let mut ids = Ids(&mut next);
+    let props = build::text_anim_props(&mut ids, "opacity", false);
+    let mut a = build::text_animator(&mut ids, "Animator 1", props);
+    let sel = build::expression_selector(&mut ids, "Expression Selector 1");
+    a.sub_mut("selectors").unwrap().children.push(sel.into());
+    p.next_id = next;
+    l.props.group_mut("text/animators").unwrap().children.push(a.into());
+    let lid = l.id;
+    p.comp_mut(cid).unwrap().layers.push(l);
+    let sel_of = |p: &Project| {
+        let c = p.comp(cid).unwrap();
+        let l = c.layer(lid).unwrap();
+        let ctx = EvalCtx { project: p, comp_id: cid, comp: c, time: Tick::ZERO, expr: Some(&Expressions) };
+        let doc = effectcraft_render::text::source_text(&ctx, l).unwrap();
+        let lay = effectcraft_text::layout_doc(&doc);
+        let anim = l.props.group("text/animators/#1").unwrap();
+        effectcraft_render::text::animator_selection(&ctx, l, anim, &lay).into_iter().map(|v| (v[0] * 1000.0).round() / 1000.0).collect::<Vec<_>>()
+    };
+    // Default: selectorValue * textIndex / textTotal (selectorValue = the full range selector).
+    assert_eq!(sel_of(&p), vec![0.25, 0.5, 0.75, 1.0]);
+    let set_expr = |p: &mut Project, text: &str| {
+        let l = p.comp_mut(cid).unwrap().layer_mut(lid).unwrap();
+        l.props.prop_mut("text/animators/#1/selectors/#2/amount").unwrap().expr = Some(Expression { text: text.into(), enabled: true });
+    };
+    // Range selector covering the first half → selectorValue 0 for the second half.
+    p.comp_mut(cid).unwrap().layer_mut(lid).unwrap().props.prop_mut("text/animators/#1/selectors/#1/end").unwrap().value = Value::Scalar(50.0);
+    assert_eq!(sel_of(&p), vec![0.25, 0.5, 0.0, 0.0]);
+    // Plain numbers, conditionals on textIndex (1-based) and arrays all work.
+    p.comp_mut(cid).unwrap().layer_mut(lid).unwrap().props.prop_mut("text/animators/#1/selectors/#1/end").unwrap().value = Value::Scalar(100.0);
+    set_expr(&mut p, "textIndex % 2 == 0 ? 100 : 0");
+    assert_eq!(sel_of(&p), vec![0.0, 1.0, 0.0, 1.0]);
+    set_expr(&mut p, "[50, 0, 0]");
+    assert_eq!(sel_of(&p), vec![0.5; 4]);
+    // The result replaces the selection so far (which it reads as selectorValue).
+    set_expr(&mut p, "selectorValue - textIndex / textTotal * 100");
+    assert_eq!(sel_of(&p), vec![0.75, 0.5, 0.25, 0.0]);
+    // Errors fall back to the static amount (100%).
+    set_expr(&mut p, "nope(");
+    assert_eq!(sel_of(&p), vec![1.0; 4]);
+    // Outside a selector the expression still evaluates (textIndex = textTotal = 1).
+    set_expr(&mut p, build::EXPRESSION_SELECTOR_DEFAULT);
+    let v = eval_property(&p, cid, lid, "text/animators/#1/selectors/#2/amount", 0.0).unwrap();
+    assert_eq!(v, Value::Vec3([100.0; 3]));
+}

@@ -12,6 +12,20 @@ use effectcraft_time::Tick;
 pub trait ExprHost: Send + Sync {
     /// Evaluate the expression of `prop` (on `layer`, comp time `t`), given the keyframed value.
     fn eval(&self, ctx: &EvalCtx, layer: &Layer, prop: &Property, value: &Value) -> Result<Value, String>;
+    /// Evaluate a text Expression Selector's Amount expression (on `prop`) for one unit:
+    /// `textIndex` (1-based), `textTotal` and `selectorValue` (percent, per dimension) are
+    /// defined. Returns the amount in percent per dimension.
+    fn eval_text_selector(
+        &self,
+        _ctx: &EvalCtx,
+        _layer: &Layer,
+        _prop: &Property,
+        _index: usize,
+        _total: usize,
+        _selector: [f64; 3],
+    ) -> Result<[f64; 3], String> {
+        Err("no expression engine".into())
+    }
 }
 
 #[derive(Clone, Copy)]

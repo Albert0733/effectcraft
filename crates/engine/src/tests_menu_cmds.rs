@@ -310,8 +310,10 @@ fn animation_menu_keys_presets_text() {
     s.execute("text.addSelector", json!({"kind": "range"})).unwrap();
     let anim = layer(&s, t).props.group("text/animators").unwrap().groups().next().unwrap().clone();
     assert_eq!(anim.sub("selectors").unwrap().children.len(), 2);
-    assert_eq!(anim.sub("properties").unwrap().children.len(), 6);
-    assert!(s.execute("text.addSelector", json!({"kind": "wiggly"})).is_err());
+    // Skew brings Skew Axis along.
+    assert_eq!(anim.sub("properties").unwrap().children.len(), 7);
+    s.execute("text.addSelector", json!({"kind": "wiggly"})).unwrap();
+    assert!(s.execute("text.addSelector", json!({"kind": "other"})).is_err());
     s.execute("text.removeAllAnimators", json!({})).unwrap();
     assert!(layer(&s, t).props.group("text/animators").unwrap().children.is_empty());
     s.execute("edit.undo", json!({})).unwrap();

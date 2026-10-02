@@ -712,6 +712,15 @@ Animation
   Save Animation Preset... | anim.savePreset
   Apply Animation Preset... | anim.applyPreset
   Browse Presets... | anim.browsePresets
+  Text Animation Presets
+    Typewriter | layer.applyTextPreset {"preset":"typewriter"}
+    Fade Up Characters | layer.applyTextPreset {"preset":"fadeUpCharacters"}
+    Bounce In Words | layer.applyTextPreset {"preset":"bounceInWords"}
+    Tracking In | layer.applyTextPreset {"preset":"trackingIn"}
+    Scramble | layer.applyTextPreset {"preset":"scramble"}
+    Blur In | layer.applyTextPreset {"preset":"blurIn"}
+    Jitter | layer.applyTextPreset {"preset":"jitter"}
+    Drop In Lines | layer.applyTextPreset {"preset":"dropInLines"}
   ---
   Add Keyframe | anim.addKeyframe
   Toggle Hold Keyframe | keys.toggleHold
@@ -734,7 +743,7 @@ Animation
     Time-Reverse Keyframes | keys.timeReverse
   ---
   Animate Text
-    Enable Per-character 3D | text.perCharacter3d
+    Enable Per-character 3D | layer.enablePerChar3D {"toggle":true}
     ---
     Anchor Point | layer.addTextAnimator {"properties":["anchor"]}
     Position | layer.addTextAnimator {"properties":["position"]}
@@ -743,25 +752,35 @@ Animation
     Rotation | layer.addTextAnimator {"properties":["rotation"]}
     Opacity | layer.addTextAnimator {"properties":["opacity"]}
     ---
-    All Transform Properties | layer.addTextAnimator {"properties":["anchor","position","scale","skew","rotation","opacity"]}
+    All Transform Properties | layer.addTextAnimator {"properties":["transformAll"]}
     ---
-    Fill Color | layer.addTextAnimator {"properties":["fillColor"]}
-    Stroke Color | layer.addTextAnimator {"properties":["strokeColor"]}
+    Fill Color
+      RGB | layer.addTextAnimator {"properties":["fillColor"]}
+      Hue | layer.addTextAnimator {"properties":["fillHue"]}
+      Saturation | layer.addTextAnimator {"properties":["fillSaturation"]}
+      Brightness | layer.addTextAnimator {"properties":["fillBrightness"]}
+      Opacity | layer.addTextAnimator {"properties":["fillOpacity"]}
+    Stroke Color
+      RGB | layer.addTextAnimator {"properties":["strokeColor"]}
+      Hue | layer.addTextAnimator {"properties":["strokeHue"]}
+      Saturation | layer.addTextAnimator {"properties":["strokeSaturation"]}
+      Brightness | layer.addTextAnimator {"properties":["strokeBrightness"]}
+      Opacity | layer.addTextAnimator {"properties":["strokeOpacity"]}
     Stroke Width | layer.addTextAnimator {"properties":["strokeWidth"]}
     ---
     Tracking | layer.addTextAnimator {"properties":["tracking"]}
-    Line Anchor | text.animatorLineAnchor
+    Line Anchor | layer.addTextAnimator {"properties":["lineAnchor"]}
     Line Spacing | layer.addTextAnimator {"properties":["lineSpacing"]}
     ---
     Character Offset | layer.addTextAnimator {"properties":["characterOffset"]}
-    Character Value | text.animatorCharacterValue
+    Character Value | layer.addTextAnimator {"properties":["characterValue"]}
     ---
     Blur | layer.addTextAnimator {"properties":["blur"]}
     Variable Font Axes | text.animatorFontAxes
   Add Text Selector
     Range | text.addSelector {"kind":"range"}
-    Wiggly | text.addWigglySelector
-    Expression | text.addExpressionSelector
+    Wiggly | text.addSelector {"kind":"wiggly"}
+    Expression | text.addSelector {"kind":"expression"}
   Remove All Text Animators | text.removeAllAnimators
   ---
   Add Expression | prop.setExpression

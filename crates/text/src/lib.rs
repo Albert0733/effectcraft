@@ -7,6 +7,8 @@
 
 pub mod fonts;
 pub mod layout;
+pub mod path_text;
+pub mod selectors;
 pub mod sfnt;
 
 use std::collections::HashMap;
@@ -84,6 +86,8 @@ pub struct CharGlyph {
     pub word_index: usize,
     pub line_index: usize,
     pub is_space: bool,
+    /// The source character (after All Caps).
+    pub ch: char,
     pub synth_bold: bool,
     pub size: f64,
 }
@@ -106,26 +110,7 @@ pub struct TextLayout {
 /// `box_pos`.
 pub fn layout_doc(doc: &TextDoc) -> TextLayout {
     let text = if doc.all_caps { doc.text.to_uppercase() } else { doc.text.clone() };
-    let style = TextStyle {
-        family: doc.font.clone(),
-        style: doc.style.clone(),
-        size: doc.size as f32,
-        tracking: doc.tracking as f32,
-        baseline_shift: doc.baseline_shift as f32,
-        faux_bold: doc.faux_bold,
-        faux_italic: doc.faux_italic,
-        caps: if doc.small_caps { Caps::Small } else { Caps::Normal },
-        ..Default::default()
-    };
-    let align = match doc.justify {
-        Justify::Left | Justify::JustifyLastLeft => Align::Left,
-        Justify::Center | Justify::JustifyLastCenter => Align::Center,
-        Justify::Right | Justify::JustifyLastRight => Align::Right,
-        Justify::JustifyAll => Align::Justify,
-    };
-    let natural = doc.size * 1.2;
-    let leading = doc.leading.map(|l| (l - natural) as f32).unwrap_or(0.0);
-    let para = ParagraphStyle { align, leading, width: doc.box_size.map(|b| b[0] as f32), rtl: None };
+    let (style, para) = styles(doc);
     let lay = layout_text(&text, &style, &para);
     let first_base = lay.lines.first().map(|l| l.baseline as f64).unwrap_or(0.0);
     // Point text origin: (0, 0) at the first baseline; alignment pivots around x = 0.
@@ -190,6 +175,7 @@ pub fn layout_doc(doc: &TextDoc) -> TextLayout {
                 word_index: word_of_char.get(ci).copied().unwrap_or(0),
                 line_index: li,
                 is_space: ch.is_whitespace(),
+                ch,
                 synth_bold: g.synth_bold,
                 size: g.size as f64,
             });
@@ -199,6 +185,46 @@ pub fn layout_doc(doc: &TextDoc) -> TextLayout {
         out.bounds = b;
     }
     out
+}
+
+/// Character and paragraph styles of a Source Text value.
+fn styles(doc: &TextDoc) -> (TextStyle, ParagraphStyle) {
+    let style = TextStyle {
+        family: doc.font.clone(),
+        style: doc.style.clone(),
+        size: doc.size as f32,
+        tracking: doc.tracking as f32,
+        baseline_shift: doc.baseline_shift as f32,
+        faux_bold: doc.faux_bold,
+        faux_italic: doc.faux_italic,
+        caps: if doc.small_caps { Caps::Small } else { Caps::Normal },
+        ..Default::default()
+    };
+    let align = match doc.justify {
+        Justify::Left | Justify::JustifyLastLeft => Align::Left,
+        Justify::Center | Justify::JustifyLastCenter => Align::Center,
+        Justify::Right | Justify::JustifyLastRight => Align::Right,
+        Justify::JustifyAll => Align::Justify,
+    };
+    let natural = doc.size * 1.2;
+    let leading = doc.leading.map(|l| (l - natural) as f32).unwrap_or(0.0);
+    (style, ParagraphStyle { align, leading, width: doc.box_size.map(|b| b[0] as f32), rtl: None })
+}
+
+/// Outline (origin on the baseline) and advance of a single character in a Source Text's
+/// style: used by Character Offset / Character Value substitutions.
+pub fn char_glyph(doc: &TextDoc, ch: char) -> (BezPath, f64) {
+    let (style, _) = styles(doc);
+    let lay = layout_text(&ch.to_string(), &style, &ParagraphStyle::default());
+    let hs = doc.h_scale / 100.0;
+    let vs = doc.v_scale / 100.0;
+    let Some(g) = lay.glyphs.first() else { return (BezPath::new(), 0.0) };
+    let mut path = glyph_outline(g);
+    if hs != 1.0 || vs != 1.0 {
+        path = Affine::scale_non_uniform(hs, vs) * path;
+    }
+    let adv = lay.lines.first().map(|l| l.width as f64).unwrap_or(0.0) * hs;
+    (Affine::translate((-(g.x as f64) * hs, 0.0)) * path, adv)
 }
 
 #[cfg(test)]
