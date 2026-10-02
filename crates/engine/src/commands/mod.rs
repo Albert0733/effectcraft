@@ -1,12 +1,16 @@
 //! The command registry. Ids follow After Effects' menu structure; every menu item, panel button,
 //! shortcut and viewer/timeline gesture maps to one of these.
 
+mod anim;
 mod comp;
 mod edit;
 mod effect;
 mod file;
 mod help;
 mod layer;
+mod layer_time;
+mod link;
+mod mask;
 mod prop;
 mod query;
 mod render_queue;
@@ -69,7 +73,11 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(edit::specs());
         v.extend(comp::specs());
         v.extend(layer::specs());
+        v.extend(layer_time::specs());
         v.extend(prop::specs());
+        v.extend(anim::specs());
+        v.extend(link::specs());
+        v.extend(mask::specs());
         v.extend(effect::specs());
         v.extend(time::specs());
         v.extend(render_queue::specs());

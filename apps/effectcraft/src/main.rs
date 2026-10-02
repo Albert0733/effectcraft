@@ -54,10 +54,10 @@ fn main() -> eframe::Result {
                 let _ = session.execute("file.openDemoProject", json!({}));
             }
             let media: Vec<String> = files.iter().filter(|f| !f.ends_with(".ecproj")).cloned().collect();
-            if !media.is_empty() {
-                if let Err(e) = session.execute("file.import", json!({"paths": media})) {
-                    eprintln!("effectcraft: {e}");
-                }
+            if !media.is_empty()
+                && let Err(e) = session.execute("file.import", json!({"paths": media}))
+            {
+                eprintln!("effectcraft: {e}");
             }
             let mut app = EffectcraftApp::new(session);
             app.ui.start_screen = home;

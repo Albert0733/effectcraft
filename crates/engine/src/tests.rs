@@ -205,7 +205,7 @@ fn set_text_paragraph_fill_and_leading() {
 #[test]
 fn prop_get_and_render_rgba8() {
     let mut s = Session::default();
-    s.execute("comp.new", json!({"name": "T", "width": 320, "height": 180, "duration": 2.0})).unwrap();
+    s.execute("comp.new", json!({"name": "T", "width": 320, "height": 180, "duration": 2.0, "frameRate": 30})).unwrap();
     let l = s.execute("layer.newSolid", json!({"color": "#ff0000"})).unwrap()["layer"].as_u64().unwrap();
     s.execute("prop.addKey", json!({"layer": l, "path": "transform/position", "time": 0.0, "value": [0, 0]})).unwrap();
     s.execute("prop.addKey", json!({"layer": l, "path": "transform/position", "time": 1.0, "value": [100, 50]})).unwrap();

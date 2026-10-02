@@ -263,12 +263,13 @@ fn add_item(s: &mut Session, p: &Value) -> Result<Value> {
         ItemKind::Solid(so) => (LayerSource::Solid { item }, (so.width, so.height), None),
         ItemKind::Folder => return Err(bad("layer.addItem", "folders can't be layers")),
     };
-    let start = f_p(p, "time").map(Tick::from_seconds_f64).unwrap_or(Tick::ZERO);
+    let fr = comp.frame_rate;
+    let start = fr.snap_nearest(f_p(p, "time").map(Tick::from_seconds_f64).unwrap_or(Tick::ZERO));
     let id = s.edit("Add Footage to Comp", None, |proj, st| {
         let mut l = build::layer(proj, &comp, &it.name, src, size, dur);
         l.start_time = start;
         l.in_point = start;
-        l.out_point = (start + dur.unwrap_or(comp.duration)).min(comp.duration);
+        l.out_point = fr.snap_nearest((start + dur.unwrap_or(comp.duration)).min(comp.duration)).max(start + fr.frame_duration());
         insert_layer(proj, st, cid, l)
     })?;
     Ok(json!({"layer": id.0}))
@@ -302,6 +303,8 @@ fn select(s: &mut Session, p: &Value) -> Result<Value> {
         s.state.selected_layers = ids;
         s.state.selected_props.clear();
         s.state.selected_keys.clear();
+        let keep = s.state.selected_layers.clone();
+        s.state.selected_vertices.retain(|v| keep.contains(&v.layer));
     }
     Ok(json!(s.state.selected_layers.iter().map(|l| l.0).collect::<Vec<_>>()))
 }
@@ -484,10 +487,62 @@ fn set_parent(s: &mut Session, p: &Value) -> Result<Value> {
             cur = comp.layer(c).and_then(|l| l.parent);
         }
     }
+    // Like AE's pick-whip, parenting keeps the layer where it is: its transform is re-expressed
+    // in the new parent's space (Position, Rotation, Scale), unless `compensate: false`.
+    let compensate = b_p(p, "compensate").unwrap_or(true);
+    let ectx = effectcraft_render::EvalCtx { project: &s.project, comp_id: cid, comp, time: s.time(), expr: s.expr.as_deref() };
+    let space = |id: Option<LayerId>| -> effectcraft_geom::Mat3 {
+        id.and_then(|i| comp.layer(i)).filter(|l| !l.is_3d()).map(|l| ectx.layer_to_comp(l).0).unwrap_or(effectcraft_geom::Mat3::IDENTITY)
+    };
+    let decompose = |m: &effectcraft_geom::Mat3| {
+        let a = m.0;
+        let sx = (a[0][0] * a[0][0] + a[1][0] * a[1][0]).sqrt();
+        let det = a[0][0] * a[1][1] - a[0][1] * a[1][0];
+        (a[1][0].atan2(a[0][0]).to_degrees(), sx, if sx > 1e-12 { det / sx } else { 0.0 })
+    };
+    // Per layer: (id, position transform, rotation delta, scale factors).
+    let mut fixes: Vec<(LayerId, effectcraft_geom::Mat3, f64, [f64; 2])> = vec![];
+    if compensate {
+        let new_m = space(parent);
+        for l in comp.layers.iter().filter(|l| ids.contains(&l.id) && !l.is_3d() && l.parent != parent) {
+            let old_m = space(l.parent);
+            let Some(inv) = new_m.inverse() else { continue };
+            let (ro, sxo, syo) = decompose(&old_m);
+            let (rn, sxn, syn) = decompose(&new_m);
+            let k = [if sxn.abs() > 1e-12 { sxo / sxn } else { 1.0 }, if syn.abs() > 1e-12 { syo / syn } else { 1.0 }];
+            fixes.push((l.id, inv * old_m, ro - rn, k));
+        }
+    }
     s.edit("Parent", None, |proj, _| {
         let comp = proj.comp_mut(cid).ok_or(EngineError::NoComp)?;
         for l in comp.layers.iter_mut().filter(|l| ids.contains(&l.id)) {
             l.parent = parent;
+            let Some((_, m, dr, k)) = fixes.iter().find(|f| f.0 == l.id) else { continue };
+            let Some(tr) = l.props.sub_mut("transform") else { continue };
+            let map = |pr: &mut effectcraft_project::Property, f: &dyn Fn(&KV) -> KV| {
+                pr.value = f(&pr.value);
+                for key in &mut pr.keys {
+                    key.value = f(&key.value);
+                }
+            };
+            if tr.get("positionX").is_none()
+                && let Some(pr) = tr.get_mut("position")
+            {
+                map(pr, &|v| {
+                    let c = v.as_vec3();
+                    let q = m.apply(effectcraft_geom::vec2(c[0], c[1]));
+                    KV::Vec3([q.x, q.y, c[2]])
+                });
+            }
+            if let Some(pr) = tr.get_mut("rotation") {
+                map(pr, &|v| KV::Scalar(v.as_f64() + dr));
+            }
+            if let Some(pr) = tr.get_mut("scale") {
+                map(pr, &|v| {
+                    let c = v.as_vec3();
+                    KV::Vec3([c[0] * k[0], c[1] * k[1], c[2]])
+                });
+            }
         }
         Ok(())
     })?;
@@ -498,10 +553,10 @@ fn timing(s: &mut Session, p: &Value) -> Result<Value> {
     let (cid, ids) = layers_p(s, p)?;
     let t = s.time();
     let op = str_p(p, "op").unwrap_or("set").to_string();
-    let delta = f_p(p, "delta").map(Tick::from_seconds_f64);
-    let start = f_p(p, "start").map(Tick::from_seconds_f64);
-    let inp = f_p(p, "in").map(Tick::from_seconds_f64);
-    let outp = f_p(p, "out").map(Tick::from_seconds_f64);
+    // Layer times stay on frame boundaries of the comp (as in AE).
+    let fr = s.project.comp(cid).ok_or(EngineError::NoComp)?.frame_rate;
+    let snap = |k: &str| f_p(p, k).map(|v| fr.snap_nearest(Tick::from_seconds_f64(v)));
+    let (delta, start, inp, outp) = (snap("delta"), snap("start"), snap("in"), snap("out"));
     s.edit("Layer Timing", merge_p(p), |proj, _| {
         let comp = proj.comp_mut(cid).ok_or(EngineError::NoComp)?;
         let fd = comp.frame_duration();
@@ -818,34 +873,6 @@ fn transform_op(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(Value::Null)
 }
 
-fn time_stretch(s: &mut Session, p: &Value) -> Result<Value> {
-    let (cid, ids) = layers_p(s, p)?;
-    let reverse = str_p(p, "op") == Some("reverse");
-    let pct = f_p(p, "percent");
-    s.edit(if reverse { "Time-Reverse Layer" } else { "Time Stretch" }, None, |proj, _| {
-        let comp = proj.comp_mut(cid).ok_or(EngineError::NoComp)?;
-        for l in comp.layers.iter_mut().filter(|l| ids.contains(&l.id)) {
-            let old = l.stretch;
-            let new = if reverse { -old } else { pct.unwrap_or(old) };
-            if new.abs() < 1.0 {
-                continue;
-            }
-            // Keep the in point fixed: the layer's source span scales around it.
-            let lin = l.layer_time(l.in_point);
-            let lout = l.layer_time(l.out_point);
-            l.stretch = new;
-            if reverse {
-                l.start_time = l.in_point + Tick((lout.0 as f64 * new.abs() / 100.0) as i64);
-            } else {
-                l.start_time = l.in_point - Tick((lin.0 as f64 * new / 100.0) as i64);
-                l.out_point = l.comp_time(lout);
-            }
-        }
-        Ok(())
-    })?;
-    Ok(Value::Null)
-}
-
 fn layer_settings(s: &mut Session, p: &Value) -> Result<Value> {
     let (cid, lid) = layer_p(s, p, "layer.settings")?;
     let color = color_p(p, "color");
@@ -977,7 +1004,6 @@ pub fn specs() -> Vec<CommandSpec> {
             has_layers,
             transform_op
         ),
-        cmd!("layer.timeStretch", "Time Stretch…", ["Layer", "Time"], None, "{layers?, percent?, op?: reverse}", has_layers, time_stretch),
     ]
 }
 

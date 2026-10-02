@@ -9,7 +9,7 @@ use super::{CommandSpec, b_p, bad, f_p, has_comp, has_keys, has_layers, layer_mu
 use crate::{EngineError, KeyRef, Result, Session, cmd, query};
 
 /// Resolve `{layer, path}` (or `{layer, prop: uid}`) to (comp, layer, prop uid).
-fn prop_ref(s: &Session, p: &Value, cmd: &str) -> Result<(ItemId, LayerId, Uid)> {
+pub(crate) fn prop_ref(s: &Session, p: &Value, cmd: &str) -> Result<(ItemId, LayerId, Uid)> {
     let (cid, lid) = layer_p(s, p, cmd)?;
     let layer = s.project.comp(cid).and_then(|c| c.layer(lid)).ok_or(EngineError::NoComp)?;
     if let Some(u) = p.get("prop").and_then(Value::as_u64) {
@@ -38,10 +38,44 @@ fn with_prop<T>(
     })
 }
 
+/// An explicit key time (layer seconds) moved onto the nearest comp frame.
+fn snapped_key_time(s: &Session, cid: ItemId, lid: LayerId, p: &Value) -> Option<Tick> {
+    let t = Tick::from_seconds_f64(f_p(p, "time")?);
+    let comp = s.project.comp(cid)?;
+    let l = comp.layer(lid)?;
+    Some(l.layer_time(comp.frame_rate.snap_nearest(l.comp_time(t))))
+}
+
 fn set(s: &mut Session, p: &Value) -> Result<Value> {
     let (cid, lid, uid) = prop_ref(s, p, "prop.set")?;
+    // Position with Separate Dimensions: write the X/Y/Z Position properties instead.
+    if let Some(l) = s.project.comp(cid).and_then(|c| c.layer(lid))
+        && let Some(tr) = l.transform()
+        && tr.get("position").is_some_and(|pr| pr.uid == uid)
+        && tr.get("positionX").is_some()
+        && let Some(Value::Array(a)) = p.get("value")
+    {
+        let mut out = vec![];
+        let three = l.is_3d();
+        for (d, m) in ["positionX", "positionY", "positionZ"].iter().enumerate() {
+            if d == 2 && (!three || a.len() < 3) {
+                continue;
+            }
+            if let Some(v) = a.get(d) {
+                let mut q = p.clone();
+                q["path"] = json!(format!("transform/{m}"));
+                q["layer"] = json!(lid.0);
+                if let Some(o) = q.as_object_mut() {
+                    o.remove("prop");
+                }
+                q["value"] = v.clone();
+                out.push(set(s, &q)?);
+            }
+        }
+        return Ok(json!(out));
+    }
     let v = p.get("value").ok_or_else(|| bad("prop.set", "missing `value`"))?.clone();
-    let at = f_p(p, "time").map(Tick::from_seconds_f64);
+    let at = snapped_key_time(s, cid, lid, p);
     let out = with_prop(s, "Change Property", merge_p(p), cid, lid, uid, |pr, lt| {
         let cur = pr.value_at(lt);
         let mut nv = cur.coerce_json(&v).ok_or_else(|| bad("prop.set", format!("can't use {v} for a {} property", cur.kind_name())))?;
@@ -87,7 +121,7 @@ fn toggle_anim(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn add_key(s: &mut Session, p: &Value) -> Result<Value> {
     let (cid, lid, uid) = prop_ref(s, p, "prop.addKey")?;
-    let at = f_p(p, "time").map(Tick::from_seconds_f64);
+    let at = snapped_key_time(s, cid, lid, p);
     let value = p.get("value").cloned();
     with_prop(s, "Add Keyframe", None, cid, lid, uid, |pr, lt| {
         let t = at.unwrap_or(lt);
@@ -128,8 +162,18 @@ fn toggle_key(s: &mut Session, p: &Value) -> Result<Value> {
 fn set_expr(s: &mut Session, p: &Value) -> Result<Value> {
     let (cid, lid, uid) = prop_ref(s, p, "prop.setExpression")?;
     let text = p.get("expression").and_then(Value::as_str).map(str::to_string);
-    let enabled = b_p(p, "enabled");
-    with_prop(s, "Expression", merge_p(p), cid, lid, uid, |pr, _| {
+    let mut enabled = b_p(p, "enabled");
+    // A syntax error keeps the text but disables the expression (AE shows the warning bar).
+    let error = match (&text, s.expr_check) {
+        (Some(t), Some(check)) if !t.trim().is_empty() => check(t).err(),
+        _ => None,
+    };
+    if error.is_some() {
+        enabled = Some(false);
+    }
+    // Alt-click on a stopwatch starts with the property's own reference (`transform.opacity`).
+    let def = s.project.comp(cid).and_then(|c| c.layer(lid).and_then(|l| super::link::reference(c, l, l, uid))).unwrap_or_else(|| "value".into());
+    let r = with_prop(s, "Expression", merge_p(p), cid, lid, uid, |pr, _| {
         match (&text, enabled) {
             (Some(t), _) if t.trim().is_empty() => pr.expr = None,
             (Some(t), e) => pr.expr = Some(effectcraft_project::Expression { text: t.clone(), enabled: e.unwrap_or(true) }),
@@ -137,20 +181,20 @@ fn set_expr(s: &mut Session, p: &Value) -> Result<Value> {
                 if let Some(x) = &mut pr.expr {
                     x.enabled = e;
                 } else if e {
-                    pr.expr = Some(effectcraft_project::Expression { text: default_expr(pr), enabled: true });
+                    pr.expr = Some(effectcraft_project::Expression { text: def.clone(), enabled: true });
                 }
             }
             (None, None) => {
-                pr.expr = if pr.expr.is_some() { None } else { Some(effectcraft_project::Expression { text: default_expr(pr), enabled: true }) };
+                pr.expr = if pr.expr.is_some() { None } else { Some(effectcraft_project::Expression { text: def.clone(), enabled: true }) };
             }
         }
         Ok(json!(pr.expr.as_ref().map(|e| e.text.clone())))
-    })
-}
-
-fn default_expr(pr: &Property) -> String {
-    let _ = pr;
-    "value".to_string()
+    })?;
+    if let Some(e) = error {
+        s.toast(format!("Expression disabled: {e}"));
+        return Ok(json!({"expression": r, "error": e}));
+    }
+    Ok(r)
 }
 
 fn reset(s: &mut Session, p: &Value) -> Result<Value> {
@@ -225,7 +269,7 @@ fn select_keys(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 /// Apply `f` to every selected key; keeps the selection pointing at moved keys.
-fn edit_keys(s: &mut Session, label: &str, merge: Option<&str>, f: impl Fn(&mut Vec<Keyframe>, usize, &mut Tick) -> bool) -> Result<Value> {
+pub(crate) fn edit_keys(s: &mut Session, label: &str, merge: Option<&str>, f: impl Fn(&mut Vec<Keyframe>, usize, &mut Tick) -> bool) -> Result<Value> {
     let cid = s.active_comp_id().ok_or(EngineError::NoComp)?;
     let sel = s.state.selected_keys.clone();
     s.edit(label, merge, |proj, st| {
@@ -262,8 +306,14 @@ fn edit_keys(s: &mut Session, label: &str, merge: Option<&str>, f: impl Fn(&mut 
             for t in keep_times {
                 new_sel.push(KeyRef { layer: lid, prop: uid, time: t });
             }
-            if pr.keys.is_empty() {
-                // Deleting every key leaves the value at the last key.
+            // Roving keys follow their neighbours: re-time and keep the selection on them.
+            let before: Vec<Tick> = pr.keys.iter().map(|k| k.time).collect();
+            if effectcraft_keyframe::retime_roving(&mut pr.keys, pr.spatial) {
+                for r in new_sel.iter_mut().filter(|r| r.layer == lid && r.prop == uid) {
+                    if let Some(i) = before.iter().position(|t| *t == r.time) {
+                        r.time = pr.keys[i].time;
+                    }
+                }
             }
         }
         st.selected_keys = new_sel;
@@ -319,8 +369,56 @@ fn interpolation(s: &mut Session, p: &Value) -> Result<Value> {
     let both = parse("interpolation");
     let inn = parse("in").or(both);
     let out = parse("out").or(both);
-    let auto = b_p(p, "autoBezier");
+    // Temporal interpolation by dialog name: linear|bezier|continuousBezier|autoBezier|hold.
+    let temporal = str_p(p, "interpolation").map(|v| v.to_ascii_lowercase());
+    let mut auto = b_p(p, "autoBezier");
+    let mut continuous = b_p(p, "continuous");
+    match temporal.as_deref() {
+        Some("autobezier" | "auto") => auto = Some(true),
+        Some("continuousbezier" | "continuous") => {
+            continuous = Some(true);
+            auto = Some(false);
+        }
+        Some("linear" | "bezier" | "hold") => {
+            auto = auto.or(Some(false));
+            continuous = continuous.or(Some(false));
+        }
+        _ => {}
+    }
+    let inn = if matches!(temporal.as_deref(), Some("autobezier" | "auto" | "continuousbezier" | "continuous")) { inn.or(Some(Interp::Bezier)) } else { inn };
+    let out = if matches!(temporal.as_deref(), Some("autobezier" | "auto" | "continuousbezier" | "continuous")) { out.or(Some(Interp::Bezier)) } else { out };
+    let spatial = str_p(p, "spatial").map(|v| v.to_ascii_lowercase());
+    let roving = b_p(p, "roving");
     edit_keys(s, "Keyframe Interpolation", None, move |keys, i, _| {
+        if let Some(sp) = spatial.as_deref() {
+            let (tin, tout) = effectcraft_keyframe::spatial_tangents(keys, i);
+            let k = &mut keys[i];
+            match sp {
+                "linear" => {
+                    k.spatial_auto = false;
+                    k.spatial_continuous = false;
+                    k.spatial_in = [0.0; 3];
+                    k.spatial_out = [0.0; 3];
+                }
+                "bezier" | "continuous" | "continuousbezier" => {
+                    k.spatial_auto = false;
+                    k.spatial_in = tin;
+                    k.spatial_out = tout;
+                    k.spatial_continuous = sp != "bezier";
+                }
+                "auto" | "autobezier" => {
+                    k.spatial_auto = true;
+                    k.spatial_continuous = false;
+                }
+                _ => {}
+            }
+        }
+        if let Some(r) = roving {
+            keys[i].roving = r;
+        }
+        if let Some(c) = continuous {
+            keys[i].continuous = c;
+        }
         let n = keys[i].value.dims().max(1);
         if let Some(x) = inn {
             keys[i].in_interp = x;
@@ -339,6 +437,24 @@ fn interpolation(s: &mut Session, p: &Value) -> Result<Value> {
             if a {
                 keys[i].in_interp = Interp::Bezier;
                 keys[i].out_interp = Interp::Bezier;
+                keys[i].continuous = false;
+            }
+        }
+        if keys[i].continuous && !keys[i].auto_bezier {
+            // Continuous Bezier: one speed through the key (average of both sides).
+            let k = &mut keys[i];
+            k.in_interp = Interp::Bezier;
+            k.out_interp = Interp::Bezier;
+            if k.in_ease.len() != n {
+                k.in_ease = vec![Ease::default(); n];
+            }
+            if k.out_ease.len() != n {
+                k.out_ease = vec![Ease::default(); n];
+            }
+            for d in 0..n {
+                let sp = (k.in_ease[d].speed + k.out_ease[d].speed) / 2.0;
+                k.in_ease[d].speed = sp;
+                k.out_ease[d].speed = sp;
             }
         }
         false
@@ -353,41 +469,67 @@ fn toggle_hold(s: &mut Session, _: &Value) -> Result<Value> {
     })
 }
 
+/// A number or a per-dimension array of numbers.
+fn nums_p(p: &Value, k: &str, scale: f64) -> Option<Vec<f64>> {
+    match p.get(k)? {
+        Value::Array(a) => Some(a.iter().filter_map(Value::as_f64).map(|v| v * scale).collect()),
+        v => v.as_f64().map(|v| vec![v * scale]),
+    }
+}
+
 fn velocity(s: &mut Session, p: &Value) -> Result<Value> {
-    let in_speed = f_p(p, "inSpeed");
-    let in_inf = f_p(p, "inInfluence").map(|v| v / 100.0);
-    let out_speed = f_p(p, "outSpeed");
-    let out_inf = f_p(p, "outInfluence").map(|v| v / 100.0);
+    let mut in_speed = nums_p(p, "inSpeed", 1.0);
+    let mut in_inf = nums_p(p, "inInfluence", 0.01);
+    let mut out_speed = nums_p(p, "outSpeed", 1.0);
+    let mut out_inf = nums_p(p, "outInfluence", 0.01);
+    // "Continuous" in the dialog: outgoing velocity follows incoming.
+    let continuous = b_p(p, "continuous");
+    if continuous == Some(true) {
+        if out_speed.is_none() {
+            out_speed = in_speed.clone();
+        }
+        if in_speed.is_none() {
+            in_speed = out_speed.clone();
+        }
+        if out_inf.is_none() {
+            out_inf = in_inf.clone();
+        }
+        if in_inf.is_none() {
+            in_inf = out_inf.clone();
+        }
+    }
     edit_keys(s, "Keyframe Velocity", merge_p(p), move |keys, i, _| {
         let n = keys[i].value.dims().max(1);
+        // Current presentation of each side, so unspecified parts keep their values.
+        let cur = |keys: &[Keyframe], out: bool| -> Vec<Ease> {
+            (0..n).map(|d| effectcraft_keyframe::side_ease(keys, i, d, false, out).unwrap_or(Ease::EASY)).collect()
+        };
+        let cur_in = cur(keys, false);
+        let cur_out = cur(keys, true);
         let k = &mut keys[i];
-        if in_speed.is_some() || in_inf.is_some() {
-            k.in_interp = Interp::Bezier;
-            if k.in_ease.is_empty() {
-                k.in_ease = vec![Ease::default(); n];
+        let apply = |list: &mut Vec<Ease>, base: Vec<Ease>, sp: &Option<Vec<f64>>, inf: &Option<Vec<f64>>| {
+            if list.len() != n {
+                *list = base;
             }
-            for e in &mut k.in_ease {
-                if let Some(v) = in_speed {
-                    e.speed = v;
+            for (d, e) in list.iter_mut().enumerate() {
+                if let Some(v) = sp.as_ref().and_then(|v| v.get(d).or(v.first())) {
+                    e.speed = *v;
                 }
-                if let Some(v) = in_inf {
+                if let Some(v) = inf.as_ref().and_then(|v| v.get(d).or(v.first())) {
                     e.influence = v.clamp(0.001, 1.0);
                 }
             }
+        };
+        if in_speed.is_some() || in_inf.is_some() {
+            k.in_interp = Interp::Bezier;
+            apply(&mut k.in_ease, cur_in, &in_speed, &in_inf);
         }
         if out_speed.is_some() || out_inf.is_some() {
             k.out_interp = Interp::Bezier;
-            if k.out_ease.is_empty() {
-                k.out_ease = vec![Ease::default(); n];
-            }
-            for e in &mut k.out_ease {
-                if let Some(v) = out_speed {
-                    e.speed = v;
-                }
-                if let Some(v) = out_inf {
-                    e.influence = v.clamp(0.001, 1.0);
-                }
-            }
+            apply(&mut k.out_ease, cur_out, &out_speed, &out_inf);
+        }
+        if let Some(c) = continuous {
+            k.continuous = c;
         }
         k.auto_bezier = false;
         false
@@ -451,7 +593,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Keyframe Interpolation…",
             ["Animation"],
             Some("Cmd+Alt+K"),
-            "{interpolation?|in?|out?: linear|bezier|hold, autoBezier?}",
+            "{interpolation?: linear|bezier|continuousBezier|autoBezier|hold, in?|out?: linear|bezier|hold, autoBezier?, continuous?, spatial?: linear|bezier|continuousBezier|autoBezier, roving?}",
             has_keys,
             interpolation
         ),
@@ -460,7 +602,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Keyframe Velocity…",
             ["Animation"],
             Some("Cmd+Shift+K"),
-            "{inSpeed?, inInfluence? %, outSpeed?, outInfluence? %}",
+            "{inSpeed?, inInfluence? %, outSpeed?, outInfluence? % (numbers or per-dimension arrays), continuous?}",
             has_keys,
             velocity
         ),

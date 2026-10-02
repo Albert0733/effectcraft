@@ -48,6 +48,7 @@ pub fn session() -> Session {
         footage: Arc::new(effectcraft_media::MediaPool::new()),
         importer: Some(Arc::new(MediaImporter)),
         expr: Some(Arc::new(effectcraft_expr::Expressions)),
+        expr_check: Some(effectcraft_expr::check_syntax),
         ..Default::default()
     }
 }
@@ -105,5 +106,62 @@ mod tests {
         assert!(s.execute("renderQueue.render", json!({})).is_err());
         s.execute("renderQueue.setRender", json!({"index": 1, "render": true})).unwrap();
         assert_eq!(s.project.render_queue[0].status, effectcraft_engine::project::render_queue::RenderStatus::Queued);
+    }
+
+    /// Value of a property of layer `l` at time 0 (keys + expression).
+    fn value(s: &effectcraft_engine::Session, l: u64, path: &str) -> effectcraft_engine::keyframe::Value {
+        let cid = s.active_comp_id().unwrap();
+        let comp = s.project.comp(cid).unwrap();
+        let layer = comp.layer(effectcraft_engine::project::LayerId(l)).unwrap();
+        let ctx = effectcraft_engine::render::EvalCtx { project: &s.project, comp_id: cid, comp, time: Default::default(), expr: s.expr.as_deref() };
+        ctx.value(layer, layer.props.prop(path).unwrap())
+    }
+
+    #[test]
+    fn pick_whip_expressions_evaluate() {
+        let mut s = super::session();
+        s.execute("comp.new", json!({"name": "C", "width": 200, "height": 200, "frameRate": 30, "duration": 2})).unwrap();
+        let a = s.execute("layer.newSolid", json!({"color": "#ffffff"})).unwrap()["layer"].as_u64().unwrap();
+        let b = s.execute("layer.newSolid", json!({"name": "Src", "color": "#ff0000"})).unwrap()["layer"].as_u64().unwrap();
+        s.execute("prop.set", json!({"layer": b, "path": "transform/rotation", "value": 33})).unwrap();
+        s.execute("prop.set", json!({"layer": b, "path": "transform/position", "value": [12, 34]})).unwrap();
+        s.execute("effect.apply", json!({"layer": b, "effect": "Gaussian Blur"})).unwrap();
+        s.execute("prop.set", json!({"layer": b, "path": "effects/#1/blurriness", "value": 21})).unwrap();
+        s.execute("layer.addMask", json!({"layer": b})).unwrap();
+        s.execute("prop.set", json!({"layer": b, "path": "masks/#1/feather", "value": [7, 7]})).unwrap();
+        let link = |s: &mut effectcraft_engine::Session, from: &str, to: &str| {
+            s.execute("prop.pickWhip", json!({"layer": a, "path": from, "target": {"layer": b, "path": to}})).unwrap();
+        };
+        link(&mut s, "transform/opacity", "transform/rotation");
+        assert_eq!(value(&s, a, "transform/opacity").as_f64(), 33.0);
+        link(&mut s, "transform/scale", "transform/rotation");
+        let cid = s.active_comp_id().unwrap();
+        let ep = effectcraft_expr::eval_property(&s.project, cid, effectcraft_engine::project::LayerId(a), "transform/scale", 0.0);
+        assert!(ep.is_ok(), "{ep:?}");
+        assert_eq!(value(&s, a, "transform/scale").as_vec2(), [33.0, 33.0]);
+        link(&mut s, "transform/position", "transform/position");
+        assert_eq!(value(&s, a, "transform/position").as_vec2(), [12.0, 34.0]);
+        link(&mut s, "transform/rotation", "effects/#1/blurriness");
+        assert_eq!(value(&s, a, "transform/rotation").as_f64(), 21.0);
+        link(&mut s, "transform/opacity", "masks/#1/feather");
+        assert_eq!(value(&s, a, "transform/opacity").as_f64(), 7.0);
+        // Separated dimensions: X Position reference.
+        s.execute("prop.separateDimensions", json!({"layer": b})).unwrap();
+        link(&mut s, "transform/rotation", "transform/positionX");
+        assert_eq!(value(&s, a, "transform/rotation").as_f64(), 12.0);
+    }
+
+    #[test]
+    fn expression_syntax_errors_disable_the_expression() {
+        let mut s = super::session();
+        s.execute("comp.new", json!({"name": "C", "width": 100, "height": 100, "frameRate": 30, "duration": 2})).unwrap();
+        let a = s.execute("layer.newSolid", json!({"color": "#ffffff"})).unwrap()["layer"].as_u64().unwrap();
+        let r = s.execute("prop.setExpression", json!({"layer": a, "path": "transform/opacity", "expression": "1 +* ("})).unwrap();
+        assert!(r["error"].is_string(), "{r}");
+        let pr = s.active_comp().unwrap().layers[0].props.prop("transform/opacity").unwrap().clone();
+        assert!(!pr.expr.unwrap().enabled);
+        assert_eq!(value(&s, a, "transform/opacity").as_f64(), 100.0);
+        s.execute("prop.setExpression", json!({"layer": a, "path": "transform/opacity", "expression": "50"})).unwrap();
+        assert_eq!(value(&s, a, "transform/opacity").as_f64(), 50.0);
     }
 }

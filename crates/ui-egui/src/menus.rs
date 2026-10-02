@@ -245,6 +245,9 @@ pub fn invoke(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, params: V
         "app.compSettings" | "comp.settings" if params.as_object().is_none_or(|m| m.is_empty()) => {
             crate::panels::dialogs::open_comp_settings(app)?;
         }
+        "keys.velocity" if params.as_object().is_none_or(|m| m.is_empty()) => crate::panels::key_dialogs::open_velocity(app)?,
+        "keys.interpolation" if params.as_object().is_none_or(|m| m.is_empty()) => crate::panels::key_dialogs::open_interpolation(app)?,
+        "layer.timeStretch" if params.as_object().is_none_or(|m| m.is_empty()) => crate::panels::key_dialogs::open_time_stretch(app)?,
         "app.solidSettings" | "layer.newSolid" if params.as_object().is_none_or(|m| m.is_empty()) => {
             crate::panels::dialogs::open_new_solid(app)?;
         }

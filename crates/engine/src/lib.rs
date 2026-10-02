@@ -93,6 +93,24 @@ pub struct KeyRef {
     pub time: Tick,
 }
 
+/// Keyframes of one property on the keyframe clipboard.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct KeyClip {
+    pub layer: LayerId,
+    /// Match-id path relative to the layer (`transform/position`), portable between layers.
+    pub path: String,
+    /// Keys with times relative to the earliest copied key (layer time).
+    pub keys: Vec<effectcraft_keyframe::Keyframe>,
+}
+
+/// A selected mask vertex: layer, mask group uid, vertex index.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct VertexRef {
+    pub layer: LayerId,
+    pub mask: Uid,
+    pub index: usize,
+}
+
 /// Editing state that commands depend on (headless-relevant, serde for agents).
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct EditorState {
@@ -109,6 +127,15 @@ pub struct EditorState {
     /// Layer clipboard (serialized layers) and keyframe clipboard.
     #[serde(skip)]
     pub clipboard: Vec<Layer>,
+    /// Copied keyframes (times relative to the earliest copied key).
+    #[serde(skip)]
+    pub key_clipboard: Vec<KeyClip>,
+    /// The last copy was keyframes (Paste pastes keys at the CTI).
+    #[serde(skip)]
+    pub clip_is_keys: bool,
+    /// Selected mask vertices (viewer Selection tool / pen).
+    #[serde(default)]
+    pub selected_vertices: Vec<VertexRef>,
     pub snapping: bool,
     /// Last applied effect id (Effect ▸ last effect).
     pub last_effect: Option<String>,
@@ -133,6 +160,8 @@ pub struct Session {
     pub services: Arc<dyn Services>,
     pub footage: Arc<dyn FootageSource>,
     pub expr: Option<Arc<dyn ExprHost>>,
+    /// Expression syntax checker (set by the host that links the expression engine).
+    pub expr_check: Option<fn(&str) -> std::result::Result<(), String>>,
     pub importer: Option<Arc<dyn Importer>>,
     /// Render Queue encoder (the export layer); `None` = export unavailable.
     pub exporter: Option<Arc<dyn Exporter>>,
@@ -157,6 +186,7 @@ impl Default for Session {
             services: Arc::new(FsServices),
             footage: Arc::new(NoFootage),
             expr: None,
+            expr_check: None,
             importer: None,
             exporter: None,
             render_job: None,
@@ -262,6 +292,7 @@ impl Session {
             self.state.selected_layers.retain(|l| ids.contains(l));
             self.state.selected_props.retain(|(l, _)| ids.contains(l));
             self.state.selected_keys.retain(|k| ids.contains(&k.layer));
+            self.state.selected_vertices.retain(|v| ids.contains(&v.layer));
         }
         self.state.project_selection.retain(|i| p.item(*i).is_some());
     }
@@ -286,7 +317,7 @@ impl Session {
         if let Some(c) = self.state.active_comp {
             let comp = self.project.comp(c);
             let t = match comp {
-                Some(comp) => comp.frame_rate.snap(t.clamp(Tick::ZERO, comp.duration - comp.frame_duration())),
+                Some(comp) => comp.frame_rate.snap_nearest(t.clamp(Tick::ZERO, comp.duration - comp.frame_duration())),
                 None => t,
             };
             self.state.times.insert(c, t);
@@ -306,6 +337,7 @@ impl Session {
             self.state.selected_layers.clear();
             self.state.selected_props.clear();
             self.state.selected_keys.clear();
+            self.state.selected_vertices.clear();
         }
         self.events.push(Event::OpenComp(id));
     }
@@ -372,6 +404,8 @@ impl Session {
 mod rq_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_timeline;
 
 /// Font families available to text layers (bundled + scanned system fonts).
 pub fn text_families() -> Vec<String> {

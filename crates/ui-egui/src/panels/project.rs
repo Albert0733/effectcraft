@@ -240,10 +240,8 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         if resp.double_clicked() {
             match &it.kind {
                 ItemKind::Comp(_) => actions.push(("comp.open".into(), json!({"comp": id.0}))),
-                ItemKind::Folder => {
-                    if !app.ui.project_open_folders.remove(&id.0) {
-                        app.ui.project_open_folders.insert(id.0);
-                    }
+                ItemKind::Folder if !app.ui.project_open_folders.remove(&id.0) => {
+                    app.ui.project_open_folders.insert(id.0);
                 }
                 _ => {}
             }
