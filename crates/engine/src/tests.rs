@@ -242,3 +242,27 @@ fn layer_tree_paths_resolve() {
     }
     assert!(checked > 20, "{checked}");
 }
+
+#[test]
+fn comp_settings_anchor_start_timecode_renderer() {
+    let mut s = Session::default();
+    s.execute("comp.new", json!({"name": "A", "width": 100, "height": 100, "duration": 2.0})).unwrap();
+    let l = s.execute("layer.newSolid", json!({"color": "#ff0000"})).unwrap()["layer"].as_u64().unwrap();
+    s.execute("prop.addKey", json!({"layer": l, "path": "transform/position", "time": 0.0, "value": [10, 20]})).unwrap();
+    let pos = |s: &Session| {
+        let pr = s.active_comp().unwrap().layer(crate::project::LayerId(l)).unwrap().props.prop("transform/position").unwrap().clone();
+        pr.keys[0].value.components()
+    };
+    // Center anchor: grow by 100x50 → shift by half.
+    s.execute("comp.settings", json!({"width": 200, "height": 150})).unwrap();
+    assert_eq!(pos(&s)[..2], [60.0, 45.0]);
+    // Top-left anchor: no shift. Bottom-right: full shift.
+    s.execute("comp.settings", json!({"width": 300, "anchor": 0})).unwrap();
+    assert_eq!(pos(&s)[..2], [60.0, 45.0]);
+    s.execute("comp.settings", json!({"width": 200, "height": 100, "anchor": 8})).unwrap();
+    assert_eq!(pos(&s)[..2], [-40.0, -5.0]);
+    s.execute("comp.settings", json!({"startTimecode": "0:00:01:00", "renderer": "advanced3D"})).unwrap();
+    let c = s.active_comp().unwrap();
+    assert_eq!(c.display_start, c.frame_rate.tick_of(30));
+    assert_eq!(c.renderer, crate::project::Renderer::Advanced3D);
+}

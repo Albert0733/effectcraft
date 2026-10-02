@@ -1,5 +1,6 @@
 //! Panel bodies.
 
+pub mod comp_settings;
 pub mod dialogs;
 pub mod effect_controls;
 pub mod effects_presets;
