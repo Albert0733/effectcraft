@@ -54,6 +54,31 @@ hours** at the pace observed so far and **≈ 35–40 hours** if the audit's fig
 hardest remaining systems (Roto Brush, Warp Stabilizer, the 3D camera tracker, Advanced 3D, GPU
 rendering, on-canvas text editing) are where the conservative figure is most likely to be right.
 
+## Update at the end of 2 October 2026
+
+A third wave landed: viewer interactions (snapping, rulers, channels, exposure, snapshots, region
+of interest, shape pen and pen-tool family, motion-path handles, graph editor transform box),
+on-canvas text editing with per-character styles and paragraph settings, render fidelity (8/16/32
+bpc, Rec.709/Rec.2020/P3 working spaces and linear blending, frame blending with optical flow,
+collapse transformations, slip edits), a GPU compositor with 16 GPU effects, Wiggler/Smoother/
+Motion Sketch, the marker dialog, precompose options and the comp navigator, Project panel folder
+moves/rename/columns/thumbnails, drag-and-drop docking with floating panels, and the tracking
+library groundwork for mask tracking and Warp Stabilizer.
+
+| Measure | Morning | Now |
+|---|---|---|
+| Feature parity, weighted | 63.7% | **≈ 79%** |
+| Unweighted | 57.8% | ≈ 74% |
+| P0 / P1 / P2 | 75% / 38% / 17% | 87% / 67% / 21% |
+| Remaining (audit-scale agent-hours) | ≈ 167 | ≈ 100 |
+| Wall clock, five parallel agents | 42–50 h | **≈ 8–10 h at today's measured pace; ≈ 25 h by the audit's conservative figures** |
+
+What is left is concentrated in large systems: Roto Brush and Refine Edge, the 3D camera tracker,
+Advanced 3D (models, PBR, image-based lighting), the Warp Stabilizer and mask-tracking UI on top of
+the new tracking library, a JavaScript scripting object model, SVG/PSD import, WebM, a disk cache,
+the missing effect categories (3D Channel, Immersive Video, OCIO), native macOS menus, and
+wasm threads.
+
 ## By area
 
 | Area | Weighted parity | Remaining (agent-hours) | Biggest gaps |
