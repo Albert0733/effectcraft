@@ -517,6 +517,14 @@ impl EffectcraftApp {
     }
 }
 
+impl EffectcraftApp {
+    /// Take the pending synthetic input (from `ui.click`, `ui.key`, …). Hosts that don't call
+    /// [`eframe::App::raw_input_hook`] (the headless test harness) feed these in themselves.
+    pub fn take_synthetic_input(&mut self) -> Vec<egui::Event> {
+        std::mem::take(&mut self.synthetic)
+    }
+}
+
 impl eframe::App for EffectcraftApp {
     fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         if !self.synthetic.is_empty() {

@@ -89,24 +89,18 @@ fn prop_row(
             if let Some(nv) = nv {
                 set(actions, json!(nv));
             }
-            // Slider track for slider params.
-            if let ParamUi::Slider { slider_min, slider_max, .. } = prop.ui {
-                let tr = Rect::from_min_max(pos2(vr.max.x + 10.0, cy - 2.0), pos2(r.max.x - 12.0, cy + 2.0));
-                if tr.width() > 40.0 {
-                    p.rect_filled(tr, 2.0, t.field_bg);
-                    let f = ((v - slider_min) / (slider_max - slider_min)).clamp(0.0, 1.0) as f32;
-                    p.rect_filled(Rect::from_min_max(tr.min, pos2(tr.min.x + tr.width() * f, tr.max.y)), 2.0, t.accent.gamma_multiply(0.7));
-                    let knob = pos2(tr.min.x + tr.width() * f, cy);
-                    p.circle_filled(knob, 5.0, t.text);
-                    let sresp = ui.interact(tr.expand2(vec2(4.0, 6.0)), egui::Id::new(("ec-slider", uid)), Sense::click_and_drag());
-                    app.auto.add(&format!("effectControls.prop.{uid}.slider"), tr, &prop.name);
-                    if (sresp.dragged() || sresp.clicked())
-                        && let Some(pt) = sresp.interact_pointer_pos()
-                    {
-                        let f = ((pt.x - tr.min.x) / tr.width()).clamp(0.0, 1.0) as f64;
-                        set(actions, json!(slider_min + (slider_max - slider_min) * f));
+            // AE hides a slider param's slider until its twirl is opened (see `slider_row`).
+            if matches!(prop.ui, ParamUi::Slider { .. }) {
+                let open = app.ui.fx_slider_open.contains(&uid);
+                let tw = Rect::from_center_size(pos2(swr.min.x - 9.0, cy), vec2(10.0, 10.0));
+                if widgets::twirl(ui, tw, open, egui::Id::new(("ec-stw", uid)), &t).clicked() {
+                    if open {
+                        app.ui.fx_slider_open.remove(&uid);
+                    } else {
+                        app.ui.fx_slider_open.insert(uid);
                     }
                 }
+                app.auto.add(&format!("effectControls.prop.{uid}.twirl"), tw, &prop.name);
             }
         }
         Value::Vec2(_) | Value::Vec3(_) => {
@@ -139,13 +133,6 @@ fn prop_row(
             if crate::header::color_popup(ui, pop, sr.left_bottom(), &mut rgb) {
                 set(actions, json!([rgb[0], rgb[1], rgb[2], 1.0]));
             }
-            p.text(
-                pos2(sr.max.x + 8.0, cy),
-                Align2::LEFT_CENTER,
-                effectcraft_engine::color::Rgba::from_array([c[0] as f32, c[1] as f32, c[2] as f32, 1.0]).to_hex(),
-                Tokens::mono(11.0),
-                t.text_dim,
-            );
         }
         Value::Bool(b) => {
             let cr = Rect::from_min_size(pos2(vx, cy - 8.0), vec2(16.0, 16.0));
@@ -187,6 +174,48 @@ fn prop_row(
     }
 }
 
+/// The twirled-open slider under a slider param: track, knob and the slider range's ends.
+#[allow(clippy::too_many_arguments)]
+fn slider_row(
+    app: &mut EffectcraftApp,
+    ui: &mut egui::Ui,
+    p: &egui::Painter,
+    layer: &Layer,
+    prop: &Property,
+    ectx: &EvalCtx,
+    r: Rect,
+    x0: f32,
+    actions: &mut Actions,
+) {
+    let t = app.tokens;
+    let ParamUi::Slider { slider_min, slider_max, decimals, .. } = prop.ui else { return };
+    let Value::Scalar(v) = ectx.value(layer, prop) else { return };
+    let uid = prop.uid;
+    let tr = Rect::from_min_max(pos2(r.min.x + x0, r.min.y + 8.0), pos2(r.max.x - 16.0, r.min.y + 12.0));
+    if tr.width() < 40.0 {
+        return;
+    }
+    p.rect_filled(tr, 2.0, t.field_bg);
+    let f = ((v - slider_min) / (slider_max - slider_min)).clamp(0.0, 1.0) as f32;
+    p.rect_filled(Rect::from_min_max(tr.min, pos2(tr.min.x + tr.width() * f, tr.max.y)), 2.0, t.accent.gamma_multiply(0.7));
+    p.circle_filled(pos2(tr.min.x + tr.width() * f, tr.center().y), 5.0, t.text);
+    let dec = decimals as usize;
+    p.text(pos2(tr.min.x, tr.max.y + 4.0), Align2::LEFT_TOP, format!("{slider_min:.dec$}"), Tokens::ui(10.5), t.text_dim);
+    p.text(pos2(tr.max.x, tr.max.y + 4.0), Align2::RIGHT_TOP, format!("{slider_max:.dec$}"), Tokens::ui(10.5), t.text_dim);
+    let sresp = ui.interact(tr.expand2(vec2(4.0, 6.0)), egui::Id::new(("ec-slider", uid)), Sense::click_and_drag());
+    app.auto.add(&format!("effectControls.prop.{uid}.slider"), tr, &prop.name);
+    if (sresp.dragged() || sresp.clicked())
+        && let Some(pt) = sresp.interact_pointer_pos()
+    {
+        let f = ((pt.x - tr.min.x) / tr.width()).clamp(0.0, 1.0) as f64;
+        actions.push((
+            "prop.set".into(),
+            json!({"layer": layer.id.0, "prop": uid, "value": slider_min + (slider_max - slider_min) * f, "merge": format!("ec-{uid}")}),
+        ));
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn group_rows(
     app: &mut EffectcraftApp,
     ui: &mut egui::Ui,
@@ -212,6 +241,11 @@ fn group_rows(
                     continue;
                 }
                 prop_row(app, ui, p, layer, pr, ectx, r, 24.0 + 14.0 * depth as f32, actions);
+                if app.ui.fx_slider_open.contains(&pr.uid) {
+                    let sr = Rect::from_min_size(pos2(rect.min.x, *y), vec2(rect.width(), 34.0));
+                    *y += 34.0;
+                    slider_row(app, ui, p, layer, pr, ectx, sr, 24.0 + 14.0 * depth as f32 + 22.0, actions);
+                }
             }
             Node::Group(sg) => {
                 *y += 24.0;
@@ -291,7 +325,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
             }
         }
         bp.text(pos2(tw.max.x + 6.0, r.center().y), Align2::LEFT_CENTER, &g.name, Tokens::semibold(12.0), t.text);
-        let reset = Rect::from_min_size(pos2(r.max.x - 92.0, r.min.y + 4.0), vec2(40.0, 18.0));
+        let reset = Rect::from_min_size(pos2(r.max.x - 96.0, r.min.y + 4.0), vec2(40.0, 18.0));
         let rresp = ui.interact(reset, egui::Id::new(("ec-reset", g.uid)), Sense::click());
         bp.text(reset.center(), Align2::CENTER_CENTER, "Reset", Tokens::ui(11.5), if rresp.hovered() { t.hot_text } else { t.text_dim });
         app.auto.add(&format!("effectControls.effect.{}.reset", g.uid), reset, "Reset");
@@ -309,11 +343,19 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 }
             }
         }
-        let rm = Rect::from_min_size(pos2(r.max.x - 28.0, r.min.y + 4.0), vec2(18.0, 18.0));
-        if widgets::icon_button(ui, rm, Icon::Close, false, &t, egui::Id::new(("ec-rm", g.uid))).on_hover_text("Remove effect").clicked() {
-            actions.push(("effect.remove".into(), json!({"layer": layer.id.0, "effect": g.uid})));
+        // About…: the effect's name and category (AE's About dialog).
+        let about = Rect::from_min_size(pos2(r.max.x - 50.0, r.min.y + 4.0), vec2(44.0, 18.0));
+        let aresp = ui.interact(about, egui::Id::new(("ec-about", g.uid)), Sense::click());
+        bp.text(about.center(), Align2::CENTER_CENTER, "About...", Tokens::ui(11.5), if aresp.hovered() { t.hot_text } else { t.text_dim });
+        app.auto.add(&format!("effectControls.effect.{}.about", g.uid), about, "About");
+        let apop = egui::Id::new(("ec-about-pop", g.uid));
+        if aresp.clicked() {
+            widgets::open_popup(ui, apop);
         }
-        app.auto.add(&format!("effectControls.effect.{}.remove", g.uid), rm, "Remove");
+        if let Some(spec) = g.kind_effect().and_then(effectcraft_engine::effects::find) {
+            let lines = vec![spec.name.to_string(), format!("Category: {}", spec.category), "EffectCraft built-in effect (MIT OR Apache-2.0)".to_string()];
+            let _ = widgets::popup_menu(ui, apop, about.left_bottom(), &lines, None);
+        }
         let hresp =
             ui.interact(Rect::from_min_max(pos2(tw.max.x, r.min.y), pos2(reset.min.x - 4.0, r.max.y)), egui::Id::new(("ec-hdr", g.uid)), Sense::click());
         app.auto.add(&format!("effectControls.effect.{}", g.uid), r, &g.name);

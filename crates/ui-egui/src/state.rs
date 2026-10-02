@@ -298,6 +298,9 @@ pub struct UiState {
     pub project_sort_desc: bool,
     /// Effect Controls twirl state (group uids that are collapsed).
     pub fx_closed: BTreeSet<u64>,
+    /// Slider params whose slider row is twirled open (AE hides sliders by default).
+    #[serde(default)]
+    pub fx_slider_open: BTreeSet<u64>,
     /// Shape tool options.
     pub fill_color: [f32; 3],
     pub stroke_color: [f32; 3],
@@ -331,6 +334,7 @@ impl Default for UiState {
             project_sort: default_project_sort(),
             project_sort_desc: false,
             fx_closed: BTreeSet::new(),
+            fx_slider_open: BTreeSet::new(),
             fill_color: [0.24, 0.55, 0.96],
             stroke_color: [1.0, 1.0, 1.0],
             stroke_width: 0.0,

@@ -60,14 +60,23 @@ fn parse_args() -> Result<Args, String> {
     Ok(a)
 }
 
+/// One frame, first queueing the app's synthetic input (kittest doesn't call
+/// `raw_input_hook`); the harness runs one frame per queued event.
+fn step_frame(h: &mut Harness<'_, EffectcraftApp>) {
+    for e in h.state_mut().take_synthetic_input() {
+        h.event(e);
+    }
+    h.step();
+}
+
 /// Step the app for `secs` of wall time so background frame renders land in the viewer.
 fn settle(h: &mut Harness<'_, EffectcraftApp>, secs: f64) {
     let end = Instant::now() + Duration::from_secs_f64(secs);
     while Instant::now() < end {
-        h.step();
+        step_frame(h);
         std::thread::sleep(Duration::from_millis(30));
     }
-    h.step();
+    step_frame(h);
 }
 
 fn snap(h: &mut Harness<'_, EffectcraftApp>, path: &str) -> Result<(), String> {
@@ -110,7 +119,7 @@ fn main() {
         // Requests are answered on a later frame (some wait for input to be processed).
         let deadline = Instant::now() + Duration::from_secs(10);
         let reply = loop {
-            harness.step();
+            step_frame(&mut harness);
             if let Ok(v) = reply_rx.try_recv() {
                 break v;
             }
