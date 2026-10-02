@@ -13,6 +13,7 @@ pub mod tracking;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+pub use effectcraft_color::ColorSpace;
 use effectcraft_color::{BlendMode, Label};
 use effectcraft_time::{FrameRate, Tick};
 pub use props::{Expression, FeatherFalloff, GroupKind, MaskMode, MaskMotionBlur, Node, ParamUi, PropGroup, Property, Uid, parse_path};
@@ -70,6 +71,22 @@ impl BitDepth {
     pub fn is_float(self) -> bool {
         self == BitDepth::Bpc32
     }
+    /// Quantisation levels per channel of the integer depths (8 bpc: 255; 16 bpc: 32768, After
+    /// Effects' "15 + 1" bit range), `None` for 32 bpc float.
+    pub fn levels(self) -> Option<f32> {
+        match self {
+            BitDepth::Bpc8 => Some(255.0),
+            BitDepth::Bpc16 => Some(32768.0),
+            BitDepth::Bpc32 => None,
+        }
+    }
+    pub fn bits(self) -> u32 {
+        match self {
+            BitDepth::Bpc8 => 8,
+            BitDepth::Bpc16 => 16,
+            BitDepth::Bpc32 => 32,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -82,8 +99,16 @@ pub enum TimeDisplayStyle {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ProjectSettings {
     pub bit_depth: BitDepth,
-    /// Blend in linear light instead of the sRGB-encoded working space.
+    /// Linearize Working Space: the working space uses linear light (1.0 gamma) for everything
+    /// (sources, effects, blending). Needs a working space.
     pub linearize: bool,
+    /// Working Space (colour management). `None` = no colour management.
+    #[serde(default)]
+    pub working_space: Option<ColorSpace>,
+    /// Blend Colors Using 1.0 Gamma: layers blend in linear light (sources and effects stay in
+    /// the working space's encoding).
+    #[serde(default)]
+    pub blend_linear: bool,
     pub time_display: TimeDisplayStyle,
     /// Frame numbering starts at 0 (or 1).
     pub frame_start: i64,
@@ -92,7 +117,15 @@ pub struct ProjectSettings {
 
 impl Default for ProjectSettings {
     fn default() -> Self {
-        ProjectSettings { bit_depth: BitDepth::Bpc8, linearize: false, time_display: TimeDisplayStyle::Timecode, frame_start: 0, audio_sample_rate: 48_000 }
+        ProjectSettings {
+            bit_depth: BitDepth::Bpc8,
+            linearize: false,
+            working_space: None,
+            blend_linear: false,
+            time_display: TimeDisplayStyle::Timecode,
+            frame_start: 0,
+            audio_sample_rate: 48_000,
+        }
     }
 }
 
@@ -520,6 +553,9 @@ pub struct Footage {
     /// Image sequence files (when kind = Sequence).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sequence: Vec<String>,
+    /// Colour profile (from the file's metadata, or Interpret Footage). `None` = sRGB.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color_profile: Option<ColorSpace>,
 }
 
 fn one() -> u32 {

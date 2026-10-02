@@ -303,7 +303,7 @@ pub fn hook(
                 exec(app, "text.setSelection", json!({"anchor": r.start, "caret": r.end}));
                 owns = true;
             }
-            _ if !matches!(tool, Tool::Hand | Tool::Zoom | Tool::Pen) && !type_tool => {
+            _ if !matches!(tool, Tool::Hand | Tool::Zoom) && !tool.is_pen() && !type_tool => {
                 if let Some(e) = text_layer_at(app, ectx, map, p) {
                     exec(app, "text.edit", json!({"layer": e.layer.id.0}));
                     ui.memory_mut(|m| m.request_focus(focus_id()));

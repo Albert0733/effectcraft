@@ -140,6 +140,18 @@ fn project_settings(s: &mut Session, p: &Value) -> Result<Value> {
         if let Some(l) = p.get("linearize").and_then(Value::as_bool) {
             proj.settings.linearize = l;
         }
+        if let Some(l) = p.get("blendLinear").or_else(|| p.get("blendColorsUsing1Gamma")).and_then(Value::as_bool) {
+            proj.settings.blend_linear = l;
+        }
+        if let Some(w) = p.get("workingSpace") {
+            proj.settings.working_space = match w.as_str() {
+                None | Some("none" | "None" | "") => None,
+                Some(n) => Some(
+                    effectcraft_project::ColorSpace::parse(n)
+                        .ok_or_else(|| bad("file.projectSettings", format!("workingSpace: none|srgb|rec709|rec2020|p3, not `{n}`")))?,
+                ),
+            };
+        }
         if let Some(t) = str_p(p, "timeDisplay") {
             proj.settings.time_display =
                 if t.eq_ignore_ascii_case("frames") { effectcraft_project::TimeDisplayStyle::Frames } else { effectcraft_project::TimeDisplayStyle::Timecode };
@@ -172,7 +184,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Project Settings...",
             ["File"],
             Some("Cmd+Alt+Shift+K"),
-            "{bitDepth?: 8|16|32, linearize?, timeDisplay?: timecode|frames}",
+            "{bitDepth?: 8|16|32, workingSpace?: none|srgb|rec709|rec2020|p3, linearize?, blendLinear?, timeDisplay?: timecode|frames}",
             always,
             project_settings
         ),

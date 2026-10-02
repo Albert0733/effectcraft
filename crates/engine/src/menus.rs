@@ -165,6 +165,7 @@ pub fn checked(s: &Session, command: &str, params: &Value) -> Option<bool> {
         "layer.mask.hideLocked" => Some(s.state.hide_locked_masks),
         "view.layout" => Some(params.get("views").and_then(Value::as_u64) == Some(s.state.view_layout.max(1) as u64)),
         "view.shareViewOptions" => Some(s.state.share_view_options),
+        "view.snapping" => Some(s.state.snapping),
         "layer.mask.motionBlur" | "layer.mask.featherFalloff" | "path.rotoBezier" => {
             use effectcraft_project::{FeatherFalloff, GroupKind, MaskMotionBlur};
             let GroupKind::Mask { motion_blur, feather_falloff, roto_bezier, .. } = layer?.masks()?.groups().next()?.kind else { return None };
@@ -869,6 +870,7 @@ View
   ---
   Show Grid | view.grid
   Snap to Grid | view.snapToGrid
+  Snapping | view.snapping
   ---
   View Options... | view.options
   Show Layer Controls | view.layerControls

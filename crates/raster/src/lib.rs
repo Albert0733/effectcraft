@@ -4,6 +4,7 @@
 //! heavy operation is row-parallel with rayon.
 
 pub mod blur;
+pub mod flow;
 pub mod warp;
 
 use effectcraft_color::{BlendMode, blend_pixel};

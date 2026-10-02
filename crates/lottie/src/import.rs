@@ -170,6 +170,7 @@ pub fn import(
                 codec: String::new(),
                 missing: false,
                 sequence: vec![],
+                color_profile: None,
             };
             let item = project.add_item(&nm, Label::Lavender, Some(folder), ItemKind::Footage(foot));
             cx.items.push(item);

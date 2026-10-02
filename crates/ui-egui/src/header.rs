@@ -113,9 +113,11 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         x = puppet_options(app, ui, &p, x, cy);
     }
     let snap = Rect::from_min_size(pos2(x, cy - 10.0), vec2(20.0, 20.0));
+    // The engine owns snapping (View ▸ Snapping); the checkbox mirrors it.
+    app.ui.snapping = app.session.state.snapping;
     if widgets::checkbox(ui, snap, app.ui.snapping, &t, egui::Id::new("snapping")).clicked() {
-        app.ui.snapping = !app.ui.snapping;
-        app.session.state.snapping = app.ui.snapping;
+        let _ = app.session.execute("view.snapping", serde_json::json!({}));
+        app.ui.snapping = app.session.state.snapping;
     }
     app.auto.add("header.snapping", snap, "Snapping");
     p.text(pos2(snap.max.x + 4.0, cy), Align2::LEFT_CENTER, "Snapping", Tokens::ui(12.0), t.text_dim);

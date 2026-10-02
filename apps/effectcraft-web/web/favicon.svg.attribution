@@ -1,9 +1,8 @@
 asset:        favicon.svg
 title:        EffectCraft web app icon (favicon)
-author:       EffectCraft contributors
+author:       EffectCraft contributors (drawing by the project owner in ArtCraft)
 source:       original work
 license:      MIT OR Apache-2.0
-added:        2026-10-01 by EffectCraft contributors (Claude agent, M15 web app)
-notes:        Hand-written SVG of the code-drawn EffectCraft mark (`paint_logo` in
-              crates/ui-egui/src/header.rs): a navy rounded square split into blue and violet halves
-              with a white keyframe diamond, from basic shapes. Not derived from any other product's icon.
+license-file: assets/app-icon/LICENSE.txt
+added:        2026-10-02 by EffectCraft contributors (Claude agent, app icon)
+notes:        Copy of assets/app-icon/effectcraft-small.svg (the lighter vector trace of the app icon). Replaces the earlier code-drawn split-square mark.

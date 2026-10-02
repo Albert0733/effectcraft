@@ -157,6 +157,37 @@ impl BlendMode {
         matches!(self, BlendMode::StencilAlpha | BlendMode::StencilLuma | BlendMode::SilhouetteAlpha | BlendMode::SilhouetteLuma)
     }
 
+    /// Modes whose formulas are defined for over-range (HDR, 32 bpc) values. The others clamp
+    /// their inputs to 0..1 before blending, as After Effects documents for 32 bpc projects
+    /// (in 8/16 bpc everything is already in range).
+    pub fn supports_hdr(self) -> bool {
+        matches!(
+            self,
+            BlendMode::Normal
+                | BlendMode::Dissolve
+                | BlendMode::DancingDissolve
+                | BlendMode::Darken
+                | BlendMode::Multiply
+                | BlendMode::LinearBurn
+                | BlendMode::DarkerColor
+                | BlendMode::Add
+                | BlendMode::Lighten
+                | BlendMode::Screen
+                | BlendMode::LinearDodge
+                | BlendMode::LighterColor
+                | BlendMode::Difference
+                | BlendMode::ClassicDifference
+                | BlendMode::Subtract
+                | BlendMode::Divide
+                | BlendMode::StencilAlpha
+                | BlendMode::StencilLuma
+                | BlendMode::SilhouetteAlpha
+                | BlendMode::SilhouetteLuma
+                | BlendMode::AlphaAdd
+                | BlendMode::LuminescentPremul
+        )
+    }
+
     pub fn next(self) -> BlendMode {
         let i = BlendMode::ALL.iter().position(|m| *m == self).unwrap_or(0);
         BlendMode::ALL[(i + 1) % BlendMode::ALL.len()]
@@ -364,8 +395,12 @@ pub fn blend_pixel(mode: BlendMode, dst: [f32; 4], src: [f32; 4], noise: f32) ->
     if da <= 0.0 {
         return src;
     }
-    let cs = [src[0] / sa, src[1] / sa, src[2] / sa];
-    let cb = [dst[0] / da, dst[1] / da, dst[2] / da];
+    let mut cs = [src[0] / sa, src[1] / sa, src[2] / sa];
+    let mut cb = [dst[0] / da, dst[1] / da, dst[2] / da];
+    if !mode.supports_hdr() {
+        cs = cs.map(|v| v.clamp(0.0, 1.0));
+        cb = cb.map(|v| v.clamp(0.0, 1.0));
+    }
     let b = non_separable(mode, cb, cs);
     let ao = sa + da - sa * da;
     let mut o = [0.0f32; 4];
@@ -430,6 +465,16 @@ mod tests {
         let d = [0.5, 0.5, 0.5, 1.0];
         assert_eq!(blend_pixel(BlendMode::StencilAlpha, d, [0.0, 0.0, 0.0, 0.0], 0.0), [0.0; 4]);
         assert_eq!(blend_pixel(BlendMode::SilhouetteAlpha, d, [0.0, 0.0, 0.0, 0.0], 0.0), d);
+    }
+
+    #[test]
+    fn hdr_modes() {
+        // Add and Screen keep over-range values (32 bpc); Overlay clamps its inputs.
+        let d = [2.0, 2.0, 2.0, 1.0];
+        let s = [0.5, 0.5, 0.5, 1.0];
+        assert!((blend_pixel(BlendMode::Add, d, s, 0.5)[0] - 2.5).abs() < 1e-6);
+        assert!((blend_pixel(BlendMode::Screen, d, s, 0.5)[0] - 1.5).abs() < 1e-6);
+        assert!(blend_pixel(BlendMode::Overlay, d, s, 0.5)[0] <= 1.0);
     }
 
     #[test]

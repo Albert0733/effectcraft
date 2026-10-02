@@ -329,6 +329,7 @@ mod tests {
             codec: String::new(),
             missing: false,
             sequence: vec![],
+            color_profile: None,
         };
         let fid = p.add_item("x.wav", effectcraft_color::Label::SeaFoam, None, ItemKind::Footage(f));
         let comp = Comp::new(64, 64, FrameRate::new(25, 1), Tick::from_seconds_f64(2.0));

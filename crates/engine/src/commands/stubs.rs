@@ -53,7 +53,6 @@ pub fn specs() -> Vec<CommandSpec> {
         stub!("material.duplicateAssign", "Duplicate and Assign Material", ["Layer", "Material"], "{}"),
         stub!("view.3d.default", "Default", ["View", "Switch 3D View"], "{}"),
         stub!("view.splitLockedViewer", "Split with New Locked Viewer", ["View"], "{}"),
-        stub!("view.res.custom", "Custom...", ["View", "Resolution"], "{}"),
         // Color management.
         stub!("view.displayColorManagement", "Use Display Color Management", ["View"], "{}"),
         stub!("view.simulateOutput", "Simulate Output", [], "{profile}"),

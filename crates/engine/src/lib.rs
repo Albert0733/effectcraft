@@ -19,6 +19,7 @@ pub mod render_queue;
 mod session_settings;
 pub mod shortcuts;
 pub mod tracking;
+pub mod viewer;
 
 use std::sync::Arc;
 
@@ -185,6 +186,9 @@ pub struct EditorState {
     /// Text copied while editing (with its formatting), for Paste / Paste Text Formatting Only.
     #[serde(skip)]
     pub text_clipboard: Option<effectcraft_keyframe::TextDoc>,
+    /// Composition viewer display options (Show Channel, exposure, snapshot, Fast Previews).
+    #[serde(default)]
+    pub viewer: commands::viewer_cmds::ViewOptions,
 }
 
 fn one_view() -> u8 {
@@ -261,6 +265,8 @@ pub struct Session {
     pub shortcut_table: std::sync::OnceLock<shortcuts::ShortcutTable>,
     /// Auto-save bookkeeping.
     pub autosave: autosave::AutoSaveState,
+    /// The viewer snapshot (Take Snapshot / Show Snapshot).
+    pub snapshot: Option<viewer::Snapshot>,
 }
 
 impl Default for Session {
@@ -290,6 +296,7 @@ impl Default for Session {
             ui_commands: vec![],
             shortcut_table: std::sync::OnceLock::new(),
             autosave: autosave::AutoSaveState::default(),
+            snapshot: None,
         }
     }
 }
@@ -415,6 +422,11 @@ impl Session {
         self.state.active_comp.filter(|c| self.project.comp(*c).is_some())
     }
 
+    /// Current time of a comp.
+    pub fn time_of(&self, comp: ItemId) -> Tick {
+        self.state.times.get(&comp).copied().unwrap_or(Tick::ZERO)
+    }
+
     /// Current time of the active comp.
     pub fn time(&self) -> Tick {
         self.state.active_comp.and_then(|c| self.state.times.get(&c).copied()).unwrap_or(Tick::ZERO)
@@ -528,6 +540,8 @@ mod tests_3d;
 #[cfg(test)]
 mod tests_effects;
 #[cfg(test)]
+mod tests_fidelity;
+#[cfg(test)]
 mod tests_lottie;
 #[cfg(test)]
 mod tests_menu_cmds;
@@ -545,6 +559,8 @@ mod tests_text_edit;
 mod tests_timeline;
 #[cfg(test)]
 mod tests_track;
+#[cfg(test)]
+mod tests_viewer;
 
 /// Font families available to text layers (bundled + scanned system fonts).
 /// Text animation presets: (id, name), for menus.

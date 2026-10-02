@@ -231,11 +231,45 @@ pub(crate) fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: &egui::Painte
         p.text(plot.center(), Align2::CENTER_CENTER, "Select animated properties to show them in the Graph Editor", Tokens::ui(12.0), t.text_faint);
     }
 
+    // Show Reference Graph: the other graph type, faint, scaled to the plot.
+    if app.ui.timeline.graph_reference && !cs.is_empty() {
+        let other = curves(app, comp, ectx, tm, plot, !speed);
+        let (mut rlo, mut rhi) = (f64::INFINITY, f64::NEG_INFINITY);
+        for c in &other {
+            for (_, v) in &c.pts {
+                rlo = rlo.min(*v);
+                rhi = rhi.max(*v);
+            }
+        }
+        if rlo.is_finite() {
+            let span = (rhi - rlo).max(1e-9);
+            let lines: Vec<(Color32, Vec<Pos2>)> = other
+                .iter()
+                .map(|c| {
+                    (
+                        c.color,
+                        c.pts
+                            .iter()
+                            .map(|(ct, v)| pos2(tm.x(*ct), plot.max.y - ((v - rlo) / span) as f32 * plot.height() * 0.9 - plot.height() * 0.05))
+                            .collect(),
+                    )
+                })
+                .collect();
+            super::graph_tools::reference_graph(&pc, plot, &lines);
+        }
+    }
     // Curves.
     for c in &cs {
         let pts: Vec<Pos2> = c.pts.iter().map(|(ct, v)| pos2(tm.x(*ct), ymap(*v))).collect();
         pc.add(egui::Shape::line(pts, Stroke::new(1.5, c.color)));
     }
+    // Transform box around several selected keys (inside below the keys, handles above).
+    let sel_keys: Vec<super::graph_tools::SelKey> = cs
+        .iter()
+        .flat_map(|c| c.keys.iter().filter(|k| k.sel).map(move |k| super::graph_tools::SelKey { t: k.t, v: k.v, dim: c.dim, editable: c.editable }))
+        .collect();
+    let all_key_times: Vec<(u64, usize, f64)> = cs.iter().flat_map(|c| c.keys.iter().map(move |k| (c.prop.uid, k.idx, k.t))).collect();
+    super::graph_tools::transform_box(app, ui, &pc, &sel_keys, tm, &ymap, &vmap, speed, false, actions);
     // Keys and handles.
     let mut key_screens: Vec<(serde_json::Value, Pos2)> = vec![];
     let fr = comp.frame_rate;
@@ -298,7 +332,10 @@ pub(crate) fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: &egui::Painte
             {
                 ctx.data_mut(|dd| dd.insert_temp(drag_id, true));
                 let merge = format!("gkey-{uid}-{}", k.idx);
-                let nt = c.layer.layer_time(fr.snap_nearest(Tick::from_seconds_f64(tm.t(pt.x).max(0.0))));
+                // Graph Editor ▸ Snap: to the current time and other keys.
+                let others: Vec<f64> = all_key_times.iter().filter(|(u, i, _)| !(*u == uid && *i == k.idx)).map(|x| x.2).collect();
+                let ct = super::graph_tools::snap_time(app, tm, tm.t(pt.x).max(0.0), &others);
+                let nt = c.layer.layer_time(fr.snap_nearest(Tick::from_seconds_f64(ct)));
                 let mut params = json!({"layer": lid.0, "prop": uid, "time": k.time.seconds(), "newTime": nt.seconds(), "merge": merge});
                 if !speed && c.editable {
                     let mut comps = c.prop.keys[k.idx].value.components();
@@ -315,6 +352,8 @@ pub(crate) fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: &egui::Painte
             }
         }
     }
+
+    super::graph_tools::transform_box(app, ui, &pc, &sel_keys, tm, &ymap, &vmap, speed, true, actions);
 
     // Background: click deselects keys, drag box-selects.
     if bg.clicked() {
@@ -372,6 +411,17 @@ pub(crate) fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: &egui::Painte
     }
     if text_button(app, ui, p, &mut x, y, "Fit Selection", false, "fitSelection", "Fit selection to view") {
         fit_selection(app, &cs, tm, plot);
+    }
+    x += 6.0;
+    let (snap, reference, tbox) = (app.ui.timeline.graph_snap, app.ui.timeline.graph_reference, app.ui.timeline.graph_transform_box);
+    if text_button(app, ui, p, &mut x, y, "Snap", snap, "snap", "Snap (key drags snap to the current time and other keys)") {
+        app.ui.timeline.graph_snap = !snap;
+    }
+    if text_button(app, ui, p, &mut x, y, "Reference", reference, "reference", "Show Reference Graph") {
+        app.ui.timeline.graph_reference = !reference;
+    }
+    if text_button(app, ui, p, &mut x, y, "Transform Box", tbox, "transformBox", "Show Transform Box when multiple keys are selected") {
+        app.ui.timeline.graph_transform_box = !tbox;
     }
     x += 6.0;
     let pos_sel = app.session.state.selected_props.iter().find_map(|(l, u)| {
