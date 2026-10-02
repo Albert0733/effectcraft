@@ -65,6 +65,18 @@ impl EffectHost for FxHost<'_, '_, '_> {
         Some(LayerPixels { buf, size })
     }
 
+    fn layer_masks(&self, id: u64) -> Option<LayerPixels> {
+        let other = self.ctx.layer(effectcraft_project::LayerId(id))?;
+        if other.id == self.layer.id || self.r.depth > MAX_FX_DEPTH {
+            return None;
+        }
+        let sub = Renderer { depth: self.r.depth + 1, ..*self.r };
+        let buf = (*sub.layer_input(self.ctx, other, 0)?).clone();
+        let size = source_size(self.r.project, other);
+        let size = if size.0 == 0 { [self.ctx.comp.width as f64, self.ctx.comp.height as f64] } else { [size.0 as f64, size.1 as f64] };
+        Some(LayerPixels { buf, size })
+    }
+
     fn audio(&self, id: u64, start: f64, frames: usize, rate: u32) -> Option<Vec<f32>> {
         let other = self.ctx.layer(effectcraft_project::LayerId(id))?;
         let LayerSource::Footage { item } = &other.source else { return None };

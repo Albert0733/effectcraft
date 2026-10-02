@@ -44,6 +44,7 @@ mod utility2;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
+pub use color2::Curve;
 use effectcraft_keyframe::Value;
 use effectcraft_project::build::Ids;
 use effectcraft_project::{GroupKind, ParamUi, PropGroup, Property};
@@ -163,6 +164,11 @@ pub trait EffectHost: Sync {
     /// `frames` stereo sample frames (interleaved L R …) of layer `id`'s audio starting at comp
     /// time `start` seconds, at `rate` Hz. `None` when the layer has no audio.
     fn audio(&self, id: u64, start: f64, frames: usize, rate: u32) -> Option<Vec<f32>>;
+    /// Layer `id` with its masks but none of its effects (a layer parameter's "Masks" choice).
+    /// Defaults to the plain source.
+    fn layer_masks(&self, id: u64) -> Option<LayerPixels> {
+        self.layer(id, false)
+    }
     /// The effect's own layer at another **layer time** `layer_time` (seconds): its source with
     /// masks applied, followed by the first `effects` effects of its stack (0 = none, which is
     /// what After Effects' Time effects see). `None` when unavailable (no host, recursion
@@ -208,9 +214,17 @@ pub struct EffectCtx<'a> {
 
 impl EffectCtx<'_> {
     /// The layer chosen in layer parameter `id`, via the host.
+    /// `masks_and_effects` is the effect's built-in choice, used when the instance has no
+    /// source companion parameter (see [`layer_source_id`]).
     pub fn layer_param(&self, id: &str, masks_and_effects: bool) -> Option<LayerPixels> {
         let lid = self.params.get(id)?.as_layer()?;
-        self.env.host?.layer(lid, masks_and_effects)
+        let host = self.env.host?;
+        match self.params.get(&layer_source_id(id)).map(Value::as_enum) {
+            Some(0) => host.layer(lid, false),
+            Some(1) => host.layer_masks(lid),
+            Some(_) => host.layer(lid, true),
+            None => host.layer(lid, masks_and_effects),
+        }
     }
     /// Frame rate for frame-based maths (comp rate, else 30).
     pub fn fps(&self) -> f64 {
@@ -300,15 +314,31 @@ pub fn lookup(name_or_id: &str) -> Option<&'static EffectSpec> {
     find(name_or_id).or_else(|| registry().iter().find(|s| s.name.eq_ignore_ascii_case(name_or_id)))
 }
 
+/// A parameter's default value on a layer of `layer_size` (point defaults are fractions of the
+/// layer size).
+pub fn default_value(ps: &ParamSpec, layer_size: [f64; 2]) -> Value {
+    match (&ps.ui, &ps.default) {
+        (ParamUi::Point, Value::Vec2(f)) => Value::Vec2([f[0] * layer_size[0], f[1] * layer_size[1]]),
+        _ => ps.default.clone(),
+    }
+}
+
+/// Options of a layer parameter's source popup (After Effects shows it next to the layer
+/// popup): what of the chosen layer the effect sees.
+pub const LAYER_SOURCE_OPTIONS: [&str; 3] = ["Source", "Masks", "Effects & Masks"];
+
+/// Id of the hidden companion parameter holding layer parameter `id`'s source choice (an index
+/// into [`LAYER_SOURCE_OPTIONS`]).
+pub fn layer_source_id(id: &str) -> String {
+    format!("{id}Source")
+}
+
 /// Build the property group for a new instance of an effect.
 pub fn instantiate(spec: &EffectSpec, ids: &mut Ids, instance_name: &str, layer_size: [f64; 2]) -> PropGroup {
     let mut g = ids.group(spec.id, instance_name);
     g.kind = GroupKind::Effect { effect: spec.id.to_string() };
     for ps in &spec.params {
-        let default = match (&ps.ui, &ps.default) {
-            (ParamUi::Point, Value::Vec2(f)) => Value::Vec2([f[0] * layer_size[0], f[1] * layer_size[1]]),
-            _ => ps.default.clone(),
-        };
+        let default = default_value(ps, layer_size);
         let mut pr = Property::new(ids.alloc(), ps.id, ps.name, default).with_ui(ps.ui.clone());
         if matches!(ps.ui, ParamUi::Point) {
             pr.spatial = true;
@@ -317,6 +347,14 @@ pub fn instantiate(spec: &EffectSpec, ids: &mut Ids, instance_name: &str, layer_
             pr.hold_only = true;
         }
         g.children.push(pr.into());
+        // Layer parameters carry a source choice (Source / Masks / Effects & Masks) unless the
+        // effect declares its own (with its own default).
+        let sid = layer_source_id(ps.id);
+        if matches!(ps.ui, ParamUi::Layer) && !spec.params.iter().any(|q| q.id == sid) {
+            let mut src = Property::new(ids.alloc(), &sid, &format!("{} Source", ps.name), Value::Enum(2)).with_ui(ParamUi::Hidden);
+            src.hold_only = true;
+            g.children.push(src.into());
+        }
     }
     g
 }
@@ -458,5 +496,48 @@ mod tests {
             }
         }
         assert!(missing.is_empty(), "these depend on time but are not in TIME_DEPENDENT: {missing:?}");
+    }
+
+    /// A host that tags the returned pixels with the requested mode (R = 0 source, 0.5 masks,
+    /// 1 effects & masks).
+    struct ModeHost;
+    impl EffectHost for ModeHost {
+        fn layer(&self, _: u64, me: bool) -> Option<LayerPixels> {
+            let v = if me { 1.0 } else { 0.0 };
+            Some(LayerPixels { buf: Buf { img: Image::filled(1, 1, [v, 0.0, 0.0, 1.0]), offset: [0.0; 2], scale: 1.0 }, size: [1.0, 1.0] })
+        }
+        fn layer_masks(&self, _: u64) -> Option<LayerPixels> {
+            Some(LayerPixels { buf: Buf { img: Image::filled(1, 1, [0.5, 0.0, 0.0, 1.0]), offset: [0.0; 2], scale: 1.0 }, size: [1.0, 1.0] })
+        }
+        fn audio(&self, _: u64, _: f64, _: usize, _: u32) -> Option<Vec<f32>> {
+            None
+        }
+    }
+
+    #[test]
+    fn layer_param_source_companion_selects_the_mode() {
+        let host = ModeHost;
+        let mode = |companion: Option<u32>, builtin: bool| {
+            let mut params = Params::default();
+            params.values.insert("l".into(), Value::Layer(Some(3)));
+            if let Some(c) = companion {
+                params.values.insert(layer_source_id("l"), Value::Enum(c));
+            }
+            let env = EffectEnv { host: Some(&host), ..Default::default() };
+            let ctx = EffectCtx { params: &params, time: 0.0, layer_size: [1.0, 1.0], seed: 0, adjustment: false, env };
+            ctx.layer_param("l", builtin).unwrap().buf.img.get(0, 0)[0]
+        };
+        assert_eq!(mode(None, true), 1.0);
+        assert_eq!(mode(None, false), 0.0);
+        assert_eq!(mode(Some(0), true), 0.0);
+        assert_eq!(mode(Some(1), true), 0.5);
+        assert_eq!(mode(Some(2), false), 1.0);
+        // Instances get a companion (default Effects & Masks) unless the effect declares one.
+        let mut next = 0;
+        let g = instantiate(find("ec.channel.blend").unwrap(), &mut Ids(&mut next), "Blend", [10.0, 10.0]);
+        assert_eq!(g.get("blendWithLayerSource").map(|p| p.value.clone()), Some(Value::Enum(2)));
+        let g = instantiate(find("ec.noise.matchgrain").unwrap(), &mut Ids(&mut next), "Match Grain", [10.0, 10.0]);
+        assert_eq!(g.get("noiseSourceLayerSource").map(|p| p.value.clone()), Some(Value::Enum(0)));
+        assert_eq!(g.props().filter(|p| p.match_id == "noiseSourceLayerSource").count(), 1);
     }
 }

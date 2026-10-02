@@ -6,6 +6,7 @@ pub mod dialogs_3d;
 pub mod effect_controls;
 pub mod effects_presets;
 pub mod forms;
+pub mod fx_widgets;
 pub mod graph;
 pub mod info;
 pub mod key_dialogs;

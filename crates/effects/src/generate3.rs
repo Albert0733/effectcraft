@@ -1394,7 +1394,7 @@ pub fn specs() -> Vec<EffectSpec> {
     let ang = || ParamUi::Angle;
     let check = |id: &'static str, name: &'static str, v: bool| p(id, name, Value::Bool(v), ParamUi::Checkbox);
     let paint_style = || popup(&["On Original Image", "On Transparent", "Reveal Original Image"]);
-    let mask_idx = |id: &'static str, name: &'static str, d: f64| p(id, name, num(d), slider(0.0, 32.0, 0.0, 8.0, 0));
+    let mask_idx = |id: &'static str, name: &'static str, d: f64| p(id, name, num(d), ParamUi::Mask);
     let display = || popup(&["Digital", "Analog lines", "Analog dots"]);
     vec![
         spec(

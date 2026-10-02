@@ -1,7 +1,7 @@
 //! Effect menu and Effect Controls gestures.
 
-use effectcraft_project::Uid;
 use effectcraft_project::build::Ids;
+use effectcraft_project::{GroupKind, LayerId, PropGroup, Uid};
 use serde_json::{Value, json};
 
 use super::{CommandSpec, b_p, bad, has_layers, layer_mut, layers_p, str_p};
@@ -61,16 +61,20 @@ fn find_fx(s: &Session, p: &Value, cmd: &str) -> Result<(effectcraft_project::It
 }
 
 fn remove(s: &mut Session, p: &Value) -> Result<Value> {
-    let (cid, lid, uid) = find_fx(s, p, "effect.remove")?;
-    s.edit("Remove Effect", None, |proj, st| {
-        let l = layer_mut(proj, cid, lid)?;
-        if let Some(fx) = l.props.sub_mut("effects") {
-            fx.children.retain(|c| c.uid() != uid);
+    let cid = super::comp_id(s, p)?;
+    let fx = effects_p(s, p, "effect.remove")?;
+    let label = if fx.len() == 1 { "Remove Effect" } else { "Remove Effects" };
+    s.edit(label, None, |proj, st| {
+        for (lid, uid) in &fx {
+            let l = layer_mut(proj, cid, *lid)?;
+            if let Some(fx) = l.props.sub_mut("effects") {
+                fx.children.retain(|c| c.uid() != *uid);
+            }
+            st.selected_props.retain(|(_, u)| u != uid);
         }
-        st.selected_props.retain(|(_, u)| *u != uid);
         Ok(())
     })?;
-    Ok(Value::Null)
+    Ok(json!(fx.len()))
 }
 
 fn remove_all(s: &mut Session, p: &Value) -> Result<Value> {
@@ -114,19 +118,157 @@ fn reorder(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn duplicate(s: &mut Session, p: &Value) -> Result<Value> {
     let (cid, lid, uid) = find_fx(s, p, "effect.duplicate")?;
-    let r = s.edit("Duplicate Effect", None, |proj, _| {
+    let r = s.edit("Duplicate Effect", None, |proj, st| {
         let mut next = proj.next_id;
         let fx = layer_mut(proj, cid, lid)?.props.sub_mut("effects").ok_or_else(|| bad("effect.duplicate", "no effects"))?;
         let Some(i) = fx.children.iter().position(|c| c.uid() == uid) else { return Ok(0) };
         let mut g = fx.children[i].as_group().cloned().ok_or_else(|| bad("effect.duplicate", "not a group"))?;
         g.reassign_uids(&mut next);
-        g.name = format!("{} 2", g.name);
+        g.name = unique_name(fx, &g.name);
         let u = g.uid;
         fx.children.insert(i + 1, g.into());
         proj.next_id = next + 1;
+        st.selected_props = vec![(lid, u)];
         Ok(u)
     })?;
     Ok(json!(r))
+}
+
+/// Effect groups selected in Effect Controls / the timeline: (layer, effect uid), in stack order.
+pub(crate) fn selected_effects(s: &Session) -> Vec<(LayerId, Uid)> {
+    let Some(c) = s.active_comp() else { return vec![] };
+    let mut out = vec![];
+    for l in &c.layers {
+        let Some(fx) = l.effects() else { continue };
+        for g in fx.groups() {
+            if s.state.selected_props.iter().any(|(sl, u)| *sl == l.id && *u == g.uid) {
+                out.push((l.id, g.uid));
+            }
+        }
+    }
+    out
+}
+
+/// Effects named by `effect` / `effects` (uids, names or 1-based indexes), else the selection.
+fn effects_p(s: &Session, p: &Value, cmd: &str) -> Result<Vec<(LayerId, Uid)>> {
+    if p.get("effect").is_some() {
+        let (_, lid, uid) = find_fx(s, p, cmd)?;
+        return Ok(vec![(lid, uid)]);
+    }
+    if let Some(Value::Array(a)) = p.get("effects") {
+        let mut out = vec![];
+        for v in a {
+            let mut q = p.clone();
+            if let Some(o) = q.as_object_mut() {
+                o.remove("effects");
+                o.insert("effect".into(), v.clone());
+            }
+            let (_, lid, uid) = find_fx(s, &q, cmd)?;
+            out.push((lid, uid));
+        }
+        return Ok(out);
+    }
+    let sel = selected_effects(s);
+    if sel.is_empty() {
+        return Err(bad(cmd, "no effect selected"));
+    }
+    Ok(sel)
+}
+
+/// Edit ▸ Copy with effects selected: puts the effect instances on the effect clipboard.
+fn copy(s: &mut Session, p: &Value) -> Result<Value> {
+    let fx = effects_p(s, p, "effect.copy")?;
+    let comp = s.active_comp().ok_or(EngineError::NoComp)?;
+    let groups: Vec<PropGroup> =
+        fx.iter().filter_map(|(l, u)| comp.layer(*l).and_then(|l| l.effects()).and_then(|e| e.groups().find(|g| g.uid == *u)).cloned()).collect();
+    s.state.clipboard.clear();
+    s.state.key_clipboard.clear();
+    s.state.link_clipboard = None;
+    s.state.clip_is_keys = false;
+    let n = groups.len();
+    s.state.effect_clipboard = groups;
+    Ok(json!({"effects": n}))
+}
+
+/// A unique instance name among `fx`'s effects (`Gaussian Blur`, `Gaussian Blur 2`…).
+pub(crate) fn unique_name(fx: &PropGroup, base: &str) -> String {
+    if !fx.groups().any(|g| g.name == base) {
+        return base.to_string();
+    }
+    let stem = base.rsplit_once(' ').filter(|(_, n)| n.parse::<u32>().is_ok()).map(|(s, _)| s).unwrap_or(base);
+    (2..).map(|i| format!("{stem} {i}")).find(|n| !fx.groups().any(|g| &g.name == n)).unwrap_or_else(|| base.to_string())
+}
+
+/// Edit ▸ Paste with effects on the clipboard: adds copies to every target layer, after the
+/// layer's selected effect when it has one, else at the end of its stack.
+fn paste(s: &mut Session, p: &Value) -> Result<Value> {
+    let clip = s.state.effect_clipboard.clone();
+    if clip.is_empty() {
+        return Err(bad("effect.paste", "no effects on the clipboard"));
+    }
+    let (cid, ids) = layers_p(s, p)?;
+    if ids.is_empty() {
+        return Err(bad("effect.paste", "select a layer to paste effects onto"));
+    }
+    let sel = selected_effects(s);
+    let label = if clip.len() == 1 { format!("Paste {}", clip[0].name) } else { "Paste Effects".to_string() };
+    let uids = s.edit(&label, None, |proj, st| {
+        let mut out = vec![];
+        let mut next = proj.next_id;
+        let mut new_sel = vec![];
+        for lid in &ids {
+            let l = layer_mut(proj, cid, *lid)?;
+            let Some(fx) = l.props.sub_mut("effects") else { continue };
+            let at = sel
+                .iter()
+                .filter(|(sl, _)| sl == lid)
+                .filter_map(|(_, u)| fx.children.iter().position(|c| c.uid() == *u))
+                .max()
+                .map(|i| i + 1)
+                .unwrap_or(fx.children.len());
+            for (k, g) in clip.iter().enumerate() {
+                let mut g = g.clone();
+                g.reassign_uids(&mut next);
+                g.name = unique_name(fx, &g.name);
+                out.push(g.uid);
+                new_sel.push((*lid, g.uid));
+                fx.children.insert(at + k, g.into());
+            }
+        }
+        proj.next_id = next + 1;
+        st.selected_props = new_sel;
+        Ok(out)
+    })?;
+    Ok(json!({"effects": uids}))
+}
+
+/// Effect Controls' Reset: every parameter back to its default. Animated parameters get a
+/// keyframe at the current time with the default value (as in After Effects); static ones
+/// change their value.
+fn reset(s: &mut Session, p: &Value) -> Result<Value> {
+    let (cid, lid, uid) = find_fx(s, p, "effect.reset")?;
+    let comp = s.project.comp(cid).ok_or(EngineError::NoComp)?;
+    let layer = comp.layer(lid).ok_or(EngineError::NoComp)?;
+    let (w, h) = effectcraft_render::source_size(&s.project, layer);
+    let size = if w == 0 { [comp.width as f64, comp.height as f64] } else { [w as f64, h as f64] };
+    let lt = layer.layer_time(s.time());
+    let g = layer.effects().and_then(|fx| fx.groups().find(|g| g.uid == uid)).ok_or_else(|| bad("effect.reset", "gone"))?;
+    let spec = match &g.kind {
+        GroupKind::Effect { effect } => effectcraft_effects::find(effect),
+        _ => None,
+    }
+    .ok_or_else(|| bad("effect.reset", "unknown effect"))?;
+    let name = g.name.clone();
+    s.edit(&format!("Reset {name}"), None, |proj, _| {
+        let g = layer_mut(proj, cid, lid)?.props.find_group_mut(uid).ok_or_else(|| bad("effect.reset", "gone"))?;
+        for ps in &spec.params {
+            if let Some(pr) = g.get_mut(ps.id) {
+                pr.set_value_at(lt, effectcraft_effects::default_value(ps, size));
+            }
+        }
+        Ok(())
+    })?;
+    Ok(Value::Null)
 }
 
 fn last(s: &mut Session, p: &Value) -> Result<Value> {
@@ -159,6 +301,9 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!("effect.toggle", "Toggle Effect", [], None, "{layer?, effect, value?}", has_layers, toggle),
         cmd!("effect.reorder", "Reorder Effect", [], None, "{layer?, effect, index}", has_layers, reorder),
         cmd!("effect.duplicate", "Duplicate Effect", [], None, "{layer?, effect}", has_layers, duplicate),
+        cmd!("effect.copy", "Copy Effects", [], None, "{layer?, effect? | effects?: [uid|name|index]} (default: the selected effects)", has_layers, copy),
+        cmd!("effect.paste", "Paste Effects", [], None, "{layers?} — adds the copied effects to the layers", has_layers, paste),
+        cmd!("effect.reset", "Reset Effect", [], None, "{layer?, effect}", has_layers, reset),
         crate::query!("effect.list", "List Effects", "{filter?}", list),
     ]
 }

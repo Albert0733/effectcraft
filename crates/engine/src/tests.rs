@@ -84,6 +84,8 @@ fn layer_workflow_with_undo() {
     assert!(pos.keys[0].time.seconds().abs() < 0.02);
     s.execute("effect.apply", json!({"layer": lid, "effect": "Gaussian Blur"})).unwrap();
     s.execute("prop.set", json!({"layer": lid, "path": "effects/#1/blurriness", "value": 12})).unwrap();
+    // Applying selects the new effect (Edit ▸ Duplicate would duplicate it); select the layer.
+    s.execute("layer.select", json!({"layers": [lid]})).unwrap();
     s.execute("edit.duplicate", json!({})).unwrap();
     assert_eq!(s.active_comp().unwrap().layers.len(), 2);
     s.execute("layer.precompose", json!({"layers": [1, 2], "name": "Pre"})).unwrap();

@@ -134,6 +134,10 @@ pub struct EditorState {
     /// The last copy was keyframes (Paste pastes keys at the CTI).
     #[serde(skip)]
     pub clip_is_keys: bool,
+    /// Copied effect instances (Edit ▸ Copy with effects selected); Paste adds them to the
+    /// selected layers.
+    #[serde(skip)]
+    pub effect_clipboard: Vec<effectcraft_project::PropGroup>,
     /// Selected mask vertices (viewer Selection tool / pen).
     #[serde(default)]
     pub selected_vertices: Vec<VertexRef>,
@@ -453,6 +457,8 @@ mod rq_tests;
 mod tests;
 #[cfg(test)]
 mod tests_3d;
+#[cfg(test)]
+mod tests_effects;
 #[cfg(test)]
 mod tests_menu_cmds;
 #[cfg(test)]

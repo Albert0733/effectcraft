@@ -1,6 +1,6 @@
 //! Frontend view state (not project data). Serde so the control channel can read and set it.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -318,6 +318,34 @@ fn default_project_sort() -> String {
     "name".into()
 }
 
+/// What an Effect Controls crosshair / eyedropper click in the viewer sets.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FxPick {
+    /// `point` (point parameter, layer space) or `color` (colour sampled from the frame).
+    pub kind: String,
+    pub layer: u64,
+    pub prop: u64,
+    /// Parameter name (for the viewer hint).
+    pub name: String,
+}
+
+/// Effects & Presets contents-menu options.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct EffectsView {
+    /// `all`, `32` (32 bpc effects only) or `gpu` (GPU-accelerated only).
+    pub depth: String,
+    /// Show the "* Animation Presets" folder.
+    pub presets: bool,
+    /// Flat alphabetical list instead of categories.
+    pub alphabetical: bool,
+}
+
+impl Default for EffectsView {
+    fn default() -> Self {
+        EffectsView { depth: "all".into(), presets: true, alphabetical: false }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UiState {
     pub tool: Tool,
@@ -347,6 +375,27 @@ pub struct UiState {
     /// Slider params whose slider row is twirled open (AE hides sliders by default).
     #[serde(default)]
     pub fx_slider_open: BTreeSet<u64>,
+    /// Effect Controls: a point crosshair or colour eyedropper waiting for a viewer click.
+    #[serde(default)]
+    pub fx_pick: Option<FxPick>,
+    /// Curves editor: shown channel (index into RGB/Red/Green/Blue/Alpha) per effect uid.
+    #[serde(default)]
+    pub fx_curve_channel: BTreeMap<u64, usize>,
+    /// Curves editors in pencil (freehand) mode, by effect uid.
+    #[serde(default)]
+    pub fx_curve_pencil: BTreeSet<u64>,
+    /// Levels (Individual Controls) editor: shown channel per effect uid.
+    #[serde(default)]
+    pub fx_levels_channel: BTreeMap<u64, usize>,
+    /// Effects & Presets: favourite effect ids (starred).
+    #[serde(default)]
+    pub effects_favorites: BTreeSet<String>,
+    /// Effects & Presets: recently applied effect ids, most recent first.
+    #[serde(default)]
+    pub effects_recent: Vec<String>,
+    /// Effects & Presets contents-menu view options.
+    #[serde(default)]
+    pub effects_view: EffectsView,
     /// Shape tool options.
     pub fill_color: [f32; 3],
     pub stroke_color: [f32; 3],
@@ -386,6 +435,13 @@ impl Default for UiState {
             project_sort_desc: false,
             fx_closed: BTreeSet::new(),
             fx_slider_open: BTreeSet::new(),
+            fx_pick: None,
+            fx_curve_channel: BTreeMap::new(),
+            fx_curve_pencil: BTreeSet::new(),
+            fx_levels_channel: BTreeMap::new(),
+            effects_favorites: BTreeSet::new(),
+            effects_recent: Vec::new(),
+            effects_view: EffectsView::default(),
             fill_color: [0.24, 0.55, 0.96],
             stroke_color: [1.0, 1.0, 1.0],
             stroke_width: 0.0,

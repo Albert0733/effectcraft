@@ -254,6 +254,7 @@ pub fn specs() -> Vec<EffectSpec> {
             vec![
                 p("viewingMode", "Viewing Mode", Value::Enum(0), popup(&["Final Output", "Noise Samples", "Blending Matte"])),
                 p("noiseSourceLayer", "Noise Source Layer", Value::Layer(None), ParamUi::Layer),
+                p("noiseSourceLayerSource", "Noise Source Layer Source", Value::Enum(0), ParamUi::Hidden),
                 p("compensateForExistingNoise", "Compensate for Existing Noise", num(0.0), pct()),
                 p("intensity", "Intensity", num(1.0), slider(0.0, 100.0, 0.0, 10.0, 2)),
                 p("size", "Size", num(1.0), slider(0.05, 100.0, 0.1, 10.0, 2)),

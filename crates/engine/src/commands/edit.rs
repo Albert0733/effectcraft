@@ -16,7 +16,7 @@ fn can_redo(s: &Session) -> std::result::Result<(), String> {
 }
 fn has_clip(s: &Session) -> std::result::Result<(), String> {
     has_comp(s)?;
-    if s.state.clipboard.is_empty() && s.state.key_clipboard.is_empty() && s.state.link_clipboard.is_none() {
+    if s.state.clipboard.is_empty() && s.state.key_clipboard.is_empty() && s.state.effect_clipboard.is_empty() && s.state.link_clipboard.is_none() {
         Err("the clipboard is empty".into())
     } else {
         Ok(())
@@ -71,6 +71,17 @@ pub(crate) fn reid(layer: &mut Layer, next: &mut u64) {
 }
 
 fn duplicate(s: &mut Session, p: &Value) -> Result<Value> {
+    // Effects selected → duplicate them (Edit ▸ Duplicate in Effect Controls).
+    if p.get("layers").is_none() {
+        let fx = super::effect::selected_effects(s);
+        if !fx.is_empty() {
+            let mut out = vec![];
+            for (lid, uid) in fx {
+                out.push(s.execute("effect.duplicate", json!({"layer": lid.0, "effect": uid}))?);
+            }
+            return Ok(json!({"effects": out}));
+        }
+    }
     let (cid, ids) = layers_p(s, p)?;
     let new = s.edit("Duplicate", None, |proj, st| {
         let mut next = proj.next_id;
@@ -99,6 +110,10 @@ fn delete(s: &mut Session, p: &Value) -> Result<Value> {
     if !s.state.selected_vertices.is_empty() && p.get("layers").is_none() {
         return s.execute("mask.deleteVertices", json!({}));
     }
+    // Effects selected → remove them.
+    if p.get("layers").is_none() && !super::effect::selected_effects(s).is_empty() {
+        return s.execute("effect.remove", json!({}));
+    }
     let (cid, ids) = layers_p(s, p)?;
     s.edit("Clear", None, |proj, st| {
         let comp = proj.comp_mut(cid).ok_or(crate::EngineError::NoComp)?;
@@ -122,6 +137,7 @@ fn delete(s: &mut Session, p: &Value) -> Result<Value> {
 fn clear_clipboards(s: &mut Session) {
     s.state.clipboard.clear();
     s.state.key_clipboard.clear();
+    s.state.effect_clipboard.clear();
     s.state.link_clipboard = None;
     s.state.clip_is_keys = false;
 }
@@ -131,7 +147,12 @@ fn copy(s: &mut Session, p: &Value) -> Result<Value> {
     // Keyframes selected → copy keys (pasted at the CTI).
     if !s.state.selected_keys.is_empty() && p.get("layers").is_none() {
         s.state.link_clipboard = None;
+        s.state.effect_clipboard.clear();
         return s.execute("keys.copy", json!({}));
+    }
+    // Effects selected (Effect Controls / timeline) → copy the effects.
+    if p.get("layers").is_none() && !super::effect::selected_effects(s).is_empty() {
+        return s.execute("effect.copy", json!({}));
     }
     let (cid, ids) = layers_p(s, p)?;
     s.state.clip_is_keys = false;
@@ -315,6 +336,9 @@ fn paste(s: &mut Session, p: &Value) -> Result<Value> {
     }
     if s.state.clip_is_keys && !s.state.key_clipboard.is_empty() {
         return s.execute("keys.paste", p.clone());
+    }
+    if !s.state.effect_clipboard.is_empty() {
+        return s.execute("effect.paste", p.clone());
     }
     let cid = super::comp_id(s, p)?;
     let clip = s.state.clipboard.clone();
