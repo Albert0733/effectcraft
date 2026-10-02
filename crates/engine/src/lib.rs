@@ -153,6 +153,12 @@ pub struct EditorState {
     /// Viewer 3D view per comp (Active Camera / Front / … / Custom View 3 and edited view cameras).
     #[serde(default)]
     pub views3d: std::collections::BTreeMap<ItemId, effectcraft_render::three_d::Views3D>,
+    /// Paint and Brushes panel options (Brush, Clone Stamp and Eraser tools).
+    #[serde(default)]
+    pub paint: commands::paint::PaintOptions,
+    /// Puppet tool options for new meshes.
+    #[serde(default)]
+    pub puppet: commands::puppet::PuppetOptions,
 }
 
 /// What Copy with Property Links / Copy Expression Only put on the clipboard.
@@ -471,3 +477,5 @@ pub fn text_presets() -> Vec<(String, String)> {
 pub fn text_families() -> Vec<String> {
     effectcraft_text::families().into_iter().map(|(f, _)| f).collect()
 }
+#[cfg(test)]
+mod tests_paint;

@@ -9,9 +9,12 @@ pub mod forms;
 pub mod graph;
 pub mod info;
 pub mod key_dialogs;
+pub mod layer_panel;
 pub mod misc;
+pub mod paint_panels;
 pub mod project;
 pub mod properties;
+pub mod puppet_tool;
 pub mod render_queue;
 pub mod text_panels;
 pub mod timeline;
@@ -69,6 +72,9 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: PanelKind, rect: Rec
         PanelKind::Markers => misc::markers(app, ui, rect),
         PanelKind::Wiggler => misc::wiggler(app, ui, rect),
         PanelKind::RenderQueue => render_queue::show(app, ui, rect),
+        PanelKind::Layer => layer_panel::show(app, ui, rect),
+        PanelKind::Paint => paint_panels::paint(app, ui, rect),
+        PanelKind::Brushes => paint_panels::brushes(app, ui, rect),
         other => misc::placeholder(app, ui, rect, other),
     }
 }

@@ -16,3 +16,6 @@ effectcraft-keyframe = { workspace = true }
 effectcraft-project = { workspace = true }
 effectcraft-raster = { workspace = true }
 rayon = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

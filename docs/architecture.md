@@ -90,6 +90,15 @@ at composite time. Styled pixels are cached separately from the layer content, s
 reuses the cached source/masks/effects. Global Light is one setting per comp, mirrored into every
 layer's Blending Options and kept in step after each edit.
 
+**Paint and Puppet** are effects whose instances carry nested groups. Paint (`effects::paint`)
+holds Brush / Clone / Eraser strokes (Path, Stroke Options, Transform, hidden Duration span);
+strokes rasterize as brush-tip dabs and composite in order, and the layer cache key includes which
+strokes are visible at the frame. Puppet (`effects::puppet`) holds meshes and pins: the mesh is
+traced from the input alpha, expanded, and triangulated (Delaunay + constraint recovery, cached
+by content); pins drive an as-rigid-as-possible solve (Igarashi et al. 2005) each frame and the
+input is texture-mapped through the deformed triangles. The renderer flattens nested effect
+groups into `Params` keys (`effects::flatten_params`). Commands: `paint.*`, `puppet.*`.
+
 Half, Third and Quarter resolution render proportionally fewer pixels end to end.
 
 ## 5. Expressions

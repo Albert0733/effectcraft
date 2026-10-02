@@ -31,6 +31,10 @@ pub enum Tool {
     Eraser,
     RotoBrush,
     Puppet,
+    PuppetStarch,
+    PuppetBend,
+    PuppetAdvanced,
+    PuppetOverlap,
 }
 
 impl Tool {
@@ -51,9 +55,9 @@ impl Tool {
         &[Tool::Clone],
         &[Tool::Eraser],
         &[Tool::RotoBrush],
-        &[Tool::Puppet],
+        &[Tool::Puppet, Tool::PuppetStarch, Tool::PuppetBend, Tool::PuppetAdvanced, Tool::PuppetOverlap],
     ];
-    pub const ALL: [Tool; 21] = [
+    pub const ALL: [Tool; 25] = [
         Tool::Selection,
         Tool::Hand,
         Tool::Zoom,
@@ -75,6 +79,10 @@ impl Tool {
         Tool::Eraser,
         Tool::RotoBrush,
         Tool::Puppet,
+        Tool::PuppetStarch,
+        Tool::PuppetBend,
+        Tool::PuppetAdvanced,
+        Tool::PuppetOverlap,
     ];
     pub fn label(self) -> &'static str {
         match self {
@@ -99,6 +107,10 @@ impl Tool {
             Tool::Eraser => "Eraser Tool",
             Tool::RotoBrush => "Roto Brush Tool",
             Tool::Puppet => "Puppet Position Pin Tool",
+            Tool::PuppetStarch => "Puppet Starch Pin Tool",
+            Tool::PuppetBend => "Puppet Bend Pin Tool",
+            Tool::PuppetAdvanced => "Puppet Advanced Pin Tool",
+            Tool::PuppetOverlap => "Puppet Overlap Pin Tool",
         }
     }
     pub fn shortcut(self) -> Option<&'static str> {
@@ -116,7 +128,7 @@ impl Tool {
             Tool::Type | Tool::TypeVertical => Some("Cmd+T"),
             Tool::Brush | Tool::Clone | Tool::Eraser => Some("Cmd+B"),
             Tool::RotoBrush => Some("Alt+W"),
-            Tool::Puppet => Some("Cmd+P"),
+            Tool::Puppet | Tool::PuppetStarch | Tool::PuppetBend | Tool::PuppetAdvanced | Tool::PuppetOverlap => Some("Cmd+P"),
         }
     }
     pub fn icon(self) -> Icon {
@@ -141,12 +153,32 @@ impl Tool {
             Tool::Clone => Icon::Clone,
             Tool::Eraser => Icon::Eraser,
             Tool::RotoBrush => Icon::RotoBrush,
-            Tool::Puppet => Icon::Puppet,
+            Tool::Puppet | Tool::PuppetStarch | Tool::PuppetBend | Tool::PuppetAdvanced | Tool::PuppetOverlap => Icon::Puppet,
         }
     }
     pub fn from_name(s: &str) -> Option<Tool> {
         let n = s.to_ascii_lowercase().replace([' ', '_', '-'], "");
         Tool::ALL.into_iter().find(|t| format!("{t:?}").to_ascii_lowercase() == n || t.label().to_ascii_lowercase().replace(' ', "").starts_with(&n))
+    }
+    /// Puppet pin tools, with the pin kind they place (`puppet.addPin` kind).
+    pub fn puppet_kind(self) -> Option<&'static str> {
+        Some(match self {
+            Tool::Puppet => "position",
+            Tool::PuppetStarch => "starch",
+            Tool::PuppetBend => "bend",
+            Tool::PuppetAdvanced => "advanced",
+            Tool::PuppetOverlap => "overlap",
+            _ => return None,
+        })
+    }
+    /// Paint tools, with their stroke kind (`paint.stroke` kind).
+    pub fn paint_kind(self) -> Option<&'static str> {
+        Some(match self {
+            Tool::Brush => "brush",
+            Tool::Clone => "clone",
+            Tool::Eraser => "eraser",
+            _ => return None,
+        })
     }
     pub fn is_shape(self) -> bool {
         matches!(self, Tool::Rectangle | Tool::RoundedRect | Tool::Ellipse | Tool::Polygon | Tool::Star)
@@ -363,6 +395,12 @@ pub struct UiState {
     pub start_screen: bool,
     /// Composition ▸ Preview ▸ Cache Frames When Idle.
     pub cache_when_idle: bool,
+    /// Layer shown in the Layer panel (None = the first selected layer).
+    #[serde(default)]
+    pub layer_panel: Option<u64>,
+    /// Layer panel View: number of effects rendered (None = through the last Paint effect).
+    #[serde(default)]
+    pub layer_view: Option<usize>,
 }
 
 impl Default for UiState {
@@ -396,6 +434,8 @@ impl Default for UiState {
             preview_audio: true,
             start_screen: false,
             cache_when_idle: false,
+            layer_panel: None,
+            layer_view: None,
         }
     }
 }

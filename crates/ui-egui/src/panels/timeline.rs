@@ -813,6 +813,10 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 if row_resp.double_clicked() {
                     match &layer.source {
                         LayerSource::Comp { item } => actions.push(("comp.open".into(), json!({"comp": item.0}))),
+                        // Footage and solids open in the Layer panel (paint happens there).
+                        LayerSource::Footage { .. } | LayerSource::Solid { .. } => {
+                            actions.push(("layer.openLayer".into(), json!({"layer": layer.id.0})));
+                        }
                         _ => {
                             ctx.data_mut(|d| d.insert_temp(rename_id, (layer.id.0, layer.name.clone())));
                         }
