@@ -596,7 +596,15 @@ pub fn specs() -> Vec<EffectSpec> {
             ],
             vector_blur,
         ),
-        spec("ec.blur.reduceflicker", "Reduce Interlace Flicker", vec![p("softness", "Softness", num(0.0), slider(0.0, 100.0, 0.0, 10.0, 2))], reduce_flicker),
+        EffectSpec {
+            category: "Obsolete",
+            ..spec(
+                "ec.blur.reduceflicker",
+                "Reduce Interlace Flicker",
+                vec![p("softness", "Softness", num(0.0), slider(0.0, 100.0, 0.0, 10.0, 2))],
+                reduce_flicker,
+            )
+        },
         spec(
             "ec.blur.cccross",
             "CC Cross Blur",

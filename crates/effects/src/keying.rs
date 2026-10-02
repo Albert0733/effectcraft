@@ -485,7 +485,7 @@ pub fn specs() -> Vec<EffectSpec> {
         spec(
             "ec.key.luma",
             "Luma Key",
-            "Keying",
+            "Obsolete",
             vec![
                 p("keyType", "Key Type", Value::Enum(1), popup(&["Key Out Brighter", "Key Out Darker", "Key Out Similar", "Key Out Dissimilar"])),
                 p("threshold", "Threshold", num(0.0), b255()),
@@ -560,7 +560,7 @@ pub fn specs() -> Vec<EffectSpec> {
         spec(
             "ec.key.spill",
             "Spill Suppressor",
-            "Keying",
+            "Obsolete",
             vec![
                 p("colorToSuppress", "Color To Suppress", col(0.0, 0.0, 1.0), ParamUi::Color),
                 p("suppression", "Suppression", num(100.0), slider(0.0, 200.0, 0.0, 100.0, 0)),
