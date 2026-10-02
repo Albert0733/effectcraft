@@ -128,6 +128,53 @@ impl FootageSource for NoFootage {
     }
 }
 
+/// Which compositor renders a frame (Project Settings ▸ Video Rendering and Effects).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Backend {
+    /// The CPU reference compositor (Mercury Software Only).
+    #[default]
+    Cpu,
+    /// The GPU compositor whenever an [`Accelerator`] is attached, whatever the project says.
+    Gpu,
+    /// The GPU compositor when an [`Accelerator`] is attached and the project's renderer is
+    /// Mercury GPU Acceleration (the viewer's choice); the CPU otherwise.
+    Auto,
+}
+
+impl Backend {
+    pub fn parse(s: &str) -> Option<Backend> {
+        match s.to_ascii_lowercase().as_str() {
+            "cpu" | "software" | "mercury software only" => Some(Backend::Cpu),
+            "gpu" | "mercury gpu acceleration" => Some(Backend::Gpu),
+            "auto" => Some(Backend::Auto),
+            _ => None,
+        }
+    }
+}
+
+/// One effect of a GPU effect chain (see [`Accelerator::effects`]).
+pub struct FxStep<'x> {
+    pub spec: &'static effectcraft_effects::EffectSpec,
+    pub ctx: EffectCtx<'x>,
+}
+
+/// A GPU (or other hardware) backend for the compositor. The CPU [`Renderer`] stays the
+/// reference: an accelerator renders what it supports and returns `None` for the rest, which
+/// then runs on the CPU. Implemented by `effectcraft-gpu`.
+pub trait Accelerator: Send + Sync {
+    /// Adapter / backend name for status readouts ("Apple M2 (Metal)").
+    fn name(&self) -> String;
+    /// Render a top-level comp frame (what [`Renderer::comp_frame`] returns). `None` = not
+    /// handled (the CPU renders it).
+    fn comp_frame(&self, r: &Renderer, comp: ItemId, t: Tick) -> Option<Image>;
+    /// The accelerator implements effect `id` with the CPU effect's semantics.
+    fn supports_effect(&self, id: &str) -> bool;
+    /// Run a chain of supported effects on `buf`, clamping and quantising to `levels` after
+    /// every effect when set (8/16 bpc). `None` = not handled.
+    fn effects(&self, chain: &[FxStep], buf: &Buf, levels: Option<f32>) -> Option<Buf>;
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct RenderOpts {
     /// Output scale relative to comp pixels (1 = Full, 0.5 = Half…).
@@ -139,6 +186,8 @@ pub struct RenderOpts {
     pub draft: bool,
     /// 3D view camera override (viewer Front/Top/Custom views); None = the comp's active camera.
     pub view: Option<three_d::CameraState>,
+    /// CPU or GPU compositor (the GPU needs [`Renderer::accel`]).
+    pub backend: Backend,
     /// Region of interest `[x, y, w, h]` in comp pixels (viewer only): the top-level frame covers
     /// just this rectangle, and only its pixels are composited.
     pub roi: Option<[f64; 4]>,
@@ -146,7 +195,7 @@ pub struct RenderOpts {
 
 impl Default for RenderOpts {
     fn default() -> Self {
-        RenderOpts { scale: 1.0, motion_blur: true, guides: false, draft: false, view: None, roi: None }
+        RenderOpts { scale: 1.0, motion_blur: true, guides: false, draft: false, view: None, roi: None, backend: Backend::Cpu }
     }
 }
 
@@ -159,6 +208,8 @@ pub struct Renderer<'a> {
     pub cache: Option<&'a LayerCache>,
     /// Optional per-layer timing sink (`frame --bench` / perf readouts).
     pub profile: Option<&'a std::sync::Mutex<Vec<LayerTiming>>>,
+    /// GPU backend used when [`RenderOpts::backend`] asks for it.
+    pub accel: Option<&'a dyn Accelerator>,
     /// Current nesting depth (precomp recursion guard).
     depth: usize,
     /// The project's colour pipeline (bit depth, working space, linear blending).
@@ -207,6 +258,7 @@ impl<'a> Renderer<'a> {
             opts,
             cache: None,
             profile: None,
+            accel: None,
             depth: 0,
             pipe: color::Pipe::of(&project.settings),
             outer: None,
@@ -223,7 +275,7 @@ impl<'a> Renderer<'a> {
     /// The nested comp of a precomp layer whose transformations collapse into this comp: the
     /// Collapse Transformations switch is on and the layer has no masks, effects or layer
     /// styles (those force a flattened render of the precomp, as in After Effects).
-    pub(crate) fn collapsed(&self, ctx: &EvalCtx, layer: &Layer) -> Option<ItemId> {
+    pub fn collapsed(&self, ctx: &EvalCtx, layer: &Layer) -> Option<ItemId> {
         if !layer.switches.collapse || layer.switches.adjustment || self.depth > 12 {
             return None;
         }
@@ -247,7 +299,7 @@ impl<'a> Renderer<'a> {
     /// their transforms are concatenated with the precomp layer's (one resample, no
     /// rasterisation at the precomp's bounds), their opacity multiplied by `opacity`, and their
     /// 3D layers use this comp's camera and lights.
-    pub(crate) fn collapse_into(&self, ctx: &EvalCtx<'a>, layer: &Layer, item: ItemId, opacity: f32) -> Option<(Renderer<'a>, EvalCtx<'a>)> {
+    pub fn collapse_into(&self, ctx: &EvalCtx<'a>, layer: &Layer, item: ItemId, opacity: f32) -> Option<(Renderer<'a>, EvalCtx<'a>)> {
         let nc = self.project.comp(item)?;
         let nctx = EvalCtx { comp_id: item, comp: nc, time: ctx.source_time(layer), ..*ctx };
         let (l2c, _) = ctx.layer_to_comp(layer);
@@ -339,8 +391,34 @@ impl<'a> Renderer<'a> {
         EvalCtx { project: self.project, comp_id, comp, time: t, expr: self.expr }
     }
 
+    /// The accelerator to use for this render, if any (see [`Backend`]).
+    pub fn active_accel(&self) -> Option<&'a dyn Accelerator> {
+        let a = self.accel?;
+        match self.opts.backend {
+            Backend::Cpu => None,
+            Backend::Gpu => Some(a),
+            Backend::Auto => self.project.settings.gpu_acceleration.then_some(a),
+        }
+    }
+
     /// Render a composition at comp time `t` (transparent background, comp size × scale).
+    /// Top-level frames go to the GPU when [`Self::active_accel`] is set and handles them.
     pub fn comp_frame(&self, comp_id: ItemId, t: Tick) -> Image {
+        // Auto keeps comps with 3D layers on the CPU compositor: 3D runs are still composited on
+        // the CPU, and the GPU path's readback/upload around them makes such comps slower.
+        let auto_3d = self.opts.backend == Backend::Auto && self.project.comp(comp_id).is_some_and(|c| c.has_3d());
+        if self.depth == 0
+            && !auto_3d
+            && let Some(a) = self.active_accel()
+            && let Some(img) = a.comp_frame(self, comp_id, t)
+        {
+            return img;
+        }
+        self.comp_frame_cpu(comp_id, t)
+    }
+
+    /// [`Self::comp_frame`] on the CPU compositor only.
+    pub fn comp_frame_cpu(&self, comp_id: ItemId, t: Tick) -> Image {
         let Some(comp) = self.project.comp(comp_id) else { return Image::new(1, 1) };
         let s = self.opts.scale;
         let w = ((comp.width as f64 * s).round() as u32).max(1);
@@ -387,15 +465,8 @@ impl<'a> Renderer<'a> {
 
     /// Draw a comp's layers (bottom to top) into `canvas` (blending space).
     fn draw_comp(&self, ctx: &EvalCtx<'a>, canvas: &mut Image) {
-        let (comp, t) = (ctx.comp, ctx.time);
-        let any_solo = comp.layers.iter().any(|l| l.switches.solo && l.source.is_av() && l.is_active_at(t));
         // Bottom-to-top, with runs of consecutive 3D layers depth-sorted (farthest first).
-        let visible: Vec<&Layer> = comp
-            .layers
-            .iter()
-            .rev()
-            .filter(|l| l.is_active_at(t) && l.has_video() && (!any_solo || l.switches.solo) && (self.opts.guides || !l.switches.guide))
-            .collect();
+        let visible = self.visible_layers(ctx);
         let mut i = 0;
         while i < visible.len() {
             if visible[i].is_3d() {
@@ -448,18 +519,49 @@ impl<'a> Renderer<'a> {
         let host = FxHost { r: self, ctx, layer, index: Default::default() };
         let env =
             EffectEnv { masks: &mask_shapes, host: Some(&host), comp_time: ctx.time.seconds(), frame_rate: ctx.comp.frame_rate.as_f64(), effect_index: 0 };
-        for (i, g) in fx.groups().enumerate() {
-            if i >= limit {
-                break;
+        // Video effects in stack order (index, group, spec); disabled and audio effects skipped.
+        let stack: Vec<(usize, &effectcraft_project::PropGroup, &'static effectcraft_effects::EffectSpec)> = fx
+            .groups()
+            .enumerate()
+            .take_while(|(i, _)| *i < limit)
+            .filter(|(_, g)| g.enabled)
+            .filter_map(|(i, g)| match &g.kind {
+                GroupKind::Effect { effect } => effectcraft_effects::find(effect).map(|s| (i, g, s)),
+                _ => None,
+            })
+            .filter(|(_, _, s)| !effectcraft_effects::audio_fx::is_audio_effect(s.id))
+            .collect();
+        let accel = self.active_accel();
+        let mut k = 0;
+        while k < stack.len() {
+            let (i, g, spec) = stack[k];
+            // A run of GPU effects goes to the accelerator in one upload / readback.
+            if let Some(a) = accel
+                && spec.gpu
+                && a.supports_effect(spec.id)
+            {
+                let run: Vec<_> = stack[k..].iter().take_while(|(_, _, s)| s.gpu && a.supports_effect(s.id)).collect();
+                let params: Vec<Params> = run.iter().map(|(_, g, _)| self.effect_params(ctx, layer, g)).collect();
+                let steps: Vec<FxStep> = run
+                    .iter()
+                    .zip(&params)
+                    .map(|((i, g, s), params)| FxStep {
+                        spec: s,
+                        ctx: EffectCtx { params, time: lt.seconds(), layer_size, seed: g.uid as u32, adjustment, env: EffectEnv { effect_index: *i, ..env } },
+                    })
+                    .collect();
+                let t0 = web_time::Instant::now();
+                if let Some(out) = a.effects(&steps, &buf, self.pipe.levels) {
+                    buf = out;
+                    if let Some(v) = timing.as_deref_mut() {
+                        let ms = t0.elapsed().as_secs_f64() * 1e3 / run.len() as f64;
+                        v.extend(run.iter().map(|(_, _, s)| (format!("{} (gpu)", s.id), ms)));
+                    }
+                    k += run.len();
+                    continue;
+                }
             }
-            if !g.enabled {
-                continue;
-            }
-            let GroupKind::Effect { effect } = &g.kind else { continue };
-            let Some(spec) = effectcraft_effects::find(effect) else { continue };
-            if effectcraft_effects::audio_fx::is_audio_effect(spec.id) {
-                continue;
-            }
+            k += 1;
             let params = self.effect_params(ctx, layer, g);
             host.index.store(i, std::sync::atomic::Ordering::Relaxed);
             let env = EffectEnv { effect_index: i, ..env };
@@ -597,7 +699,7 @@ impl<'a> Renderer<'a> {
     }
 
     /// [`Self::layer_buf`] in the blending space (linear with Blend Colors Using 1.0 Gamma).
-    pub(crate) fn blend_layer_buf(&self, ctx: &EvalCtx, layer: &Layer) -> Option<Arc<Buf>> {
+    pub fn blend_layer_buf(&self, ctx: &EvalCtx, layer: &Layer) -> Option<Arc<Buf>> {
         let (b, k) = self.layer_buf_keyed(ctx, layer)?;
         Some(self.to_blend(b, k))
     }
@@ -779,32 +881,45 @@ impl<'a> Renderer<'a> {
             * Mat3::translate(vec2(-buf.offset[0], -buf.offset[1]))
     }
 
-    /// Draw a processed layer into `target` (transform, motion blur) with `mode`/`opacity`.
-    fn place(&self, ctx: &EvalCtx, layer: &Layer, buf: &Buf, target: &mut Image, mode: BlendMode, opacity: f32) {
+    /// How a processed layer buffer lands in the output: one buffer → output matrix, or one per
+    /// motion-blur sub-sample (averaged), with the layer's sampling filter and dissolve seed.
+    pub fn placement(&self, ctx: &EvalCtx, layer: &Layer, buf: &Buf) -> Placement {
         let samples = if self.opts.motion_blur && ctx.comp.enable_motion_blur && layer.switches.motion_blur {
             if self.opts.draft { 4 } else { ctx.comp.motion_blur_samples.clamp(2, 64) as usize }
         } else {
             1
         };
-        let opts = WarpOpts { sampling: self.sampling(layer), opacity, mode, seed: layer.id.0 as u32, clip: None };
+        let (sampling, seed) = (self.sampling(layer), layer.id.0 as u32);
         if samples <= 1 {
-            let m = self.buf_matrix(ctx, layer, buf);
-            composite_warp(target, &buf.img, &m, &opts);
-            return;
+            return Placement { matrices: vec![self.buf_matrix(ctx, layer, buf)], sampling, seed };
         }
         let fd = ctx.comp.frame_duration().seconds();
         let angle = ctx.comp.shutter_angle / 360.0;
         let phase = ctx.comp.shutter_phase / 360.0;
+        let matrices = (0..samples)
+            .map(|i| {
+                let f = phase + angle * i as f64 / (samples - 1) as f64;
+                self.buf_matrix(&ctx.at(ctx.time + Tick::from_seconds_f64(f * fd)), layer, buf)
+            })
+            .collect();
+        Placement { matrices, sampling, seed }
+    }
+
+    /// Draw a processed layer into `target` (transform, motion blur) with `mode`/`opacity`.
+    fn place(&self, ctx: &EvalCtx, layer: &Layer, buf: &Buf, target: &mut Image, mode: BlendMode, opacity: f32) {
+        let pl = self.placement(ctx, layer, buf);
+        let opts = WarpOpts { sampling: pl.sampling, opacity, mode, seed: pl.seed, clip: None };
+        if let [m] = pl.matrices.as_slice() {
+            composite_warp(target, &buf.img, m, &opts);
+            return;
+        }
         // Sub-samples sum straight into one buffer (each warp is row-parallel).
         let mut acc = Image::new(target.width, target.height);
-        let k = 1.0 / samples as f32;
-        for i in 0..samples {
-            let f = phase + angle * i as f64 / (samples - 1) as f64;
-            let sub = ctx.at(ctx.time + Tick::from_seconds_f64(f * fd));
-            let m = self.buf_matrix(&sub, layer, buf);
-            effectcraft_raster::accumulate_warp(&mut acc, &buf.img, &m, opts.sampling, k);
+        let k = 1.0 / pl.matrices.len() as f32;
+        for m in &pl.matrices {
+            effectcraft_raster::accumulate_warp(&mut acc, &buf.img, m, opts.sampling, k);
         }
-        target.blend_from(&acc, mode, opacity, layer.id.0 as u32);
+        target.blend_from(&acc, mode, opacity, pl.seed);
     }
 
     fn draw_layer(&self, ctx: &EvalCtx, layer: &Layer, canvas: &mut Image) {
@@ -953,18 +1068,99 @@ impl<'a> Renderer<'a> {
     }
 }
 
-/// A layer ready to composite (see [`Renderer::styled`]).
-struct StyledLayer {
-    passes: Vec<(Arc<Buf>, BlendMode)>,
-    body: Arc<Buf>,
+/// A layer ready to composite (see [`Renderer::styled_layer`]).
+pub struct StyledLayer {
+    /// Exterior style passes (Drop Shadow, Outer Glow) with their blend modes.
+    pub passes: Vec<(Arc<Buf>, BlendMode)>,
+    pub body: Arc<Buf>,
     /// Pre-style pixels (knockout shape).
-    content: Arc<Buf>,
+    pub content: Arc<Buf>,
     /// Styled cache key (the content key when plain).
     key: Option<u64>,
     /// Content cache key.
     ckey: Option<u64>,
     /// No layer styles: composite `body` the usual way.
-    plain: bool,
+    pub plain: bool,
+}
+
+/// Where a layer buffer lands (see [`Renderer::placement`]).
+#[derive(Clone, Debug)]
+pub struct Placement {
+    /// Buffer pixel → output pixel; several = motion-blur sub-samples (equal weights).
+    pub matrices: Vec<Mat3>,
+    pub sampling: effectcraft_raster::Sampling,
+    /// Dissolve noise seed.
+    pub seed: u32,
+}
+
+/// Hooks for accelerated compositors (`effectcraft-gpu`): the pieces of the CPU walk they reuse
+/// or fall back to. The CPU compositor itself is [`Renderer::comp_frame_cpu`].
+impl<'a> Renderer<'a> {
+    /// The project's colour pipeline.
+    pub fn pipe(&self) -> color::Pipe {
+        self.pipe
+    }
+
+    /// Nesting depth (0 = the top-level comp).
+    pub fn depth(&self) -> usize {
+        self.depth
+    }
+
+    /// Evaluation context of comp `comp_id` at comp time `t`.
+    pub fn eval_ctx(&self, comp_id: ItemId, t: Tick) -> Option<EvalCtx<'a>> {
+        Some(self.ctx(comp_id, self.project.comp(comp_id)?, t))
+    }
+
+    /// The layers drawn at the context time, bottom to top (solo, guides and visibility
+    /// applied).
+    pub fn visible_layers(&self, ctx: &EvalCtx<'a>) -> Vec<&'a Layer> {
+        let (comp, t) = (ctx.comp, ctx.time);
+        let any_solo = comp.layers.iter().any(|l| l.switches.solo && l.source.is_av() && l.is_active_at(t));
+        comp.layers
+            .iter()
+            .rev()
+            .filter(|l| l.is_active_at(t) && l.has_video() && (!any_solo || l.switches.solo) && (self.opts.guides || !l.switches.guide))
+            .collect()
+    }
+
+    /// Draw a run of consecutive 3D layers into `canvas` (CPU).
+    pub fn draw_3d_run(&self, ctx: &EvalCtx<'a>, run: &[&Layer], canvas: &mut Image) {
+        three_d::compose::draw_run(self, ctx, run, canvas);
+    }
+
+    /// Draw one 2D layer into `canvas` on the CPU (any kind: adjustment, wireframe, styled…).
+    pub fn draw_layer_cpu(&self, ctx: &EvalCtx, layer: &Layer, canvas: &mut Image) {
+        self.draw_layer(ctx, layer, canvas);
+    }
+
+    /// Draw a collapsed precomp layer into `canvas` on the CPU.
+    pub fn draw_collapsed_cpu(&self, ctx: &EvalCtx<'a>, layer: &Layer, item: ItemId, canvas: &mut Image) {
+        self.draw_collapsed(ctx, layer, item, canvas);
+    }
+
+    /// The layer's finished buffers (styles included) in the blending space.
+    pub fn styled_layer(&self, ctx: &EvalCtx, layer: &Layer) -> Option<StyledLayer> {
+        let mut timing = self.profile.map(|_| LayerTiming { depth: self.depth, layer: layer.name.clone(), ..Default::default() });
+        let t0 = web_time::Instant::now();
+        let st = self.styled(ctx, layer, timing.as_mut()).map(|st| self.styled_to_blend(st));
+        if let (Some(prof), Some(mut timing)) = (self.profile, timing) {
+            timing.process_ms = t0.elapsed().as_secs_f64() * 1e3;
+            if let Ok(mut v) = prof.lock() {
+                v.push(timing);
+            }
+        }
+        st
+    }
+
+    /// Opacity the layer composites with (its Opacity × collapsed precomps' opacity).
+    pub fn layer_opacity(&self, ctx: &EvalCtx, layer: &Layer) -> f32 {
+        ctx.opacity(layer) as f32 * self.opacity_mul
+    }
+
+    /// The layer's track matte layer and kind, if it has a valid one.
+    pub fn track_matte<'c>(&self, ctx: &EvalCtx<'c>, layer: &Layer) -> Option<(&'c Layer, MatteKind)> {
+        layer.track_matte.and_then(|tm| ctx.comp.layer(tm.layer).filter(|m| m.id != layer.id).map(|m| (m, tm.kind)))
+    }
 }
 
 /// The layer's frame blending mode, if the comp's Enable Frame Blending switch is on.

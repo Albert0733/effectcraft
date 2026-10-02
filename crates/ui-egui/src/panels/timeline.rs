@@ -579,7 +579,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         }
     }
     // Cache bar (green: cached frames at the viewer's resolution).
-    let scale_key = app.viewer_tex.as_ref().map(|(_, k)| k.scale).unwrap_or(1000);
+    let scale_key = app.viewer_shown.as_ref().map(|(_, k)| k.scale).unwrap_or(1000);
     let cached = app.frames.cached_frames(app.session.revision, cid.0, scale_key);
     let fd = comp.frame_duration().seconds();
     let cy0 = ruler.min.y + 11.0;

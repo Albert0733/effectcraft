@@ -123,10 +123,20 @@ pub struct EffectcraftApp {
     next_token: u64,
     pub(crate) last_ui_time: f64,
     pub(crate) toast: Option<(String, f64)>,
-    /// Texture of the frame shown in the viewer and the key it came from.
+    /// Texture of the last CPU frame shown in the viewer and the key it came from.
     pub(crate) viewer_tex: Option<(egui::TextureHandle, FrameKey)>,
-    /// Last displayed image (for the Info panel colour picker).
+    /// The last GPU frame shown: its egui texture id (registered with egui-wgpu), key and texture.
+    pub(crate) viewer_native: Option<(egui::TextureId, FrameKey, Arc<effectcraft_gpu::DisplayFrame>)>,
+    /// The texture the viewer draws and its frame key (CPU or GPU frame).
+    pub(crate) viewer_shown: Option<(egui::TextureId, FrameKey)>,
+    /// Last displayed image (Info panel colour, eyedroppers, histograms). GPU frames fill it on
+    /// demand ([`EffectcraftApp::viewer_pixels`]).
     pub(crate) viewer_image: Option<Arc<egui::ColorImage>>,
+    /// egui-wgpu's device, once the first frame arrives (desktop and WebGPU).
+    pub(crate) wgpu: Option<eframe::egui_wgpu::RenderState>,
+    /// The GPU compositor on that device (None: no usable adapter → CPU only).
+    pub(crate) gpu: Option<effectcraft_gpu::Gpu>,
+    gpu_checked: bool,
     /// Commands from the native menu bar.
     pub command_inbox: Option<Receiver<String>>,
     /// Pointer position in comp pixels (Info panel).
@@ -175,7 +185,12 @@ impl EffectcraftApp {
             last_ui_time: 0.0,
             toast: None,
             viewer_tex: None,
+            viewer_native: None,
+            viewer_shown: None,
             viewer_image: None,
+            wgpu: None,
+            gpu: None,
+            gpu_checked: false,
             command_inbox: None,
             pointer_comp: None,
             dialog_state: Default::default(),
@@ -291,7 +306,52 @@ impl EffectcraftApp {
             footage: self.session.footage.clone(),
             expr: self.session.expr.clone(),
             layer_cache: self.session.layer_cache.clone(),
+            gpu: self.gpu.clone(),
+            gpu_display: false,
         }
+    }
+
+    /// Set up the GPU compositor on egui-wgpu's device (once). Without an adapter that runs
+    /// compute shaders (WebGL2, software GL) everything stays on the CPU.
+    pub(crate) fn init_gpu(&mut self, frame: &eframe::Frame) {
+        if self.gpu_checked {
+            return;
+        }
+        self.gpu_checked = true;
+        let Some(rs) = frame.wgpu_render_state() else { return };
+        match effectcraft_gpu::Gpu::new(&rs.adapter, rs.device.clone(), rs.queue.clone()) {
+            Ok(g) => {
+                log::info!("GPU compositor: {}", effectcraft_engine::render::Accelerator::name(&g));
+                self.session.accel = Some(Arc::new(g.clone()));
+                self.gpu = Some(g);
+                self.wgpu = Some(rs.clone());
+            }
+            Err(e) => log::info!("GPU compositor unavailable: {e}"),
+        }
+    }
+
+    /// The viewer shows a frame composited on the GPU (drawn from its wgpu texture).
+    pub fn viewer_on_gpu(&self) -> bool {
+        matches!((&self.viewer_shown, &self.viewer_native), (Some(s), Some(n)) if s.1 == n.1)
+    }
+
+    /// The GPU compositor's adapter, when the viewer has one.
+    pub fn gpu_adapter(&self) -> Option<String> {
+        self.gpu.as_ref().map(effectcraft_engine::render::Accelerator::name)
+    }
+
+    /// The viewer's current pixels as 8-bit premultiplied RGBA, reading a GPU frame back the
+    /// first time something asks for it.
+    pub fn viewer_pixels(&mut self) -> Option<Arc<egui::ColorImage>> {
+        if self.viewer_image.is_none()
+            && let (Some((_, _, f)), Some(g)) = (&self.viewer_native, &self.gpu)
+            && self.viewer_shown.as_ref().map(|s| s.1) == self.viewer_native.as_ref().map(|n| n.1)
+            && let Some(bytes) = g.read_display(f)
+        {
+            let px = bytes.chunks_exact(4).map(|c| egui::Color32::from_rgba_premultiplied(c[0], c[1], c[2], c[3])).collect();
+            self.viewer_image = Some(Arc::new(egui::ColorImage::new([f.width as usize, f.height as usize], px)));
+        }
+        self.viewer_image.clone()
     }
 
     /// The render scale used by the viewer right now.
@@ -351,8 +411,15 @@ impl EffectcraftApp {
         let t = c.frame_rate.tick_of(frame);
         let (draft, _) = self.session.state.viewer.fast_previews.render(self.ui.viewer.interacting);
         let roi = self.session.state.region_of_interest.filter(|_| self.session.active_comp_id() == Some(comp));
-        let opts =
-            RenderOpts { scale, motion_blur: true, guides: true, draft: self.ui.viewer.fast_preview || draft, view: self.session.view_camera(comp), roi };
+        let opts = RenderOpts {
+            scale,
+            motion_blur: true,
+            guides: true,
+            draft: self.ui.viewer.fast_preview || draft,
+            view: self.session.view_camera(comp),
+            roi,
+            backend: effectcraft_engine::render::Backend::Auto,
+        };
         if urgent {
             self.frames.request_urgent(&self.render_source(), key, comp, t, opts);
         } else {
@@ -783,7 +850,8 @@ impl eframe::App for EffectcraftApp {
         self.collect_screenshots(ctx);
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        self.init_gpu(frame);
         if !self.fonts_ready {
             ui.ctx().request_repaint();
             return;

@@ -1157,6 +1157,7 @@ dependencies = [
  "cpu-time",
  "effectcraft-automation",
  "effectcraft-engine",
+ "effectcraft-gpu",
  "effectcraft-host",
  "effectcraft-render",
  "effectcraft-time",
@@ -1255,6 +1256,25 @@ version = "0.1.0"
 dependencies = [
  "proptest",
  "serde",
+]
+
+[[package]]
+name = "effectcraft-gpu"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "effectcraft-color",
+ "effectcraft-effects",
+ "effectcraft-geom",
+ "effectcraft-keyframe",
+ "effectcraft-project",
+ "effectcraft-raster",
+ "effectcraft-render",
+ "effectcraft-text",
+ "effectcraft-time",
+ "log",
+ "pollster 0.4.0",
+ "wgpu",
 ]
 
 [[package]]
@@ -1408,6 +1428,7 @@ dependencies = [
  "effectcraft-color",
  "effectcraft-engine",
  "effectcraft-geom",
+ "effectcraft-gpu",
  "effectcraft-host",
  "effectcraft-keyframe",
  "effectcraft-path",
