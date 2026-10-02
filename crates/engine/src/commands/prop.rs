@@ -38,6 +38,14 @@ fn with_prop<T>(
     })
 }
 
+/// An explicit key time (layer seconds) moved onto the nearest comp frame.
+fn snapped_key_time(s: &Session, cid: ItemId, lid: LayerId, p: &Value) -> Option<Tick> {
+    let t = Tick::from_seconds_f64(f_p(p, "time")?);
+    let comp = s.project.comp(cid)?;
+    let l = comp.layer(lid)?;
+    Some(l.layer_time(comp.frame_rate.snap_nearest(l.comp_time(t))))
+}
+
 fn set(s: &mut Session, p: &Value) -> Result<Value> {
     let (cid, lid, uid) = prop_ref(s, p, "prop.set")?;
     // Position with Separate Dimensions: write the X/Y/Z Position properties instead.
@@ -67,7 +75,7 @@ fn set(s: &mut Session, p: &Value) -> Result<Value> {
         return Ok(json!(out));
     }
     let v = p.get("value").ok_or_else(|| bad("prop.set", "missing `value`"))?.clone();
-    let at = f_p(p, "time").map(Tick::from_seconds_f64);
+    let at = snapped_key_time(s, cid, lid, p);
     let out = with_prop(s, "Change Property", merge_p(p), cid, lid, uid, |pr, lt| {
         let cur = pr.value_at(lt);
         let mut nv = cur.coerce_json(&v).ok_or_else(|| bad("prop.set", format!("can't use {v} for a {} property", cur.kind_name())))?;
@@ -98,7 +106,7 @@ fn toggle_anim(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn add_key(s: &mut Session, p: &Value) -> Result<Value> {
     let (cid, lid, uid) = prop_ref(s, p, "prop.addKey")?;
-    let at = f_p(p, "time").map(Tick::from_seconds_f64);
+    let at = snapped_key_time(s, cid, lid, p);
     let value = p.get("value").cloned();
     with_prop(s, "Add Keyframe", None, cid, lid, uid, |pr, lt| {
         let t = at.unwrap_or(lt);

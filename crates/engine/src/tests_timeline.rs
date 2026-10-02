@@ -307,6 +307,48 @@ fn alt_click_stopwatch_toggles_a_self_reference_expression() {
 }
 
 #[test]
+fn layer_comp_and_key_times_stay_frame_aligned() {
+    let aligned = |fr: effectcraft_time::FrameRate, t: effectcraft_time::Tick| fr.snap(t) == t;
+    // The demo project: every comp duration, layer in/out/start and key time is on a frame.
+    let mut s = Session::default();
+    s.execute("file.openDemoProject", json!({})).unwrap();
+    for (_, c) in s.project.comps() {
+        let fr = c.frame_rate;
+        assert!(aligned(fr, c.duration), "duration {:?}", c.duration);
+        for l in &c.layers {
+            for t in [l.in_point, l.out_point, l.start_time] {
+                assert!(aligned(fr, t), "{} {t:?}", l.name);
+            }
+            l.props.walk("", &mut |_, pr| {
+                for k in &pr.keys {
+                    assert!(aligned(fr, l.comp_time(k.time)), "{} {}", l.name, pr.name);
+                }
+            });
+        }
+    }
+    let lower = s.active_comp().unwrap().layer_by_name("Lower Third").unwrap();
+    let fr = s.active_comp().unwrap().frame_rate;
+    assert_eq!(fr.frame_at(lower.in_point), 150, "5 s at 29.97 is frame 150 (0:00:05:00)");
+    // Commands snap: comp duration, layer timing, key times.
+    s.execute("comp.new", json!({"name": "F", "frameRate": 29.97, "duration": 10.0})).unwrap();
+    let c = s.active_comp().unwrap();
+    assert_eq!(c.frame_rate.frame_at(c.duration), 300);
+    assert!(aligned(c.frame_rate, c.duration));
+    let l = s.execute("layer.newSolid", json!({"color": "#fff"})).unwrap()["layer"].as_u64().unwrap();
+    s.execute("layer.timing", json!({"layers": [l], "in": 1.01, "out": 3.3333, "delta": 0.02})).unwrap();
+    let ly = s.active_comp().unwrap().layers[0].clone();
+    let fr = s.active_comp().unwrap().frame_rate;
+    for t in [ly.in_point, ly.out_point, ly.start_time] {
+        assert!(aligned(fr, t), "{t:?}");
+    }
+    s.execute("prop.addKey", json!({"layer": l, "path": "transform/opacity", "time": 1.2345, "value": 10})).unwrap();
+    let k = prop(&s, l, "transform/opacity").keys[0].time;
+    assert!(aligned(fr, ly.comp_time(k)));
+    // Layer shifted one frame (delta 0.02 s rounds to 1 frame): 1.2345 s + 1 frame -> frame 38.
+    assert_eq!(fr.frame_at(ly.comp_time(k)), 38);
+}
+
+#[test]
 fn time_set_snaps_to_the_nearest_frame_and_ae_timecode() {
     let mut s = Session::default();
     s.execute("comp.new", json!({"name": "T", "width": 100, "height": 100, "frameRate": 29.97, "duration": 10})).unwrap();

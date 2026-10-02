@@ -25,7 +25,8 @@ fn time_stretch(s: &mut Session, p: &Value) -> Result<Value> {
     let dur = f_p(p, "duration");
     let hold = str_p(p, "hold").unwrap_or("in").to_string();
     let cti = s.time();
-    let fd = s.project.comp(cid).ok_or(EngineError::NoComp)?.frame_duration();
+    let comp_rate = s.project.comp(cid).ok_or(EngineError::NoComp)?.frame_rate;
+    let fd = comp_rate.frame_duration();
     s.edit(if reverse { "Time-Reverse Layer" } else { "Time Stretch" }, None, |proj, _| {
         let comp = proj.comp_mut(cid).ok_or(EngineError::NoComp)?;
         for l in comp.layers.iter_mut().filter(|l| ids.contains(&l.id)) {
@@ -57,8 +58,9 @@ fn time_stretch(s: &mut Session, p: &Value) -> Result<Value> {
             l.stretch = new;
             l.start_time = h - Tick((lt_h.0 as f64 * new / 100.0).round() as i64);
             let (a, b) = (l.comp_time(lin), l.comp_time(lout));
-            l.in_point = a.min(b);
-            l.out_point = a.max(b);
+            let fr = comp_rate;
+            l.in_point = fr.snap_nearest(a.min(b));
+            l.out_point = fr.snap_nearest(a.max(b)).max(l.in_point + fr.frame_duration());
         }
         Ok(())
     })?;

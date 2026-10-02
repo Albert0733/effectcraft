@@ -24,7 +24,8 @@ fn apply_settings(c: &mut Comp, p: &Value) {
     }
     if let Some(d) = f_p(p, "duration") {
         let old = c.duration;
-        c.duration = Tick::from_seconds_f64(d.max(c.frame_rate.frame_duration().seconds()));
+        // Whole frames, at least one.
+        c.duration = c.frame_rate.snap_nearest(Tick::from_seconds_f64(d)).max(c.frame_rate.frame_duration());
         if c.work_area.1 == old {
             c.work_area.1 = c.duration;
         }
@@ -53,7 +54,7 @@ fn apply_settings(c: &mut Comp, p: &Value) {
 fn new_comp(s: &mut Session, p: &Value) -> Result<Value> {
     let name = str_p(p, "name").unwrap_or("Comp 1").to_string();
     let rate = rate_p(p).unwrap_or(FrameRate::FPS_29_97);
-    let mut c = Comp::new(1920, 1080, rate, Tick::from_seconds_f64(10.0));
+    let mut c = Comp::new(1920, 1080, rate, rate.snap_nearest(Tick::from_seconds_f64(10.0)));
     apply_settings(&mut c, p);
     let id = s.edit("New Composition", None, |proj, st| {
         let mut name = name.clone();

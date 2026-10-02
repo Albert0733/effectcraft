@@ -235,12 +235,13 @@ fn add_item(s: &mut Session, p: &Value) -> Result<Value> {
         ItemKind::Solid(so) => (LayerSource::Solid { item }, (so.width, so.height), None),
         ItemKind::Folder => return Err(bad("layer.addItem", "folders can't be layers")),
     };
-    let start = f_p(p, "time").map(Tick::from_seconds_f64).unwrap_or(Tick::ZERO);
+    let fr = comp.frame_rate;
+    let start = fr.snap_nearest(f_p(p, "time").map(Tick::from_seconds_f64).unwrap_or(Tick::ZERO));
     let id = s.edit("Add Footage to Comp", None, |proj, st| {
         let mut l = build::layer(proj, &comp, &it.name, src, size, dur);
         l.start_time = start;
         l.in_point = start;
-        l.out_point = (start + dur.unwrap_or(comp.duration)).min(comp.duration);
+        l.out_point = fr.snap_nearest((start + dur.unwrap_or(comp.duration)).min(comp.duration)).max(start + fr.frame_duration());
         insert_layer(proj, st, cid, l)
     })?;
     Ok(json!({"layer": id.0}))
@@ -524,10 +525,10 @@ fn timing(s: &mut Session, p: &Value) -> Result<Value> {
     let (cid, ids) = layers_p(s, p)?;
     let t = s.time();
     let op = str_p(p, "op").unwrap_or("set").to_string();
-    let delta = f_p(p, "delta").map(Tick::from_seconds_f64);
-    let start = f_p(p, "start").map(Tick::from_seconds_f64);
-    let inp = f_p(p, "in").map(Tick::from_seconds_f64);
-    let outp = f_p(p, "out").map(Tick::from_seconds_f64);
+    // Layer times stay on frame boundaries of the comp (as in AE).
+    let fr = s.project.comp(cid).ok_or(EngineError::NoComp)?.frame_rate;
+    let snap = |k: &str| f_p(p, k).map(|v| fr.snap_nearest(Tick::from_seconds_f64(v)));
+    let (delta, start, inp, outp) = (snap("delta"), snap("start"), snap("in"), snap("out"));
     s.edit("Layer Timing", merge_p(p), |proj, _| {
         let comp = proj.comp_mut(cid).ok_or(EngineError::NoComp)?;
         let fd = comp.frame_duration();
