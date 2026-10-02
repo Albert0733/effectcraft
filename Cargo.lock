@@ -1265,6 +1265,7 @@ dependencies = [
  "kurbo",
  "log",
  "rayon",
+ "serde",
 ]
 
 [[package]]

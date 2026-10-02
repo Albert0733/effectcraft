@@ -170,6 +170,8 @@ pub(crate) fn render_frame(job: &Job, comp: &Comp, i: u64) -> Image {
         motion_blur: job.settings.motion_blur,
         guides: false,
         draft: job.settings.quality == RenderQuality::Draft,
+        // Output renders always look through the comp's active camera.
+        view: None,
     };
     let mut r = Renderer::new(job.project, job.footage, opts);
     r.expr = job.expr;

@@ -41,6 +41,8 @@ pub enum Dialog {
     CompSettings,
     SolidSettings,
     CommandPalette,
+    CameraSettings,
+    LightSettings,
     KeyVelocity,
     KeyInterpolation,
     TimeStretch,
@@ -183,7 +185,22 @@ impl EffectcraftApp {
     }
 
     pub fn frame_key(&self, comp: ItemId, frame: i64, scale: f64) -> FrameKey {
-        FrameKey { revision: self.session.revision, comp: comp.0, frame, scale: (scale * 1000.0).round() as u32 }
+        FrameKey { revision: self.session.revision, comp: comp.0, frame, scale: (scale * 1000.0).round() as u32, view: self.view_hash(comp) }
+    }
+
+    /// Hash of the comp viewer's 3D view camera (0 for the active camera view).
+    pub fn view_hash(&self, comp: ItemId) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let Some(cam) = self.session.view_camera(comp) else { return 0 };
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        for row in cam.view.0 {
+            for v in row {
+                v.to_bits().hash(&mut h);
+            }
+        }
+        cam.zoom.to_bits().hash(&mut h);
+        cam.ortho.hash(&mut h);
+        h.finish() | 1
     }
 
     /// Request a prefetch frame render (no-op if cached/in flight).
@@ -200,7 +217,7 @@ impl EffectcraftApp {
         let Some(c) = self.session.project.comp(comp) else { return };
         let key = self.frame_key(comp, frame, scale);
         let t = c.frame_rate.tick_of(frame);
-        let opts = RenderOpts { scale, motion_blur: true, guides: true, draft: self.ui.viewer.fast_preview };
+        let opts = RenderOpts { scale, motion_blur: true, guides: true, draft: self.ui.viewer.fast_preview, view: self.session.view_camera(comp) };
         if urgent {
             self.frames.request_urgent(&self.render_source(), key, comp, t, opts);
         } else {

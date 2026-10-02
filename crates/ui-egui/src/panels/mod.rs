@@ -2,6 +2,7 @@
 
 pub mod comp_settings;
 pub mod dialogs;
+pub mod dialogs_3d;
 pub mod effect_controls;
 pub mod effects_presets;
 pub mod graph;

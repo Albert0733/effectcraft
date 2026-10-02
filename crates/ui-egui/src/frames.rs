@@ -19,6 +19,8 @@ pub struct FrameKey {
     pub frame: i64,
     /// Render scale × 1000.
     pub scale: u32,
+    /// Hash of the 3D view camera (0 = the comp's active camera).
+    pub view: u64,
 }
 
 struct Cache {

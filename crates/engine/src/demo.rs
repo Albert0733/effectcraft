@@ -1,6 +1,8 @@
 //! The demo project: an animated title sequence built entirely from procedural content (original
 //! work, MIT OR Apache-2.0): gradient background, orbiting shape rings with trim paths and a
-//! repeater burst, an animated title with a text animator and glow, a lower-third precomp.
+//! repeater burst, an animated title with a text animator and glow, a lower-third precomp; and a
+//! "3D Showcase" comp: a two-node camera move with depth of field over lit, shadow-casting 3D
+//! cards, intersecting planes and a gridded floor.
 
 use effectcraft_color::BlendMode;
 use effectcraft_color::Label;
@@ -10,6 +12,7 @@ use effectcraft_project::{Comp, ItemId, ItemKind, Layer, LayerSource, Project, P
 use effectcraft_time::{FrameRate, Tick};
 
 pub const MAIN_COMP: &str = "EffectCraft Intro";
+pub const SHOWCASE_3D: &str = "3D Showcase";
 
 /// Seconds → the nearest frame of the demo's 29.97 fps comps (AE keeps times frame-aligned).
 fn t(s: f64) -> Tick {
@@ -119,6 +122,134 @@ fn lower_third(p: &mut Project) -> Comp {
     );
     anim(&mut title, "transform/opacity", keys(&[(0.4, Value::Scalar(0.0)), (0.9, Value::Scalar(100.0))]));
     c.layers = vec![title, bar];
+    c
+}
+
+fn solid_sized(p: &mut Project, comp: &Comp, folder: ItemId, name: &str, color: [f32; 3], w: u32, h: u32) -> Layer {
+    let sid = p.add_item(name, Label::Red, Some(folder), ItemKind::Solid(Solid { color, width: w, height: h, pixel_aspect: 1.0 }));
+    build::layer(p, comp, name, LayerSource::Solid { item: sid }, (w, h), None)
+}
+
+/// A 3D card: a solid with a diagonal gradient and a thin border grid.
+fn card(p: &mut Project, comp: &Comp, folder: ItemId, name: &str, a: &str, b: &str, size: (u32, u32), pos: [f64; 3], rot_y: f64) -> Layer {
+    let mut l = solid_sized(p, comp, folder, name, [1.0, 1.0, 1.0], size.0, size.1);
+    let (w, h) = (size.0 as f64, size.1 as f64);
+    effect(
+        p,
+        &mut l,
+        "ec.generate.gradientramp",
+        [w, h],
+        &[("start", Value::Vec2([0.0, 0.0])), ("end", Value::Vec2([w, h])), ("startColor", Value::Color(hex(a))), ("endColor", Value::Color(hex(b)))],
+    );
+    effect(
+        p,
+        &mut l,
+        "ec.generate.grid",
+        [w, h],
+        &[("width", Value::Scalar(w)), ("height", Value::Scalar(h)), ("border", Value::Scalar(10.0)), ("opacity", Value::Scalar(35.0))],
+    );
+    l.switches.three_d = true;
+    set(&mut l, "transform/position", Value::Vec3(pos));
+    set(&mut l, "transform/rotationY", Value::Scalar(rot_y));
+    set(&mut l, "materialOptions/castsShadows", Value::Enum(1));
+    set(&mut l, "materialOptions/specularIntensity", Value::Scalar(35.0));
+    set(&mut l, "materialOptions/specularShininess", Value::Scalar(40.0));
+    l
+}
+
+/// The "3D Showcase" comp: camera move, key + fill lights, shadows, DOF, intersecting planes.
+fn showcase_3d(p: &mut Project, solids: ItemId) -> Comp {
+    let mut c = Comp::new(1920, 1080, FrameRate::FPS_29_97, t(10.0));
+    c.background = [0.02, 0.02, 0.035];
+    // Floor: a gridded plane laid flat (X rotation 90°) below the cards.
+    let mut floor = solid_sized(p, &c, solids, "Floor", [0.16, 0.17, 0.22], 1000, 1000);
+    effect(
+        p,
+        &mut floor,
+        "ec.generate.grid",
+        [1000.0, 1000.0],
+        &[
+            ("width", Value::Scalar(100.0)),
+            ("height", Value::Scalar(100.0)),
+            ("border", Value::Scalar(3.0)),
+            ("color", Value::Color(hex("#6F7BB8"))),
+            ("opacity", Value::Scalar(45.0)),
+        ],
+    );
+    floor.switches.three_d = true;
+    set(&mut floor, "transform/position", Value::Vec3([960.0, 800.0, 500.0]));
+    set(&mut floor, "transform/scale", Value::Vec3([400.0, 400.0, 100.0]));
+    set(&mut floor, "transform/rotationX", Value::Scalar(90.0));
+    set(&mut floor, "materialOptions/specularIntensity", Value::Scalar(10.0));
+
+    // Cards at different depths and angles; the centre pair intersects.
+    let left = card(p, &c, solids, "Card Blue", "#2E7BF0", "#7A4DFF", (520, 340), [520.0, 560.0, 120.0], 28.0);
+    let right = card(p, &c, solids, "Card Coral", "#FF6A5C", "#FFB347", (520, 340), [1420.0, 560.0, 260.0], -32.0);
+    let mut x1 = card(p, &c, solids, "Cross A", "#1FD1A5", "#2E7BF0", (460, 460), [960.0, 470.0, 520.0], 40.0);
+    set(&mut x1, "materialOptions/lightTransmission", Value::Scalar(30.0));
+    let x2 = card(p, &c, solids, "Cross B", "#F0E14A", "#FF6A5C", (460, 460), [960.0, 470.0, 520.0], -40.0);
+    // Hero title in 3D space, gently turning.
+    let mut title = text_layer(
+        p,
+        &c,
+        "3D Title",
+        TextDoc { text: "CLASSIC 3D".into(), size: 150.0, style: "Bold".into(), tracking: 60.0, justify: Justify::Center, ..Default::default() },
+        [960.0, 560.0],
+    );
+    title.switches.three_d = true;
+    set(&mut title, "transform/position", Value::Vec3([960.0, 600.0, -160.0]));
+    anim(&mut title, "transform/rotationY", keys(&[(0.0, Value::Scalar(-18.0)), (10.0, Value::Scalar(18.0))]));
+    set(&mut title, "materialOptions/castsShadows", Value::Enum(1));
+
+    // Camera: two-node, 35 mm, sweeping around the set with depth of field on the title.
+    let mut cam = build::layer(p, &c, "Camera 1", LayerSource::Camera, (1920, 1080), None);
+    let zoom = 1920.0 * 35.0 / 36.0;
+    set(&mut cam, "cameraOptions/zoom", Value::Scalar(zoom));
+    set(&mut cam, "cameraOptions/dof", Value::Bool(true));
+    set(&mut cam, "cameraOptions/aperture", Value::Scalar(40.0));
+    set(&mut cam, "cameraOptions/blurLevel", Value::Scalar(100.0));
+    set(&mut cam, "transform/poi", Value::Vec3([960.0, 560.0, 150.0]));
+    anim(
+        &mut cam,
+        "transform/position",
+        keys(&[(0.0, Value::Vec3([-200.0, 160.0, -1500.0])), (5.0, Value::Vec3([1100.0, 80.0, -1850.0])), (10.0, Value::Vec3([2150.0, 220.0, -1300.0]))]),
+    );
+    anim(&mut cam, "cameraOptions/focusDistance", keys(&[(0.0, Value::Scalar(1700.0)), (5.0, Value::Scalar(1900.0)), (10.0, Value::Scalar(1650.0))]));
+
+    // Key light: warm spot casting soft shadows. Fill: cool ambient.
+    let mut key = build::layer(p, &c, "Key Light", LayerSource::Light { kind: effectcraft_project::LightKind::Spot }, (1920, 1080), None);
+    set(&mut key, "transform/position", Value::Vec3([500.0, -500.0, -700.0]));
+    set(&mut key, "transform/poi", Value::Vec3([960.0, 600.0, 300.0]));
+    set(&mut key, "lightOptions/intensity", Value::Scalar(150.0));
+    set(&mut key, "lightOptions/color", Value::Color(hex("#FFE6C7")));
+    set(&mut key, "lightOptions/coneAngle", Value::Scalar(110.0));
+    set(&mut key, "lightOptions/coneFeather", Value::Scalar(60.0));
+    set(&mut key, "lightOptions/castsShadows", Value::Bool(true));
+    set(&mut key, "lightOptions/shadowDarkness", Value::Scalar(70.0));
+    set(&mut key, "lightOptions/shadowDiffusion", Value::Scalar(12.0));
+    let mut fill = build::layer(p, &c, "Fill Light", LayerSource::Light { kind: effectcraft_project::LightKind::Ambient }, (1920, 1080), None);
+    set(&mut fill, "lightOptions/intensity", Value::Scalar(35.0));
+    set(&mut fill, "lightOptions/color", Value::Color(hex("#B9C8FF")));
+
+    // 2D caption on top (2D layers break 3D groups, so it always draws over the 3D scene).
+    let mut caption = text_layer(
+        p,
+        &c,
+        "Caption",
+        TextDoc {
+            text: "CAMERAS  ·  LIGHTS  ·  SHADOWS  ·  DEPTH OF FIELD".into(),
+            size: 30.0,
+            style: "Medium".into(),
+            tracking: 220.0,
+            fill: [0.78, 0.83, 1.0, 1.0],
+            justify: Justify::Center,
+            ..Default::default()
+        },
+        [960.0, 1000.0],
+    );
+    anim(&mut caption, "transform/opacity", keys(&[(0.3, Value::Scalar(0.0)), (1.2, Value::Scalar(100.0))]));
+
+    c.layers = vec![caption, cam, key, fill, title, left, right, x1, x2, floor];
     c
 }
 
@@ -319,6 +450,8 @@ pub fn demo_project() -> Project {
     }
     comp.work_area = (Tick::ZERO, t(10.0));
     p.add_item(MAIN_COMP, Label::Sandstone, None, ItemKind::Comp(comp.into()));
+    let show = showcase_3d(&mut p, solids);
+    p.add_item(SHOWCASE_3D, Label::Sandstone, None, ItemKind::Comp(show.into()));
     p.fix_next_id();
     p
 }

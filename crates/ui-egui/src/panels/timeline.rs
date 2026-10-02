@@ -186,6 +186,10 @@ fn prop_visible(p: &Property, layer: &Layer) -> bool {
     if p.two_d_only && layer.is_3d() {
         return false;
     }
+    // One-node cameras (and lights with auto-orient off) have no Point of Interest.
+    if p.match_id == "poi" && (layer.is_camera() || layer.is_light()) && layer.auto_orient != effectcraft_engine::project::AutoOrient::TowardsPointOfInterest {
+        return false;
+    }
     // Separate Dimensions: X/Y/Z Position replace Position.
     if p.match_id == "position" && layer.transform().is_some_and(|tr| tr.get("positionX").is_some() && tr.get("position").is_some_and(|q| q.uid == p.uid)) {
         return false;
@@ -1093,7 +1097,10 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     }
                 }
                 let name_x = indent + 12.0;
-                let pname = if prop.has_expression() { format!("{}  =", prop.name) } else { prop.name.clone() };
+                // 3D layers show Rotation as "Z Rotation" next to X/Y Rotation.
+                let is_tr_rot = layer.transform().and_then(|t| t.get("rotation")).is_some_and(|r| r.uid == prop.uid);
+                let base = if is_tr_rot && prop.name == "Rotation" && layer.is_3d() { "Z Rotation".to_string() } else { prop.name.clone() };
+                let pname = if prop.has_expression() { format!("{base}  =") } else { base };
                 lp.text(
                     pos2(name_x, cy),
                     Align2::LEFT_CENTER,

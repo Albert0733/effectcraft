@@ -1,5 +1,5 @@
 //! Modal dialogs: About (with community links), New Composition / Composition Settings, Solid
-//! Settings and the command palette.
+//! Settings and the command palette (Camera/Light Settings live in `dialogs_3d`).
 
 use egui::{Align2, Color32, Rect, Sense, pos2, vec2};
 use serde_json::json;
@@ -19,6 +19,8 @@ pub struct DialogState {
     pub solid_size: [u32; 2],
     pub palette_query: String,
     pub palette_sel: usize,
+    pub camera: super::dialogs_3d::CameraDraft,
+    pub light: super::dialogs_3d::LightDraft,
     pub velocity: super::key_dialogs::VelocityDraft,
     pub interp: super::key_dialogs::InterpDraft,
     pub stretch: super::key_dialogs::StretchDraft,
@@ -89,6 +91,8 @@ pub fn show(app: &mut EffectcraftApp, ctx: &egui::Context) {
         Dialog::NewComp | Dialog::CompSettings => comp_settings(app, ctx, &t, d == Dialog::CompSettings),
         Dialog::SolidSettings => solid(app, ctx, &t),
         Dialog::CommandPalette => palette(app, ctx, &t),
+        Dialog::CameraSettings => super::dialogs_3d::camera(app, ctx, &t),
+        Dialog::LightSettings => super::dialogs_3d::light(app, ctx, &t),
         Dialog::KeyVelocity => super::key_dialogs::velocity(app, ctx, &t),
         Dialog::KeyInterpolation => super::key_dialogs::interpolation(app, ctx, &t),
         Dialog::TimeStretch => super::key_dialogs::time_stretch(app, ctx, &t),

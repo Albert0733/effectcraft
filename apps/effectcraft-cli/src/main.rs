@@ -552,7 +552,7 @@ fn bench_cmd(args: &Args) -> Result<(), Failure> {
     let cid = s.active_comp_id().ok_or_else(|| Failure::Error("no composition".into()))?;
     let t = Tick::from_seconds_f64(args.num("--time")?.unwrap_or(3.0));
     let opts = RenderOpts { scale: args.num("--scale")?.unwrap_or(1.0), ..Default::default() };
-    bench(&s, cid, t, opts.clone(), args.num("--n")?.unwrap_or(10.0).max(1.0) as usize);
+    bench(&s, cid, t, opts, args.num("--n")?.unwrap_or(10.0).max(1.0) as usize);
     if let Some(n) = args.num("--play")? {
         bench_play(&s, cid, t, opts, n.max(1.0) as usize);
     }
