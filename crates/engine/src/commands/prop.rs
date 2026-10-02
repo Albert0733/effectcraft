@@ -148,6 +148,8 @@ fn set_expr(s: &mut Session, p: &Value) -> Result<Value> {
     if error.is_some() {
         enabled = Some(false);
     }
+    // Alt-click on a stopwatch starts with the property's own reference (`transform.opacity`).
+    let def = s.project.comp(cid).and_then(|c| c.layer(lid).and_then(|l| super::link::reference(c, l, l, uid))).unwrap_or_else(|| "value".into());
     let r = with_prop(s, "Expression", merge_p(p), cid, lid, uid, |pr, _| {
         match (&text, enabled) {
             (Some(t), _) if t.trim().is_empty() => pr.expr = None,
@@ -156,11 +158,11 @@ fn set_expr(s: &mut Session, p: &Value) -> Result<Value> {
                 if let Some(x) = &mut pr.expr {
                     x.enabled = e;
                 } else if e {
-                    pr.expr = Some(effectcraft_project::Expression { text: default_expr(pr), enabled: true });
+                    pr.expr = Some(effectcraft_project::Expression { text: def.clone(), enabled: true });
                 }
             }
             (None, None) => {
-                pr.expr = if pr.expr.is_some() { None } else { Some(effectcraft_project::Expression { text: default_expr(pr), enabled: true }) };
+                pr.expr = if pr.expr.is_some() { None } else { Some(effectcraft_project::Expression { text: def.clone(), enabled: true }) };
             }
         }
         Ok(json!(pr.expr.as_ref().map(|e| e.text.clone())))
@@ -170,11 +172,6 @@ fn set_expr(s: &mut Session, p: &Value) -> Result<Value> {
         return Ok(json!({"expression": r, "error": e}));
     }
     Ok(r)
-}
-
-fn default_expr(pr: &Property) -> String {
-    let _ = pr;
-    "value".to_string()
 }
 
 fn reset(s: &mut Session, p: &Value) -> Result<Value> {

@@ -241,6 +241,20 @@ fn time_reverse_keyframes() {
 }
 
 #[test]
+fn alt_click_stopwatch_toggles_a_self_reference_expression() {
+    let (mut s, l) = setup();
+    s.execute("prop.setExpression", json!({"layer": l, "path": "transform/opacity"})).unwrap();
+    assert_eq!(prop(&s, l, "transform/opacity").expr.unwrap().text, "transform.opacity");
+    s.execute("prop.setExpression", json!({"layer": l, "path": "transform/opacity", "enabled": false})).unwrap();
+    assert!(!prop(&s, l, "transform/opacity").expr.unwrap().enabled);
+    s.execute("prop.setExpression", json!({"layer": l, "path": "transform/opacity", "enabled": true})).unwrap();
+    s.execute("prop.setExpression", json!({"layer": l, "path": "transform/opacity"})).unwrap();
+    assert!(prop(&s, l, "transform/opacity").expr.is_none());
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(prop(&s, l, "transform/opacity").expr.unwrap().enabled);
+}
+
+#[test]
 fn time_set_snaps_to_the_nearest_frame_and_ae_timecode() {
     let mut s = Session::default();
     s.execute("comp.new", json!({"name": "T", "width": 100, "height": 100, "frameRate": 29.97, "duration": 10})).unwrap();
