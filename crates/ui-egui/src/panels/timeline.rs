@@ -42,7 +42,6 @@ struct Cols {
     label: f32,
     num: f32,
     name: f32,
-    name_w: f32,
     switches: f32,
     mode: f32,
     trkmat: f32,
@@ -61,22 +60,22 @@ fn cols(x0: f32, width: f32, show_modes: bool) -> Cols {
     let mode = switches + SW * 8.0 + 6.0;
     let trkmat = mode + if show_modes { 92.0 } else { 0.0 };
     let parent = trkmat + if show_modes { 112.0 } else { 0.0 };
-    Cols { av, label, num, name, name_w, switches, mode, trkmat, parent, end: parent + 116.0 }
+    Cols { av, label, num, name, switches, mode, trkmat, parent, end: parent + 116.0 }
 }
 
 /// Timeline horizontal mapping.
 #[derive(Clone, Copy, Debug)]
-struct TMap {
-    x0: f32,
-    start: f64,
-    pps: f64,
+pub(crate) struct TMap {
+    pub x0: f32,
+    pub start: f64,
+    pub pps: f64,
 }
 
 impl TMap {
-    fn x(&self, secs: f64) -> f32 {
+    pub fn x(&self, secs: f64) -> f32 {
         self.x0 + ((secs - self.start) * self.pps) as f32
     }
-    fn t(&self, x: f32) -> f64 {
+    pub fn t(&self, x: f32) -> f64 {
         self.start + (x - self.x0) as f64 / self.pps
     }
 }
@@ -141,6 +140,10 @@ fn prop_visible(p: &Property, layer: &Layer) -> bool {
     if p.two_d_only && layer.is_3d() {
         return false;
     }
+    // Separate Dimensions: X/Y/Z Position replace Position.
+    if p.match_id == "position" && layer.transform().is_some_and(|tr| tr.get("positionX").is_some() && tr.get("position").is_some_and(|q| q.uid == p.uid)) {
+        return false;
+    }
     true
 }
 
@@ -168,7 +171,7 @@ fn build_rows(app: &EffectcraftApp, comp: &Comp) -> Vec<Row> {
         }
         if let Some(kind) = tl.reveal.first() {
             let (group, props): (&str, Vec<&str>) = match kind.as_str() {
-                "position" => ("transform", vec!["position"]),
+                "position" => ("transform", vec!["position", "positionX", "positionY", "positionZ"]),
                 "scale" => ("transform", vec!["scale"]),
                 "rotation" => ("transform", vec!["rotation", "rotationX", "rotationY", "orientation"]),
                 "opacity" => ("transform", vec!["opacity"]),
@@ -439,7 +442,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let fd = comp.frame_duration().seconds();
     let cy0 = ruler.min.y + 11.0;
     let mut run: Option<(i64, i64)> = None;
-    let mut draw_run = |a: i64, b: i64| {
+    let draw_run = |a: i64, b: i64| {
         let x0 = tm.x(a as f64 * fd);
         let x1 = tm.x((b + 1) as f64 * fd);
         p.rect_filled(Rect::from_min_max(pos2(x0, cy0), pos2(x1, cy0 + 2.5)), 0.0, t.cache_green);
@@ -785,10 +788,8 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     if lin.hovered() || lout.hovered() || lin.dragged() || lout.dragged() {
                         ctx.set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
                     }
-                    if body.clicked() || body.drag_started() {
-                        if !is_sel {
-                            actions.push(("layer.select".into(), json!({"layers": [layer.id.0], "add": ui.input(|i| i.modifiers.shift)})));
-                        }
+                    if (body.clicked() || body.drag_started()) && !is_sel {
+                        actions.push(("layer.select".into(), json!({"layers": [layer.id.0], "add": ui.input(|i| i.modifiers.shift)})));
                     }
                     layer_context_menu(&body, layer, &mut actions);
                     let drag_key = format!("bar-{}", layer.id.0);
@@ -1001,15 +1002,32 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                         }
                         kresp.context_menu(|ui| {
                             for (lbl, cmd, params) in [
+                                ("Copy", "keys.copy", json!({})),
+                                ("Paste", "keys.paste", json!({})),
+                                ("-", "", json!({})),
+                                ("Keyframe Interpolation…", "keys.interpolation", json!({})),
+                                ("Keyframe Velocity…", "keys.velocity", json!({})),
+                                ("Toggle Hold Keyframe", "keys.toggleHold", json!({})),
+                                ("Rove Across Time", "keys.interpolation", json!({"roving": !k.roving})),
+                                ("-", "", json!({})),
                                 ("Easy Ease", "keys.easyEase", json!({})),
                                 ("Easy Ease In", "keys.easyEaseIn", json!({})),
                                 ("Easy Ease Out", "keys.easyEaseOut", json!({})),
-                                ("Toggle Hold Keyframe", "keys.toggleHold", json!({})),
+                                ("Time-Reverse Keyframes", "keys.timeReverse", json!({})),
+                                ("-", "", json!({})),
                                 ("Linear", "keys.interpolation", json!({"interpolation": "linear"})),
                                 ("Bezier", "keys.interpolation", json!({"interpolation": "bezier"})),
-                                ("Auto Bezier", "keys.interpolation", json!({"autoBezier": true})),
+                                ("Auto Bezier", "keys.interpolation", json!({"interpolation": "autoBezier"})),
+                                ("Select All Keyframes", "keys.selectAll", json!({})),
                                 ("Delete", "keys.delete", json!({})),
                             ] {
+                                if lbl == "-" {
+                                    ui.separator();
+                                    continue;
+                                }
+                                if lbl == "Rove Across Time" && !prop.spatial {
+                                    continue;
+                                }
                                 if ui.button(lbl).clicked() {
                                     if !ks {
                                         actions.push(("keys.select".into(), json!({"keys": [{"layer": layer.id.0, "prop": uid, "time": k.time.seconds()}]})));
@@ -1041,15 +1059,16 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     }
     // Graph editor.
     if graph_on {
-        graph_editor(app, ui, &gp, &comp, &ectx, tm, Rect::from_min_max(pos2(graph_x0, rows_rect.min.y), rows_rect.max));
+        super::graph::show(app, ui, &gp, &comp, &ectx, tm, Rect::from_min_max(pos2(graph_x0, rows_rect.min.y), rows_rect.max), &mut actions);
     }
     // Empty-area click in the graph: deselect keys; drag: box-select keys.
-    let empty = ui.interact(Rect::from_min_max(pos2(graph_x0, rows_rect.min.y), rows_rect.max), egui::Id::new("tl-graph-bg"), Sense::click_and_drag());
+    let empty_rect = if graph_on { Rect::NOTHING } else { Rect::from_min_max(pos2(graph_x0, rows_rect.min.y), rows_rect.max) };
+    let empty = ui.interact(empty_rect, egui::Id::new("tl-graph-bg"), Sense::click_and_drag());
     if empty.clicked() {
         actions.push(("keys.select".into(), json!({"keys": []})));
     }
     if let (true, Some(origin), Some(cur)) =
-        (empty.dragged(), empty.interact_pointer_pos().map(|_| ctx.input(|i| i.pointer.press_origin())).flatten(), empty.interact_pointer_pos())
+        (empty.dragged(), empty.interact_pointer_pos().and_then(|_| ctx.input(|i| i.pointer.press_origin())), empty.interact_pointer_pos())
     {
         let br = Rect::from_two_pos(origin, cur);
         gp.rect_filled(br, 0.0, t.accent.gamma_multiply(0.12));
@@ -1188,6 +1207,10 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         }
     }
     for (id, params) in actions {
+        if id == "__endMerge" {
+            app.session.history.merge_key = None;
+            continue;
+        }
         if let Err(e) = crate::menus::invoke(app, &ctx, &id, params) {
             app.ui.status = e;
         }
@@ -1257,7 +1280,11 @@ fn layer_context_menu(resp: &egui::Response, layer: &Layer, actions: &mut Vec<(S
             item(ui, "Flip Vertical", "layer.transform", json!({"layers": [id], "op": "flipV"}));
         });
         ui.menu_button("Time", |ui| {
-            item(ui, "Time-Reverse Layer", "layer.timeStretch", json!({"layers": [id], "op": "reverse"}));
+            item(ui, "Enable Time Remapping", "layer.enableTimeRemap", json!({"layers": [id]}));
+            item(ui, "Time-Reverse Layer", "layer.timeReverse", json!({"layers": [id]}));
+            item(ui, "Time Stretch…", "layer.timeStretch", json!({}));
+            item(ui, "Freeze Frame", "layer.freezeFrame", json!({"layers": [id]}));
+            item(ui, "Freeze on Last Frame", "layer.freezeOnLastFrame", json!({"layers": [id]}));
         });
         ui.menu_button("Blending Mode", |ui| {
             for m in BlendMode::ALL {
@@ -1411,87 +1438,4 @@ fn value_editor(
             p.text(pos2(x, at.y), Align2::LEFT_CENTER, s.chars().take(30).collect::<String>(), Tokens::ui(12.0), t.text_dim);
         }
     }
-}
-
-/// Value graph of the selected properties (numeric dimensions over time) with key markers.
-fn graph_editor(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: &egui::Painter, comp: &Comp, ectx: &EvalCtx, tm: TMap, area: Rect) {
-    let t = app.tokens;
-    let props: Vec<(LayerId, u64)> = if app.session.state.selected_props.is_empty() {
-        // Default: animated properties of selected layers.
-        let mut v = vec![];
-        for l in comp.layers.iter().filter(|l| app.session.state.selected_layers.contains(&l.id)) {
-            l.props.walk("", &mut |_, pr| {
-                if pr.is_animated() && !pr.value.components().is_empty() {
-                    v.push((l.id, pr.uid));
-                }
-            });
-        }
-        v
-    } else {
-        app.session.state.selected_props.clone()
-    };
-    p.rect_filled(area, 0.0, Color32::from_rgb(0x1e, 0x1e, 0x1e));
-    // Grid.
-    for i in 1..8 {
-        let y = area.min.y + area.height() * i as f32 / 8.0;
-        p.line_segment([pos2(area.min.x, y), pos2(area.max.x, y)], Stroke::new(1.0, Color32::from_white_alpha(10)));
-    }
-    if props.is_empty() {
-        p.text(area.center(), Align2::CENTER_CENTER, "Select animated properties to show them in the Graph Editor", Tokens::ui(12.0), t.text_faint);
-        return;
-    }
-    let colors =
-        [Color32::from_rgb(0xe0, 0x50, 0x50), Color32::from_rgb(0x60, 0xd0, 0x60), Color32::from_rgb(0x50, 0x8c, 0xf0), Color32::from_rgb(0xe8, 0xc8, 0x40)];
-    // Sample all curves over the visible span; normalise to a common range.
-    let n = ((area.width() / 2.0) as usize).max(2);
-    let mut curves: Vec<(Vec<Vec<f64>>, &Layer, &Property)> = vec![];
-    let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
-    for (lid, uid) in &props {
-        let Some(l) = comp.layer(*lid) else { continue };
-        let Some(pr) = l.props.find(*uid) else { continue };
-        let mut dims: Vec<Vec<f64>> = vec![];
-        for i in 0..n {
-            let x = area.min.x + area.width() * i as f32 / (n - 1) as f32;
-            let tt = Tick::from_seconds_f64(tm.t(x));
-            let v = ectx.at(tt).value(l, pr).components();
-            if dims.is_empty() {
-                dims = vec![Vec::with_capacity(n); v.len().min(3)];
-            }
-            for (d, c) in v.iter().take(dims.len()).enumerate() {
-                dims[d].push(*c);
-                lo = lo.min(*c);
-                hi = hi.max(*c);
-            }
-        }
-        curves.push((dims, l, pr));
-    }
-    if !lo.is_finite() || !hi.is_finite() {
-        return;
-    }
-    if (hi - lo).abs() < 1e-9 {
-        hi = lo + 1.0;
-    }
-    let pad = (hi - lo) * 0.1;
-    let (lo, hi) = (lo - pad, hi + pad);
-    let ymap = |v: f64| area.max.y - ((v - lo) / (hi - lo)) as f32 * area.height();
-    for (dims, l, pr) in &curves {
-        for (d, vals) in dims.iter().enumerate() {
-            let pts: Vec<Pos2> = vals.iter().enumerate().map(|(i, v)| pos2(area.min.x + area.width() * i as f32 / (n - 1) as f32, ymap(*v))).collect();
-            p.add(egui::Shape::line(pts, Stroke::new(1.5, colors[d % colors.len()])));
-        }
-        for k in &pr.keys {
-            let x = tm.x(l.comp_time(k.time).seconds());
-            for (d, v) in k.value.components().iter().take(dims.len()).enumerate() {
-                let c = pos2(x, ymap(*v));
-                p.rect_filled(Rect::from_center_size(c, vec2(6.0, 6.0)), 0.0, Color32::WHITE);
-                p.rect_stroke(Rect::from_center_size(c, vec2(6.0, 6.0)), 0.0, Stroke::new(1.0, colors[d % colors.len()]), StrokeKind::Outside);
-            }
-        }
-    }
-    // Value labels.
-    for i in 0..=4 {
-        let v = lo + (hi - lo) * i as f64 / 4.0;
-        p.text(pos2(area.min.x + 4.0, ymap(v)), Align2::LEFT_BOTTOM, format!("{v:.1}"), Tokens::ui(10.0), t.text_faint);
-    }
-    let _ = ui;
 }

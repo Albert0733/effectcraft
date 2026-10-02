@@ -15,7 +15,7 @@ fn can_redo(s: &Session) -> std::result::Result<(), String> {
 }
 fn has_clip(s: &Session) -> std::result::Result<(), String> {
     has_comp(s)?;
-    if s.state.clipboard.is_empty() { Err("the clipboard is empty".into()) } else { Ok(()) }
+    if s.state.clipboard.is_empty() && s.state.key_clipboard.is_empty() { Err("the clipboard is empty".into()) } else { Ok(()) }
 }
 
 fn undo(s: &mut Session, _: &Value) -> Result<Value> {
@@ -97,18 +97,30 @@ fn delete(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 fn copy(s: &mut Session, p: &Value) -> Result<Value> {
+    // Keyframes selected → copy keys (pasted at the CTI).
+    if !s.state.selected_keys.is_empty() && p.get("layers").is_none() {
+        return s.execute("keys.copy", json!({}));
+    }
     let (cid, ids) = layers_p(s, p)?;
+    s.state.clip_is_keys = false;
     let comp = s.project.comp(cid).ok_or(crate::EngineError::NoComp)?;
     s.state.clipboard = comp.layers.iter().filter(|l| ids.contains(&l.id)).cloned().collect();
     Ok(json!(s.state.clipboard.len()))
 }
 
 fn cut(s: &mut Session, p: &Value) -> Result<Value> {
+    if !s.state.selected_keys.is_empty() && p.get("layers").is_none() {
+        s.execute("keys.copy", json!({}))?;
+        return s.execute("keys.delete", json!({}));
+    }
     copy(s, p)?;
     delete(s, p)
 }
 
 fn paste(s: &mut Session, p: &Value) -> Result<Value> {
+    if s.state.clip_is_keys && !s.state.key_clipboard.is_empty() {
+        return s.execute("keys.paste", p.clone());
+    }
     let cid = super::comp_id(s, p)?;
     let clip = s.state.clipboard.clone();
     let new = s.edit("Paste", None, |proj, st| {
@@ -191,10 +203,10 @@ pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!("edit.undo", "Undo", ["Edit"], Some("Cmd+Z"), "{}", can_undo, undo),
         cmd!("edit.redo", "Redo", ["Edit"], Some("Cmd+Shift+Z"), "{}", can_redo, redo),
-        cmd!("edit.cut", "Cut", ["Edit"], Some("Cmd+X"), "{layers?}", has_layers, cut),
-        cmd!("edit.copy", "Copy", ["Edit"], Some("Cmd+C"), "{layers?}", has_layers, copy),
+        cmd!("edit.cut", "Cut", ["Edit"], Some("Cmd+X"), "{layers?} (keyframes when keys are selected)", layers_or_keys, cut),
+        cmd!("edit.copy", "Copy", ["Edit"], Some("Cmd+C"), "{layers?} (keyframes when keys are selected)", layers_or_keys, copy),
         cmd!("edit.paste", "Paste", ["Edit"], Some("Cmd+V"), "{}", has_clip, paste),
-        cmd!("edit.clear", "Clear", ["Edit"], Some("Delete"), "{layers?}", has_layers, delete),
+        cmd!("edit.clear", "Clear", ["Edit"], Some("Delete"), "{layers?}", layers_or_keys, delete),
         cmd!("edit.duplicate", "Duplicate", ["Edit"], Some("Cmd+D"), "{layers?}", has_layers, duplicate),
         cmd!("edit.splitLayer", "Split Layer", ["Edit"], Some("Cmd+Shift+D"), "{layers?}", has_layers, split),
         cmd!("edit.selectAll", "Select All", ["Edit"], Some("Cmd+A"), "{}", has_comp, select_all),
@@ -202,6 +214,10 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!("edit.label", "Label", ["Edit", "Label"], None, "{label: Red|Yellow|Aqua|…, layers?}", always_ok, label),
         cmd!("edit.purgeUndo", "Undo", ["Edit", "Purge"], None, "{}", always_ok, purge),
     ]
+}
+
+fn layers_or_keys(s: &Session) -> std::result::Result<(), String> {
+    if !s.state.selected_keys.is_empty() { super::has_comp(s) } else { has_layers(s) }
 }
 
 fn always_ok(_: &Session) -> std::result::Result<(), String> {

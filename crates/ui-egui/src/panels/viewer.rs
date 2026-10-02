@@ -56,7 +56,7 @@ pub fn last_fit(ctx: &egui::Context) -> f32 {
 #[derive(Clone, Debug)]
 enum Gesture {
     Move { layers: Vec<(LayerId, [f64; 3], Mat3)>, start: [f64; 2] },
-    Scale { layer: LayerId, anchor_screen: Pos2, start_scale: [f64; 3], start_local: [f64; 2], inv: Mat3, uniform: bool },
+    Scale { layer: LayerId, start_scale: [f64; 3], start_local: [f64; 2], inv: Mat3 },
     Rotate { layer: LayerId, center: Pos2, start_angle: f64, start_rot: f64 },
     Anchor { layer: LayerId, start_anchor: [f64; 3], start_pos: [f64; 3], start: [f64; 2], inv: Mat3, l2p: Mat3 },
     Pan { start_pan: [f32; 2] },
@@ -436,17 +436,9 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                         let (l2c, _) = ectx.layer_to_comp(&layer);
                         let inv = l2c.inverse()?;
                         let a = ectx.v3(&layer, tr, "anchor", [0.0; 3]);
-                        let ac = l2c.apply(gv2(a[0], a[1]));
                         let lp = inv.apply(gv2(cpt[0], cpt[1]));
                         let _ = hi;
-                        Some(Gesture::Scale {
-                            layer: lid,
-                            anchor_screen: map.to_screen([ac.x, ac.y]),
-                            start_scale: ectx.v3(&layer, tr, "scale", [100.0; 3]),
-                            start_local: [lp.x - a[0], lp.y - a[1]],
-                            inv,
-                            uniform: hi < 4,
-                        })
+                        Some(Gesture::Scale { layer: lid, start_scale: ectx.v3(&layer, tr, "scale", [100.0; 3]), start_local: [lp.x - a[0], lp.y - a[1]], inv })
                     })
                 } else if let Some(l) = pick(app, &ectx, cpt, mods.shift) {
                     let layers: Vec<(LayerId, [f64; 3], Mat3)> = app
@@ -491,14 +483,14 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     let _ = app.session.execute("prop.set", json!({"layer": lid.0, "path": "transform/position", "value": v, "merge": merge}));
                 }
             }
-            Gesture::Scale { layer, start_scale, start_local, inv, uniform, .. } => {
+            Gesture::Scale { layer, start_scale, start_local, inv, .. } => {
                 let lp = inv.apply(gv2(cpt[0], cpt[1]));
                 // Local point relative to the anchor in *unscaled* layer space.
                 let a = comp.layer(layer).and_then(|l| l.transform().map(|tr| ectx.v3(l, tr, "anchor", [0.0; 3]))).unwrap_or([0.0; 3]);
                 let cur = [lp.x - a[0], lp.y - a[1]];
                 let fx = if start_local[0].abs() > 1e-6 { cur[0] / start_local[0] } else { 1.0 };
                 let fy = if start_local[1].abs() > 1e-6 { cur[1] / start_local[1] } else { 1.0 };
-                let (fx, fy) = if mods.shift || uniform && start_local[0].abs() > 1e-6 && start_local[1].abs() > 1e-6 && mods.shift {
+                let (fx, fy) = if mods.shift {
                     let f = (fx + fy) / 2.0;
                     (f, f)
                 } else {
@@ -847,7 +839,7 @@ fn bottom_bar(app: &mut EffectcraftApp, ui: &mut egui::Ui, bar: Rect, zoom: f32,
         app.ui.viewer.res = Resolution::ALL[i];
     }
     x = r.max.x + 6.0;
-    if tog(ui, &mut app.auto, &mut x, Icon::Region, false, "roi", "Region of Interest") {}
+    let _ = tog(ui, &mut app.auto, &mut x, Icon::Region, false, "roi", "Region of Interest");
     if tog(ui, &mut app.auto, &mut x, Icon::Checker, app.ui.viewer.transparency_grid, "transparency", "Toggle Transparency Grid") {
         app.ui.viewer.transparency_grid = !app.ui.viewer.transparency_grid;
     }

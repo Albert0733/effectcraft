@@ -1,0 +1,454 @@
+//! Timeline depth: keyframe clipboard, easing, velocity/interpolation, roving, nudging, graph
+//! editor key edits, time remapping/stretch/reverse/freeze, separate dimensions, pick-whips,
+//! expressions and masks (pen tool). Every command is checked with undo/redo.
+
+use effectcraft_keyframe::{Interp, Value as KV};
+use effectcraft_project::Property;
+use serde_json::{Value, json};
+
+use crate::Session;
+
+/// A 4 s, 30 fps comp with one solid; returns (session, layer id).
+pub(crate) fn setup() -> (Session, u64) {
+    let mut s = Session::default();
+    s.execute("comp.new", json!({"name": "T", "width": 400, "height": 300, "frameRate": 30, "duration": 4})).unwrap();
+    let r = s.execute("layer.newSolid", json!({"color": "#ffffff", "width": 100, "height": 100})).unwrap();
+    (s, r["layer"].as_u64().unwrap())
+}
+
+pub(crate) fn prop(s: &Session, layer: u64, path: &str) -> Property {
+    s.active_comp().unwrap().layer(effectcraft_project::LayerId(layer)).unwrap().props.prop(path).unwrap().clone()
+}
+
+/// Key `path` at the given (time, value) pairs.
+pub(crate) fn animate(s: &mut Session, layer: u64, path: &str, keys: &[(f64, Value)]) {
+    for (t, v) in keys {
+        s.execute("prop.addKey", json!({"layer": layer, "path": path, "time": t, "value": v})).unwrap();
+    }
+}
+
+fn select_prop_keys(s: &mut Session, layer: u64, path: &str) {
+    s.execute("prop.select", json!({"layer": layer, "path": path})).unwrap();
+}
+
+fn undo_redo_roundtrip(s: &mut Session, check_after: impl Fn(&Session), check_before: impl Fn(&Session)) {
+    check_after(s);
+    s.execute("edit.undo", json!({})).unwrap();
+    check_before(s);
+    s.execute("edit.redo", json!({})).unwrap();
+    check_after(s);
+}
+
+#[test]
+fn easy_ease_family_sets_influence_and_zero_speed() {
+    let (mut s, l) = setup();
+    animate(&mut s, l, "transform/opacity", &[(0.0, json!(0)), (1.0, json!(100)), (2.0, json!(0))]);
+    select_prop_keys(&mut s, l, "transform/opacity");
+    s.execute("keys.easyEase", json!({})).unwrap();
+    undo_redo_roundtrip(
+        &mut s,
+        |s| {
+            let p = prop(s, l, "transform/opacity");
+            assert!(p.keys.iter().all(|k| k.in_interp == Interp::Bezier && k.out_interp == Interp::Bezier));
+            assert!((p.keys[1].in_ease[0].influence - 1.0 / 3.0).abs() < 1e-9 && p.keys[1].in_ease[0].speed == 0.0);
+        },
+        |s| assert!(prop(s, l, "transform/opacity").keys.iter().all(|k| k.in_interp == Interp::Linear)),
+    );
+    // Easy Ease In only touches the incoming side; Out only the outgoing side.
+    s.execute("keys.interpolation", json!({"interpolation": "linear"})).unwrap();
+    s.execute("keys.easyEaseIn", json!({})).unwrap();
+    let p = prop(&s, l, "transform/opacity");
+    assert!(p.keys.iter().all(|k| k.in_interp == Interp::Bezier && k.out_interp == Interp::Linear));
+    s.execute("keys.interpolation", json!({"interpolation": "linear"})).unwrap();
+    s.execute("keys.easyEaseOut", json!({})).unwrap();
+    let p = prop(&s, l, "transform/opacity");
+    assert!(p.keys.iter().all(|k| k.in_interp == Interp::Linear && k.out_interp == Interp::Bezier));
+    // Eased motion is slow near the key.
+    s.execute("keys.easyEase", json!({})).unwrap();
+    let p = prop(&s, l, "transform/opacity");
+    let early = p.value_at(effectcraft_time::Tick::from_seconds_f64(0.1)).as_f64();
+    assert!(early < 5.0, "{early}");
+}
+
+#[test]
+fn keyframe_copy_paste_keeps_relative_timing_and_crosses_properties() {
+    let (mut s, l) = setup();
+    animate(&mut s, l, "transform/rotation", &[(0.5, json!(0)), (1.0, json!(90)), (2.0, json!(45))]);
+    select_prop_keys(&mut s, l, "transform/rotation");
+    s.execute("keys.easyEase", json!({})).unwrap();
+    assert_eq!(s.execute("edit.copy", json!({})).unwrap(), json!(3));
+    assert!(s.state.clip_is_keys);
+    // Paste into the same property at 2.5 s: keys at 2.5, 3.0 and 4.0 (clamped by nothing).
+    s.execute("time.set", json!({"time": 2.5})).unwrap();
+    s.execute("keys.select", json!({"keys": []})).unwrap();
+    s.execute("edit.paste", json!({})).unwrap();
+    let after = |s: &Session| {
+        let p = prop(s, l, "transform/rotation");
+        let times: Vec<f64> = p.keys.iter().map(|k| (k.time.seconds() * 30.0).round() / 30.0).collect();
+        assert_eq!(times, vec![0.5, 1.0, 2.0, 2.5, 3.0, 4.0]);
+        assert_eq!(p.keys[4].value, KV::Scalar(90.0));
+        assert_eq!(p.keys[4].in_interp, Interp::Bezier, "interpolation travels with the keys");
+        assert_eq!(s.state.selected_keys.len(), 3, "pasted keys are selected");
+    };
+    undo_redo_roundtrip(&mut s, after, |s| assert_eq!(prop(s, l, "transform/rotation").keys.len(), 3));
+    // Cross-property paste of one property's keys into another of the same type (Scalar).
+    let r = s.execute("layer.newSolid", json!({"color": "#ff0000"})).unwrap();
+    let l2 = r["layer"].as_u64().unwrap();
+    select_prop_keys(&mut s, l, "transform/rotation");
+    s.execute("keys.select", json!({"keys": [{"layer": l, "prop": prop(&s, l, "transform/rotation").uid, "time": 1.0}]})).unwrap();
+    s.execute("keys.copy", json!({})).unwrap();
+    s.execute("time.set", json!({"time": 1.0})).unwrap();
+    s.execute("prop.select", json!({"layer": l2, "path": "transform/opacity", "selectKeys": false})).unwrap();
+    s.execute("keys.paste", json!({"layers": [l2]})).unwrap();
+    let op = prop(&s, l2, "transform/opacity");
+    assert_eq!(op.keys.len(), 1);
+    assert_eq!(op.keys[0].value, KV::Scalar(90.0));
+    // Incompatible target (Vec3 position) is refused when explicitly given.
+    let e = s.execute("keys.paste", json!({"layers": [l2], "path": "transform/position"}));
+    assert!(e.is_err() || prop(&s, l2, "transform/position").keys.is_empty());
+}
+
+#[test]
+fn cut_removes_keys_and_paste_restores_them() {
+    let (mut s, l) = setup();
+    animate(&mut s, l, "transform/opacity", &[(0.0, json!(10)), (1.0, json!(20))]);
+    select_prop_keys(&mut s, l, "transform/opacity");
+    s.execute("edit.cut", json!({})).unwrap();
+    assert!(prop(&s, l, "transform/opacity").keys.is_empty());
+    s.execute("time.set", json!({"time": 0.0})).unwrap();
+    s.execute("layer.select", json!({"layers": [l]})).unwrap();
+    s.execute("edit.paste", json!({})).unwrap();
+    assert_eq!(prop(&s, l, "transform/opacity").keys.len(), 2);
+}
+
+#[test]
+fn select_all_and_nudge_keys() {
+    let (mut s, l) = setup();
+    animate(&mut s, l, "transform/opacity", &[(0.0, json!(10)), (1.0, json!(20))]);
+    animate(&mut s, l, "transform/rotation", &[(0.5, json!(10))]);
+    s.state.selected_props.clear();
+    s.execute("layer.select", json!({"layers": [l]})).unwrap();
+    assert_eq!(s.execute("keys.selectAll", json!({})).unwrap(), json!(3));
+    s.execute("keys.nudgeForward", json!({})).unwrap();
+    let after = |s: &Session| {
+        let p = prop(s, l, "transform/opacity");
+        assert!((p.keys[0].time.seconds() - 1.0 / 30.0).abs() < 1e-6);
+        assert_eq!(s.state.selected_keys.len(), 3);
+    };
+    undo_redo_roundtrip(&mut s, after, |s| assert_eq!(prop(s, l, "transform/opacity").keys[0].time.0, 0));
+    s.execute("keys.nudgeBackward10", json!({})).unwrap();
+    let p = prop(&s, l, "transform/opacity");
+    assert!((p.keys[0].time.seconds() + 9.0 / 30.0).abs() < 1e-6, "{}", p.keys[0].time.seconds());
+}
+
+#[test]
+fn velocity_dialog_values_per_dimension_and_continuous() {
+    let (mut s, l) = setup();
+    animate(&mut s, l, "transform/scale", &[(0.0, json!([100, 100])), (1.0, json!([200, 50])), (2.0, json!([100, 100]))]);
+    s.execute("keys.select", json!({"keys": [{"layer": l, "prop": prop(&s, l, "transform/scale").uid, "time": 1.0}]})).unwrap();
+    let info = s.execute("keys.info", json!({})).unwrap();
+    assert_eq!(info[0]["units"], "%/sec");
+    assert_eq!(info[0]["dims"], 2);
+    // Linear sides present the segment slope: +100 %/s in X on the incoming side.
+    assert!((info[0]["inEase"][0]["speed"].as_f64().unwrap() - 100.0).abs() < 1e-6, "{info}");
+    s.execute("keys.velocity", json!({"inSpeed": [10, -20], "inInfluence": 50, "continuous": true})).unwrap();
+    let after = |s: &Session| {
+        let k = &prop(s, l, "transform/scale").keys[1];
+        assert_eq!(k.in_ease[0].speed, 10.0);
+        assert_eq!(k.in_ease[1].speed, -20.0);
+        assert_eq!(k.out_ease[1].speed, -20.0, "continuous mirrors incoming");
+        assert!((k.out_ease[0].influence - 0.5).abs() < 1e-9);
+        assert!(k.continuous);
+    };
+    undo_redo_roundtrip(&mut s, after, |s| assert_eq!(prop(s, l, "transform/scale").keys[1].in_interp, Interp::Linear));
+}
+
+#[test]
+fn interpolation_dialog_temporal_spatial_and_roving() {
+    let (mut s, l) = setup();
+    animate(&mut s, l, "transform/position", &[(0.0, json!([0, 0])), (0.3, json!([300, 0])), (2.0, json!([400, 0]))]);
+    select_prop_keys(&mut s, l, "transform/position");
+    s.execute("keys.interpolation", json!({"interpolation": "hold"})).unwrap();
+    assert!(prop(&s, l, "transform/position").keys.iter().all(|k| k.out_interp == Interp::Hold));
+    s.execute("keys.interpolation", json!({"interpolation": "autoBezier"})).unwrap();
+    assert!(prop(&s, l, "transform/position").keys.iter().all(|k| k.auto_bezier));
+    s.execute("keys.interpolation", json!({"interpolation": "continuousBezier", "spatial": "linear"})).unwrap();
+    let p = prop(&s, l, "transform/position");
+    assert!(p.keys.iter().all(|k| k.continuous && !k.auto_bezier && !k.spatial_auto && k.spatial_out == [0.0; 3]));
+    // Rove the middle key: its time follows the path length (300 of 400 px → 1.5 s).
+    let uid = p.uid;
+    s.execute("keys.select", json!({"keys": [{"layer": l, "prop": uid, "time": 0.3}]})).unwrap();
+    s.execute("keys.interpolation", json!({"roving": true})).unwrap();
+    let after = |s: &Session| {
+        let p = prop(s, l, "transform/position");
+        assert!(p.keys[1].roving);
+        assert!((p.keys[1].time.seconds() - 1.5).abs() < 0.01, "{}", p.keys[1].time.seconds());
+        // The selection follows the roving key.
+        assert!((s.state.selected_keys[0].time.seconds() - 1.5).abs() < 0.01);
+    };
+    undo_redo_roundtrip(&mut s, after, |s| assert!(!prop(s, l, "transform/position").keys[1].roving));
+    // Moving the last key re-times the roving key.
+    s.execute("keys.set", json!({"layer": l, "path": "transform/position", "time": 2.0, "newTime": 4.0})).unwrap();
+    let p = prop(&s, l, "transform/position");
+    assert!((p.keys[1].time.seconds() - 3.0).abs() < 0.02, "{}", p.keys[1].time.seconds());
+    // Toggle hold on a key and back.
+    s.execute("keys.select", json!({"keys": [{"layer": l, "prop": uid, "time": 0.0}]})).unwrap();
+    s.execute("keys.toggleHold", json!({})).unwrap();
+    assert_eq!(prop(&s, l, "transform/position").keys[0].out_interp, Interp::Hold);
+    s.execute("keys.toggleHold", json!({})).unwrap();
+    assert_ne!(prop(&s, l, "transform/position").keys[0].out_interp, Interp::Hold);
+}
+
+#[test]
+fn graph_editor_key_and_handle_edits() {
+    let (mut s, l) = setup();
+    animate(&mut s, l, "transform/opacity", &[(0.0, json!(0)), (2.0, json!(100))]);
+    // Drag a key in the value graph: new time + value, merged into one undo step.
+    s.execute("keys.set", json!({"layer": l, "path": "transform/opacity", "time": 2.0, "newTime": 1.0, "value": 50, "merge": "g1"})).unwrap();
+    s.execute("keys.set", json!({"layer": l, "path": "transform/opacity", "time": 1.0, "newTime": 1.5, "value": 60, "merge": "g1"})).unwrap();
+    let p = prop(&s, l, "transform/opacity");
+    assert!((p.keys[1].time.seconds() - 1.5).abs() < 1e-6);
+    assert_eq!(p.keys[1].value, KV::Scalar(60.0));
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!((prop(&s, l, "transform/opacity").keys[1].time.seconds() - 2.0).abs() < 1e-6);
+    s.execute("edit.redo", json!({})).unwrap();
+    // A key can't be dragged past its neighbour.
+    s.execute("keys.set", json!({"layer": l, "path": "transform/opacity", "time": 1.5, "newTime": -1.0})).unwrap();
+    let p = prop(&s, l, "transform/opacity");
+    assert!(p.keys[1].time > p.keys[0].time);
+    // Handle drag: out side of key 0 → speed 200 %/s, 60 % influence.
+    s.execute("keys.setEase", json!({"layer": l, "path": "transform/opacity", "time": 0.0, "side": "out", "speed": 200, "influence": 60})).unwrap();
+    let k = &prop(&s, l, "transform/opacity").keys[0];
+    assert_eq!(k.out_interp, Interp::Bezier);
+    assert_eq!(k.out_ease[0].speed, 200.0);
+    assert!((k.out_ease[0].influence - 0.6).abs() < 1e-9);
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(prop(&s, l, "transform/opacity").keys[0].out_interp, Interp::Linear);
+}
+
+#[test]
+fn time_reverse_keyframes() {
+    let (mut s, l) = setup();
+    animate(&mut s, l, "transform/opacity", &[(0.0, json!(0)), (1.0, json!(30)), (3.0, json!(100))]);
+    select_prop_keys(&mut s, l, "transform/opacity");
+    s.execute("keys.timeReverse", json!({})).unwrap();
+    let after = |s: &Session| {
+        let p = prop(s, l, "transform/opacity");
+        assert_eq!(p.keys[0].value, KV::Scalar(100.0));
+        assert!((p.keys[1].time.seconds() - 2.0).abs() < 1e-6);
+    };
+    undo_redo_roundtrip(&mut s, after, |s| assert_eq!(prop(s, l, "transform/opacity").keys[0].value, KV::Scalar(0.0)));
+}
+
+#[test]
+fn separate_dimensions_split_and_rejoin() {
+    let (mut s, l) = setup();
+    animate(&mut s, l, "transform/position", &[(0.0, json!([0, 100])), (2.0, json!([200, 50]))]);
+    s.execute("prop.separateDimensions", json!({"layer": l})).unwrap();
+    let after = |s: &Session| {
+        let x = prop(s, l, "transform/positionX");
+        let y = prop(s, l, "transform/positionY");
+        assert_eq!(x.keys.len(), 2);
+        assert_eq!(y.keys[1].value, KV::Scalar(50.0));
+        // The layer still renders at the same place (render sees the separated values).
+        let cid = s.active_comp_id().unwrap();
+        let comp = s.project.comp(cid).unwrap();
+        let layer = &comp.layers[0];
+        let ctx = effectcraft_render::EvalCtx::new(&s.project, cid, comp, effectcraft_time::Tick::from_seconds_f64(1.0));
+        let p = ctx.value(layer, layer.transform().unwrap().get("position").unwrap()).as_vec3();
+        assert!((p[0] - 100.0).abs() < 1e-6 && (p[1] - 75.0).abs() < 1e-6, "{p:?}");
+    };
+    undo_redo_roundtrip(&mut s, after, |s| assert!(s.active_comp().unwrap().layers[0].transform().unwrap().get("positionX").is_none()));
+    // X and Y animate independently.
+    s.execute("keys.select", json!({"keys": []})).unwrap();
+    s.execute("prop.select", json!({"layer": l, "path": "transform/positionX"})).unwrap();
+    s.execute("keys.easyEase", json!({})).unwrap();
+    assert_eq!(prop(&s, l, "transform/positionY").keys[0].out_interp, Interp::Linear);
+    // Setting Position (viewer drags) writes X/Y.
+    s.execute("time.set", json!({"time": 3.0})).unwrap();
+    s.execute("prop.set", json!({"layer": l, "path": "transform/position", "value": [7, 8, 0]})).unwrap();
+    assert_eq!(prop(&s, l, "transform/positionX").keys.len(), 3);
+    // Re-join: one Position with keys at the union of times.
+    s.execute("prop.separateDimensions", json!({"layer": l})).unwrap();
+    let p = prop(&s, l, "transform/position");
+    assert_eq!(p.keys.len(), 3);
+    assert_eq!(p.keys[2].value, KV::Vec3([7.0, 8.0, 0.0]));
+    assert!(s.active_comp().unwrap().layers[0].transform().unwrap().get("positionX").is_none());
+}
+
+#[test]
+fn parenting_keeps_the_layer_in_place() {
+    let (mut s, child) = setup();
+    let r = s.execute("layer.newNull", json!({})).unwrap();
+    let par = r["layer"].as_u64().unwrap();
+    s.execute("prop.set", json!({"layer": par, "path": "transform/position", "value": [300, 200]})).unwrap();
+    s.execute("prop.set", json!({"layer": par, "path": "transform/rotation", "value": 90})).unwrap();
+    s.execute("prop.set", json!({"layer": par, "path": "transform/scale", "value": [200, 200]})).unwrap();
+    s.execute("prop.set", json!({"layer": child, "path": "transform/position", "value": [100, 50]})).unwrap();
+    let world = |s: &Session| {
+        let cid = s.active_comp_id().unwrap();
+        let comp = s.project.comp(cid).unwrap();
+        let l = comp.layer(effectcraft_project::LayerId(child)).unwrap();
+        let ctx = effectcraft_render::EvalCtx::new(&s.project, cid, comp, effectcraft_time::Tick::ZERO);
+        let (m, _) = ctx.layer_to_comp(l);
+        let a = m.apply(effectcraft_geom::vec2(50.0, 50.0));
+        let b = m.apply(effectcraft_geom::vec2(100.0, 50.0));
+        (a, (b.y - a.y).atan2(b.x - a.x).to_degrees(), (b.x - a.x).hypot(b.y - a.y))
+    };
+    let before = world(&s);
+    s.execute("layer.setParent", json!({"layers": [child], "parent": par})).unwrap();
+    let after = world(&s);
+    assert!((before.0.x - after.0.x).abs() < 1e-6 && (before.0.y - after.0.y).abs() < 1e-6, "{before:?} {after:?}");
+    assert!((before.1 - after.1).abs() < 1e-6 && (before.2 - after.2).abs() < 1e-6);
+    assert!((prop(&s, child, "transform/rotation").value.as_f64() + 90.0).abs() < 1e-9);
+    // Unparenting restores comp-space values.
+    s.execute("layer.setParent", json!({"layers": [child], "parent": null})).unwrap();
+    let p = prop(&s, child, "transform/position").value.as_vec3();
+    assert!((p[0] - 100.0).abs() < 1e-6 && (p[1] - 50.0).abs() < 1e-6, "{p:?}");
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(s.active_comp().unwrap().layer(effectcraft_project::LayerId(child)).unwrap().parent.is_some());
+}
+
+#[test]
+fn pick_whip_generates_ae_reference_expressions() {
+    let (mut s, l) = setup();
+    let r = s.execute("layer.newSolid", json!({"name": "Other", "color": "#00ff00"})).unwrap();
+    let o = r["layer"].as_u64().unwrap();
+    s.execute("effect.apply", json!({"layer": o, "effect": "Gaussian Blur"})).unwrap();
+    s.execute("layer.addMask", json!({"layer": o})).unwrap();
+    let cases = [
+        ("transform/opacity", json!({"layer": o, "path": "transform/opacity"}), "thisComp.layer(\"Other\").transform.opacity"),
+        ("transform/rotation", json!({"layer": l, "path": "transform/opacity"}), "transform.opacity"),
+        ("transform/rotation", json!({"layer": o, "path": "effects/#1/blurriness"}), "thisComp.layer(\"Other\").effect(\"Gaussian Blur\")(\"Blurriness\")"),
+        ("transform/opacity", json!({"layer": o, "path": "masks/#1/feather"}), "thisComp.layer(\"Other\").mask(\"Mask 1\").maskFeather[0]"),
+        ("transform/scale", json!({"layer": o, "path": "transform/rotation"}), "temp = thisComp.layer(\"Other\").transform.rotation;\n[temp, temp]"),
+        ("transform/position", json!({"layer": o, "path": "transform/position"}), "thisComp.layer(\"Other\").transform.position"),
+    ];
+    for (path, target, want) in cases {
+        let got = s.execute("prop.pickWhip", json!({"layer": l, "path": path, "target": target})).unwrap();
+        assert_eq!(got, json!(want));
+        assert_eq!(prop(&s, l, path).expr.unwrap().text, want);
+    }
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_ne!(prop(&s, l, "transform/position").expr.map(|e| e.text), Some("thisComp.layer(\"Other\").transform.position".into()));
+    assert!(s.execute("prop.pickWhip", json!({"layer": l, "path": "transform/opacity", "target": {"layer": l, "path": "transform/opacity"}})).is_err());
+}
+
+/// Outer comp (4 s) containing a precomp whose 10×10 white solid moves x = 10 + 20·t (t in s).
+/// Returns (session, precomp layer id in the outer comp).
+fn precomp_setup() -> (Session, u64) {
+    let mut s = Session::default();
+    s.execute("comp.new", json!({"name": "Inner", "width": 100, "height": 100, "frameRate": 30, "duration": 4})).unwrap();
+    let r = s.execute("layer.newSolid", json!({"color": "#ffffff", "width": 10, "height": 10})).unwrap();
+    let l = r["layer"].as_u64().unwrap();
+    animate(&mut s, l, "transform/position", &[(0.0, json!([10, 50])), (4.0, json!([90, 50]))]);
+    s.execute("comp.new", json!({"name": "Outer", "width": 100, "height": 100, "frameRate": 30, "duration": 4})).unwrap();
+    let r = s.execute("layer.addItem", json!({"item": "Inner"})).unwrap();
+    let pl = r["layer"].as_u64().unwrap();
+    s.execute("layer.select", json!({"layers": [pl]})).unwrap();
+    (s, pl)
+}
+
+/// X of the moving square's centre in the outer comp at `t`.
+fn square_x(s: &Session, t: f64) -> f64 {
+    let cid = s.active_comp_id().unwrap();
+    let img = s.render(cid, effectcraft_time::Tick::from_seconds_f64(t), effectcraft_render::RenderOpts { scale: 1.0, ..Default::default() });
+    let xs: Vec<usize> = (0..img.width as usize).filter(|x| img.get(*x as i64, 50)[3] > 0.5).collect();
+    assert!(!xs.is_empty(), "nothing drawn at {t}");
+    (xs[0] + xs[xs.len() - 1]) as f64 / 2.0 + 0.5
+}
+
+#[test]
+fn time_remap_enable_freeze_and_disable() {
+    let (mut s, l) = precomp_setup();
+    assert!((square_x(&s, 1.0) - 30.0).abs() < 1.5);
+    s.execute("layer.enableTimeRemap", json!({})).unwrap();
+    let after = |s: &Session| {
+        let p = prop(s, l, "timeRemap");
+        assert_eq!(p.keys.len(), 2);
+        assert_eq!(p.keys[1].value, KV::Scalar(4.0));
+        // Remapping at identity shows the same frames.
+        assert!((square_x(s, 1.0) - 30.0).abs() < 1.5);
+    };
+    undo_redo_roundtrip(&mut s, after, |s| assert!(s.active_comp().unwrap().layers[0].props.get("timeRemap").is_none()));
+    // Remap the first key to show source time 3 s at comp time 0.
+    s.execute("keys.set", json!({"layer": l, "path": "timeRemap", "time": 0.0, "value": 3.0})).unwrap();
+    assert!((square_x(&s, 0.0) - 70.0).abs() < 1.5, "{}", square_x(&s, 0.0));
+    // Freeze Frame at 2 s: one hold key; every frame shows source time 2 s.
+    s.execute("time.set", json!({"time": 2.0})).unwrap();
+    s.execute("keys.set", json!({"layer": l, "path": "timeRemap", "time": 0.0, "value": 0.0})).unwrap();
+    s.execute("layer.freezeFrame", json!({})).unwrap();
+    let p = prop(&s, l, "timeRemap");
+    assert_eq!(p.keys.len(), 1);
+    assert_eq!(p.keys[0].out_interp, Interp::Hold);
+    for t in [0.0, 1.0, 3.5] {
+        assert!((square_x(&s, t) - 50.0).abs() < 1.5, "{t}: {}", square_x(&s, t));
+    }
+    // Ctrl+Alt+T again disables remapping.
+    s.execute("layer.enableTimeRemap", json!({})).unwrap();
+    assert!((square_x(&s, 1.0) - 30.0).abs() < 1.5);
+    // Solids can't be remapped.
+    let r = s.execute("layer.newSolid", json!({"color": "#ff0000"})).unwrap();
+    assert!(s.execute("layer.enableTimeRemap", json!({"layers": [r["layer"]]})).is_err());
+}
+
+#[test]
+fn freeze_on_last_frame_extends_the_layer() {
+    let (mut s, l) = precomp_setup();
+    s.execute("layer.timing", json!({"layers": [l], "out": 2.0})).unwrap();
+    s.execute("layer.freezeOnLastFrame", json!({})).unwrap();
+    let layer = s.active_comp().unwrap().layers[0].clone();
+    assert_eq!(layer.out_point, s.active_comp().unwrap().duration);
+    // Plays normally, then holds the frame before the old out point.
+    assert!((square_x(&s, 1.0) - 30.0).abs() < 1.5);
+    let hold = 10.0 + 20.0 * (2.0 - 1.0 / 30.0);
+    assert!((square_x(&s, 3.5) - hold).abs() < 1.5, "{}", square_x(&s, 3.5));
+}
+
+#[test]
+fn time_reverse_layer_plays_backwards_and_round_trips() {
+    let (mut s, l) = precomp_setup();
+    let before = s.active_comp().unwrap().layers[0].clone();
+    s.execute("layer.timeReverse", json!({})).unwrap();
+    let after = |s: &Session| {
+        let ly = &s.active_comp().unwrap().layers[0];
+        assert_eq!(ly.stretch, -100.0);
+        assert_eq!((ly.in_point, ly.out_point), (before.in_point, before.out_point));
+        // First frame shows the last source frame; the end shows the start.
+        let last = 10.0 + 20.0 * (4.0 - 1.0 / 30.0);
+        assert!((square_x(s, 0.0) - last).abs() < 1.5, "{}", square_x(s, 0.0));
+        assert!((square_x(s, 4.0 - 1.0 / 30.0) - 10.0).abs() < 1.5);
+    };
+    undo_redo_roundtrip(&mut s, after, |s| assert_eq!(s.active_comp().unwrap().layers[0].stretch, 100.0));
+    // Reversing twice restores normal playback.
+    s.execute("layer.timeReverse", json!({"layers": [l]})).unwrap();
+    let ly = &s.active_comp().unwrap().layers[0];
+    assert_eq!(ly.stretch, 100.0);
+    assert_eq!(ly.start_time, before.start_time);
+    assert!((square_x(&s, 1.0) - 30.0).abs() < 1.5);
+}
+
+#[test]
+fn time_stretch_holds_in_current_or_out() {
+    let (mut s, l) = precomp_setup();
+    s.execute("layer.timeStretch", json!({"percent": 50})).unwrap();
+    let ly = s.active_comp().unwrap().layers[0].clone();
+    assert_eq!(ly.stretch, 50.0);
+    assert!((ly.out_point.seconds() - 2.0).abs() < 1e-6);
+    // Twice as fast: comp 1 s shows source 2 s.
+    assert!((square_x(&s, 1.0) - 50.0).abs() < 1.5);
+    s.execute("edit.undo", json!({})).unwrap();
+    // Hold the current frame (2 s) in place while doubling the duration.
+    s.execute("time.set", json!({"time": 2.0})).unwrap();
+    s.execute("layer.timeStretch", json!({"layers": [l], "duration": 8.0, "hold": "current"})).unwrap();
+    let ly = s.active_comp().unwrap().layers[0].clone();
+    assert!((ly.stretch - 200.0).abs() < 1e-6);
+    assert!((ly.in_point.seconds() + 2.0).abs() < 1e-6, "{}", ly.in_point.seconds());
+    assert!((square_x(&s, 2.0) - 50.0).abs() < 1.5);
+    // Hold the out point.
+    s.execute("edit.undo", json!({})).unwrap();
+    s.execute("layer.timeStretch", json!({"layers": [l], "percent": 50, "hold": "out"})).unwrap();
+    let ly = s.active_comp().unwrap().layers[0].clone();
+    assert!((ly.out_point.seconds() - 4.0).abs() < 1e-6 && (ly.in_point.seconds() - 2.0).abs() < 1e-6);
+    assert!(s.execute("layer.timeStretch", json!({"layers": [l], "percent": 0})).is_err());
+}

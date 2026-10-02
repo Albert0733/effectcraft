@@ -249,6 +249,28 @@ pub struct TimelineState {
     pub open_groups: BTreeSet<u64>,
     /// "Reveal" filter: only show these property match ids (P/S/R/T/A…) — empty = normal.
     pub reveal: Vec<String>,
+    /// Graph Editor: `value` or `speed` graph.
+    #[serde(default = "value_graph")]
+    pub graph_mode: String,
+    /// Show only the selected properties (else every animated property of the selected layers).
+    #[serde(default = "yes")]
+    pub graph_show_selected: bool,
+    /// Auto-zoom the graph height to the visible curves.
+    #[serde(default = "yes")]
+    pub graph_auto_zoom: bool,
+    /// Manual graph value range (when auto-zoom is off).
+    #[serde(default)]
+    pub graph_range: Option<(f64, f64)>,
+    /// Properties whose inline expression editor is collapsed.
+    #[serde(default)]
+    pub expr_closed: BTreeSet<u64>,
+}
+
+fn value_graph() -> String {
+    "value".into()
+}
+fn yes() -> bool {
+    true
 }
 
 impl Default for TimelineState {
@@ -264,6 +286,11 @@ impl Default for TimelineState {
             open_layers: BTreeSet::new(),
             open_groups: BTreeSet::new(),
             reveal: vec![],
+            graph_mode: value_graph(),
+            graph_show_selected: true,
+            graph_auto_zoom: true,
+            graph_range: None,
+            expr_closed: BTreeSet::new(),
         }
     }
 }

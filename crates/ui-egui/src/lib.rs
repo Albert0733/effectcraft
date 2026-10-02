@@ -41,6 +41,9 @@ pub enum Dialog {
     CompSettings,
     SolidSettings,
     CommandPalette,
+    KeyVelocity,
+    KeyInterpolation,
+    TimeStretch,
 }
 
 /// Host hooks provided by the native app (file pickers etc.).

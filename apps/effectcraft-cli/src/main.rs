@@ -22,7 +22,8 @@ fn open(s: &mut Session, args: &[String]) {
             eprintln!("effectcraft: {e}");
             std::process::exit(1);
         }
-    } else if args.iter().any(|a| a == "--demo") || true {
+    } else {
+        // `--demo` or no project: the demo project.
         let _ = s.execute("file.openDemoProject", json!({}));
     }
 }

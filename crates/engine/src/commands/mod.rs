@@ -1,12 +1,15 @@
 //! The command registry. Ids follow After Effects' menu structure; every menu item, panel button,
 //! shortcut and viewer/timeline gesture maps to one of these.
 
+mod anim;
 mod comp;
 mod edit;
 mod effect;
 mod file;
 mod help;
 mod layer;
+mod layer_time;
+mod link;
 mod prop;
 mod query;
 mod time;
@@ -68,7 +71,10 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(edit::specs());
         v.extend(comp::specs());
         v.extend(layer::specs());
+        v.extend(layer_time::specs());
         v.extend(prop::specs());
+        v.extend(anim::specs());
+        v.extend(link::specs());
         v.extend(effect::specs());
         v.extend(time::specs());
         v.extend(help::specs());
@@ -182,6 +188,6 @@ pub(crate) fn time_p(s: &Session, p: &Value, comp: Option<&Comp>) -> Tick {
     s.time()
 }
 
-pub(crate) fn layer_mut<'a>(p: &'a mut effectcraft_project::Project, cid: ItemId, lid: LayerId) -> Result<&'a mut Layer> {
+pub(crate) fn layer_mut(p: &mut effectcraft_project::Project, cid: ItemId, lid: LayerId) -> Result<&mut Layer> {
     p.comp_mut(cid).ok_or(EngineError::NoComp)?.layer_mut(lid).ok_or(EngineError::Project(effectcraft_project::ProjectError::NoLayer(lid)))
 }

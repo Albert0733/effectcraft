@@ -166,7 +166,7 @@ impl<'a> Renderer<'a> {
                     return None;
                 }
                 let sub = Renderer { project: self.project, footage: self.footage, expr: self.expr, opts: self.opts, depth: self.depth + 1 };
-                let lt = layer.layer_time(ctx.time);
+                let lt = ctx.source_time(layer);
                 Some(Buf { img: sub.comp_frame(*item, lt), offset: [0.0; 2], scale: s })
             }
             LayerSource::Footage { item } => {
@@ -175,7 +175,7 @@ impl<'a> Renderer<'a> {
                 if !f.has_video {
                     return None;
                 }
-                let lt = layer.layer_time(ctx.time);
+                let lt = ctx.source_time(layer);
                 let img = self.footage.frame(*item, f, lt)?;
                 let k = if img.width > 0 { f.width.max(1) as f64 / img.width as f64 } else { 1.0 };
                 // Keep native pixels when downsampling is small; resample otherwise.
@@ -332,6 +332,8 @@ pub fn render_frame(project: &Project, comp: ItemId, t: Tick, scale: f64) -> Ima
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_remap;
 
 /// Layer-space bounds `[x0, y0, x1, y1]` of a layer's content at the context time (source size
 /// for solids/footage/precomps, glyph bounds for text, painted bounds for shapes). Used for viewer
