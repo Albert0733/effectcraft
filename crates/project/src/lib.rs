@@ -7,6 +7,7 @@
 pub mod build;
 pub mod props;
 pub mod render_queue;
+pub mod styles;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -150,6 +151,9 @@ pub struct Comp {
     pub draft_3d: bool,
     #[serde(default)]
     pub poster_time: Tick,
+    /// Global Light for layer styles (Layer ▸ Layer Styles ▸ Blending Options).
+    #[serde(default)]
+    pub global_light: styles::GlobalLight,
 }
 
 fn yes() -> bool {
@@ -178,6 +182,7 @@ impl Comp {
             enable_frame_blending: true,
             draft_3d: false,
             poster_time: Tick::ZERO,
+            global_light: styles::GlobalLight::default(),
         }
     }
     pub fn layer(&self, id: LayerId) -> Option<&Layer> {

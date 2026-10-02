@@ -11,6 +11,7 @@ pub mod cache;
 pub mod eval;
 pub mod masks;
 pub mod shapes;
+pub mod styles;
 pub mod text;
 pub mod three_d;
 
@@ -53,7 +54,7 @@ impl EffectHost for FxHost<'_, '_, '_> {
         }
         let sub = Renderer { depth: self.r.depth + 1, ..*self.r };
         // The cached layer buffer is shared; effects get their own copy.
-        let buf = if masks_and_effects { (*sub.layer_buf(self.ctx, other)?).clone() } else { sub.source(self.ctx, other)? };
+        let buf = if masks_and_effects { (*sub.content_buf(self.ctx, other)?).clone() } else { sub.source(self.ctx, other)? };
         let size = source_size(self.r.project, other);
         let size = if size.0 == 0 { [self.ctx.comp.width as f64, self.ctx.comp.height as f64] } else { [size.0 as f64, size.1 as f64] };
         Some(LayerPixels { buf, size })
@@ -262,13 +263,32 @@ impl<'a> Renderer<'a> {
         }
     }
 
-    /// Fully processed layer buffer (source → masks → effects).
+    /// Fully processed layer buffer (source → masks → effects → layer styles, flattened).
     /// Served from the layer cache when the layer's content key matches.
     pub fn layer_buf(&self, ctx: &EvalCtx, layer: &Layer) -> Option<Arc<Buf>> {
-        self.layer_buf_timed(ctx, layer, None)
+        let st = self.styled(ctx, layer, None)?;
+        if st.passes.is_empty() {
+            return Some(st.body);
+        }
+        let key = st.key.map(|k| cache::derive(k, 0xf1a7));
+        if let (Some(c), Some(k)) = (self.cache, key)
+            && let Some(b) = c.get(k)
+        {
+            return Some(b);
+        }
+        let flat = Arc::new(styles::Styled { passes: st.passes.iter().map(|(b, m)| ((**b).clone(), *m)).collect(), body: (*st.body).clone() }.flatten());
+        if let (Some(c), Some(k)) = (self.cache, key) {
+            c.insert(k, flat.clone());
+        }
+        Some(flat)
     }
 
-    fn layer_buf_timed(&self, ctx: &EvalCtx, layer: &Layer, mut timing: Option<&mut LayerTiming>) -> Option<Arc<Buf>> {
+    /// Layer pixels after source → masks → effects (no layer styles).
+    pub fn content_buf(&self, ctx: &EvalCtx, layer: &Layer) -> Option<Arc<Buf>> {
+        self.content_buf_timed(ctx, layer, None).map(|(b, _)| b)
+    }
+
+    fn content_buf_timed(&self, ctx: &EvalCtx, layer: &Layer, mut timing: Option<&mut LayerTiming>) -> Option<(Arc<Buf>, Option<u64>)> {
         let key = self.cache.and_then(|_| cache::layer_key(ctx, layer, self.opts.scale, self.opts.draft));
         if let (Some(c), Some(k)) = (self.cache, key)
             && let Some(b) = c.get(k)
@@ -276,7 +296,7 @@ impl<'a> Renderer<'a> {
             if let Some(t) = timing.as_deref_mut() {
                 t.cached = true;
             }
-            return Some(b);
+            return Some((b, key));
         }
         let mut buf = self.source(ctx, layer)?;
         masks::apply(ctx, layer, &mut buf);
@@ -284,7 +304,42 @@ impl<'a> Renderer<'a> {
         if let (Some(c), Some(k)) = (self.cache, key) {
             c.insert(k, buf.clone());
         }
-        Some(buf)
+        Some((buf, key))
+    }
+
+    /// The layer with its styles: exterior passes and body (cached per pass).
+    fn styled(&self, ctx: &EvalCtx, layer: &Layer, mut timing: Option<&mut LayerTiming>) -> Option<StyledLayer> {
+        let (content, ckey) = self.content_buf_timed(ctx, layer, timing.as_deref_mut())?;
+        if !styles::active(ctx, layer) {
+            return Some(StyledLayer { passes: vec![], body: content.clone(), content, key: None, plain: true });
+        }
+        let modes = styles::pass_modes(ctx, layer);
+        let key = ckey.map(|k| cache::styles_key(ctx, layer, k));
+        if let (Some(c), Some(k)) = (self.cache, key)
+            && let Some(body) = c.get(k)
+        {
+            let passes: Option<Vec<_>> = modes.iter().enumerate().map(|(i, m)| c.get(cache::derive(k, i as u64 + 1)).map(|b| (b, *m))).collect();
+            if let Some(passes) = passes {
+                return Some(StyledLayer { passes, body, content, key, plain: false });
+            }
+        }
+        let t0 = std::time::Instant::now();
+        let size = source_size(self.project, layer);
+        let layer_size = if size.0 == 0 { [ctx.comp.width as f64, ctx.comp.height as f64] } else { [size.0 as f64, size.1 as f64] };
+        let st = styles::render(ctx, layer, &content, layer_size);
+        if let Some(t) = timing {
+            t.cached = false;
+            t.effects.push(("layerStyles".into(), t0.elapsed().as_secs_f64() * 1e3));
+        }
+        let body = Arc::new(st.body);
+        let passes: Vec<_> = st.passes.into_iter().map(|(b, m)| (Arc::new(b), m)).collect();
+        if let (Some(c), Some(k)) = (self.cache, key) {
+            c.insert(k, body.clone());
+            for (i, (b, _)) in passes.iter().enumerate() {
+                c.insert(cache::derive(k, i as u64 + 1), b.clone());
+            }
+        }
+        Some(StyledLayer { passes, body, content, key, plain: false })
     }
 
     fn sampling(&self, layer: &Layer) -> effectcraft_raster::Sampling {
@@ -341,34 +396,79 @@ impl<'a> Renderer<'a> {
             self.draw_adjustment(ctx, layer, canvas, opacity);
             return;
         }
-        let Some(prof) = self.profile else {
-            if let Some(buf) = self.layer_buf(ctx, layer) {
-                self.composite_layer(ctx, layer, &buf, canvas, opacity);
-            }
-            return;
-        };
-        let mut timing = LayerTiming { depth: self.depth, layer: layer.name.clone(), ..Default::default() };
+        let mut timing = self.profile.map(|_| LayerTiming { depth: self.depth, layer: layer.name.clone(), ..Default::default() });
         let t0 = std::time::Instant::now();
-        let Some(buf) = self.layer_buf_timed(ctx, layer, Some(&mut timing)) else { return };
+        let Some(st) = self.styled(ctx, layer, timing.as_mut()) else { return };
         let t1 = std::time::Instant::now();
-        self.composite_layer(ctx, layer, &buf, canvas, opacity);
-        timing.process_ms = (t1 - t0).as_secs_f64() * 1e3;
-        timing.composite_ms = t1.elapsed().as_secs_f64() * 1e3;
-        if let Ok(mut v) = prof.lock() {
-            v.push(timing);
+        if st.plain {
+            self.composite_layer(ctx, layer, &st.body, canvas, opacity);
+        } else {
+            self.composite_styled(ctx, layer, &st, canvas, opacity);
+        }
+        if let (Some(prof), Some(mut timing)) = (self.profile, timing) {
+            timing.process_ms = (t1 - t0).as_secs_f64() * 1e3;
+            timing.composite_ms = t1.elapsed().as_secs_f64() * 1e3;
+            if let Ok(mut v) = prof.lock() {
+                v.push(timing);
+            }
         }
     }
 
+    /// Composite a styled layer: exterior passes with their own modes, then the body with the
+    /// layer's mode; the layer's opacity fades the whole stack. Knockout clears what is below the
+    /// layer's content; switched-off R/G/B channels keep the values below.
+    fn composite_styled(&self, ctx: &EvalCtx, layer: &Layer, st: &StyledLayer, canvas: &mut Image, opacity: f32) {
+        let bl = styles::blending(ctx, layer);
+        let matte = layer.track_matte.is_some_and(|tm| tm.layer != layer.id && ctx.comp.layer(tm.layer).is_some());
+        if matte || layer.preserve_transparency {
+            let mut iso = Image::new(canvas.width, canvas.height);
+            for (b, m) in &st.passes {
+                self.place(ctx, layer, b, &mut iso, *m, 1.0);
+            }
+            self.place(ctx, layer, &st.body, &mut iso, BlendMode::Normal, 1.0);
+            self.composite_iso(ctx, layer, iso, canvas, opacity);
+            return;
+        }
+        let mut tmp = canvas.clone();
+        if bl.knockout > 0 {
+            let mut k = Image::new(canvas.width, canvas.height);
+            self.place(ctx, layer, &st.content, &mut k, BlendMode::Normal, 1.0);
+            tmp.data.par_iter_mut().zip(k.data.par_iter()).for_each(|(p, q)| {
+                let keep = 1.0 - q[3].clamp(0.0, 1.0);
+                for c in p.iter_mut() {
+                    *c *= keep;
+                }
+            });
+        }
+        for (b, m) in &st.passes {
+            self.place(ctx, layer, b, &mut tmp, *m, 1.0);
+        }
+        self.place(ctx, layer, &st.body, &mut tmp, layer.blend_mode, 1.0);
+        let ch = bl.channels;
+        canvas.data.par_iter_mut().zip(tmp.data.par_iter()).for_each(|(c, t)| {
+            for i in 0..4 {
+                let v = if i < 3 && !ch[i] { c[i] } else { t[i] };
+                c[i] += (v - c[i]) * opacity;
+            }
+        });
+    }
+
     fn composite_layer(&self, ctx: &EvalCtx, layer: &Layer, buf: &Buf, canvas: &mut Image, opacity: f32) {
-        let matte = layer.track_matte.and_then(|tm| ctx.comp.layer(tm.layer).filter(|m| m.id != layer.id).map(|m| (m, tm.kind)));
-        let preserve = layer.preserve_transparency;
-        if matte.is_none() && !preserve {
+        let matte = layer.track_matte.is_some_and(|tm| tm.layer != layer.id && ctx.comp.layer(tm.layer).is_some());
+        if !matte && !layer.preserve_transparency {
             self.place(ctx, layer, buf, canvas, layer.blend_mode, opacity);
             return;
         }
         // Render in isolation, then matte / preserve transparency, then blend.
         let mut iso = Image::new(canvas.width, canvas.height);
         self.place(ctx, layer, buf, &mut iso, BlendMode::Normal, 1.0);
+        self.composite_iso(ctx, layer, iso, canvas, opacity);
+    }
+
+    /// Apply the track matte / preserve transparency to an isolated layer render, then blend.
+    fn composite_iso(&self, ctx: &EvalCtx, layer: &Layer, mut iso: Image, canvas: &mut Image, opacity: f32) {
+        let matte = layer.track_matte.and_then(|tm| ctx.comp.layer(tm.layer).filter(|m| m.id != layer.id).map(|m| (m, tm.kind)));
+        let preserve = layer.preserve_transparency;
         if let Some((m, kind)) = matte {
             let mut mimg = Image::new(canvas.width, canvas.height);
             if m.is_active_at(ctx.time)
@@ -420,6 +520,18 @@ impl<'a> Renderer<'a> {
     }
 }
 
+/// A layer ready to composite (see [`Renderer::styled`]).
+struct StyledLayer {
+    passes: Vec<(Arc<Buf>, BlendMode)>,
+    body: Arc<Buf>,
+    /// Pre-style pixels (knockout shape).
+    content: Arc<Buf>,
+    /// Styled cache key.
+    key: Option<u64>,
+    /// No layer styles: composite `body` the usual way.
+    plain: bool,
+}
+
 /// Convenience: render one frame of a comp with no footage source.
 pub fn render_frame(project: &Project, comp: ItemId, t: Tick, scale: f64) -> Image {
     Renderer::new(project, &NoFootage, RenderOpts { scale, ..Default::default() }).comp_frame(comp, t)
@@ -429,6 +541,8 @@ pub fn render_frame(project: &Project, comp: ItemId, t: Tick, scale: f64) -> Ima
 mod tests;
 #[cfg(test)]
 mod tests_remap;
+#[cfg(test)]
+mod tests_styles;
 
 /// Layer-space bounds `[x0, y0, x1, y1]` of a layer's content at the context time (source size
 /// for solids/footage/precomps, glyph bounds for text, painted bounds for shapes). Used for viewer
