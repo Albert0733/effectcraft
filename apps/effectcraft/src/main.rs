@@ -70,6 +70,7 @@ fn main() -> eframe::Result {
             app.hooks.pick_open_project =
                 Some(Box::new(|| rfd::FileDialog::new().add_filter("EffectCraft Project", &["ecproj"]).pick_file().map(|p| p.to_string_lossy().to_string())));
             if let Some(port) = control_port {
+                disable_app_nap();
                 let rx = control_server::start(port, cc.egui_ctx.clone());
                 app = app.with_control(rx);
             }
@@ -90,4 +91,18 @@ fn agent_event_loop(agent: bool) -> Option<eframe::EventLoopBuilderHook> {
     }
     let _ = agent;
     None
+}
+
+/// Agents drive the app while its window is covered or on another Space. macOS App Nap would
+/// throttle the event loop then, stalling the control channel; opt out for `--control` runs.
+fn disable_app_nap() {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_foundation::{NSActivityOptions, NSProcessInfo, NSString};
+        let info = NSProcessInfo::processInfo();
+        let reason = NSString::from_str("EffectCraft control channel");
+        let opts = NSActivityOptions::UserInitiatedAllowingIdleSystemSleep | NSActivityOptions::LatencyCritical;
+        // Leaked on purpose: the activity lasts for the life of the process.
+        std::mem::forget(info.beginActivityWithOptions_reason(opts, &reason));
+    }
 }

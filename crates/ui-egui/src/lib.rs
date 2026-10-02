@@ -313,6 +313,12 @@ impl EffectcraftApp {
                 }
                 control::Outcome::AfterInput => self.input_waiters.push(reply),
                 control::Outcome::Screenshot { path, crop } => {
+                    // A covered or minimized window presents no frames (macOS skips its redraws), so
+                    // a screenshot would never arrive and nothing would tick its timeout.
+                    if ctx.input(|i| i.viewport().occluded == Some(true) || i.viewport().minimized == Some(true)) {
+                        let _ = reply.send(json!({"ok": false, "error": "window is covered or minimized: call ui.focus first (render.frame renders comp pixels without the window)"}));
+                        continue;
+                    }
                     let token = self.next_token;
                     self.next_token += 1;
                     let settle = now + 0.35;

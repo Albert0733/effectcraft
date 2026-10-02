@@ -21,3 +21,5 @@ rfd = { workspace = true }
 [target.'cfg(target_os = "macos")'.dependencies]
 # Same winit as eframe: macOS event-loop options (no app activation when driven by an agent).
 winit = { version = "0.30", default-features = false }
+# Keep the control channel responsive when the window is covered (App Nap / occlusion throttling).
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSProcessInfo", "NSString", "NSObject"] }
