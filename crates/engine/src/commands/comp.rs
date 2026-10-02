@@ -205,7 +205,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "New Composition…",
             ["Composition"],
             Some("Cmd+N"),
-            "{name?, width?, height?, frameRate?, duration? (s), background? [r,g,b]|#hex, open?}",
+            "{name?, width?, height?, frameRate?, duration? (s), background? [r,g,b]|#hex, pixelAspect?, open?}",
             always,
             new_comp
         ),
@@ -214,7 +214,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Composition Settings…",
             ["Composition"],
             Some("Cmd+K"),
-            "{comp?, name?, width?, height?, frameRate?, duration?, background?, shutterAngle?, shutterPhase?, motionBlurSamples?}",
+            "{comp?, name?, width?, height?, frameRate?, duration?, background?, shutterAngle?, shutterPhase?, motionBlurSamples?, pixelAspect?}",
             has_comp,
             settings
         ),

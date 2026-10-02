@@ -181,6 +181,14 @@ impl Session {
         Ok(r)
     }
 
+    /// [`Session::execute`] for agents and scripts (MCP, CLI, control channel): unknown top-level
+    /// parameters are rejected with the accepted keys instead of being silently ignored.
+    pub fn execute_checked(&mut self, id: &str, params: Value) -> Result<Value> {
+        let spec = commands::find(id).ok_or_else(|| EngineError::UnknownCommand(id.to_string()))?;
+        commands::check_params(spec, &params)?;
+        self.execute(id, params)
+    }
+
     pub fn is_enabled(&self, id: &str) -> bool {
         commands::find(id).is_some_and(|c| (c.enabled)(self).is_ok())
     }
@@ -304,6 +312,25 @@ impl Session {
         let mut r = Renderer::new(&self.project, self.footage.as_ref(), opts);
         r.expr = self.expr.as_deref();
         r.comp_frame(comp, t)
+    }
+
+    /// Resolve a comp reference (item id number or name; `None`/null = the active comp).
+    pub fn resolve_comp(&self, comp: Option<&Value>) -> Result<ItemId> {
+        let p = match comp {
+            Some(v) if !v.is_null() => serde_json::json!({ "comp": v }),
+            _ => serde_json::json!({}),
+        };
+        commands::comp_id(self, &p)
+    }
+
+    /// Render a comp frame (comp time `t`) as opaque 8-bit RGBA over the comp background, scaled
+    /// so the longest side is at most `max_side` pixels (0 = full size). Returns (width, height, rgba).
+    pub fn render_rgba8(&self, comp: ItemId, t: Tick, max_side: u32) -> Result<(u32, u32, Vec<u8>)> {
+        let c = self.project.comp(comp).ok_or(EngineError::NoComp)?;
+        let long = c.width.max(c.height).max(1) as f64;
+        let scale = if max_side == 0 { 1.0 } else { (max_side as f64 / long).min(1.0) };
+        let img = self.render(comp, t, RenderOpts { scale, ..Default::default() });
+        Ok((img.width, img.height, img.to_rgba8_over(c.background)))
     }
 
     /// Replace the whole project (open/new), resetting history and state.

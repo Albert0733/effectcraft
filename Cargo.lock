@@ -1054,13 +1054,22 @@ dependencies = [
 ]
 
 [[package]]
-name = "effectcraft-cli"
+name = "effectcraft-automation"
 version = "0.1.0"
 dependencies = [
  "effectcraft-engine",
- "effectcraft-render",
- "effectcraft-time",
  "image",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "effectcraft-cli"
+version = "0.1.0"
+dependencies = [
+ "effectcraft-automation",
+ "effectcraft-engine",
+ "effectcraft-host",
  "serde_json",
 ]
 
