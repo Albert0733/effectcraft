@@ -125,11 +125,11 @@ struct Work {
 }
 
 fn unix_now() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+    web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
 fn run_work(w: Work, shared: &JobShared) {
-    let t0 = std::time::Instant::now();
+    let t0 = web_time::Instant::now();
     {
         let mut s = lock(&shared.state);
         s.items_total = w.items.len();
@@ -139,7 +139,7 @@ fn run_work(w: Work, shared: &JobShared) {
             lock(&shared.updates).push(ItemUpdate::Finished { id: item.id, status: RenderStatus::UserStopped, seconds: 0.0, output: None });
             continue;
         }
-        let t1 = std::time::Instant::now();
+        let t1 = web_time::Instant::now();
         lock(&shared.updates).push(ItemUpdate::Started { id: item.id, unix: unix_now() });
         {
             let mut s = lock(&shared.state);
@@ -211,7 +211,8 @@ impl Session {
             return Some(p);
         }
         let base = self.path.as_deref().and_then(|s| std::path::Path::new(s).parent().map(|d| d.to_path_buf())).filter(|d| !d.as_os_str().is_empty());
-        let base = base.or_else(|| std::env::current_dir().ok())?;
+        // (the web has no working directory: relative outputs land in its virtual root)
+        let base = base.or_else(|| std::env::current_dir().ok()).or_else(|| cfg!(target_arch = "wasm32").then(|| "/".into()))?;
         Some(base.join(path).to_string_lossy().to_string())
     }
 
@@ -227,7 +228,9 @@ impl Session {
 
     /// Start rendering every queued item. `wait`: block until done (otherwise a background thread
     /// renders; call [`Session::poll_render`] regularly). Returns the ids being rendered.
+    /// wasm32 has no threads: the render always runs to completion before this returns.
     pub fn start_render(&mut self, wait: bool) -> Result<Vec<u64>, String> {
+        let wait = wait || cfg!(target_arch = "wasm32");
         if self.is_rendering() {
             return Err("a render is already in progress".into());
         }

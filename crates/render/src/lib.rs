@@ -255,7 +255,7 @@ impl<'a> Renderer<'a> {
             host.index.store(i, std::sync::atomic::Ordering::Relaxed);
             let env = EffectEnv { effect_index: i, ..env };
             let ectx = EffectCtx { params: &params, time: lt.seconds(), layer_size, seed: g.uid as u32, adjustment, env };
-            let t0 = std::time::Instant::now();
+            let t0 = web_time::Instant::now();
             buf = effectcraft_effects::apply(spec, &ectx, buf);
             if let Some(v) = timing.as_deref_mut() {
                 v.push((spec.id.to_string(), t0.elapsed().as_secs_f64() * 1e3));
@@ -391,7 +391,7 @@ impl<'a> Renderer<'a> {
                 return Some(StyledLayer { passes, body, content, key, plain: false });
             }
         }
-        let t0 = std::time::Instant::now();
+        let t0 = web_time::Instant::now();
         let size = source_size(self.project, layer);
         let layer_size = if size.0 == 0 { [ctx.comp.width as f64, ctx.comp.height as f64] } else { [size.0 as f64, size.1 as f64] };
         let st = styles::render(ctx, layer, &content, layer_size);
@@ -465,9 +465,9 @@ impl<'a> Renderer<'a> {
             return;
         }
         let mut timing = self.profile.map(|_| LayerTiming { depth: self.depth, layer: layer.name.clone(), ..Default::default() });
-        let t0 = std::time::Instant::now();
+        let t0 = web_time::Instant::now();
         let Some(st) = self.styled(ctx, layer, timing.as_mut()) else { return };
-        let t1 = std::time::Instant::now();
+        let t1 = web_time::Instant::now();
         if st.plain {
             self.composite_layer(ctx, layer, &st.body, canvas, opacity);
         } else {

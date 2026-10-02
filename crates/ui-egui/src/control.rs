@@ -358,7 +358,9 @@ fn render_frame(app: &EffectcraftApp, p: &Value) -> Outcome {
         Err(e) => return err(e),
     };
     let mut out = json!({"comp": cid.0, "time": t.seconds(), "width": w, "height": h});
-    if p.get("base64").and_then(Value::as_bool) == Some(true) {
+    // (the web has no file system: inline unless a path is given)
+    let inline = p.get("base64").and_then(Value::as_bool).unwrap_or(cfg!(target_arch = "wasm32") && p.get("path").is_none());
+    if inline {
         out["png"] = json!(base64(&png));
         return ok(out);
     }
@@ -429,6 +431,13 @@ pub fn save_screenshot(ctx: &egui::Context, image: &egui::ColorImage, path: Opti
             let c = image.pixels[y * w + x];
             rgba.extend_from_slice(&[c.r(), c.g(), c.b(), 255]);
         }
+    }
+    if path.is_none() && cfg!(target_arch = "wasm32") {
+        // no file system on the web: inline PNG
+        return match encode_png(&rgba, cw as u32, ch as u32) {
+            Ok(png) => json!({"ok": true, "result": {"png": base64(&png), "width": cw, "height": ch}}),
+            Err(e) => json!({"ok": false, "error": e}),
+        };
     }
     let path = path.map(str::to_string).unwrap_or_else(|| std::env::temp_dir().join("effectcraft-screenshot.png").to_string_lossy().to_string());
     match encode_png(&rgba, cw as u32, ch as u32) {

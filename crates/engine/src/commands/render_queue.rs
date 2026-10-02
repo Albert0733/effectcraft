@@ -385,7 +385,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Add to Render Queue",
             ["Composition"],
             Some("Cmd+M"),
-            "{comp?: id|name, format?: h264|prores|png|jpeg|tiff|exr|gif, output?: path|template, …renderSettings, …outputModule}",
+            "{comp?: id|name, format?: h264|prores|png|jpeg|tiff|exr|gif, output?: path|template, quality?: best|draft|1-100 (jpeg), resolution?: full|half|third|quarter|scale, timeSpan?: workArea|comp|custom, start?: s, end?: s, frameRate?: fps|null, motionBlur?: bool, skipExisting?: bool, channels?: rgb|rgba, bitrate?: kbps, proresProfile?: proxy|lt|standard|hq|4444|4444xq, audio?: auto|on|off, sampleRate?, loop?: bool}",
             can_add,
             add
         ),

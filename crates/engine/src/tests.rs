@@ -298,3 +298,15 @@ fn comp_settings_anchor_start_timecode_renderer() {
     assert_eq!(c.display_start, c.frame_rate.tick_of(30));
     assert_eq!(c.renderer, crate::project::Renderer::Advanced3D);
 }
+
+#[test]
+fn render_queue_add_accepts_documented_settings_when_checked() {
+    let mut s = demo();
+    let r = s.execute_checked(
+        "renderQueue.add",
+        json!({"format": "gif", "output": "/tmp/x.gif", "resolution": "quarter", "timeSpan": "custom", "start": 0.0, "end": 0.5, "quality": "draft", "loop": true}),
+    );
+    // Without an exporter the add itself still succeeds (rendering is what needs one).
+    assert!(r.is_ok(), "{r:?}");
+    assert!(s.execute_checked("renderQueue.add", json!({"bogus": 1})).is_err());
+}

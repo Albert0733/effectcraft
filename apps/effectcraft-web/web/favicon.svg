@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- EffectCraft mark (original work): the header logo of crates/ui-egui/src/header.rs as SVG:
+       a navy rounded square split blue/violet with a white keyframe diamond. -->
+  <rect x="0" y="0" width="64" height="64" rx="12" fill="#1d2b5e"/>
+  <path d="M14 4 H32 V60 H14 A10 10 0 0 1 4 50 V14 A10 10 0 0 1 14 4 Z" fill="#2d8ceb"/>
+  <path d="M32 4 H50 A10 10 0 0 1 60 14 V50 A10 10 0 0 1 50 60 H32 Z" fill="#8e6bff"/>
+  <path d="M32 15.4 L48.6 32 L32 48.6 L15.4 32 Z" fill="#ffffff"/>
+</svg>
