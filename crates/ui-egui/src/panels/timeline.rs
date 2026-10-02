@@ -38,12 +38,20 @@ enum RowKind {
         uid: u64,
         lines: usize,
     },
+    /// Audio > Waveform of a footage layer with audio (drawn from the item's peak summary).
+    Waveform {
+        item: u64,
+    },
 }
+
+/// Synthetic group uid for a layer's Audio > Waveform twirl (never a real property uid).
+const WAVE_BIT: u64 = 1 << 60;
 
 /// Row height (expression editors grow with their text).
 fn row_height(row: &Row, rh: f32) -> f32 {
     match row.kind {
         RowKind::Expr { lines, .. } => rh * lines.clamp(1, 8) as f32 + 6.0,
+        RowKind::Waveform { .. } => rh * 3.0,
         _ => rh,
     }
 }
@@ -237,9 +245,15 @@ fn build_rows(app: &EffectcraftApp, comp: &Comp) -> Vec<Row> {
                 "opacity" => ("transform", vec!["opacity"]),
                 "anchor" => ("transform", vec!["anchor"]),
                 "feather" => ("masks", vec!["feather"]),
+                "levels" => ("audio", vec!["levels"]),
                 _ => ("", vec![]),
             };
             match kind.as_str() {
+                "waveform" => {
+                    if let Some(item) = super::waveform::audio_item(&app.session.project, l) {
+                        rows.push(Row { layer: l.id, depth: 1, kind: RowKind::Waveform { item: item.0 } });
+                    }
+                }
                 "effects" => {
                     if let Some(fx) = l.effects() {
                         for g in fx.groups() {
@@ -282,6 +296,36 @@ fn build_rows(app: &EffectcraftApp, comp: &Comp) -> Vec<Row> {
                         }
                     }
                 }
+                "props" => {
+                    // Animation ▸ Reveal Properties…: the engine picked the uids.
+                    fn groups_in<'a>(g: &'a PropGroup, set: &std::collections::BTreeSet<u64>, out: &mut Vec<&'a PropGroup>) {
+                        for sg in g.groups() {
+                            if set.contains(&sg.uid) {
+                                out.push(sg);
+                            } else {
+                                groups_in(sg, set, out);
+                            }
+                        }
+                    }
+                    let mut groups = vec![];
+                    groups_in(&l.props, &tl.reveal_props, &mut groups);
+                    for g in groups {
+                        let open = tl.open_groups.contains(&g.uid);
+                        rows.push(Row {
+                            layer: l.id,
+                            depth: 1,
+                            kind: RowKind::Group { uid: g.uid, name: g.name.clone(), open, has_children: !g.children.is_empty(), fx: None, eye: None },
+                        });
+                        if open {
+                            push_group(&mut rows, l, g, 2, &tl.open_groups);
+                        }
+                    }
+                    let mut found = vec![];
+                    collect_props(&l.props, &mut found, &|p| prop_visible(p, l) && tl.reveal_props.contains(&p.uid));
+                    for uid in found {
+                        rows.push(Row { layer: l.id, depth: 1, kind: RowKind::Prop { uid } });
+                    }
+                }
                 _ => {
                     let mut found = vec![];
                     let root = if group.is_empty() {
@@ -319,6 +363,21 @@ fn build_rows(app: &EffectcraftApp, comp: &Comp) -> Vec<Row> {
                     });
                     if open {
                         push_group(&mut rows, l, g, 2, &tl.open_groups);
+                        // Audio > Waveform > Waveform (footage with audio).
+                        if g.match_id == "audio"
+                            && let Some(item) = super::waveform::audio_item(&app.session.project, l)
+                        {
+                            let wuid = WAVE_BIT | g.uid;
+                            let wopen = tl.open_groups.contains(&wuid);
+                            rows.push(Row {
+                                layer: l.id,
+                                depth: 2,
+                                kind: RowKind::Group { uid: wuid, name: "Waveform".into(), open: wopen, has_children: true, fx: None, eye: None },
+                            });
+                            if wopen {
+                                rows.push(Row { layer: l.id, depth: 3, kind: RowKind::Waveform { item: item.0 } });
+                            }
+                        }
                     }
                 }
                 Node::Prop(p) if prop_visible(p, l) => rows.push(Row { layer: l.id, depth: 1, kind: RowKind::Prop { uid: p.uid } }),
@@ -995,11 +1054,31 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     lp.text(pos2(ir.max.x + 4.0, cy), Align2::LEFT_CENTER, "Inverted", Tokens::ui(11.0), t.text_dim);
                 }
                 let gr = ui.interact(Rect::from_min_max(pos2(indent + 8.0, r.min.y), pos2(cw.switches, r.max.y)), egui::Id::new(("grow", uid)), Sense::click());
-                if gr.clicked() {
+                if gr.clicked() && uid & WAVE_BIT == 0 {
                     actions.push(("prop.select".into(), json!({"layer": layer.id.0, "prop": uid, "selectKeys": false})));
                 }
                 if gr.double_clicked() {
                     ui_actions.push(UiAct::ToggleGroup(*uid));
+                }
+            }
+            RowKind::Waveform { item } => {
+                lp.rect_filled(left, 0.0, if ri % 2 == 0 { t.row } else { t.row_alt });
+                let indent = cw.name + 6.0 + 14.0 * row.depth as f32;
+                lp.text(pos2(indent + 10.0, cy), Align2::LEFT_CENTER, "Waveform", Tokens::ui(12.0), t.text);
+                let wr = Rect::from_min_max(pos2(graph_x0, r.min.y), r.max);
+                gp.rect_filled(wr, 0.0, t.tl_bg);
+                app.auto.add(&format!("timeline.layer.{}.waveform", layer.id.0), wr, "Waveform");
+                match super::waveform::summary(app, &ctx, effectcraft_engine::project::ItemId(*item)) {
+                    Some(s) => super::waveform::draw(&gp, wr.shrink2(vec2(0.0, 2.0)), &tm, layer, &s, Color32::from_rgb(0x5f, 0xc8, 0x8a)),
+                    None => {
+                        gp.text(
+                            pos2(tm.x(layer.in_point.seconds()).max(wr.min.x) + 6.0, wr.center().y),
+                            Align2::LEFT_CENTER,
+                            "Building waveform…",
+                            Tokens::ui(11.0),
+                            t.text_faint,
+                        );
+                    }
                 }
             }
             RowKind::Expr { uid, lines } => {

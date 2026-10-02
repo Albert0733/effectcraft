@@ -199,6 +199,7 @@ impl Resolution {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ViewerState {
     /// Magnification (1 = 100%); None = fit.
     pub zoom: Option<f32>,
@@ -213,6 +214,14 @@ pub struct ViewerState {
     pub channel: String,
     pub show_layer_controls: bool,
     pub fast_preview: bool,
+    /// View ▸ Show Guides / Snap to Guides / Lock Guides / Snap to Grid.
+    pub guides: bool,
+    pub snap_guides: bool,
+    pub lock_guides: bool,
+    pub snap_grid: bool,
+    /// View ▸ Panel Background Color (`None` = theme default).
+    pub pasteboard: Option<[u8; 3]>,
+    pub custom_pasteboard: [u8; 3],
 }
 
 impl Default for ViewerState {
@@ -229,6 +238,12 @@ impl Default for ViewerState {
             channel: "RGB".into(),
             show_layer_controls: true,
             fast_preview: false,
+            guides: true,
+            snap_guides: false,
+            lock_guides: false,
+            snap_grid: false,
+            pasteboard: None,
+            custom_pasteboard: [0x80, 0x80, 0x80],
         }
     }
 }
@@ -249,6 +264,9 @@ pub struct TimelineState {
     pub open_groups: BTreeSet<u64>,
     /// "Reveal" filter: only show these property match ids (P/S/R/T/A…) — empty = normal.
     pub reveal: Vec<String>,
+    /// Properties / groups (uids) shown by the `props` reveal (Animation ▸ Reveal Properties…).
+    #[serde(default)]
+    pub reveal_props: BTreeSet<u64>,
     /// Graph Editor: `value` or `speed` graph.
     #[serde(default = "value_graph")]
     pub graph_mode: String,
@@ -286,6 +304,7 @@ impl Default for TimelineState {
             open_layers: BTreeSet::new(),
             open_groups: BTreeSet::new(),
             reveal: vec![],
+            reveal_props: BTreeSet::new(),
             graph_mode: value_graph(),
             graph_show_selected: true,
             graph_auto_zoom: true,
@@ -338,7 +357,12 @@ pub struct UiState {
     /// Preview panel options.
     pub preview_loop: bool,
     pub preview_cache_first: bool,
+    /// Preview panel "Include Audio" (Mute Audio off).
+    #[serde(default = "yes")]
+    pub preview_audio: bool,
     pub start_screen: bool,
+    /// Composition ▸ Preview ▸ Cache Frames When Idle.
+    pub cache_when_idle: bool,
 }
 
 impl Default for UiState {
@@ -369,7 +393,9 @@ impl Default for UiState {
             tool_creates_shape: true,
             preview_loop: true,
             preview_cache_first: false,
+            preview_audio: true,
             start_screen: false,
+            cache_when_idle: false,
         }
     }
 }

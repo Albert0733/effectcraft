@@ -304,9 +304,12 @@ pub fn handle(app: &mut EffectcraftApp, ctx: &egui::Context, req: &ControlReques
             match s("action").unwrap_or("toggle") {
                 "play" => app.play(now),
                 "stop" => app.stop(),
+                "status" => {}
                 _ => app.toggle_play(now),
             }
-            ok(json!({"playing": app.playback.playing, "time": app.session.time().seconds()}))
+            ok(
+                json!({"playing": app.playback.playing, "time": app.session.time().seconds(), "audio": app.audio.is_some(), "levelsDb": app.meter.level_db, "peaksDb": app.meter.peak_db}),
+            )
         }
         "ui.screenshot" => {
             let crop = s("panel").and_then(PanelKind::from_name).and_then(|pk| app.auto.find(&format!("panel.{}", pk.id())).map(|e| e.rect));

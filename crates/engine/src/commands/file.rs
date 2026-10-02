@@ -141,16 +141,16 @@ fn cycle_depth(s: &mut Session, _: &Value) -> Result<Value> {
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!("file.newProject", "New Project", ["File", "New"], Some("Cmd+Alt+N"), "{}", always, new_project),
-        cmd!("file.openDemoProject", "Open Demo Project", ["File"], None, "{}", always, demo),
-        cmd!("file.open", "Open Project…", ["File"], Some("Cmd+O"), "{path}", always, open),
+        cmd!("file.openDemoProject", "Open Demo Project", ["Help"], None, "{}", always, demo),
+        cmd!("file.open", "Open Project...", ["File"], Some("Cmd+O"), "{path}", always, open),
         cmd!("file.save", "Save", ["File"], Some("Cmd+S"), "{path?}", always, save),
-        cmd!("file.saveAs", "Save As…", ["File", "Save As"], Some("Cmd+Shift+S"), "{path}", always, save_as),
+        cmd!("file.saveAs", "Save As...", ["File", "Save As"], Some("Cmd+Shift+S"), "{path}", always, save_as),
         cmd!("file.incrementAndSave", "Increment and Save", ["File"], Some("Cmd+Alt+Shift+S"), "{}", has_path, increment_save),
         cmd!("file.revert", "Revert", ["File"], None, "{}", has_path, revert),
-        cmd!("file.import", "File…", ["File", "Import"], Some("Cmd+I"), "{paths: [string]}", always, import),
+        cmd!("file.import", "File...", ["File", "Import"], Some("Cmd+I"), "{paths: [string]}", always, import),
         cmd!(
             "file.projectSettings",
-            "Project Settings…",
+            "Project Settings...",
             ["File"],
             Some("Cmd+Alt+Shift+K"),
             "{bitDepth?: 8|16|32, linearize?, timeDisplay?: timecode|frames}",

@@ -398,7 +398,15 @@ impl Inner {
             if !c.inflight.contains(&loc.key) {
                 break;
             }
-            // another thread (or the read-ahead) is decoding this frame
+            // Another thread (or the read-ahead) is decoding this frame. Never block a rayon
+            // worker on that: while the decoder waits on its own parallel join, the worker can
+            // steal this very job, and waiting here would then wait on a decode further down
+            // its own stack (deadlock). Decode a private copy instead.
+            if rayon::current_thread_index().is_some() {
+                self.misses.fetch_add(1, Ordering::Relaxed);
+                drop(c);
+                return Ok(Arc::new(self.decode(&loc, footage)?));
+            }
             c = self.done.wait(c).unwrap_or_else(|e| e.into_inner());
         }
         self.misses.fetch_add(1, Ordering::Relaxed);
@@ -414,7 +422,8 @@ impl Inner {
     fn prefetch(self: &Arc<Self>, footage: &Footage, t: Tick) {
         let (me, f) = (self.clone(), footage.clone());
         self.prefetched.fetch_add(1, Ordering::Relaxed);
-        rayon::spawn(move || {
+        // A plain thread, not a rayon job: the decode below parallelises with rayon itself.
+        std::thread::spawn(move || {
             let _ = me.frame_at(&f, t, false);
         });
     }

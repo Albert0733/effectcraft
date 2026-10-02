@@ -168,7 +168,21 @@ fn presets_apply_render_and_round_trip() {
 fn menus_have_text_animation_entries() {
     let (s, _) = session();
     let spec = crate::commands::find("layer.enablePerChar3D").unwrap();
-    assert_eq!(spec.menu, ["Animation", "Animate Text"]);
+    assert!(spec.menu.is_empty(), "placed by the engine menu tree");
+    let entries = crate::menus::entries();
+    let has = |path: &[&str], cmd: &str| {
+        let (label, parent) = path.split_last().unwrap();
+        entries.iter().any(|(p, e)| p.iter().map(String::as_str).eq(parent.iter().copied()) && e.label == *label && e.command == cmd)
+    };
+    assert!(has(&["Animation", "Animate Text", "Enable Per-character 3D"], "layer.enablePerChar3D"));
+    assert!(has(&["Animation", "Animate Text", "Fill Color", "Hue"], "layer.addTextAnimator"));
+    assert!(has(&["Animation", "Add Text Selector", "Wiggly"], "text.addSelector"));
+    assert!(has(&["Animation", "Text Animation Presets", "Typewriter"], "layer.applyTextPreset"));
+    // Every preset in the menu exists.
+    let ids: Vec<String> = crate::text_presets().into_iter().map(|p| p.0).collect();
+    for (_, e) in entries.iter().filter(|(_, e)| e.command == "layer.applyTextPreset") {
+        assert!(ids.iter().any(|i| e.params["preset"] == i.as_str()), "{:?}", e.params);
+    }
     assert!(s.is_enabled("layer.enablePerChar3D"));
     assert!(!s.is_enabled("layer.addTextSelector"), "needs an animator");
 }

@@ -149,7 +149,7 @@ fn add_animator_prop(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"animator": auid}))
 }
 
-fn add_selector(s: &mut Session, p: &Value) -> Result<Value> {
+pub(crate) fn add_selector(s: &mut Session, p: &Value) -> Result<Value> {
     const C: &str = "layer.addTextSelector";
     let (cid, lid) = layer_p(s, p, C)?;
     let kind = str_p(p, "kind").unwrap_or("range").to_ascii_lowercase();
@@ -404,15 +404,7 @@ pub fn specs() -> Vec<CommandSpec> {
             has_animator,
             add_selector
         ),
-        cmd!(
-            "layer.enablePerChar3D",
-            "Enable Per-character 3D",
-            ["Animation", "Animate Text"],
-            None,
-            "{layer?, enabled?: bool, toggle?: bool}",
-            has_text_layer,
-            enable_per_char
-        ),
+        cmd!("layer.enablePerChar3D", "Enable Per-character 3D", [], None, "{layer?, enabled?: bool, toggle?: bool}", has_text_layer, enable_per_char),
         cmd!(
             "layer.applyTextPreset",
             "Apply Text Animation Preset",
