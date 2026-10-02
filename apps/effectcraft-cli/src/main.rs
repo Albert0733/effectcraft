@@ -138,6 +138,10 @@ fn value_arg(s: &str) -> Value {
 
 fn main() {
     let raw: Vec<String> = std::env::args().skip(1).collect();
+    if matches!(raw.first().map(String::as_str), Some("--version" | "-V" | "version")) {
+        println!("effectcraft-cli {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
     if raw.is_empty() || raw.iter().any(|a| a == "-h" || a == "--help") {
         println!("{USAGE}");
         std::process::exit(if raw.is_empty() { 2 } else { 0 });

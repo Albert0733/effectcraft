@@ -104,12 +104,12 @@ pub fn run(root: &Path, args: &[&str]) -> Result<(), String> {
             std::fs::write(&tmp, updated).map_err(|e| format!("write {}: {e}", tmp.display()))?;
             std::fs::rename(&tmp, &path).map_err(|e| format!("replace {}: {e}", path.display()))?;
             // Refresh the workspace members' entries in Cargo.lock (no dependency upgrades).
-            let mut c = crate::cargo();
-            c.args(["update", "--workspace", "--offline"]);
-            if crate::run(c, "cargo update --workspace --offline").is_err() {
-                let mut c = crate::cargo();
-                c.args(["update", "--workspace"]);
-                crate::run(c, "cargo update --workspace")?;
+            let mut c = std::process::Command::new(env!("CARGO"));
+            c.current_dir(root).args(["update", "--workspace", "--offline"]);
+            if crate::run(&mut c).is_err() {
+                let mut c = std::process::Command::new(env!("CARGO"));
+                c.current_dir(root).args(["update", "--workspace"]);
+                crate::run(&mut c)?;
             }
             println!("version: {old} -> {new}");
             Ok(())

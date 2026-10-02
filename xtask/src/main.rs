@@ -365,7 +365,11 @@ fn main() -> ExitCode {
             let rest: Vec<String> = std::env::args().skip(2).collect();
             ico::run(&rest.iter().map(String::as_str).collect::<Vec<_>>())
         }
-        _ => Err("usage: cargo xtask <layers|assets|wasm|web [--dev] [--serve PORT]|ico OUT.ico IN.png…|ci>".into()),
+        "version" => {
+            let rest: Vec<String> = std::env::args().skip(2).collect();
+            version::run(&root(), &rest.iter().map(String::as_str).collect::<Vec<_>>())
+        }
+        _ => Err("usage: cargo xtask <layers|assets|wasm|web [--dev] [--serve PORT]|ico OUT.ico IN.png…|version [set X.Y.Z]|ci>".into()),
     };
     match r {
         Ok(()) => ExitCode::SUCCESS,
