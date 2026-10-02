@@ -2,21 +2,28 @@
 //! shortcut and viewer/timeline gesture maps to one of these.
 
 mod anim;
+mod animation;
 mod comp;
+mod comp_more;
 mod edit;
 mod effect;
 mod file;
+mod file_more;
+mod frontend;
 mod help;
 mod layer;
+mod layer_menu;
 mod layer_time;
 mod link;
 mod mask;
 mod prop;
 mod query;
 mod render_queue;
+mod stubs;
 mod styles;
 mod three_d;
 mod time;
+mod view;
 
 use std::sync::OnceLock;
 
@@ -87,6 +94,13 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(render_queue::specs());
         v.extend(help::specs());
         v.extend(query::specs());
+        v.extend(layer_menu::specs());
+        v.extend(animation::specs());
+        v.extend(view::specs());
+        v.extend(file_more::specs());
+        v.extend(comp_more::specs());
+        v.extend(frontend::specs());
+        v.extend(stubs::specs());
         v
     })
 }
@@ -169,6 +183,60 @@ pub(crate) fn has_layers(s: &Session) -> std::result::Result<(), String> {
 pub(crate) fn has_keys(s: &Session) -> std::result::Result<(), String> {
     has_comp(s)?;
     if s.state.selected_keys.is_empty() { Err("select keyframes first".into()) } else { Ok(()) }
+}
+
+pub(crate) fn has_project_selection(s: &Session) -> std::result::Result<(), String> {
+    if s.state.project_selection.is_empty() { Err("select an item in the Project panel first".into()) } else { Ok(()) }
+}
+
+/// Disabled-command enablement (menu entries whose implementation lands with another milestone).
+pub(crate) fn not_yet(_: &Session) -> std::result::Result<(), String> {
+    Err("not available yet in EffectCraft".into())
+}
+
+/// `run` of a not-yet-available command.
+pub(crate) fn not_yet_run(_: &mut Session, _: &Value) -> Result<Value> {
+    Err(EngineError::Other("not available yet in EffectCraft".into()))
+}
+
+/// Hand a frontend-only command to the UI ([`crate::Event::Frontend`]).
+pub(crate) fn frontend(s: &mut Session, id: &str, p: &Value) -> Result<Value> {
+    s.events.push(crate::Event::Frontend { command: id.to_string(), params: p.clone() });
+    Ok(serde_json::json!({"frontend": id}))
+}
+
+/// Match path of a node (`transform/position`, `effects/#2/blurriness` style with `match#n`
+/// occurrences) so it can be found again on another layer.
+pub fn match_path_of(g: &effectcraft_project::PropGroup, uid: effectcraft_project::Uid) -> Option<String> {
+    for c in &g.children {
+        let nth = g.children.iter().take_while(|x| !std::ptr::eq(*x, c)).filter(|x| x.match_id() == c.match_id()).count() + 1;
+        let seg = if nth == 1 { c.match_id().to_string() } else { format!("{}#{nth}", c.match_id()) };
+        if c.uid() == uid {
+            return Some(seg);
+        }
+        if let effectcraft_project::Node::Group(sub) = c
+            && let Some(rest) = match_path_of(sub, uid)
+        {
+            return Some(format!("{seg}/{rest}"));
+        }
+    }
+    None
+}
+
+/// Selected properties (leaves) of the active comp as (layer, uid); selected groups expand to
+/// their properties.
+pub(crate) fn selected_leaf_props(s: &Session) -> Vec<(LayerId, effectcraft_project::Uid)> {
+    let Some(comp) = s.active_comp() else { return vec![] };
+    let mut out = vec![];
+    for (lid, uid) in &s.state.selected_props {
+        let Some(l) = comp.layer(*lid) else { continue };
+        if l.props.find(*uid).is_some() {
+            out.push((*lid, *uid));
+        } else if let Some(g) = l.props.find_group(*uid) {
+            g.walk("", &mut |_, p| out.push((*lid, p.uid)));
+        }
+    }
+    out
 }
 
 // ---------- params ----------

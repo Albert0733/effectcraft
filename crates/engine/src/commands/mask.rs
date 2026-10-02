@@ -254,7 +254,7 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!("mask.selectVertices", "Select Mask Vertices", [], None, "{vertices: [{layer, mask, index}], add?, toggle?}", has_comp, select_vertices),
         cmd!("mask.moveVertices", "Move Mask Vertices", [], None, "{vertices?: [{layer, mask, index}], delta: [dx,dy], merge?}", has_vertices, move_vertices),
         cmd!("mask.deleteVertices", "Delete Mask Vertices", [], None, "{vertices?}", has_vertices, delete_vertices),
-        cmd!("mask.remove", "Remove Mask", ["Layer", "Mask"], None, "{layer?, mask}", has_layers, |s, p| remove_masks(s, p, false)),
-        cmd!("mask.removeAll", "Remove All Masks", ["Layer", "Mask"], None, "{layer?}", has_layers, |s, p| remove_masks(s, p, true)),
+        cmd!("mask.remove", "Remove Mask", [], None, "{layer?, mask}", has_layers, |s, p| remove_masks(s, p, false)),
+        cmd!("mask.removeAll", "Remove All Masks", [], None, "{layer?}", has_layers, |s, p| remove_masks(s, p, true)),
     ]
 }

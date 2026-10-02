@@ -274,6 +274,36 @@ fn build_rows(app: &EffectcraftApp, comp: &Comp) -> Vec<Row> {
                         }
                     }
                 }
+                "props" => {
+                    // Animation ▸ Reveal Properties…: the engine picked the uids.
+                    fn groups_in<'a>(g: &'a PropGroup, set: &std::collections::BTreeSet<u64>, out: &mut Vec<&'a PropGroup>) {
+                        for sg in g.groups() {
+                            if set.contains(&sg.uid) {
+                                out.push(sg);
+                            } else {
+                                groups_in(sg, set, out);
+                            }
+                        }
+                    }
+                    let mut groups = vec![];
+                    groups_in(&l.props, &tl.reveal_props, &mut groups);
+                    for g in groups {
+                        let open = tl.open_groups.contains(&g.uid);
+                        rows.push(Row {
+                            layer: l.id,
+                            depth: 1,
+                            kind: RowKind::Group { uid: g.uid, name: g.name.clone(), open, has_children: !g.children.is_empty(), fx: None, eye: None },
+                        });
+                        if open {
+                            push_group(&mut rows, l, g, 2, &tl.open_groups);
+                        }
+                    }
+                    let mut found = vec![];
+                    collect_props(&l.props, &mut found, &|p| prop_visible(p, l) && tl.reveal_props.contains(&p.uid));
+                    for uid in found {
+                        rows.push(Row { layer: l.id, depth: 1, kind: RowKind::Prop { uid } });
+                    }
+                }
                 _ => {
                     let mut found = vec![];
                     let root = if group.is_empty() {

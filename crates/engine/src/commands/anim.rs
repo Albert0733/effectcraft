@@ -386,7 +386,7 @@ pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!("keys.copy", "Copy Keyframes", [], None, "{}", has_keys, copy),
         cmd!("keys.paste", "Paste Keyframes", [], None, "{layers?, prop?|path?, time?}", has_key_clip, paste),
-        cmd!("keys.selectAll", "Select All Keyframes", ["Edit"], Some("Cmd+Alt+A"), "{layers?}", keys_or_layers, select_all),
+        cmd!("keys.selectAll", "Select All Keyframes", [], Some("Cmd+Alt+A"), "{layers?}", keys_or_layers, select_all),
         cmd!("keys.nudge", "Nudge Keyframes", [], None, "{frames, merge?}", has_keys, nudge),
         cmd!("keys.nudgeForward", "Move Keyframes 1 Frame Later", [], Some("Alt+ArrowRight"), "{}", has_keys, |s, _| nudge(s, &json!({"frames": 1}))),
         cmd!("keys.nudgeBackward", "Move Keyframes 1 Frame Earlier", [], Some("Alt+ArrowLeft"), "{}", has_keys, |s, _| nudge(s, &json!({"frames": -1}))),

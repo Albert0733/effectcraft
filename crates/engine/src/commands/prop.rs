@@ -590,7 +590,7 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!("keys.toggleHold", "Toggle Hold Keyframe", ["Animation"], Some("Cmd+Alt+H"), "{}", has_keys, toggle_hold),
         cmd!(
             "keys.interpolation",
-            "Keyframe Interpolation…",
+            "Keyframe Interpolation...",
             ["Animation"],
             Some("Cmd+Alt+K"),
             "{interpolation?: linear|bezier|continuousBezier|autoBezier|hold, in?|out?: linear|bezier|hold, autoBezier?, continuous?, spatial?: linear|bezier|continuousBezier|autoBezier, roving?}",
@@ -599,7 +599,7 @@ pub fn specs() -> Vec<CommandSpec> {
         ),
         cmd!(
             "keys.velocity",
-            "Keyframe Velocity…",
+            "Keyframe Velocity...",
             ["Animation"],
             Some("Cmd+Shift+K"),
             "{inSpeed?, inInfluence? %, outSpeed?, outInfluence? % (numbers or per-dimension arrays), continuous?}",
