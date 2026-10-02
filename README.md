@@ -11,7 +11,7 @@
 <h1 align="center">EffectCraft</h1>
 
 <p align="center">
-  <b>Motion graphics and visual effects, in pure Rust.</b>
+  <b>Motion graphics and visual effects; an open-source, clean-room reimplementation of Adobe After Effects, rebuilt in pure Rust.</b>
 </p>
 
 <p align="center">
@@ -247,8 +247,7 @@ EffectCraft is dual-licensed under [MIT](LICENSE-MIT) or [Apache 2.0](LICENSE-AP
 option. Bundled fonts and other non-code assets are listed with their authors and licenses in
 [ATTRIBUTION.md](ATTRIBUTION.md).
 
-After Effects is a trademark of Adobe. EffectCraft is an independent project and is not
-affiliated with or endorsed by Adobe.
+<sub>Adobe, Photoshop, Illustrator, Premiere Pro, Lightroom, Acrobat, After Effects and InDesign are trademarks or registered trademarks of Adobe Inc. in the United States and/or other countries. EffectCraft is an independent, open-source project and is not affiliated with, sponsored by or endorsed by Adobe Inc.; these names are used only to describe the workflows it is compatible with.</sub>
 
 <p align="center">
   <a href="https://getartcraft.com/"><img alt="ArtCraft" src="docs/brand/artcraft-mark.svg" width="28"></a><br>
