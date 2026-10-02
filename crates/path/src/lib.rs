@@ -7,6 +7,7 @@
 
 pub mod boolean;
 mod fit;
+pub mod interp;
 pub mod offset;
 pub mod ops;
 

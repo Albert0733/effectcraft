@@ -1398,6 +1398,7 @@ dependencies = [
  "effectcraft-raster",
  "rayon",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
