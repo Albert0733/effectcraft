@@ -127,6 +127,15 @@ pub enum SplitSize {
     FixedB(f32),
 }
 
+/// One panel in a [`DockNode::Stack`].
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct StackEntry {
+    pub panel: PanelKind,
+    pub open: bool,
+    /// Content height when open; `None` = share the remaining height.
+    pub height: Option<f32>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum DockNode {
     /// `vertical`: children stacked top/bottom; else side by side.
@@ -140,10 +149,18 @@ pub enum DockNode {
         panels: Vec<PanelKind>,
         active: usize,
     },
+    /// After Effects' stacked panels (e.g. the Default workspace's right column): each panel has
+    /// a header row; clicking it expands or collapses the panel in place.
+    Stack {
+        entries: Vec<StackEntry>,
+    },
 }
 
 fn tabs(p: &[PanelKind], active: usize) -> DockNode {
     DockNode::Tabs { panels: p.to_vec(), active }
+}
+fn stack(e: &[(PanelKind, bool, Option<f32>)]) -> DockNode {
+    DockNode::Stack { entries: e.iter().map(|&(panel, open, height)| StackEntry { panel, open, height }).collect() }
 }
 fn hsplit(size: SplitSize, a: DockNode, b: DockNode) -> DockNode {
     DockNode::Split { vertical: false, size, a: Box::new(a), b: Box::new(b) }
@@ -245,7 +262,7 @@ pub fn workspace(name: &str) -> DockNode {
         _ => hsplit(
             FixedB(300.0),
             vsplit(Ratio(0.56), hsplit(FixedA(300.0), tabs(&[Project, EffectControls], 0), tabs(&[Composition, Layer], 0)), tabs(&[Timeline, RenderQueue], 0)),
-            vsplit(FixedA(250.0), tabs(&[Preview, Info, Audio], 0), tabs(&[Properties, EffectsPresets, Character, Paragraph, Align], 0)),
+            stack(&[(Preview, true, Some(46.0)), (Properties, true, None), (Align, false, None), (Audio, false, None), (EffectsPresets, false, None)]),
         ),
     }
 }
@@ -259,6 +276,7 @@ impl DockNode {
                 b.panels(out);
             }
             DockNode::Tabs { panels, .. } => out.extend(panels.iter().copied()),
+            DockNode::Stack { entries } => out.extend(entries.iter().map(|e| e.panel)),
         }
     }
     pub fn contains(&self, p: PanelKind) -> bool {
@@ -278,12 +296,34 @@ impl DockNode {
                     false
                 }
             }
+            DockNode::Stack { entries } => match entries.iter_mut().find(|e| e.panel == p) {
+                Some(e) => {
+                    e.open = true;
+                    true
+                }
+                None => false,
+            },
+        }
+    }
+    /// Expand or collapse a stacked panel. Returns false if `p` is not in a stack.
+    pub fn toggle_stacked(&mut self, p: PanelKind) -> bool {
+        match self {
+            DockNode::Split { a, b, .. } => a.toggle_stacked(p) || b.toggle_stacked(p),
+            DockNode::Tabs { .. } => false,
+            DockNode::Stack { entries } => match entries.iter_mut().find(|e| e.panel == p) {
+                Some(e) => {
+                    e.open = !e.open;
+                    true
+                }
+                None => false,
+            },
         }
     }
     pub fn is_visible(&self, p: PanelKind) -> bool {
         match self {
             DockNode::Split { a, b, .. } => a.is_visible(p) || b.is_visible(p),
             DockNode::Tabs { panels, active } => panels.get(*active) == Some(&p),
+            DockNode::Stack { entries } => entries.iter().any(|e| e.panel == p && e.open),
         }
     }
     /// Close a panel (remove its tab; empty groups collapse their split).
@@ -291,7 +331,11 @@ impl DockNode {
         if let DockNode::Split { a, b, .. } = self {
             a.close(p);
             b.close(p);
-            let empty = |n: &DockNode| matches!(n, DockNode::Tabs { panels, .. } if panels.is_empty());
+            let empty = |n: &DockNode| match n {
+                DockNode::Tabs { panels, .. } => panels.is_empty(),
+                DockNode::Stack { entries } => entries.is_empty(),
+                DockNode::Split { .. } => false,
+            };
             if empty(a) {
                 *self = (**b).clone();
             } else if empty(b) {
@@ -300,6 +344,8 @@ impl DockNode {
         } else if let DockNode::Tabs { panels, active } = self {
             panels.retain(|x| *x != p);
             *active = (*active).min(panels.len().saturating_sub(1));
+        } else if let DockNode::Stack { entries } = self {
+            entries.retain(|e| e.panel != p);
         }
     }
     /// Add a panel as a tab next to `near` (or into the first group).
@@ -320,6 +366,13 @@ impl DockNode {
                         false
                     }
                 }
+                DockNode::Stack { entries } => match entries.iter().position(|e| e.panel == near) {
+                    Some(i) => {
+                        entries.insert(i + 1, StackEntry { panel: p, open: true, height: None });
+                        true
+                    }
+                    None => false,
+                },
             }
         }
         if !add(self, p, near) && !add(self, p, PanelKind::EffectsPresets) {
@@ -335,12 +388,16 @@ pub struct Group {
     pub content: Rect,
     pub panels: Vec<PanelKind>,
     pub active: usize,
+    /// In a [`DockNode::Stack`]: whether the panel is expanded.
+    pub stacked: Option<bool>,
 }
 
 /// Actions produced by interacting with the dock chrome.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DockAction {
     Activate(PanelKind),
+    /// Expand/collapse a stacked panel.
+    ToggleStacked(PanelKind),
     Focus(PanelKind),
     Close(PanelKind),
     PanelMenu(PanelKind, egui::Pos2),
@@ -352,7 +409,24 @@ pub fn layout(ui: &mut egui::Ui, node: &mut DockNode, rect: Rect, t: &Tokens, pa
         DockNode::Tabs { panels, active } => {
             let tab_h = if panels.len() == 1 && panels[0].compact() { 8.0 } else { t.tab_h };
             let content = Rect::from_min_max(pos2(rect.min.x, rect.min.y + tab_h), rect.max);
-            out.push(Group { path: path.to_string(), rect, content, panels: panels.clone(), active: *active });
+            out.push(Group { path: path.to_string(), rect, content, panels: panels.clone(), active: *active, stacked: None });
+        }
+        DockNode::Stack { entries } => {
+            // Headers for every entry; fixed-height panels next; flexible ones share the rest.
+            let head = t.tab_h;
+            let g = t.gap;
+            let n = entries.len() as f32;
+            let fixed: f32 = entries.iter().filter(|e| e.open).filter_map(|e| e.height).sum();
+            let flex = entries.iter().filter(|e| e.open && e.height.is_none()).count().max(1) as f32;
+            let spare = (rect.height() - n * head - (n - 1.0).max(0.0) * g - fixed).max(0.0);
+            let mut y = rect.min.y;
+            for (i, e) in entries.iter().enumerate() {
+                let body = if !e.open { 0.0 } else { e.height.unwrap_or(spare / flex) };
+                let r = Rect::from_min_max(pos2(rect.min.x, y), pos2(rect.max.x, (y + head + body).min(rect.max.y)));
+                let content = Rect::from_min_max(pos2(r.min.x, r.min.y + head), r.max);
+                out.push(Group { path: format!("{path}s{i}"), rect: r, content, panels: vec![e.panel], active: 0, stacked: Some(e.open) });
+                y = r.max.y + g;
+            }
         }
         DockNode::Split { vertical, size, a, b } => {
             let g = t.gap;
@@ -429,7 +503,8 @@ pub fn draw_group_chrome(
         let mut x = strip.min.x + 12.0;
         let text_y = strip.min.y + 16.0;
         for (i, p) in g.panels.iter().enumerate() {
-            let is_active = i == g.active;
+            // A collapsed stacked panel's header is plain text (no underline or panel menu).
+            let is_active = i == g.active && g.stacked != Some(false);
             let label = title(*p);
             let galley = painter.layout_no_wrap(label.clone(), Tokens::ui(12.0), if is_active { t.tab_text_active } else { t.tab_text });
             let menu_w = if is_active { 20.0 } else { 0.0 };
@@ -467,7 +542,11 @@ pub fn draw_group_chrome(
                 }
             }
             if resp.clicked() {
-                actions.push(DockAction::Activate(*p));
+                if g.stacked.is_some() {
+                    actions.push(DockAction::ToggleStacked(*p));
+                } else {
+                    actions.push(DockAction::Activate(*p));
+                }
                 actions.push(DockAction::Focus(*p));
             }
             if resp.middle_clicked() {
@@ -498,6 +577,32 @@ pub fn placeholder(ui: &mut egui::Ui, rect: Rect, t: &Tokens, text: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stacked_panels_toggle_open_close() {
+        use PanelKind::*;
+        let mut d = stack(&[(Preview, true, Some(46.0)), (Properties, true, None), (Align, false, None)]);
+        assert!(d.is_visible(Properties) && !d.is_visible(Align));
+        assert!(d.toggle_stacked(Align));
+        assert!(d.is_visible(Align));
+        assert!(d.toggle_stacked(Align) && !d.is_visible(Align));
+        // Showing a collapsed panel expands it; opening a new panel near one inserts after it.
+        assert!(d.activate(Align) && d.is_visible(Align));
+        d.open_near(Info, Properties);
+        let mut v = vec![];
+        d.panels(&mut v);
+        assert_eq!(v, [Preview, Properties, Info, Align]);
+        d.close(Preview);
+        assert!(!d.contains(Preview));
+        assert!(!d.toggle_stacked(Timeline));
+    }
+
+    #[test]
+    fn default_workspace_has_ae_right_column_stack() {
+        let d = workspace("Default");
+        assert!(d.is_visible(PanelKind::Properties) && d.is_visible(PanelKind::Preview));
+        assert!(d.contains(PanelKind::EffectsPresets) && !d.is_visible(PanelKind::EffectsPresets));
+    }
 
     #[test]
     fn workspaces_contain_core_panels() {

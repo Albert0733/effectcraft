@@ -626,6 +626,9 @@ impl EffectcraftApp {
         self.ui.dock = dock;
         for g in &groups {
             let Some(p) = g.panels.get(g.active).copied() else { continue };
+            if g.content.height() < 2.0 {
+                continue; // a collapsed stacked panel: header only
+            }
             self.auto.add(&format!("panel.{}", p.id()), g.content, p.title());
             let mut child = ui.new_child(egui::UiBuilder::new().max_rect(g.content).id_salt(("panel", p.id())));
             child.set_clip_rect(g.content.intersect(ui.clip_rect()));
@@ -635,6 +638,9 @@ impl EffectcraftApp {
             match a {
                 dock::DockAction::Activate(p) => {
                     self.ui.dock.activate(p);
+                }
+                dock::DockAction::ToggleStacked(p) => {
+                    self.ui.dock.toggle_stacked(p);
                 }
                 dock::DockAction::Focus(p) => self.ui.focused = p,
                 dock::DockAction::Close(p) => self.ui.dock.close(p),
