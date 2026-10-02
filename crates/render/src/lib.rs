@@ -6,6 +6,7 @@
 //! with motion blur sub-samples) → **track matte** → **blend** with the layer's mode and opacity.
 //! Adjustment layers run their effects on everything below, limited by their own bounds/masks.
 
+pub mod cache;
 pub mod eval;
 pub mod masks;
 pub mod shapes;
@@ -13,6 +14,7 @@ pub mod text;
 
 use std::sync::Arc;
 
+pub use cache::{CacheStats, LayerCache};
 use effectcraft_color::BlendMode;
 use effectcraft_effects::{Buf, EffectCtx, Params};
 use effectcraft_geom::{Mat3, vec2};
@@ -59,13 +61,32 @@ pub struct Renderer<'a> {
     pub footage: &'a dyn FootageSource,
     pub expr: Option<&'a dyn ExprHost>,
     pub opts: RenderOpts,
+    /// Processed-layer cache shared across frames (see [`cache`]). `None` renders everything.
+    pub cache: Option<&'a LayerCache>,
+    /// Optional per-layer timing sink (`frame --bench` / perf readouts).
+    pub profile: Option<&'a std::sync::Mutex<Vec<LayerTiming>>>,
     /// Current nesting depth (precomp recursion guard).
     depth: usize,
 }
 
+/// Time spent on one layer of one frame (milliseconds).
+#[derive(Clone, Debug, Default)]
+pub struct LayerTiming {
+    pub depth: usize,
+    pub layer: String,
+    /// Source + masks + effects (cache lookup only, on a hit).
+    pub process_ms: f64,
+    /// Per effect: (effect id, ms). Empty on a cache hit.
+    pub effects: Vec<(String, f64)>,
+    /// Transform + matte + blend.
+    pub composite_ms: f64,
+    /// The processed buffer came from the layer cache.
+    pub cached: bool,
+}
+
 impl<'a> Renderer<'a> {
     pub fn new(project: &'a Project, footage: &'a dyn FootageSource, opts: RenderOpts) -> Renderer<'a> {
-        Renderer { project, footage, expr: None, opts, depth: 0 }
+        Renderer { project, footage, expr: None, opts, cache: None, profile: None, depth: 0 }
     }
 
     fn ctx(&self, comp_id: ItemId, comp: &'a Comp, t: Tick) -> EvalCtx<'a> {
@@ -126,7 +147,11 @@ impl<'a> Renderer<'a> {
         p
     }
 
-    fn apply_effects(&self, ctx: &EvalCtx, layer: &Layer, mut buf: Buf, adjustment: bool) -> Buf {
+    fn apply_effects(&self, ctx: &EvalCtx, layer: &Layer, buf: Buf, adjustment: bool) -> Buf {
+        self.apply_effects_timed(ctx, layer, buf, adjustment, None)
+    }
+
+    fn apply_effects_timed(&self, ctx: &EvalCtx, layer: &Layer, mut buf: Buf, adjustment: bool, mut timing: Option<&mut Vec<(String, f64)>>) -> Buf {
         if !layer.switches.effects {
             return buf;
         }
@@ -142,7 +167,11 @@ impl<'a> Renderer<'a> {
             let Some(spec) = effectcraft_effects::find(effect) else { continue };
             let params = self.effect_params(ctx, layer, g);
             let ectx = EffectCtx { params: &params, time: lt.seconds(), layer_size, seed: g.uid as u32, adjustment };
+            let t0 = std::time::Instant::now();
             buf = effectcraft_effects::apply(spec, &ectx, buf);
+            if let Some(v) = timing.as_deref_mut() {
+                v.push((spec.id.to_string(), t0.elapsed().as_secs_f64() * 1e3));
+            }
         }
         buf
     }
@@ -165,7 +194,7 @@ impl<'a> Renderer<'a> {
                 if self.project.comp_contains(*item, ctx.comp_id) {
                     return None;
                 }
-                let sub = Renderer { project: self.project, footage: self.footage, expr: self.expr, opts: self.opts, depth: self.depth + 1 };
+                let sub = Renderer { depth: self.depth + 1, ..*self };
                 let lt = layer.layer_time(ctx.time);
                 Some(Buf { img: sub.comp_frame(*item, lt), offset: [0.0; 2], scale: s })
             }
@@ -193,10 +222,28 @@ impl<'a> Renderer<'a> {
     }
 
     /// Fully processed layer buffer (source → masks → effects).
-    pub fn layer_buf(&self, ctx: &EvalCtx, layer: &Layer) -> Option<Buf> {
+    /// Served from the layer cache when the layer's content key matches.
+    pub fn layer_buf(&self, ctx: &EvalCtx, layer: &Layer) -> Option<Arc<Buf>> {
+        self.layer_buf_timed(ctx, layer, None)
+    }
+
+    fn layer_buf_timed(&self, ctx: &EvalCtx, layer: &Layer, mut timing: Option<&mut LayerTiming>) -> Option<Arc<Buf>> {
+        let key = self.cache.and_then(|_| cache::layer_key(ctx, layer, self.opts.scale, self.opts.draft));
+        if let (Some(c), Some(k)) = (self.cache, key)
+            && let Some(b) = c.get(k)
+        {
+            if let Some(t) = timing.as_deref_mut() {
+                t.cached = true;
+            }
+            return Some(b);
+        }
         let mut buf = self.source(ctx, layer)?;
         masks::apply(ctx, layer, &mut buf);
-        Some(self.apply_effects(ctx, layer, buf, false))
+        let buf = Arc::new(self.apply_effects_timed(ctx, layer, buf, false, timing.map(|t| &mut t.effects)));
+        if let (Some(c), Some(k)) = (self.cache, key) {
+            c.insert(k, buf.clone());
+        }
+        Some(buf)
     }
 
     fn sampling(&self, layer: &Layer) -> effectcraft_raster::Sampling {
@@ -232,25 +279,14 @@ impl<'a> Renderer<'a> {
         let fd = ctx.comp.frame_duration().seconds();
         let angle = ctx.comp.shutter_angle / 360.0;
         let phase = ctx.comp.shutter_phase / 360.0;
+        // Sub-samples sum straight into one buffer (each warp is row-parallel).
         let mut acc = Image::new(target.width, target.height);
-        let accum: Vec<Image> = (0..samples)
-            .into_par_iter()
-            .map(|i| {
-                let f = phase + angle * i as f64 / (samples - 1) as f64;
-                let sub = ctx.at(ctx.time + Tick::from_seconds_f64(f * fd));
-                let m = self.buf_matrix(&sub, layer, buf);
-                let mut img = Image::new(target.width, target.height);
-                composite_warp(&mut img, &buf.img, &m, &WarpOpts { mode: BlendMode::Normal, opacity: 1.0, ..opts });
-                img
-            })
-            .collect();
         let k = 1.0 / samples as f32;
-        for img in &accum {
-            acc.data.par_iter_mut().zip(img.data.par_iter()).for_each(|(a, b)| {
-                for c in 0..4 {
-                    a[c] += b[c] * k;
-                }
-            });
+        for i in 0..samples {
+            let f = phase + angle * i as f64 / (samples - 1) as f64;
+            let sub = ctx.at(ctx.time + Tick::from_seconds_f64(f * fd));
+            let m = self.buf_matrix(&sub, layer, buf);
+            effectcraft_raster::accumulate_warp(&mut acc, &buf.img, &m, opts.sampling, k);
         }
         target.blend_from(&acc, mode, opacity, layer.id.0 as u32);
     }
@@ -264,16 +300,34 @@ impl<'a> Renderer<'a> {
             self.draw_adjustment(ctx, layer, canvas, opacity);
             return;
         }
-        let Some(buf) = self.layer_buf(ctx, layer) else { return };
+        let Some(prof) = self.profile else {
+            if let Some(buf) = self.layer_buf(ctx, layer) {
+                self.composite_layer(ctx, layer, &buf, canvas, opacity);
+            }
+            return;
+        };
+        let mut timing = LayerTiming { depth: self.depth, layer: layer.name.clone(), ..Default::default() };
+        let t0 = std::time::Instant::now();
+        let Some(buf) = self.layer_buf_timed(ctx, layer, Some(&mut timing)) else { return };
+        let t1 = std::time::Instant::now();
+        self.composite_layer(ctx, layer, &buf, canvas, opacity);
+        timing.process_ms = (t1 - t0).as_secs_f64() * 1e3;
+        timing.composite_ms = t1.elapsed().as_secs_f64() * 1e3;
+        if let Ok(mut v) = prof.lock() {
+            v.push(timing);
+        }
+    }
+
+    fn composite_layer(&self, ctx: &EvalCtx, layer: &Layer, buf: &Buf, canvas: &mut Image, opacity: f32) {
         let matte = layer.track_matte.and_then(|tm| ctx.comp.layer(tm.layer).filter(|m| m.id != layer.id).map(|m| (m, tm.kind)));
         let preserve = layer.preserve_transparency;
         if matte.is_none() && !preserve {
-            self.place(ctx, layer, &buf, canvas, layer.blend_mode, opacity);
+            self.place(ctx, layer, buf, canvas, layer.blend_mode, opacity);
             return;
         }
         // Render in isolation, then matte / preserve transparency, then blend.
         let mut iso = Image::new(canvas.width, canvas.height);
-        self.place(ctx, layer, &buf, &mut iso, BlendMode::Normal, 1.0);
+        self.place(ctx, layer, buf, &mut iso, BlendMode::Normal, 1.0);
         if let Some((m, kind)) = matte {
             let mut mimg = Image::new(canvas.width, canvas.height);
             if m.is_active_at(ctx.time)

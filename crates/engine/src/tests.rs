@@ -18,6 +18,35 @@ fn demo_opens_and_renders() {
     assert!(lit > 100_000, "{lit}");
 }
 
+/// The session's layer cache never changes pixels: scrubbing the demo (including back and
+/// forth, and across an edit made through a command) matches cache-less renders exactly.
+#[test]
+fn demo_layer_cache_is_transparent() {
+    let mut s = demo();
+    let cid = s.active_comp_id().unwrap();
+    let opts = effectcraft_render::RenderOpts { scale: 0.25, ..Default::default() };
+    let uncached = |s: &Session, t: f64| {
+        let mut r = effectcraft_render::Renderer::new(&s.project, s.footage.as_ref(), opts);
+        r.expr = s.expr.as_deref();
+        r.comp_frame(cid, effectcraft_time::Tick::from_seconds_f64(t))
+    };
+    let check = |s: &Session, t: f64| {
+        let a = s.render(cid, effectcraft_time::Tick::from_seconds_f64(t), opts);
+        let b = uncached(s, t);
+        assert!(a.data.iter().zip(&b.data).all(|(p, q)| (0..4).all(|c| (p[c] - q[c]).abs() < 1e-6)), "t={t}");
+    };
+    for t in [0.5, 1.0, 3.0, 3.0334, 6.0, 3.0, 0.5] {
+        check(&s, t);
+    }
+    assert!(s.layer_cache.stats().hits > 0);
+    // Edit the title's glow through the command layer, then scrub again.
+    let title = s.project.comp(cid).unwrap().layers.iter().find(|l| l.name == "EFFECTCRAFT").map(|l| l.id.0).unwrap();
+    s.execute("prop.set", json!({"layer": title, "path": "effects/#1/radius", "value": 5.0})).unwrap();
+    for t in [3.0, 0.5] {
+        check(&s, t);
+    }
+}
+
 #[test]
 fn every_command_has_unique_id_and_runs_or_reports() {
     let mut ids = std::collections::HashSet::new();
