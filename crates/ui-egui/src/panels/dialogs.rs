@@ -6,7 +6,7 @@ use serde_json::json;
 
 use crate::icons::{self, Icon};
 use crate::theme::Tokens;
-use crate::{Dialog, EffectcraftApp, widgets};
+use crate::{Dialog, EffectcraftApp};
 
 #[derive(Clone, Debug)]
 pub struct CompDraft {

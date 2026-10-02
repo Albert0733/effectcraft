@@ -4,7 +4,7 @@ use effectcraft_color::{BlendMode, Label};
 use effectcraft_keyframe::{Justify, ShapePath, TextDoc, Value as KV};
 use effectcraft_project::build::{self, Ids};
 use effectcraft_project::{
-    Comp, FrameBlend, GroupKind, ItemId, ItemKind, Layer, LayerId, LayerSource, LightKind, MaskMode, MatteKind, Project, PropGroup, Quality, Solid, TrackMatte,
+    Comp, FrameBlend, GroupKind, ItemId, ItemKind, Layer, LayerId, LayerSource, MaskMode, MatteKind, Project, PropGroup, Quality, Solid, TrackMatte,
 };
 use effectcraft_time::Tick;
 use serde_json::{Value, json};
@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use super::{CommandSpec, b_p, bad, comp_id, f_p, has_comp, has_layers, layer_mut, layer_p, layers_p, merge_p, resolve_layer, str_p};
 use crate::{EngineError, Result, Session, cmd};
 
-fn color_p(p: &Value, k: &str) -> Option<[f32; 3]> {
+pub(crate) fn color_p(p: &Value, k: &str) -> Option<[f32; 3]> {
     match p.get(k)? {
         Value::String(s) => effectcraft_color::Rgba::from_hex(s).map(|c| [c.r, c.g, c.b]),
         Value::Array(a) => {
@@ -24,7 +24,7 @@ fn color_p(p: &Value, k: &str) -> Option<[f32; 3]> {
 }
 
 /// Insert a new layer above the selection (or at the top) and select it.
-fn insert_layer(proj: &mut Project, st: &mut crate::EditorState, cid: ItemId, layer: Layer) -> Result<LayerId> {
+pub(crate) fn insert_layer(proj: &mut Project, st: &mut crate::EditorState, cid: ItemId, layer: Layer) -> Result<LayerId> {
     let comp = proj.comp_mut(cid).ok_or(EngineError::NoComp)?;
     let at = st.selected_layers.first().and_then(|id| comp.layers.iter().position(|l| l.id == *id)).unwrap_or(0);
     let id = layer.id;
@@ -208,13 +208,6 @@ fn new_simple(s: &mut Session, p: &Value, src: LayerSource, name: &str, label: &
 
 fn new_null(s: &mut Session, p: &Value) -> Result<Value> {
     new_simple(s, p, LayerSource::Null, "Null 1", "New Null Object")
-}
-fn new_camera(s: &mut Session, p: &Value) -> Result<Value> {
-    new_simple(s, p, LayerSource::Camera, "Camera 1", "New Camera")
-}
-fn new_light(s: &mut Session, p: &Value) -> Result<Value> {
-    let kind = str_p(p, "kind").and_then(|k| LightKind::ALL.into_iter().find(|l| l.label().eq_ignore_ascii_case(k))).unwrap_or(LightKind::Point);
-    new_simple(s, p, LayerSource::Light { kind }, "Light 1", "New Light")
 }
 
 fn add_item(s: &mut Session, p: &Value) -> Result<Value> {
@@ -820,6 +813,12 @@ fn time_stretch(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn layer_settings(s: &mut Session, p: &Value) -> Result<Value> {
     let (cid, lid) = layer_p(s, p, "layer.settings")?;
+    // Cameras and lights open their own settings (Camera Settings / Light Settings).
+    match s.project.comp(cid).and_then(|c| c.layer(lid)).map(|l| l.source.clone()) {
+        Some(LayerSource::Camera) => return s.execute("layer.cameraSettings", with_layer(p, lid)),
+        Some(LayerSource::Light { .. }) => return s.execute("layer.lightSettings", with_layer(p, lid)),
+        _ => {}
+    }
     let color = color_p(p, "color");
     let w = p.get("width").and_then(Value::as_u64).map(|v| v as u32);
     let h = p.get("height").and_then(Value::as_u64).map(|v| v as u32);
@@ -849,12 +848,16 @@ fn layer_settings(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(Value::Null)
 }
 
+fn with_layer(p: &Value, lid: LayerId) -> Value {
+    let mut p = if p.is_object() { p.clone() } else { json!({}) };
+    p["layer"] = json!(lid.0);
+    p
+}
+
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!("layer.newText", "Text", ["Layer", "New"], Some("Cmd+Alt+Shift+T"), "{text?, size?, font?, fill?, position? [x,y], justify?}", has_comp, new_text),
         cmd!("layer.newSolid", "Solid…", ["Layer", "New"], Some("Cmd+Y"), "{name?, color? #hex|[r,g,b], width?, height?}", has_comp, new_solid),
-        cmd!("layer.newLight", "Light…", ["Layer", "New"], Some("Cmd+Alt+Shift+L"), "{kind?: Parallel|Spot|Point|Ambient}", has_comp, new_light),
-        cmd!("layer.newCamera", "Camera…", ["Layer", "New"], Some("Cmd+Alt+Shift+C"), "{name?}", has_comp, new_camera),
         cmd!("layer.newNull", "Null Object", ["Layer", "New"], Some("Cmd+Alt+Shift+Y"), "{name?}", has_comp, new_null),
         cmd!(
             "layer.newShape",

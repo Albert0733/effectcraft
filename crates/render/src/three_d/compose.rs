@@ -1,0 +1,483 @@
+//! The Classic 3D compositor for a run of consecutive 3D layers.
+//!
+//! Each layer is a textured plane: its processed buffer (source → masks → effects, DOF-blurred)
+//! mapped through `projection · world`. Rendering is per output pixel (rows in parallel): every
+//! plane covering the pixel is inverse-mapped through its homography (exact perspective-correct
+//! texture coordinates, bilinear/bicubic sampling), its camera depth taken from the plane
+//! equation, and the fragment shaded by the comp's lights. The pixel's fragments are then sorted
+//! far→near (coplanar fragments keep layer-stack order) and blended with each layer's mode and
+//! opacity. Sorting per pixel handles intersecting layers exactly, and blend modes and partial
+//! transparency still compose in depth order, as in AE's Classic 3D renderer.
+//!
+//! Shadows are ray-cast against the shadow-casting planes (exact for planar layers, including
+//! alpha-shaped and coloured shadows through Light Transmission); Shadow Diffusion softens them
+//! with a penumbra that grows with the distance between caster and receiver.
+
+use effectcraft_color::{BlendMode, blend_pixel};
+use effectcraft_effects::Buf;
+use effectcraft_geom::{Mat3, Mat4, Vec3, vec3};
+use effectcraft_project::{Layer, LightKind, MatteKind};
+use effectcraft_raster::{Image, Px, hash_noise};
+use effectcraft_time::Tick;
+use rayon::prelude::*;
+
+use super::camera::{CameraState, NEAR, active_camera};
+use super::light::{LightState, Material, lights_at, shade};
+use crate::{EvalCtx, Renderer};
+
+/// One position of a plane (several with motion blur).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Geo {
+    /// Output pixel → homogeneous layer coordinates.
+    hinv: Mat3,
+    /// Camera-space depth as a function of layer (u, v): `d0·u + d1·v + d2`.
+    depth: [f64; 3],
+    world: Mat4,
+    normal: Vec3,
+    /// Output pixel bounds [x0, y0, x1, y1) covered by the plane.
+    bbox: [i64; 4],
+    cam: CameraState,
+}
+
+/// A prepared 3D layer.
+pub(crate) struct Item<'a> {
+    pub layer: &'a Layer,
+    /// Position in the layer stack (higher = above).
+    order: usize,
+    buf: Buf,
+    bicubic: bool,
+    geos: Vec<Geo>,
+    mat: Material,
+    opacity: f32,
+    /// Drawn (false for "Casts Shadows: Only" and shadow-only casters outside the run).
+    draw: bool,
+    /// Screen-space track matte factor (output size).
+    matte: Option<Vec<f32>>,
+    preserve: bool,
+    /// World → layer (for shadow rays) and the buffer's layer-space bounds.
+    winv: Mat4,
+    bounds: [f64; 4],
+    bbox: [i64; 4],
+}
+
+impl Item<'_> {
+    #[inline]
+    fn texel(&self, u: f64, v: f64) -> Px {
+        let x = u * self.buf.scale + self.buf.offset[0];
+        let y = v * self.buf.scale + self.buf.offset[1];
+        if self.bicubic { self.buf.img.sample_bicubic(x, y) } else { self.buf.img.sample_bilinear(x, y) }
+    }
+}
+
+/// Build the plane geometry of a layer for a camera.
+fn geo(cam: &CameraState, world: Mat4, buf: &Buf, comp: (f64, f64), scale: f64, out: (u32, u32)) -> Option<Geo> {
+    let proj = Mat4::scale(vec3(scale, scale, 1.0)) * cam.projection(comp.0, comp.1);
+    let full = proj * world;
+    let h = full.plane_to_mat3();
+    let hinv = h.inverse()?;
+    let cv = cam.view * world;
+    let depth = [cv.0[2][0], cv.0[2][1], cv.0[2][3]];
+    let normal = world.apply_vec(vec3(1.0, 0.0, 0.0)).cross(world.apply_vec(vec3(0.0, 1.0, 0.0)));
+    if normal.length() < 1e-12 {
+        return None;
+    }
+    let normal = normal.normalize();
+    let b = buf_bounds(buf);
+    let corners = [(b[0], b[1]), (b[2], b[1]), (b[2], b[3]), (b[0], b[3])];
+    let (mut x0, mut y0, mut x1, mut y1) = (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+    let mut behind = 0;
+    let mut full_frame = false;
+    for (u, v) in corners {
+        let z = depth[0] * u + depth[1] * v + depth[2];
+        if !cam.ortho && z < NEAR {
+            behind += 1;
+            full_frame = true;
+            continue;
+        }
+        let p = full.apply(vec3(u, v, 0.0));
+        x0 = x0.min(p.x);
+        y0 = y0.min(p.y);
+        x1 = x1.max(p.x);
+        y1 = y1.max(p.y);
+    }
+    if behind == 4 {
+        return None;
+    }
+    let (ow, oh) = (out.0 as i64, out.1 as i64);
+    let bbox = if full_frame {
+        [0, 0, ow, oh]
+    } else {
+        [((x0.floor() as i64) - 2).max(0), ((y0.floor() as i64) - 2).max(0), ((x1.ceil() as i64) + 2).min(ow), ((y1.ceil() as i64) + 2).min(oh)]
+    };
+    if bbox[0] >= bbox[2] || bbox[1] >= bbox[3] {
+        return None;
+    }
+    Some(Geo { hinv, depth, world, normal, bbox, cam: *cam })
+}
+
+/// Layer-space rectangle covered by a buffer.
+fn buf_bounds(buf: &Buf) -> [f64; 4] {
+    let s = buf.scale.max(1e-9);
+    [-buf.offset[0] / s, -buf.offset[1] / s, (buf.img.width as f64 - buf.offset[0]) / s, (buf.img.height as f64 - buf.offset[1]) / s]
+}
+
+/// Inverse-map an output pixel centre onto a plane: (u, v, camera depth).
+#[inline]
+fn unproject(g: &Geo, sx: f64, sy: f64) -> Option<(f64, f64, f64)> {
+    let h = &g.hinv.0;
+    let qz = h[2][0] * sx + h[2][1] * sy + h[2][2];
+    if !g.cam.ortho && qz <= 0.0 {
+        return None;
+    }
+    if qz.abs() < 1e-300 {
+        return None;
+    }
+    let u = (h[0][0] * sx + h[0][1] * sy + h[0][2]) / qz;
+    let v = (h[1][0] * sx + h[1][1] * sy + h[1][2]) / qz;
+    let z = g.depth[0] * u + g.depth[1] * v + g.depth[2];
+    if !g.cam.ortho && z < NEAR {
+        return None;
+    }
+    Some((u, v, z))
+}
+
+/// The camera a renderer uses at a context time (view override only for the top-level comp).
+pub(crate) fn camera_for(r: &Renderer, ctx: &EvalCtx) -> CameraState {
+    match r.opts.view {
+        Some(v) if r.depth == 0 => v,
+        _ => active_camera(ctx),
+    }
+}
+
+/// Number of motion-blur sub-samples for a layer.
+fn mb_samples(r: &Renderer, ctx: &EvalCtx, layer: &Layer) -> usize {
+    if r.opts.motion_blur && ctx.comp.enable_motion_blur && layer.switches.motion_blur {
+        if r.opts.draft { 4 } else { ctx.comp.motion_blur_samples.clamp(2, 64) as usize }
+    } else {
+        1
+    }
+}
+
+/// Prepare a layer (buffer, geometry, material). `None` when it shows nothing.
+pub(crate) fn prepare<'a>(r: &Renderer, ctx: &EvalCtx<'a>, layer: &'a Layer, order: usize, out: (u32, u32), in_run: bool) -> Option<Item<'a>> {
+    let mut buf = r.layer_buf(ctx, layer)?;
+    if buf.img.is_empty() {
+        return None;
+    }
+    let comp = (ctx.comp.width as f64, ctx.comp.height as f64);
+    let s = r.opts.scale;
+    let cam = camera_for(r, ctx);
+    let world = ctx.world_matrix(layer);
+    // Depth of field: blur the layer by its circle of confusion at its centre.
+    if let Some(dof) = cam.dof.filter(|_| !ctx.comp.draft_3d && !r.opts.draft) {
+        let b = buf_bounds(&buf);
+        let centre = world.apply(vec3((b[0] + b[2]) * 0.5, (b[1] + b[3]) * 0.5, 0.0));
+        let z = cam.depth(centre);
+        let coc = dof.coc(z);
+        // Comp pixels on screen per layer pixel at that depth.
+        let k = cam.zoom / z.max(NEAR) * world.apply_vec(vec3(1.0, 0.0, 0.0)).length().max(1e-9);
+        let radius = coc * 0.5 / k * buf.scale;
+        if radius > 0.3 {
+            let sigma = radius / 1.5;
+            let pad = (sigma * 3.0).ceil() as u32 + 1;
+            let padded = buf.img.padded(pad);
+            buf.img = effectcraft_raster::gaussian_blur(&padded, sigma, sigma, false);
+            buf.offset = [buf.offset[0] + pad as f64, buf.offset[1] + pad as f64];
+        }
+    }
+    let n = if in_run { mb_samples(r, ctx, layer) } else { 1 };
+    let geos: Vec<Geo> = if n <= 1 {
+        geo(&cam, world, &buf, comp, s, out).into_iter().collect()
+    } else {
+        let fd = ctx.comp.frame_duration().seconds();
+        let angle = ctx.comp.shutter_angle / 360.0;
+        let phase = ctx.comp.shutter_phase / 360.0;
+        (0..n)
+            .filter_map(|i| {
+                let f = phase + angle * i as f64 / (n - 1) as f64;
+                let sub = ctx.at(ctx.time + Tick::from_seconds_f64(f * fd));
+                let c = camera_for(r, &sub);
+                geo(&c, sub.world_matrix(layer), &buf, comp, s, out)
+            })
+            .collect()
+    };
+    if geos.is_empty() && in_run {
+        return None;
+    }
+    let mut bbox = [i64::MAX, i64::MAX, i64::MIN, i64::MIN];
+    for g in &geos {
+        bbox = [bbox[0].min(g.bbox[0]), bbox[1].min(g.bbox[1]), bbox[2].max(g.bbox[2]), bbox[3].max(g.bbox[3])];
+    }
+    let mat = Material::of(ctx, layer);
+    let bounds = buf_bounds(&buf);
+    Some(Item {
+        layer,
+        order,
+        bicubic: matches!(r.sampling(layer), effectcraft_raster::Sampling::Bicubic),
+        buf,
+        geos,
+        opacity: ctx.opacity(layer) as f32,
+        draw: in_run && mat.casts_shadows != 2,
+        mat,
+        matte: None,
+        preserve: layer.preserve_transparency,
+        winv: world.inverse().unwrap_or(Mat4::IDENTITY),
+        bounds,
+        bbox,
+    })
+}
+
+/// Screen-space track matte factor for a layer, or None.
+fn matte_for(r: &Renderer, ctx: &EvalCtx, layer: &Layer, out: (u32, u32)) -> Option<Vec<f32>> {
+    let tm = layer.track_matte?;
+    let m = ctx.comp.layer(tm.layer).filter(|m| m.id != layer.id)?;
+    let mut img = Image::new(out.0, out.1);
+    if m.is_active_at(ctx.time) {
+        if m.is_3d() {
+            // Render the matte plane alone (its own matte is ignored).
+            let mut solo = m.clone();
+            solo.track_matte = None;
+            solo.preserve_transparency = false;
+            solo.blend_mode = BlendMode::Normal;
+            if let Some(it) = prepare(r, ctx, &solo, 0, out, true) {
+                let lights = lights_at(ctx);
+                composite(&mut img, &[it], &lights, &[], m.id.0 as u32);
+            }
+        } else if let Some(mb) = r.layer_buf(ctx, m) {
+            r.place(ctx, m, &mb, &mut img, BlendMode::Normal, ctx.opacity(m) as f32);
+        }
+    }
+    Some(
+        img.data
+            .par_iter()
+            .map(|q| {
+                match tm.kind {
+                    MatteKind::Alpha => q[3],
+                    MatteKind::AlphaInverted => 1.0 - q[3],
+                    MatteKind::Luma => effectcraft_color::luminance(q[0], q[1], q[2]),
+                    MatteKind::LumaInverted => 1.0 - effectcraft_color::luminance(q[0], q[1], q[2]),
+                }
+                .clamp(0.0, 1.0)
+            })
+            .collect(),
+    )
+}
+
+/// Draw a run of consecutive 3D layers (bottom-to-top order) into `canvas`.
+pub(crate) fn draw_run(r: &Renderer, ctx: &EvalCtx, run: &[&Layer], canvas: &mut Image) {
+    // 3D adjustment layers act on everything below them in the stack (like 2D ones): split.
+    if let Some(k) = run.iter().position(|l| l.switches.adjustment) {
+        draw_run(r, ctx, &run[..k], canvas);
+        r.draw_layer(ctx, run[k], canvas);
+        draw_run(r, ctx, &run[k + 1..], canvas);
+        return;
+    }
+    if run.is_empty() {
+        return;
+    }
+    let out = (canvas.width, canvas.height);
+    let lights = lights_at(ctx);
+    let mut items: Vec<Item> = run
+        .par_iter()
+        .enumerate()
+        .filter(|(_, l)| ctx.opacity(l) > 0.0)
+        .filter_map(|(i, l)| {
+            let mut it = prepare(r, ctx, l, i, out, true)?;
+            it.matte = matte_for(r, ctx, l, out);
+            Some(it)
+        })
+        .collect();
+    // Shadow casters outside this run (other 3D layers of the comp).
+    let mut extra: Vec<Item> = vec![];
+    if lights.iter().any(|l| l.casts_shadows && l.kind != LightKind::Ambient) {
+        let in_run: Vec<_> = run.iter().map(|l| l.id).collect();
+        extra = ctx
+            .comp
+            .layers
+            .par_iter()
+            .filter(|l| l.switches.three_d && l.has_video() && l.is_active_at(ctx.time) && !in_run.contains(&l.id) && !l.switches.adjustment)
+            .filter(|l| Material::of(ctx, l).casts_shadows != 0)
+            .filter_map(|l| prepare(r, ctx, l, 0, out, false))
+            .collect();
+    }
+    items.sort_by_key(|i| i.order);
+    let casters: Vec<&Item> = items.iter().chain(extra.iter()).filter(|i| i.mat.casts_shadows != 0 && !i.geos.is_empty()).collect();
+    composite(canvas, &items, &lights, &casters, run[0].id.0 as u32);
+}
+
+/// Per-pixel depth-sorted compositing of prepared planes.
+fn composite(canvas: &mut Image, items: &[Item], lights: &[LightState], casters: &[&Item], seed: u32) {
+    let w = canvas.width as usize;
+    canvas.rows_mut().for_each(|(y, row)| {
+        let yi = y as i64;
+        let active: Vec<&Item> = items.iter().filter(|it| it.draw && yi >= it.bbox[1] && yi < it.bbox[3]).collect();
+        if active.is_empty() {
+            return;
+        }
+        let mut frags: Vec<(f64, usize, Px, usize)> = Vec::with_capacity(active.len());
+        for x in 0..w {
+            let xi = x as i64;
+            frags.clear();
+            for (k, it) in active.iter().enumerate() {
+                if xi < it.bbox[0] || xi >= it.bbox[2] {
+                    continue;
+                }
+                if let Some((z, px)) = fragment(it, x as f64 + 0.5, y as f64 + 0.5, lights, casters) {
+                    let px = match &it.matte {
+                        Some(m) => {
+                            let f = m[y * w + x];
+                            [px[0] * f, px[1] * f, px[2] * f, px[3] * f]
+                        }
+                        None => px,
+                    };
+                    if px[3] > 0.0 || px[0] != 0.0 || px[1] != 0.0 || px[2] != 0.0 {
+                        frags.push((z, it.order, px, k));
+                    }
+                }
+            }
+            if frags.is_empty() {
+                continue;
+            }
+            // Far → near; (near-)coplanar fragments in stack order (lower layer first).
+            for i in 1..frags.len() {
+                let mut j = i;
+                while j > 0 && before(&frags[j], &frags[j - 1]) {
+                    frags.swap(j, j - 1);
+                    j -= 1;
+                }
+            }
+            let mut d = row[x];
+            for (_, _, px, k) in &frags {
+                let it = active[*k];
+                let mut s = *px;
+                let op = it.opacity * if it.preserve { d[3] } else { 1.0 };
+                for c in s.iter_mut() {
+                    *c *= op;
+                }
+                let mode = it.layer.blend_mode;
+                let n = if matches!(mode, BlendMode::Dissolve | BlendMode::DancingDissolve) {
+                    hash_noise(x as u32, y as u32, seed ^ it.layer.id.0 as u32)
+                } else {
+                    0.5
+                };
+                d = blend_pixel(mode, d, s, n);
+            }
+            row[x] = d;
+        }
+    });
+}
+
+#[inline]
+fn before(a: &(f64, usize, Px, usize), b: &(f64, usize, Px, usize)) -> bool {
+    let tol = 1e-6 * a.0.abs().max(b.0.abs()).max(1.0);
+    if (a.0 - b.0).abs() <= tol { a.1 < b.1 } else { a.0 > b.0 }
+}
+
+/// Shaded premultiplied fragment of a plane at an output pixel centre, with its depth.
+fn fragment(it: &Item, sx: f64, sy: f64, lights: &[LightState], casters: &[&Item]) -> Option<(f64, Px)> {
+    let n = it.geos.len();
+    let mut acc = [0.0f32; 4];
+    let mut depth = None;
+    for g in &it.geos {
+        let Some((u, v, z)) = unproject(g, sx, sy) else { continue };
+        let t = it.texel(u, v);
+        if t[3] <= 1e-6 {
+            continue;
+        }
+        depth.get_or_insert(z);
+        let px = shade_texel(it, g, u, v, t, lights, casters);
+        for c in 0..4 {
+            acc[c] += px[c];
+        }
+    }
+    let depth = depth?;
+    if n > 1 {
+        let k = 1.0 / n as f32;
+        for c in acc.iter_mut() {
+            *c *= k;
+        }
+    }
+    Some((depth, acc))
+}
+
+fn shade_texel(it: &Item, g: &Geo, u: f64, v: f64, t: Px, lights: &[LightState], casters: &[&Item]) -> Px {
+    if lights.is_empty() || !it.mat.accepts_lights {
+        if it.mat.accepts_shadows == 2 {
+            return [0.0; 4];
+        }
+        return t;
+    }
+    let a = t[3];
+    let rgb = [t[0] / a, t[1] / a, t[2] / a];
+    let p = g.world.apply(vec3(u, v, 0.0));
+    let shadow = |li: usize, p: Vec3| -> [f32; 3] {
+        let l = &lights[li];
+        let mut tr = [1.0f32; 3];
+        for c in casters {
+            if std::ptr::eq(*c, it) || c.layer.id == it.layer.id {
+                continue;
+            }
+            let o = occlusion(c, p, l);
+            for k in 0..3 {
+                tr[k] *= o[k];
+            }
+        }
+        tr
+    };
+    let (lit, shadow_amt) = shade(rgb, p, g.normal, g.cam.to_viewer(p), &it.mat, lights, &shadow);
+    if it.mat.accepts_shadows == 2 {
+        return [0.0, 0.0, 0.0, a * shadow_amt];
+    }
+    [lit[0] * a, lit[1] * a, lit[2] * a, a]
+}
+
+/// RGB transmittance of light `l` reaching `p` past caster `c` (1 = unoccluded).
+fn occlusion(c: &Item, p: Vec3, l: &LightState) -> [f32; 3] {
+    const FAR: f64 = 1.0e6;
+    let a = c.winv.apply(p);
+    let target = if l.kind == LightKind::Parallel { p - l.dir * FAR } else { l.pos };
+    let b = c.winv.apply(target);
+    if a.z == b.z || a.z.signum() == b.z.signum() {
+        return [1.0; 3];
+    }
+    let t = a.z / (a.z - b.z);
+    if t <= 1e-6 || t >= 1.0 - 1e-9 {
+        return [1.0; 3];
+    }
+    let hit = a + (b - a) * t;
+    // Penumbra radius (layer pixels) from Shadow Diffusion: grows with receiver–caster distance.
+    let seg = (target - p).length();
+    let d_pc = seg * t;
+    let d_cl = if l.kind == LightKind::Parallel { 1000.0 } else { (seg * (1.0 - t)).max(1.0) };
+    let r = l.shadow_diffusion * (d_pc / d_cl).min(4.0);
+    let bd = &c.bounds;
+    if hit.x < bd[0] - r || hit.y < bd[1] - r || hit.x > bd[2] + r || hit.y > bd[3] + r {
+        return [1.0; 3];
+    }
+    let mut px = [0.0f32; 4];
+    if r * c.buf.scale < 0.5 {
+        px = c.texel(hit.x, hit.y);
+    } else {
+        for j in -1..=1 {
+            for i in -1..=1 {
+                let q = c.texel(hit.x + i as f64 * r * 0.66, hit.y + j as f64 * r * 0.66);
+                for k in 0..4 {
+                    px[k] += q[k] / 9.0;
+                }
+            }
+        }
+    }
+    let alpha = (px[3] * c.opacity).clamp(0.0, 1.0);
+    if alpha <= 0.0 {
+        return [1.0; 3];
+    }
+    let tr = c.mat.light_transmission;
+    let dark = l.shadow_darkness as f32;
+    let mut out = [1.0f32; 3];
+    for k in 0..3 {
+        let straight = if px[3] > 0.0 { (px[k] / px[3]).clamp(0.0, 1.0) } else { 0.0 };
+        let pass = (1.0 - alpha) + alpha * tr * straight;
+        out[k] = 1.0 - dark * (1.0 - pass);
+    }
+    out
+}

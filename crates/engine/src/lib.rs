@@ -110,6 +110,9 @@ pub struct EditorState {
     pub snapping: bool,
     /// Last applied effect id (Effect ▸ last effect).
     pub last_effect: Option<String>,
+    /// Viewer 3D view per comp (Active Camera / Front / … / Custom View 3 and edited view cameras).
+    #[serde(default)]
+    pub views3d: std::collections::BTreeMap<ItemId, effectcraft_render::three_d::Views3D>,
 }
 
 /// Events for frontends (drained each frame).
@@ -299,6 +302,15 @@ impl Session {
         std::mem::take(&mut self.events)
     }
 
+    /// The 3D view camera of a comp's viewer (None = the active camera).
+    pub fn view_camera(&self, comp: ItemId) -> Option<effectcraft_render::three_d::CameraState> {
+        let c = self.project.comp(comp)?;
+        if !c.has_3d() {
+            return None;
+        }
+        self.state.views3d.get(&comp)?.override_camera(c.width as f64, c.height as f64)
+    }
+
     /// Render a comp frame with the session's footage + expression hosts.
     pub fn render(&self, comp: ItemId, t: Tick, opts: RenderOpts) -> Image {
         let mut r = Renderer::new(&self.project, self.footage.as_ref(), opts);
@@ -324,6 +336,8 @@ impl Session {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_3d;
 
 /// Font families available to text layers (bundled + scanned system fonts).
 pub fn text_families() -> Vec<String> {

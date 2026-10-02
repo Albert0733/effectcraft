@@ -439,7 +439,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let fd = comp.frame_duration().seconds();
     let cy0 = ruler.min.y + 11.0;
     let mut run: Option<(i64, i64)> = None;
-    let mut draw_run = |a: i64, b: i64| {
+    let draw_run = |a: i64, b: i64| {
         let x0 = tm.x(a as f64 * fd);
         let x1 = tm.x((b + 1) as f64 * fd);
         p.rect_filled(Rect::from_min_max(pos2(x0, cy0), pos2(x1, cy0 + 2.5)), 0.0, t.cache_green);

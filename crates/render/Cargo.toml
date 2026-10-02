@@ -21,4 +21,5 @@ effectcraft-text = { workspace = true }
 effectcraft-effects = { workspace = true }
 kurbo = { workspace = true }
 rayon = { workspace = true }
+serde = { workspace = true }
 log = { workspace = true }

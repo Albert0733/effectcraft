@@ -3,7 +3,7 @@
 //! Keyframe times are stored in **layer time** (they move with the layer), so evaluating a
 //! property at comp time `t` first maps `t` through the layer's start time and stretch.
 
-use effectcraft_geom::{Mat3, Mat4, Vec3, look_at, vec3};
+use effectcraft_geom::{Mat3, Mat4, Vec3, vec3};
 use effectcraft_keyframe::Value;
 use effectcraft_project::{Comp, ItemId, Layer, LayerId, LayerSource, Project, PropGroup, Property};
 use effectcraft_time::Tick;
@@ -111,40 +111,10 @@ impl<'a> EvalCtx<'a> {
         layer.transform().map(|tr| self.f(layer, tr, "opacity", 100.0)).unwrap_or(100.0) / 100.0
     }
 
-    /// The comp's camera at this time: (view-projection to comp pixels, eye position).
+    /// The comp's active camera at this time: (view-projection to comp pixels, eye, zoom).
     pub fn camera(&self) -> (Mat4, Vec3, f64) {
-        let (w, h) = (self.comp.width as f64, self.comp.height as f64);
-        if let Some(cam) = self.comp.active_camera(self.time)
-            && let Some(tr) = cam.transform()
-        {
-            let pos = Vec3::from(self.v3(cam, tr, "position", [w / 2.0, h / 2.0, -1000.0]));
-            let zoom = cam.props.sub("cameraOptions").map(|g| self.f(cam, g, "zoom", 1000.0)).unwrap_or(1000.0);
-            let o = self.v3(cam, tr, "orientation", [0.0; 3]);
-            let rx = self.f(cam, tr, "rotationX", 0.0);
-            let ry = self.f(cam, tr, "rotationY", 0.0);
-            let rz = self.f(cam, tr, "rotation", 0.0);
-            // Extra camera rotation is applied in camera space (inverse, because it rotates the eye).
-            let extra = (Mat4::orientation(Vec3::from(o)) * Mat4::rotate_z(rz) * Mat4::rotate_y(ry) * Mat4::rotate_x(rx)).transpose();
-            let view = if let Some(poi) = tr.get("poi").map(|p| self.value(cam, p).as_vec3()) {
-                look_at(pos, Vec3::from(poi), extra)
-            } else {
-                look_at(pos, pos + vec3(0.0, 0.0, 1.0), extra)
-            };
-            let mut view = view;
-            // Parented cameras: apply the parent's world matrix inverse.
-            if let Some(pid) = cam.parent
-                && let Some(p) = self.comp.layer(pid)
-                && let Some(inv) = self.world_matrix(p).inverse()
-            {
-                view = view * inv;
-                let _ = pos;
-            }
-            return (effectcraft_geom::camera_matrix(w, h, pos, view, zoom), pos, zoom);
-        }
-        let zoom = effectcraft_geom::default_camera_zoom(w);
-        let pos = vec3(w / 2.0, h / 2.0, -zoom);
-        let view = look_at(pos, vec3(w / 2.0, h / 2.0, 0.0), Mat4::IDENTITY);
-        (effectcraft_geom::camera_matrix(w, h, pos, view, zoom), pos, zoom)
+        let c = crate::three_d::active_camera(self);
+        (c.projection(self.comp.width as f64, self.comp.height as f64), c.eye, c.zoom)
     }
 
     /// Layer space → comp pixel space as a 2D projective matrix, plus camera-space depth of the

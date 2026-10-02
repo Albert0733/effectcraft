@@ -9,6 +9,7 @@ mod help;
 mod layer;
 mod prop;
 mod query;
+mod three_d;
 mod time;
 
 use std::sync::OnceLock;
@@ -68,6 +69,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(edit::specs());
         v.extend(comp::specs());
         v.extend(layer::specs());
+        v.extend(three_d::specs());
         v.extend(prop::specs());
         v.extend(effect::specs());
         v.extend(time::specs());
@@ -182,6 +184,6 @@ pub(crate) fn time_p(s: &Session, p: &Value, comp: Option<&Comp>) -> Tick {
     s.time()
 }
 
-pub(crate) fn layer_mut<'a>(p: &'a mut effectcraft_project::Project, cid: ItemId, lid: LayerId) -> Result<&'a mut Layer> {
+pub(crate) fn layer_mut(p: &mut effectcraft_project::Project, cid: ItemId, lid: LayerId) -> Result<&mut Layer> {
     p.comp_mut(cid).ok_or(EngineError::NoComp)?.layer_mut(lid).ok_or(EngineError::Project(effectcraft_project::ProjectError::NoLayer(lid)))
 }

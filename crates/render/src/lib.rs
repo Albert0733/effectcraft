@@ -10,6 +10,7 @@ pub mod eval;
 pub mod masks;
 pub mod shapes;
 pub mod text;
+pub mod three_d;
 
 use std::sync::Arc;
 
@@ -46,11 +47,13 @@ pub struct RenderOpts {
     pub guides: bool,
     /// Draft quality: fewer motion-blur samples, bilinear only.
     pub draft: bool,
+    /// 3D view camera override (viewer Front/Top/Custom views); None = the comp's active camera.
+    pub view: Option<three_d::CameraState>,
 }
 
 impl Default for RenderOpts {
     fn default() -> Self {
-        RenderOpts { scale: 1.0, motion_blur: true, guides: false, draft: false }
+        RenderOpts { scale: 1.0, motion_blur: true, guides: false, draft: false, view: None }
     }
 }
 
@@ -98,11 +101,7 @@ impl<'a> Renderer<'a> {
                 while j < visible.len() && visible[j].is_3d() {
                     j += 1;
                 }
-                let mut run: Vec<(&Layer, f64)> = visible[i..j].iter().map(|l| (*l, ctx.layer_to_comp(l).1)).collect();
-                run.sort_by(|a, b| b.1.total_cmp(&a.1));
-                for (l, _) in run {
-                    self.draw_layer(&ctx, l, &mut canvas);
-                }
+                three_d::compose::draw_run(self, &ctx, &visible[i..j], &mut canvas);
                 i = j;
             } else {
                 self.draw_layer(&ctx, visible[i], &mut canvas);
