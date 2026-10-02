@@ -5,12 +5,12 @@
 //! `index` (1-based, the # column).
 
 use effectcraft_project::render_queue::{
-    AudioOutput, Channels, OutputFormat, OutputModule, ProResProfile, RenderQuality, RenderQueueItem, RenderSettings, RenderStatus, TimeSpan,
+    AudioOutput, Channels, OutputFormat, OutputModule, PostRenderAction, ProResProfile, RenderQuality, RenderQueueItem, RenderSettings, RenderStatus, TimeSpan,
 };
 use effectcraft_time::{FrameRate, Tick};
 use serde_json::{Value, json};
 
-use super::{CommandSpec, b_p, bad, f_p, str_p};
+use super::{CommandSpec, b_p, bad, comp_id, f_p, has_comp, str_p};
 use crate::{EngineError, Result, Session, cmd, query};
 
 fn can_add(s: &Session) -> std::result::Result<(), String> {
@@ -195,6 +195,24 @@ fn apply_output(om: &mut OutputModule, p: &Value, cmd: &str) -> Result<bool> {
     Ok(any)
 }
 
+/// `module` (1-based; 1 = the first output module).
+fn module_p(s: &Session, i: usize, p: &Value, cmd: &str) -> Result<usize> {
+    let n = p.get("module").and_then(Value::as_u64).unwrap_or(1) as usize;
+    let have = s.project.render_queue[i].extra_outputs.len() + 1;
+    if n == 0 || n > have {
+        return Err(bad(cmd, format!("module must be 1..={have}")));
+    }
+    Ok(n - 1)
+}
+
+fn module_ref(it: &RenderQueueItem, m: usize) -> &OutputModule {
+    if m == 0 { &it.output } else { &it.extra_outputs[m - 1] }
+}
+
+fn module_mut(it: &mut RenderQueueItem, m: usize) -> &mut OutputModule {
+    if m == 0 { &mut it.output } else { &mut it.extra_outputs[m - 1] }
+}
+
 /// A finished item that is edited goes back to Queued (AE re-queues on change).
 fn requeue(it: &mut RenderQueueItem) {
     if it.render && !matches!(it.status, RenderStatus::Rendering) {
@@ -215,6 +233,18 @@ fn item_json(s: &Session, it: &RenderQueueItem, index: usize) -> Value {
         o.insert("outputPath".into(), json!(s.resolve_output(it)));
         o.insert("renderSettingsSummary".into(), json!(it.settings.summary()));
         o.insert("outputModuleSummary".into(), json!(it.output.summary()));
+        let extra: Vec<Value> = it
+            .extra_outputs
+            .iter()
+            .map(|om| {
+                let mut c = it.clone();
+                c.output = om.clone();
+                json!({"summary": om.summary(), "outputPath": s.resolve_output(&c)})
+            })
+            .collect();
+        o.insert("outputModules".into(), json!(it.extra_outputs.len() + 1));
+        o.insert("extraOutputs".into(), json!(extra));
+        o.insert("postRenderAction".into(), json!(it.post_render.label()));
         o.insert("width".into(), json!(w));
         o.insert("height".into(), json!(h));
         o.insert("frames".into(), json!(frames));
@@ -285,13 +315,14 @@ fn set_render_settings(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn set_output_module(s: &mut Session, p: &Value) -> Result<Value> {
     let i = item_index(s, p, "renderQueue.setOutputModule")?;
-    let mut om = s.project.render_queue[i].output.clone();
+    let m = module_p(s, i, p, "renderQueue.setOutputModule")?;
+    let mut om = module_ref(&s.project.render_queue[i], m).clone();
     if !apply_output(&mut om, p, "renderQueue.setOutputModule")? {
         return Err(bad("renderQueue.setOutputModule", "nothing to change"));
     }
     s.edit("Output Module Settings", None, |proj, _| {
         let it = &mut proj.render_queue[i];
-        it.output = om;
+        *module_mut(it, m) = om;
         requeue(it);
         Ok(())
     })?;
@@ -301,11 +332,12 @@ fn set_output_module(s: &mut Session, p: &Value) -> Result<Value> {
 fn set_output(s: &mut Session, p: &Value) -> Result<Value> {
     let i = item_index(s, p, "renderQueue.setOutput")?;
     let path = str_p(p, "path").or(str_p(p, "output")).ok_or_else(|| bad("renderQueue.setOutput", "pass `path` (file path or template)"))?;
-    let mut om = s.project.render_queue[i].output.clone();
+    let m = module_p(s, i, p, "renderQueue.setOutput")?;
+    let mut om = module_ref(&s.project.render_queue[i], m).clone();
     apply_output(&mut om, &json!({"output": path}), "renderQueue.setOutput")?;
     s.edit("Output To", None, |proj, _| {
         let it = &mut proj.render_queue[i];
-        it.output = om;
+        *module_mut(it, m) = om;
         requeue(it);
         Ok(())
     })?;
@@ -386,6 +418,89 @@ fn formats(s: &mut Session, _: &Value) -> Result<Value> {
     Ok(json!({"formats": v, "proresProfiles": ProResProfile::ALL.iter().map(|p| p.label()).collect::<Vec<_>>()}))
 }
 
+/// `item?|index?`, else the last item (the queue's newest entry).
+fn item_or_last(s: &Session, p: &Value, cmd: &str) -> Result<usize> {
+    if p.get("item").is_some() || p.get("index").is_some() {
+        return item_index(s, p, cmd);
+    }
+    s.project.render_queue.len().checked_sub(1).ok_or_else(|| bad(cmd, "the render queue is empty"))
+}
+
+/// Composition ▸ Add Output Module: another output module on a render item (the same frames are
+/// encoded once more).
+fn add_output_module(s: &mut Session, p: &Value) -> Result<Value> {
+    let i = item_or_last(s, p, "render.addOutputModule")?;
+    let it = &s.project.render_queue[i];
+    let n = it.extra_outputs.len() + 2;
+    let mut om = it.output.clone();
+    if let Some(f) = str_p(p, "format") {
+        let f = OutputFormat::from_name(f).ok_or_else(|| bad("render.addOutputModule", "format: h264|prores|png|jpeg|tiff|exr|gif"))?;
+        om = OutputModule::for_format(f);
+    }
+    if str_p(p, "output").is_none() && str_p(p, "path").is_none() {
+        // Same name with a module suffix so the files don't collide.
+        om.output = match om.output.rfind('.') {
+            Some(dot) => format!("{}_{n}{}", &om.output[..dot], &om.output[dot..]),
+            None => format!("{}_{n}", om.output),
+        };
+    }
+    let mut op = p.clone();
+    if let Some(o) = op.as_object_mut() {
+        o.remove("format");
+    }
+    apply_output(&mut om, &op, "render.addOutputModule")?;
+    s.edit("Add Output Module", None, |proj, _| {
+        let it = &mut proj.render_queue[i];
+        it.extra_outputs.push(om);
+        requeue(it);
+        Ok(())
+    })?;
+    let mut v = item_json(s, &s.project.render_queue[i], i);
+    v["module"] = json!(n);
+    Ok(v)
+}
+
+/// Composition ▸ Pre-render…: queue the comp with a lossless-with-alpha module whose post-render
+/// action imports the result and replaces the comp's uses.
+fn pre_render(s: &mut Session, p: &Value) -> Result<Value> {
+    let cid = s.comp_for_queue(p).ok_or(EngineError::NoComp)?;
+    let mut it = RenderQueueItem::new(0, cid);
+    it.output = OutputModule::for_format(OutputFormat::ProRes);
+    it.output.prores_profile = ProResProfile::P4444;
+    it.output.channels = Channels::Rgba;
+    it.output.output = "[compName]_prerender.[fileExtension]".into();
+    apply_output(&mut it.output, p, "render.preRender")?;
+    it.post_render = PostRenderAction::ImportAndReplace;
+    let id = s.edit("Pre-render", None, |proj, _| {
+        it.id = proj.render_queue.iter().map(|i| i.id).max().unwrap_or(0) + 1;
+        let id = it.id;
+        proj.render_queue.push(it);
+        Ok(id)
+    })?;
+    let idx = s.project.render_queue.len() - 1;
+    let mut v = item_json(s, &s.project.render_queue[idx], idx);
+    v["item"] = json!(id);
+    Ok(v)
+}
+
+/// Composition ▸ Save Current Preview…: render the work area of the comp straight to a movie file.
+fn save_current_preview(s: &mut Session, p: &Value) -> Result<Value> {
+    let path = str_p(p, "path").ok_or_else(|| bad("render.saveCurrentPreview", "missing `path`"))?.to_string();
+    let cid = comp_id(s, p)?;
+    let format = OutputFormat::from_path(&path).unwrap_or(OutputFormat::H264);
+    let exporter = s.exporter.clone().ok_or_else(|| EngineError::Other("export is not available in this build".into()))?;
+    if !exporter.formats().contains(&format) {
+        return Err(EngineError::Other(format!("{} export is not available", format.label())));
+    }
+    let mut item = RenderQueueItem::new(0, cid);
+    item.output = OutputModule::for_format(format);
+    item.output.output = path.clone();
+    let job = crate::ExportJob { project: &s.project, footage: s.footage.as_ref(), expr: s.expr.as_deref(), item: &item, path: &path };
+    let r = exporter.export(&job, &mut |_, _| true).map_err(EngineError::Other)?;
+    s.toast(format!("Saved preview to {}", r.path));
+    Ok(serde_json::to_value(&r).unwrap_or_default())
+}
+
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(
@@ -413,7 +528,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Output Module Settings...",
             [],
             None,
-            "{item?|index?, format?, channels?: rgb|rgba, quality?: 1-100, bitrate?: kbps, proresProfile?: proxy|lt|standard|hq|4444|4444xq, audio?: auto|on|off, sampleRate?, loop?: bool, output?}",
+            "{item?|index?, module?: n (1 = first), format?, channels?: rgb|rgba, quality?: 1-100, bitrate?: kbps, proresProfile?: proxy|lt|standard|hq|4444|4444xq, audio?: auto|on|off, sampleRate?, loop?: bool, output?}",
             has_items,
             set_output_module
         ),
@@ -422,10 +537,21 @@ pub fn specs() -> Vec<CommandSpec> {
             "Output To...",
             [],
             None,
-            "{item?|index?, path: file path or template like [compName].[fileExtension]}",
+            "{item?|index?, module?: n, path: file path or template like [compName].[fileExtension]}",
             has_items,
             set_output
         ),
+        cmd!(
+            "render.addOutputModule",
+            "Add Output Module",
+            ["Composition"],
+            None,
+            "{item?|index? (default: the last item), format?, output?, channels?, quality?, bitrate?, proresProfile?, audio?}",
+            has_items,
+            add_output_module
+        ),
+        cmd!("render.preRender", "Pre-render...", ["Composition"], None, "{comp?, output?: path|template, format?}", can_add, pre_render),
+        cmd!("render.saveCurrentPreview", "Save Current Preview...", ["Composition"], None, "{comp?, path}", has_comp, save_current_preview),
         cmd!("renderQueue.move", "Move in Render Queue", [], None, "{item?|index?, to: n (1-based)}", has_items, move_item),
         cmd!("renderQueue.duplicate", "Duplicate Render Item", [], None, "{item?|index?}", has_items, duplicate),
         cmd!("renderQueue.render", "Render", [], None, "{wait?: bool (default true; the UI renders in the background)}", has_queued, render),

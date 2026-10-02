@@ -162,6 +162,21 @@ pub fn checked(s: &Session, command: &str, params: &Value) -> Option<bool> {
             })
         }
         "layer.markersLock" => Some(layer?.markers_locked),
+        "layer.mask.hideLocked" => Some(s.state.hide_locked_masks),
+        "view.layout" => Some(params.get("views").and_then(Value::as_u64) == Some(s.state.view_layout.max(1) as u64)),
+        "view.shareViewOptions" => Some(s.state.share_view_options),
+        "layer.mask.motionBlur" | "layer.mask.featherFalloff" | "path.rotoBezier" => {
+            use effectcraft_project::{FeatherFalloff, GroupKind, MaskMotionBlur};
+            let GroupKind::Mask { motion_blur, feather_falloff, roto_bezier, .. } = layer?.masks()?.groups().next()?.kind else { return None };
+            Some(match command {
+                "path.rotoBezier" => roto_bezier,
+                "layer.mask.motionBlur" => matches!(
+                    (pstr("mode")?, motion_blur),
+                    ("sameAsLayer", MaskMotionBlur::SameAsLayer) | ("on", MaskMotionBlur::On) | ("off", MaskMotionBlur::Off)
+                ),
+                _ => matches!((pstr("mode")?, feather_falloff), ("smooth", FeatherFalloff::Smooth) | ("linear", FeatherFalloff::Linear)),
+            })
+        }
         _ => None,
     }
 }
@@ -320,8 +335,10 @@ File
     Multiple Files... | file.importMultiple
     Placeholder... | file.importPlaceholder
     Solid... | file.importSolid
+    Lottie... | file.importLottie
   Export
     Add to Render Queue | renderQueue.add
+    Lottie JSON... | file.exportLottie
   ---
   Find | app.find
   ---

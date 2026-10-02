@@ -169,6 +169,19 @@ pub struct EditorState {
     /// Puppet tool options for new meshes.
     #[serde(default)]
     pub puppet: commands::puppet::PuppetOptions,
+    /// View ▸ Switch View Layout: 1, 2 or 4 views side by side in the Composition viewer.
+    #[serde(default = "one_view")]
+    pub view_layout: u8,
+    /// View ▸ Switch View Layout ▸ Share View Options (grid, guides… in every view).
+    #[serde(default)]
+    pub share_view_options: bool,
+    /// Layer ▸ Mask ▸ Hide Locked Masks (viewer outlines).
+    #[serde(default)]
+    pub hide_locked_masks: bool,
+}
+
+fn one_view() -> u8 {
+    1
 }
 
 /// What Copy with Property Links / Copy Expression Only put on the clipboard.
@@ -251,7 +264,7 @@ impl Default for Session {
             revision: 0,
             saved_revision: 0,
             path: None,
-            state: EditorState { snapping: true, ..Default::default() },
+            state: EditorState { snapping: true, view_layout: 1, ..Default::default() },
             services: Arc::new(FsServices),
             footage: Arc::new(NoFootage),
             expr: None,
@@ -487,7 +500,7 @@ impl Session {
         p.fix_next_id();
         self.project = Arc::new(p);
         self.history = History::default();
-        self.state = EditorState { snapping: true, ..Default::default() };
+        self.state = EditorState { snapping: true, view_layout: 1, ..Default::default() };
         self.path = path;
         self.bump();
         self.saved_revision = self.revision;
@@ -507,9 +520,13 @@ mod tests_3d;
 #[cfg(test)]
 mod tests_effects;
 #[cfg(test)]
+mod tests_lottie;
+#[cfg(test)]
 mod tests_menu_cmds;
 #[cfg(test)]
 mod tests_settings;
+#[cfg(test)]
+mod tests_stubs;
 #[cfg(test)]
 mod tests_styles;
 #[cfg(test)]

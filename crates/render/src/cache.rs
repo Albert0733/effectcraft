@@ -299,6 +299,12 @@ fn key_with(ctx: &EvalCtx, layer: &Layer, scale: f64, draft: bool, footage: bool
     layer.id.hash(&mut h);
     hash_debug(&mut h, &layer.source);
     hash_debug(&mut h, &layer.switches);
+    // Mask motion blur samples the comp's shutter.
+    if layer.masks().is_some_and(|m| !m.children.is_empty()) {
+        ctx.comp.enable_motion_blur.hash(&mut h);
+        ctx.comp.shutter_angle.to_bits().hash(&mut h);
+        ctx.comp.shutter_phase.to_bits().hash(&mut h);
+    }
     for c in &layer.props.children {
         // Transform is applied later; Layer Styles are keyed separately (see [`styles_key`]).
         if let Node::Group(g) = c

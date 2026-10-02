@@ -15,8 +15,10 @@ mod layer;
 mod layer_menu;
 mod layer_time;
 mod link;
+mod lottie;
 mod mask;
 pub mod paint;
+mod paths;
 mod prop;
 pub mod puppet;
 mod query;
@@ -95,6 +97,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(anim::specs());
         v.extend(link::specs());
         v.extend(mask::specs());
+        v.extend(paths::specs());
         v.extend(effect::specs());
         v.extend(time::specs());
         v.extend(render_queue::specs());
@@ -104,6 +107,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(animation::specs());
         v.extend(view::specs());
         v.extend(file_more::specs());
+        v.extend(lottie::specs());
         v.extend(comp_more::specs());
         v.extend(frontend::specs());
         v.extend(track::specs());

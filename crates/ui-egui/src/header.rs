@@ -223,9 +223,9 @@ fn puppet_options(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: &egui::Painter
 }
 
 fn ws_menu(app: &mut EffectcraftApp, ui: &mut egui::Ui) {
-    for w in crate::dock::WORKSPACES {
-        if ui.selectable_label(app.ui.workspace == w, w).clicked() {
-            app.set_workspace(w);
+    for w in app.workspace_names() {
+        if ui.selectable_label(app.ui.workspace == w, &w).clicked() {
+            app.set_workspace(&w);
             ui.close();
         }
     }

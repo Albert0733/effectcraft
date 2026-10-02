@@ -385,6 +385,9 @@ pub struct UiState {
     pub slot_tools: Vec<Tool>,
     pub workspace: String,
     pub dock: DockNode,
+    /// Saved workspace layouts (Save Changes to this Workspace / Save as New Workspace).
+    #[serde(default)]
+    pub saved_workspaces: std::collections::BTreeMap<String, DockNode>,
     pub focused: PanelKind,
     pub viewer: ViewerState,
     pub timeline: TimelineState,
@@ -462,6 +465,7 @@ impl Default for UiState {
             slot_tools: Tool::SLOTS.iter().map(|s| s[0]).collect(),
             workspace: "Default".into(),
             dock: crate::dock::workspace("Default"),
+            saved_workspaces: Default::default(),
             focused: PanelKind::Composition,
             viewer: ViewerState::default(),
             timeline: TimelineState::default(),

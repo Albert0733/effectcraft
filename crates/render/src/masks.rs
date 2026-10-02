@@ -4,14 +4,52 @@ use effectcraft_effects::Buf;
 use effectcraft_geom::{Mat3, vec2};
 use effectcraft_keyframe::Value;
 use effectcraft_path::{FillRule, StrokeStyle};
-use effectcraft_project::{GroupKind, Layer, MaskMode};
-use effectcraft_raster::{Mask, gaussian_blur};
+use effectcraft_project::{FeatherFalloff, GroupKind, Layer, MaskMode, MaskMotionBlur};
+use effectcraft_raster::{Mask, box_blur, gaussian_blur};
 use rayon::prelude::*;
 
 use crate::eval::EvalCtx;
 
-/// Coverage of one mask in buffer pixels (before mode/opacity/invert).
+/// Sub-frame samples for mask motion blur (animated mask paths only).
+const MASK_BLUR_SAMPLES: usize = 8;
+
+/// Coverage of one mask in buffer pixels (before mode/opacity/invert). With mask motion blur
+/// (Layer ▸ Mask ▸ Motion Blur: On, or Same As Layer with the layer's switch on) an animated
+/// path is averaged over the comp's shutter.
 fn coverage(ctx: &EvalCtx, layer: &Layer, g: &effectcraft_project::PropGroup, buf: &Buf) -> Option<Mask> {
+    let mb = match g.kind {
+        GroupKind::Mask { motion_blur, .. } => match motion_blur {
+            MaskMotionBlur::On => true,
+            MaskMotionBlur::Off => false,
+            MaskMotionBlur::SameAsLayer => layer.switches.motion_blur,
+        },
+        _ => false,
+    };
+    let animated = g.get("path").is_some_and(|p| p.keys.len() > 1 || p.has_expression());
+    if mb && animated && ctx.comp.enable_motion_blur {
+        let fd = ctx.comp.frame_duration().seconds();
+        let (angle, phase) = (ctx.comp.shutter_angle / 360.0, ctx.comp.shutter_phase / 360.0);
+        let mut acc: Option<Mask> = None;
+        let k = 1.0 / MASK_BLUR_SAMPLES as f32;
+        for i in 0..MASK_BLUR_SAMPLES {
+            let f = phase + angle * i as f64 / (MASK_BLUR_SAMPLES - 1) as f64;
+            let sub = ctx.at(ctx.time + effectcraft_time::Tick::from_seconds_f64(f * fd));
+            let Some(c) = coverage_at(&sub, layer, g, buf) else { continue };
+            match &mut acc {
+                None => {
+                    let mut c = c;
+                    c.data.iter_mut().for_each(|v| *v *= k);
+                    acc = Some(c);
+                }
+                Some(a) => a.data.iter_mut().zip(&c.data).for_each(|(a, c)| *a += c * k),
+            }
+        }
+        return acc;
+    }
+    coverage_at(ctx, layer, g, buf)
+}
+
+fn coverage_at(ctx: &EvalCtx, layer: &Layer, g: &effectcraft_project::PropGroup, buf: &Buf) -> Option<Mask> {
     let Value::Path(sp) = ctx.group_value(layer, g, "path")? else { return None };
     let path = effectcraft_path::to_kurbo(&sp);
     let (w, h) = (buf.img.width, buf.img.height);
@@ -33,7 +71,14 @@ fn coverage(ctx: &EvalCtx, layer: &Layer, g: &effectcraft_project::PropGroup, bu
     let feather = ctx.v2(layer, g, "feather", [0.0; 2]);
     if feather[0] > 0.0 || feather[1] > 0.0 {
         let img = cov.to_image();
-        let b = gaussian_blur(&img, feather[0] * buf.scale / 2.0, feather[1] * buf.scale / 2.0, false);
+        let linear = matches!(g.kind, GroupKind::Mask { feather_falloff: FeatherFalloff::Linear, .. });
+        let b = if linear {
+            // One box pass: a straight ramp `feather` pixels wide across the edge.
+            let r = |f: f64| ((f * buf.scale / 2.0).round() as usize).max(if f > 0.0 { 1 } else { 0 });
+            box_blur(&img, r(feather[0]), r(feather[1]), 1, false)
+        } else {
+            gaussian_blur(&img, feather[0] * buf.scale / 2.0, feather[1] * buf.scale / 2.0, false)
+        };
         cov = Mask::from_alpha(&b);
     }
     Some(cov)

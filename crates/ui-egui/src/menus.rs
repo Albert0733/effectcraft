@@ -452,16 +452,91 @@ pub fn frontend(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, p: Valu
         }
         "window.workspace" => {
             let want = p.get("name").and_then(Value::as_str).unwrap_or("Default").to_ascii_lowercase().replace(' ', "");
-            let name = crate::dock::WORKSPACES
-                .iter()
+            let name = app
+                .workspace_names()
+                .into_iter()
                 .find(|w| w.to_ascii_lowercase().replace(' ', "") == want)
                 .ok_or_else(|| format!("unknown workspace `{want}`"))?;
-            app.set_workspace(name);
+            app.set_workspace(&name);
             json!({"workspace": name})
         }
         "window.resetWorkspace" => {
             let name = app.ui.workspace.clone();
             app.set_workspace(&name);
+            Value::Null
+        }
+        "window.saveWorkspace" => {
+            let name = app.ui.workspace.clone();
+            app.ui.saved_workspaces.insert(name.clone(), app.ui.dock.clone());
+            json!({"workspace": name})
+        }
+        "window.saveWorkspaceAs" => {
+            let Some(name) = p.get("name").and_then(Value::as_str).map(str::trim).filter(|n| !n.is_empty()).map(str::to_string) else {
+                crate::panels::dialogs::form(
+                    app,
+                    "New Workspace",
+                    "window.saveWorkspaceAs",
+                    json!({}),
+                    vec![crate::panels::dialogs::Field::text("name", "Name", "Untitled Workspace")],
+                );
+                return Ok(Value::Null);
+            };
+            app.ui.saved_workspaces.insert(name.clone(), app.ui.dock.clone());
+            app.ui.workspace = name.clone();
+            json!({"workspace": name})
+        }
+        "window.editWorkspaces" => {
+            let Some(name) = p.get("name").and_then(Value::as_str).map(str::to_string) else {
+                let cur = app.ui.workspace.clone();
+                crate::panels::dialogs::form(
+                    app,
+                    "Edit Workspaces",
+                    "window.editWorkspaces",
+                    json!({}),
+                    vec![
+                        crate::panels::dialogs::Field::text("name", "Workspace", &cur),
+                        crate::panels::dialogs::Field::text("rename", "Rename to", &cur),
+                        crate::panels::dialogs::Field::bool("delete", "Delete", false),
+                    ],
+                );
+                return Ok(Value::Null);
+            };
+            let builtin = crate::dock::WORKSPACES.contains(&name.as_str());
+            if p.get("delete").and_then(Value::as_bool) == Some(true) {
+                if app.ui.saved_workspaces.remove(&name).is_none() && !builtin {
+                    return Err(format!("no workspace `{name}`"));
+                }
+                if app.ui.workspace == name {
+                    app.set_workspace("Default");
+                }
+                return Ok(json!({"deleted": name}));
+            }
+            if let Some(new) = p.get("rename").and_then(Value::as_str).map(str::trim).filter(|n| !n.is_empty() && *n != name) {
+                if builtin {
+                    return Err(format!("`{name}` is a built-in workspace: save it as a new workspace instead"));
+                }
+                let dock = app.ui.saved_workspaces.remove(&name).ok_or_else(|| format!("no workspace `{name}`"))?;
+                app.ui.saved_workspaces.insert(new.to_string(), dock);
+                if app.ui.workspace == name {
+                    app.ui.workspace = new.to_string();
+                }
+                return Ok(json!({"renamed": new}));
+            }
+            json!({"workspaces": app.workspace_names()})
+        }
+        "view.lookAt" => {
+            let r: Vec<f64> = p.get("rect").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_f64).collect()).unwrap_or_default();
+            if r.len() == 4 {
+                let map: Option<crate::panels::viewer::ViewerMap> = ctx.data(|d| d.get_temp(egui::Id::new("viewer-map")));
+                if let Some(m) = map {
+                    let (rw, rh) = (((r[2] - r[0]) as f32).max(1.0), ((r[3] - r[1]) as f32).max(1.0));
+                    let zoom = ((m.area.width() - 40.0) / rw).min((m.area.height() - 40.0) / rh).clamp(0.015, 32.0);
+                    let rc = [(r[0] + r[2]) as f32 / 2.0, (r[1] + r[3]) as f32 / 2.0];
+                    let v = &mut app.ui.viewer;
+                    v.zoom = Some(zoom);
+                    v.pan = [m.comp[0] * zoom / 2.0 - rc[0] * zoom, m.comp[1] * zoom / 2.0 - rc[1] * zoom];
+                }
+            }
             Value::Null
         }
         "comp.flowchart" | "comp.miniFlowchart" => {
@@ -517,6 +592,9 @@ fn file_dialog(app: &mut EffectcraftApp, id: &str, params: &Value) -> Option<Res
         "anim.applyPreset" => ("path", Ask::Open(&["ecpreset", "json"])),
         "view.exportGuides" => ("path", Ask::Save("Guides.json")),
         "view.importGuides" => ("path", Ask::Open(&["json"])),
+        "file.exportLottie" => ("path", Ask::Save("Animation.json")),
+        "file.importLottie" => ("path", Ask::Open(&["json", "lottie"])),
+        "render.saveCurrentPreview" => ("path", Ask::Save("Preview.mp4")),
         "file.runScript" => ("path", Ask::Open(&["jsonl", "json", "txt"])),
         "file.replaceFootage" => ("path", Ask::Import),
         "file.collectFiles" => ("folder", Ask::Save("Collected Files")),

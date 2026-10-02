@@ -17,6 +17,10 @@ iconography, images or other Adobe assets; open licences only; every asset attri
 | `assets/fonts/NotoSerif-Regular.ttf` | The Noto Project Authors | https://github.com/notofonts/latin-greek-cyrillic | OFL-1.1 (`assets/fonts/OFL-NotoSerif.txt`) |
 | `assets/fonts/JetBrainsMono-Regular.ttf` | The JetBrains Mono Project Authors | https://github.com/JetBrains/JetBrainsMono | OFL-1.1 (`assets/fonts/OFL-JetBrainsMono.txt`) |
 | `apps/effectcraft-web/web/favicon.svg` | EffectCraft contributors | Original work: web app icon, the code-drawn EffectCraft mark (split rounded square, keyframe diamond) as SVG | MIT OR Apache-2.0 |
+| `crates/lottie/tests/fixtures/bouncing-ball.json` | EffectCraft contributors | Original work: hand-written Lottie test fixture (bouncing ball, eased position keys) | MIT OR Apache-2.0 |
+| `crates/lottie/tests/fixtures/shapes-gradient.json` | EffectCraft contributors | Original work: hand-written Lottie test fixture (star, rectangle, gradient fill, dashed stroke, trim paths) | MIT OR Apache-2.0 |
+| `crates/lottie/tests/fixtures/precomp-matte-text.json` | EffectCraft contributors | Original work: hand-written Lottie test fixture (precomp, track matte, parented text) | MIT OR Apache-2.0 |
+| `crates/lottie/tests/fixtures/legacy-masks.json` | EffectCraft contributors | Original work: hand-written Lottie test fixture (legacy keyframes, masks) | MIT OR Apache-2.0 |
 
 ## Screenshots
 

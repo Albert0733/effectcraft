@@ -27,6 +27,7 @@ cpal or muda. Everything in L0 to L4, the egui UI and the web app also build for
 | L3 | `media` | Footage decoding (FilmCraft's pure-Rust codecs), image sequences, frame cache |
 | L3 | `expr` | The expression engine (JavaScript via boa) with the After Effects object model |
 | L3 | `export` | Render queue encoding: H.264, ProRes, PNG/JPEG/TIFF/EXR sequences, GIF, audio |
+| L3 | `lottie` | Lottie JSON / dotLottie import and export (layers, precomps, eased and spatial keyframes, shapes, masks, mattes) with a warnings list for what Lottie cannot express |
 | L4 | `engine` | `Session`: project, undo history, editor state, the command registry and menus |
 | L4 | `host` | A fully wired `Session` (media, expressions, exporter) for the frontends |
 | L5 | `ui-egui` | The desktop interface: docking, panels, viewer, timeline, graph editor, dialogs, control channel |
@@ -34,7 +35,7 @@ cpal or muda. Everything in L0 to L4, the egui UI and the web app also build for
 | L6 | apps `effectcraft`, `effectcraft-cli`, `effectcraft-web` | Desktop app; command-line tool (render, exec, get/set, MCP); the browser app (wasm32, [web.md](web.md)) |
 
 Allowed same-layer edges: `path → keyframe, raster`, `text → path`, `effects → project, text, path`,
-`media / expr / export → render`, `export → media`, `host → engine`.
+`media / expr / export → render`, `export → media`, `lottie → format`, `host → engine`.
 
 ## 2. Time
 

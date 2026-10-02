@@ -213,6 +213,82 @@ fn parent_inverse(ctx: &EvalCtx, layer: &Layer) -> Mat3 {
     }
 }
 
+/// Draw the extra views of a 2- or 4-view layout and return the main view's rectangle.
+fn aux_views(
+    app: &mut EffectcraftApp,
+    ui: &mut egui::Ui,
+    comp: &effectcraft_engine::project::Comp,
+    cid: effectcraft_engine::project::ItemId,
+    full: Rect,
+    bg: Color32,
+) -> Rect {
+    let n = app.session.state.view_layout;
+    if n < 2 {
+        return full;
+    }
+    let gap = 2.0;
+    let (main, aux): (Rect, Vec<(Rect, View3D)>) = if n == 2 {
+        let mid = full.center().x;
+        (Rect::from_min_max(pos2(mid + gap / 2.0, full.min.y), full.max), vec![(Rect::from_min_max(full.min, pos2(mid - gap / 2.0, full.max.y)), View3D::Top)])
+    } else {
+        let c = full.center();
+        let q = |x0: f32, y0: f32, x1: f32, y1: f32| Rect::from_min_max(pos2(x0, y0), pos2(x1, y1));
+        (
+            q(c.x + gap / 2.0, c.y + gap / 2.0, full.max.x, full.max.y),
+            vec![
+                (q(full.min.x, full.min.y, c.x - gap / 2.0, c.y - gap / 2.0), View3D::Top),
+                (q(c.x + gap / 2.0, full.min.y, full.max.x, c.y - gap / 2.0), View3D::Front),
+                (q(full.min.x, c.y + gap / 2.0, c.x - gap / 2.0, full.max.y), View3D::Right),
+            ],
+        )
+    };
+    let ctx = ui.ctx().clone();
+    let p = ui.painter().clone();
+    p.rect_filled(full, 0.0, Color32::from_black_alpha(200));
+    let t = app.session.time();
+    let (cw, ch) = (comp.width as f32, comp.height as f32);
+    let views = app.session.state.views3d.get(&cid).cloned().unwrap_or_default();
+    let share = app.session.state.share_view_options;
+    for (i, (r, v)) in aux.into_iter().enumerate() {
+        p.rect_filled(r, 0.0, bg);
+        let fit = ((r.width() - 20.0) / cw).min((r.height() - 20.0) / ch).max(0.01);
+        let cr = Rect::from_center_size(r.center(), vec2(cw * fit, ch * fit));
+        let scale = (fit * ctx.pixels_per_point()).min(1.0) as f64;
+        let cam = views.cam(v, comp.width as f64, comp.height as f64).state();
+        let key = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            (app.session.revision, cid.0, t.0, i, scale.to_bits(), format!("{cam:?}")).hash(&mut h);
+            h.finish()
+        };
+        let id = egui::Id::new(("viewer-aux", i));
+        let cached: Option<(u64, egui::TextureHandle)> = ctx.data(|d| d.get_temp(id));
+        let tex = match cached {
+            Some((k, tex)) if k == key => tex,
+            _ => {
+                let opts = effectcraft_engine::render::RenderOpts { scale, view: comp.has_3d().then_some(cam), draft: true, ..Default::default() };
+                let img = app.session.render(cid, t, opts);
+                let tex = ctx.load_texture(format!("viewer-aux-{i}"), crate::frames::to_color_image(&img), egui::TextureOptions::LINEAR);
+                ctx.data_mut(|d| d.insert_temp(id, (key, tex.clone())));
+                tex
+            }
+        };
+        let b = comp.background;
+        p.rect_filled(cr, 0.0, Color32::from_rgb((b[0] * 255.0) as u8, (b[1] * 255.0) as u8, (b[2] * 255.0) as u8));
+        p.image(tex.id(), cr, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+        p.rect_stroke(cr, 0.0, Stroke::new(1.0, Color32::from_black_alpha(160)), StrokeKind::Outside);
+        if share && app.ui.viewer.safe_margins {
+            for k in [0.9, 0.8] {
+                p.rect_stroke(Rect::from_center_size(cr.center(), cr.size() * k), 0.0, Stroke::new(1.0, Color32::from_white_alpha(120)), StrokeKind::Middle);
+            }
+        }
+        let label = if comp.has_3d() { v.label() } else { "Active Camera" };
+        p.text(r.left_bottom() + vec2(8.0, -8.0), Align2::LEFT_BOTTOM, label, Tokens::ui(11.0), Color32::from_white_alpha(200));
+        app.auto.add(&format!("viewer.view.{}", v.id()), r, label);
+    }
+    main
+}
+
 pub(crate) fn checker(p: &egui::Painter, r: Rect) {
     let s = 10.0;
     p.rect_filled(r, 0.0, Color32::from_gray(0xcc));
@@ -274,8 +350,11 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     // Bottom control bar.
     let bar_h = 30.0;
     let bar = Rect::from_min_max(pos2(rect.min.x, rect.max.y - bar_h), rect.max);
-    let area = Rect::from_min_max(pos2(rect.min.x, nav.max.y), pos2(rect.max.x, bar.min.y));
+    let full = Rect::from_min_max(pos2(rect.min.x, nav.max.y), pos2(rect.max.x, bar.min.y));
     let pasteboard = app.ui.viewer.pasteboard.map(|[r, g, b]| Color32::from_rgb(r, g, b)).unwrap_or(t.pasteboard);
+    // View ▸ Switch View Layout: extra views (Top / Front / Right) beside the main view, which
+    // keeps the overlays and the interaction.
+    let area = aux_views(app, ui, &comp, cid, full, pasteboard);
     p.rect_filled(area, 0.0, pasteboard);
 
     let (cw, ch) = (comp.width as f32, comp.height as f32);
@@ -443,7 +522,10 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
             {
                 let (m, _) = l2c(&ectx, l);
                 for g in masks.groups() {
-                    let GroupKind::Mask { color, .. } = g.kind else { continue };
+                    let GroupKind::Mask { color, locked, .. } = g.kind else { continue };
+                    if locked && app.session.state.hide_locked_masks {
+                        continue;
+                    }
                     let Some(path) = g.get("path").map(|pr| ectx.value(l, pr)) else { continue };
                     let Some(sp) = path.as_path() else { continue };
                     let k = effectcraft_engine::render::kurbo_path(sp);

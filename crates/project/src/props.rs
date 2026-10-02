@@ -165,15 +165,40 @@ pub enum GroupKind {
         inverted: bool,
         color: [u8; 3],
         locked: bool,
+        /// Layer ▸ Mask ▸ Motion Blur.
+        #[serde(default)]
+        motion_blur: MaskMotionBlur,
+        /// Layer ▸ Mask ▸ Feather Falloff.
+        #[serde(default)]
+        feather_falloff: FeatherFalloff,
+        /// Layer ▸ Mask and Shape Path ▸ RotoBezier: tangents follow the vertices automatically.
+        #[serde(default)]
+        roto_bezier: bool,
     },
     Effect {
         /// Effect spec id, e.g. `ec.blur.gaussian`.
         effect: String,
     },
     /// A motion tracker (Motion Trackers ▸ Tracker n) with its Tracker panel settings.
-    Tracker {
-        settings: Box<crate::tracking::TrackerSettings>,
-    },
+    Tracker { settings: Box<crate::tracking::TrackerSettings> },
+}
+
+/// Mask motion blur (sub-frame samples of an animated mask path).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum MaskMotionBlur {
+    /// Blur when the layer's Motion Blur switch is on.
+    #[default]
+    SameAsLayer,
+    On,
+    Off,
+}
+
+/// How a mask's feather ramps: Smooth (Gaussian) or Linear.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum FeatherFalloff {
+    #[default]
+    Smooth,
+    Linear,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]

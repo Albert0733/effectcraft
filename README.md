@@ -140,6 +140,11 @@ A Render Queue like After Effects', with Render Settings and Output Modules: **H
 sequences, and animated GIF. The same queue runs from the command line. Every encoder is
 FilmCraft's pure-Rust code; there is no FFmpeg inside.
 
+**Lottie** goes both ways: File ▸ Export ▸ Lottie JSON… writes a composition (precomps, shape,
+solid, image, text and null layers, eased and spatial keyframes, masks, track mattes, blend
+modes, time remapping, optionally expressions) as `.json` or `.lottie`, and lists anything Lottie
+cannot express; File ▸ Import ▸ Lottie… opens one as a new composition.
+
 <p align="center">
   <img src="docs/images/effectcraft-render-queue.png" alt="The Render Queue panel with two compositions queued" width="100%">
 </p>
@@ -154,7 +159,8 @@ them:
   tree, keyframes and rendered frames. This repository ships a ready [`.mcp.json`](.mcp.json).
 - **Command line:** one-shot calls with JSON output, for example
   `effectcraft-cli set Main '#1' transform/position '[100,360]' --time 0 main.ecproj --save`
-  or `effectcraft-cli render --comp Main --out main.mp4`.
+  or `effectcraft-cli render --comp Main --out main.mp4`, or
+  `effectcraft-cli exec file.exportLottie '{"comp":"Main","path":"main.json"}' main.ecproj`.
 - **Control channel:** `effectcraft --control 9877` accepts JSON lines to run commands, inspect
   and click any widget by its automation id, and take screenshots.
 
@@ -179,8 +185,8 @@ tests, layering, asset attribution and the WebAssembly build). See [CONTRIBUTING
 ## Where it stands
 
 EffectCraft is young. The core of After Effects is in place and gets deeper every week: what is
-done and what comes next is in the [ROADMAP](ROADMAP.md). Not there yet: motion tracking, puppet,
-paint and roto tools, Lottie and GPU compositing. The web build
+done and what comes next is in the [ROADMAP](ROADMAP.md). Not there yet: Roto Brush, Warp
+Stabilizer and the 3D camera tracker, Advanced 3D, on-canvas text editing and GPU compositing. The web build
 ([docs/web.md](docs/web.md)) runs the full app in the browser, single-threaded for now. Projects
 are saved as `.ecproj`, readable versioned JSON; After Effects `.aep` files cannot be opened.
 

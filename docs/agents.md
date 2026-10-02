@@ -118,7 +118,14 @@ effectcraft-cli get Main '#1' transform/position --time 0.5 main.ecproj --json
 effectcraft-cli run main.ecproj comp.open '{"comp":"Main"}' time.set '{"time":1}' --json
 effectcraft-cli render-frame main.ecproj --time 1 --max-side 640 --out f.png --json
 effectcraft-cli exec layer.newNull --bridge 9877                 # same commands, against the live app
+effectcraft-cli exec file.exportLottie '{"comp":"Main","path":"main.json","includeExpressions":true}' main.ecproj --json
+effectcraft-cli exec file.importLottie '{"path":"anim.json"}' main.ecproj --save
 ```
+
+`file.exportLottie` returns `{path, bytes, warnings}`: the warnings list every feature Lottie
+cannot express (most effects, cameras and lights, layer styles, audio, video footage…), so an
+agent can check what a player will not show. A `.lottie` path writes a dotLottie archive.
+`file.importLottie` returns `{comp, items, warnings}` and opens the new composition.
 
 `<comp>` is an id or name, or `-` for the active comp. `<value>` is JSON (`50`, `[960,540]`,
 `"#ff0000"`) or a bare string.

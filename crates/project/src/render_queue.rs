@@ -401,6 +401,37 @@ pub struct RenderQueueItem {
     /// Resolved path of the last render (first file for sequences).
     #[serde(default)]
     pub last_output: Option<String>,
+    /// Further Output Modules (Composition ▸ Add Output Module): the same frames are encoded
+    /// once per module.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extra_outputs: Vec<OutputModule>,
+    /// Post-Render Action of the first output module.
+    #[serde(default, skip_serializing_if = "PostRenderAction::is_none")]
+    pub post_render: PostRenderAction,
+}
+
+/// What happens after an item renders (Output Module ▸ Post-Render Action).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PostRenderAction {
+    #[default]
+    None,
+    /// Import the rendered file into the project.
+    Import,
+    /// Import it and replace every use of the rendered composition (Composition ▸ Pre-render).
+    ImportAndReplace,
+}
+
+impl PostRenderAction {
+    pub fn is_none(&self) -> bool {
+        *self == PostRenderAction::None
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            PostRenderAction::None => "None",
+            PostRenderAction::Import => "Import",
+            PostRenderAction::ImportAndReplace => "Import & Replace Usage",
+        }
+    }
 }
 
 impl RenderQueueItem {
@@ -415,7 +446,13 @@ impl RenderQueueItem {
             started: None,
             render_time: None,
             last_output: None,
+            extra_outputs: vec![],
+            post_render: PostRenderAction::None,
         }
+    }
+    /// Every output module, the first one first.
+    pub fn output_modules(&self) -> impl Iterator<Item = &OutputModule> {
+        std::iter::once(&self.output).chain(self.extra_outputs.iter())
     }
     /// Will be rendered by the next Render.
     pub fn is_queued(&self) -> bool {

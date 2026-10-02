@@ -75,12 +75,28 @@ fn region_of_interest(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!(s.state.region_of_interest))
 }
 
+fn view_layout(s: &mut Session, p: &Value) -> Result<Value> {
+    let n = p.get("views").and_then(Value::as_u64).ok_or_else(|| bad("view.layout", "views: 1|2|4"))?;
+    if !matches!(n, 1 | 2 | 4) {
+        return Err(bad("view.layout", "views: 1|2|4"));
+    }
+    s.state.view_layout = n as u8;
+    Ok(json!({"views": n}))
+}
+
+fn share_view_options(s: &mut Session, p: &Value) -> Result<Value> {
+    s.state.share_view_options = super::b_p(p, "value").unwrap_or(!s.state.share_view_options);
+    Ok(json!(s.state.share_view_options))
+}
+
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!("view.addGuide", "Add Guide...", ["View"], None, "{orientation?: vertical|horizontal, position? (comp px)}", has_comp, add_guide),
         cmd!("view.clearGuides", "Clear Guides", ["View"], None, "{comp?}", has_guides, clear_guides),
         cmd!("view.importGuides", "Import Guides...", ["View"], None, "{path}", has_comp, import_guides),
         cmd!("view.exportGuides", "Export Guides...", ["View"], None, "{path}", has_guides, export_guides),
+        cmd!("view.layout", "Switch View Layout", [], None, "{views: 1|2|4}", has_comp, view_layout),
+        cmd!("view.shareViewOptions", "Share View Options", ["View", "Switch View Layout"], None, "{value?}", has_comp, share_view_options),
         cmd!("view.setRegionOfInterest", "Region of Interest", [], None, "{rect?: [x, y, w, h] | null}", always, region_of_interest),
     ]
 }

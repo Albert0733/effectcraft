@@ -137,6 +137,16 @@ pub fn open_form(app: &mut EffectcraftApp, id: &str, p: &Value) -> bool {
             };
             (title.into(), fields)
         }
+        "path.freeTransform" if !has(p, &["scale", "rotation", "offset"]) => (
+            "Free Transform Points".into(),
+            vec![
+                Field::num("scale[0]", "Scale X (%)", 100.0),
+                Field::num("scale[1]", "Scale Y (%)", 100.0),
+                Field::num("rotation", "Rotation (degrees)", 0.0),
+                Field::num("offset[0]", "Move X", 0.0),
+                Field::num("offset[1]", "Move Y", 0.0),
+            ],
+        ),
         "layer.mask.set" if !has(p, &["value"]) => {
             let field = p.get("field").and_then(Value::as_str).unwrap_or("feather");
             let first = layer.and_then(|l| l.masks()).and_then(|m| m.groups().next()).and_then(|g| g.get(field)).map(|pr| pr.value_at(lt).as_f64());
