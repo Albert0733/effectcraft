@@ -231,8 +231,9 @@ pub fn layer_key(ctx: &EvalCtx, layer: &Layer, scale: f64, draft: bool) -> Optio
     hash_debug(&mut h, &layer.source);
     hash_debug(&mut h, &layer.switches);
     for c in &layer.props.children {
+        // Transform is applied later; Layer Styles are keyed separately (see [`styles_key`]).
         if let Node::Group(g) = c
-            && g.match_id == "transform"
+            && (g.match_id == "transform" || g.match_id == effectcraft_project::styles::GROUP)
         {
             continue;
         }
@@ -249,4 +250,23 @@ pub fn layer_key(ctx: &EvalCtx, layer: &Layer, scale: f64, draft: bool) -> Optio
         layer.stretch.to_bits().hash(&mut h);
     }
     Some(h.finish())
+}
+
+/// Cache key for the styled layer (content key + the Layer Styles group: structure, eye
+/// switches, values, keyframes, expressions and their values at the context time — Global Light
+/// included, as every layer mirrors it in its Blending Options).
+pub fn styles_key(ctx: &EvalCtx, layer: &Layer, content_key: u64) -> u64 {
+    let mut h = KeyHasher(content_key ^ 0x9e37_79b9_7f4a_7c15);
+    if let Some(g) = layer.layer_styles() {
+        hash_debug(&mut h, g);
+        hash_values(&mut h, ctx, layer, g);
+    }
+    h.finish()
+}
+
+/// A sub-key of `key` (styled layer passes, flattened buffer).
+pub fn derive(key: u64, i: u64) -> u64 {
+    let mut h = KeyHasher(key);
+    i.hash(&mut h);
+    h.finish()
 }

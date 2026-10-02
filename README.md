@@ -15,12 +15,12 @@
 
 <p align="center">
   A free, open-source compositor in the spirit of After Effects: compositions, layers,
-  keyframes, effects and expressions, native on macOS, Windows and Linux, and in the browser later on.
-  It is in early development. The engine crates are being written now and there is no app to run yet.
+  keyframes, 241 effects, expressions, 3D cameras and lights, and a render queue, native on macOS,
+  Windows and Linux, and in the browser later on. Young, moving fast, and already usable.
 </p>
 
 <p align="center">
-  <img alt="Status: early development" src="https://img.shields.io/badge/status-early%20development-e0368f?style=flat-square">
+  <img alt="Status: young and moving fast" src="https://img.shields.io/badge/status-young%20and%20moving%20fast-e0368f?style=flat-square">
   <img alt="Written in Rust" src="https://img.shields.io/badge/rust-1.95%2B-b0206c?style=flat-square&logo=rust&logoColor=white">
   <img alt="License: MIT or Apache-2.0" src="https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-555?style=flat-square">
 </p>
@@ -35,6 +35,12 @@
   <a href="https://getartcraft.com/apps">All Crafting Apps</a>
 </p>
 
+<br>
+
+<p align="center">
+  <img src="docs/images/effectcraft-hero.png" alt="EffectCraft's main window: the animated demo composition in the Composition panel, the Project panel, a Timeline with text, shape and solid layers, and the Properties panel showing the selected text layer's transform, font and paragraph settings" width="100%">
+</p>
+
 > [!NOTE]
 > **ArtCraft is a community of artists from all walks of life.** Painters, photographers,
 > filmmakers, illustrators, designers, animators, hobbyists, and people who picked up a pencil
@@ -42,9 +48,13 @@
 
 <p align="center">
   <a href="#what-effectcraft-is">What it is</a> ·
-  <a href="#where-it-stands">Where it stands</a> ·
-  <a href="#the-plan">The plan</a> ·
-  <a href="#building-from-source">Building</a> ·
+  <a href="#animate">Animate</a> ·
+  <a href="#effects">Effects</a> ·
+  <a href="#3d">3D</a> ·
+  <a href="#export">Export</a> ·
+  <a href="#built-for-agents">Agents</a> ·
+  <a href="#get-started">Get started</a> ·
+  <a href="#where-it-stands">Status</a> ·
   <a href="#how-its-made">How it's made</a> ·
   <a href="#the-crafting-apps">The Crafting Apps</a> ·
   <a href="#license-and-credits">License</a>
@@ -71,84 +81,104 @@ then to go further in a few places where it matters to us:
 - **No FFmpeg.** Video and audio decoding and encoding come from FilmCraft's own pure-Rust
   codecs.
 
-## Where it stands
+## Animate
 
-> [!IMPORTANT]
-> **There is no app to run yet.** EffectCraft is in its first milestone. The planning is done and
-> the low-level engine crates are being written. The windowed app, the renderer and the effects
-> come next. If you want to follow along or help shape it, the
-> [Discord](https://discord.gg/artcraft) is the place.
+The panels, menus and shortcuts follow After Effects, so your muscle memory carries over:
+Project, Composition, Timeline, Effect Controls, Properties, Effects & Presets, Character,
+Paragraph, Align, Info, Preview, Audio and the Render Queue, docked the way you expect.
 
-| | What | State |
-|---|---|---|
-| **Built** | The plan: an After Effects UI and feature reference, a full effects list, the architecture and a milestone plan (see [`plan/`](plan/)) | Done |
-| **In progress** | Engine foundation crates: time, geometry, color and blend modes, keyframes, the project model, raster images, Bezier paths, text | Early code and first tests |
-| **Next** | The compositor, a first set of effects, the editing engine and the After Effects style interface rendering an animated demo composition | Not started |
-| **Later** | Precomps and preview, shapes and masks, 3D, expressions, text animators, export, GPU rendering, the web build | Planned |
+- **Layers of every kind:** solids, shapes, text, footage, nested compositions, nulls,
+  adjustment layers, cameras and lights; parenting, track mattes, all 38 blend modes, motion blur.
+- **Keyframes that behave the same:** linear, Bezier, hold, auto and continuous Bezier, roving
+  keys, Easy Ease (F9), Keyframe Velocity and Interpolation dialogs, copy and paste at the current
+  time, and a **Graph Editor** with value and speed graphs and draggable handles.
+- **Time:** time remapping, time stretch, time-reverse, freeze frame, work area, markers, exact
+  frame-accurate timing at every frame rate including 29.97 drop-frame.
+- **Shapes and masks:** shape layers with trim paths, repeaters, round corners, offset, zig zag,
+  twist, wiggle, merge paths and gradient strokes; masks drawn with the pen tool, with modes,
+  feather, expansion and vertex editing in the viewer.
+- **Text:** point and paragraph text with real shaping, the Character and Paragraph panels, and
+  text animators with range selectors.
+- **Expressions:** JavaScript with the After Effects object model (`wiggle`, `loopOut`,
+  `thisComp.layer("…")`, vector maths on arrays), an inline editor and the pick-whip.
 
-The live checklist is [`plan/STATUS.md`](plan/STATUS.md).
+<p align="center">
+  <img src="docs/images/effectcraft-graph-editor.png" alt="The Graph Editor showing an eased value curve for a text animator's Range Start, with the graph editor's button bar for hold, linear, auto Bezier and Easy Ease" width="100%">
+</p>
 
-### The crates so far
+## Effects
 
-| Crate | What it does |
-|---|---|
-| `effectcraft-time` | Exact media time in integer ticks, so 23.976 and 29.97 fps, drop-frame timecode and audio sample rates never drift |
-| `effectcraft-geom` | 2D and 3D vectors, matrices and the layer transform (anchor, position, scale, rotation, orientation) |
-| `effectcraft-color` | RGBA color, sRGB transfer, HSL and HSV, and the 38 After Effects blend modes |
-| `effectcraft-keyframe` | Animated values: linear, hold and Bezier keyframes with speed and influence, and spatial motion paths |
-| `effectcraft-project` | The document: project items, compositions, layers and the property tree |
-| `effectcraft-raster` | Floating-point premultiplied images with warps, blurs and compositing, parallel across cores |
-| `effectcraft-path` | Bezier shapes, path operations (trim, round corners, zig zag, offset and more), stroking and anti-aliased fills |
-| `effectcraft-text` | Fonts, shaping, bidirectional text, line breaking and glyph outlines for text layers |
+241 effects across After Effects' categories, each with its parameter names, order and
+defaults: blur and sharpen, channel, color correction (Curves, Levels, Hue/Saturation, Lumetri
+Color…), distort (Warp, Bulge, Turbulent Displace, CC Power Pin…), generate (Fractal Noise,
+Gradient Ramp, Stroke, Write-on, Audio Spectrum…), keying, matte, noise and grain, perspective,
+**simulation** (CC Particle World, CC Rainfall, Shatter, Card Dance, Caustics, Wave World…),
+stylize (Glow, CC Glass…), text, transitions, utility and expression controls.
 
-These are moving fast. Expect names and APIs to change.
+<p align="center">
+  <img src="docs/images/effectcraft-effects.png" alt="A CC Particle World burst with Glow, and the Effect Controls panel listing the particle system's parameters" width="100%">
+</p>
 
-## The plan
+## 3D
 
-EffectCraft is built in milestones. The first one is about getting something you can see on
-screen as early as possible, then filling in depth underneath.
+Classic 3D the way After Effects does it: 3D layers with orientation and material options,
+one- and two-node **cameras** with depth of field, **lights** (parallel, spot, point, ambient)
+with soft ray-traced shadows, layers that intersect correctly, orbit, pan and dolly camera
+tools, and Front, Top, Left and Custom views.
 
-| | Milestone | What you'll get |
-|---|---|---|
-| **M0** | Skeleton and visual shell | The full panel layout over a real CPU compositor playing an animated demo composition, about 8 effects, and the control channel and MCP server |
-| M1 | Keyframes | Complete temporal and spatial interpolation, Easy Ease, roving keys, velocity |
-| M2 | Compositing | All 38 blend modes, track mattes, parenting, 8/16/32 bit per channel behaviour |
-| M3 | Project operations | Composition and layer settings, layer commands, save and open `.ecproj`, undo, clipboard |
-| M4 | Preview and precomps | Nested compositions, adjustment layers, motion blur, cached RAM preview with audio |
-| M5 | Timeline depth | Keyframe editing, the graph editor, markers, trims, time remapping |
-| M6 | Shapes, masks and footage | Shape layers and path operations, masks, the pen tool, video and image import |
-| M7 | 3D | 3D layers, cameras and lights |
-| M8 | Expressions | JavaScript expressions with the After Effects object model (`wiggle`, `loopOut`, `thisComp` and friends) |
-| M9 | Text and effects | Text animators, text on a path, layer styles, the first 60 effects |
-| M10 | Export | Render queue, image sequences, H.264 and ProRes, GIF, command-line rendering |
-| M11 | Animation tools | Motion Sketch, Wiggler, presets, Lottie import and export, audio |
-| M12 | Performance | GPU compositing and effects, disk cache, motion tracking |
-| M13 to M16 | Beyond | More effects, puppet and paint tools, polish, the web app, a plugin API |
+<p align="center">
+  <img src="docs/images/effectcraft-3d.png" alt="The 3D Showcase demo in Custom View 1: intersecting cards lit by a spot light with soft shadows on a gridded floor, with the camera frustum and light drawn as wireframes" width="100%">
+</p>
 
-The details, with an acceptance test for every task, are in
-[`plan/execution-plan.md`](plan/execution-plan.md) and [`plan/architecture.md`](plan/architecture.md).
+## Export
 
-## Building from source
+A Render Queue like After Effects', with Render Settings and Output Modules: **H.264** MP4 and
+**ProRes** MOV (Proxy to 4444 XQ with alpha) with audio, PNG, JPEG, TIFF and 32-bit EXR
+sequences, and animated GIF. The same queue runs from the command line. Every encoder is
+FilmCraft's pure-Rust code; there is no FFmpeg inside.
 
-You need [Rust](https://rustup.rs/) 1.95 or newer. There is nothing to launch yet, but you can
-build and test the engine crates:
+<p align="center">
+  <img src="docs/images/effectcraft-render-queue.png" alt="The Render Queue panel with two compositions queued" width="100%">
+</p>
+
+## Built for agents
+
+Everything you can do from a menu is a command with an id, and agents can reach every one of
+them:
+
+- **MCP server:** `effectcraft-cli mcp` speaks the Model Context Protocol over stdio, headless
+  or bridged to the running app (`--bridge 9877`). Tools cover commands, the project and property
+  tree, keyframes and rendered frames. This repository ships a ready [`.mcp.json`](.mcp.json).
+- **Command line:** one-shot calls with JSON output, for example
+  `effectcraft-cli set Main '#1' transform/position '[100,360]' --time 0 main.ecproj --save`
+  or `effectcraft-cli render --comp Main --out main.mp4`.
+- **Control channel:** `effectcraft --control 9877` accepts JSON lines to run commands, inspect
+  and click any widget by its automation id, and take screenshots.
+
+See [docs/agents.md](docs/agents.md) and [docs/control-protocol.md](docs/control-protocol.md).
+
+## Get started
+
+You need [Rust](https://rustup.rs/) 1.95 or newer.
 
 ```sh
 git clone https://github.com/storytold/effectcraft
 cd effectcraft
-cargo build
-cargo test
+cargo run --release -p effectcraft          # the app, with the demo project open
+cargo run --release -p effectcraft-cli -- render --out intro.mp4    # render the demo headless
 ```
 
-To work on one crate:
+To work on it: `cargo test --workspace`, and `cargo xtask ci` before every commit (format, lints,
+tests, layering, asset attribution and the WebAssembly build). See [CONTRIBUTING.md](CONTRIBUTING.md),
+[docs/architecture.md](docs/architecture.md) and [docs/testing.md](docs/testing.md).
 
-```sh
-cargo test -p effectcraft-keyframe
-```
+## Where it stands
 
-The workspace picks up every crate under `crates/`, so while a new crate is half-written the
-whole build can break for a while. The `cargo xtask` helpers named in the plan (layer checks,
-asset checks, CI) are not written yet.
+EffectCraft is young. The core of After Effects is in place and gets deeper every week: what is
+done and what comes next is in the [ROADMAP](ROADMAP.md). Not there yet: layer styles, time and
+audio effects, audio playback, motion tracking, puppet and paint tools, the web build and GPU
+compositing. Projects are saved as `.ecproj`, readable versioned JSON; After Effects `.aep`
+files cannot be opened.
 
 ## How it's made
 
@@ -156,10 +186,10 @@ asset checks, CI) are not written yet.
   top and nothing underneath depends on it.
 - **Clean room.** We work from After Effects' public documentation and how it behaves, never
   from Adobe's files, icons, presets or code. No code is copied from GPL projects. The full rules
-  are in [`plan/README.md`](plan/README.md).
+  are in [AGENTS.md](AGENTS.md).
 - **Private by default.** No telemetry, and no network access unless you ask for it.
 - **One family.** EffectCraft shares its time model and text engine design with FilmCraft, and
-  gets its video and audio codecs from it (see [`plan/adr/`](plan/adr/)).
+  gets its video and audio codecs from it.
 
 ## The Crafting Apps
 
