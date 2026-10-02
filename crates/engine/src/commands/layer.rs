@@ -110,6 +110,21 @@ fn text_doc_from(p: &Value, base: TextDoc) -> TextDoc {
     if let Some(v) = b_p(p, "allCaps") {
         d.all_caps = v;
     }
+    if let Some(v) = b_p(p, "smallCaps") {
+        d.small_caps = v;
+    }
+    if let Some(v) = f_p(p, "hScale") {
+        d.h_scale = v.clamp(1.0, 1000.0);
+    }
+    if let Some(v) = f_p(p, "vScale") {
+        d.v_scale = v.clamp(1.0, 1000.0);
+    }
+    if let Some(v) = f_p(p, "baselineShift") {
+        d.baseline_shift = v;
+    }
+    if let Some(v) = b_p(p, "strokeOverFill") {
+        d.stroke_over_fill = v;
+    }
     if let Some(v) = b_p(p, "fauxBold") {
         d.faux_bold = v;
     }
@@ -940,7 +955,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Edit Text",
             [],
             None,
-            "{layer?, text?, size?, font?, style?, fill?, stroke?, applyFill?, applyStroke?, strokeWidth?, tracking?, leading?: px|\"auto\", justify?: left|center|right|justifyLeft|justifyCenter|justifyRight|justifyAll, allCaps?, fauxBold?, fauxItalic?}",
+            "{layer?, text?, size?, font?, style?, fill?, stroke?, applyFill?, applyStroke?, strokeWidth?, tracking?, leading?: px|\"auto\", justify?: left|center|right|justifyLeft|justifyCenter|justifyRight|justifyAll, allCaps?, smallCaps?, fauxBold?, fauxItalic?, hScale? %, vScale? %, baselineShift? px, strokeOverFill?}",
             has_layers,
             set_text
         ),

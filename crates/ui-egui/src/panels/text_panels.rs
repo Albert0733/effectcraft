@@ -57,16 +57,21 @@ pub fn character(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         actions.push(json!({"style": styles[i]}));
     }
     y += 34.0;
-    // Numeric fields in a 2-column grid.
-    let fields: [(&str, &str, f64, (f64, f64), &str); 6] = [
+    // Numeric fields in AE's two-column grid.
+    let fields: [(&str, &str, f64, (f64, f64), &str); 8] = [
         ("size", "T", doc.size, (1.0, 2000.0), " px"),
         ("leading", "A", doc.leading.unwrap_or(doc.size * 1.2), (0.0, 5000.0), " px"),
         ("tracking", "VA", doc.tracking, (-1000.0, 10000.0), ""),
-        ("strokeWidth", "≡", doc.stroke_width, (0.0, 500.0), " px"),
+        ("strokeWidth", "W", doc.stroke_width, (0.0, 500.0), " px"),
+        ("vScale", "↕T", doc.v_scale, (1.0, 1000.0), " %"),
+        ("hScale", "↔T", doc.h_scale, (1.0, 1000.0), " %"),
         ("baselineShift", "A↑", doc.baseline_shift, (-1000.0, 1000.0), " px"),
-        ("hScale", "↔", doc.h_scale, (1.0, 1000.0), "%"),
+        ("", "", 0.0, (0.0, 0.0), ""),
     ];
     for (i, (key, glyph, v, range, suffix)) in fields.into_iter().enumerate() {
+        if key.is_empty() {
+            continue;
+        }
         let col = i % 2;
         let row = i / 2;
         let fx = x0 + col as f32 * (w / 2.0);
@@ -77,13 +82,25 @@ pub fn character(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         if let Some(nv) = nv
             && enabled
         {
-            let k = if key == "baselineShift" || key == "hScale" { "tracking" } else { key };
-            if k == key {
-                actions.push(json!({key: nv, "merge": format!("char-{key}")}));
-            }
+            actions.push(json!({key: nv, "merge": format!("char-{key}")}));
         }
     }
-    y += 3.0 * 28.0 + 8.0;
+    // Stroke Over Fill / Fill Over Stroke (bottom-right cell).
+    {
+        let fx = x0 + w / 2.0;
+        let fy = y + 3.0 * 28.0;
+        let dr = Rect::from_min_size(pos2(fx, fy), vec2(w / 2.0, 20.0));
+        let labels = vec!["Fill Over Stroke".to_string(), "Stroke Over Fill".to_string()];
+        let pop = egui::Id::new("char-stroke-order-pop");
+        if widgets::dropdown(ui, dr, &labels[doc.stroke_over_fill as usize], &t, egui::Id::new("char-stroke-order")).clicked() && enabled {
+            widgets::open_popup(ui, pop);
+        }
+        app.auto.add("character.strokeOverFill", dr, "Stroke order");
+        if let Some(i) = widgets::popup_menu(ui, pop, dr.left_bottom(), &labels, Some(doc.stroke_over_fill as usize)) {
+            actions.push(json!({"strokeOverFill": i == 1}));
+        }
+    }
+    y += 4.0 * 28.0 + 8.0;
     // Fill / stroke swatches.
     p.text(pos2(x0, y + 10.0), Align2::LEFT_CENTER, "Fill", Tokens::ui(11.5), t.text_dim);
     let fs = Rect::from_min_size(pos2(x0 + 34.0, y), vec2(26.0, 20.0));
@@ -107,7 +124,8 @@ pub fn character(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     }
     y += 32.0;
     // Style toggles.
-    let toggles = [("fauxBold", "T", doc.faux_bold), ("fauxItalic", "T", doc.faux_italic), ("allCaps", "TT", doc.all_caps)];
+    let toggles =
+        [("fauxBold", "T", doc.faux_bold), ("fauxItalic", "T", doc.faux_italic), ("allCaps", "TT", doc.all_caps), ("smallCaps", "Tт", doc.small_caps)];
     for (i, (key, label, on)) in toggles.into_iter().enumerate() {
         let r = Rect::from_min_size(pos2(x0 + i as f32 * 34.0, y), vec2(30.0, 24.0));
         let resp = ui.interact(r, egui::Id::new(("char-t", key)), Sense::click());

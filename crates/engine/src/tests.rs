@@ -168,6 +168,9 @@ fn set_text_paragraph_fill_and_leading() {
     assert_eq!((d.leading, d.apply_fill, d.apply_stroke), (Some(50.0), false, true));
     s.execute("layer.setText", json!({"layer": t, "leading": "auto"})).unwrap();
     assert_eq!(doc(&s).leading, None);
+    s.execute("layer.setText", json!({"layer": t, "hScale": 120, "vScale": 80, "baselineShift": 4, "smallCaps": true, "strokeOverFill": true})).unwrap();
+    let d = doc(&s);
+    assert_eq!((d.h_scale, d.v_scale, d.baseline_shift, d.small_caps, d.stroke_over_fill), (120.0, 80.0, 4.0, true, true));
 }
 
 #[test]
