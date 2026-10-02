@@ -268,6 +268,10 @@ impl Default for TimelineState {
     }
 }
 
+fn default_project_sort() -> String {
+    "name".into()
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UiState {
     pub tool: Tool,
@@ -286,6 +290,12 @@ pub struct UiState {
     pub effects_open: BTreeSet<String>,
     pub project_search: String,
     pub project_open_folders: BTreeSet<u64>,
+    /// Project panel sort column (`name`, `type`, `size`, `fps`) and direction, as in AE's
+    /// clickable column headers. Folders sort with everything else.
+    #[serde(default = "default_project_sort")]
+    pub project_sort: String,
+    #[serde(default)]
+    pub project_sort_desc: bool,
     /// Effect Controls twirl state (group uids that are collapsed).
     pub fx_closed: BTreeSet<u64>,
     /// Shape tool options.
@@ -318,6 +328,8 @@ impl Default for UiState {
             effects_open: BTreeSet::new(),
             project_search: String::new(),
             project_open_folders: BTreeSet::new(),
+            project_sort: default_project_sort(),
+            project_sort_desc: false,
             fx_closed: BTreeSet::new(),
             fill_color: [0.24, 0.55, 0.96],
             stroke_color: [1.0, 1.0, 1.0],
