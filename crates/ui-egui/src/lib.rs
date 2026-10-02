@@ -174,7 +174,14 @@ impl EffectcraftApp {
 
     pub fn set_workspace(&mut self, name: &str) {
         self.ui.workspace = name.to_string();
-        self.ui.dock = dock::workspace(name);
+        self.ui.dock = self.ui.saved_workspaces.get(name).cloned().unwrap_or_else(|| dock::workspace(name));
+    }
+
+    /// Built-in workspaces followed by the saved ones (Window ▸ Workspace ▸ Save as New Workspace).
+    pub fn workspace_names(&self) -> Vec<String> {
+        let mut v: Vec<String> = dock::WORKSPACES.iter().map(|s| s.to_string()).collect();
+        v.extend(self.ui.saved_workspaces.keys().filter(|k| !dock::WORKSPACES.contains(&k.as_str())).cloned());
+        v
     }
 
     pub fn show_panel(&mut self, p: PanelKind) {

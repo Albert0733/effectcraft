@@ -21,9 +21,6 @@ pub fn specs() -> Vec<CommandSpec> {
         stub!("app.hideOthers", "Hide Others", [], "{}"),
         stub!("app.showAll", "Show All", [], "{}"),
         // Render queue / export (export milestone).
-        stub!("render.addOutputModule", "Add Output Module", ["Composition"], "{}"),
-        stub!("render.preRender", "Pre-render...", ["Composition"], "{}"),
-        stub!("render.saveCurrentPreview", "Save Current Preview...", ["Composition"], "{path}"),
         stub!("file.createProxy", "Create Proxy", [], "{kind: still|movie}"),
         // Proxies (no proxy model yet).
         stub!("file.setProxy", "File...", ["File", "Set Proxy"], "{path}"),
@@ -37,15 +34,6 @@ pub fn specs() -> Vec<CommandSpec> {
         stub!("layer.newContentAwareFill", "Content-Aware Fill Layer...", ["Layer", "New"], "{}"),
         stub!("layer.new3dPrimitive", "3D Primitive", [], "{kind: cube|sphere|plane|torus|cone|cylinder}"),
         // Mask options not in the mask model yet; pen / vertex editing (timeline milestone).
-        stub!("layer.mask.motionBlur", "Motion Blur", [], "{mode: sameAsLayer|on|off}"),
-        stub!("layer.mask.featherFalloff", "Feather Falloff", [], "{mode: smooth|linear}"),
-        stub!("layer.mask.hideLocked", "Hide Locked Masks", ["Layer", "Mask"], "{}"),
-        stub!("path.rotoBezier", "RotoBezier", ["Layer", "Mask and Shape Path"], "{}"),
-        stub!("path.convertToBezier", "Convert To Bezier Path", ["Layer", "Mask and Shape Path"], "{}"),
-        stub!("path.groupShapes", "Group Shapes", ["Layer", "Mask and Shape Path"], "Cmd+G", "{}"),
-        stub!("path.ungroupShapes", "Ungroup Shapes", ["Layer", "Mask and Shape Path"], "Cmd+Shift+G", "{}"),
-        stub!("path.setFirstVertex", "Set First Vertex", ["Layer", "Mask and Shape Path"], "{}"),
-        stub!("path.freeTransform", "Free Transform Points", ["Layer", "Mask and Shape Path"], "{}"),
         // Time (timeline milestone).
         stub!("layer.alignVideoToData", "Align Video to Data", ["Layer", "Time"], "{}"),
         stub!("layer.environment", "Environment Layer", ["Layer"], "{}"),
@@ -54,7 +42,6 @@ pub fn specs() -> Vec<CommandSpec> {
         stub!("layer.autoTrace", "Auto-trace...", ["Layer"], "{}"),
         stub!("layer.sceneEditDetection", "Scene Edit Detection...", ["Layer"], "{}"),
         // Cameras / lights / materials / 3D views (3D milestone).
-        stub!("camera.fromView", "Create Camera from 3D View", ["Layer", "Camera"], "{}"),
         stub!("camera.stereoRig", "Create Stereo 3D Rig", ["Layer", "Camera"], "{}"),
         stub!("camera.orbitNull", "Create Orbit Null", ["Layer", "Camera"], "{}"),
         stub!("camera.fromModel", "Create Cameras from 3D Model", ["Layer", "Camera"], "{}"),
@@ -67,11 +54,7 @@ pub fn specs() -> Vec<CommandSpec> {
         stub!("material.revealSource", "Reveal Material Source in Project", ["Layer", "Material"], "{}"),
         stub!("material.reset", "Reset Material", ["Layer", "Material"], "{}"),
         stub!("material.duplicateAssign", "Duplicate and Assign Material", ["Layer", "Material"], "{}"),
-        stub!("view.layout", "Switch View Layout", [], "{views: 1|2|4}"),
-        stub!("view.shareViewOptions", "Share View Options", ["View", "Switch View Layout"], "{}"),
         stub!("view.3d.default", "Default", ["View", "Switch 3D View"], "{}"),
-        stub!("view.lookAtSelected", "Look at Selected Layers", ["View"], "Cmd+Alt+Shift+\\", "{}"),
-        stub!("view.lookAtAll", "Look at All Layers", ["View"], "{}"),
         stub!("view.splitLockedViewer", "Split with New Locked Viewer", ["View"], "{}"),
         stub!("view.res.custom", "Custom...", ["View", "Resolution"], "{}"),
         // Color management.
@@ -87,9 +70,6 @@ pub fn specs() -> Vec<CommandSpec> {
         stub!("track.mask", "Track Mask", ["Animation"], "{}"),
         stub!("track.property", "Track this Property", ["Animation"], "{}"),
         // Workspaces and panels that don't exist yet.
-        stub!("window.saveWorkspace", "Save Changes to this Workspace", ["Window", "Workspace"], "{}"),
-        stub!("window.saveWorkspaceAs", "Save as New Workspace...", ["Window", "Workspace"], "{name}"),
-        stub!("window.editWorkspaces", "Edit Workspaces...", ["Window", "Workspace"], "{}"),
         stub!("window.unavailablePanel", "Panel", [], "{panel}"),
     ]
 }

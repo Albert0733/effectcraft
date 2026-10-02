@@ -17,6 +17,7 @@ mod layer_time;
 mod link;
 mod lottie;
 mod mask;
+mod paths;
 mod prop;
 mod query;
 mod render_queue;
@@ -92,6 +93,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(anim::specs());
         v.extend(link::specs());
         v.extend(mask::specs());
+        v.extend(paths::specs());
         v.extend(effect::specs());
         v.extend(time::specs());
         v.extend(render_queue::specs());

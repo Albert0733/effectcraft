@@ -256,7 +256,7 @@ fn center_anchor(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// Masks the command applies to: `mask` (index / uid / name) on `layer`, else selected masks,
 /// else every mask of the selected layers.
-fn target_masks(s: &Session, p: &Value) -> Result<(ItemId, Vec<(LayerId, Uid)>)> {
+pub(crate) fn target_masks(s: &Session, p: &Value) -> Result<(ItemId, Vec<(LayerId, Uid)>)> {
     let (cid, ids) = layers_p(s, p)?;
     let comp = s.project.comp(cid).ok_or(EngineError::NoComp)?;
     let mut out = vec![];

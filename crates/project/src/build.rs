@@ -71,7 +71,15 @@ pub const MASK_COLORS: [[u8; 3]; 8] = [
 
 pub fn mask(ids: &mut Ids, name: &str, path: ShapePath, mode: MaskMode, color: [u8; 3]) -> PropGroup {
     let mut g = ids.group("mask", name);
-    g.kind = GroupKind::Mask { mode, inverted: false, color, locked: false };
+    g.kind = GroupKind::Mask {
+        mode,
+        inverted: false,
+        color,
+        locked: false,
+        motion_blur: Default::default(),
+        feather_falloff: Default::default(),
+        roto_bezier: false,
+    };
     g.with(ids.prop("path", "Mask Path", Value::Path(path)).with_ui(ParamUi::Path))
         .with(ids.prop("feather", "Mask Feather", Value::Vec2([0.0, 0.0])).with_ui(ParamUi::Pixels))
         .with(ids.prop("opacity", "Mask Opacity", Value::Scalar(100.0)).with_ui(slider(0.0, 100.0, 0.0, 100.0, 0)))

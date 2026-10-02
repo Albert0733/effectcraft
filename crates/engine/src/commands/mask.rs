@@ -44,9 +44,13 @@ fn edit_path<T>(s: &mut Session, p: &Value, label: &str, f: impl FnOnce(&mut Sha
         let masks = l.props.sub_mut("masks").ok_or_else(|| bad(label, "this layer has no masks"))?;
         let g = find_mask(masks, &key).ok_or_else(|| bad(label, "no such mask"))?;
         let uid = g.uid;
+        let roto = super::paths::is_roto(g);
         let pr = g.get_mut("path").ok_or_else(|| bad(label, "mask has no path"))?;
         let KV::Path(mut sp) = pr.value_at(lt) else { return Err(bad(label, "not a path")) };
         let r = f(&mut sp)?;
+        if roto {
+            super::paths::roto_smooth(&mut sp);
+        }
         pr.set_value_at(lt, KV::Path(sp));
         Ok((uid, r))
     })
@@ -182,9 +186,14 @@ fn edit_vertices(s: &mut Session, p: &Value, label: &str, f: impl Fn(&mut ShapeP
         for ((l, m), idx) in &groups {
             let Some(layer) = comp.layer_mut(effectcraft_project::LayerId(*l)) else { continue };
             let lt = layer.layer_time(t);
-            let Some(pr) = layer.props.sub_mut("masks").and_then(|ms| ms.find_group_mut(*m)).and_then(|g| g.get_mut("path")) else { continue };
+            let Some(g) = layer.props.sub_mut("masks").and_then(|ms| ms.find_group_mut(*m)) else { continue };
+            let roto = super::paths::is_roto(g);
+            let Some(pr) = g.get_mut("path") else { continue };
             let KV::Path(mut sp) = pr.value_at(lt) else { continue };
             f(&mut sp, idx);
+            if roto {
+                super::paths::roto_smooth(&mut sp);
+            }
             pr.set_value_at(lt, KV::Path(sp));
         }
         Ok(())

@@ -10,8 +10,8 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use effectcraft_project::render_queue::{OutputFormat, RenderQueueItem, RenderStatus, TemplateVars, expand_template};
-use effectcraft_project::{ItemId, Project};
+use effectcraft_project::render_queue::{OutputFormat, PostRenderAction, RenderQueueItem, RenderStatus, TemplateVars, expand_template};
+use effectcraft_project::{ItemId, ItemKind, LayerSource, Project};
 use effectcraft_render::{ExprHost, FootageSource};
 use serde::Serialize;
 
@@ -121,7 +121,8 @@ struct Work {
     footage: Arc<dyn FootageSource>,
     expr: Option<Arc<dyn ExprHost>>,
     exporter: Arc<dyn Exporter>,
-    items: Vec<(RenderQueueItem, String)>,
+    /// Per queue item: one (item with that output module, resolved path) per output module.
+    items: Vec<Vec<(RenderQueueItem, String)>>,
 }
 
 fn unix_now() -> u64 {
@@ -134,7 +135,8 @@ fn run_work(w: Work, shared: &JobShared) {
         let mut s = lock(&shared.state);
         s.items_total = w.items.len();
     }
-    for (k, (item, path)) in w.items.iter().enumerate() {
+    for (k, modules) in w.items.iter().enumerate() {
+        let Some((item, _)) = modules.first() else { continue };
         if shared.cancel.load(Ordering::Relaxed) {
             lock(&shared.updates).push(ItemUpdate::Finished { id: item.id, status: RenderStatus::UserStopped, seconds: 0.0, output: None });
             continue;
@@ -149,16 +151,29 @@ fn run_work(w: Work, shared: &JobShared) {
             s.items_done = k;
             s.remaining = None;
         }
-        let job = ExportJob { project: &w.project, footage: w.footage.as_ref(), expr: w.expr.as_deref(), item, path };
-        let r = w.exporter.export(&job, &mut |done, total| {
-            let mut s = lock(&shared.state);
-            s.done = done;
-            s.total = total;
-            s.elapsed = t0.elapsed().as_secs_f64();
-            s.item_elapsed = t1.elapsed().as_secs_f64();
-            s.remaining = (done > 0).then(|| s.item_elapsed / done as f64 * total.saturating_sub(done) as f64);
-            !shared.cancel.load(Ordering::Relaxed)
-        });
+        // Every output module encodes the same frames (Composition ▸ Add Output Module); the
+        // first module's file is the item's output.
+        let mut r: Result<ExportResult, String> = Err("no output module".into());
+        for (mi, (mitem, path)) in modules.iter().enumerate() {
+            let job = ExportJob { project: &w.project, footage: w.footage.as_ref(), expr: w.expr.as_deref(), item: mitem, path };
+            let rr = w.exporter.export(&job, &mut |done, total| {
+                let mut s = lock(&shared.state);
+                s.done = done;
+                s.total = total;
+                s.elapsed = t0.elapsed().as_secs_f64();
+                s.item_elapsed = t1.elapsed().as_secs_f64();
+                s.remaining = (done > 0).then(|| s.item_elapsed / done as f64 * total.saturating_sub(done) as f64);
+                !shared.cancel.load(Ordering::Relaxed)
+            });
+            match rr {
+                Ok(res) if mi == 0 => r = Ok(res),
+                Ok(_) => {}
+                Err(e) => {
+                    r = Err(e);
+                    break;
+                }
+            }
+        }
         let seconds = t1.elapsed().as_secs_f64();
         let up = match r {
             Ok(res) => ItemUpdate::Finished { id: item.id, status: RenderStatus::Done, seconds, output: Some(res.path) },
@@ -240,11 +255,24 @@ impl Session {
         let mut items = Vec::new();
         let mut needs_output = Vec::new();
         for it in self.project.render_queue.iter().filter(|i| i.is_queued()) {
-            match self.resolve_output(it) {
-                Some(p) if formats.contains(&it.output.format) => items.push((it.clone(), p)),
-                Some(_) => needs_output.push((it.id, RenderStatus::Failed(format!("{} export is not available", it.output.format.label())))),
-                None if self.project.comp(it.comp).is_none() => needs_output.push((it.id, RenderStatus::Failed("composition missing".into()))),
-                None => needs_output.push((it.id, RenderStatus::NeedsOutput)),
+            let mut modules = vec![];
+            let mut problem = None;
+            for om in it.output_modules() {
+                let mut m = it.clone();
+                m.output = om.clone();
+                match self.resolve_output(&m) {
+                    Some(p) if formats.contains(&om.format) => modules.push((m, p)),
+                    Some(_) => problem = Some(RenderStatus::Failed(format!("{} export is not available", om.format.label()))),
+                    None if self.project.comp(it.comp).is_none() => problem = Some(RenderStatus::Failed("composition missing".into())),
+                    None => problem = Some(RenderStatus::NeedsOutput),
+                }
+                if problem.is_some() {
+                    break;
+                }
+            }
+            match problem {
+                Some(st) => needs_output.push((it.id, st)),
+                None => items.push(modules),
             }
         }
         if !needs_output.is_empty() {
@@ -259,7 +287,7 @@ impl Session {
         if items.is_empty() {
             return Err("nothing is queued: add a composition (Composition ▸ Add to Render Queue) and tick Render".into());
         }
-        let ids: Vec<u64> = items.iter().map(|(i, _)| i.id).collect();
+        let ids: Vec<u64> = items.iter().filter_map(|m| m.first().map(|(i, _)| i.id)).collect();
         let work = Work { project: self.project.clone(), footage: self.footage.clone(), expr: self.expr.clone(), exporter, items };
         let shared = Arc::new(JobShared::default());
         if wait {
@@ -292,6 +320,7 @@ impl Session {
         let updates = std::mem::take(&mut *lock(&job.shared.updates));
         let finished = job.is_finished();
         let changed = !updates.is_empty();
+        let mut post: Vec<(u64, String)> = vec![];
         if changed {
             let p = Arc::make_mut(&mut self.project);
             for u in &updates {
@@ -309,6 +338,11 @@ impl Session {
                             i.render_time = Some(*seconds);
                             if output.is_some() {
                                 i.last_output = output.clone();
+                            }
+                            if let (RenderStatus::Done, Some(o)) = (status, output)
+                                && !i.post_render.is_none()
+                            {
+                                post.push((*id, o.clone()));
                             }
                         }
                     }
@@ -333,7 +367,48 @@ impl Session {
             };
             self.events.push(Event::Toast { message: msg, error: failed > 0 });
         }
+        for (id, path) in post {
+            if let Err(e) = self.post_render_action(id, &path) {
+                self.events.push(Event::Toast { message: format!("Post-render action: {e}"), error: true });
+            }
+        }
         changed || finished
+    }
+
+    /// Run an item's Post-Render Action: import the rendered file, and for Import & Replace
+    /// Usage swap every layer that used the rendered composition to the new footage (one undo
+    /// step).
+    pub fn post_render_action(&mut self, id: u64, path: &str) -> Result<Option<ItemId>, String> {
+        let Some(item) = self.project.render_queue.iter().find(|i| i.id == id).cloned() else { return Ok(None) };
+        if item.post_render.is_none() {
+            return Ok(None);
+        }
+        let importer = self.importer.clone().ok_or("media import is not available in this build")?;
+        let footage = importer.probe(path)?;
+        let name = std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| path.to_string());
+        let replace = item.post_render == PostRenderAction::ImportAndReplace;
+        let comp = item.comp;
+        let label = if replace { "Pre-render: Import & Replace Usage" } else { "Post-Render: Import" };
+        self.edit(label, None, |proj, st| {
+            let fid = proj.add_item(&name, effectcraft_color::Label::Aqua, None, ItemKind::Footage(footage));
+            if replace {
+                let ids: Vec<ItemId> = proj.comps().map(|(i, _)| *i).filter(|i| *i != comp).collect();
+                for cid in ids {
+                    let uses = proj.comp(cid).is_some_and(|c| c.layers.iter().any(|l| matches!(l.source, LayerSource::Comp { item } if item == comp)));
+                    if !uses {
+                        continue;
+                    }
+                    if let Some(c) = proj.comp_mut(cid) {
+                        for l in c.layers.iter_mut().filter(|l| matches!(l.source, LayerSource::Comp { item } if item == comp)) {
+                            l.source = LayerSource::Footage { item: fid };
+                        }
+                    }
+                }
+            }
+            st.project_selection = vec![fid];
+            Ok(Some(fid))
+        })
+        .map_err(|e| e.to_string())
     }
 
     /// The comp to add: `comp` param, the active comp, or the first comp selected in the Project panel.
