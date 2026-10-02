@@ -9,6 +9,7 @@ mod help;
 mod layer;
 mod prop;
 mod query;
+mod render_queue;
 mod time;
 
 use std::sync::OnceLock;
@@ -71,6 +72,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(prop::specs());
         v.extend(effect::specs());
         v.extend(time::specs());
+        v.extend(render_queue::specs());
         v.extend(help::specs());
         v.extend(query::specs());
         v

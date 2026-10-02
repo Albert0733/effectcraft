@@ -9,6 +9,10 @@
 //! effectcraft-cli get <comp> <layer> <path> [--time S]        read a property
 //! effectcraft-cli set <comp> <layer> <path> <value> [--time S] [--expression E]
 //! effectcraft-cli render-frame [--comp C] [--time S|--frame N] [--max-side PX|--scale K] [--out F.png]
+//! effectcraft-cli render [--comp C] --out FILE [--format h264|prores|png|jpeg|tiff|exr|gif] [--start S] [--end S]
+//!     [--work-area] [--fps N] [--resolution full|half|third|quarter|K] [--quality best|draft] [--channels rgb|rgba]
+//!     [--jpeg-quality N] [--bitrate KBPS] [--prores proxy|lt|standard|hq|4444|4444xq] [--audio auto|on|off]
+//! effectcraft-cli render F.ecproj --queue                    render the project's Render Queue
 //! effectcraft-cli mcp [--bridge PORT]                         MCP server on stdio
 //!
 //! Project:  --project F.ecproj (or a positional *.ecproj) | --demo | --empty   (default: demo; mcp: empty)
@@ -24,7 +28,7 @@ use effectcraft_automation::tools::{self, Reply};
 use effectcraft_automation::{Backend, McpServer};
 use serde_json::{Value, json};
 
-const USAGE: &str = "usage: effectcraft-cli <info|commands|exec|run|props|get|set|render-frame|mcp> [args] [--json]
+const USAGE: &str = "usage: effectcraft-cli <info|commands|exec|run|props|get|set|render-frame|render|mcp> [args] [--json]
   info                                     project + engine summary
   commands [--filter TEXT] [--enabled]     list engine commands
   exec <command-id> [--params JSON]        run one engine command
@@ -33,13 +37,41 @@ const USAGE: &str = "usage: effectcraft-cli <info|commands|exec|run|props|get|se
   get <comp> <layer> <path> [--time S]     read a property
   set <comp> <layer> <path> <value> [--time S] [--expression E]
   render-frame [--comp C] [--time S | --frame N] [--max-side PX | --scale K] [--out F.png]
+  render [--comp C] --out FILE [--format F] [--start S] [--end S] [--work-area] [--fps N]
+         [--resolution full|half|third|quarter|K] [--quality best|draft] [--channels rgb|rgba]
+         [--jpeg-quality N] [--bitrate KBPS] [--prores PROFILE] [--audio auto|on|off] | --queue
   mcp [--bridge PORT]                      MCP server (JSON-RPC over stdio)
 options: --project F.ecproj | --demo | --empty   --save | --save-as F   --bridge PORT   --json
 <comp>: id or name, '-' = active comp; <layer>: id, '#n' or name; <value>: JSON or bare string";
 
 /// Options that take a value.
-const VALUED: &[&str] =
-    &["--params", "--project", "--bridge", "--save-as", "--filter", "--time", "--frame", "--comp", "--max-side", "--scale", "--out", "--expression", "--depth"];
+const VALUED: &[&str] = &[
+    "--params",
+    "--project",
+    "--bridge",
+    "--save-as",
+    "--filter",
+    "--time",
+    "--frame",
+    "--comp",
+    "--max-side",
+    "--scale",
+    "--out",
+    "--expression",
+    "--depth",
+    // render
+    "--format",
+    "--start",
+    "--end",
+    "--fps",
+    "--resolution",
+    "--quality",
+    "--channels",
+    "--jpeg-quality",
+    "--bitrate",
+    "--prores",
+    "--audio",
+];
 
 struct Args {
     pos: Vec<String>,
@@ -198,6 +230,7 @@ fn emit(v: &Value, json_out: bool) {
 
 fn run(cmd: &str, args: &Args, json_out: bool) -> Result<(), Failure> {
     match cmd {
+        "render" => render(args, json_out)?,
         "info" => {
             let mut b = backend(args, true)?;
             let p = tool(&mut b, "get_project", json!({}))?;
@@ -388,4 +421,112 @@ fn with_saved(v: Value, saved: Option<String>) -> Value {
         None => v,
         Some(p) => json!({"result": v, "saved": p}),
     }
+}
+
+/// `render`: queue `--comp` (or the active comp) with the given settings unless `--queue`, then
+/// render the queue with a progress line on stderr. Fails if any item fails.
+fn render(args: &Args, json_out: bool) -> Result<(), Failure> {
+    use effectcraft_engine::project::render_queue::RenderStatus;
+    if args.opt("--bridge").is_some() {
+        return usage_err("render runs headless; use `exec renderQueue.add` / `renderQueue.render` with --bridge");
+    }
+    let mut s = effectcraft_host::session();
+    match &args.project {
+        Some(p) => s.execute("file.open", json!({"path": p})).map_err(|e| Failure::Error(e.to_string()))?,
+        None => s.execute("file.openDemoProject", json!({})).map_err(|e| Failure::Error(e.to_string()))?,
+    };
+    let err = |e: effectcraft_engine::EngineError| Failure::Error(e.to_string());
+    if !args.flag("--queue") {
+        let Some(out) = args.opt("--out") else { return usage_err("render: --out FILE is required (or --queue)") };
+        let mut p = json!({"output": out});
+        if let Some(c) = args.opt("--comp") {
+            p["comp"] = json!(c);
+        }
+        let ext = std::path::Path::new(out).extension().map(|e| e.to_string_lossy().to_string());
+        if let Some(f) = args.opt("--format").map(str::to_string).or(ext) {
+            p["format"] = json!(f);
+        }
+        match (args.num("--start")?, args.num("--end")?) {
+            (None, None) => p["timeSpan"] = json!(if args.flag("--work-area") { "workArea" } else { "comp" }),
+            (a, b) => {
+                p["start"] = json!(a.unwrap_or(0.0));
+                if let Some(b) = b {
+                    p["end"] = json!(b);
+                }
+            }
+        }
+        if let Some(v) = args.num("--fps")? {
+            p["frameRate"] = json!(v);
+        }
+        if let Some(r) = args.opt("--resolution").or(args.opt("--scale")) {
+            p["resolution"] = r.parse::<f64>().map(|v| json!(v)).unwrap_or(json!(r));
+        }
+        for (flag, key) in [("--quality", "quality"), ("--channels", "channels"), ("--prores", "proresProfile"), ("--audio", "audio")] {
+            if let Some(v) = args.opt(flag) {
+                p[key] = json!(v);
+            }
+        }
+        if let Some(v) = args.num("--jpeg-quality")? {
+            p["quality"] = json!(v);
+        }
+        if let Some(v) = args.num("--bitrate")? {
+            p["bitrate"] = json!(v);
+        }
+        // Render exactly this item: unqueue whatever the project's queue already holds.
+        for k in 0..s.project.render_queue.len() {
+            let _ = s.execute("renderQueue.setRender", json!({"index": k + 1, "render": false}));
+        }
+        let r = s.execute("renderQueue.add", p).map_err(err)?;
+        eprintln!(
+            "{} → {} ({}×{}, {} frames, {})",
+            r["compName"].as_str().unwrap_or("?"),
+            r["outputPath"].as_str().unwrap_or("?"),
+            r["width"],
+            r["height"],
+            r["frames"],
+            r["outputModuleSummary"].as_str().unwrap_or("")
+        );
+    }
+    s.execute("renderQueue.render", json!({"wait": false})).map_err(err)?;
+    let tty = std::io::IsTerminal::is_terminal(&std::io::stderr());
+    while s.is_rendering() {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        if tty && let Some(p) = s.render_progress() {
+            let left = p.remaining.map(|r| format!(", ~{r:.1}s left")).unwrap_or_default();
+            eprint!(
+                "
+  [{}/{}] frame {}/{}  {:.1}s{left}\x1b[K",
+                (p.items_done + 1).min(p.items_total),
+                p.items_total,
+                p.done,
+                p.total,
+                p.item_elapsed
+            );
+        }
+        s.poll_render();
+    }
+    s.poll_render();
+    if tty {
+        eprintln!();
+    }
+    let mut results = vec![];
+    let mut failed = vec![];
+    for it in s.project.render_queue.iter().filter(|i| i.render && i.started.is_some()) {
+        let name = s.project.item(it.comp).map(|i| i.name.clone()).unwrap_or_else(|| "?".into());
+        match &it.status {
+            RenderStatus::Done => {
+                eprintln!("done: {name} → {} in {:.2}s", it.last_output.as_deref().unwrap_or("?"), it.render_time.unwrap_or(0.0));
+                results.push(json!({"comp": name, "output": it.last_output, "seconds": it.render_time}));
+            }
+            RenderStatus::Failed(e) => failed.push(format!("{name}: {e}")),
+            other => failed.push(format!("{name}: {}", other.label())),
+        }
+    }
+    if !failed.is_empty() {
+        return Err(Failure::Error(failed.join("; ")));
+    }
+    if json_out {
+        emit(&json!({"rendered": results}), true);
+    }
+    Ok(())
 }

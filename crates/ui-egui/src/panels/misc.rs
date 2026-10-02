@@ -1,7 +1,6 @@
-//! Smaller panels: Preview, Audio, History, Markers, Wiggler, Render Queue, the Home screen and
-//! placeholders.
+//! Smaller panels: Preview, Audio, History, Markers, Wiggler, the Home screen and placeholders.
 
-use egui::{Align2, Color32, Rect, Sense, Stroke, pos2, vec2};
+use egui::{Align2, Color32, Rect, Sense, pos2, vec2};
 use serde_json::json;
 
 use crate::dock::PanelKind;
@@ -183,25 +182,6 @@ pub fn wiggler(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         }
     }
     app.auto.add("wiggler.apply", b, "Apply");
-}
-
-/// Render Queue: comps queued for export with output settings.
-pub fn render_queue(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
-    let t = app.tokens;
-    let p = ui.painter().with_clip_rect(rect);
-    let hdr = Rect::from_min_size(rect.min, vec2(rect.width(), 40.0));
-    p.text(pos2(hdr.min.x + 14.0, hdr.center().y), Align2::LEFT_CENTER, "Render Queue", Tokens::semibold(13.0), t.text);
-    let b = Rect::from_min_size(pos2(hdr.max.x - 100.0, hdr.min.y + 8.0), vec2(84.0, 24.0));
-    let _ = widgets::text_button(ui, b, "Render", true, &t, egui::Id::new("rq-render"));
-    app.auto.add("renderQueue.render", b, "Render");
-    p.line_segment([hdr.left_bottom(), hdr.right_bottom()], Stroke::new(1.0, t.separator));
-    p.text(
-        pos2(rect.min.x + 14.0, hdr.max.y + 20.0),
-        Align2::LEFT_CENTER,
-        "Composition ▸ Add to Render Queue (⌃⌘M) to queue a render.",
-        Tokens::ui(12.0),
-        t.text_faint,
-    );
 }
 
 /// Home screen: new/open, recent, and community links.

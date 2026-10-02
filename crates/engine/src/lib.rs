@@ -11,6 +11,7 @@
 pub mod commands;
 pub mod demo;
 pub mod links;
+pub mod render_queue;
 
 use std::sync::Arc;
 
@@ -29,6 +30,7 @@ pub use effectcraft_keyframe as keyframe;
 pub use effectcraft_project as project;
 pub use effectcraft_render as render;
 pub use effectcraft_time as time;
+pub use render_queue::{ExportJob, ExportResult, Exporter, JobState};
 
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
@@ -132,6 +134,10 @@ pub struct Session {
     pub footage: Arc<dyn FootageSource>,
     pub expr: Option<Arc<dyn ExprHost>>,
     pub importer: Option<Arc<dyn Importer>>,
+    /// Render Queue encoder (the export layer); `None` = export unavailable.
+    pub exporter: Option<Arc<dyn Exporter>>,
+    /// The running (or finished, not yet polled) render.
+    pub render_job: Option<render_queue::RenderJob>,
     pub events: Vec<Event>,
     /// Commands executed: (id, params).
     pub journal: Vec<(String, Value)>,
@@ -150,6 +156,8 @@ impl Default for Session {
             footage: Arc::new(NoFootage),
             expr: None,
             importer: None,
+            exporter: None,
+            render_job: None,
             events: vec![],
             journal: vec![],
         }
@@ -335,6 +343,13 @@ impl Session {
 
     /// Replace the whole project (open/new), resetting history and state.
     pub fn replace_project(&mut self, mut p: Project, path: Option<String>) {
+        if self.stop_render()
+            && let Some(mut job) = self.render_job.take()
+        {
+            // Let the worker notice the cancel; its updates refer to the old project.
+            job.wait();
+        }
+        self.render_job = None;
         p.fix_next_id();
         self.project = Arc::new(p);
         self.history = History::default();
@@ -349,6 +364,8 @@ impl Session {
     }
 }
 
+#[cfg(test)]
+mod rq_tests;
 #[cfg(test)]
 mod tests;
 

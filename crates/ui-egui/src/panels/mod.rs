@@ -8,6 +8,7 @@ pub mod info;
 pub mod misc;
 pub mod project;
 pub mod properties;
+pub mod render_queue;
 pub mod text_panels;
 pub mod timeline;
 pub mod viewer;
@@ -65,7 +66,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: PanelKind, rect: Rec
         PanelKind::History => misc::history(app, ui, rect),
         PanelKind::Markers => misc::markers(app, ui, rect),
         PanelKind::Wiggler => misc::wiggler(app, ui, rect),
-        PanelKind::RenderQueue => misc::render_queue(app, ui, rect),
+        PanelKind::RenderQueue => render_queue::show(app, ui, rect),
         other => misc::placeholder(app, ui, rect, other),
     }
 }

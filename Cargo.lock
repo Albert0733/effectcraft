@@ -1071,6 +1071,8 @@ dependencies = [
  "effectcraft-automation",
  "effectcraft-engine",
  "effectcraft-host",
+ "effectcraft-render",
+ "effectcraft-time",
  "serde_json",
 ]
 
@@ -1115,6 +1117,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "effectcraft-export"
+version = "0.1.0"
+dependencies = [
+ "effectcraft-color",
+ "effectcraft-media",
+ "effectcraft-project",
+ "effectcraft-raster",
+ "effectcraft-render",
+ "effectcraft-time",
+ "filmcraft-aac",
+ "filmcraft-h264enc",
+ "filmcraft-isobmff",
+ "filmcraft-prores",
+ "gif",
+ "image",
+ "log",
+ "rayon",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "effectcraft-expr"
 version = "0.1.0"
 dependencies = [
@@ -1142,6 +1165,7 @@ name = "effectcraft-host"
 version = "0.1.0"
 dependencies = [
  "effectcraft-engine",
+ "effectcraft-export",
  "effectcraft-expr",
  "effectcraft-media",
  "effectcraft-project",
@@ -1699,6 +1723,16 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-h264"
+version = "0.1.0"
+source = "git+https://github.com/storytold/filmcraft?rev=89cfbf24f698b0f0e538eb7795929f19bbfb1dbb#89cfbf24f698b0f0e538eb7795929f19bbfb1dbb"
+dependencies = [
+ "filmcraft-bitstream",
+ "rayon",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "filmcraft-h264enc"
 version = "0.1.0"
 source = "git+https://github.com/storytold/filmcraft?rev=89cfbf24f698b0f0e538eb7795929f19bbfb1dbb#89cfbf24f698b0f0e538eb7795929f19bbfb1dbb"
 dependencies = [
