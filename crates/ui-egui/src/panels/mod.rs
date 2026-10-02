@@ -34,11 +34,8 @@ pub fn timecode(session: &Session, comp: &Comp, t: Tick) -> String {
     let fr = comp.frame_rate;
     match session.project.settings.time_display {
         TimeDisplayStyle::Frames => format!("{:05}", fr.frame_at(t) + session.project.settings.frame_start),
-        TimeDisplayStyle::Timecode => {
-            let df = fr.supports_drop_frame();
-            let s = effectcraft_engine::time::format_timecode_frames(fr.frame_at(t + comp.display_start), fr, df);
-            if df { s } else { s.replace(';', ":") }
-        }
+        // AE's display: `0:00:02:15` (non-drop-frame counting, as AE shows new comps).
+        TimeDisplayStyle::Timecode => effectcraft_engine::time::format_timecode_ae(fr.frame_at(t + comp.display_start), fr, false),
     }
 }
 

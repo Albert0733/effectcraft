@@ -325,7 +325,8 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let ruler_h = 34.0;
     let colhdr_h = 22.0;
     let footer_h = 24.0;
-    let left_w = (rect.width() * 0.5).clamp(420.0, 860.0);
+    let fixed = AV_W + LABEL_W + NUM_W + SW * 8.0 + if app.ui.timeline.show_modes { 92.0 + 112.0 } else { 0.0 } + 116.0 + 6.0;
+    let left_w = (fixed + 190.0).clamp(420.0, (rect.width() * 0.62).max(420.0));
     let cw = cols(rect.min.x, left_w, app.ui.timeline.show_modes);
     let graph_x0 = rect.min.x + left_w + 1.0;
     let graph_x1 = rect.max.x - 10.0;
@@ -349,7 +350,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let tc_rect = Rect::from_min_size(pos2(rect.min.x + 12.0, top + 6.0), vec2(150.0, 24.0));
     let tc_resp = ui.interact(tc_rect, egui::Id::new("tl-timecode"), Sense::click_and_drag());
     p.text(tc_rect.left_center(), Align2::LEFT_CENTER, &tc, Tokens::semibold(20.0), t.timecode);
-    let sub = format!("{} ({:.2} fps)", fr.frame_at(time), fr.as_f64());
+    let sub = format!("{:05} ({:.2} fps)", fr.frame_at(time) + app.session.project.settings.frame_start, fr.as_f64());
     p.text(pos2(tc_rect.min.x, tc_rect.max.y + 8.0), Align2::LEFT_CENTER, sub, Tokens::ui(10.5), t.text_faint);
     app.auto.add("timeline.timecode", tc_rect, &tc);
     if tc_resp.dragged() {
@@ -461,14 +462,26 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         draw_run(a, b);
     }
     // Ticks + labels.
-    let secs_per_label = [0.0333, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0].into_iter().find(|s| s * pps >= 70.0).unwrap_or(60.0);
+    // Label spacing in whole frames (AE: `00:15f`-style seconds:frames labels).
+    let fps_i = fr.as_f64().round().max(1.0) as i64;
+    let half = (fps_i / 2).max(1);
+    let label_frames = [1, 2, 5, 10, half, fps_i, 2 * fps_i, 5 * fps_i, 10 * fps_i, 30 * fps_i, 60 * fps_i]
+        .into_iter()
+        .find(|f| *f as f64 * fd * pps >= 52.0)
+        .unwrap_or(60 * fps_i);
+    let secs_per_label = label_frames as f64 * fd;
     let first = (tm.start / secs_per_label).floor() * secs_per_label;
     let mut s = first;
     let pr = p.with_clip_rect(Rect::from_min_max(pos2(graph_x0, ruler.min.y), ruler.max));
     while s <= tm.t(graph_x1) + secs_per_label {
         let x = tm.x(s);
         pr.line_segment([pos2(x, ruler.max.y - 10.0), pos2(x, ruler.max.y)], Stroke::new(1.0, t.tl_ruler_tick));
-        let label = if secs_per_label < 1.0 { format!("{:02}f", fr.frame_at(Tick::from_seconds_f64(s + 1e-9))) } else { format!("{:02}s", s.round() as i64) };
+        let fno = (s / fd).round() as i64;
+        let label = if fno >= 60 * fps_i * 60 {
+            format!("{}:{:02}:{:02}f", fno / (fps_i * 60), (fno / fps_i) % 60, fno % fps_i)
+        } else {
+            format!("{:02}:{:02}f", fno / fps_i, fno % fps_i)
+        };
         pr.text(pos2(x + 3.0, ruler.max.y - 16.0), Align2::LEFT_CENTER, label, Tokens::ui(10.0), t.tl_ruler_text);
         for k in 1..5 {
             let xx = tm.x(s + secs_per_label * k as f64 / 5.0);
@@ -551,7 +564,12 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let mut ui_actions: Vec<UiAct> = Vec::new();
     let idx_of = |id: LayerId| comp.index_of(id).unwrap_or(0);
     let graph_on = app.ui.timeline.graph_editor;
+    let full_clip = ui.clip_rect();
+    let left_clip = full_clip.intersect(Rect::from_min_max(pos2(rect.min.x, rows_rect.min.y), pos2(graph_x0 - 1.0, rows_rect.max.y)));
+    let right_clip = full_clip.intersect(Rect::from_min_max(pos2(graph_x0, rows_rect.min.y), rows_rect.max));
     for (ri, row) in rows.iter().enumerate() {
+        // Outline widgets never spill into the time graph (narrow timelines).
+        ui.set_clip_rect(left_clip);
         let r = Rect::from_min_size(pos2(rect.min.x, y), vec2(rect.width(), rh));
         y += rh;
         if r.max.y < rows_rect.min.y || r.min.y > rows_rect.max.y {
@@ -758,6 +776,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     actions.push(("layer.setParent".into(), json!({"layers": [layer.id.0], "parent": par})));
                 }
                 // Layer bar.
+                ui.set_clip_rect(right_clip);
                 if !graph_on {
                     let x_in = tm.x(layer.in_point.seconds());
                     let x_out = tm.x(layer.out_point.seconds());
@@ -962,6 +981,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 let value = ectx.value(layer, prop);
                 let vx = (cw.switches + 4.0).max(name_x + 120.0);
                 value_editor(app, ui, &lp, layer, prop, &value, pos2(vx, cy), &mut actions);
+                ui.set_clip_rect(right_clip);
                 // Expression text row hint.
                 if let Some(e) = prop.expr.as_ref().filter(|e| e.enabled) {
                     gp.text(
@@ -1057,6 +1077,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
             }
         }
     }
+    ui.set_clip_rect(full_clip);
     // Graph editor.
     if graph_on {
         super::graph::show(app, ui, &gp, &comp, &ectx, tm, Rect::from_min_max(pos2(graph_x0, rows_rect.min.y), rows_rect.max), &mut actions);

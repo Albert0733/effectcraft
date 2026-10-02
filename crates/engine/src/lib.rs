@@ -298,7 +298,7 @@ impl Session {
         if let Some(c) = self.state.active_comp {
             let comp = self.project.comp(c);
             let t = match comp {
-                Some(comp) => comp.frame_rate.snap(t.clamp(Tick::ZERO, comp.duration - comp.frame_duration())),
+                Some(comp) => comp.frame_rate.snap_nearest(t.clamp(Tick::ZERO, comp.duration - comp.frame_duration())),
                 None => t,
             };
             self.state.times.insert(c, t);

@@ -280,7 +280,7 @@ impl Default for TimelineState {
             pps: None,
             scroll_y: 0.0,
             columns_w: 560.0,
-            show_modes: true,
+            show_modes: false,
             graph_editor: false,
             search: String::new(),
             open_layers: BTreeSet::new(),

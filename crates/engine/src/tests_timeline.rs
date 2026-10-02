@@ -241,6 +241,17 @@ fn time_reverse_keyframes() {
 }
 
 #[test]
+fn time_set_snaps_to_the_nearest_frame_and_ae_timecode() {
+    let mut s = Session::default();
+    s.execute("comp.new", json!({"name": "T", "width": 100, "height": 100, "frameRate": 29.97, "duration": 10})).unwrap();
+    let r = s.execute("time.set", json!({"time": 2.5})).unwrap();
+    assert_eq!(r["frame"], 75);
+    let fr = s.active_comp().unwrap().frame_rate;
+    assert_eq!(effectcraft_time::format_timecode_ae(75, fr, false), "0:00:02:15");
+    assert_eq!(effectcraft_time::format_timecode_ae(75, fr, true), "0;00;02;15");
+}
+
+#[test]
 fn separate_dimensions_split_and_rejoin() {
     let (mut s, l) = setup();
     animate(&mut s, l, "transform/position", &[(0.0, json!([0, 100])), (2.0, json!([200, 50]))]);
