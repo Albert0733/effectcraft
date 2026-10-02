@@ -12,7 +12,17 @@ fn has_path(s: &Session) -> std::result::Result<(), String> {
 }
 
 fn new_project(s: &mut Session, _: &Value) -> Result<Value> {
+    // Settings ▸ Project ▸ New Project Loads Template: open the template as an untitled project.
+    let tpl = s.prefs.project.template_path.trim().to_string();
+    if s.prefs.project.use_template && !tpl.is_empty() {
+        let bytes = s.services.read_file(&tpl).map_err(|e| EngineError::Other(format!("cannot read the new project template {tpl}: {e}")))?;
+        let text = String::from_utf8(bytes).map_err(|_| EngineError::Other("the new project template is not a project file".into()))?;
+        s.replace_project(Project::from_json(&text)?, None);
+        s.update_sentinel();
+        return Ok(json!({"template": tpl}));
+    }
     s.replace_project(Project::default(), None);
+    s.update_sentinel();
     Ok(Value::Null)
 }
 
@@ -26,12 +36,13 @@ fn demo(s: &mut Session, _: &Value) -> Result<Value> {
     Ok(json!({"comp": s.state.active_comp.map(|c| c.0)}))
 }
 
-fn open(s: &mut Session, p: &Value) -> Result<Value> {
+pub(crate) fn open(s: &mut Session, p: &Value) -> Result<Value> {
     let path = str_p(p, "path").ok_or_else(|| bad("file.open", "missing `path`"))?;
     let bytes = s.services.read_file(path).map_err(|e| EngineError::Other(format!("cannot read {path}: {e}")))?;
     let text = String::from_utf8(bytes).map_err(|_| EngineError::Other("not a text project file".into()))?;
     let proj = Project::from_json(&text)?;
     s.replace_project(proj, Some(path.to_string()));
+    s.note_project_path(path);
     Ok(json!({"path": path}))
 }
 
@@ -40,6 +51,7 @@ fn save_to(s: &mut Session, path: &str) -> Result<Value> {
     s.services.write_file(path, json.as_bytes()).map_err(|e| EngineError::Other(format!("cannot write {path}: {e}")))?;
     s.path = Some(path.to_string());
     s.saved_revision = s.revision;
+    s.note_project_path(path);
     s.toast(format!("Saved {path}"));
     Ok(json!({"path": path, "bytes": json.len()}))
 }
@@ -56,12 +68,9 @@ fn save_as(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn increment_save(s: &mut Session, _: &Value) -> Result<Value> {
     let cur = s.path.clone().ok_or_else(|| bad("file.incrementAndSave", "save the project first"))?;
-    let stem = cur.trim_end_matches(".ecproj");
-    let (base, n) = match stem.rsplit_once('_') {
-        Some((b, n)) if n.chars().all(|c| c.is_ascii_digit()) && !n.is_empty() => (b.to_string(), n.parse::<u32>().unwrap_or(0) + 1),
-        _ => (stem.to_string(), 2),
-    };
-    save_to(s, &format!("{base}_{n}.ecproj"))
+    // After Effects: `Intro.aep` → `Intro 2.aep` → `Intro 3.aep`.
+    let next = crate::autosave::increment_path(&cur, |p| std::path::Path::new(p).exists());
+    save_to(s, &next)
 }
 
 fn revert(s: &mut Session, _: &Value) -> Result<Value> {
@@ -79,9 +88,19 @@ fn import(s: &mut Session, p: &Value) -> Result<Value> {
     let mut ids = vec![];
     let mut errors = vec![];
     let mut probed = vec![];
+    let seq_rate = effectcraft_time::FrameRate::from_f64(s.prefs.import.sequence_fps);
     for path in &paths {
         match importer.probe(path) {
-            Ok(f) => probed.push((path.clone(), f)),
+            Ok(mut f) => {
+                // Settings ▸ Import ▸ Sequence Footage frames per second.
+                if f.kind == FootageKind::Sequence {
+                    let r = seq_rate;
+                    let frames = f.frame_rate.frame_at(f.duration);
+                    f.frame_rate = r;
+                    f.duration = r.tick_of(frames.max(1));
+                }
+                probed.push((path.clone(), f))
+            }
             Err(e) => errors.push(format!("{path}: {e}")),
         }
     }

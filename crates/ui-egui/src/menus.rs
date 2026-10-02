@@ -194,7 +194,11 @@ pub fn invoke(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, params: V
         }
         "view.safeMargins" => app.ui.viewer.safe_margins = !app.ui.viewer.safe_margins,
         "view.transparencyGrid" => app.ui.viewer.transparency_grid = !app.ui.viewer.transparency_grid,
-        "view.fastPreviews" => app.ui.viewer.fast_preview = !app.ui.viewer.fast_preview,
+        "view.fastPreviews" => {
+            let on = !app.ui.viewer.fast_preview;
+            app.set_pref("previews.fastPreviews", json!(on))?;
+            app.ui.viewer.fast_preview = on;
+        }
         "timeline.zoomIn" | "timeline.zoomOut" => {
             let k = if id == "timeline.zoomIn" { 1.5 } else { 1.0 / 1.5 };
             crate::panels::timeline::zoom(app, ctx, k);
@@ -311,8 +315,21 @@ pub fn frontend(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, p: Valu
             Value::Null
         }
         "app.settings" => {
-            app.dialog_state.settings_page = p.get("page").and_then(Value::as_str).unwrap_or("general").to_string();
-            app.dialog = Some(crate::Dialog::Settings);
+            let page = p.get("page").and_then(Value::as_str).unwrap_or("general");
+            crate::panels::settings::open(app, effectcraft_engine::prefs::page_id(page).unwrap_or("general"));
+            Value::Null
+        }
+        "app.gpuInfo" => {
+            let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+            crate::panels::dialogs::info(
+                app,
+                "GPU Information",
+                &format!(
+                    "Compositing: CPU, {threads} threads (pure Rust, rayon).\nDisplay: egui on wgpu.\nLayer cache: {} MB  •  Preview cache: {} MB.",
+                    app.session.layer_cache.budget() >> 20,
+                    app.frames.budget() >> 20
+                ),
+            );
             Value::Null
         }
         "app.hide" => {
@@ -330,7 +347,7 @@ pub fn frontend(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, p: Valu
             Value::Null
         }
         "app.keyboardShortcuts" => {
-            app.dialog = Some(crate::Dialog::Shortcuts);
+            crate::panels::shortcut_editor::open(app);
             Value::Null
         }
         "app.templates" => {
@@ -350,7 +367,11 @@ pub fn frontend(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, p: Valu
             app.toggle_play(now);
             json!({"playing": app.playback.playing})
         }
-        "playback.cacheWhenIdle" => toggle(&mut app.ui.cache_when_idle, &p),
+        "playback.cacheWhenIdle" => {
+            let r = toggle(&mut app.ui.cache_when_idle, &p);
+            app.set_pref("previews.cacheFramesWhenIdle", r.clone())?;
+            r
+        }
         "playback.audio" => {
             let r = toggle(&mut app.ui.preview_audio, &p);
             if !app.ui.preview_audio {
@@ -571,8 +592,13 @@ fn entry_label(app: &EffectcraftApp, e: &MenuEntry) -> String {
     match e.command.as_str() {
         "edit.undo" => app.session.history.undo.last().map(|u| format!("Undo {}", u.0)).unwrap_or_else(|| "Can't Undo".into()),
         "edit.redo" => app.session.history.redo.last().map(|u| format!("Redo {}", u.0)).unwrap_or_else(|| "Can't Redo".into()),
-        _ => e.label.clone(),
+        _ => effectcraft_engine::menus::entry_label(&app.session, e),
     }
+}
+
+/// The entry's shortcut in the active keyboard shortcut preset.
+fn entry_shortcut(app: &EffectcraftApp, e: &MenuEntry) -> Option<String> {
+    app.session.shortcuts().shortcut_of(&e.command, &e.params).map(str::to_string)
 }
 
 /// Check-mark state of frontend toggles (engine state is answered by the engine).
@@ -623,7 +649,7 @@ pub fn menu_items(app: &EffectcraftApp) -> Vec<MenuItem> {
             id: e.command.clone(),
             label: entry_label(app, e),
             path,
-            shortcut: e.shortcut.clone(),
+            shortcut: entry_shortcut(app, e),
             enabled: entry_enabled(app, e),
             checked: entry_checked(app, e),
             params: e.params.clone(),
@@ -718,36 +744,17 @@ fn shifted_alias(k: egui::Key) -> Option<egui::Key> {
 /// A key binding: modifiers, key, command id and bound params.
 pub type Binding = (egui::Modifiers, egui::Key, String, Value);
 
-/// All active bindings, most modifiers first.
-pub fn bindings() -> Vec<Binding> {
+/// All bindings of the active keyboard shortcut preset, most modifiers first.
+pub fn bindings(session: &effectcraft_engine::Session) -> Vec<Binding> {
     let mut v: Vec<Binding> = Vec::new();
-    let mut push = |sc: &str, id: &str, params: Value| {
+    for (sc, b) in session.shortcuts().bindings() {
         if let Some((m, k)) = parse_shortcut(sc) {
             if m.shift
                 && let Some(alias) = shifted_alias(k)
             {
-                v.push((m, alias, id.to_string(), params.clone()));
+                v.push((m, alias, b.command.clone(), b.params.clone()));
             }
-            v.push((m, k, id.to_string(), params));
-        }
-    };
-    // Menu entries (their shortcuts may bind params), then command defaults not in the menus.
-    let entries = effectcraft_engine::menus::entries();
-    for (_, e) in &entries {
-        if let Some(sc) = &e.shortcut {
-            push(sc, &e.command, e.params.clone());
-        }
-    }
-    for c in effectcraft_engine::command_specs() {
-        if let Some(sc) = c.shortcut
-            && !entries.iter().any(|(_, e)| e.command == c.id)
-        {
-            push(sc, c.id, Value::Null);
-        }
-    }
-    for c in UI_COMMANDS {
-        if let Some(sc) = c.shortcut {
-            push(sc, c.id, Value::Null);
+            v.push((m, k, b.command.clone(), b.params.clone()));
         }
     }
     v.sort_by_key(|(m, ..)| std::cmp::Reverse(m.command as u8 + m.shift as u8 + m.alt as u8 + m.ctrl as u8));
@@ -779,10 +786,21 @@ pub fn handle_shortcuts(app: &mut EffectcraftApp, ctx: &egui::Context) {
     if events.is_empty() {
         return;
     }
-    let binds = bindings();
+    let binds = bindings(&app.session);
     for (key, mods) in events {
         // Escape closes dialogs.
         if key == egui::Key::Escape && app.dialog.is_some() {
+            // Escape while recording a shortcut cancels the recording, not the editor.
+            if crate::panels::shortcut_editor::recording(app) {
+                continue;
+            }
+            // Escape in Settings is Cancel: restore the settings from when it opened.
+            if app.dialog == Some(crate::Dialog::Settings)
+                && let Some(p) = app.dialog_state.prefs_snapshot.take()
+            {
+                app.session.prefs = p;
+                app.session.prefs_changed();
+            }
             app.dialog = None;
             continue;
         }
@@ -834,6 +852,27 @@ fn menu_nodes(app: &mut EffectcraftApp, ui: &mut egui::Ui, nodes: &[MenuNode], c
             MenuNode::Separator => {
                 ui.separator();
             }
+            MenuNode::Submenu { label, children } if label == "Open Recent" => {
+                // File ▸ Open Recent: the recent projects (Settings), then the static entries.
+                ui.menu_button((gutter(false), label.as_str()), |ui| {
+                    ui.set_min_width(320.0);
+                    let recent = app.session.prefs.recent_projects.clone();
+                    if recent.is_empty() {
+                        ui.add_enabled(false, egui::Button::new((gutter(false), "No Recent Projects")));
+                    }
+                    for (i, path) in recent.iter().enumerate() {
+                        let name = std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or(path.clone());
+                        let r = ui.add(egui::Button::new((gutter(false), name))).on_hover_text(path);
+                        app.auto.add(&format!("menu.openRecent.{i}"), r.rect, path);
+                        if r.clicked() {
+                            *clicked = Some(("file.openRecent".into(), json!({"index": i})));
+                            ui.close();
+                        }
+                    }
+                    ui.separator();
+                    menu_nodes(app, ui, children, clicked);
+                });
+            }
             MenuNode::Submenu { label, children } => {
                 ui.menu_button((gutter(false), label.as_str()), |ui| {
                     ui.set_min_width(if children.len() > 30 { 200.0 } else { 240.0 });
@@ -862,8 +901,8 @@ fn gutter(checked: bool) -> egui::Atom<'static> {
 fn menu_entry(app: &EffectcraftApp, ui: &mut egui::Ui, e: &MenuEntry) -> bool {
     let label = entry_label(app, e);
     let mut b = egui::Button::new((gutter(entry_checked(app, e) == Some(true)), label));
-    if let Some(s) = &e.shortcut {
-        b = b.shortcut_text(shortcut_text(s));
+    if let Some(s) = entry_shortcut(app, e) {
+        b = b.shortcut_text(shortcut_text(&s));
     }
     ui.add_enabled(entry_enabled(app, e), b).clicked()
 }
@@ -888,8 +927,9 @@ mod tests {
 
     #[test]
     fn ui_and_menu_shortcuts_do_not_collide() {
+        let app = EffectcraftApp::new(effectcraft_engine::Session::default());
         let mut seen: std::collections::BTreeMap<(String, String), (String, String)> = Default::default();
-        for (m, k, id, params) in bindings() {
+        for (m, k, id, params) in bindings(&app.session) {
             let key = (format!("{m:?}"), format!("{k:?}"));
             let target = (id.clone(), params.to_string());
             if let Some(prev) = seen.get(&key) {
@@ -898,6 +938,36 @@ mod tests {
                 seen.insert(key, target);
             }
         }
+    }
+
+    #[test]
+    fn dispatch_uses_the_active_custom_preset() {
+        let mut app = EffectcraftApp::new(effectcraft_engine::Session::default());
+        let find = |app: &EffectcraftApp, id: &str| bindings(&app.session).into_iter().filter(|b| b.2 == id).map(|b| (b.0, b.1)).collect::<Vec<_>>();
+        let (m, k) = parse_shortcut("Cmd+Alt+Shift+Y").unwrap();
+        assert!(find(&app, "layer.newNull").contains(&(m, k)));
+        // A UI command rebound in a custom preset.
+        app.session.execute("shortcuts.set", json!({"command": "tool.hand", "keys": "Ctrl+Alt+H"})).unwrap();
+        assert_eq!(app.session.keymaps.active, "Custom");
+        let (m2, k2) = parse_shortcut("Ctrl+Alt+H").unwrap();
+        assert_eq!(find(&app, "tool.hand"), vec![(m2, k2)]);
+        app.session.execute("shortcuts.set", json!({"command": "layer.newNull", "keys": "F6"})).unwrap();
+        assert_eq!(find(&app, "layer.newNull"), vec![(egui::Modifiers::NONE, egui::Key::F6)]);
+        // The menus show the preset's shortcut.
+        let item = menu_items(&app).into_iter().find(|i| i.id == "layer.newNull").unwrap();
+        assert_eq!(item.shortcut.as_deref(), Some("F6"));
+        // Back to the default preset.
+        app.session.execute("shortcuts.preset", json!({"op": "select", "name": effectcraft_engine::shortcuts::DEFAULT_PRESET})).unwrap();
+        assert!(find(&app, "layer.newNull").contains(&(m, k)));
+    }
+
+    #[test]
+    fn renamed_label_shows_in_the_label_menu() {
+        let mut app = EffectcraftApp::new(effectcraft_engine::Session::default());
+        app.set_pref("labels.1.name", json!("Sunflower")).unwrap();
+        let labels: Vec<String> = menu_items(&app).into_iter().filter(|i| i.id == "edit.label").map(|i| i.label).collect();
+        assert!(labels.contains(&"Sunflower".to_string()), "{labels:?}");
+        assert!(!labels.contains(&"Yellow".to_string()));
     }
 
     #[test]

@@ -21,6 +21,7 @@ mod prop;
 pub mod puppet;
 mod query;
 mod render_queue;
+mod settings;
 mod stubs;
 mod styles;
 mod text_anim;
@@ -108,6 +109,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(track::specs());
         v.extend(paint::specs());
         v.extend(puppet::specs());
+        v.extend(settings::specs());
         v.extend(stubs::specs());
         v
     })

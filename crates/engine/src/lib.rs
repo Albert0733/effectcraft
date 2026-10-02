@@ -8,11 +8,16 @@
 //! The project is an `Arc<Project>` edited copy-on-write; undo keeps whole-project snapshots
 //! (compositions are `Arc`s, so untouched comps are shared).
 
+pub mod autosave;
 pub mod commands;
+pub mod config;
 pub mod demo;
 pub mod links;
 pub mod menus;
+pub mod prefs;
 pub mod render_queue;
+mod session_settings;
+pub mod shortcuts;
 pub mod tracking;
 
 use std::sync::Arc;
@@ -65,10 +70,7 @@ impl Services for FsServices {
         std::fs::read(path)
     }
     fn write_file(&self, path: &str, data: &[u8]) -> std::io::Result<()> {
-        let p = std::path::Path::new(path);
-        let tmp = p.with_extension("ecproj.tmp");
-        std::fs::write(&tmp, data)?;
-        std::fs::rename(&tmp, p)
+        config::atomic_write(std::path::Path::new(path), data)
     }
 }
 
@@ -224,6 +226,21 @@ pub struct Session {
     pub journal: Vec<(String, Value)>,
     /// Processed-layer pixels reused across frames and edits (content-keyed, never stale).
     pub layer_cache: Arc<LayerCache>,
+    /// Settings (Preferences).
+    pub prefs: prefs::Prefs,
+    /// Bumped whenever settings change (frontends re-apply theme, labels…).
+    pub prefs_revision: u64,
+    /// Where settings, shortcut presets and the crash-recovery sentinel are stored (`None` =
+    /// nothing persists).
+    pub config: Option<Arc<dyn config::ConfigStore>>,
+    /// Keyboard shortcut presets.
+    pub keymaps: shortcuts::Keymaps,
+    /// Frontend-only commands offered for binding.
+    pub ui_commands: Vec<shortcuts::UiCommand>,
+    /// Cache of the resolved active preset (read it with [`Session::shortcuts`]).
+    pub shortcut_table: std::sync::OnceLock<shortcuts::ShortcutTable>,
+    /// Auto-save bookkeeping.
+    pub autosave: autosave::AutoSaveState,
 }
 
 impl Default for Session {
@@ -246,6 +263,13 @@ impl Default for Session {
             events: vec![],
             journal: vec![],
             layer_cache: Arc::new(LayerCache::default()),
+            prefs: prefs::Prefs::default(),
+            prefs_revision: 0,
+            config: None,
+            keymaps: shortcuts::Keymaps::default(),
+            ui_commands: vec![],
+            shortcut_table: std::sync::OnceLock::new(),
+            autosave: autosave::AutoSaveState::default(),
         }
     }
 }
@@ -298,8 +322,10 @@ impl Session {
         let same = merge.is_some() && merge.map(str::to_string) == self.history.merge_key;
         if !same {
             self.history.undo.push((label.to_string(), before));
-            if self.history.undo.len() > 500 {
-                self.history.undo.remove(0);
+            let levels = self.prefs.general.undo_levels.max(1) as usize;
+            if self.history.undo.len() > levels {
+                let extra = self.history.undo.len() - levels;
+                self.history.undo.drain(..extra);
             }
         }
         self.history.merge_key = merge.map(str::to_string);
@@ -482,6 +508,8 @@ mod tests_3d;
 mod tests_effects;
 #[cfg(test)]
 mod tests_menu_cmds;
+#[cfg(test)]
+mod tests_settings;
 #[cfg(test)]
 mod tests_styles;
 #[cfg(test)]

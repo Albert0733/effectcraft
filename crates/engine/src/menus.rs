@@ -93,6 +93,17 @@ pub fn entries() -> Vec<(Vec<String>, &'static MenuEntry)> {
     out
 }
 
+/// Display label of an entry: label names come from Settings ▸ Labels.
+pub fn entry_label(s: &Session, e: &MenuEntry) -> String {
+    match e.command.as_str() {
+        "edit.label" => match e.params.get("label").and_then(Value::as_str).and_then(effectcraft_color::Label::from_name) {
+            Some(l) if l != effectcraft_color::Label::None => s.prefs.label_name(l),
+            _ => e.label.clone(),
+        },
+        _ => e.label.clone(),
+    }
+}
+
 /// Check-mark state of an entry (`None` = not a toggle / radio entry). Frontend-only toggles
 /// (rulers, grid…) are answered by the frontend.
 pub fn checked(s: &Session, command: &str, params: &Value) -> Option<bool> {
@@ -292,6 +303,8 @@ File
     New Project | file.newProject
     New Folder | project.newFolder
   Open Project... | file.open
+  Open Recent
+    Clear Recent Projects | file.clearRecent
   ---
   Close | file.close
   Close Project | file.closeProject

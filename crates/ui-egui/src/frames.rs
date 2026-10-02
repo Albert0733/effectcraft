@@ -129,6 +129,24 @@ impl Frames {
         v
     }
 
+    /// Change the RAM preview cache budget (Settings ▸ Memory & CPU), evicting the oldest
+    /// frames when it shrinks.
+    pub fn set_budget(&self, bytes: usize) {
+        if let Ok(mut c) = self.cache.lock() {
+            c.budget = bytes;
+            while c.bytes > c.budget {
+                let Some(old) = c.order.pop_front() else { break };
+                if let Some(i) = c.map.remove(&old) {
+                    c.bytes -= i.pixels.len() * 4;
+                }
+            }
+        }
+    }
+
+    pub fn budget(&self) -> usize {
+        self.cache.lock().map(|c| c.budget).unwrap_or(0)
+    }
+
     pub fn clear(&self) {
         if let Ok(mut c) = self.cache.lock() {
             c.map.clear();

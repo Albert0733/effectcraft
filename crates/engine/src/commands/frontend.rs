@@ -24,6 +24,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "{page?: general|startup|project|composition|previews|appearance|grids|labels|type|import|export|audio|disk|memory|video|3d|scripting}",
             always
         ),
+        fe!("app.gpuInfo", "GPU Information...", [], None, "{}", always),
         fe!("app.hide", "Hide EffectCraft", [], None, "{}", always),
         fe!("app.quit", "Quit EffectCraft", [], Some("Cmd+Q"), "{}", always),
         fe!("app.commandPalette", "Quick Apply...", ["Edit"], Some("Cmd+Shift+Space"), "{query?}", always),

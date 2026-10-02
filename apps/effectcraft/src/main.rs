@@ -15,14 +15,14 @@ fn main() -> eframe::Result {
     let mut control_port: Option<u16> = std::env::var("EFFECTCRAFT_CONTROL_PORT").ok().and_then(|p| p.parse().ok());
     let mut files = Vec::new();
     let mut demo = true;
-    let mut home = false;
+    let mut home: Option<bool> = None;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
             "--control" => control_port = args.next().and_then(|p| p.parse().ok()),
             "--demo" => demo = true,
             "--empty" => demo = false,
-            "--home" => home = true,
+            "--home" => home = Some(true),
             "--version" => {
                 println!("effectcraft {}", env!("CARGO_PKG_VERSION"));
                 return Ok(());
@@ -46,6 +46,13 @@ fn main() -> eframe::Result {
         options,
         Box::new(move |cc| {
             let mut session = effectcraft_host::session();
+            // Settings, shortcut presets and the crash-recovery sentinel live in the platform
+            // config directory. Agent-driven runs (`--control`) skip crash recovery.
+            if let Some(dir) = config_dir() {
+                session.config = Some(std::sync::Arc::new(effectcraft_engine::config::DirConfig::new(dir)));
+            }
+            session.load_settings();
+            let recovery = if control_port.is_none() { session.begin_recovery() } else { None };
             let project = files.iter().find(|f| f.ends_with(".ecproj")).cloned();
             if let Some(p) = project {
                 if let Err(e) = session.execute("file.open", json!({"path": p})) {
@@ -60,8 +67,12 @@ fn main() -> eframe::Result {
             {
                 eprintln!("effectcraft: {e}");
             }
+            let show_home = home.unwrap_or(session.prefs.startup.show_home_on_launch && files.is_empty() && control_port.is_none());
             let mut app = EffectcraftApp::new(session);
-            app.ui.start_screen = home;
+            app.ui.start_screen = show_home;
+            if let Some(r) = recovery {
+                app.offer_recovery(r);
+            }
             app.hooks.pick_files = Some(Box::new(|exts: &[&str]| {
                 rfd::FileDialog::new().add_filter("Media", exts).pick_files().unwrap_or_default().into_iter().map(|p| p.to_string_lossy().to_string()).collect()
             }));
@@ -71,6 +82,11 @@ fn main() -> eframe::Result {
             app.hooks.pick_open_project =
                 Some(Box::new(|| rfd::FileDialog::new().add_filter("EffectCraft Project", &["ecproj"]).pick_file().map(|p| p.to_string_lossy().to_string())));
             app.hooks.audio_device = Some(Box::new(audio_out::open));
+            app.hooks.audio_devices = Some(Box::new(audio_out::devices));
+            app.hooks.pick_folder = Some(Box::new(|| rfd::FileDialog::new().pick_folder().map(|p| p.to_string_lossy().to_string())));
+            app.hooks.pick_save_file = Some(Box::new(|name: &str, ext: &str| {
+                rfd::FileDialog::new().add_filter(ext, &[ext]).set_file_name(name).save_file().map(|p| p.to_string_lossy().to_string())
+            }));
             if let Some(port) = control_port {
                 disable_app_nap();
                 let rx = control_server::start(port, cc.egui_ctx.clone());
@@ -79,6 +95,24 @@ fn main() -> eframe::Result {
             Ok(Box::new(app))
         }),
     )
+}
+
+/// The platform config directory for EffectCraft (`EFFECTCRAFT_CONFIG_DIR` overrides):
+/// `~/Library/Application Support/EffectCraft` (macOS), `%APPDATA%\EffectCraft` (Windows),
+/// `$XDG_CONFIG_HOME/effectcraft` or `~/.config/effectcraft` (Linux and others).
+fn config_dir() -> Option<std::path::PathBuf> {
+    use std::path::PathBuf;
+    if let Some(d) = std::env::var_os("EFFECTCRAFT_CONFIG_DIR") {
+        return Some(PathBuf::from(d));
+    }
+    let home = || std::env::var_os("HOME").map(PathBuf::from);
+    if cfg!(target_os = "macos") {
+        return home().map(|h| h.join("Library/Application Support/EffectCraft"));
+    }
+    if cfg!(target_os = "windows") {
+        return std::env::var_os("APPDATA").map(|a| PathBuf::from(a).join("EffectCraft"));
+    }
+    std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).or_else(|| home().map(|h| h.join(".config"))).map(|c| c.join("effectcraft"))
 }
 
 /// Driven by an agent (`--control`): don't activate the app on launch, so the user's keyboard

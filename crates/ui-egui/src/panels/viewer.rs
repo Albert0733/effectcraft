@@ -331,7 +331,9 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
 
     // Guides.
     if app.ui.viewer.safe_margins {
-        for (k, a) in [(0.9, 120u8), (0.8, 160)] {
+        let g = &app.session.prefs.grids;
+        let (act, title) = (1.0 - g.action_safe as f32 / 100.0, 1.0 - g.title_safe as f32 / 100.0);
+        for (k, a) in [(act, 120u8), (title, 160)] {
             let r = Rect::from_center_size(comp_rect.center(), comp_rect.size() * k);
             painter.rect_stroke(r, 0.0, Stroke::new(1.0, Color32::from_white_alpha(a)), StrokeKind::Middle);
         }
@@ -340,22 +342,41 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         painter.line_segment([c - vec2(0.0, 10.0), c + vec2(0.0, 10.0)], Stroke::new(1.0, Color32::from_white_alpha(140)));
     }
     if app.ui.viewer.grid {
-        let step = 100.0 * zoom;
+        // Settings ▸ Grids & Guides: gridline spacing, subdivisions and colour.
+        let g = &app.session.prefs.grids;
+        let [r, gg, b] = hex_rgb(&g.grid_color).unwrap_or([120, 160, 255]);
+        let major = Stroke::new(1.0, Color32::from_rgba_unmultiplied(r, gg, b, 90));
+        let minor = Stroke::new(1.0, Color32::from_rgba_unmultiplied(r, gg, b, 35));
+        let step = (g.grid_spacing as f32 * zoom).max(2.0);
+        let sub = g.grid_subdivisions.max(1) as f32;
+        let sstep = step / sub;
+        let draw_minor = sstep >= 4.0;
+        let mut i = 0u32;
         let mut gx = comp_rect.min.x;
         while gx <= comp_rect.max.x {
-            painter.line_segment([pos2(gx, comp_rect.min.y), pos2(gx, comp_rect.max.y)], Stroke::new(1.0, Color32::from_rgba_unmultiplied(120, 160, 255, 50)));
-            gx += step;
+            let is_major = i.is_multiple_of(g.grid_subdivisions.max(1));
+            if is_major || draw_minor {
+                painter.line_segment([pos2(gx, comp_rect.min.y), pos2(gx, comp_rect.max.y)], if is_major { major } else { minor });
+            }
+            gx += sstep;
+            i += 1;
         }
+        let mut i = 0u32;
         let mut gy = comp_rect.min.y;
         while gy <= comp_rect.max.y {
-            painter.line_segment([pos2(comp_rect.min.x, gy), pos2(comp_rect.max.x, gy)], Stroke::new(1.0, Color32::from_rgba_unmultiplied(120, 160, 255, 50)));
-            gy += step;
+            let is_major = i.is_multiple_of(g.grid_subdivisions.max(1));
+            if is_major || draw_minor {
+                painter.line_segment([pos2(comp_rect.min.x, gy), pos2(comp_rect.max.x, gy)], if is_major { major } else { minor });
+            }
+            gy += sstep;
+            i += 1;
         }
     }
 
     // Comp guides (View ▸ Show Guides) and the region of interest.
     if app.ui.viewer.guides {
-        let stroke = Stroke::new(1.0, Color32::from_rgb(0x3c, 0xc8, 0xf0));
+        let [r, gg, b] = hex_rgb(&app.session.prefs.grids.guide_color).unwrap_or([0x3c, 0xc8, 0xf0]);
+        let stroke = Stroke::new(1.0, Color32::from_rgb(r, gg, b));
         for g in &comp.guides {
             if g.vertical {
                 let x = comp_rect.min.x + g.position as f32 * zoom;
@@ -384,8 +405,13 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         ui.data_mut(|d| d.remove::<(LayerId, u64)>(pen_id()));
     }
     if app.ui.viewer.show_layer_controls {
+        // Settings ▸ General ▸ Path Point and Handle Size; Appearance ▸ Use Label Color for
+        // Layer Handles and Paths.
+        let hs = app.session.prefs.general.path_point_size as f32 + 2.0;
+        let vs = app.session.prefs.general.path_point_size as f32 + 1.0;
+        let label_handles = app.session.prefs.appearance.use_label_color_for_handles;
         for l in comp.layers.iter().filter(|l| selected.contains(&l.id) && l.is_active_at(time)) {
-            let col = Tokens::label(l.label);
+            let col = if label_handles { t.label(l.label) } else { t.accent };
             // Motion path of animated position.
             if let Some(pos) = l.transform().and_then(|tr| tr.get("position"))
                 && pos.keys.len() > 1
@@ -450,10 +476,10 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                                 painter.circle_filled(h, 3.0, mc);
                                 vertex_hits.push(VertexHit { layer: l.id, mask: g.uid, index: i, pos: h, tangent: Some(out), vertex: *v, l2c: m });
                             }
-                            painter.rect_filled(Rect::from_center_size(s, vec2(6.0, 6.0)), 0.0, mc);
+                            painter.rect_filled(Rect::from_center_size(s, vec2(vs, vs)), 0.0, mc);
                         } else {
-                            painter.rect_filled(Rect::from_center_size(s, vec2(6.0, 6.0)), 0.0, Color32::from_black_alpha(160));
-                            painter.rect_stroke(Rect::from_center_size(s, vec2(6.0, 6.0)), 0.0, Stroke::new(1.0, mc), StrokeKind::Inside);
+                            painter.rect_filled(Rect::from_center_size(s, vec2(vs, vs)), 0.0, Color32::from_black_alpha(160));
+                            painter.rect_stroke(Rect::from_center_size(s, vec2(vs, vs)), 0.0, Stroke::new(1.0, mc), StrokeKind::Inside);
                         }
                         app.auto.add(&format!("viewer.mask.{}.vertex.{i}", g.uid), Rect::from_center_size(s, vec2(8.0, 8.0)), &g.name);
                         vertex_hits.push(VertexHit { layer: l.id, mask: g.uid, index: i, pos: s, tangent: None, vertex: *v, l2c: m });
@@ -479,7 +505,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
             painter.add(egui::Shape::closed_line(sq.clone(), Stroke::new(1.0, col)));
             for i in 0..8 {
                 let hp = if i < 4 { sq[i] } else { sq[i - 4] + (sq[(i - 3) % 4] - sq[i - 4]) * 0.5 };
-                let hr = Rect::from_center_size(hp, vec2(HANDLE, HANDLE));
+                let hr = Rect::from_center_size(hp, vec2(hs, hs));
                 painter.rect_filled(hr, 0.0, col);
                 painter.rect_stroke(hr, 0.0, Stroke::new(1.0, Color32::from_black_alpha(120)), StrokeKind::Outside);
                 handle_hits.push((l.id, i, hp));
@@ -1019,7 +1045,7 @@ fn draw_rigs(app: &mut EffectcraftApp, painter: &egui::Painter, map: &ViewerMap,
     };
     for l in ectx.comp.layers.iter().filter(|l| (l.is_camera() || l.is_light()) && l.is_active_at(ectx.time)) {
         let sel = selected.contains(&l.id);
-        let col = Tokens::label(l.label).gamma_multiply(if sel { 1.0 } else { 0.6 });
+        let col = app.tokens.label(l.label).gamma_multiply(if sel { 1.0 } else { 0.6 });
         let stroke = Stroke::new(if sel { 1.5 } else { 1.0 }, col);
         let (eye, fwd, down) = three_d::camera::layer_frame(ectx, l);
         let poi = |l: &Layer| -> Option<Vec3> {
@@ -1371,4 +1397,14 @@ fn empty_state(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         let _ = crate::menus::invoke(app, &ui.ctx().clone(), "file.import", json!({}));
     }
     app.auto.add("viewer.empty.import", b2, "New Composition From Footage");
+}
+
+/// `#rrggbb` → sRGB bytes.
+pub(crate) fn hex_rgb(s: &str) -> Option<[u8; 3]> {
+    let h = s.trim().trim_start_matches('#');
+    if h.len() != 6 || !h.is_ascii() {
+        return None;
+    }
+    let p = |i: usize| u8::from_str_radix(&h[i..i + 2], 16).ok();
+    Some([p(0)?, p(2)?, p(4)?])
 }

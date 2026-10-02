@@ -63,6 +63,8 @@ pub enum Dialog {
     TrackTarget,
     /// Tracker ▸ Apply (Transform / Stabilize): Apply Dimensions.
     TrackApply,
+    /// Crash recovery: offer the latest auto-save (`EffectcraftApp::recovery`).
+    Recovery,
 }
 
 /// Host hooks provided by the native app (file pickers etc.).
@@ -73,6 +75,12 @@ pub struct Hooks {
     pub pick_open_project: Option<Box<dyn Fn() -> Option<String>>>,
     /// Opens the audio output for preview playback (the desktop app uses cpal).
     pub audio_device: Option<audio::AudioDeviceFactory>,
+    /// Lists audio output devices (Settings ▸ Audio).
+    pub audio_devices: Option<Box<dyn Fn() -> Vec<String>>>,
+    /// Picks a folder (Settings paths).
+    pub pick_folder: Option<Box<dyn Fn() -> Option<String>>>,
+    /// Save dialog for other file kinds: (default name, extension).
+    pub pick_save_file: Option<Box<dyn Fn(&str, &str) -> Option<String>>>,
 }
 
 #[derive(Default)]
@@ -128,6 +136,10 @@ pub struct EffectcraftApp {
     pub(crate) waveforms: panels::waveform::Cache,
     /// Last reveal shortcut and when (double-press shortcuts such as LL).
     pub(crate) last_reveal: Option<(String, f64)>,
+    /// Settings revision applied to the theme, tooltips and caches.
+    applied_prefs: Option<u64>,
+    /// A previous run that didn't exit cleanly (shown by `Dialog::Recovery`).
+    pub recovery: Option<effectcraft_engine::autosave::Recovery>,
 }
 
 impl EffectcraftApp {
@@ -164,7 +176,53 @@ impl EffectcraftApp {
             meter: Default::default(),
             waveforms: Default::default(),
             last_reveal: None,
+            applied_prefs: None,
+            recovery: None,
         }
+        .with_ui_commands()
+    }
+
+    /// Offer the frontend's commands (tools, timeline navigation…) for keyboard shortcuts.
+    fn with_ui_commands(mut self) -> Self {
+        let cmds = menus::UI_COMMANDS
+            .iter()
+            .map(|c| effectcraft_engine::shortcuts::UiCommand { id: c.id.into(), label: c.label.into(), shortcut: c.shortcut.map(str::to_string) })
+            .collect();
+        self.session.set_ui_commands(cmds);
+        self
+    }
+
+    /// Show the crash-recovery dialog for a previous run that didn't exit cleanly.
+    pub fn offer_recovery(&mut self, r: effectcraft_engine::autosave::Recovery) {
+        if r.autosave.is_some() {
+            self.recovery = Some(r);
+            self.dialog = Some(Dialog::Recovery);
+        }
+    }
+
+    /// Apply changed settings: theme and brightness, label colours, tool tips, preview caches.
+    pub fn apply_prefs(&mut self, ctx: &egui::Context) {
+        if self.applied_prefs == Some(self.session.prefs_revision) {
+            return;
+        }
+        self.applied_prefs = Some(self.session.prefs_revision);
+        let p = &self.session.prefs;
+        self.ui.theme = theme::ThemeKind::from_name(&p.appearance.theme).unwrap_or_default();
+        self.tokens = Tokens::from_prefs(p);
+        theme::apply_visuals(ctx, &self.tokens);
+        let tips = p.general.show_tool_tips;
+        ctx.all_styles_mut(|s| s.interaction.tooltip_delay = if tips { 0.5 } else { f32::INFINITY });
+        self.ui.cache_when_idle = p.previews.cache_frames_when_idle;
+        self.ui.viewer.fast_preview = p.previews.fast_previews;
+        self.frames.set_budget(p.preview_cache_bytes());
+    }
+
+    /// Change settings from the UI (applied next frame and saved).
+    pub fn set_pref(&mut self, key: &str, value: serde_json::Value) -> Result<(), String> {
+        self.session.prefs.set(key, value)?;
+        self.session.prefs_changed();
+        self.session.save_prefs();
+        Ok(())
     }
 
     pub fn with_control(mut self, rx: Receiver<ControlRequest>) -> Self {
@@ -173,9 +231,13 @@ impl EffectcraftApp {
     }
 
     pub fn set_theme(&mut self, ctx: &egui::Context, k: theme::ThemeKind) {
-        self.ui.theme = k;
-        self.tokens = Tokens::for_kind(k);
-        theme::apply_visuals(ctx, &self.tokens);
+        let name = match k {
+            theme::ThemeKind::Dark => "dark",
+            theme::ThemeKind::Darker => "darker",
+            theme::ThemeKind::Light => "light",
+        };
+        let _ = self.set_pref("appearance.theme", json!(name));
+        self.apply_prefs(ctx);
     }
 
     pub fn set_workspace(&mut self, name: &str) {
@@ -209,8 +271,10 @@ impl EffectcraftApp {
     /// The render scale used by the viewer right now.
     pub fn viewer_scale(&self, zoom: f32, ppp: f32) -> f64 {
         if self.playback.playing && self.ui.viewer.res == state::Resolution::Auto {
-            // Keep previews snappy: never more than the displayed size.
-            return self.ui.viewer.res.scale(zoom, ppp).min(0.5);
+            // Keep previews snappy: half the displayed size, but no lower than Settings ▸
+            // Previews ▸ Adaptive Resolution Limit.
+            let full = self.ui.viewer.res.scale(zoom, ppp);
+            return full.min((full * 0.5).max(self.session.prefs.adaptive_limit()));
         }
         self.ui.viewer.res.scale(zoom, ppp)
     }
@@ -291,7 +355,8 @@ impl EffectcraftApp {
         if !effectcraft_engine::render::audio::comp_has_audio(&self.session.project, cid) {
             return;
         }
-        let Some(dev) = self.hooks.audio_device.as_ref().and_then(|f| f()) else { return };
+        let out = audio::AudioOutput::from_prefs(&self.session.prefs);
+        let Some(dev) = self.hooks.audio_device.as_ref().and_then(|f| f(&out)) else { return };
         match audio::AudioPlayback::start(dev, self.render_source(), cid, t, c.work_area.0, c.work_area.1, self.ui.preview_loop) {
             Ok(a) => self.audio = Some(a),
             Err(e) => log::warn!("audio preview: {e}"),
@@ -546,7 +611,9 @@ impl EffectcraftApp {
             self.session.poll_track();
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
         }
+        self.apply_prefs(&ctx);
         self.handle_events(&ctx);
+        self.tick_autosave(&ctx);
         if let Some(rx) = self.command_inbox.take() {
             while let Ok(id) = rx.try_recv() {
                 if let Err(e) = menus::invoke(self, &ctx, &id, json!({})) {
@@ -664,6 +731,17 @@ impl EffectcraftApp {
 }
 
 impl EffectcraftApp {
+    /// Auto-save a dirty project when the interval has passed (Settings ▸ Project ▸ Auto-Save).
+    fn tick_autosave(&mut self, ctx: &egui::Context) {
+        let now = web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0);
+        if let Some(Err(e)) = self.session.autosave_tick(now) {
+            self.ui.status = e.to_string();
+        }
+        if self.session.prefs.auto_save.enabled {
+            ctx.request_repaint_after(std::time::Duration::from_secs(30));
+        }
+    }
+
     /// Take the pending synthetic input (from `ui.click`, `ui.key`, …). Hosts that don't call
     /// [`eframe::App::raw_input_hook`] (the headless test harness) feed these in themselves.
     pub fn take_synthetic_input(&mut self) -> Vec<egui::Event> {
@@ -672,6 +750,11 @@ impl EffectcraftApp {
 }
 
 impl eframe::App for EffectcraftApp {
+    fn on_exit(&mut self) {
+        // Clean exit: no crash recovery next launch.
+        self.session.end_recovery();
+    }
+
     fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         if !self.synthetic.is_empty() {
             // Pointer events go one per frame so egui sees press → moves → release as a real drag.

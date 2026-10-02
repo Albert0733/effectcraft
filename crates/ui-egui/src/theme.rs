@@ -66,6 +66,8 @@ pub struct Tokens {
     pub timecode: Color32,
     pub danger: Color32,
     pub warning: Color32,
+    /// Label colours (`Label::ALL` order), from Settings ▸ Labels.
+    pub labels: [Color32; 17],
     pub radius: f32,
     pub radius_sm: f32,
     pub gap: f32,
@@ -112,6 +114,7 @@ impl Tokens {
             timecode: Color32::from_rgb(0x3d, 0x8f, 0xf5),
             danger: Color32::from_rgb(0xe0, 0x4a, 0x3c),
             warning: Color32::from_rgb(0xe8, 0x9a, 0x2c),
+            labels: default_labels(),
             radius: 6.0,
             radius_sm: 3.0,
             gap: 4.0,
@@ -172,11 +175,65 @@ impl Tokens {
     pub fn medium(size: f32) -> FontId {
         FontId::new(size, FontFamily::Name("medium".into()))
     }
-    /// sRGB colour of an item/layer label.
-    pub fn label(l: effectcraft_color::Label) -> Color32 {
+    /// sRGB colour of an item/layer label (Settings ▸ Labels).
+    pub fn label(&self, l: effectcraft_color::Label) -> Color32 {
+        let i = effectcraft_color::Label::ALL.iter().position(|x| *x == l).unwrap_or(0);
+        self.labels[i]
+    }
+
+    /// Theme tokens for the current settings: theme, UI brightness and label colours.
+    pub fn from_prefs(p: &effectcraft_engine::prefs::Prefs) -> Tokens {
+        let kind = ThemeKind::from_name(&p.appearance.theme).unwrap_or_default();
+        let mut t = Tokens::for_kind(kind).with_brightness(p.appearance.brightness as f32);
+        for (i, l) in effectcraft_color::Label::ALL.iter().enumerate() {
+            let [r, g, b] = p.label_rgb(*l);
+            t.labels[i] = Color32::from_rgb(r, g, b);
+        }
+        t
+    }
+
+    /// Lighten (b > 0) or darken (b < 0) the interface greys, like After Effects' brightness
+    /// slider. Accent colours, labels and keyframe colours are kept.
+    pub fn with_brightness(mut self, b: f32) -> Tokens {
+        let b = b.clamp(-1.0, 1.0);
+        if b.abs() < 1e-3 {
+            return self;
+        }
+        let adj = |c: &mut Color32| {
+            let f = |v: u8| -> u8 {
+                let v = v as f32;
+                (if b > 0.0 { v + (110.0 - v).max(0.0) * b * 0.8 + 10.0 * b } else { v * (1.0 + b * 0.6) }).round().clamp(0.0, 255.0) as u8
+            };
+            *c = Color32::from_rgb(f(c.r()), f(c.g()), f(c.b()));
+        };
+        for c in [
+            &mut self.app_bg,
+            &mut self.header_bg,
+            &mut self.panel_bg,
+            &mut self.hover,
+            &mut self.pressed,
+            &mut self.field_bg,
+            &mut self.field_border,
+            &mut self.separator,
+            &mut self.row,
+            &mut self.row_alt,
+            &mut self.row_selected,
+            &mut self.tl_bg,
+            &mut self.tl_ruler_bg,
+            &mut self.pasteboard,
+            &mut self.work_area,
+        ] {
+            adj(c);
+        }
+        self
+    }
+}
+
+fn default_labels() -> [Color32; 17] {
+    effectcraft_color::Label::ALL.map(|l| {
         let [r, g, b] = l.rgb();
         Color32::from_rgb(r, g, b)
-    }
+    })
 }
 
 static INTER_REGULAR: &[u8] = include_bytes!("../../../assets/fonts/Inter-Regular.ttf");

@@ -38,7 +38,22 @@ pub trait AudioDevice: Send {
 }
 
 /// Opens the default output device (`None` when there is none).
-pub type AudioDeviceFactory = Box<dyn Fn() -> Option<Box<dyn AudioDevice>>>;
+pub type AudioDeviceFactory = Box<dyn Fn(&AudioOutput) -> Option<Box<dyn AudioDevice>>>;
+
+/// Which output to open (Settings ▸ Audio): device name (empty = the system default) and the
+/// 1-based device channels for left and right.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AudioOutput {
+    pub device: String,
+    pub left: u32,
+    pub right: u32,
+}
+
+impl AudioOutput {
+    pub fn from_prefs(p: &effectcraft_engine::prefs::Prefs) -> AudioOutput {
+        AudioOutput { device: p.audio.output_device.clone(), left: p.audio.output_left, right: p.audio.output_right }
+    }
+}
 
 /// Lock-protected sample queue between the feeder thread and the device callback.
 #[derive(Default)]
