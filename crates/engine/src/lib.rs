@@ -518,11 +518,15 @@ mod tests;
 #[cfg(test)]
 mod tests_3d;
 #[cfg(test)]
+mod tests_anim_tools;
+#[cfg(test)]
 mod tests_effects;
 #[cfg(test)]
 mod tests_fidelity;
 #[cfg(test)]
 mod tests_lottie;
+#[cfg(test)]
+mod tests_markers;
 #[cfg(test)]
 mod tests_menu_cmds;
 #[cfg(test)]

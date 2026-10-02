@@ -78,6 +78,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("app.compSettings", "Composition Settings...", [], None),
     uic!("app.solidSettings", "New Solid...", [], None),
     uic!("app.home", "Home", [], None),
+    uic!("markers.dialog", "Marker Settings...", [], None),
 ];
 
 pub fn panel_command_id(p: PanelKind) -> String {
@@ -163,6 +164,13 @@ pub fn invoke(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, params: V
         reveal(app, k, now);
         return Ok(Value::Null);
     }
+    if id == "markers.dialog" {
+        // The Composition/Layer Marker dialog (double-click a marker): {layer?, index}.
+        let index = params.get("index").and_then(Value::as_u64).ok_or("markers.dialog: need `index`")? as usize;
+        let layer = params.get("layer").and_then(Value::as_u64);
+        crate::panels::markers_ui::open_dialog(app, crate::panels::markers_ui::MarkerRef { layer, index })?;
+        return Ok(json!({"dialog": id}));
+    }
     if id == "view.res.auto" {
         app.ui.viewer.res = Resolution::Auto;
         return Ok(Value::Null);
@@ -247,6 +255,10 @@ pub fn invoke(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, params: V
             }
             if let Some(r) = file_dialog(app, id, &params) {
                 return r;
+            }
+            if id == "layer.precompose" && params.get("name").is_none() {
+                crate::panels::precomp::open(app, &params)?;
+                return Ok(json!({"dialog": id}));
             }
             if crate::panels::dialogs::open_form(app, id, &params) {
                 return Ok(json!({"dialog": id}));
@@ -539,8 +551,13 @@ pub fn frontend(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, p: Valu
             }
             Value::Null
         }
-        "comp.flowchart" | "comp.miniFlowchart" => {
+        "comp.flowchart" => {
             app.show_panel(PanelKind::Flowchart);
+            Value::Null
+        }
+        "comp.miniFlowchart" => {
+            let at = ctx.input(|i| i.pointer.hover_pos()).unwrap_or_else(|| ctx.content_rect().center());
+            app.ui.mini_flowchart = Some([at.x, at.y]);
             Value::Null
         }
         "track.editTargetDialog" => {

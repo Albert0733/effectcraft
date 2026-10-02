@@ -2,6 +2,7 @@
 //! shortcut and viewer/timeline gesture maps to one of these.
 
 mod anim;
+pub mod anim_tools;
 mod animation;
 mod comp;
 mod comp_more;
@@ -16,6 +17,7 @@ mod layer_menu;
 mod layer_time;
 mod link;
 mod lottie;
+mod markers;
 mod mask;
 pub mod paint;
 mod paths;
@@ -95,7 +97,9 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(layer_time::specs());
         v.extend(prop::specs());
         v.extend(anim::specs());
+        v.extend(anim_tools::specs());
         v.extend(link::specs());
+        v.extend(markers::specs());
         v.extend(mask::specs());
         v.extend(paths::specs());
         v.extend(effect::specs());

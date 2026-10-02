@@ -1,5 +1,6 @@
 //! Panel bodies.
 
+pub mod anim_tools;
 pub mod comp_settings;
 pub mod dialogs;
 pub mod dialogs_3d;
@@ -11,8 +12,10 @@ pub mod graph;
 pub mod info;
 pub mod key_dialogs;
 pub mod layer_panel;
+pub mod markers_ui;
 pub mod misc;
 pub mod paint_panels;
+pub mod precomp;
 pub mod project;
 pub mod properties;
 pub mod puppet_tool;
@@ -74,7 +77,9 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: PanelKind, rect: Rec
         PanelKind::Audio => misc::audio(app, ui, rect),
         PanelKind::History => misc::history(app, ui, rect),
         PanelKind::Markers => misc::markers(app, ui, rect),
-        PanelKind::Wiggler => misc::wiggler(app, ui, rect),
+        PanelKind::Wiggler => anim_tools::wiggler(app, ui, rect),
+        PanelKind::Smoother => anim_tools::smoother(app, ui, rect),
+        PanelKind::MotionSketch => anim_tools::motion_sketch(app, ui, rect),
         PanelKind::RenderQueue => render_queue::show(app, ui, rect),
         PanelKind::Tracker => tracker::show(app, ui, rect),
         PanelKind::Layer => layer_panel::show(app, ui, rect),

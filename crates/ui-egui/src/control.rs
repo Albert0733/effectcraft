@@ -182,6 +182,17 @@ pub fn handle(app: &mut EffectcraftApp, ctx: &egui::Context, req: &ControlReques
             if let Some(b) = p.get("menuBar").and_then(Value::as_bool) {
                 app.ui.show_menu_bar = b;
             }
+            // Wiggler / Smoother / Motion Sketch settings (fields of `AnimToolsState`).
+            if let Some(Value::Object(m)) = p.get("animTools") {
+                let mut cur = serde_json::to_value(&app.ui.anim_tools).unwrap_or_default();
+                for (k, v) in m {
+                    cur[k] = v.clone();
+                }
+                match serde_json::from_value(cur) {
+                    Ok(v) => app.ui.anim_tools = v,
+                    Err(e) => return err(format!("animTools: {e}")),
+                }
+            }
             if let Some(b) = p.get("home").and_then(Value::as_bool) {
                 app.ui.start_screen = b;
             }

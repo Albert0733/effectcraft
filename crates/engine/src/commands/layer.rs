@@ -715,15 +715,65 @@ fn arrange(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(Value::Null)
 }
 
+/// Layer ▸ Pre-compose. `mode: move` (default; "Move all attributes into the new composition")
+/// nests the selected layers as they are; `mode: leave` ("Leave all attributes in", one footage,
+/// solid or precomp layer) nests only the layer's source, sized to it, and keeps the layer's
+/// transform, masks, effects and timing in the current comp. `adjustDuration` (move) trims the
+/// new comp to the selected layers' span; `open` opens the new comp.
 fn precompose(s: &mut Session, p: &Value) -> Result<Value> {
+    let c = "layer.precompose";
     let (cid, ids) = layers_p(s, p)?;
     if ids.is_empty() {
-        return Err(bad("layer.precompose", "no layers"));
+        return Err(bad(c, "no layers"));
     }
     let name = str_p(p, "name").unwrap_or("Pre-comp 1").to_string();
     let comp = s.project.comp(cid).ok_or(EngineError::NoComp)?.clone();
+    let leave = match str_p(p, "mode").unwrap_or("move") {
+        "move" => false,
+        "leave" => true,
+        x => return Err(bad(c, format!("mode: move|leave, got `{x}`"))),
+    };
+    let adjust = b_p(p, "adjustDuration").unwrap_or(false);
+    if leave {
+        let [lid] = ids[..] else { return Err(bad(c, "\"Leave all attributes\" needs exactly one layer")) };
+        let layer = comp.layer(lid).ok_or(EngineError::NoComp)?.clone();
+        let Some(src_item) = layer.source.item() else {
+            return Err(bad(c, "\"Leave all attributes\" is available for footage, solid and precomp layers only"));
+        };
+        let (w, h) = effectcraft_render::source_size(&s.project, &layer);
+        let (w, h) = if w == 0 || h == 0 { (comp.width, comp.height) } else { (w, h) };
+        let dur = match s.project.item(src_item).map(|i| &i.kind) {
+            Some(ItemKind::Comp(nc)) => nc.duration,
+            Some(ItemKind::Footage(f)) if f.duration > Tick(0) => f.duration,
+            _ => comp.duration,
+        };
+        let new = s.edit("Pre-compose", None, |proj, st| {
+            let mut inner = Comp::new(w, h, comp.frame_rate, dur);
+            inner.background = comp.background;
+            let mut il = build::layer(proj, &inner, &layer.name, layer.source.clone(), (w, h), Some(dur));
+            il.name = layer.name.clone();
+            inner.layers.push(il);
+            let iid = proj.add_item(&name, Label::Sandstone, None, ItemKind::Comp(inner.into()));
+            let l = layer_mut(proj, cid, lid)?;
+            l.source = LayerSource::Comp { item: iid };
+            l.name = name.clone();
+            st.selected_layers = vec![lid];
+            Ok((iid, lid))
+        })?;
+        if b_p(p, "open").unwrap_or(false) {
+            s.open_comp(new.0);
+        }
+        return Ok(json!({"comp": new.0.0, "layer": new.1.0}));
+    }
+    let span = {
+        let sel: Vec<&effectcraft_project::Layer> = comp.layers.iter().filter(|l| ids.contains(&l.id)).collect();
+        let a = sel.iter().map(|l| l.in_point).min().unwrap_or(Tick(0)).max(Tick(0));
+        let b = sel.iter().map(|l| l.out_point).max().unwrap_or(comp.duration).min(comp.duration);
+        (a, b)
+    };
+    let (offset, dur) = if adjust && span.1 > span.0 { (span.0, span.1 - span.0) } else { (Tick(0), comp.duration) };
     let new = s.edit("Pre-compose", None, |proj, st| {
-        let mut inner = Comp::new(comp.width, comp.height, comp.frame_rate, comp.duration);
+        let mut inner = Comp::new(comp.width, comp.height, comp.frame_rate, dur);
         inner.background = comp.background;
         inner.layers = comp.layers.iter().filter(|l| ids.contains(&l.id)).cloned().collect();
         for l in &mut inner.layers {
@@ -733,10 +783,16 @@ fn precompose(s: &mut Session, p: &Value) -> Result<Value> {
             if l.track_matte.is_some_and(|m| !ids.contains(&m.layer)) {
                 l.track_matte = None;
             }
+            l.start_time -= offset;
+            l.in_point -= offset;
+            l.out_point -= offset;
         }
         let iid = proj.add_item(&name, Label::Sandstone, None, ItemKind::Comp(inner.into()));
-        let mut l = build::layer(proj, &comp, &name, LayerSource::Comp { item: iid }, (comp.width, comp.height), Some(comp.duration));
+        let mut l = build::layer(proj, &comp, &name, LayerSource::Comp { item: iid }, (comp.width, comp.height), Some(dur));
         l.name = name.clone();
+        l.start_time = offset;
+        l.in_point = offset;
+        l.out_point = offset + dur;
         let c = proj.comp_mut(cid).ok_or(EngineError::NoComp)?;
         let at = c.layers.iter().position(|l| ids.contains(&l.id)).unwrap_or(0);
         c.layers.retain(|l| !ids.contains(&l.id));
@@ -745,6 +801,9 @@ fn precompose(s: &mut Session, p: &Value) -> Result<Value> {
         st.selected_layers = vec![lid];
         Ok((iid, lid))
     })?;
+    if b_p(p, "open").unwrap_or(false) {
+        s.open_comp(new.0);
+    }
     Ok(json!({"comp": new.0.0, "layer": new.1.0}))
 }
 
@@ -1033,7 +1092,15 @@ pub fn specs() -> Vec<CommandSpec> {
             slip(s, &p)
         }),
         cmd!("layer.arrange", "Arrange", ["Layer", "Arrange"], None, "{layers?, to: front|forward|backward|back, index?}", has_layers, arrange),
-        cmd!("layer.precompose", "Pre-compose...", ["Layer"], Some("Cmd+Shift+C"), "{layers?, name?}", has_layers, precompose),
+        cmd!(
+            "layer.precompose",
+            "Pre-compose...",
+            ["Layer"],
+            Some("Cmd+Shift+C"),
+            "{layers?, name?, mode?: move|leave, adjustDuration?, open?}",
+            has_layers,
+            precompose
+        ),
         cmd!(
             "layer.addMask",
             "New Mask",

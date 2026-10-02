@@ -65,6 +65,10 @@ pub enum Dialog {
     TrackApply,
     /// Crash recovery: offer the latest auto-save (`EffectcraftApp::recovery`).
     Recovery,
+    /// Composition/Layer Marker (double-click a marker).
+    Marker,
+    /// Layer ▸ Pre-compose.
+    Precompose,
 }
 
 /// Host hooks provided by the native app (file pickers etc.).
@@ -646,6 +650,7 @@ impl EffectcraftApp {
         header::show(self, ui, header);
         let body = egui::Rect::from_min_max(egui::pos2(full.min.x + 4.0, header.max.y + 2.0), egui::pos2(full.max.x - 4.0, full.max.y - 4.0));
         self.dock_area(ui, body);
+        panels::precomp::mini_flowchart(self, &ctx);
         panels::dialogs::show(self, &ctx);
         self.draw_toast(ui, full);
     }
@@ -714,9 +719,21 @@ impl EffectcraftApp {
                 continue; // a collapsed stacked panel: header only
             }
             self.auto.add(&format!("panel.{}", p.id()), g.content, p.title());
-            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(g.content).id_salt(("panel", p.id())));
-            child.set_clip_rect(g.content.intersect(ui.clip_rect()));
-            panels::show(self, &mut child, p, g.content);
+            let mut content = g.content;
+            if p == PanelKind::Composition && !self.ui.start_screen && panels::precomp::has_flow(self) {
+                // Composition Navigator: the flow of nested comps above the viewer.
+                let nav = egui::Rect::from_min_size(content.min, egui::vec2(content.width(), panels::precomp::NAV_H));
+                let mut child = ui.new_child(egui::UiBuilder::new().max_rect(nav).id_salt("comp-navigator"));
+                child.set_clip_rect(nav.intersect(ui.clip_rect()));
+                panels::precomp::navigator(self, &mut child, nav);
+                content.min.y = nav.max.y;
+            }
+            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(content).id_salt(("panel", p.id())));
+            child.set_clip_rect(content.intersect(ui.clip_rect()));
+            panels::show(self, &mut child, p, content);
+            if p == PanelKind::Composition && !self.ui.start_screen {
+                panels::anim_tools::sketch_overlay(self, &mut child);
+            }
         }
         for a in actions {
             match a {

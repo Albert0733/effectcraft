@@ -1,4 +1,4 @@
-//! Smaller panels: Preview, Audio, History, Markers, Wiggler, the Home screen and placeholders.
+//! Smaller panels: Preview, Audio, History, Markers, the Home screen and placeholders.
 
 use egui::{Align2, Color32, Rect, Sense, Stroke, pos2, vec2};
 use serde_json::json;
@@ -222,45 +222,6 @@ pub fn markers(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
             app.session.set_time(m.time);
         }
     }
-}
-
-/// Wiggler: add random keyframes between two selected keys (applied as a wiggle expression).
-pub fn wiggler(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
-    let t = app.tokens;
-    let p = ui.painter().with_clip_rect(rect);
-    let freq_id = egui::Id::new("wiggler-freq");
-    let mag_id = egui::Id::new("wiggler-mag");
-    let mut freq: f64 = ui.data(|d| d.get_temp(freq_id).unwrap_or(5.0));
-    let mut mag: f64 = ui.data(|d| d.get_temp(mag_id).unwrap_or(30.0));
-    let x0 = rect.min.x + 12.0;
-    let mut y = rect.min.y + 14.0;
-    p.text(pos2(x0, y + 8.0), Align2::LEFT_CENTER, "Frequency:", Tokens::ui(12.0), t.text_dim);
-    let (_, nv, _) = widgets::hot_number_at(ui, pos2(x0 + 110.0, y), egui::Id::new("wg-f"), freq, 0.1, (0.1, 100.0), 1, " per second", &t);
-    if let Some(v) = nv {
-        freq = v;
-    }
-    y += 26.0;
-    p.text(pos2(x0, y + 8.0), Align2::LEFT_CENTER, "Magnitude:", Tokens::ui(12.0), t.text_dim);
-    let (_, nv, _) = widgets::hot_number_at(ui, pos2(x0 + 110.0, y), egui::Id::new("wg-m"), mag, 0.5, (0.0, 10000.0), 1, "", &t);
-    if let Some(v) = nv {
-        mag = v;
-    }
-    ui.data_mut(|d| {
-        d.insert_temp(freq_id, freq);
-        d.insert_temp(mag_id, mag);
-    });
-    y += 34.0;
-    let b = Rect::from_min_size(pos2(rect.max.x - 92.0, y), vec2(80.0, 24.0));
-    if widgets::text_button(ui, b, "Apply", true, &t, egui::Id::new("wg-apply")).clicked() {
-        let props = app.session.state.selected_props.clone();
-        if props.is_empty() {
-            app.ui.status = "Select a property in the Timeline first".into();
-        }
-        for (l, u) in props {
-            let _ = app.session.execute("prop.setExpression", json!({"layer": l.0, "prop": u, "expression": format!("wiggle({freq}, {mag})")}));
-        }
-    }
-    app.auto.add("wiggler.apply", b, "Apply");
 }
 
 /// Home screen: new/open, recent, and community links.

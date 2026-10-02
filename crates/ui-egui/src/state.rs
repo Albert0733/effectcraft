@@ -378,6 +378,48 @@ impl Default for EffectsView {
     }
 }
 
+/// Wiggler, Smoother and Motion Sketch panel settings.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AnimToolsState {
+    /// Wiggler Apply To: Spatial Path (true) or Temporal Path.
+    pub wiggle_spatial: bool,
+    /// Noise Type: Smooth (true) or Jagged.
+    pub wiggle_smooth: bool,
+    /// `one` (dimension `wiggle_dim`), `same` or `independent`.
+    pub wiggle_dims: String,
+    pub wiggle_dim: usize,
+    pub wiggle_frequency: f64,
+    pub wiggle_magnitude: f64,
+    pub smooth_tolerance: f64,
+    /// Motion Sketch: capture speed (%), smoothing, show wireframe / background.
+    pub sketch_speed: f64,
+    pub sketch_smoothing: f64,
+    pub sketch_wireframe: bool,
+    pub sketch_background: bool,
+    /// Start Capture pressed: the next drag in the viewer records.
+    pub sketch_armed: bool,
+}
+
+impl Default for AnimToolsState {
+    fn default() -> Self {
+        AnimToolsState {
+            wiggle_spatial: true,
+            wiggle_smooth: true,
+            wiggle_dims: "independent".into(),
+            wiggle_dim: 0,
+            wiggle_frequency: 5.0,
+            wiggle_magnitude: 1.0,
+            smooth_tolerance: 1.0,
+            sketch_speed: 100.0,
+            sketch_smoothing: 1.0,
+            sketch_wireframe: false,
+            sketch_background: true,
+            sketch_armed: false,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UiState {
     pub tool: Tool,
@@ -456,6 +498,12 @@ pub struct UiState {
     /// Layer panel View: number of effects rendered (None = through the last Paint effect).
     #[serde(default)]
     pub layer_view: Option<usize>,
+    /// Wiggler / Smoother / Motion Sketch settings.
+    #[serde(default)]
+    pub anim_tools: AnimToolsState,
+    /// Composition Mini-Flowchart popup position (open when set).
+    #[serde(default)]
+    pub mini_flowchart: Option<[f32; 2]>,
 }
 
 impl Default for UiState {
@@ -500,6 +548,8 @@ impl Default for UiState {
             tracker_source: None,
             layer_panel: None,
             layer_view: None,
+            anim_tools: AnimToolsState::default(),
+            mini_flowchart: None,
         }
     }
 }
