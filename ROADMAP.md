@@ -15,7 +15,7 @@ once.
 | M6 | Shapes, masks and footage: shape operators, masks and the pen tool, video and image import | Done |
 | M7 | 3D: 3D layers, cameras, lights, shadows, depth of field, 3D views and camera tools | In review |
 | M8 | Expressions with the After Effects object model | Done |
-| M9 | Text and effects: text animators, layer styles, 259 effects incl. time and audio effects | Mostly done (text animator depth in review) |
+| M9 | Text and effects: text animators, layer styles, 259 effects incl. time and audio effects | Done (range, wiggly and expression selectors, per-character 3D, text on a path) |
 | M10 | Export: render queue, H.264, ProRes, image sequences, GIF, audio | Done |
 | M11 | Animation tools: audio playback, meters and waveforms (done); presets, Motion Sketch, Wiggler, Lottie | In progress |
 | M12 | Performance: layer cache and parallel compositing (done), GPU compositing, disk cache, motion tracking | In progress |
