@@ -222,3 +222,76 @@ fn motion_path_key_drag_edits_that_key() {
     assert!((v1[1] - 300.0).abs() < 2.0 && (v1[0] - 500.0).abs() < 2.0, "{v1:?}");
     assert_eq!(k[0].value.as_vec3(), [100.0, 100.0, 0.0]);
 }
+
+#[test]
+fn graph_editor_transform_box_scales_selected_keys_in_time() {
+    let mut h = harness();
+    let box_id: LayerId = h.state().session.active_comp().unwrap().layers[0].id;
+    let s = &mut h.state_mut().session;
+    s.execute("layer.select", json!({"layers": [box_id.0]})).unwrap();
+    for (t, v) in [(0.0, 0.0), (1.0, 50.0), (2.0, 100.0)] {
+        s.execute("prop.addKey", json!({"layer": box_id.0, "path": "transform/opacity", "time": t, "value": v})).unwrap();
+    }
+    let uid = s.active_comp().unwrap().layer(box_id).unwrap().props.prop("transform/opacity").unwrap().uid;
+    s.execute("prop.select", json!({"layer": box_id.0, "prop": uid})).unwrap();
+    let keys: Vec<_> = [0.0, 1.0, 2.0].iter().map(|t| json!({"layer": box_id.0, "prop": uid, "time": t})).collect();
+    s.execute("keys.select", json!({"keys": keys})).unwrap();
+    h.state_mut().ui.timeline.graph_editor = true;
+    h.run_steps(4);
+    for id in ["timeline.graph.snap", "timeline.graph.reference", "timeline.graph.transformBox", "timeline.graph.transformBox.5"] {
+        assert!(h.state().auto.find(id).is_some(), "missing {id}");
+    }
+    // Drag the right edge handle to the right: the keys spread out in time, the first stays.
+    let r = rect(&h, "timeline.graph.transformBox.5");
+    let k0 = rect(&h, &format!("timeline.graph.key.{uid}.0.0")).center();
+    let k2 = rect(&h, &format!("timeline.graph.key.{uid}.0.2")).center();
+    let to = r.center() + vec2((k2.x - k0.x) * 0.5, 0.0);
+    drag(&mut h, r.center(), to);
+    let p = h.state().session.active_comp().unwrap().layer(box_id).unwrap().props.prop("transform/opacity").unwrap().clone();
+    let ts: Vec<f64> = p.keys.iter().map(|k| k.time.seconds()).collect();
+    assert_eq!(ts[0], 0.0);
+    assert!(ts[2] > 2.5 && ts[2] < 3.5, "{ts:?}");
+    assert_eq!(p.keys.iter().map(|k| k.value.as_f64()).collect::<Vec<_>>(), vec![0.0, 50.0, 100.0]);
+    let undo = h.state().session.history.undo.iter().filter(|(l, _)| l == "Transform Keyframes").count();
+    assert_eq!(undo, 1, "one undo step per drag");
+}
+
+#[test]
+fn timeline_alt_drag_scales_a_key_group_in_time() {
+    let mut h = harness();
+    let box_id: LayerId = h.state().session.active_comp().unwrap().layers[0].id;
+    let s = &mut h.state_mut().session;
+    s.execute("layer.select", json!({"layers": [box_id.0]})).unwrap();
+    for (t, v) in [(0.0, 0.0), (1.0, 50.0), (2.0, 100.0)] {
+        s.execute("prop.addKey", json!({"layer": box_id.0, "path": "transform/opacity", "time": t, "value": v})).unwrap();
+    }
+    let uid = s.active_comp().unwrap().layer(box_id).unwrap().props.prop("transform/opacity").unwrap().uid;
+    s.execute("keys.selectAll", json!({"layers": [box_id.0]})).unwrap();
+    let ctx = h.ctx.clone();
+    effectcraft_ui_egui::menus::invoke(h.state_mut(), &ctx, "timeline.reveal.opacity", json!({})).unwrap();
+    h.run_steps(4);
+    let mut ks: Vec<Pos2> =
+        h.state().auto.query(&format!("timeline.key.{uid}.")).iter().map(|e| pos2(e.rect[0] + e.rect[2] / 2.0, e.rect[1] + e.rect[3] / 2.0)).collect();
+    ks.sort_by(|a, b| a.x.total_cmp(&b.x));
+    assert_eq!(ks.len(), 3, "{ks:?}");
+    let (k0, k2) = (ks[0], ks[2]);
+    // Alt-drag the last key to where 3 s would be: the group scales by 1.5 about the first key.
+    let to = pos2(k0.x + (k2.x - k0.x) * 1.5, k2.y);
+    let alt = egui::Modifiers { alt: true, ..Default::default() };
+    h.input_mut().events.push(Event::PointerMoved(k2));
+    h.step();
+    h.input_mut().events.push(Event::ModifiersChanged(alt));
+    h.input_mut().events.push(Event::PointerButton { pos: k2, button: egui::PointerButton::Primary, pressed: true, modifiers: alt });
+    h.step();
+    for i in 1..=8 {
+        h.input_mut().events.push(Event::PointerMoved(k2 + (to - k2) * (i as f32 / 8.0)));
+        h.step();
+    }
+    h.input_mut().events.push(Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers: alt });
+    h.run_steps(2);
+    let p = h.state().session.active_comp().unwrap().layer(box_id).unwrap().props.prop("transform/opacity").unwrap().clone();
+    let ts: Vec<f64> = p.keys.iter().map(|k| k.time.seconds()).collect();
+    assert_eq!(ts.len(), 3);
+    assert_eq!(ts[0], 0.0);
+    assert!((ts[2] - 3.0).abs() < 0.1 && (ts[1] - 1.5).abs() < 0.1, "{ts:?}");
+}

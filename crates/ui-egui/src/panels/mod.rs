@@ -8,6 +8,7 @@ pub mod effects_presets;
 pub mod forms;
 pub mod fx_widgets;
 pub mod graph;
+pub mod graph_tools;
 pub mod info;
 pub mod key_dialogs;
 pub mod layer_panel;
