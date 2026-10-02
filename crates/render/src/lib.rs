@@ -22,10 +22,10 @@ pub use cache::{CacheStats, LayerCache};
 use effectcraft_color::BlendMode;
 use effectcraft_effects::{Buf, EffectCtx, EffectEnv, EffectHost, LayerPixels, Params};
 use effectcraft_geom::{Mat3, vec2};
-use effectcraft_project::{Comp, Footage, GroupKind, ItemId, ItemKind, Layer, LayerSource, MatteKind, Project, Quality, Sampling};
+use effectcraft_project::{Comp, Footage, FootageKind, FrameBlend, GroupKind, ItemId, ItemKind, Layer, LayerSource, MatteKind, Project, Quality, Sampling};
 pub use effectcraft_raster::Image;
 use effectcraft_raster::{WarpOpts, composite_warp};
-use effectcraft_time::Tick;
+use effectcraft_time::{FrameRate, TICKS_PER_SECOND, Tick};
 pub use eval::{EvalCtx, ExprHost, source_size};
 use rayon::prelude::*;
 
@@ -327,6 +327,18 @@ impl<'a> Renderer<'a> {
                 }
                 let sub = self.nested();
                 let lt = ctx.source_time(layer);
+                // Frame blending between the nested comp's frames (time-stretched/remapped).
+                let mode = frame_blend_mode(ctx, layer);
+                if mode != FrameBlend::Off
+                    && let Some(nc) = self.project.comp(*item)
+                {
+                    let (i, w) = frame_position(lt, nc.frame_rate);
+                    if w > 1e-6 {
+                        let a = sub.comp_frame(*item, nc.frame_rate.tick_of(i));
+                        let b = sub.comp_frame(*item, nc.frame_rate.tick_of(i + 1));
+                        return Some(Buf { img: blend_frames(mode, &a, &b, w as f32), offset: [0.0; 2], scale: s });
+                    }
+                }
                 Some(Buf { img: sub.comp_frame(*item, lt), offset: [0.0; 2], scale: s })
             }
             LayerSource::Footage { item } => {
@@ -365,8 +377,37 @@ impl<'a> Renderer<'a> {
         buf
     }
 
-    /// A footage frame at source time `t`.
-    fn footage_frame(&self, _ctx: &EvalCtx, _layer: &Layer, item: ItemId, f: &Footage, t: Tick) -> Option<Arc<Image>> {
+    /// A footage frame at source time `t`, frame-blended between the two nearest source frames
+    /// when the layer's Frame Blending switch (and the comp's Enable Frame Blending) is on and
+    /// `t` falls between frames (footage rate ≠ comp rate, time stretch, time remapping).
+    fn footage_frame(&self, ctx: &EvalCtx, layer: &Layer, item: ItemId, f: &Footage, t: Tick) -> Option<Arc<Image>> {
+        let mode = frame_blend_mode(ctx, layer);
+        if mode != FrameBlend::Off && matches!(f.kind, FootageKind::Video | FootageKind::Sequence) {
+            let (i, w) = frame_position(t, f.frame_rate);
+            if w > 1e-6 {
+                // Blended frames are cached (Pixel Motion is expensive).
+                let key = self.cache.map(|_| {
+                    use std::hash::{Hash, Hasher};
+                    let mut h = std::collections::hash_map::DefaultHasher::new();
+                    (0x00f8_a3e5_u64, item, i, (w as f32).to_bits(), mode as u8, f.frame_rate.num, f.frame_rate.den, &f.path).hash(&mut h);
+                    h.finish()
+                });
+                if let (Some(c), Some(k)) = (self.cache, key)
+                    && let Some(b) = c.get(k)
+                {
+                    return Some(Arc::new(b.img.clone()));
+                }
+                let a = self.footage.frame(item, f, f.frame_rate.tick_of(i));
+                let b = self.footage.frame(item, f, f.frame_rate.tick_of(i + 1));
+                if let (Some(a), Some(b)) = (a, b) {
+                    let img = blend_frames(mode, &a, &b, w as f32);
+                    if let (Some(c), Some(k)) = (self.cache, key) {
+                        c.insert(k, Arc::new(Buf { img: img.clone(), offset: [0.0; 2], scale: 1.0 }));
+                    }
+                    return Some(Arc::new(img));
+                }
+            }
+        }
         self.footage.frame(item, f, t)
     }
 
@@ -723,6 +764,29 @@ struct StyledLayer {
     plain: bool,
 }
 
+/// The layer's frame blending mode, if the comp's Enable Frame Blending switch is on.
+fn frame_blend_mode(ctx: &EvalCtx, layer: &Layer) -> FrameBlend {
+    if ctx.comp.enable_frame_blending { layer.switches.frame_blend } else { FrameBlend::Off }
+}
+
+/// Position of source time `t` among frames at `rate`: the frame at or before `t` and the
+/// fraction (0..1) of the way to the next frame. Exact (integer tick arithmetic), so frames that
+/// line up exactly report a fraction of 0.
+pub fn frame_position(t: Tick, rate: FrameRate) -> (i64, f64) {
+    let num = t.0 as i128 * rate.num as i128;
+    let den = TICKS_PER_SECOND as i128 * rate.den as i128;
+    (num.div_euclid(den) as i64, num.rem_euclid(den) as f64 / den as f64)
+}
+
+/// Blend two neighbouring frames `w` of the way from `a` to `b`: a cross-fade (Frame Mix) or a
+/// motion-compensated interpolation (Pixel Motion).
+pub fn blend_frames(mode: FrameBlend, a: &Image, b: &Image, w: f32) -> Image {
+    match mode {
+        FrameBlend::PixelMotion => effectcraft_raster::flow::interpolate(a, b, w),
+        _ => effectcraft_raster::flow::mix(a, b, w),
+    }
+}
+
 /// Convenience: render one frame of a comp with no footage source.
 pub fn render_frame(project: &Project, comp: ItemId, t: Tick, scale: f64) -> Image {
     Renderer::new(project, &NoFootage, RenderOpts { scale, ..Default::default() }).comp_frame(comp, t)
@@ -762,6 +826,8 @@ pub fn kurbo_path(sp: &effectcraft_keyframe::ShapePath) -> kurbo::BezPath {
 mod tests_audio_fx;
 #[cfg(test)]
 mod tests_color;
+#[cfg(test)]
+mod tests_frame_blend;
 #[cfg(test)]
 mod tests_paint;
 #[cfg(test)]

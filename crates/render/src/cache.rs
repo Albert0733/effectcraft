@@ -288,6 +288,8 @@ fn key_with(ctx: &EvalCtx, layer: &Layer, scale: f64, draft: bool, footage: bool
             hash_debug(&mut h, f);
             item.hash(&mut h);
             ctx.source_time(layer).0.hash(&mut h);
+            // Frame blending mixes neighbouring source frames.
+            ctx.comp.enable_frame_blending.hash(&mut h);
         }
         _ => return None,
     }
