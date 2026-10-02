@@ -350,6 +350,10 @@ fn default_project_sort() -> String {
     "name".into()
 }
 
+pub fn default_project_columns() -> Vec<String> {
+    ["type", "size", "duration", "fps"].map(String::from).to_vec()
+}
+
 /// What an Effect Controls crosshair / eyedropper click in the viewer sets.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct FxPick {
@@ -447,6 +451,10 @@ pub struct UiState {
     pub project_sort: String,
     #[serde(default)]
     pub project_sort_desc: bool,
+    /// Visible Project panel columns after Name and Label, in order (`type`, `size`, `fps`,
+    /// `duration`, `path`, `comment`); toggled from the column header's context menu.
+    #[serde(default = "default_project_columns")]
+    pub project_columns: Vec<String>,
     /// Effect Controls twirl state (group uids that are collapsed).
     pub fx_closed: BTreeSet<u64>,
     /// Slider params whose slider row is twirled open (AE hides sliders by default).
@@ -526,6 +534,7 @@ impl Default for UiState {
             project_open_folders: BTreeSet::new(),
             project_sort: default_project_sort(),
             project_sort_desc: false,
+            project_columns: default_project_columns(),
             fx_closed: BTreeSet::new(),
             fx_slider_open: BTreeSet::new(),
             fx_pick: None,

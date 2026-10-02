@@ -902,6 +902,10 @@ pub fn handle_shortcuts(app: &mut EffectcraftApp, ctx: &egui::Context) {
         if app.dialog.is_some() {
             continue;
         }
+        // Enter in the Project panel renames the selected item (handled by the panel).
+        if key == egui::Key::Enter && !mods.any() && app.ui.focused == PanelKind::Project {
+            continue;
+        }
         // Delete/Backspace clears selection.
         if matches!(key, egui::Key::Delete | egui::Key::Backspace) && !mods.any() {
             let _ = invoke(app, ctx, "edit.clear", json!({}));

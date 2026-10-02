@@ -21,6 +21,7 @@ mod markers;
 mod mask;
 pub mod paint;
 mod paths;
+mod project_items;
 mod prop;
 pub mod puppet;
 mod query;
@@ -96,6 +97,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(text_anim::specs());
         v.extend(layer_time::specs());
         v.extend(prop::specs());
+        v.extend(project_items::specs());
         v.extend(anim::specs());
         v.extend(anim_tools::specs());
         v.extend(link::specs());

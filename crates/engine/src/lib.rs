@@ -530,6 +530,8 @@ mod tests_markers;
 #[cfg(test)]
 mod tests_menu_cmds;
 #[cfg(test)]
+mod tests_project_items;
+#[cfg(test)]
 mod tests_settings;
 #[cfg(test)]
 mod tests_stubs;
