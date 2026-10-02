@@ -112,11 +112,13 @@ fn effect_controls_widgets_register_automation_ids() {
     h.step();
     h.step();
     let have = ids(&h);
-    let want = ["histogram", "channel", "inBlack", "gamma", "inWhite", "outBlack", "outWhite"].map(|k| format!("effectControls.effect.{}.levels.{k}", x.levels));
+    let want =
+        ["histogram", "channel", "inBlack", "gamma", "inWhite", "outBlack", "outWhite"].map(|k| format!("effectControls.effect.{}.levels.{k}", x.levels));
     let missing: Vec<&String> = want.iter().filter(|w| !have.contains(w)).collect();
     assert!(missing.is_empty(), "missing {missing:?}");
     // The angle reads AE-style.
-    let angle = h.state().auto.previous.iter().chain(h.state().auto.elements.iter()).find(|e| e.id == format!("effectControls.prop.{}.value", x.angle)).cloned();
+    let angle =
+        h.state().auto.previous.iter().chain(h.state().auto.elements.iter()).find(|e| e.id == format!("effectControls.prop.{}.value", x.angle)).cloned();
     assert_eq!(angle.map(|e| e.label), Some("0x+0.0°".to_string()));
     // Twirling the angle open shows its dial.
     h.state_mut().ui.fx_slider_open.insert(x.angle);
