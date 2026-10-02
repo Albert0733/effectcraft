@@ -23,4 +23,14 @@ once.
 | M15 | The web app (WebAssembly, WebGPU) | Done, single-threaded |
 | M14 | Built for agents: MCP server, command-line tool, control channel | Done |
 
+## How far from full parity
+
+Measured feature by feature in [docs/parity.md](docs/parity.md) (2 October 2026):
+
+- **≈ 64% of After Effects' features, weighted by importance** (75% of the essentials, 38% of
+  professional daily-use features, 17% of the long tail); 257 of 298 effects.
+- **≈ 167 agent-hours of work remain**, about **42–50 hours of wall-clock time** with five Claude
+  Opus 5.5 agents working in parallel (≈ 31–35 hours for the essentials and daily-use features).
+- Hardest remaining pieces: on-canvas text editing, GPU rendering, tracking and roto, Advanced 3D.
+
 Come tell us what matters most to you on [Discord](https://discord.gg/artcraft).
