@@ -8,6 +8,7 @@
 
 pub mod audio;
 pub mod cache;
+pub mod color;
 pub mod eval;
 pub mod masks;
 pub mod shapes;
@@ -64,7 +65,7 @@ impl EffectHost for FxHost<'_, '_, '_> {
         if other.id == self.layer.id || self.r.depth > MAX_FX_DEPTH {
             return None;
         }
-        let sub = Renderer { depth: self.r.depth + 1, ..*self.r };
+        let sub = self.r.nested();
         // The cached layer buffer is shared; effects get their own copy.
         let buf = if masks_and_effects { (*sub.content_buf(self.ctx, other)?).clone() } else { sub.source(self.ctx, other)? };
         let size = source_size(self.r.project, other);
@@ -77,7 +78,7 @@ impl EffectHost for FxHost<'_, '_, '_> {
         if other.id == self.layer.id || self.r.depth > MAX_FX_DEPTH {
             return None;
         }
-        let sub = Renderer { depth: self.r.depth + 1, ..*self.r };
+        let sub = self.r.nested();
         let buf = (*sub.layer_input(self.ctx, other, 0)?).clone();
         let size = source_size(self.r.project, other);
         let size = if size.0 == 0 { [self.ctx.comp.width as f64, self.ctx.comp.height as f64] } else { [size.0 as f64, size.1 as f64] };
@@ -101,7 +102,7 @@ impl EffectHost for FxHost<'_, '_, '_> {
         }
         let n = effects.min(self.index.load(std::sync::atomic::Ordering::Relaxed));
         let t = self.layer.comp_time(Tick::from_seconds_f64(layer_time));
-        let sub = Renderer { depth: self.r.depth + 1, ..*self.r };
+        let sub = self.r.nested();
         sub.layer_input(&self.ctx.at(t), self.layer, n).map(|b| (*b).clone())
     }
 
@@ -111,7 +112,7 @@ impl EffectHost for FxHost<'_, '_, '_> {
             return None;
         }
         let ctx = self.ctx.at(Tick::from_seconds_f64(comp_time));
-        let sub = Renderer { depth: self.r.depth + 1, ..*self.r };
+        let sub = self.r.nested();
         let buf = if masks_and_effects { (*sub.content_buf(&ctx, other)?).clone() } else { (*sub.layer_input(&ctx, other, 0)?).clone() };
         let size = source_size(self.r.project, other);
         let size = if size.0 == 0 { [self.ctx.comp.width as f64, self.ctx.comp.height as f64] } else { [size.0 as f64, size.1 as f64] };
@@ -157,6 +158,8 @@ pub struct Renderer<'a> {
     pub profile: Option<&'a std::sync::Mutex<Vec<LayerTiming>>>,
     /// Current nesting depth (precomp recursion guard).
     depth: usize,
+    /// The project's colour pipeline (bit depth, working space, linear blending).
+    pub(crate) pipe: color::Pipe,
 }
 
 /// Time spent on one layer of one frame (milliseconds).
@@ -176,7 +179,12 @@ pub struct LayerTiming {
 
 impl<'a> Renderer<'a> {
     pub fn new(project: &'a Project, footage: &'a dyn FootageSource, opts: RenderOpts) -> Renderer<'a> {
-        Renderer { project, footage, expr: None, opts, cache: None, profile: None, depth: 0 }
+        Renderer { project, footage, expr: None, opts, cache: None, profile: None, depth: 0, pipe: color::Pipe::of(&project.settings) }
+    }
+
+    /// A renderer for nested work (precomps, layers read by effects): one level deeper.
+    fn nested(&self) -> Renderer<'a> {
+        Renderer { depth: self.depth + 1, ..*self }
     }
 
     fn ctx(&self, comp_id: ItemId, comp: &'a Comp, t: Tick) -> EvalCtx<'a> {
@@ -194,6 +202,24 @@ impl<'a> Renderer<'a> {
             return canvas;
         }
         let ctx = self.ctx(comp_id, comp, t);
+        self.draw_comp(&ctx, &mut canvas);
+        if let Some(c) = self.pipe.from_blend() {
+            color::convert(&mut canvas, &c);
+        }
+        self.pipe.quantize(&mut canvas);
+        // The top-level comp leaves the working space for the (sRGB) display / output.
+        if self.depth == 0
+            && let Some(c) = self.pipe.output()
+        {
+            color::convert(&mut canvas, &c);
+            self.pipe.quantize(&mut canvas);
+        }
+        canvas
+    }
+
+    /// Draw a comp's layers (bottom to top) into `canvas` (blending space).
+    fn draw_comp(&self, ctx: &EvalCtx<'a>, canvas: &mut Image) {
+        let (comp, t) = (ctx.comp, ctx.time);
         let any_solo = comp.layers.iter().any(|l| l.switches.solo && l.source.is_av() && l.is_active_at(t));
         // Bottom-to-top, with runs of consecutive 3D layers depth-sorted (farthest first).
         let visible: Vec<&Layer> = comp
@@ -209,17 +235,15 @@ impl<'a> Renderer<'a> {
                 while j < visible.len() && visible[j].is_3d() {
                     j += 1;
                 }
-                three_d::compose::draw_run(self, &ctx, &visible[i..j], &mut canvas);
+                three_d::compose::draw_run(self, ctx, &visible[i..j], canvas);
                 i = j;
             } else {
-                self.draw_layer(&ctx, visible[i], &mut canvas);
+                self.draw_layer(ctx, visible[i], canvas);
                 i += 1;
             }
+            // 8/16 bpc: the comp is an integer buffer after every layer.
+            self.pipe.quantize(canvas);
         }
-        if !self.project.settings.bit_depth.is_float() {
-            canvas.clamp01();
-        }
-        canvas
     }
 
     /// Evaluate an effect instance's parameters.
@@ -271,6 +295,8 @@ impl<'a> Renderer<'a> {
             let ectx = EffectCtx { params: &params, time: lt.seconds(), layer_size, seed: g.uid as u32, adjustment, env };
             let t0 = web_time::Instant::now();
             buf = effectcraft_effects::apply(spec, &ectx, buf);
+            // 8/16 bpc effects write integer pixels.
+            self.pipe.quantize(&mut buf.img);
             if let Some(v) = timing.as_deref_mut() {
                 v.push((spec.id.to_string(), t0.elapsed().as_secs_f64() * 1e3));
             }
@@ -289,14 +315,17 @@ impl<'a> Renderer<'a> {
                 if layer.switches.adjustment {
                     return Some(Buf { img: Image::filled(w, h, [1.0; 4]), offset: [0.0; 2], scale: s });
                 }
-                let c = sol.color;
+                let mut c = sol.color;
+                if let Some(conv) = self.pipe.authored_in() {
+                    c = conv.apply(c);
+                }
                 Some(Buf { img: Image::filled(w, h, [c[0], c[1], c[2], 1.0]), offset: [0.0; 2], scale: s })
             }
             LayerSource::Comp { item } => {
                 if self.project.comp_contains(*item, ctx.comp_id) {
                     return None;
                 }
-                let sub = Renderer { depth: self.depth + 1, ..*self };
+                let sub = self.nested();
                 let lt = ctx.source_time(layer);
                 Some(Buf { img: sub.comp_frame(*item, lt), offset: [0.0; 2], scale: s })
             }
@@ -307,40 +336,94 @@ impl<'a> Renderer<'a> {
                     return None;
                 }
                 let lt = ctx.source_time(layer);
-                let img = self.footage.frame(*item, f, lt)?;
+                let img = self.footage_frame(ctx, layer, *item, f, lt)?;
                 let k = if img.width > 0 { f.width.max(1) as f64 / img.width as f64 } else { 1.0 };
                 // Keep native pixels when downsampling is small; resample otherwise.
-                if s < 0.75 {
+                let mut buf = if s < 0.75 {
                     let w = ((f.width as f64 * s).round() as u32).max(1);
                     let h = ((f.height as f64 * s).round() as u32).max(1);
-                    return Some(Buf { img: effectcraft_raster::resample(&img, w, h), offset: [0.0; 2], scale: s });
+                    Buf { img: effectcraft_raster::resample(&img, w, h), offset: [0.0; 2], scale: s }
+                } else {
+                    Buf { img: (*img).clone(), offset: [0.0; 2], scale: 1.0 / k }
+                };
+                if let Some(c) = self.pipe.media_in(f.color_profile) {
+                    color::convert(&mut buf.img, &c);
                 }
-                Some(Buf { img: (*img).clone(), offset: [0.0; 2], scale: 1.0 / k })
+                Some(buf)
             }
-            LayerSource::Text => Some(text::render(ctx, layer, s)),
-            LayerSource::Shape => layer.props.sub("contents").map(|c| shapes::render(ctx, layer, c, s)),
+            LayerSource::Text => Some(self.authored(text::render(ctx, layer, s))),
+            LayerSource::Shape => layer.props.sub("contents").map(|c| self.authored(shapes::render(ctx, layer, c, s))),
             _ => None,
         }
+    }
+
+    /// Authored colours into the working space (linear working spaces).
+    fn authored(&self, mut buf: Buf) -> Buf {
+        if let Some(c) = self.pipe.authored_in() {
+            color::convert(&mut buf.img, &c);
+        }
+        buf
+    }
+
+    /// A footage frame at source time `t`.
+    fn footage_frame(&self, _ctx: &EvalCtx, _layer: &Layer, item: ItemId, f: &Footage, t: Tick) -> Option<Arc<Image>> {
+        self.footage.frame(item, f, t)
+    }
+
+    /// Source → masks, clamped/quantised to the project depth.
+    fn masked_source(&self, ctx: &EvalCtx, layer: &Layer) -> Option<Buf> {
+        let mut buf = self.source(ctx, layer)?;
+        masks::apply(ctx, layer, &mut buf);
+        self.pipe.quantize(&mut buf.img);
+        Some(buf)
     }
 
     /// Fully processed layer buffer (source → masks → effects → layer styles, flattened).
     /// Served from the layer cache when the layer's content key matches.
     pub fn layer_buf(&self, ctx: &EvalCtx, layer: &Layer) -> Option<Arc<Buf>> {
+        self.layer_buf_keyed(ctx, layer).map(|(b, _)| b)
+    }
+
+    /// [`Self::layer_buf`] in the blending space (linear with Blend Colors Using 1.0 Gamma).
+    pub(crate) fn blend_layer_buf(&self, ctx: &EvalCtx, layer: &Layer) -> Option<Arc<Buf>> {
+        let (b, k) = self.layer_buf_keyed(ctx, layer)?;
+        Some(self.to_blend(b, k))
+    }
+
+    /// A buffer converted to the blending space (cached under a key derived from `key`).
+    pub(crate) fn to_blend(&self, b: Arc<Buf>, key: Option<u64>) -> Arc<Buf> {
+        let Some(c) = self.pipe.to_blend() else { return b };
+        let key = key.map(|k| cache::derive(k, 0x1ea7));
+        if let (Some(cache), Some(k)) = (self.cache, key)
+            && let Some(x) = cache.get(k)
+        {
+            return x;
+        }
+        let mut nb = (*b).clone();
+        color::convert(&mut nb.img, &c);
+        let nb = Arc::new(nb);
+        if let (Some(cache), Some(k)) = (self.cache, key) {
+            cache.insert(k, nb.clone());
+        }
+        nb
+    }
+
+    fn layer_buf_keyed(&self, ctx: &EvalCtx, layer: &Layer) -> Option<(Arc<Buf>, Option<u64>)> {
         let st = self.styled(ctx, layer, None)?;
         if st.passes.is_empty() {
-            return Some(st.body);
+            return Some((st.body, st.key));
         }
         let key = st.key.map(|k| cache::derive(k, 0xf1a7));
         if let (Some(c), Some(k)) = (self.cache, key)
             && let Some(b) = c.get(k)
         {
-            return Some(b);
+            return Some((b, key));
         }
         let flat = Arc::new(styles::Styled { passes: st.passes.iter().map(|(b, m)| ((**b).clone(), *m)).collect(), body: (*st.body).clone() }.flatten());
         if let (Some(c), Some(k)) = (self.cache, key) {
             c.insert(k, flat.clone());
         }
-        Some(flat)
+        Some((flat, key))
     }
 
     /// A layer's source pixels at the context time, before masks, effects and the transform
@@ -365,8 +448,7 @@ impl<'a> Renderer<'a> {
             }
             return Some((b, key));
         }
-        let mut buf = self.source(ctx, layer)?;
-        masks::apply(ctx, layer, &mut buf);
+        let buf = self.masked_source(ctx, layer)?;
         let buf = Arc::new(self.apply_effects_timed(ctx, layer, buf, false, usize::MAX, timing.map(|t| &mut t.effects)));
         if let (Some(c), Some(k)) = (self.cache, key) {
             c.insert(k, buf.clone());
@@ -384,8 +466,7 @@ impl<'a> Renderer<'a> {
         {
             return Some(b);
         }
-        let mut buf = self.source(ctx, layer)?;
-        masks::apply(ctx, layer, &mut buf);
+        let mut buf = self.masked_source(ctx, layer)?;
         if effects > 0 {
             buf = self.apply_effects_timed(ctx, layer, buf, false, effects, None);
         }
@@ -400,7 +481,7 @@ impl<'a> Renderer<'a> {
     fn styled(&self, ctx: &EvalCtx, layer: &Layer, mut timing: Option<&mut LayerTiming>) -> Option<StyledLayer> {
         let (content, ckey) = self.content_buf_timed(ctx, layer, timing.as_deref_mut())?;
         if !styles::active(ctx, layer) {
-            return Some(StyledLayer { passes: vec![], body: content.clone(), content, key: None, plain: true });
+            return Some(StyledLayer { passes: vec![], body: content.clone(), content, key: ckey, ckey, plain: true });
         }
         let modes = styles::pass_modes(ctx, layer);
         let key = ckey.map(|k| cache::styles_key(ctx, layer, k));
@@ -409,7 +490,7 @@ impl<'a> Renderer<'a> {
         {
             let passes: Option<Vec<_>> = modes.iter().enumerate().map(|(i, m)| c.get(cache::derive(k, i as u64 + 1)).map(|b| (b, *m))).collect();
             if let Some(passes) = passes {
-                return Some(StyledLayer { passes, body, content, key, plain: false });
+                return Some(StyledLayer { passes, body, content, key, ckey, plain: false });
             }
         }
         let t0 = web_time::Instant::now();
@@ -428,7 +509,18 @@ impl<'a> Renderer<'a> {
                 c.insert(cache::derive(k, i as u64 + 1), b.clone());
             }
         }
-        Some(StyledLayer { passes, body, content, key, plain: false })
+        Some(StyledLayer { passes, body, content, key, ckey, plain: false })
+    }
+
+    /// The styled layer's buffers in the blending space.
+    fn styled_to_blend(&self, st: StyledLayer) -> StyledLayer {
+        if self.pipe.to_blend().is_none() {
+            return st;
+        }
+        let body = self.to_blend(st.body, st.key);
+        let content = if st.plain { body.clone() } else { self.to_blend(st.content, st.ckey) };
+        let passes = st.passes.into_iter().enumerate().map(|(i, (b, m))| (self.to_blend(b, st.key.map(|k| cache::derive(k, i as u64 + 1))), m)).collect();
+        StyledLayer { passes, body, content, ..st }
     }
 
     fn sampling(&self, layer: &Layer) -> effectcraft_raster::Sampling {
@@ -488,6 +580,7 @@ impl<'a> Renderer<'a> {
         let mut timing = self.profile.map(|_| LayerTiming { depth: self.depth, layer: layer.name.clone(), ..Default::default() });
         let t0 = web_time::Instant::now();
         let Some(st) = self.styled(ctx, layer, timing.as_mut()) else { return };
+        let st = self.styled_to_blend(st);
         let t1 = web_time::Instant::now();
         if st.plain {
             self.composite_layer(ctx, layer, &st.body, canvas, opacity);
@@ -595,8 +688,15 @@ impl<'a> Renderer<'a> {
         masks::apply(ctx, layer, &mut foot);
         let mut matte = Image::new(canvas.width, canvas.height);
         self.place(ctx, layer, &foot, &mut matte, BlendMode::Normal, 1.0);
-        let below = Buf { img: canvas.clone(), offset: [0.0; 2], scale: self.opts.scale };
-        let adjusted = self.apply_effects(ctx, layer, below, true);
+        let mut below = Buf { img: canvas.clone(), offset: [0.0; 2], scale: self.opts.scale };
+        // Effects run in the working space, not the linear blending space.
+        if let Some(c) = self.pipe.from_blend() {
+            color::convert(&mut below.img, &c);
+        }
+        let mut adjusted = self.apply_effects(ctx, layer, below, true);
+        if let Some(c) = self.pipe.to_blend() {
+            color::convert(&mut adjusted.img, &c);
+        }
         if adjusted.img.width != canvas.width || adjusted.img.height != canvas.height {
             return;
         }
@@ -615,8 +715,10 @@ struct StyledLayer {
     body: Arc<Buf>,
     /// Pre-style pixels (knockout shape).
     content: Arc<Buf>,
-    /// Styled cache key.
+    /// Styled cache key (the content key when plain).
     key: Option<u64>,
+    /// Content cache key.
+    ckey: Option<u64>,
     /// No layer styles: composite `body` the usual way.
     plain: bool,
 }
@@ -658,6 +760,8 @@ pub fn kurbo_path(sp: &effectcraft_keyframe::ShapePath) -> kurbo::BezPath {
 }
 #[cfg(test)]
 mod tests_audio_fx;
+#[cfg(test)]
+mod tests_color;
 #[cfg(test)]
 mod tests_paint;
 #[cfg(test)]

@@ -6,9 +6,11 @@
 //! colour and composited with Porter-Duff source-over on premultiplied pixels.
 
 pub mod blend;
+pub mod space;
 
 pub use blend::{BlendMode, blend_pixel};
 use serde::{Deserialize, Serialize};
+pub use space::{ColorSpace, Conversion};
 
 /// Straight (un-premultiplied) RGBA, 0..1 nominal (32 bpc may exceed).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]

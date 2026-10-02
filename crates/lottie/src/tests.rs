@@ -591,6 +591,7 @@ fn images_embed_as_base64_and_come_back() {
             codec: String::new(),
             missing: false,
             sequence: vec![],
+            color_profile: None,
         }),
     );
     let c = comp(&p, cid);

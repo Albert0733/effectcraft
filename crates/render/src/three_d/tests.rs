@@ -14,6 +14,8 @@ const H: u32 = 100;
 
 fn setup() -> (Project, ItemId, Comp) {
     let mut p = Project::default();
+    // Exact float maths; 8/16 bpc quantisation has its own tests (tests_color).
+    p.settings.bit_depth = effectcraft_project::BitDepth::Bpc32;
     let comp = Comp::new(W, H, FrameRate::FPS_30, Tick::from_seconds_f64(2.0));
     let cid = p.add_item("Comp", Label::Sandstone, None, ItemKind::Comp(comp.clone().into()));
     (p, cid, comp)

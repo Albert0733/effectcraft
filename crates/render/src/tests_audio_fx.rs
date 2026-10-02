@@ -50,6 +50,7 @@ fn audio_footage() -> Footage {
         codec: String::new(),
         missing: false,
         sequence: vec![],
+        color_profile: None,
     }
 }
 

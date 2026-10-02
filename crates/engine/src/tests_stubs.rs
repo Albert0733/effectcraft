@@ -256,6 +256,7 @@ impl Importer for MockImporter {
             codec: "mock".into(),
             missing: false,
             sequence: vec![],
+            color_profile: None,
         })
     }
 }

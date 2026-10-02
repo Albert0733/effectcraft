@@ -71,6 +71,20 @@ pub(crate) fn footage_from_info(path: &str, info: &filmcraft_media::MediaInfo) -
         codec,
         missing: false,
         sequence: Vec::new(),
+        color_profile: v.and_then(|v| profile_of(&v.color)),
+    }
+}
+
+/// The colour profile a video stream declares (H.273 primaries / transfer from the bitstream or
+/// container). `None` (interpreted as sRGB) for Rec. 709 primaries with an sRGB curve.
+fn profile_of(c: &filmcraft_color::ColorInfo) -> Option<effectcraft_project::ColorSpace> {
+    use effectcraft_project::ColorSpace;
+    use filmcraft_color::{Primaries, Transfer};
+    match (c.primaries, c.transfer) {
+        (Primaries::Bt2020, _) => Some(ColorSpace::Rec2020),
+        (Primaries::P3D65, _) => Some(ColorSpace::DisplayP3),
+        (_, Transfer::Bt709) => Some(ColorSpace::Rec709),
+        _ => None,
     }
 }
 
@@ -99,6 +113,7 @@ fn still_footage(path: &str, w: u32, h: u32, fmt: image::ImageFormat, has_alpha:
         codec,
         missing: false,
         sequence: Vec::new(),
+        color_profile: None,
     }
 }
 

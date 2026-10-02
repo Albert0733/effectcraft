@@ -291,6 +291,8 @@ fn key_with(ctx: &EvalCtx, layer: &Layer, scale: f64, draft: bool, footage: bool
         }
         _ => return None,
     }
+    // Bit depth and colour management change the pixels.
+    crate::color::Pipe::of(&ctx.project.settings).key().hash(&mut h);
     ctx.comp_id.hash(&mut h);
     ctx.comp.width.hash(&mut h);
     ctx.comp.height.hash(&mut h);

@@ -311,9 +311,15 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let dresp = ui.interact(dr, egui::Id::new("bpc"), Sense::click());
     p.text(dr.center(), Align2::CENTER_CENTER, depth, Tokens::ui(11.5), if dresp.hovered() { t.text } else { t.text_dim });
     app.auto.add("project.bitDepth", dr, depth);
+    // Click cycles 8/16/32 bpc; Alt-click opens Project Settings (as in After Effects).
     if dresp.clicked() {
-        actions.push(("file.cycleBitDepth".into(), json!({})));
+        if ui.input(|i| i.modifiers.alt) {
+            actions.push(("file.projectSettings".into(), json!({})));
+        } else {
+            actions.push(("file.cycleBitDepth".into(), json!({})));
+        }
     }
+    dresp.on_hover_text("Project color depth: click to cycle 8/16/32 bpc, Alt-click for Project Settings");
     let tr = Rect::from_min_size(pos2(foot.max.x - 30.0, foot.min.y + 3.0), vec2(22.0, 22.0));
     if widgets::icon_button(ui, tr, Icon::Trash, false, &t, egui::Id::new("ptrash")).on_hover_text("Delete selected project items").clicked() {
         let sel = app.session.state.project_selection.clone();
