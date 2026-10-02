@@ -31,3 +31,4 @@ kurbo = { workspace = true }
 egui_kittest = { workspace = true, features = ["eframe", "wgpu"] }
 image = { workspace = true }
 pollster = "0.4"
+effectcraft-host = { workspace = true }

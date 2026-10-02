@@ -114,3 +114,58 @@ fn time_navigation() {
     s.execute("time.set", json!({"frame": 45})).unwrap();
     assert_eq!(s.execute("time.step", json!({"frames": 5})).unwrap()["frame"], 50);
 }
+
+#[test]
+fn time_navigation_per_property() {
+    let mut s = demo();
+    // An animated property and the comp times of its keys.
+    let comp = s.active_comp().unwrap().clone();
+    let mut found = None;
+    for l in &comp.layers {
+        l.props.walk("", &mut |_, pr| {
+            if found.is_none() && pr.keys.len() >= 2 {
+                found = Some((pr.uid, pr.keys.iter().map(|k| l.comp_time(k.time)).collect::<Vec<_>>()));
+            }
+        });
+    }
+    let (uid, times) = found.expect("demo has an animated property");
+    s.set_time(effectcraft_time::Tick::ZERO);
+    let half = comp.frame_duration().0 / 2;
+    let expect = times.iter().copied().filter(|t| t.0 > half).min().unwrap();
+    s.execute("time.go", json!({"to": "nextKey", "prop": uid})).unwrap();
+    let snap = |t| comp.frame_rate.snap(t);
+    assert_eq!(s.time(), snap(expect));
+    // Going back from past the last key lands on the last key.
+    s.set_time(comp.duration);
+    s.execute("time.go", json!({"to": "prevKey", "prop": uid})).unwrap();
+    assert_eq!(s.time(), snap(*times.iter().max().unwrap()));
+}
+
+#[test]
+fn set_text_paragraph_fill_and_leading() {
+    use effectcraft_keyframe::{Justify, Value as KValue};
+    let mut s = demo();
+    let t = s.execute("layer.newText", json!({"text": "Hi"})).unwrap()["layer"].as_u64().unwrap();
+    let doc = |s: &Session| {
+        let l = s.active_comp().unwrap().layer(crate::project::LayerId(t)).unwrap().clone();
+        match &l.props.prop("text/sourceText").unwrap().value {
+            KValue::Text(d) => (**d).clone(),
+            v => panic!("{v:?}"),
+        }
+    };
+    for (key, j) in [
+        ("justifyLeft", Justify::JustifyLastLeft),
+        ("justifyCenter", Justify::JustifyLastCenter),
+        ("justifyRight", Justify::JustifyLastRight),
+        ("justifyAll", Justify::JustifyAll),
+        ("center", Justify::Center),
+    ] {
+        s.execute("layer.setText", json!({"layer": t, "justify": key})).unwrap();
+        assert_eq!(doc(&s).justify, j, "{key}");
+    }
+    s.execute("layer.setText", json!({"layer": t, "leading": 50, "applyFill": false, "applyStroke": true})).unwrap();
+    let d = doc(&s);
+    assert_eq!((d.leading, d.apply_fill, d.apply_stroke), (Some(50.0), false, true));
+    s.execute("layer.setText", json!({"layer": t, "leading": "auto"})).unwrap();
+    assert_eq!(doc(&s).leading, None);
+}

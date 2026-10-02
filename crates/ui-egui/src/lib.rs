@@ -467,14 +467,31 @@ impl EffectcraftApp {
         }
     }
 
+    /// Tab labels that name what the panel shows, as After Effects does: "Composition Intro",
+    /// "Effect Controls Title", "Properties: Title", and the Timeline tab named after its comp.
+    fn tab_titles(&self) -> Vec<(PanelKind, String)> {
+        let mut out = Vec::new();
+        let Some(comp) = self.session.active_comp() else { return out };
+        let cname = self.session.active_comp_id().and_then(|id| self.session.project.item(id)).map(|i| i.name.clone()).unwrap_or_default();
+        out.push((PanelKind::Composition, format!("Composition {cname}")));
+        out.push((PanelKind::Timeline, cname));
+        if let Some(l) = self.session.state.selected_layers.first().and_then(|id| comp.layer(*id)) {
+            out.push((PanelKind::EffectControls, format!("Effect Controls {}", l.name)));
+            out.push((PanelKind::Properties, format!("Properties: {}", l.name)));
+        }
+        out
+    }
+
     fn dock_area(&mut self, ui: &mut egui::Ui, body: egui::Rect) {
         let t = self.tokens;
         let mut dock = std::mem::replace(&mut self.ui.dock, dock::DockNode::Tabs { panels: vec![], active: 0 });
         let mut groups = Vec::new();
         dock::layout(ui, &mut dock, body, &t, "", &mut groups, &mut self.auto);
         let mut actions = Vec::new();
+        let titles = self.tab_titles();
+        let title = |p: PanelKind| titles.iter().find(|(k, _)| *k == p).map(|(_, s)| s.clone()).unwrap_or_else(|| p.title().to_string());
         for g in &groups {
-            actions.extend(dock::draw_group_chrome(ui, g, self.ui.focused, &t, &mut self.auto));
+            actions.extend(dock::draw_group_chrome(ui, g, self.ui.focused, &t, &mut self.auto, &title));
         }
         self.ui.dock = dock;
         for g in &groups {

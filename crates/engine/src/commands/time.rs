@@ -56,13 +56,23 @@ fn go(s: &mut Session, p: &Value) -> Result<Value> {
             } else {
                 comp.layers.iter().filter(|l| s.state.selected_layers.contains(&l.id)).collect()
             };
+            // `prop` (uid) narrows the search to one property: the Properties panel's ◀ ▶ arrows.
+            let only = p.get("prop").and_then(Value::as_u64);
+            if only.is_some() {
+                times.clear();
+            }
             for l in layers {
                 l.props.walk("", &mut |_, pr| {
+                    if only.is_some_and(|u| u != pr.uid) {
+                        return;
+                    }
                     for k in &pr.keys {
                         times.push(l.comp_time(k.time));
                     }
                 });
-                times.extend(l.markers.iter().map(|m| l.comp_time(m.time)));
+                if only.is_none() {
+                    times.extend(l.markers.iter().map(|m| l.comp_time(m.time)));
+                }
             }
             times.sort();
             times.dedup();
@@ -93,6 +103,6 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!("time.layerOut", "Go to Layer Out Point", [], Some("O"), "{}", has_comp, |s, _| go(s, &json!({"to": "layerOut"}))),
         cmd!("time.nextKey", "Go to Next Keyframe or Marker", [], Some("K"), "{}", has_comp, |s, _| go(s, &json!({"to": "nextKey"}))),
         cmd!("time.previousKey", "Go to Previous Keyframe or Marker", [], Some("J"), "{}", has_comp, |s, _| go(s, &json!({"to": "prevKey"}))),
-        cmd!("time.go", "Go To", [], None, "{to: start|end|workStart|workEnd|layerIn|layerOut|nextKey|prevKey}", has_comp, go),
+        cmd!("time.go", "Go To", [], None, "{to: start|end|workStart|workEnd|layerIn|layerOut|nextKey|prevKey, prop?: uid}", has_comp, go),
     ]
 }

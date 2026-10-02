@@ -6,6 +6,7 @@ pub mod effects_presets;
 pub mod info;
 pub mod misc;
 pub mod project;
+pub mod properties;
 pub mod text_panels;
 pub mod timeline;
 pub mod viewer;
@@ -58,7 +59,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: PanelKind, rect: Rec
         PanelKind::Character => text_panels::character(app, ui, rect),
         PanelKind::Paragraph => text_panels::paragraph(app, ui, rect),
         PanelKind::Align => text_panels::align(app, ui, rect),
-        PanelKind::Properties => effect_controls::properties(app, ui, rect),
+        PanelKind::Properties => properties::show(app, ui, rect),
         PanelKind::Audio => misc::audio(app, ui, rect),
         PanelKind::History => misc::history(app, ui, rect),
         PanelKind::Markers => misc::markers(app, ui, rect),

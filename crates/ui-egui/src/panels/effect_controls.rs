@@ -1,5 +1,4 @@
-//! Effect Controls (the selected layer's effects with all parameters) and the Properties panel
-//! (essential properties: transform + text/shape basics).
+//! Effect Controls: the selected layer's effects with all parameters.
 
 use effectcraft_engine::keyframe::Value;
 use effectcraft_engine::project::{GroupKind, Layer, Node, ParamUi, PropGroup, Property};
@@ -373,44 +372,6 @@ impl EffectKind for PropGroup {
         match &self.kind {
             GroupKind::Effect { effect } => Some(effect.as_str()),
             _ => None,
-        }
-    }
-}
-
-/// Properties panel: the selected layer's transform (and text basics), always visible.
-pub fn properties(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
-    let t = app.tokens;
-    let p = ui.painter().with_clip_rect(rect);
-    let ctx = ui.ctx().clone();
-    let Some(layer) = selected_layer(app) else {
-        p.text(rect.center(), Align2::CENTER_CENTER, "Select a layer", Tokens::ui(12.0), t.text_faint);
-        return;
-    };
-    let Some(cid) = app.session.active_comp_id() else { return };
-    let comp = app.session.project.comp(cid).cloned().unwrap_or_else(|| effectcraft_engine::project::Comp::new(1, 1, Default::default(), Default::default()));
-    let snap_project = app.session.project.clone();
-    let snap_expr = app.session.expr.clone();
-    let ectx = EvalCtx { project: &snap_project, comp_id: cid, comp: &comp, time: app.session.time(), expr: snap_expr.as_deref() };
-    let mut y = rect.min.y + 8.0;
-    p.text(pos2(rect.min.x + 10.0, y + 8.0), Align2::LEFT_CENTER, &layer.name, Tokens::semibold(13.0), t.text);
-    p.text(pos2(rect.min.x + 10.0, y + 24.0), Align2::LEFT_CENTER, layer.source.type_name(), Tokens::ui(11.0), t.text_dim);
-    y += 40.0;
-    let mut actions: Actions = vec![];
-    if let Some(tr) = layer.transform().cloned() {
-        p.text(pos2(rect.min.x + 10.0, y + 10.0), Align2::LEFT_CENTER, "Layer Transform", Tokens::semibold(12.0), t.text);
-        y += 24.0;
-        for pr in tr.props() {
-            if pr.three_d_only && !layer.is_3d() {
-                continue;
-            }
-            let r = Rect::from_min_size(pos2(rect.min.x, y), vec2(rect.width(), 24.0));
-            prop_row(app, ui, &p, &layer, pr, &ectx, r, 16.0, &mut actions);
-            y += 24.0;
-        }
-    }
-    for (id, params) in actions {
-        if let Err(e) = crate::menus::invoke(app, &ctx, &id, params) {
-            app.ui.status = e;
         }
     }
 }

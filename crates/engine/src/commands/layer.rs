@@ -95,8 +95,17 @@ fn text_doc_from(p: &Value, base: TextDoc) -> TextDoc {
     if let Some(v) = f_p(p, "tracking") {
         d.tracking = v;
     }
-    if let Some(v) = f_p(p, "leading") {
-        d.leading = Some(v);
+    match p.get("leading") {
+        Some(Value::Number(n)) => d.leading = n.as_f64(),
+        // "auto" or null: Auto Leading (120% of the font size).
+        Some(Value::String(_) | Value::Null) => d.leading = None,
+        _ => {}
+    }
+    if let Some(v) = b_p(p, "applyFill") {
+        d.apply_fill = v;
+    }
+    if let Some(v) = b_p(p, "applyStroke") {
+        d.apply_stroke = v;
     }
     if let Some(v) = b_p(p, "allCaps") {
         d.all_caps = v;
@@ -108,10 +117,14 @@ fn text_doc_from(p: &Value, base: TextDoc) -> TextDoc {
         d.faux_italic = v;
     }
     if let Some(j) = str_p(p, "justify") {
+        // AE's seven Paragraph alignment buttons.
         d.justify = match j.to_ascii_lowercase().as_str() {
             "center" | "centre" => Justify::Center,
             "right" => Justify::Right,
-            "justify" | "justifyall" => Justify::JustifyAll,
+            "justify" | "justifyleft" | "justifylastleft" => Justify::JustifyLastLeft,
+            "justifycenter" | "justifylastcenter" => Justify::JustifyLastCenter,
+            "justifyright" | "justifylastright" => Justify::JustifyLastRight,
+            "justifyall" => Justify::JustifyAll,
             _ => Justify::Left,
         };
     }
@@ -927,7 +940,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Edit Text",
             [],
             None,
-            "{layer?, text?, size?, font?, style?, fill?, stroke?, strokeWidth?, tracking?, leading?, justify?, allCaps?, fauxBold?, fauxItalic?}",
+            "{layer?, text?, size?, font?, style?, fill?, stroke?, applyFill?, applyStroke?, strokeWidth?, tracking?, leading?: px|\"auto\", justify?: left|center|right|justifyLeft|justifyCenter|justifyRight|justifyAll, allCaps?, fauxBold?, fauxItalic?}",
             has_layers,
             set_text
         ),
