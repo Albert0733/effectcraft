@@ -71,6 +71,8 @@ pub struct Hooks {
     pub audio_devices: Option<Box<dyn Fn() -> Vec<String>>>,
     /// Picks a folder (Settings paths).
     pub pick_folder: Option<Box<dyn Fn() -> Option<String>>>,
+    /// Save dialog for other file kinds: (default name, extension).
+    pub pick_save_file: Option<Box<dyn Fn(&str, &str) -> Option<String>>>,
 }
 
 #[derive(Default)]
@@ -166,6 +168,17 @@ impl EffectcraftApp {
             last_reveal: None,
             applied_prefs: None,
         }
+        .with_ui_commands()
+    }
+
+    /// Offer the frontend's commands (tools, timeline navigation…) for keyboard shortcuts.
+    fn with_ui_commands(mut self) -> Self {
+        let cmds = menus::UI_COMMANDS
+            .iter()
+            .map(|c| effectcraft_engine::shortcuts::UiCommand { id: c.id.into(), label: c.label.into(), shortcut: c.shortcut.map(str::to_string) })
+            .collect();
+        self.session.set_ui_commands(cmds);
+        self
     }
 
     /// Apply changed settings: theme and brightness, label colours, tool tips, preview caches.

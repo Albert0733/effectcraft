@@ -24,6 +24,8 @@ pub struct DialogState {
     pub settings_page: String,
     /// Settings when the dialog opened (Cancel restores them).
     pub prefs_snapshot: Option<effectcraft_engine::prefs::Prefs>,
+    /// Keyboard Shortcuts editor.
+    pub shortcuts: super::shortcut_editor::EditorState,
     /// The open parameter form.
     pub form: super::forms::Form,
     /// Message box (title, body).
@@ -101,7 +103,7 @@ pub fn show(app: &mut EffectcraftApp, ctx: &egui::Context) {
         Dialog::SolidSettings => solid(app, ctx, &t),
         Dialog::CommandPalette => palette(app, ctx, &t),
         Dialog::Settings => super::settings::show(app, ctx, &t),
-        Dialog::Shortcuts => super::forms::show_shortcuts(app, ctx, &t),
+        Dialog::Shortcuts => super::shortcut_editor::show(app, ctx, &t),
         Dialog::Form => super::forms::show_form(app, ctx, &t),
         Dialog::Info => super::forms::show_info(app, ctx, &t),
         Dialog::ViewOptions => super::forms::show_view_options(app, ctx, &t),

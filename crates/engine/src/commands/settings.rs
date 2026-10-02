@@ -1,9 +1,10 @@
-//! Settings (`prefs.*`).
+//! Settings (`prefs.*`) and keyboard shortcut presets (`shortcuts.*`).
 
 use serde_json::{Value, json};
 
 use super::{CommandSpec, always, bad, str_p};
-use crate::{Result, Session, cmd, query};
+use crate::shortcuts::{DEFAULT_PRESET, binding_key, normalize};
+use crate::{EngineError, Result, Session, cmd, query};
 
 // ---------------------------------------------------------------- prefs
 
@@ -57,6 +58,146 @@ fn prefs_pages(_: &mut Session, _: &Value) -> Result<Value> {
     Ok(crate::prefs::pages_json())
 }
 
+// ---------------------------------------------------------------- shortcuts
+
+/// The bindable named by `command` (+ `params`), or by a binding key (`app.settings {...}`).
+fn bindable(s: &Session, p: &Value, cmd: &str) -> Result<crate::shortcuts::Bindable> {
+    let c = str_p(p, "command").ok_or_else(|| bad(cmd, "missing `command`"))?;
+    let params = p.get("params").cloned().unwrap_or(Value::Null);
+    let t = s.shortcuts();
+    let key = binding_key(c, &params);
+    t.find(&key).or_else(|| t.find(c)).cloned().ok_or_else(|| bad(cmd, format!("`{key}` can't have a shortcut (see shortcuts.list)")))
+}
+
+fn keys_param(p: &Value, cmd: &str) -> Result<Vec<String>> {
+    Ok(match p.get("keys") {
+        None | Some(Value::Null) => vec![],
+        Some(Value::String(k)) if k.trim().is_empty() => vec![],
+        Some(Value::String(k)) => vec![k.clone()],
+        Some(Value::Array(a)) => a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect(),
+        Some(v) => return Err(bad(cmd, format!("`keys` must be a string or a list, not {v}"))),
+    })
+}
+
+fn sc_list(s: &mut Session, p: &Value) -> Result<Value> {
+    let q = str_p(p, "query").unwrap_or("").to_lowercase();
+    let assigned = p.get("assigned").and_then(Value::as_bool).unwrap_or(false);
+    let keys_q = str_p(p, "keys").and_then(normalize);
+    let t = s.shortcuts();
+    let rows: Vec<Value> = t
+        .bindables
+        .iter()
+        .filter_map(|b| {
+            let keys = t.keys.get(&b.key).cloned().unwrap_or_default();
+            if assigned && keys.is_empty() {
+                return None;
+            }
+            if let Some(k) = &keys_q
+                && !keys.contains(k)
+            {
+                return None;
+            }
+            let hay = format!("{} {} {} {}", b.label, b.command, b.path.join(" "), keys.join(" ")).to_lowercase();
+            if !q.split_whitespace().all(|w| hay.contains(w)) {
+                return None;
+            }
+            let mut o = serde_json::to_value(b).unwrap_or_default();
+            o["keys"] = json!(keys);
+            Some(o)
+        })
+        .collect();
+    Ok(json!({"preset": s.keymaps.active, "presets": s.keymaps.names(), "count": rows.len(), "commands": rows}))
+}
+
+fn sc_set(s: &mut Session, p: &Value) -> Result<Value> {
+    let b = bindable(s, p, "shortcuts.set")?;
+    let keys = keys_param(p, "shortcuts.set")?;
+    let conflicts: Vec<_> = keys.iter().flat_map(|k| s.shortcuts().conflicts(&b, k)).collect();
+    let created = s.keymaps.set(&b, &keys).map_err(|e| bad("shortcuts.set", e))?;
+    s.shortcuts_changed();
+    let now = s.shortcuts().keys.get(&b.key).cloned().unwrap_or_default();
+    if let Some(n) = &created {
+        s.toast(format!("The default shortcuts can't be changed: created the preset \"{n}\""));
+    }
+    if !conflicts.is_empty() {
+        let names: Vec<String> = conflicts.iter().map(|c| format!("{} ({})", c.label, c.keys)).collect();
+        s.toast(format!("Shortcut conflict: also used by {}", names.join(", ")));
+    }
+    Ok(json!({"command": b.key, "keys": now, "preset": s.keymaps.active, "created": created, "conflicts": conflicts}))
+}
+
+fn sc_reset(s: &mut Session, p: &Value) -> Result<Value> {
+    if let Some(c) = str_p(p, "command") {
+        let b = bindable(s, p, "shortcuts.reset")?;
+        let defaults = b.defaults.clone();
+        s.keymaps.set(&b, &defaults).map_err(|e| bad("shortcuts.reset", e))?;
+        s.shortcuts_changed();
+        return Ok(json!({"command": c, "keys": defaults}));
+    }
+    s.keymaps.reset_active();
+    s.shortcuts_changed();
+    Ok(json!({"preset": s.keymaps.active}))
+}
+
+fn sc_preset(s: &mut Session, p: &Value) -> Result<Value> {
+    let op = str_p(p, "op").unwrap_or("select");
+    let name = str_p(p, "name");
+    let e = |m: String| bad("shortcuts.preset", m);
+    let k = &mut s.keymaps;
+    match op {
+        "select" => k.select(name.unwrap_or(DEFAULT_PRESET)).map_err(e)?,
+        "new" => {
+            k.duplicate(DEFAULT_PRESET, Some(name.unwrap_or("Custom"))).map_err(e)?;
+        }
+        "duplicate" => {
+            let from = str_p(p, "from").map(str::to_string).unwrap_or_else(|| k.active.clone());
+            k.duplicate(&from, name).map_err(e)?;
+        }
+        "delete" => {
+            let n = name.map(str::to_string).unwrap_or_else(|| k.active.clone());
+            k.delete(&n).map_err(e)?;
+        }
+        "rename" => {
+            let to = str_p(p, "newName").ok_or_else(|| bad("shortcuts.preset", "missing `newName`"))?;
+            let from = name.map(str::to_string).unwrap_or_else(|| k.active.clone());
+            k.rename(&from, to).map_err(e)?;
+        }
+        _ => return Err(bad("shortcuts.preset", "op must be select, new, duplicate, delete or rename")),
+    }
+    s.shortcuts_changed();
+    Ok(json!({"preset": s.keymaps.active, "presets": s.keymaps.names()}))
+}
+
+fn sc_export(s: &mut Session, p: &Value) -> Result<Value> {
+    let doc = s.keymaps.export(str_p(p, "preset")).map_err(|e| bad("shortcuts.export", e))?;
+    if let Some(path) = str_p(p, "path") {
+        let text = serde_json::to_string_pretty(&doc).unwrap_or_default();
+        s.services.write_file(path, text.as_bytes()).map_err(|e| EngineError::Other(format!("cannot write {path}: {e}")))?;
+        return Ok(json!({"path": path, "preset": doc["name"]}));
+    }
+    Ok(doc)
+}
+
+fn sc_import(s: &mut Session, p: &Value) -> Result<Value> {
+    let doc = match (str_p(p, "path"), p.get("preset")) {
+        (Some(path), _) => {
+            let bytes = s.services.read_file(path).map_err(|e| EngineError::Other(format!("cannot read {path}: {e}")))?;
+            serde_json::from_slice(&bytes).map_err(|e| bad("shortcuts.import", format!("{path}: {e}")))?
+        }
+        (None, Some(v)) if v.is_object() => v.clone(),
+        _ => return Err(bad("shortcuts.import", "give `path` or `preset` (an exported document)")),
+    };
+    let name = s.keymaps.import(&doc, str_p(p, "name")).map_err(|e| bad("shortcuts.import", e))?;
+    s.shortcuts_changed();
+    Ok(json!({"preset": name}))
+}
+
+fn sc_conflicts(s: &mut Session, _: &Value) -> Result<Value> {
+    let c: Vec<Value> =
+        s.shortcuts().all_conflicts().into_iter().map(|(a, c)| json!({"command": a, "keys": c.keys, "with": c.key, "scope": c.scope})).collect();
+    Ok(json!(c))
+}
+
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         query!("prefs.get", "Get Setting", "{key?: e.g. general.undoLevels (omit for all settings)}", prefs_get),
@@ -72,5 +213,12 @@ pub fn specs() -> Vec<CommandSpec> {
             prefs_open
         ),
         query!("prefs.pages", "Settings Pages", "{}", prefs_pages),
+        query!("shortcuts.list", "List Keyboard Shortcuts", "{query?, keys?, assigned?: bool}", sc_list),
+        cmd!("shortcuts.set", "Set Keyboard Shortcut", [], None, "{command, params?, keys: \"Cmd+Shift+K\" | [keys] | null}", always, sc_set),
+        cmd!("shortcuts.reset", "Reset Keyboard Shortcuts", [], None, "{command?, params?}", always, sc_reset),
+        cmd!("shortcuts.preset", "Keyboard Shortcut Preset", [], None, "{op: select|new|duplicate|delete|rename, name?, from?, newName?}", always, sc_preset),
+        cmd!("shortcuts.export", "Export Keyboard Shortcuts", [], None, "{preset?, path?}", always, sc_export),
+        cmd!("shortcuts.import", "Import Keyboard Shortcuts", [], None, "{path? | preset?: exported document, name?}", always, sc_import),
+        query!("shortcuts.conflicts", "Keyboard Shortcut Conflicts", "{}", sc_conflicts),
     ]
 }

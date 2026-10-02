@@ -16,6 +16,7 @@ pub mod menus;
 pub mod prefs;
 pub mod render_queue;
 mod session_settings;
+pub mod shortcuts;
 
 use std::sync::Arc;
 
@@ -215,8 +216,15 @@ pub struct Session {
     pub prefs: prefs::Prefs,
     /// Bumped whenever settings change (frontends re-apply theme, labels…).
     pub prefs_revision: u64,
-    /// Where settings are stored (`None` = nothing persists).
+    /// Where settings, shortcut presets and the crash-recovery sentinel are stored (`None` =
+    /// nothing persists).
     pub config: Option<Arc<dyn config::ConfigStore>>,
+    /// Keyboard shortcut presets.
+    pub keymaps: shortcuts::Keymaps,
+    /// Frontend-only commands offered for binding.
+    pub ui_commands: Vec<shortcuts::UiCommand>,
+    /// Cache of the resolved active preset (read it with [`Session::shortcuts`]).
+    pub shortcut_table: std::sync::OnceLock<shortcuts::ShortcutTable>,
 }
 
 impl Default for Session {
@@ -241,6 +249,9 @@ impl Default for Session {
             prefs: prefs::Prefs::default(),
             prefs_revision: 0,
             config: None,
+            keymaps: shortcuts::Keymaps::default(),
+            ui_commands: vec![],
+            shortcut_table: std::sync::OnceLock::new(),
         }
     }
 }

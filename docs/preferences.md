@@ -1,4 +1,4 @@
-# Settings
+# Settings and keyboard shortcuts
 
 ## Settings (Preferences)
 
@@ -135,3 +135,25 @@ These rows are in the dialog for After Effects parity and are stored, but nothin
 - `scripting.bracketMatching`: Bracket Matching
 - `scripting.wordWrap`: Word Wrap
 - `scripting.errorBanner`: Show Expression Error Banner
+
+## Keyboard shortcuts
+
+Edit ▸ Keyboard Shortcuts (`Cmd+Alt+'`) opens the shortcut editor: an on-screen keyboard showing
+which keys are assigned for the held modifiers (purple: application-wide, green: panel-specific,
+both: split), modifier toggles, a searchable list of every command (all engine commands, menu
+entries with bound parameters and the frontend's tool / panel commands), and a preset menu.
+
+- **Presets.** "EffectCraft Default" is After Effects' default layout and is read-only; editing
+  it creates a "Custom" copy. Custom presets store only their differences from the default and
+  can be duplicated, renamed, deleted, exported and imported (JSON). The active preset is what
+  the menus show and what the shortcut dispatcher runs.
+- **Assigning.** Select a command, then press keys in the shortcut field (or type them), or
+  click a key on the keyboard with the modifiers toggled. Conflicts with other commands in an
+  overlapping scope are listed before you assign.
+- **Scope.** Menu and engine commands are application-wide; timeline commands work in the
+  Timeline and viewer commands in the Composition panel.
+
+Commands: `shortcuts.list {query?, keys?, assigned?}`, `shortcuts.set {command, params?, keys}`,
+`shortcuts.reset {command?}`, `shortcuts.preset {op: select|new|duplicate|delete|rename, name?,
+from?, newName?}`, `shortcuts.export {preset?, path?}`, `shortcuts.import {path? | preset?}`,
+`shortcuts.conflicts`.

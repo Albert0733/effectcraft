@@ -1,7 +1,7 @@
 //! Menu dialogs: a generic parameter form (numeric Transform dialogs, Mask Feather/Opacity/
 //! Expansion, Auto-Orient, Go to Time, Add Guide, Sequence Layers, Interpret Footage, Project
-//! Settings, placeholders…), Keyboard Shortcuts, View Options and simple message boxes
-//! (Settings: `settings`). Every form runs an engine command with the collected parameters, so whatever a
+//! Settings, placeholders…), View Options and simple message boxes (Settings: `settings`;
+//! Keyboard Shortcuts: `shortcut_editor`). Every form runs an engine command with the collected parameters, so whatever a
 //! dialog does an agent can do with one `engine.execute`.
 
 use egui::{Color32, vec2};
@@ -354,55 +354,6 @@ pub fn show_info(app: &mut EffectcraftApp, ctx: &egui::Context, t: &Tokens) {
             }
         });
     });
-    if close {
-        app.dialog = None;
-    }
-}
-
-pub fn show_shortcuts(app: &mut EffectcraftApp, ctx: &egui::Context, t: &Tokens) {
-    let mut q = app.dialog_state.palette_query.clone();
-    let mut close = false;
-    // (shortcut, where, label)
-    let mut rows: Vec<(String, String, String)> = vec![];
-    for (path, e) in effectcraft_engine::menus::entries() {
-        if let Some(sc) = &e.shortcut {
-            rows.push((crate::menus::shortcut_text(sc), path.join(" ▸ "), e.label.clone()));
-        }
-    }
-    for c in effectcraft_engine::command_specs().iter().filter(|c| c.menu.is_empty()) {
-        if let Some(sc) = c.shortcut
-            && !rows.iter().any(|r| r.2 == c.label)
-        {
-            rows.push((crate::menus::shortcut_text(sc), "Commands".into(), c.label.to_string()));
-        }
-    }
-    for c in crate::menus::UI_COMMANDS {
-        if let Some(sc) = c.shortcut {
-            rows.push((crate::menus::shortcut_text(sc), "Panels & Tools".into(), c.label.to_string()));
-        }
-    }
-    super::dialogs::modal(ctx, "Keyboard Shortcuts", vec2(640.0, 520.0), t, |ui| {
-        ui.add(egui::TextEdit::singleline(&mut q).hint_text("Search commands or shortcuts").desired_width(f32::INFINITY));
-        ui.add_space(8.0);
-        let ql = q.to_lowercase();
-        egui::ScrollArea::vertical().max_height(400.0).show(ui, |ui| {
-            egui::Grid::new("shortcut-grid").num_columns(3).striped(true).spacing([18.0, 4.0]).show(ui, |ui| {
-                for (sc, place, label) in rows.iter().filter(|r| ql.is_empty() || format!("{} {} {}", r.0, r.1, r.2).to_lowercase().contains(&ql)) {
-                    ui.label(egui::RichText::new(sc).monospace());
-                    ui.label(label);
-                    ui.label(egui::RichText::new(place).color(t.text_dim));
-                    ui.end_row();
-                }
-            });
-        });
-        ui.add_space(8.0);
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.add(egui::Button::new(egui::RichText::new("   OK   ").color(Color32::WHITE)).fill(t.accent)).clicked() {
-                close = true;
-            }
-        });
-    });
-    app.dialog_state.palette_query = q;
     if close {
         app.dialog = None;
     }

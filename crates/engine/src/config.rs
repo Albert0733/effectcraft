@@ -1,13 +1,13 @@
-//! Persistent configuration storage (Settings). The engine only sees the [`ConfigStore`] trait;
-//! frontends choose where it lives: the desktop app uses a [`DirConfig`] in the platform config
-//! directory, the web app can back it with `localStorage`, tests and headless runs use
-//! [`MemoryConfig`] (or none at all).
+//! Persistent configuration storage (Settings, keyboard shortcut presets, the crash-recovery
+//! sentinel). The engine only sees the [`ConfigStore`] trait; frontends choose where it lives:
+//! the desktop app uses a [`DirConfig`] in the platform config directory, the web app can back it
+//! with `localStorage`, tests and headless runs use [`MemoryConfig`] (or none at all).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-/// Named text blobs (`prefs.json`).
+/// Named text blobs (`prefs.json`, `shortcuts.json`, `session.lock`).
 pub trait ConfigStore: Send + Sync {
     fn read(&self, name: &str) -> Option<String>;
     fn write(&self, name: &str, data: &str) -> std::io::Result<()>;

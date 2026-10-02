@@ -46,7 +46,7 @@ fn main() -> eframe::Result {
         options,
         Box::new(move |cc| {
             let mut session = effectcraft_host::session();
-            // Settings live in the platform config directory.
+            // Settings and shortcut presets live in the platform config directory.
             if let Some(dir) = config_dir() {
                 session.config = Some(std::sync::Arc::new(effectcraft_engine::config::DirConfig::new(dir)));
             }
@@ -79,6 +79,9 @@ fn main() -> eframe::Result {
             app.hooks.audio_device = Some(Box::new(audio_out::open));
             app.hooks.audio_devices = Some(Box::new(audio_out::devices));
             app.hooks.pick_folder = Some(Box::new(|| rfd::FileDialog::new().pick_folder().map(|p| p.to_string_lossy().to_string())));
+            app.hooks.pick_save_file = Some(Box::new(|name: &str, ext: &str| {
+                rfd::FileDialog::new().add_filter(ext, &[ext]).set_file_name(name).save_file().map(|p| p.to_string_lossy().to_string())
+            }));
             if let Some(port) = control_port {
                 disable_app_nap();
                 let rx = control_server::start(port, cc.egui_ctx.clone());

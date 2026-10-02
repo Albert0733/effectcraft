@@ -1,4 +1,4 @@
-//! Settings.
+//! Settings and keyboard shortcut presets.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -8,6 +8,7 @@ use serde_json::json;
 use crate::Session;
 use crate::config::{ConfigStore, MemoryConfig};
 use crate::prefs::{PREFS_FILE, Prefs};
+use crate::shortcuts::{DEFAULT_PRESET, Keymaps, normalize};
 
 fn tmp(name: &str) -> PathBuf {
     use std::sync::atomic::{AtomicU32, Ordering};
@@ -232,4 +233,96 @@ fn new_project_template_and_default_renderer() {
     s.execute("comp.new", json!({})).unwrap();
     assert_eq!(s.active_comp().unwrap().renderer, effectcraft_project::Renderer::Advanced3D);
     let _ = std::fs::remove_dir_all(d);
+}
+
+// ---------------------------------------------------------------- shortcuts
+
+#[test]
+fn shortcut_text_normalizes() {
+    assert_eq!(normalize("shift+cmd+k").as_deref(), Some("Cmd+Shift+K"));
+    assert_eq!(normalize("Opt+Ctrl+f5").as_deref(), Some("Ctrl+Alt+F5"));
+    assert_eq!(normalize("⌘⇧S").as_deref(), Some("Cmd+Shift+S"));
+    assert_eq!(normalize("Cmd++").as_deref(), Some("Cmd++"));
+    assert_eq!(normalize("space").as_deref(), Some("Space"));
+    assert_eq!(normalize("Cmd+").as_deref(), None);
+}
+
+#[test]
+fn defaults_have_no_conflicts_and_match_the_menus() {
+    let s = Session::default();
+    let t = s.shortcuts();
+    assert!(t.all_conflicts().is_empty(), "{:?}", t.all_conflicts());
+    assert_eq!(t.shortcut_of("file.save", &json!(null)), Some("Cmd+S"));
+    assert_eq!(t.shortcut_of("app.settings", &json!({"page": "general"})), Some("Cmd+Alt+;"));
+    assert!(t.bindables.len() > 500);
+}
+
+#[test]
+fn shortcut_edits_detect_conflicts_and_create_a_custom_preset() {
+    let store = Arc::new(MemoryConfig::default());
+    let mut s = Session { config: Some(store.clone()), ..Default::default() };
+    let r = s.execute_checked("shortcuts.set", json!({"command": "layer.newNull", "keys": "cmd+s"})).unwrap();
+    assert_eq!(r["keys"], json!(["Cmd+S"]));
+    assert_eq!(r["created"], json!("Custom"));
+    assert!(r["conflicts"].as_array().unwrap().iter().any(|c| c["key"] == "file.save"), "{r}");
+    assert_eq!(s.keymaps.active, "Custom");
+    assert_eq!(s.shortcuts().shortcut_of("layer.newNull", &json!(null)), Some("Cmd+S"));
+    assert!(!s.execute("shortcuts.conflicts", json!({})).unwrap().as_array().unwrap().is_empty());
+    // The default preset is untouched.
+    s.execute("shortcuts.preset", json!({"op": "select", "name": DEFAULT_PRESET})).unwrap();
+    assert_eq!(s.shortcuts().shortcut_of("layer.newNull", &json!(null)), Some("Cmd+Alt+Shift+Y"));
+    // Remove a shortcut; reset one.
+    s.execute("shortcuts.preset", json!({"op": "select", "name": "Custom"})).unwrap();
+    s.execute("shortcuts.set", json!({"command": "file.save", "keys": null})).unwrap();
+    assert_eq!(s.shortcuts().shortcut_of("file.save", &json!(null)), None);
+    s.execute("shortcuts.reset", json!({"command": "file.save"})).unwrap();
+    assert_eq!(s.shortcuts().shortcut_of("file.save", &json!(null)), Some("Cmd+S"));
+    // Bound-parameter entries are bindable too.
+    s.execute("shortcuts.set", json!({"command": "app.settings", "params": {"page": "labels"}, "keys": ["F9"]})).unwrap();
+    assert_eq!(s.shortcuts().shortcut_of("app.settings", &json!({"page": "labels"})), Some("F9"));
+    // Persisted.
+    let k = Keymaps::from_json(&store.read(crate::shortcuts::SHORTCUTS_FILE).unwrap());
+    assert_eq!(k.active, "Custom");
+    assert!(s.execute("shortcuts.set", json!({"command": "no.such", "keys": "F1"})).is_err());
+    assert!(s.execute("shortcuts.set", json!({"command": "file.save", "keys": "Cmd+"})).is_err());
+    let list = s.execute("shortcuts.list", json!({"keys": "F9"})).unwrap();
+    assert!(list["commands"].as_array().unwrap().iter().any(|c| c["command"] == "app.settings" && c["params"]["page"] == "labels"), "{list}");
+}
+
+#[test]
+fn shortcut_presets_duplicate_rename_delete_export_import() {
+    let d = tmp("presets");
+    let mut s = Session::default();
+    s.execute("shortcuts.preset", json!({"op": "new", "name": "Mine"})).unwrap();
+    s.execute("shortcuts.set", json!({"command": "edit.undo", "keys": ["Cmd+Z", "F2"]})).unwrap();
+    s.execute("shortcuts.preset", json!({"op": "duplicate", "name": "Mine 2"})).unwrap();
+    assert_eq!(s.keymaps.names(), vec![DEFAULT_PRESET, "Mine", "Mine 2"]);
+    s.execute("shortcuts.preset", json!({"op": "rename", "name": "Mine 2", "newName": "Other"})).unwrap();
+    assert!(s.execute("shortcuts.preset", json!({"op": "delete", "name": DEFAULT_PRESET})).is_err());
+    let path = d.join("mine.json");
+    s.execute("shortcuts.export", json!({"preset": "Mine", "path": path.to_string_lossy()})).unwrap();
+    s.execute("shortcuts.preset", json!({"op": "delete", "name": "Mine"})).unwrap();
+    s.execute("shortcuts.preset", json!({"op": "delete", "name": "Other"})).unwrap();
+    assert_eq!(s.keymaps.active, DEFAULT_PRESET);
+    let r = s.execute("shortcuts.import", json!({"path": path.to_string_lossy()})).unwrap();
+    assert_eq!(r["preset"], json!("Mine"));
+    assert_eq!(s.shortcuts().keys["edit.undo"], vec!["Cmd+Z".to_string(), "F2".into()]);
+    s.execute("shortcuts.reset", json!({})).unwrap();
+    assert_eq!(s.shortcuts().keys["edit.undo"], vec!["Cmd+Z".to_string()]);
+    let _ = std::fs::remove_dir_all(d);
+}
+
+#[test]
+fn frontend_commands_are_bindable_with_panel_scope() {
+    let mut s = Session::default();
+    s.set_ui_commands(vec![
+        crate::shortcuts::UiCommand { id: "timeline.zoomIn".into(), label: "Zoom In Time".into(), shortcut: Some("=".into()) },
+        crate::shortcuts::UiCommand { id: "tool.hand".into(), label: "Hand Tool".into(), shortcut: Some("H".into()) },
+    ]);
+    let b = s.shortcuts().find("timeline.zoomIn").unwrap().clone();
+    assert_eq!(b.scope, "Timeline");
+    assert_eq!(s.shortcuts().shortcut_of("tool.hand", &json!(null)), Some("H"));
+    // A panel shortcut conflicts with an application shortcut on the same keys.
+    let c = s.shortcuts().conflicts(&b, "H");
+    assert!(c.iter().any(|c| c.key == "tool.hand"));
 }
