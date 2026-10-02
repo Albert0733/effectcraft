@@ -160,3 +160,46 @@ fn effects_run_in_pipeline() {
     let c = img.get(100, 50);
     assert!(c[1] > 0.99 && c[0] < 0.01, "{c:?}");
 }
+
+fn add_effect(p: &mut Project, l: &mut effectcraft_project::Layer, id: &str, size: [f64; 2], vals: &[(&str, Value)]) {
+    let spec = effectcraft_effects::find(id).unwrap();
+    let mut next = p.next_id;
+    let mut g = effectcraft_effects::instantiate(spec, &mut Ids(&mut next), spec.name, size);
+    p.next_id = next;
+    for (k, v) in vals {
+        g.prop_mut(k).unwrap().value = v.clone();
+    }
+    l.props.sub_mut("effects").unwrap().children.push(g.into());
+}
+
+#[test]
+fn effects_see_layer_masks() {
+    let (mut p, cid, comp) = setup();
+    let mut l = solid(&mut p, &comp, [0.0, 0.0, 0.0], 200, 100);
+    let mut next = p.next_id;
+    let m = build::mask(&mut Ids(&mut next), "Mask 1", ShapePath::rect([50.0, 50.0], 40.0, 40.0), MaskMode::None, [255, 255, 0]);
+    p.next_id = next;
+    l.props.sub_mut("masks").unwrap().children.push(m.into());
+    add_effect(&mut p, &mut l, "ec.generate.stroke", [200.0, 100.0], &[("brushSize", Value::Scalar(6.0))]);
+    p.comp_mut(cid).unwrap().layers.push(l);
+    let img = render_frame(&p, cid, Tick::ZERO, 1.0);
+    assert!(img.get(30, 50)[0] > 0.5, "stroke on the mask edge: {:?}", img.get(30, 50));
+    assert!(img.get(50, 50)[0] < 0.01, "inside untouched");
+    assert!(img.get(150, 50)[3] > 0.99, "mode None mask does not cut the layer");
+}
+
+#[test]
+fn effects_read_layer_params() {
+    let (mut p, cid, comp) = setup();
+    let mut src = solid(&mut p, &comp, [0.0, 0.0, 1.0], 200, 100);
+    src.switches.video = false;
+    let src_id = src.id.0;
+    let mut top = solid(&mut p, &comp, [1.0, 0.0, 0.0], 200, 100);
+    add_effect(&mut p, &mut top, "ec.channel.blend", [200.0, 100.0], &[("blendWithLayer", Value::Layer(Some(src_id)))]);
+    let c = p.comp_mut(cid).unwrap();
+    c.layers.push(top);
+    c.layers.push(src);
+    let img = render_frame(&p, cid, Tick::ZERO, 1.0);
+    let px = img.get(100, 50);
+    assert!(px[2] > 0.99 && px[0] < 0.01, "{px:?}");
+}
