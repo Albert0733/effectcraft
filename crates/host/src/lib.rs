@@ -16,11 +16,12 @@ impl Importer for MediaImporter {
 
 /// A new session with media, import and expressions enabled.
 pub fn session() -> Session {
-    let mut s = Session::default();
-    s.footage = Arc::new(effectcraft_media::MediaPool::new());
-    s.importer = Some(Arc::new(MediaImporter));
-    s.expr = Some(Arc::new(effectcraft_expr::Expressions));
-    s
+    Session {
+        footage: Arc::new(effectcraft_media::MediaPool::new()),
+        importer: Some(Arc::new(MediaImporter)),
+        expr: Some(Arc::new(effectcraft_expr::Expressions)),
+        ..Session::default()
+    }
 }
 
 #[cfg(test)]

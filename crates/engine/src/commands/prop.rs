@@ -6,7 +6,7 @@ use effectcraft_time::Tick;
 use serde_json::{Value, json};
 
 use super::{CommandSpec, b_p, bad, f_p, has_comp, has_keys, has_layers, layer_mut, layer_p, merge_p, str_p};
-use crate::{EngineError, KeyRef, Result, Session, cmd};
+use crate::{EngineError, KeyRef, Result, Session, cmd, query};
 
 /// Resolve `{layer, path}` (or `{layer, prop: uid}`) to (comp, layer, prop uid).
 fn prop_ref(s: &Session, p: &Value, cmd: &str) -> Result<(ItemId, LayerId, Uid)> {
@@ -55,6 +55,21 @@ fn set(s: &mut Session, p: &Value) -> Result<Value> {
         Ok(nv.to_json())
     })?;
     Ok(out)
+}
+
+/// Read one property: value at `time` (comp seconds, default the CTI), keyframes and expression.
+fn get(s: &mut Session, p: &Value) -> Result<Value> {
+    let (cid, lid, uid) = prop_ref(s, p, "prop.get")?;
+    let l = s.project.comp(cid).and_then(|c| c.layer(lid)).ok_or(EngineError::NoComp)?;
+    let pr = l.props.find(uid).ok_or_else(|| bad("prop.get", "property vanished"))?;
+    let t = f_p(p, "time").map(Tick::from_seconds_f64).unwrap_or_else(|| s.time());
+    let keys: Vec<Value> =
+        pr.keys.iter().map(|k| json!({"time": k.time.seconds(), "value": k.value.to_json(), "in": k.in_interp.label(), "out": k.out_interp.label()})).collect();
+    Ok(json!({
+        "layer": lid.0, "uid": pr.uid, "match": pr.match_id, "name": pr.name, "type": pr.value.kind_name(),
+        "time": t.seconds(), "value": pr.value_at(l.layer_time(t)).to_json(), "animated": !pr.keys.is_empty(),
+        "keys": keys, "expression": pr.expr.as_ref().map(|e| e.text.clone()),
+    }))
 }
 
 fn toggle_anim(s: &mut Session, p: &Value) -> Result<Value> {
@@ -404,6 +419,7 @@ fn convert_expr_to_keys(s: &mut Session, p: &Value) -> Result<Value> {
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
+        query!("prop.get", "Get Property", "{layer?, path|prop, time? (comp s)}", get),
         cmd!("prop.set", "Set Property Value", [], None, "{layer?, path|prop, value, time?, merge?}", has_layers, set),
         cmd!("prop.toggleAnimation", "Toggle Stopwatch", [], None, "{layer?, path|prop, value?}", has_layers, toggle_anim),
         cmd!("prop.addKey", "Add Keyframe", [], None, "{layer?, path|prop, time?, value?}", has_layers, add_key),
