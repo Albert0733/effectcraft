@@ -1,4 +1,5 @@
-//! Settings (`prefs.*`) and keyboard shortcut presets (`shortcuts.*`).
+//! Settings (`prefs.*`), keyboard shortcut presets (`shortcuts.*`), File ▸ Open Recent and
+//! auto-save commands.
 
 use serde_json::{Value, json};
 
@@ -198,6 +199,55 @@ fn sc_conflicts(s: &mut Session, _: &Value) -> Result<Value> {
     Ok(json!(c))
 }
 
+// ---------------------------------------------------------------- recent / auto-save
+
+fn open_recent(s: &mut Session, p: &Value) -> Result<Value> {
+    let path = match (str_p(p, "path"), p.get("index").and_then(Value::as_u64)) {
+        (Some(path), _) => path.to_string(),
+        (None, Some(i)) => s.prefs.recent_projects.get(i as usize).cloned().ok_or_else(|| bad("file.openRecent", format!("no recent project #{i}")))?,
+        _ => s.prefs.recent_projects.first().cloned().ok_or_else(|| bad("file.openRecent", "no recent projects"))?,
+    };
+    match super::file::open(s, &json!({"path": path})) {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            // A project that's gone drops out of the list.
+            if !std::path::Path::new(&path).exists() {
+                s.prefs.recent_projects.retain(|x| *x != path);
+                s.save_prefs();
+            }
+            Err(e)
+        }
+    }
+}
+
+fn clear_recent(s: &mut Session, _: &Value) -> Result<Value> {
+    s.prefs.recent_projects.clear();
+    s.save_prefs();
+    s.prefs_revision += 1;
+    Ok(Value::Null)
+}
+
+fn has_recent(s: &Session) -> std::result::Result<(), String> {
+    if s.prefs.recent_projects.is_empty() { Err("no recent projects".into()) } else { Ok(()) }
+}
+
+fn auto_save(s: &mut Session, _: &Value) -> Result<Value> {
+    let path = s.autosave_now()?;
+    s.toast(format!("Auto-saved to {path}"));
+    Ok(json!({"path": path}))
+}
+
+fn recovery_info(s: &mut Session, _: &Value) -> Result<Value> {
+    let root = s.default_autosave_root();
+    let latest = crate::autosave::latest(&s.prefs, s.path.as_deref(), root.as_deref()).map(|p| p.to_string_lossy().to_string());
+    Ok(json!({
+        "lastAutoSave": s.autosave.last_path,
+        "latestOnDisk": latest,
+        "folder": crate::autosave::folder(&s.prefs, s.path.as_deref(), root.as_deref()).map(|p| p.to_string_lossy().to_string()),
+        "recentProjects": s.prefs.recent_projects,
+    }))
+}
+
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         query!("prefs.get", "Get Setting", "{key?: e.g. general.undoLevels (omit for all settings)}", prefs_get),
@@ -220,5 +270,9 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!("shortcuts.export", "Export Keyboard Shortcuts", [], None, "{preset?, path?}", always, sc_export),
         cmd!("shortcuts.import", "Import Keyboard Shortcuts", [], None, "{path? | preset?: exported document, name?}", always, sc_import),
         query!("shortcuts.conflicts", "Keyboard Shortcut Conflicts", "{}", sc_conflicts),
+        cmd!("file.openRecent", "Open Recent", [], None, "{index? | path?}", has_recent, open_recent),
+        cmd!("file.clearRecent", "Clear Recent Projects", ["File", "Open Recent"], None, "{}", has_recent, clear_recent),
+        cmd!("file.autoSave", "Auto-Save Now", [], None, "{}", always, auto_save),
+        query!("file.recoveryInfo", "Auto-Save Status", "{}", recovery_info),
     ]
 }

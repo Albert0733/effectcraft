@@ -106,3 +106,9 @@ the JSON control channel and the MCP server all dispatch by id, so anything a pe
 menu, an agent can do too. Every interactive widget registers an automation id, so agents can also
 inspect and click the interface. See [agents.md](agents.md) and
 [control-protocol.md](control-protocol.md).
+
+Settings (`engine::prefs`), keyboard shortcut presets (`engine::shortcuts`) and auto-save /
+crash recovery (`engine::autosave`) live in the engine too; they persist through a
+`ConfigStore` the frontend provides (a directory on the desktop, `localStorage` on the web).
+The shortcut dispatcher and the menus read the active preset. See
+[preferences.md](preferences.md).

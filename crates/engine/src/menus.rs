@@ -303,6 +303,8 @@ File
     New Project | file.newProject
     New Folder | project.newFolder
   Open Project... | file.open
+  Open Recent
+    Clear Recent Projects | file.clearRecent
   ---
   Close | file.close
   Close Project | file.closeProject

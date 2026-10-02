@@ -1,4 +1,4 @@
-# Settings and keyboard shortcuts
+# Settings, keyboard shortcuts, auto-save and crash recovery
 
 ## Settings (Preferences)
 
@@ -157,3 +157,20 @@ Commands: `shortcuts.list {query?, keys?, assigned?}`, `shortcuts.set {command, 
 `shortcuts.reset {command?}`, `shortcuts.preset {op: select|new|duplicate|delete|rename, name?,
 from?, newName?}`, `shortcuts.export {preset?, path?}`, `shortcuts.import {path? | preset?}`,
 `shortcuts.conflicts`.
+
+## Auto-save and crash recovery
+
+- Every *n* minutes (Settings ▸ Project ▸ Auto-Save) a project with unsaved changes is written
+  to an `EffectCraft Auto-Save` folder next to it (or the custom folder) as
+  `<name> auto-save N.ecproj`. Slots rotate through 1…maximum versions, overwriting the oldest.
+  Untitled projects go to the custom folder, or to `Auto-Save` in the config directory.
+- Every project and auto-save write is atomic: a temporary file is written and flushed, then
+  renamed over the target, so a crash mid-write leaves the previous file intact.
+- While the app runs, `session.lock` in the config directory records the open project and its
+  latest auto-save. A clean quit removes it. If it is still there at the next launch, the app
+  offers to open the latest auto-save (Settings ▸ Startup & Repair can turn this off).
+- File ▸ Open Recent lists recent projects (stored in the settings), File ▸ Revert reloads the
+  saved project, File ▸ Increment and Save saves `Intro.ecproj` as `Intro 2.ecproj`.
+
+Commands: `file.autoSave` (now), `file.recoveryInfo`, `file.openRecent {index? | path?}`,
+`file.clearRecent`, `file.revert`, `file.incrementAndSave`.

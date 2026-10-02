@@ -8,6 +8,7 @@
 //! The project is an `Arc<Project>` edited copy-on-write; undo keeps whole-project snapshots
 //! (compositions are `Arc`s, so untouched comps are shared).
 
+pub mod autosave;
 pub mod commands;
 pub mod config;
 pub mod demo;
@@ -68,10 +69,7 @@ impl Services for FsServices {
         std::fs::read(path)
     }
     fn write_file(&self, path: &str, data: &[u8]) -> std::io::Result<()> {
-        let p = std::path::Path::new(path);
-        let tmp = p.with_extension("ecproj.tmp");
-        std::fs::write(&tmp, data)?;
-        std::fs::rename(&tmp, p)
+        config::atomic_write(std::path::Path::new(path), data)
     }
 }
 
@@ -225,6 +223,8 @@ pub struct Session {
     pub ui_commands: Vec<shortcuts::UiCommand>,
     /// Cache of the resolved active preset (read it with [`Session::shortcuts`]).
     pub shortcut_table: std::sync::OnceLock<shortcuts::ShortcutTable>,
+    /// Auto-save bookkeeping.
+    pub autosave: autosave::AutoSaveState,
 }
 
 impl Default for Session {
@@ -252,6 +252,7 @@ impl Default for Session {
             keymaps: shortcuts::Keymaps::default(),
             ui_commands: vec![],
             shortcut_table: std::sync::OnceLock::new(),
+            autosave: autosave::AutoSaveState::default(),
         }
     }
 }

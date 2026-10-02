@@ -1,14 +1,14 @@
-//! Settings and keyboard shortcut presets.
+//! Settings, keyboard shortcut presets, auto-save and crash recovery.
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use serde_json::json;
 
-use crate::Session;
-use crate::config::{ConfigStore, MemoryConfig};
+use crate::config::{ConfigStore, DirConfig, MemoryConfig, atomic_write, atomic_write_with, temp_path};
 use crate::prefs::{PREFS_FILE, Prefs};
 use crate::shortcuts::{DEFAULT_PRESET, Keymaps, normalize};
+use crate::{Session, autosave};
 
 fn tmp(name: &str) -> PathBuf {
     use std::sync::atomic::{AtomicU32, Ordering};
@@ -325,4 +325,142 @@ fn frontend_commands_are_bindable_with_panel_scope() {
     // A panel shortcut conflicts with an application shortcut on the same keys.
     let c = s.shortcuts().conflicts(&b, "H");
     assert!(c.iter().any(|c| c.key == "tool.hand"));
+}
+
+// ---------------------------------------------------------------- auto-save / recovery
+
+#[test]
+fn atomic_write_survives_a_crash_mid_write() {
+    let d = tmp("atomic");
+    let f = d.join("p.ecproj");
+    atomic_write(&f, b"version 1").unwrap();
+    // The writer dies halfway through the temporary file.
+    let r = atomic_write_with(&f, b"version 2 is much longer", |tmp, data| {
+        std::fs::write(tmp, &data[..5])?;
+        Err(std::io::Error::other("power cut"))
+    });
+    assert!(r.is_err());
+    assert_eq!(std::fs::read(&f).unwrap(), b"version 1");
+    assert!(!temp_path(&f).exists(), "the partial temp file is cleaned up");
+    // A temp file left by a hard kill doesn't count as an auto-save.
+    std::fs::write(d.join("p auto-save 1.ecproj.tmp"), b"junk").unwrap();
+    assert!(autosave::existing(&d, "p").is_empty());
+    atomic_write(&f, b"version 3").unwrap();
+    assert_eq!(std::fs::read(&f).unwrap(), b"version 3");
+    let _ = std::fs::remove_dir_all(d);
+}
+
+#[test]
+fn autosave_rotates_through_max_versions() {
+    let d = tmp("rotate");
+    let proj = d.join("Intro.ecproj");
+    let mut s = session_with_comp();
+    s.execute("file.saveAs", json!({"path": proj.to_string_lossy()})).unwrap();
+    s.execute("prefs.set", json!({"key": "autoSave.maxVersions", "value": 3})).unwrap();
+    let folder = d.join(autosave::AUTOSAVE_FOLDER);
+    let mut written = vec![];
+    for i in 0..5 {
+        s.execute("layer.newNull", json!({"name": format!("save{i}")})).unwrap();
+        written.push(s.autosave_now().unwrap());
+    }
+    let names: Vec<String> = written.iter().map(|p| PathBuf::from(p).file_name().unwrap().to_string_lossy().to_string()).collect();
+    assert_eq!(
+        names,
+        ["Intro auto-save 1.ecproj", "Intro auto-save 2.ecproj", "Intro auto-save 3.ecproj", "Intro auto-save 1.ecproj", "Intro auto-save 2.ecproj"]
+    );
+    let have: Vec<u32> = autosave::existing(&folder, "Intro").iter().map(|e| e.0).collect();
+    assert_eq!(have, [1, 2, 3]);
+    let slot2 = std::fs::read_to_string(folder.join("Intro auto-save 2.ecproj")).unwrap();
+    assert!(slot2.contains("save4"), "slot 2 holds the newest save");
+    // The project file itself is untouched and still dirty.
+    assert!(s.is_dirty());
+    assert!(!std::fs::read_to_string(&proj).unwrap().contains("save0"));
+    // Lowering the maximum drops the extra slots.
+    s.execute("prefs.set", json!({"key": "autoSave.maxVersions", "value": 2})).unwrap();
+    s.autosave_now().unwrap();
+    let have: Vec<u32> = autosave::existing(&folder, "Intro").iter().map(|e| e.0).collect();
+    assert_eq!(have, [1, 2]);
+    // A fresh session continues after the newest file on disk.
+    let next = autosave::next_slot(&autosave::existing(&folder, "Intro"), None, 2);
+    let newest = autosave::existing(&folder, "Intro").into_iter().max_by_key(|e| e.2).unwrap().0;
+    assert_eq!(next, newest % 2 + 1);
+    let _ = std::fs::remove_dir_all(d);
+}
+
+#[test]
+fn autosave_tick_waits_for_the_interval_and_changes() {
+    let d = tmp("tick");
+    let mut s = session_with_comp();
+    s.execute("file.saveAs", json!({"path": d.join("T.ecproj").to_string_lossy()})).unwrap();
+    s.execute(
+        "prefs.set",
+        json!({"values": {"autoSave.intervalMinutes": 1, "autoSave.location": "custom", "autoSave.folder": d.join("custom").to_string_lossy()}}),
+    )
+    .unwrap();
+    assert!(s.autosave_tick(1000.0).is_none(), "the first tick starts the clock");
+    s.execute("layer.newNull", json!({})).unwrap();
+    assert!(s.autosave_tick(1030.0).is_none(), "interval not reached");
+    let p = s.autosave_tick(1061.0).unwrap().unwrap();
+    assert!(p.contains("custom") && p.ends_with("T auto-save 1.ecproj"), "{p}");
+    assert!(s.autosave_tick(1200.0).is_none(), "nothing changed since");
+    s.execute("prefs.set", json!({"key": "autoSave.enabled", "value": false})).unwrap();
+    s.execute("layer.newNull", json!({})).unwrap();
+    assert!(s.autosave_tick(5000.0).is_none(), "disabled");
+    let _ = std::fs::remove_dir_all(d);
+}
+
+#[test]
+fn crash_recovery_detects_an_unclean_exit() {
+    let d = tmp("recovery");
+    let store: Arc<dyn ConfigStore> = Arc::new(DirConfig::new(d.join("config")));
+    // First run: open a project, auto-save, then "crash" (no end_recovery).
+    let mut s = session_with_comp();
+    s.config = Some(store.clone());
+    assert!(s.begin_recovery().is_none(), "first launch is clean");
+    let proj = d.join("Crash.ecproj");
+    s.execute("file.saveAs", json!({"path": proj.to_string_lossy()})).unwrap();
+    s.execute("layer.newNull", json!({"name": "unsaved work"})).unwrap();
+    let auto = s.autosave_now().unwrap();
+    drop(s);
+    // Second run finds the sentinel and offers the auto-save.
+    let mut s2 = Session { config: Some(store.clone()), ..Default::default() };
+    let r = s2.begin_recovery().expect("unclean exit detected");
+    assert_eq!(r.project.as_deref(), Some(proj.to_string_lossy().as_ref()));
+    assert_eq!(r.autosave.as_deref(), Some(auto.as_str()));
+    s2.execute("file.open", json!({"path": r.autosave.unwrap()})).unwrap();
+    assert!(s2.active_comp().unwrap().layers.iter().any(|l| l.name == "unsaved work"));
+    // Clean exit: nothing to recover next time.
+    s2.end_recovery();
+    let mut s3 = Session { config: Some(store.clone()), ..Default::default() };
+    assert!(s3.begin_recovery().is_none());
+    // The setting can turn the offer off.
+    let mut s4 = Session { config: Some(store), ..Default::default() };
+    s4.prefs.startup.offer_crash_recovery = false;
+    assert!(s4.begin_recovery().is_none());
+    let _ = std::fs::remove_dir_all(d);
+}
+
+#[test]
+fn open_recent_increment_and_revert() {
+    let d = tmp("recent");
+    let a = d.join("A.ecproj");
+    let mut s = session_with_comp();
+    s.execute("file.saveAs", json!({"path": a.to_string_lossy()})).unwrap();
+    let r = s.execute("file.incrementAndSave", json!({})).unwrap();
+    assert!(r["path"].as_str().unwrap().ends_with("A 2.ecproj"));
+    let r = s.execute("file.incrementAndSave", json!({})).unwrap();
+    assert!(r["path"].as_str().unwrap().ends_with("A 3.ecproj"));
+    assert!(s.prefs.recent_projects[0].ends_with("A 3.ecproj"));
+    assert!(s.prefs.recent_projects[2].ends_with("A.ecproj"));
+    s.execute("layer.newNull", json!({})).unwrap();
+    s.execute("file.revert", json!({})).unwrap();
+    assert_eq!(s.active_comp().unwrap().layers.len(), 0);
+    s.execute("file.openRecent", json!({"index": 2})).unwrap();
+    assert!(s.path.as_deref().unwrap().ends_with("A.ecproj"));
+    assert!(s.prefs.recent_projects[0].ends_with("A.ecproj"));
+    s.execute("file.clearRecent", json!({})).unwrap();
+    assert!(!s.is_enabled("file.openRecent"));
+    assert_eq!(autosave::increment_path("/x/Intro 9.ecproj", |_| false), "/x/Intro 10.ecproj");
+    assert_eq!(autosave::increment_path("/x/v1.ecproj", |p| p.ends_with("v1 2.ecproj")), "/x/v1 3.ecproj");
+    let _ = std::fs::remove_dir_all(d);
 }

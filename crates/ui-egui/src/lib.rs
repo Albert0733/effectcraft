@@ -57,6 +57,8 @@ pub enum Dialog {
     KeyVelocity,
     KeyInterpolation,
     TimeStretch,
+    /// Crash recovery: offer the latest auto-save (`EffectcraftApp::recovery`).
+    Recovery,
 }
 
 /// Host hooks provided by the native app (file pickers etc.).
@@ -130,6 +132,8 @@ pub struct EffectcraftApp {
     pub(crate) last_reveal: Option<(String, f64)>,
     /// Settings revision applied to the theme, tooltips and caches.
     applied_prefs: Option<u64>,
+    /// A previous run that didn't exit cleanly (shown by `Dialog::Recovery`).
+    pub recovery: Option<effectcraft_engine::autosave::Recovery>,
 }
 
 impl EffectcraftApp {
@@ -167,6 +171,7 @@ impl EffectcraftApp {
             waveforms: Default::default(),
             last_reveal: None,
             applied_prefs: None,
+            recovery: None,
         }
         .with_ui_commands()
     }
@@ -179,6 +184,14 @@ impl EffectcraftApp {
             .collect();
         self.session.set_ui_commands(cmds);
         self
+    }
+
+    /// Show the crash-recovery dialog for a previous run that didn't exit cleanly.
+    pub fn offer_recovery(&mut self, r: effectcraft_engine::autosave::Recovery) {
+        if r.autosave.is_some() {
+            self.recovery = Some(r);
+            self.dialog = Some(Dialog::Recovery);
+        }
     }
 
     /// Apply changed settings: theme and brightness, label colours, tool tips, preview caches.
@@ -590,6 +603,7 @@ impl EffectcraftApp {
         }
         self.apply_prefs(&ctx);
         self.handle_events(&ctx);
+        self.tick_autosave(&ctx);
         if let Some(rx) = self.command_inbox.take() {
             while let Ok(id) = rx.try_recv() {
                 if let Err(e) = menus::invoke(self, &ctx, &id, json!({})) {
@@ -701,6 +715,17 @@ impl EffectcraftApp {
 }
 
 impl EffectcraftApp {
+    /// Auto-save a dirty project when the interval has passed (Settings ▸ Project ▸ Auto-Save).
+    fn tick_autosave(&mut self, ctx: &egui::Context) {
+        let now = web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0);
+        if let Some(Err(e)) = self.session.autosave_tick(now) {
+            self.ui.status = e.to_string();
+        }
+        if self.session.prefs.auto_save.enabled {
+            ctx.request_repaint_after(std::time::Duration::from_secs(30));
+        }
+    }
+
     /// Take the pending synthetic input (from `ui.click`, `ui.key`, …). Hosts that don't call
     /// [`eframe::App::raw_input_hook`] (the headless test harness) feed these in themselves.
     pub fn take_synthetic_input(&mut self) -> Vec<egui::Event> {
@@ -709,6 +734,11 @@ impl EffectcraftApp {
 }
 
 impl eframe::App for EffectcraftApp {
+    fn on_exit(&mut self) {
+        // Clean exit: no crash recovery next launch.
+        self.session.end_recovery();
+    }
+
     fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         if !self.synthetic.is_empty() {
             // Pointer events go one per frame so egui sees press → moves → release as a real drag.

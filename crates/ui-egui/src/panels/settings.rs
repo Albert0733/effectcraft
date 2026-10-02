@@ -344,3 +344,68 @@ pub fn show(app: &mut EffectcraftApp, ctx: &egui::Context, t: &Tokens) {
         app.dialog = None;
     }
 }
+
+/// Crash recovery: the previous session didn't exit cleanly; offer its latest auto-save.
+pub fn recovery(app: &mut EffectcraftApp, ctx: &egui::Context, t: &Tokens) {
+    let Some(r) = app.recovery.clone() else {
+        app.dialog = None;
+        return;
+    };
+    let mut choice: Option<&str> = None;
+    super::dialogs::modal(ctx, "Recover Project", vec2(560.0, 230.0), t, |ui| {
+        ui.label("EffectCraft didn't quit normally last time.");
+        ui.add_space(6.0);
+        if let Some(p) = &r.project {
+            ui.label(format!("Project: {p}"));
+        }
+        if let Some(a) = &r.autosave {
+            let when = std::fs::metadata(a).and_then(|m| m.modified()).ok().and_then(|m| m.elapsed().ok()).map(|d| {
+                let m = d.as_secs() / 60;
+                if m < 1 {
+                    "less than a minute ago".to_string()
+                } else if m < 120 {
+                    format!("{m} minutes ago")
+                } else {
+                    format!("{} hours ago", m / 60)
+                }
+            });
+            ui.label(format!("Latest auto-save: {a}"));
+            if let Some(w) = when {
+                ui.label(RichText::new(format!("Saved {w}")).color(t.text_dim));
+            }
+        }
+        ui.add_space(14.0);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let b = ui.add(egui::Button::new(RichText::new(" Open Auto-Save ").color(Color32::WHITE)).fill(t.accent));
+            app.auto.add("recovery.openAutoSave", b.rect, "Open Auto-Save");
+            if b.clicked() {
+                choice = Some("autosave");
+            }
+            if r.project.is_some() {
+                let b = ui.button("Open Last Saved Project");
+                app.auto.add("recovery.openProject", b.rect, "Open Last Saved Project");
+                if b.clicked() {
+                    choice = Some("project");
+                }
+            }
+            let b = ui.button("Don't Recover");
+            app.auto.add("recovery.dismiss", b.rect, "Don't Recover");
+            if b.clicked() {
+                choice = Some("none");
+            }
+        });
+    });
+    let Some(c) = choice else { return };
+    app.dialog = None;
+    app.recovery = None;
+    let path = match c {
+        "autosave" => r.autosave,
+        "project" => r.project,
+        _ => None,
+    };
+    if let Some(p) = path
+        && let Err(e) = crate::menus::invoke(app, ctx, "file.open", json!({"path": p}))
+    {
+        app.ui.status = e;
+    }
+}

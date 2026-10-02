@@ -46,11 +46,13 @@ fn main() -> eframe::Result {
         options,
         Box::new(move |cc| {
             let mut session = effectcraft_host::session();
-            // Settings and shortcut presets live in the platform config directory.
+            // Settings, shortcut presets and the crash-recovery sentinel live in the platform
+            // config directory. Agent-driven runs (`--control`) skip crash recovery.
             if let Some(dir) = config_dir() {
                 session.config = Some(std::sync::Arc::new(effectcraft_engine::config::DirConfig::new(dir)));
             }
             session.load_settings();
+            let recovery = if control_port.is_none() { session.begin_recovery() } else { None };
             let project = files.iter().find(|f| f.ends_with(".ecproj")).cloned();
             if let Some(p) = project {
                 if let Err(e) = session.execute("file.open", json!({"path": p})) {
@@ -68,6 +70,9 @@ fn main() -> eframe::Result {
             let show_home = home.unwrap_or(session.prefs.startup.show_home_on_launch && files.is_empty() && control_port.is_none());
             let mut app = EffectcraftApp::new(session);
             app.ui.start_screen = show_home;
+            if let Some(r) = recovery {
+                app.offer_recovery(r);
+            }
             app.hooks.pick_files = Some(Box::new(|exts: &[&str]| {
                 rfd::FileDialog::new().add_filter("Media", exts).pick_files().unwrap_or_default().into_iter().map(|p| p.to_string_lossy().to_string()).collect()
             }));

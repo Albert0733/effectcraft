@@ -104,6 +104,7 @@ pub fn show(app: &mut EffectcraftApp, ctx: &egui::Context) {
         Dialog::CommandPalette => palette(app, ctx, &t),
         Dialog::Settings => super::settings::show(app, ctx, &t),
         Dialog::Shortcuts => super::shortcut_editor::show(app, ctx, &t),
+        Dialog::Recovery => super::settings::recovery(app, ctx, &t),
         Dialog::Form => super::forms::show_form(app, ctx, &t),
         Dialog::Info => super::forms::show_info(app, ctx, &t),
         Dialog::ViewOptions => super::forms::show_view_options(app, ctx, &t),

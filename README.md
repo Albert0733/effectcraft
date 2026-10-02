@@ -180,7 +180,7 @@ tests, layering, asset attribution and the WebAssembly build). See [CONTRIBUTING
 
 EffectCraft is young. The core of After Effects is in place and gets deeper every week: what is
 done and what comes next is in the [ROADMAP](ROADMAP.md). Not there yet: motion tracking, puppet,
-paint and roto tools, Lottie, preferences and a shortcut editor, and GPU compositing. The web build
+paint and roto tools, Lottie and GPU compositing. The web build
 ([docs/web.md](docs/web.md)) runs the full app in the browser, single-threaded for now. Projects
 are saved as `.ecproj`, readable versioned JSON; After Effects `.aep` files cannot be opened.
 

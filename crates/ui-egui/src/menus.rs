@@ -840,6 +840,27 @@ fn menu_nodes(app: &mut EffectcraftApp, ui: &mut egui::Ui, nodes: &[MenuNode], c
             MenuNode::Separator => {
                 ui.separator();
             }
+            MenuNode::Submenu { label, children } if label == "Open Recent" => {
+                // File ▸ Open Recent: the recent projects (Settings), then the static entries.
+                ui.menu_button((gutter(false), label.as_str()), |ui| {
+                    ui.set_min_width(320.0);
+                    let recent = app.session.prefs.recent_projects.clone();
+                    if recent.is_empty() {
+                        ui.add_enabled(false, egui::Button::new((gutter(false), "No Recent Projects")));
+                    }
+                    for (i, path) in recent.iter().enumerate() {
+                        let name = std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or(path.clone());
+                        let r = ui.add(egui::Button::new((gutter(false), name))).on_hover_text(path);
+                        app.auto.add(&format!("menu.openRecent.{i}"), r.rect, path);
+                        if r.clicked() {
+                            *clicked = Some(("file.openRecent".into(), json!({"index": i})));
+                            ui.close();
+                        }
+                    }
+                    ui.separator();
+                    menu_nodes(app, ui, children, clicked);
+                });
+            }
             MenuNode::Submenu { label, children } => {
                 ui.menu_button((gutter(false), label.as_str()), |ui| {
                     ui.set_min_width(if children.len() > 30 { 200.0 } else { 240.0 });
