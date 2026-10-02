@@ -10,6 +10,7 @@ mod help;
 mod layer;
 mod layer_time;
 mod link;
+mod mask;
 mod prop;
 mod query;
 mod time;
@@ -75,6 +76,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(prop::specs());
         v.extend(anim::specs());
         v.extend(link::specs());
+        v.extend(mask::specs());
         v.extend(effect::specs());
         v.extend(time::specs());
         v.extend(help::specs());

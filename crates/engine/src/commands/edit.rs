@@ -39,6 +39,7 @@ fn deselect_all(s: &mut Session, _: &Value) -> Result<Value> {
     s.state.selected_layers.clear();
     s.state.selected_props.clear();
     s.state.selected_keys.clear();
+    s.state.selected_vertices.clear();
     Ok(Value::Null)
 }
 
@@ -72,9 +73,12 @@ fn duplicate(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 fn delete(s: &mut Session, p: &Value) -> Result<Value> {
-    // Keyframes selected → delete keys; else layers.
+    // Keyframes selected → delete keys; mask vertices → delete them; else layers.
     if !s.state.selected_keys.is_empty() && p.get("layers").is_none() {
         return s.execute("keys.delete", json!({}));
+    }
+    if !s.state.selected_vertices.is_empty() && p.get("layers").is_none() {
+        return s.execute("mask.deleteVertices", json!({}));
     }
     let (cid, ids) = layers_p(s, p)?;
     s.edit("Clear", None, |proj, st| {
@@ -217,7 +221,7 @@ pub fn specs() -> Vec<CommandSpec> {
 }
 
 fn layers_or_keys(s: &Session) -> std::result::Result<(), String> {
-    if !s.state.selected_keys.is_empty() { super::has_comp(s) } else { has_layers(s) }
+    if !s.state.selected_keys.is_empty() || !s.state.selected_vertices.is_empty() { super::has_comp(s) } else { has_layers(s) }
 }
 
 fn always_ok(_: &Session) -> std::result::Result<(), String> {

@@ -241,6 +241,58 @@ fn time_reverse_keyframes() {
 }
 
 #[test]
+fn pen_tool_draws_edits_and_closes_a_mask() {
+    let (mut s, l) = setup();
+    // Click (corner), click, drag (Bezier), click on the first vertex (close).
+    let r = s.execute("mask.new", json!({"layer": l, "vertices": [[10, 10]]})).unwrap();
+    let m = r["mask"].as_u64().unwrap();
+    s.execute("mask.addVertex", json!({"layer": l, "mask": m, "point": [90, 10]})).unwrap();
+    s.execute("mask.addVertex", json!({"layer": l, "mask": m, "point": [90, 90]})).unwrap();
+    s.execute("mask.setVertex", json!({"layer": l, "mask": m, "index": 2, "in": [0, -20], "out": [0, 20], "merge": "pen"})).unwrap();
+    s.execute("mask.addVertex", json!({"layer": l, "mask": m, "point": [10, 90]})).unwrap();
+    s.execute("mask.setClosed", json!({"layer": l, "mask": m, "closed": true})).unwrap();
+    let path = |s: &Session| prop(s, l, "masks/#1/path").value.as_path().unwrap().clone();
+    let p = path(&s);
+    assert_eq!(p.vertices, vec![[10.0, 10.0], [90.0, 10.0], [90.0, 90.0], [10.0, 90.0]]);
+    assert_eq!(p.out_tangents[2], [0.0, 20.0]);
+    assert!(p.closed);
+    assert_eq!(s.state.selected_vertices.last().unwrap().index, 3);
+    // The mask cuts the 100×100 solid (layer centred in the 400×300 comp at 150..250, 100..200).
+    let cid = s.active_comp_id().unwrap();
+    let img = s.render(cid, effectcraft_time::Tick::ZERO, effectcraft_render::RenderOpts { scale: 1.0, ..Default::default() });
+    assert!(img.get(200, 150)[3] > 0.99 && img.get(152, 102)[3] < 0.01);
+    // Undo removes the close, redo restores it.
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(!path(&s).closed);
+    s.execute("edit.redo", json!({})).unwrap();
+    // Select two vertices and drag them; Delete removes them.
+    s.execute("mask.selectVertices", json!({"vertices": [{"layer": l, "mask": m, "index": 0}, {"layer": l, "mask": m, "index": 1}]})).unwrap();
+    s.execute("mask.moveVertices", json!({"delta": [5, -5], "merge": "v1"})).unwrap();
+    s.execute("mask.moveVertices", json!({"delta": [5, -5], "merge": "v1"})).unwrap();
+    assert_eq!(path(&s).vertices[1], [100.0, 0.0]);
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(path(&s).vertices[1], [90.0, 10.0], "a drag is one undo step");
+    s.execute("edit.clear", json!({})).unwrap();
+    assert_eq!(path(&s).vertices.len(), 2);
+    assert!(!path(&s).closed);
+    // Animated mask paths get a key at the current time.
+    s.execute("prop.toggleAnimation", json!({"layer": l, "path": "masks/#1/path"})).unwrap();
+    s.execute("time.set", json!({"time": 1.0})).unwrap();
+    s.execute("mask.setVertex", json!({"layer": l, "mask": 1, "index": 0, "point": [0, 0]})).unwrap();
+    assert_eq!(prop(&s, l, "masks/#1/path").keys.len(), 2);
+    // Mode / feather / opacity / expansion through the timeline commands.
+    s.execute("layer.setMask", json!({"layer": l, "mask": m, "mode": "Subtract", "inverted": true})).unwrap();
+    s.execute("prop.set", json!({"layer": l, "path": "masks/#1/feather", "value": [4, 4]})).unwrap();
+    s.execute("prop.set", json!({"layer": l, "path": "masks/#1/expansion", "value": 3})).unwrap();
+    s.execute("prop.set", json!({"layer": l, "path": "masks/#1/opacity", "value": 50})).unwrap();
+    assert_eq!(prop(&s, l, "masks/#1/opacity").value, KV::Scalar(50.0));
+    s.execute("mask.removeAll", json!({"layer": l})).unwrap();
+    assert!(s.active_comp().unwrap().layers[0].masks().unwrap().children.is_empty());
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(s.active_comp().unwrap().layers[0].masks().unwrap().children.len(), 1);
+}
+
+#[test]
 fn alt_click_stopwatch_toggles_a_self_reference_expression() {
     let (mut s, l) = setup();
     s.execute("prop.setExpression", json!({"layer": l, "path": "transform/opacity"})).unwrap();

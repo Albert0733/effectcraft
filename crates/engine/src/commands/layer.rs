@@ -274,6 +274,8 @@ fn select(s: &mut Session, p: &Value) -> Result<Value> {
         s.state.selected_layers = ids;
         s.state.selected_props.clear();
         s.state.selected_keys.clear();
+        let keep = s.state.selected_layers.clone();
+        s.state.selected_vertices.retain(|v| keep.contains(&v.layer));
     }
     Ok(json!(s.state.selected_layers.iter().map(|l| l.0).collect::<Vec<_>>()))
 }
