@@ -427,9 +427,252 @@ pub fn layer_rect(ctx: &crate::EffectCtx, b: &crate::Buf) -> (f64, f64, f64, f64
     (b.offset[0], b.offset[1], ctx.layer_size[0] * b.scale, ctx.layer_size[1] * b.scale)
 }
 
+/// Resample another layer (a layer parameter) into `b`'s pixel grid. With `stretch` the other
+/// layer is scaled to this layer's size ("Stretch to Fit"); otherwise it is centred.
+pub fn fit_layer(ctx: &crate::EffectCtx, b: &crate::Buf, other: &crate::LayerPixels, stretch: bool) -> Image {
+    let ls = ctx.layer_size;
+    let os = other.size;
+    let (sx, sy) = if stretch && ls[0] > 0.0 && ls[1] > 0.0 { (os[0] / ls[0], os[1] / ls[1]) } else { (1.0, 1.0) };
+    let (dx, dy) = if stretch { (0.0, 0.0) } else { ((os[0] - ls[0]) * 0.5, (os[1] - ls[1]) * 0.5) };
+    let inv = 1.0 / b.scale.max(1e-9);
+    gen_image(b.img.width, b.img.height, |x, y| {
+        let px = (x as f64 + 0.5 - b.offset[0]) * inv;
+        let py = (y as f64 + 0.5 - b.offset[1]) * inv;
+        let qx = px * sx + dx;
+        let qy = py * sy + dy;
+        other.buf.img.sample_bilinear(qx * other.buf.scale + other.buf.offset[0], qy * other.buf.scale + other.buf.offset[1])
+    })
+}
+
+/// The layer chosen in layer parameter `id` fitted to `b` (see [`fit_layer`]), or a copy of
+/// `b`'s own pixels when none is chosen / available (After Effects' "self" behaviour).
+pub fn layer_or_self(ctx: &crate::EffectCtx, b: &crate::Buf, id: &str, masks_and_effects: bool, stretch: bool) -> Image {
+    match ctx.layer_param(id, masks_and_effects) {
+        Some(o) => fit_layer(ctx, b, &o, stretch),
+        None => b.img.clone(),
+    }
+}
+
+/// A stable hash of an effect instance's evaluated parameters, seed, layer size and buffer
+/// scale (cache key for simulations).
+pub fn params_key(ctx: &crate::EffectCtx, b: &crate::Buf, salt: u64) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    let mut keys: Vec<&String> = ctx.params.values.keys().collect();
+    keys.sort();
+    for k in keys {
+        k.hash(&mut h);
+        format!("{:?}", ctx.params.values[k]).hash(&mut h);
+    }
+    ctx.seed.hash(&mut h);
+    ctx.layer_size[0].to_bits().hash(&mut h);
+    ctx.layer_size[1].to_bits().hash(&mut h);
+    b.scale.to_bits().hash(&mut h);
+    salt.hash(&mut h);
+    h.finish()
+}
+
+/// Checkpointed, deterministic, time-seekable simulation cache.
+///
+/// A simulation is a state advanced in fixed steps from layer time 0. [`SimCache::run`] returns
+/// the state after `target` steps, starting from the nearest cached checkpoint at or before it
+/// (so scrubbing forward is incremental and seeking anywhere gives the same answer as
+/// simulating from scratch). Entries are keyed by [`params_key`]; the least recently used key
+/// is evicted beyond `cap` keys.
+pub struct SimCache<S> {
+    inner: std::sync::Mutex<Vec<SimEntry<S>>>,
+    cap: usize,
+}
+
+struct SimEntry<S> {
+    key: u64,
+    used: u64,
+    checkpoints: Vec<(u64, std::sync::Arc<S>)>,
+}
+
+/// Checkpoint every this many steps.
+pub const SIM_CHECKPOINT: u64 = 15;
+
+impl<S: Clone> SimCache<S> {
+    pub const fn new(cap: usize) -> SimCache<S> {
+        SimCache { inner: std::sync::Mutex::new(Vec::new()), cap }
+    }
+
+    /// State after `target` steps. `init` builds step 0; `step(state, i)` advances from step
+    /// `i` to `i + 1`.
+    pub fn run(&self, key: u64, target: u64, init: impl FnOnce() -> S, mut step: impl FnMut(&mut S, u64)) -> std::sync::Arc<S> {
+        use std::sync::Arc;
+        let start = {
+            let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            let tick = g.iter().map(|e| e.used).max().unwrap_or(0) + 1;
+            g.iter_mut().find(|e| e.key == key).and_then(|e| {
+                e.used = tick;
+                e.checkpoints.iter().filter(|(s, _)| *s <= target).max_by_key(|(s, _)| *s).map(|(s, st)| (*s, st.clone()))
+            })
+        };
+        let had_start = start.is_some();
+        let (mut i, mut st) = match start {
+            Some((s, st)) if s == target => return st,
+            Some((s, st)) => (s, (*st).clone()),
+            None => (0, init()),
+        };
+        let mut fresh: Vec<(u64, Arc<S>)> = Vec::new();
+        if !had_start {
+            fresh.push((0, Arc::new(st.clone())));
+        }
+        while i < target {
+            step(&mut st, i);
+            i += 1;
+            if i % SIM_CHECKPOINT == 0 && i != target {
+                fresh.push((i, Arc::new(st.clone())));
+            }
+        }
+        let out = Arc::new(st);
+        fresh.push((target, out.clone()));
+        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let tick = g.iter().map(|e| e.used).max().unwrap_or(0) + 1;
+        let idx = match g.iter().position(|e| e.key == key) {
+            Some(ix) => ix,
+            None => {
+                if g.len() >= self.cap.max(1) {
+                    let old = g.iter().enumerate().min_by_key(|(_, e)| e.used).map(|(ix, _)| ix).unwrap_or(0);
+                    g.remove(old);
+                }
+                g.push(SimEntry { key, used: tick, checkpoints: Vec::new() });
+                g.len() - 1
+            }
+        };
+        let e = &mut g[idx];
+        e.used = tick;
+        for (s, st) in fresh {
+            if !e.checkpoints.iter().any(|(c, _)| *c == s) {
+                e.checkpoints.push((s, st));
+            }
+        }
+        // Keep memory bounded: drop unaligned (exact-target) checkpoints first, then thin.
+        if e.checkpoints.len() > 256 {
+            e.checkpoints.retain(|(s, _)| s % SIM_CHECKPOINT == 0);
+            e.checkpoints.sort_by_key(|(s, _)| *s);
+            let mut k = 0;
+            e.checkpoints.retain(|_| {
+                k += 1;
+                k % 2 == 1
+            });
+        }
+        out
+    }
+}
+
+/// Point-in-polygon (even-odd) for a closed polyline.
+pub fn point_in_poly(pts: &[[f64; 2]], x: f64, y: f64) -> bool {
+    let n = pts.len();
+    if n < 3 {
+        return false;
+    }
+    let mut inside = false;
+    let mut j = n - 1;
+    for i in 0..n {
+        let (a, b) = (pts[i], pts[j]);
+        if (a[1] > y) != (b[1] > y) && x < (b[0] - a[0]) * (y - a[1]) / (b[1] - a[1]) + a[0] {
+            inside = !inside;
+        }
+        j = i;
+    }
+    inside
+}
+
+/// Distance from a point to a polyline (closed adds the last→first segment).
+pub fn dist_to_poly(pts: &[[f64; 2]], closed: bool, x: f64, y: f64) -> f64 {
+    let n = pts.len();
+    if n == 0 {
+        return f64::INFINITY;
+    }
+    if n == 1 {
+        return ((pts[0][0] - x).powi(2) + (pts[0][1] - y).powi(2)).sqrt();
+    }
+    let segs = if closed { n } else { n - 1 };
+    let mut best = f64::INFINITY;
+    for i in 0..segs {
+        let a = pts[i];
+        let b = pts[(i + 1) % n];
+        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+        let l2 = dx * dx + dy * dy;
+        let t = if l2 > 0.0 { (((x - a[0]) * dx + (y - a[1]) * dy) / l2).clamp(0.0, 1.0) } else { 0.0 };
+        let (px, py) = (a[0] + dx * t, a[1] + dy * t);
+        best = best.min((px - x).powi(2) + (py - y).powi(2));
+    }
+    best.sqrt()
+}
+
+/// Total length of a polyline.
+pub fn poly_length(pts: &[[f64; 2]], closed: bool) -> f64 {
+    let n = pts.len();
+    if n < 2 {
+        return 0.0;
+    }
+    let segs = if closed { n } else { n - 1 };
+    (0..segs)
+        .map(|i| {
+            let (a, b) = (pts[i], pts[(i + 1) % n]);
+            ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2)).sqrt()
+        })
+        .sum()
+}
+
+/// Point and unit tangent at arc length `s` along a polyline.
+pub fn poly_point_at(pts: &[[f64; 2]], closed: bool, s: f64) -> ([f64; 2], [f64; 2]) {
+    let n = pts.len();
+    if n == 0 {
+        return ([0.0; 2], [1.0, 0.0]);
+    }
+    if n == 1 {
+        return (pts[0], [1.0, 0.0]);
+    }
+    let segs = if closed { n } else { n - 1 };
+    let mut rem = s.max(0.0);
+    for i in 0..segs {
+        let (a, b) = (pts[i], pts[(i + 1) % n]);
+        let l = ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2)).sqrt();
+        if rem <= l || i == segs - 1 {
+            let t = if l > 0.0 { (rem / l).min(1.0) } else { 0.0 };
+            let d = if l > 0.0 { [(b[0] - a[0]) / l, (b[1] - a[1]) / l] } else { [1.0, 0.0] };
+            return ([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t], d);
+        }
+        rem -= l;
+    }
+    (pts[n - 1], [1.0, 0.0])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sim_cache_is_seek_consistent() {
+        static C: SimCache<u64> = SimCache::new(2);
+        let step = |s: &mut u64, i: u64| *s = s.wrapping_mul(6364136223846793005).wrapping_add(i);
+        let direct = *C.run(1, 100, || 7, step);
+        let fresh: SimCache<u64> = SimCache::new(2);
+        let a = *fresh.run(1, 40, || 7, step);
+        let b = *fresh.run(1, 100, || 7, step);
+        let c = *fresh.run(1, 40, || 7, step);
+        let d = *fresh.run(1, 77, || 7, step);
+        let e = *C.run(1, 77, || 7, step);
+        assert_eq!(b, direct);
+        assert_eq!(a, c);
+        assert_eq!(d, e);
+    }
+
+    #[test]
+    fn poly_helpers() {
+        let sq = [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]];
+        assert!(point_in_poly(&sq, 5.0, 5.0));
+        assert!(!point_in_poly(&sq, 15.0, 5.0));
+        assert!((poly_length(&sq, true) - 40.0).abs() < 1e-9);
+        assert!((dist_to_poly(&sq, true, 5.0, 5.0) - 5.0).abs() < 1e-9);
+        let (pt, _) = poly_point_at(&sq, true, 15.0);
+        assert!((pt[0] - 10.0).abs() < 1e-9 && (pt[1] - 5.0).abs() < 1e-9);
+    }
 
     #[test]
     fn minmax_matches_brute_force() {

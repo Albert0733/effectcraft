@@ -103,7 +103,7 @@ fn mix_into(
         let lt = l.layer_time(t_a);
         let buf = match &l.source {
             LayerSource::Footage { item } => match project.item(*item).map(|i| &i.kind) {
-                Some(ItemKind::Footage(f)) => footage.audio(*item, f, lt, src_n, rate),
+                Some(ItemKind::Footage(f)) => footage.audio(*item, f, lt, src_n, rate).unwrap_or_else(|| vec![0.0; src_n * 2]),
                 _ => continue,
             },
             LayerSource::Comp { item } => {
@@ -152,8 +152,8 @@ mod tests {
         fn frame(&self, _: ItemId, _: &Footage, _: Tick) -> Option<Arc<Image>> {
             None
         }
-        fn audio(&self, _: ItemId, _: &Footage, start: Tick, frames: usize, _: u32) -> Vec<f32> {
-            (0..frames).flat_map(|_| if start >= Tick::ZERO { [0.25, -0.25] } else { [0.0, 0.0] }).collect()
+        fn audio(&self, _: ItemId, _: &Footage, start: Tick, frames: usize, _: u32) -> Option<Vec<f32>> {
+            Some((0..frames).flat_map(|_| if start >= Tick::ZERO { [0.25, -0.25] } else { [0.0, 0.0] }).collect())
         }
     }
 

@@ -454,8 +454,12 @@ impl FootageSource for MediaPool {
             }
         }
     }
-    fn audio(&self, _item: ItemId, footage: &Footage, start: Tick, frames: usize, rate: u32) -> Vec<f32> {
-        self.audio_samples(footage, start, frames, rate)
+
+    fn audio(&self, _item: ItemId, footage: &Footage, t: Tick, frames: usize, rate: u32) -> Option<Vec<f32>> {
+        if !footage.has_audio || footage.missing {
+            return None;
+        }
+        Some(self.audio_samples(footage, t, frames, rate))
     }
 }
 

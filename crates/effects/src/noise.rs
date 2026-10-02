@@ -531,7 +531,7 @@ mod tests {
         for (k, v) in vals {
             params.values.insert(k.to_string(), v.clone());
         }
-        let ctx = EffectCtx { params: &params, time, layer_size: [img.width as f64, img.height as f64], seed: 3, adjustment: false };
+        let ctx = EffectCtx { params: &params, time, layer_size: [img.width as f64, img.height as f64], seed: 3, adjustment: false, env: Default::default() };
         crate::apply(s, &ctx, Buf { img, offset: [0.0, 0.0], scale: 1.0 })
     }
 
