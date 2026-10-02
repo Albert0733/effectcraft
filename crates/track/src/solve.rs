@@ -47,6 +47,89 @@ impl Homography {
         [(m[0][0] * p[0] + m[0][1] * p[1] + m[0][2]) / w, (m[1][0] * p[0] + m[1][1] * p[1] + m[1][2]) / w]
     }
 
+    /// `self ∘ other` (apply `other` first).
+    pub fn then_after(&self, other: &Homography) -> Homography {
+        Homography(mul(self.0, other.0)).normalized()
+    }
+
+    /// Composition `b ∘ a`: apply `a`, then `b`.
+    pub fn compose(a: &Homography, b: &Homography) -> Homography {
+        b.then_after(a)
+    }
+
+    /// Scale so that `h33 = 1` (when it isn't ≈ 0).
+    pub fn normalized(self) -> Homography {
+        let s = self.0[2][2];
+        if s.abs() < 1e-12 || (s - 1.0).abs() < 1e-15 {
+            return self;
+        }
+        Homography(self.0.map(|r| r.map(|v| v / s)))
+    }
+
+    /// The inverse map (`None` when singular).
+    pub fn inverse(&self) -> Option<Homography> {
+        let m = &self.0;
+        let c00 = m[1][1] * m[2][2] - m[1][2] * m[2][1];
+        let c01 = m[1][2] * m[2][0] - m[1][0] * m[2][2];
+        let c02 = m[1][0] * m[2][1] - m[1][1] * m[2][0];
+        let det = m[0][0] * c00 + m[0][1] * c01 + m[0][2] * c02;
+        if det.abs() < 1e-18 || !det.is_finite() {
+            return None;
+        }
+        let inv = [
+            [c00, m[0][2] * m[2][1] - m[0][1] * m[2][2], m[0][1] * m[1][2] - m[0][2] * m[1][1]],
+            [c01, m[0][0] * m[2][2] - m[0][2] * m[2][0], m[0][2] * m[1][0] - m[0][0] * m[1][2]],
+            [c02, m[0][1] * m[2][0] - m[0][0] * m[2][1], m[0][0] * m[1][1] - m[0][1] * m[1][0]],
+        ];
+        Some(Homography(inv.map(|r| r.map(|v| v / det))).normalized())
+    }
+
+    /// Translation by `t`.
+    pub fn translation(t: [f64; 2]) -> Homography {
+        Homography([[1.0, 0.0, t[0]], [0.0, 1.0, t[1]], [0.0, 0.0, 1.0]])
+    }
+
+    /// Uniform scale `k` about `c`.
+    pub fn scale_about(k: f64, c: [f64; 2]) -> Homography {
+        Homography([[k, 0.0, c[0] * (1.0 - k)], [0.0, k, c[1] * (1.0 - k)], [0.0, 0.0, 1.0]])
+    }
+
+    /// `(1 - t) · self + t · other` element-wise (both normalised to `h33 = 1`): blends between
+    /// nearby transforms.
+    pub fn lerp(&self, other: &Homography, t: f64) -> Homography {
+        let (a, b) = (self.normalized().0, other.normalized().0);
+        let mut o = [[0.0; 3]; 3];
+        for i in 0..3 {
+            for j in 0..3 {
+                o[i][j] = a[i][j] + (b[i][j] - a[i][j]) * t;
+            }
+        }
+        Homography(o)
+    }
+
+    /// Map a Bezier tangent (relative to vertex `v`) through the transform: the tangent's end
+    /// point is mapped and made relative to the mapped vertex.
+    pub fn apply_tangent(&self, v: [f64; 2], tangent: [f64; 2]) -> [f64; 2] {
+        if tangent == [0.0, 0.0] {
+            return tangent;
+        }
+        let a = self.apply(v);
+        let b = self.apply([v[0] + tangent[0], v[1] + tangent[1]]);
+        [b[0] - a[0], b[1] - a[1]]
+    }
+
+    /// Largest absolute difference of the matrices (normalised).
+    pub fn max_diff(&self, other: &Homography) -> f64 {
+        let (a, b) = (self.normalized().0, other.normalized().0);
+        let mut d: f64 = 0.0;
+        for i in 0..3 {
+            for j in 0..3 {
+                d = d.max((a[i][j] - b[i][j]).abs());
+            }
+        }
+        d
+    }
+
     /// The homography taking `src[i]` to `dst[i]` (four points, no three collinear).
     pub fn from_points(src: [[f64; 2]; 4], dst: [[f64; 2]; 4]) -> Option<Homography> {
         // Normalise both sets (centroid at 0, mean distance √2) for conditioning.
@@ -114,7 +197,7 @@ fn sub(a: [f64; 2], b: [f64; 2]) -> [f64; 2] {
     [a[0] - b[0], a[1] - b[1]]
 }
 
-fn mul(a: [[f64; 3]; 3], b: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
+pub(crate) fn mul(a: [[f64; 3]; 3], b: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
     let mut o = [[0.0; 3]; 3];
     for i in 0..3 {
         for j in 0..3 {
