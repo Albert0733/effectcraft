@@ -681,6 +681,17 @@ pub const GPU_EFFECTS: &[&str] = &[
     "ec.generate.fourcolor",
     "ec.noise.noise",
     "ec.noise.addgrain",
+    // effectcraft-gpu fx_color
+    "ec.color.colorbalance",
+    "ec.color.vibrance",
+    "ec.color.lumetri",
+    "ec.color.blackwhite",
+    "ec.color.tritone",
+    "ec.color.colorama",
+    "ec.color.channelmixer",
+    "ec.color.selectivecolor",
+    "ec.key.linearcolor",
+    "ec.keying.keylight",
 ];
 
 /// Effects whose output depends on [`EffectCtx::time`] directly (not only through animated

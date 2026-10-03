@@ -161,8 +161,10 @@ mod tests_adjust;
 #[cfg(test)]
 mod tests_adv3d;
 #[cfg(test)]
+mod tests_fx_color;
+#[cfg(test)]
 mod tests_fx_distort;
 #[cfg(test)]
-mod tests_particles;
-#[cfg(test)]
 mod tests_fx_generate;
+#[cfg(test)]
+mod tests_particles;
