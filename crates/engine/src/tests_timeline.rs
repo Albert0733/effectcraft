@@ -571,3 +571,26 @@ fn time_stretch_holds_in_current_or_out() {
     assert!((ly.out_point.seconds() - 4.0).abs() < 1e-6 && (ly.in_point.seconds() - 2.0).abs() < 1e-6);
     assert!(s.execute("layer.timeStretch", json!({"layers": [l], "percent": 0})).is_err());
 }
+
+#[test]
+fn arrange_above_moves_layers_to_a_place_in_the_stack() {
+    let mut s = Session::default();
+    s.execute("comp.new", json!({"name": "Stack", "width": 100, "height": 100, "duration": 2})).unwrap();
+    for n in ["D", "C", "B", "A"] {
+        s.execute("layer.newSolid", json!({"name": n, "width": 10, "height": 10})).unwrap();
+    }
+    let names = |s: &Session| s.active_comp().unwrap().layers.iter().map(|l| l.name.clone()).collect::<Vec<_>>();
+    assert_eq!(names(&s), ["A", "B", "C", "D"]);
+    // A below C (one undo step), then B and D together above A, then C to the bottom.
+    s.execute("layer.arrange", json!({"layers": ["A"], "above": "D"})).unwrap();
+    assert_eq!(names(&s), ["B", "C", "A", "D"]);
+    s.execute("layer.arrange", json!({"layers": ["B", "D"], "above": "A"})).unwrap();
+    assert_eq!(names(&s), ["C", "B", "D", "A"]);
+    s.execute("layer.arrange", json!({"layers": ["C"], "to": "back"})).unwrap();
+    assert_eq!(names(&s), ["B", "D", "A", "C"]);
+    s.undo();
+    assert_eq!(names(&s), ["C", "B", "D", "A"]);
+    // A layer can't go above itself; unknown targets fail.
+    assert!(s.execute("layer.arrange", json!({"layers": ["B"], "above": "B"})).is_err());
+    assert!(s.execute("layer.arrange", json!({"layers": ["B"], "above": "Nope"})).is_err());
+}

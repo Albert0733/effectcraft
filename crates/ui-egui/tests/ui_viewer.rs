@@ -534,3 +534,29 @@ fn middle_and_hand_drags_pan_the_viewer_and_the_pan_stays_after_release() {
     let end = h.state().ui.viewer.pan;
     assert!((end[0] - after[0] + 50.0).abs() < 1.0 && (end[1] - after[1] + 30.0).abs() < 1.0, "{after:?} → {end:?}");
 }
+
+#[test]
+fn timeline_rows_drag_to_reorder_layers() {
+    let mut h = harness();
+    let names = |h: &Harness<'_, EffectcraftApp>| h.state().session.active_comp().unwrap().layers.iter().map(|l| l.name.clone()).collect::<Vec<_>>();
+    assert_eq!(names(&h), ["Box", "Plate"]);
+    let row = |h: &Harness<'_, EffectcraftApp>, name: &str| {
+        let l = h.state().session.active_comp().unwrap().layers.iter().find(|l| l.name == name).unwrap().id.0;
+        rect(h, &format!("timeline.layer.{l}.row"))
+    };
+    // Drag "Box" (top) below "Plate": it becomes the bottom layer, in one undo step.
+    let (from, plate) = (row(&h, "Box").center(), row(&h, "Plate"));
+    let steps = h.state().session.history.undo.len();
+    drag(&mut h, from, plate.center() + vec2(0.0, plate.height() * 0.4));
+    assert_eq!(names(&h), ["Plate", "Box"]);
+    assert_eq!(h.state().session.history.undo.len(), steps + 1);
+    // Dropping a layer where it already is changes nothing.
+    let b = row(&h, "Box").center();
+    drag(&mut h, b, b + vec2(0.0, 3.0));
+    assert_eq!(names(&h), ["Plate", "Box"]);
+    assert_eq!(h.state().session.history.undo.len(), steps + 1);
+    // And back to the top.
+    let (from, top) = (row(&h, "Box").center(), row(&h, "Plate"));
+    drag(&mut h, from, top.center() - vec2(0.0, top.height() * 0.4));
+    assert_eq!(names(&h), ["Box", "Plate"]);
+}
