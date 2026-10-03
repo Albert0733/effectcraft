@@ -304,7 +304,9 @@ fn edit_masks(
 ) -> Result<Value> {
     let (cid, targets) = target_masks(s, p)?;
     if targets.is_empty() {
-        return Err(EngineError::Other("no masks".into()));
+        return Err(EngineError::Other(format!(
+            "{label}: no masks to change (the layer has none, or `mask` matched none): add one with layer.addMask {{layer, shape?: rect|ellipse, rect?: [x,y,w,h]}}"
+        )));
     }
     let t = s.time();
     let sizes: Vec<(LayerId, (f64, f64))> = targets

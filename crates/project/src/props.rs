@@ -307,6 +307,11 @@ pub enum Seg {
 
 /// Parse `transform/position`, `effects/#1/blurriness`, `effects/@57/blurriness`,
 /// `contents/rect#2/size`.
+/// `@57` (a whole path that is one uid).
+fn bare_uid(path: &str) -> Option<Uid> {
+    path.trim().strip_prefix('@')?.parse().ok()
+}
+
 pub fn parse_path(s: &str) -> Vec<Seg> {
     s.split(['/', '.'])
         .filter(|x| !x.is_empty())
@@ -365,10 +370,17 @@ impl PropGroup {
         let i = g.child_index(last)?;
         g.children.get_mut(i)
     }
+    /// A property by path; a bare `@uid` finds the property anywhere below this group.
     pub fn prop(&self, path: &str) -> Option<&Property> {
+        if let Some(u) = bare_uid(path) {
+            return self.find(u);
+        }
         self.node(path)?.as_prop()
     }
     pub fn prop_mut(&mut self, path: &str) -> Option<&mut Property> {
+        if let Some(u) = bare_uid(path) {
+            return self.find_mut(u);
+        }
         match self.node_mut(path)? {
             Node::Prop(p) => Some(p),
             _ => None,

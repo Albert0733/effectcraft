@@ -122,6 +122,10 @@ fn group_json(g: &PropGroup, path: &str, l: &Layer, t: effectcraft_time::Tick, d
             .collect()
     };
     let mut o = json!({"path": path, "uid": g.uid, "match": g.match_id, "name": g.name, "enabled": g.enabled, "children": children});
+    if depth >= max_depth && !g.children.is_empty() {
+        // Not expanded at this `depth`: ask again with a larger one (or for this group's layer).
+        o["truncated"] = json!(true);
+    }
     match &g.kind {
         GroupKind::Mask { mode, inverted, .. } => {
             o["mask"] = json!({"mode": mode.label(), "inverted": inverted});
