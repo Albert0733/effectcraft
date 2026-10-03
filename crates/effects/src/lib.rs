@@ -841,7 +841,6 @@ pub const GPU_EFFECTS: &[&str] = &[
     "ec.channel.blend",
     "ec.channel.calculations",
     "ec.channel.compoundarithmetic",
-    //
     // effectcraft-gpu fx_tone (colour correction)
     "ec.color.levelsic",
     "ec.color.gammapedestalgain",
@@ -913,7 +912,6 @@ pub const GPU_EFFECTS: &[&str] = &[
     "ec.channel.minimax",
     "ec.time.echo",
     "ec.time.posterizetime",
-    //
 ];
 
 /// Effects whose output depends on [`EffectCtx::time`] directly (not only through animated

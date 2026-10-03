@@ -16,7 +16,10 @@
 //!
 //! GPU effects ([`effectcraft_effects::GPU_EFFECTS`]) run as compute kernels with the CPU
 //! effect's exact steps (padding, box-blur radii, parameter conversions); chains of them are
-//! uploaded and read back once.
+//! uploaded and read back once. Each family lives in its own module with its own WGSL file
+//! (`fx_color`, `fx_distort`, `fx_generate`, `fx_key`, `fx_noise`, `fx_stylize`, `fx_tone`);
+//! settings a kernel cannot match fall back to the CPU (`catalog::gpu_supported`, or `None`
+//! from the family's `apply`).
 //!
 //! GPU particles (`particles`): the stepped particle effects hand their simulation to
 //! [`effectcraft_effects::psim::ParticleSim`], implemented here with one invocation per particle
