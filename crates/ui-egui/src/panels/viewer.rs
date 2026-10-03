@@ -404,11 +404,14 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let p = ui.painter().clone();
     VIEW_CAM.with(|c| c.set(app.session.view_camera(cid)));
 
-    // Navigator bar (open comps as breadcrumbs).
-    let nav = Rect::from_min_size(rect.min, vec2(rect.width(), 24.0));
+    // Navigator bar (open comps as breadcrumbs). After Effects shows a single breadcrumb row:
+    // when the Composition Navigator (nested comp flow) is above the viewer, this row is left
+    // out.
+    let nav_h = if super::precomp::has_flow(app) { 0.0 } else { 24.0 };
+    let nav = Rect::from_min_size(rect.min, vec2(rect.width(), nav_h));
     p.rect_filled(nav, 0.0, t.panel_bg);
     let mut x = nav.min.x + 10.0;
-    let open = app.session.state.open_comps.clone();
+    let open = if nav_h > 0.0 { app.session.state.open_comps.clone() } else { vec![] };
     for oc in open {
         let name = app.session.project.item(oc).map(|i| i.name.clone()).unwrap_or_default();
         let g = p.layout_no_wrap(name.clone(), Tokens::ui(11.5), t.text);

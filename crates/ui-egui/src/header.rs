@@ -168,7 +168,9 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         app.set_workspace(crate::dock::WORKSPACES[i]);
     }
     rx = more.min.x - 6.0;
-    let shown = ["Small Screen", "Standard", "Animation", "Default"];
+    // After Effects 2026's workspace bar order (right to left here): Default, Review, Learn,
+    // Small Screen, Standard.
+    let shown = ["Standard", "Small Screen", "Learn", "Review", "Default"];
     for name in shown {
         let g = p.layout_no_wrap(name.to_string(), Tokens::ui(12.0), t.text);
         let w = g.size().x + 16.0;
