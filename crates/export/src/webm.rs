@@ -5,8 +5,10 @@
 //! (size patched at the end), Info, Tracks and one Cluster per render batch. Video frames are
 //! SimpleBlocks; with alpha (Channels: RGB + Alpha) each frame is a BlockGroup whose
 //! BlockAdditional (BlockAddID 1) carries a second VP9 frame coding the alpha channel as luma,
-//! with `AlphaMode` 1 on the track, as WebM defines. VP9 comes from `effectcraft-vp9enc` (every
-//! frame a key frame), Opus from `effectcraft-opusenc` (CELT, 48 kHz stereo, 20 ms packets,
+//! with `AlphaMode` 1 on the track, as WebM defines. VP9 comes from `effectcraft-vp9enc` (key
+//! frames every two seconds, inter frames between them: SimpleBlocks carry the key flag, inter
+//! BlockGroups a ReferenceBlock; the alpha stream's key frames line up with the colour stream's),
+//! Opus from `effectcraft-opusenc` (CELT, 48 kHz stereo, 20 ms packets,
 //! `CodecDelay` = pre-skip). WAV (RIFF, 16-bit PCM) and AIFF (big-endian 16-bit, 80-bit
 //! extended sample rate) follow their published file layouts.
 
@@ -82,6 +84,10 @@ fn block(track: u64, rel: i16, flags: u8, data: &[u8]) -> Vec<u8> {
 struct Frame {
     ms: i64,
     track: u64,
+    /// A key frame (VP9) or any audio packet.
+    key: bool,
+    /// Timestamp of the previous video frame (ReferenceBlock of inter frames).
+    prev_ms: Option<i64>,
     data: Vec<u8>,
     alpha: Option<Vec<u8>>,
 }
@@ -94,10 +100,15 @@ fn cluster(frames: &mut [Frame]) -> Vec<u8> {
     for f in frames.iter() {
         let rel = (f.ms - base).clamp(i16::MIN as i64, i16::MAX as i64) as i16;
         match &f.alpha {
-            None => el(&mut body, 0xA3, &block(f.track, rel, 0x80, &f.data)),
+            None => el(&mut body, 0xA3, &block(f.track, rel, if f.key { 0x80 } else { 0x00 }, &f.data)),
             Some(a) => {
                 let mut g = vec![];
                 el(&mut g, 0xA1, &block(f.track, rel, 0x00, &f.data));
+                if let (false, Some(p)) = (f.key, f.prev_ms) {
+                    // ReferenceBlock: a signed timestamp relative to this block (an inter frame).
+                    let d = (p - f.ms).clamp(i16::MIN as i64, -1) as i16;
+                    el(&mut g, 0xFB, &d.to_be_bytes());
+                }
                 let mut more = vec![];
                 el_uint(&mut more, 0xEE, 1);
                 el(&mut more, 0xA5, a);
@@ -117,7 +128,19 @@ pub(crate) fn webm(job: &Job, comp: &Comp, w: u32, h: u32, st: &mut State) -> Re
     let rate = job.settings.rate(comp);
     let alpha = job.output.channels == Channels::Rgba;
     let quality = job.output.quality.clamp(1, 100);
-    let cfg = effectcraft_vp9enc::EncoderConfig { width: w, height: h, quality, full_range: false };
+    let fps = rate.as_f64().max(1.0);
+    let cfg = effectcraft_vp9enc::EncoderConfig {
+        width: w,
+        height: h,
+        quality,
+        full_range: false,
+        keyframe_interval: (fps * 2.0).round().max(1.0) as u32,
+        target_kbps: None,
+        frame_rate: fps,
+        loop_filter: true,
+    };
+    let mut color_enc = effectcraft_vp9enc::Vp9Encoder::new(cfg.clone());
+    let mut alpha_enc = alpha.then(|| effectcraft_vp9enc::Vp9Encoder::new(cfg.clone()));
     let with_audio = wants_audio(job);
     let mut opus = with_audio.then(|| effectcraft_opusenc::OpusEncoder::new(2, OPUS_BITRATE));
     let total = st.total;
@@ -209,7 +232,7 @@ pub(crate) fn webm(job: &Job, comp: &Comp, w: u32, h: u32, st: &mut State) -> Re
         while pcm_left.len() >= fs {
             let pkt = enc.encode_float(&pcm_left[..fs]);
             pcm_left.drain(..fs);
-            frames.push(Frame { ms: packets as i64 * 20, track: 2, data: pkt, alpha: None });
+            frames.push(Frame { ms: packets as i64 * 20, track: 2, key: true, prev_ms: None, data: pkt, alpha: None });
             packets += 1;
         }
     };
@@ -218,23 +241,28 @@ pub(crate) fn webm(job: &Job, comp: &Comp, w: u32, h: u32, st: &mut State) -> Re
     let mut i = 0;
     while i < total {
         let end = (i + batch).min(total);
-        let encoded: Vec<(Vec<u8>, Option<Vec<u8>>)> = (i..end)
-            .into_par_iter()
-            .map(|k| {
-                let px = rgba8(&render_frame(job, comp, k), comp, if alpha { Channels::Rgba } else { Channels::Rgb }, w, h);
-                let mut enc = effectcraft_vp9enc::Vp9Encoder::new(cfg.clone());
-                let (y, u, vv) = effectcraft_vp9enc::rgba_to_yuv420(&px, w, h, false);
-                let color = enc.encode_yuv420(&y, &u, &vv);
-                let a = alpha.then(|| {
-                    let mut ea = effectcraft_vp9enc::Vp9Encoder::new(cfg.clone());
-                    let (y, u, vv) = effectcraft_vp9enc::alpha_to_yuv420(&px, w, h);
-                    ea.encode_yuv420(&y, &u, &vv)
-                });
-                (color, a)
-            })
-            .collect();
-        let mut frames: Vec<Frame> =
-            encoded.into_iter().enumerate().map(|(j, (data, alpha))| Frame { ms: frame_ms(i + j as u64), track: 1, data, alpha }).collect();
+        // Frames render in parallel; the VP9 streams (inter-coded) encode in order, colour and
+        // alpha side by side.
+        let pixels: Vec<Vec<u8>> =
+            (i..end).into_par_iter().map(|k| rgba8(&render_frame(job, comp, k), comp, if alpha { Channels::Rgba } else { Channels::Rgb }, w, h)).collect();
+        let mut frames: Vec<Frame> = Vec::with_capacity(pixels.len());
+        for (j, px) in pixels.iter().enumerate() {
+            let (color, a) = rayon::join(
+                || {
+                    let (y, u, vv) = effectcraft_vp9enc::rgba_to_yuv420(px, w, h, false);
+                    color_enc.encode_frame(&y, &u, &vv, false)
+                },
+                || {
+                    alpha_enc.as_mut().map(|ea| {
+                        let (y, u, vv) = effectcraft_vp9enc::alpha_to_yuv420(px, w, h);
+                        ea.encode_frame(&y, &u, &vv, false).data
+                    })
+                },
+            );
+            let k = i + j as u64;
+            frames.push(Frame { ms: frame_ms(k), track: 1, key: color.key, prev_ms: (k > 0).then(|| frame_ms(k - 1)), data: color.data, alpha: a });
+        }
+        drop(pixels);
         let t_end = if end >= total { span_end } else { job.settings.frame_time(comp, end) };
         audio_until(t_end, &mut frames, end >= total);
         let c = cluster(&mut frames);

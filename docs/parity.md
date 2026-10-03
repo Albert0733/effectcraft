@@ -110,7 +110,7 @@ the disk cache in the formats wave; the 3D Camera Tracker in M12.6.)
 | Area | Weighted parity | Remaining (agent-hours) | Biggest gaps |
 |---|---|---|---|
 | Layers | 88% | 4.8 | frame blending, collapse transformations, slip edit |
-| Output | 90% | 3.0 | multiple output modules, pre-render (WebM with VP9 alpha + Opus and WAV/AIFF audio-only landed: VP9 is intra-only, Opus CELT-only) |
+| Output | 90% | 3.0 | multiple output modules, pre-render (WebM with VP9 alpha + Opus and WAV/AIFF audio-only landed: VP9 key + inter frames with motion search, loop filter and rate control; Opus CELT-only) |
 | Audio | 85% | 0.5 | audio to keyframes |
 | Import | 88% | 2.0 | AI/EPS/PDF vector footage, PSD smart objects and 3D layers (PSD as footage/composition/retain layer sizes, SVG footage and Create Shapes from Vector Layer landed) |
 | Automation | ≈ 90% | 0.8 | scripting covers the documented core object model (AUT-2, M14.4: `app`, project items, comps, layers, properties and keyframes, text documents, markers, render queue, Script Console, `effectcraft-cli script`, MCP `run_script`); still missing: ScriptUI panels/dialogs, `.jsxbin`, sockets |

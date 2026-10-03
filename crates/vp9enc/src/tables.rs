@@ -128,3 +128,76 @@ pub const DEFAULT_COEF_PROBS: [u8; 432] = [
     79, 1, 20, 39, 99, 167, 239, 47, 141, 224, 10, 104, 178, 2, 73, 133, 1, 44, 85, 1, 22, 47, 127, 145, 243, 71, 129, 228, 17, 93, 177, 3, 61, 124, 1, 41, 84,
     1, 21, 52, 157, 78, 244, 140, 72, 231, 69, 58, 184, 31, 44, 137, 14, 38, 105, 8, 23, 61,
 ];
+
+// ---------------------------------------------------------------- inter frames (spec section 10.5)
+
+/// `inv_map_table` (used by `inv_remap_prob`): the 20 values 7 + 13k first, then every other value
+/// 1..=253 in increasing order, then 253 again.
+pub fn inv_map_table() -> &'static [u8; 255] {
+    use std::sync::OnceLock;
+    static T: OnceLock<[u8; 255]> = OnceLock::new();
+    T.get_or_init(|| {
+        let mut t = [253u8; 255];
+        let mut n = 0;
+        for k in 0..20 {
+            t[n] = 7 + 13 * k;
+            n += 1;
+        }
+        for v in 1..=253u8 {
+            if v < 7 || (v - 7) % 13 != 0 {
+                t[n] = v;
+                n += 1;
+            }
+        }
+        t
+    })
+}
+
+/// The regular 8-tap sub-sample interpolation filters (`subpel_filters[EIGHTTAP]`), 16 positions.
+pub const SUBPEL_REGULAR: [[i32; 8]; 16] = [
+    [0, 0, 0, 128, 0, 0, 0, 0],
+    [0, 1, -5, 126, 8, -3, 1, 0],
+    [-1, 3, -10, 122, 18, -6, 2, 0],
+    [-1, 4, -13, 118, 27, -9, 3, -1],
+    [-1, 4, -16, 112, 37, -11, 4, -1],
+    [-1, 5, -18, 105, 48, -14, 4, -1],
+    [-1, 5, -19, 97, 58, -16, 5, -1],
+    [-1, 6, -19, 88, 68, -18, 5, -1],
+    [-1, 6, -19, 78, 78, -19, 6, -1],
+    [-1, 5, -18, 68, 88, -19, 6, -1],
+    [-1, 5, -16, 58, 97, -19, 5, -1],
+    [-1, 4, -14, 48, 105, -18, 5, -1],
+    [-1, 4, -11, 37, 112, -16, 4, -1],
+    [-1, 3, -9, 27, 118, -13, 4, -1],
+    [0, 2, -6, 18, 122, -10, 3, -1],
+    [0, 1, -3, 8, 126, -5, 1, 0],
+];
+
+/// `mv_ref_blocks` (row, column offsets) for BLOCK_8X8 and BLOCK_16X16.
+pub const MV_REF_8X8: [(i32, i32); 8] = [(-1, 0), (0, -1), (-1, -1), (-2, 0), (0, -2), (-2, -1), (-1, -2), (-2, -2)];
+pub const MV_REF_16X16: [(i32, i32); 8] = [(-1, 0), (0, -1), (-1, 1), (1, -1), (-1, -1), (-3, 0), (0, -3), (-3, -3)];
+
+/// `mode_2_counter` indexed by y mode (intra modes 0..=9, then NEARESTMV, NEARMV, ZEROMV, NEWMV).
+pub const MODE_2_COUNTER: [u8; 14] = [9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 0, 0, 3, 1];
+
+/// `counter_to_context`; INVALID_CASE entries are 9.
+pub const COUNTER_TO_CONTEXT: [u8; 19] = [2, 3, 4, 1, 3, 9, 0, 9, 9, 5, 5, 9, 5, 9, 9, 9, 9, 9, 6];
+
+pub const DEFAULT_PARTITION_PROBS: [u8; 48] = [
+    199, 122, 141, 147, 63, 159, 148, 133, 118, 121, 104, 114, 174, 73, 87, 92, 41, 83, 82, 99, 50, 53, 39, 39, 177, 58, 59, 68, 26, 63, 52, 79, 25, 17, 14,
+    12, 222, 34, 30, 72, 16, 44, 58, 32, 12, 10, 7, 6,
+];
+
+pub const DEFAULT_IS_INTER_PROB: [u8; 4] = [9, 102, 187, 225];
+
+pub const DEFAULT_SINGLE_REF_PROB: [u8; 10] = [33, 16, 77, 74, 142, 142, 172, 170, 238, 247];
+
+pub const DEFAULT_INTER_MODE_PROBS: [u8; 21] = [2, 173, 34, 7, 145, 85, 7, 166, 63, 7, 94, 66, 8, 64, 46, 17, 81, 31, 25, 29, 30];
+
+pub const DEFAULT_MV_JOINT_PROBS: [u8; 3] = [32, 64, 96];
+pub const DEFAULT_MV_SIGN_PROB: [u8; 2] = [128, 128];
+pub const DEFAULT_MV_CLASS_PROBS: [u8; 20] = [224, 144, 192, 168, 192, 176, 192, 198, 198, 245, 216, 128, 176, 160, 176, 176, 192, 198, 198, 208];
+pub const DEFAULT_MV_CLASS0_BIT_PROB: [u8; 2] = [216, 208];
+pub const DEFAULT_MV_BITS_PROB: [u8; 20] = [136, 140, 148, 160, 176, 192, 224, 234, 234, 240, 136, 140, 148, 160, 176, 192, 224, 234, 234, 240];
+pub const DEFAULT_MV_CLASS0_FR_PROBS: [u8; 12] = [128, 128, 64, 96, 112, 64, 128, 128, 64, 96, 112, 64];
+pub const DEFAULT_MV_FR_PROBS: [u8; 6] = [64, 96, 64, 64, 96, 64];

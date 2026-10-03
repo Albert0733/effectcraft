@@ -7,7 +7,7 @@
 //! | PNG / JPEG / TIFF sequence | one file per frame | 8-bit | PNG, TIFF | — |
 //! | OpenEXR sequence | one file per frame | 32-bit float, linear light, premultiplied | yes | — |
 //! | Animated GIF | GIF89a | 256-colour palette per frame (NeuQuant) | 1-bit | — |
-//! | WebM | WebM (Matroska) | VP9 profile 0 intra frames (`effectcraft-vp9enc`), 8-bit 4:2:0 | VP9 alpha (BlockAdditional) | Opus (`effectcraft-opusenc`), 48 kHz stereo |
+//! | WebM | WebM (Matroska) | VP9 profile 0 (`effectcraft-vp9enc`: key + inter frames, a key frame every 2 s, loop filter), 8-bit 4:2:0 | VP9 alpha (BlockAdditional) | Opus (`effectcraft-opusenc`), 48 kHz stereo |
 //! | WAV / AIFF | RIFF WAVE / AIFF | — | — | 16-bit PCM stereo (audio only) |
 //!
 //! Frames are rendered in parallel batches (rayon; one batch ≈ one frame per core) and handed to
