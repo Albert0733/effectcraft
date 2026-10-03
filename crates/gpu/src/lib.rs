@@ -52,6 +52,7 @@ mod fx_distort;
 mod fx_extra;
 mod fx_generate;
 mod fx_key;
+mod fx_light;
 mod fx_noise;
 mod fx_stylize;
 mod fx_tone;
@@ -208,6 +209,8 @@ mod tests_fx_extra;
 mod tests_fx_generate;
 #[cfg(test)]
 mod tests_fx_key;
+#[cfg(test)]
+mod tests_fx_light;
 #[cfg(test)]
 mod tests_fx_noise;
 #[cfg(test)]

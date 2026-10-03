@@ -5,7 +5,7 @@
 
 EffectCraft ships 306 effects with 3009 parameters in total, grouped into the same categories as the Effects & Presets panel. Every effect is our own implementation, written from public behaviour descriptions and standard image-processing literature. Parameter names, order, popup options, units, defaults and ranges follow the reference application so that projects, expressions and muscle memory carry over.
 
-- **GPU**: 166 effects also run on the GPU compositor with identical results.
+- **GPU**: 170 effects also run on the GPU compositor with identical results.
 - **32**: 306 effects process 32-bit float (HDR, overbright) pixels without clamping.
 - **Status**: 306 implemented in full, 0 partial (what is missing is listed).
 
@@ -194,9 +194,9 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 | Audio Waveform | `ec.generate.audiowaveform` | 17 |  | 32 | Implemented |
 | Beam | `ec.generate.beam` | 11 |  | 32 | Implemented |
 | CC Glue Gun | `ec.generate.ccgluegun` | 7 |  | 32 | Implemented |
-| CC Light Burst 2.5 | `ec.generate.cclightburst` | 6 |  | 32 | Implemented |
-| CC Light Rays | `ec.generate.cclightrays` | 8 |  | 32 | Implemented |
-| CC Light Sweep | `ec.generate.cclightsweep` | 9 |  | 32 | Implemented |
+| CC Light Burst 2.5 | `ec.generate.cclightburst` | 6 | GPU | 32 | Implemented |
+| CC Light Rays | `ec.generate.cclightrays` | 8 | GPU | 32 | Implemented |
+| CC Light Sweep | `ec.generate.cclightsweep` | 9 | GPU | 32 | Implemented |
 | CC Threads | `ec.generate.ccthreads` | 8 |  | 32 | Implemented |
 | Cell Pattern | `ec.generate.cellpattern` | 14 | GPU | 32 | Implemented |
 | Checkerboard | `ec.generate.checkerboard` | 10 | GPU | 32 | Implemented |
@@ -395,7 +395,7 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 | CC Grid Wipe | `ec.transition.ccgridwipe` | 7 |  | 32 | Implemented |
 | CC Image Wipe | `ec.transition.ccimagewipe` | 7 |  | 32 | Implemented |
 | CC Jaws | `ec.transition.ccjaws` | 6 |  | 32 | Implemented |
-| CC Light Wipe | `ec.transition.cclightwipe` | 8 |  | 32 | Implemented |
+| CC Light Wipe | `ec.transition.cclightwipe` | 8 | GPU | 32 | Implemented |
 | CC Line Sweep | `ec.transition.cclinesweep` | 5 |  | 32 | Implemented |
 | CC Radial ScaleWipe | `ec.transition.ccradialscalewipe` | 3 |  | 32 | Implemented |
 | CC Scale Wipe | `ec.transition.ccscalewipe` | 3 |  | 32 | Implemented |

@@ -931,6 +931,11 @@ pub const GPU_EFFECTS: &[&str] = &[
     "ec.perspective.bevelalpha",
     "ec.perspective.beveledges",
     "ec.obsolete.gaussianlegacy",
+    // effectcraft-gpu fx_light (the CC light family)
+    "ec.generate.cclightrays",
+    "ec.generate.cclightburst",
+    "ec.generate.cclightsweep",
+    "ec.transition.cclightwipe",
 ];
 
 /// Effects whose output depends on [`EffectCtx::time`] directly (not only through animated
