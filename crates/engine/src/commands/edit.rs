@@ -384,6 +384,8 @@ fn paste(s: &mut Session, p: &Value) -> Result<Value> {
 fn split(s: &mut Session, p: &Value) -> Result<Value> {
     let (cid, ids) = layers_p(s, p)?;
     let t = s.time();
+    // Settings ▸ General ▸ Create Split Layers Above Original Layer.
+    let above = s.prefs.general.create_split_layers_above;
     let new = s.edit("Split Layer", None, |proj, st| {
         let mut next = proj.next_id;
         let comp = proj.comp_mut(cid).ok_or(crate::EngineError::NoComp)?;
@@ -398,7 +400,7 @@ fn split(s: &mut Session, p: &Value) -> Result<Value> {
             b.in_point = t;
             comp.layers[i].out_point = t;
             created.push(b.id);
-            comp.layers.insert(i, b);
+            comp.layers.insert(if above { i } else { i + 1 }, b);
         }
         proj.next_id = next;
         st.selected_layers = created.clone();
@@ -408,6 +410,11 @@ fn split(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 fn label(s: &mut Session, p: &Value) -> Result<Value> {
+    // Keyframe colour labels: selected keyframes take the label (unless layers are named).
+    let explicit_layers = p.get("layers").is_some() || p.get("layer").is_some();
+    if p.get("keys").is_some() || (!s.state.selected_keys.is_empty() && !explicit_layers && str_p(p, "target") != Some("layers")) {
+        return super::keys_more::label_keys(s, p);
+    }
     let name = str_p(p, "label").unwrap_or("Red");
     let lab = s.prefs.label_from_name(name).ok_or_else(|| super::bad("edit.label", format!("unknown label `{name}`")))?;
     let (cid, ids) = layers_p(s, p)?;
@@ -624,7 +631,7 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!("edit.extractWorkArea", "Extract Work Area", ["Edit"], None, "{layers?}", has_comp, extract),
         cmd!("edit.selectAll", "Select All", ["Edit"], Some("Cmd+A"), "{}", has_comp, select_all),
         cmd!("edit.deselectAll", "Deselect All", ["Edit"], Some("Cmd+Shift+A"), "{}", always_ok, deselect_all),
-        cmd!("edit.label", "Label", ["Edit", "Label"], None, "{label: Red|Yellow|Aqua|…, layers?}", always_ok, label),
+        cmd!("edit.label", "Label", ["Edit", "Label"], None, "{label: Red|Yellow|Aqua|…, layers?, keys?, target?: layers}", always_ok, label),
         cmd!("edit.selectLabelGroup", "Select Label Group", ["Edit", "Label"], None, "{}", has_props_or_layers_or_items, select_label_group),
         cmd!("edit.purgeUndo", "Undo", ["Edit", "Purge"], None, "{}", always_ok, purge),
         cmd!("edit.purge", "Purge", [], None, "{what?: all|memoryAndDisk|memory|disk|3d|image|snapshot}", always_ok, purge_caches),

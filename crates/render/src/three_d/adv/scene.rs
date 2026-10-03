@@ -855,7 +855,14 @@ pub(crate) fn build_at(r: &Renderer, ctx: &EvalCtx, sub: Option<&EvalCtx>, run: 
         {
             add_environment(&mut b, w, h, d, k, rot);
         }
-        super::raster::shadow_maps(&mut b.s, r.opts.draft);
+        if r.opts.shadows() {
+            super::raster::shadow_maps(&mut b.s, r.opts.draft);
+        } else {
+            // Settings ▸ 3D ▸ Realtime Shadows in Draft off: draft renders skip shadows.
+            for l in &mut b.s.lights {
+                l.shadow = -1;
+            }
+        }
     }
     // Camera matrices.
     let s = r.opts.scale;

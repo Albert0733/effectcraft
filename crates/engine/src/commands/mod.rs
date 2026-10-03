@@ -5,6 +5,7 @@ mod align_data;
 mod anim;
 pub mod anim_tools;
 mod animation;
+mod app_more;
 mod autotrace;
 mod camera_cmds;
 mod comp;
@@ -23,6 +24,7 @@ mod frontend;
 mod help;
 mod key_labels;
 mod key_transform;
+mod keys_more;
 mod layer;
 mod layer_menu;
 mod layer_time;
@@ -58,6 +60,13 @@ mod track;
 mod view;
 pub mod viewer_cmds;
 mod warp_cmds;
+#[cfg(test)]
+pub(crate) use app_more::report_text as report_text_for_tests;
+pub(crate) use app_more::view_command;
+#[cfg(test)]
+pub(crate) use file::missing_frames as missing_frames_for_tests;
+#[cfg(test)]
+pub(crate) use keys_more::amplitudes as amplitudes_for_tests;
 #[cfg(test)]
 pub(crate) use mask::split_segment as split_segment_for_tests;
 
@@ -161,6 +170,8 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(puppet::specs());
         v.extend(liquify::specs());
         v.extend(settings::specs());
+        v.extend(app_more::specs());
+        v.extend(keys_more::specs());
         v.extend(essential::specs());
         v.extend(expr_tools::specs());
         v.extend(proxy::specs());
@@ -269,12 +280,15 @@ pub(crate) fn has_project_selection(s: &Session) -> std::result::Result<(), Stri
     if s.state.project_selection.is_empty() { Err("select an item in the Project panel first".into()) } else { Ok(()) }
 }
 
-/// Disabled-command enablement (menu entries whose implementation lands with another milestone).
+/// Disabled-command enablement (menu entries whose implementation lands with another milestone;
+/// none are left, kept for future stubs).
+#[allow(dead_code)]
 pub(crate) fn not_yet(_: &Session) -> std::result::Result<(), String> {
     Err("not available yet in EffectCraft".into())
 }
 
 /// `run` of a not-yet-available command.
+#[allow(dead_code)]
 pub(crate) fn not_yet_run(_: &mut Session, _: &Value) -> Result<Value> {
     Err(EngineError::Other("not available yet in EffectCraft".into()))
 }

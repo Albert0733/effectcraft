@@ -12,6 +12,8 @@
 //!   Next Blending Mode | layer.setBlendMode {"step":1} | Shift+=
 //!   ---                                       separator
 //!   @effects                                  the effect categories (Effect menu)
+//!   @dynamic:history                          entries computed from the session when the menu
+//!                                             opens ([`dynamic`]: recent files, undo history…)
 //! [mac] Quit EffectCraft | app.quit           only on macOS ([!mac] = everywhere else)
 //! ```
 //!
@@ -35,11 +37,120 @@ use crate::commands::{self, CommandSpec};
 pub enum MenuNode {
     Item(MenuEntry),
     Separator,
-    Submenu { label: String, children: Vec<MenuNode> },
+    Submenu {
+        label: String,
+        children: Vec<MenuNode>,
+    },
+    /// Entries computed when the menu opens (see [`dynamic`]).
+    Dynamic {
+        name: String,
+    },
+}
+
+/// Frontend state dynamic menus depend on.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DynCtx<'a> {
+    /// The current workspace (Window ▸ Assign Shortcut to "…" Workspace).
+    pub workspace: Option<&'a str>,
+}
+
+fn file_name(p: &str) -> String {
+    std::path::Path::new(p).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| p.to_string())
+}
+
+fn dyn_entry(label: String, command: &str, params: Value) -> MenuEntry {
+    MenuEntry { label, command: command.into(), params, shortcut: None }
+}
+
+/// The bindable holding shortcut `keys` in the active preset (its label).
+fn holder_of(s: &Session, keys: &str) -> Option<String> {
+    let t = s.shortcuts();
+    t.bindables.iter().find(|b| t.keys.get(&b.key).is_some_and(|k| k.iter().any(|k| k == keys))).map(|b| b.label.clone())
+}
+
+/// The entries of a `@dynamic:<name>` node, and the disabled placeholder shown when there are
+/// none: `recentProjects`, `recentFootage`, `recentPresets`, `history` (undo steps, newest
+/// first), `view3dShortcuts`, `workspaceShortcuts` and `openViewers` (open compositions other
+/// than the active one).
+pub fn dynamic(s: &Session, name: &str, cx: &DynCtx) -> (Vec<MenuEntry>, Option<&'static str>) {
+    use serde_json::json;
+    let indexed = |list: &[String], cmd: &str, stem: bool| -> Vec<MenuEntry> {
+        list.iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let n =
+                    if stem { std::path::Path::new(p).file_stem().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| p.clone()) } else { file_name(p) };
+                dyn_entry(n, cmd, json!({"index": i}))
+            })
+            .collect()
+    };
+    match name {
+        "recentProjects" => (indexed(&s.prefs.recent_projects, "file.openRecent", false), Some("No Recent Projects")),
+        "recentFootage" => (indexed(&s.prefs.recent_footage, "file.importRecent", false), Some("No Recent Footage")),
+        "recentPresets" => (indexed(&s.prefs.recent_presets, "anim.applyRecentPreset", true), Some("No Recent Presets")),
+        "history" => (
+            s.history.undo.iter().rev().enumerate().map(|(i, (l, _))| dyn_entry(format!("Undo {l}"), "edit.history", json!({"steps": i + 1}))).collect(),
+            Some("No History"),
+        ),
+        "view3dShortcuts" => (
+            ["F10", "F11", "F12"]
+                .iter()
+                .map(|k| {
+                    let label = match holder_of(s, k) {
+                        Some(h) => format!("{k} (Replace “{h}”)"),
+                        None => k.to_string(),
+                    };
+                    dyn_entry(label, "view.assign3dShortcut", json!({"slot": k}))
+                })
+                .collect(),
+            None,
+        ),
+        "workspaceShortcuts" => (
+            ["Shift+F10", "Shift+F11", "Shift+F12"]
+                .iter()
+                .map(|k| {
+                    let label = match holder_of(s, k) {
+                        Some(h) => format!("{k} (Replace “{h}”)"),
+                        None => k.to_string(),
+                    };
+                    let mut p = json!({"slot": k});
+                    if let Some(w) = cx.workspace {
+                        p["workspace"] = json!(w);
+                    }
+                    dyn_entry(label, "window.assignWorkspaceShortcut", p)
+                })
+                .collect(),
+            None,
+        ),
+        "openViewers" => (
+            s.state
+                .open_comps
+                .iter()
+                .filter(|c| Some(**c) != s.state.active_comp)
+                .filter_map(|c| s.project.item(*c).map(|i| dyn_entry(format!("Composition: {}", i.name), "comp.open", json!({"comp": c.0}))))
+                .collect(),
+            None,
+        ),
+        _ => (vec![], None),
+    }
+}
+
+/// Display label of a submenu (the "Assign Shortcut to …" submenus name the current view or
+/// workspace, like After Effects).
+pub fn submenu_label(s: &Session, label: &str, cx: &DynCtx) -> String {
+    match label {
+        "Assign Shortcut to 3D View" => {
+            let v = s.active_comp_id().and_then(|c| s.state.views3d.get(&c)).map(|v| v.current).unwrap_or_default();
+            let name = crate::commands::find(crate::commands::view_command(v)).map(|c| c.label).unwrap_or("Active Camera");
+            format!("Assign Shortcut to “{name}”")
+        }
+        "Assign Shortcut to Workspace" => format!("Assign Shortcut to “{}” Workspace", cx.workspace.unwrap_or("Default")),
+        _ => label.to_string(),
+    }
 }
 
 /// A clickable menu entry.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct MenuEntry {
     pub label: String,
     pub command: String,
@@ -81,7 +192,7 @@ pub fn entries() -> Vec<(Vec<String>, &'static MenuEntry)> {
         for n in nodes {
             match n {
                 MenuNode::Item(e) => out.push((path.clone(), e)),
-                MenuNode::Separator => {}
+                MenuNode::Separator | MenuNode::Dynamic { .. } => {}
                 MenuNode::Submenu { label, children } => {
                     path.push(label.clone());
                     rec(children, path, out);
@@ -97,7 +208,27 @@ pub fn entries() -> Vec<(Vec<String>, &'static MenuEntry)> {
 
 /// Display label of an entry: label names come from Settings ▸ Labels.
 pub fn entry_label(s: &Session, e: &MenuEntry) -> String {
+    let comp_name = || s.active_comp_id().and_then(|c| s.project.item(c)).map(|i| i.name.clone()).unwrap_or_else(|| "(none)".into());
+    let layer_name =
+        || s.active_comp().and_then(|c| s.state.selected_layers.first().and_then(|l| c.layer(*l))).map(|l| l.name.clone()).unwrap_or_else(|| "(none)".into());
     match e.command.as_str() {
+        // Window menu: the panels' current viewer instances.
+        "window.panel" => match e.params.get("panel").and_then(Value::as_str) {
+            Some("composition") => format!("Composition: {}", comp_name()),
+            Some("timeline") => format!("Timeline: {}", comp_name()),
+            Some("flowchart") => format!("Flowchart: {}", comp_name()),
+            Some("layer") => format!("Layer: {}", layer_name()),
+            Some("effectControls") if e.label == "Effect Controls" => format!("Effect Controls: {}", layer_name()),
+            // The footage shown in the Footage panel (else the selected footage).
+            Some("footage") => {
+                let shown = s.state.footage_panel.as_ref().and_then(|f| s.project.item(f.item));
+                let f = shown.or_else(|| {
+                    s.state.project_selection.iter().filter_map(|i| s.project.item(*i)).find(|i| matches!(i.kind, effectcraft_project::ItemKind::Footage(_)))
+                });
+                format!("Footage: {}", f.map(|i| i.name.clone()).unwrap_or_else(|| "(none)".into()))
+            }
+            _ => e.label.clone(),
+        },
         "edit.label" => match e.params.get("label").and_then(Value::as_str).and_then(effectcraft_color::Label::from_name) {
             Some(l) if l != effectcraft_color::Label::None => s.prefs.label_name(l),
             _ => e.label.clone(),
@@ -109,6 +240,9 @@ pub fn entry_label(s: &Session, e: &MenuEntry) -> String {
 /// Check-mark state of an entry (`None` = not a toggle / radio entry). Frontend-only toggles
 /// (rulers, grid…) are answered by the frontend.
 pub fn checked(s: &Session, command: &str, params: &Value) -> Option<bool> {
+    if command == "help.enableLogging" {
+        return Some(crate::logging::is_enabled());
+    }
     let comp = s.active_comp()?;
     let layer = s.state.selected_layers.first().and_then(|l| comp.layer(*l));
     let pstr = |k: &str| params.get(k).and_then(Value::as_str);
@@ -248,6 +382,10 @@ pub fn parse(text: &str, mac: bool) -> Result<Vec<MenuNode>, String> {
                 out.extend(effect_categories());
                 continue;
             }
+            if let Some(name) = l.body.strip_prefix("@dynamic:") {
+                out.push(MenuNode::Dynamic { name: name.trim().to_string() });
+                continue;
+            }
             let mut parts = l.body.split(" | ");
             let label = parts.next().unwrap_or_default().trim().to_string();
             match parts.next() {
@@ -333,6 +471,8 @@ File
     New Folder | project.newFolder
   Open Project... | file.open
   Open Recent
+    @dynamic:recentProjects
+    ---
     Clear Recent Projects | file.clearRecent
   ---
   Close | file.close
@@ -341,6 +481,7 @@ File
   Save As
     Save As... | file.saveAs
     Save a Copy... | file.saveCopy
+    Save a Copy As XML... | file.saveCopyAsXml
   Increment and Save | file.incrementAndSave
   Revert | file.revert
   ---
@@ -351,6 +492,10 @@ File
     Solid... | file.importSolid
     Lottie... | file.importLottie
     Essential Graphics Template... | essential.importTemplate
+  Import Recent Footage
+    @dynamic:recentFootage
+    ---
+    Clear Recent Footage | file.clearRecentFootage
   Export
     Add to Render Queue | renderQueue.add
     Lottie JSON... | file.exportLottie
@@ -388,6 +533,7 @@ File
     File... | file.replaceFootage
     Placeholder... | file.replaceWithPlaceholder
     Solid... | file.replaceWithSolid
+    With Layered Comp | file.replaceWithLayeredComp
   Reload Footage | file.reloadFootage
   Reveal in Finder | file.revealInFinder
   ---
@@ -397,6 +543,8 @@ File
 Edit
   Undo | edit.undo
   Redo | edit.redo
+  History
+    @dynamic:history
   ---
   Quick Apply... | app.commandPalette
   ---
@@ -508,6 +656,10 @@ Composition
   ---
   Composition Flowchart | comp.flowchart
   Composition Mini-Flowchart | comp.miniFlowchart
+  ---
+  VR
+    Create VR Environment... | comp.vr.createEnvironment
+    Extract Cubemap... | comp.vr.extractCubemap
 Layer
   New
     Text | layer.newText
@@ -760,6 +912,10 @@ Effect
 Animation
   Save Animation Preset... | anim.savePreset
   Apply Animation Preset... | anim.applyPreset
+  Recent Animation Presets
+    @dynamic:recentPresets
+    ---
+    Clear Recent Presets | anim.clearRecentPresets
   Browse Presets... | anim.browsePresets
   Text Animation Presets
     Typewriter | layer.applyTextPreset {"preset":"typewriter"}
@@ -922,6 +1078,8 @@ View
     Custom View 3 | view.3d.custom3
     ---
     Reset 3D View | view.reset3DView
+  Assign Shortcut to 3D View
+    @dynamic:view3dShortcuts
   Switch to Last 3D View | view.3d.last | Escape
   Look at Selected Layers | view.lookAtSelected
   Look at All Layers | view.lookAtAll
@@ -951,6 +1109,8 @@ Window
     Save Changes to this Workspace | window.saveWorkspace
     Save as New Workspace... | window.saveWorkspaceAs
     Edit Workspaces... | window.editWorkspaces
+  Assign Shortcut to Workspace
+    @dynamic:workspaceShortcuts
   ---
   Align | window.panel {"panel":"align"}
   Audio | window.panel {"panel":"audio"} | Cmd+4
@@ -984,6 +1144,7 @@ Window
   Project | window.panel {"panel":"project"} | Cmd+0
   Render Queue | window.panel {"panel":"renderQueue"} | Cmd+Alt+0
   Timeline | window.panel {"panel":"timeline"}
+  @dynamic:openViewers
 Help
   EffectCraft Help... | help.docs {"page":"help"} | F1
   Scripting Help... | help.docs {"page":"scripting"}
@@ -991,6 +1152,10 @@ Help
   Effect Reference... | help.docs {"page":"effects"}
   Animation Presets... | anim.browsePresets
   Keyboard Shortcuts... | app.keyboardShortcuts
+  ---
+  System Compatibility Report... | help.systemReport
+  Enable Logging | help.enableLogging
+  Reveal Logging File | help.revealLogFile
   ---
   Join the ArtCraft Discord... | help.discord
   Provide Feedback... | help.reportIssue
