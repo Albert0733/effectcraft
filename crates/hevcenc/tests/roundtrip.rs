@@ -1,0 +1,273 @@
+//! Round trips through the filmcraft-hevc decoder and (when installed) ffmpeg: decoded pictures must
+//! equal the encoder's own reconstruction bit-exactly.
+
+use effectcraft_hevcenc::{Encoder, EncoderConfig, Frame, Profile, RateControl};
+use std::process::Command;
+
+struct Pic {
+    w: usize,
+    y: Vec<u16>,
+    u: Vec<u16>,
+    v: Vec<u16>,
+}
+
+impl Pic {
+    fn frame(&self) -> Frame<'_> {
+        Frame { y: &self.y, u: &self.u, v: &self.v, y_stride: self.w, uv_stride: self.w / 2 }
+    }
+}
+
+/// Smooth gradients with a few hard-edged shapes, translated by (dx, dy) samples.
+fn synth(w: usize, h: usize, bd: u32, dx: i32, dy: i32) -> Pic {
+    let max = ((1u32 << bd) - 1) as f64;
+    let mut y = vec![0u16; w * h];
+    let mut u = vec![0u16; w * h / 4];
+    let mut v = vec![0u16; w * h / 4];
+    let luma = |x: i32, yy: i32| -> f64 {
+        let (fx, fy) = ((x - dx) as f64, (yy - dy) as f64);
+        let mut l = 0.25 + 0.5 * (fx / 97.0).sin().abs() * 0.6 + 0.3 * (fy / 61.0).cos().powi(2);
+        // a disc and a rectangle
+        if (fx - 40.0).powi(2) + (fy - 30.0).powi(2) < 18.0f64.powi(2) {
+            l = 0.85;
+        }
+        if (70.0..110.0).contains(&fx) && (50.0..64.0).contains(&fy) {
+            l = 0.12;
+        }
+        // fine texture
+        l += 0.03 * ((fx * 0.9).sin() * (fy * 0.7).cos());
+        l.clamp(0.0, 1.0)
+    };
+    for yy in 0..h {
+        for x in 0..w {
+            y[yy * w + x] = (luma(x as i32, yy as i32) * max).round() as u16;
+        }
+    }
+    for yy in 0..h / 2 {
+        for x in 0..w / 2 {
+            let (fx, fy) = ((2 * x) as i32 - dx, (2 * yy) as i32 - dy);
+            let cu = 0.5 + 0.2 * ((fx as f64) / 53.0).sin();
+            let cv = 0.5 + 0.2 * ((fy as f64) / 37.0).cos() * if (fx / 16 + fy / 16) % 2 == 0 { 1.0 } else { -0.5 };
+            u[yy * w / 2 + x] = (cu * max).round() as u16;
+            v[yy * w / 2 + x] = (cv * max).round() as u16;
+        }
+    }
+    Pic { w, y, u, v }
+}
+
+fn psnr(a: &[u16], b: &[u16], bd: u32) -> f64 {
+    let max = ((1u32 << bd) - 1) as f64;
+    let mse = a.iter().zip(b).map(|(&x, &y)| (x as f64 - y as f64).powi(2)).sum::<f64>() / a.len() as f64;
+    if mse == 0.0 { 99.0 } else { 10.0 * (max * max / mse).log10() }
+}
+
+struct Run {
+    packets: Vec<Vec<u8>>,
+    keys: Vec<bool>,
+    recons: Vec<[Vec<u16>; 3]>,
+    hvcc: Vec<u8>,
+    sets: [Vec<u8>; 3],
+    psnr_y: Vec<f64>,
+}
+
+fn encode(cfg: EncoderConfig, pics: &[Pic]) -> Run {
+    let bd = cfg.profile.bit_depth() as u32;
+    let mut enc = Encoder::new(cfg).unwrap();
+    let mut run = Run { packets: vec![], keys: vec![], recons: vec![], hvcc: enc.hvcc(), sets: enc.parameter_sets(), psnr_y: vec![] };
+    for p in pics {
+        let pkt = enc.encode(&p.frame());
+        let rec = enc.last_reconstruction().unwrap().clone();
+        run.psnr_y.push(psnr(&p.y, &rec[0], bd));
+        run.packets.push(pkt.data);
+        run.keys.push(pkt.keyframe);
+        run.recons.push(rec);
+    }
+    run
+}
+
+/// Decode with filmcraft-hevc and compare with the reconstructions.
+fn check_filmcraft(run: &Run, w: usize, h: usize) {
+    let mut dec = filmcraft_hevc::Decoder::from_hvcc(&run.hvcc).unwrap();
+    let mut pics = Vec::new();
+    for (i, p) in run.packets.iter().enumerate() {
+        pics.extend(dec.decode(p, i as i64).unwrap());
+    }
+    pics.extend(dec.flush());
+    assert_eq!(pics.len(), run.packets.len(), "decoded picture count");
+    for (i, pic) in pics.iter().enumerate() {
+        assert_eq!((pic.width as usize, pic.height as usize), (w, h));
+        assert_eq!(pic.pts, i as i64);
+        let rec = &run.recons[i];
+        for (c, plane) in [&pic.y, &pic.u, &pic.v].into_iter().enumerate() {
+            let (pw, ph, stride) = if c == 0 { (w, h, pic.y_stride) } else { (w / 2, h / 2, pic.uv_stride) };
+            for yy in 0..ph {
+                for x in 0..pw {
+                    let got = plane.get(yy * stride + x);
+                    let want = rec[c][yy * pw + x];
+                    assert_eq!(got, want, "picture {i} plane {c} at ({x}, {yy})");
+                }
+            }
+        }
+    }
+}
+
+fn annexb(run: &Run) -> Vec<u8> {
+    let mut out = Vec::new();
+    for s in &run.sets {
+        out.extend_from_slice(&[0, 0, 0, 1]);
+        out.extend_from_slice(s);
+    }
+    for p in &run.packets {
+        let mut i = 0;
+        while i < p.len() {
+            let n = u32::from_be_bytes([p[i], p[i + 1], p[i + 2], p[i + 3]]) as usize;
+            out.extend_from_slice(&[0, 0, 0, 1]);
+            out.extend_from_slice(&p[i + 4..i + 4 + n]);
+            i += 4 + n;
+        }
+    }
+    out
+}
+
+fn ffmpeg_available() -> bool {
+    Command::new("ffmpeg").arg("-version").output().map(|o| o.status.success()).unwrap_or(false)
+}
+
+/// Decode the Annex-B stream with ffmpeg and require bit-exact equality and an empty stderr.
+fn check_ffmpeg(run: &Run, w: usize, h: usize, bd: u32, tag: &str) {
+    if !ffmpeg_available() {
+        eprintln!("ffmpeg not found; skipping the ffmpeg oracle");
+        return;
+    }
+    let dir = std::env::temp_dir();
+    let uniq = format!("{}-{}-{}", tag, std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos());
+    let inp = dir.join(format!("hevcenc-{uniq}.hevc"));
+    let out = dir.join(format!("hevcenc-{uniq}.yuv"));
+    std::fs::write(&inp, annexb(run)).unwrap();
+    let pix = if bd == 8 { "yuv420p" } else { "yuv420p10le" };
+    let o = Command::new("ffmpeg")
+        .args(["-v", "error", "-xerror", "-y", "-f", "hevc", "-i"])
+        .arg(&inp)
+        .args(["-f", "rawvideo", "-pix_fmt", pix])
+        .arg(&out)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&o.stderr).to_string();
+    let data = std::fs::read(&out).unwrap_or_default();
+    let _ = std::fs::remove_file(&inp);
+    let _ = std::fs::remove_file(&out);
+    assert!(o.status.success() && stderr.trim().is_empty(), "ffmpeg failed: {stderr}");
+    let bps = if bd == 8 { 1 } else { 2 };
+    let frame_bytes = (w * h + 2 * (w / 2) * (h / 2)) * bps;
+    assert_eq!(data.len(), frame_bytes * run.packets.len(), "ffmpeg output size");
+    for (i, rec) in run.recons.iter().enumerate() {
+        let mut off = i * frame_bytes;
+        for (c, plane) in rec.iter().enumerate() {
+            let pw = if c == 0 { w } else { w / 2 };
+            for (k, &want) in plane.iter().enumerate() {
+                let got = if bd == 8 { data[off] as u16 } else { u16::from_le_bytes([data[off], data[off + 1]]) };
+                assert_eq!(got, want, "ffmpeg: picture {i} plane {c} at ({}, {})", k % pw, k / pw);
+                off += bps;
+            }
+        }
+    }
+}
+
+fn cfg(w: u32, h: u32, qp: u8, keyint: u32, profile: Profile) -> EncoderConfig {
+    let mut c = EncoderConfig::new(w, h, 30, 1);
+    c.rate = RateControl::ConstantQp(qp);
+    c.keyint = keyint;
+    c.profile = profile;
+    c
+}
+
+#[test]
+fn intra_8bit_quality_and_decoders() {
+    let (w, h) = (192, 128);
+    let pics = vec![synth(w, h, 8, 0, 0)];
+    let run = encode(cfg(w as u32, h as u32, 22, 1, Profile::Main), &pics);
+    eprintln!("intra QP22: {} bytes, PSNR-Y {:.2}", run.packets[0].len(), run.psnr_y[0]);
+    assert!(run.psnr_y[0] > 35.0, "PSNR {}", run.psnr_y[0]);
+    check_filmcraft(&run, w, h);
+    check_ffmpeg(&run, w, h, 8, "intra8");
+}
+
+#[test]
+fn inter_8bit_moving_pattern() {
+    let (w, h) = (160, 96);
+    let pics: Vec<Pic> = (0..6).map(|i| synth(w, h, 8, 3 * i, i)).collect();
+    let run = encode(cfg(w as u32, h as u32, 27, 30, Profile::Main), &pics);
+    let sizes: Vec<usize> = run.packets.iter().map(|p| p.len()).collect();
+    eprintln!("inter sizes {sizes:?} psnr {:?}", run.psnr_y);
+    assert_eq!(run.keys, vec![true, false, false, false, false, false]);
+    let p_avg = sizes[1..].iter().sum::<usize>() as f64 / 5.0;
+    assert!(p_avg < sizes[0] as f64 * 0.6, "P frames {p_avg} vs I {}", sizes[0]);
+    assert!(run.psnr_y.iter().all(|&p| p > 33.0));
+    check_filmcraft(&run, w, h);
+    check_ffmpeg(&run, w, h, 8, "inter8");
+}
+
+#[test]
+fn odd_multiple_sizes_and_cropping() {
+    for (w, h) in [(34usize, 18usize), (66, 38), (8, 8), (130, 72)] {
+        let pics: Vec<Pic> = (0..3).map(|i| synth(w, h, 8, i, 2 * i)).collect();
+        let run = encode(cfg(w as u32, h as u32, 30, 2, Profile::Main), &pics);
+        check_filmcraft(&run, w, h);
+        check_ffmpeg(&run, w, h, 8, &format!("size{w}x{h}"));
+    }
+}
+
+#[test]
+fn odd_dimensions_are_rejected() {
+    assert!(Encoder::new(EncoderConfig::new(33, 17, 30, 1)).is_err());
+}
+
+#[test]
+fn main10_round_trip() {
+    let (w, h) = (96, 64);
+    let pics: Vec<Pic> = (0..4).map(|i| synth(w, h, 10, 2 * i, -i)).collect();
+    let run = encode(cfg(w as u32, h as u32, 24, 3, Profile::Main10), &pics);
+    eprintln!("main10 psnr {:?}", run.psnr_y);
+    assert!(run.psnr_y[0] > 35.0);
+    check_filmcraft(&run, w, h);
+    check_ffmpeg(&run, w, h, 10, "main10");
+}
+
+#[test]
+fn qp_extremes() {
+    let (w, h) = (64, 64);
+    for qp in [0u8, 51] {
+        let pics: Vec<Pic> = (0..2).map(|i| synth(w, h, 8, i, i)).collect();
+        let run = encode(cfg(w as u32, h as u32, qp, 30, Profile::Main), &pics);
+        check_filmcraft(&run, w, h);
+        check_ffmpeg(&run, w, h, 8, &format!("qp{qp}"));
+    }
+}
+
+#[test]
+fn bitrate_mode_hits_target() {
+    let (w, h) = (192, 128);
+    let pics: Vec<Pic> = (0..30).map(|i| synth(w, h, 8, i, i / 2)).collect();
+    let mut c = EncoderConfig::new(w as u32, h as u32, 30, 1);
+    c.rate = RateControl::Bitrate { kbps: 400 };
+    c.keyint = 15;
+    let run = encode(c, &pics);
+    let bits: usize = run.packets.iter().map(|p| p.len() * 8).sum();
+    let kbps = bits as f64 / (pics.len() as f64 / 30.0) / 1000.0;
+    eprintln!("bitrate mode: {kbps:.1} kbit/s for a 400 kbit/s target");
+    assert!(kbps > 400.0 / 2.0 && kbps < 400.0 * 2.0, "{kbps}");
+    check_filmcraft(&run, w, h);
+}
+
+#[test]
+fn hvcc_layout() {
+    let enc = Encoder::new(cfg(64, 48, 28, 30, Profile::Main10)).unwrap();
+    let h = enc.hvcc();
+    assert_eq!(h[0], 1);
+    assert_eq!(h[1] & 31, 2); // Main 10
+    assert_eq!(h[21] & 3, 3); // lengthSizeMinusOne
+    assert_eq!(h[22], 3); // arrays
+    let sets = enc.parameter_sets();
+    assert_eq!(sets[0][0] >> 1, 32);
+    assert_eq!(sets[1][0] >> 1, 33);
+    assert_eq!(sets[2][0] >> 1, 34);
+}
