@@ -612,6 +612,9 @@ pub struct UiState {
     /// Flowchart panel options (layers, effects, solids, direction, root comp).
     #[serde(default)]
     pub flowchart: crate::panels::flowchart::FlowOptions,
+    /// Lumetri Scopes panel options.
+    #[serde(default)]
+    pub scopes: crate::panels::scopes_panel::ScopesState,
 }
 
 impl Default for UiState {
@@ -665,6 +668,7 @@ impl Default for UiState {
             anim_tools: AnimToolsState::default(),
             mini_flowchart: None,
             flowchart: Default::default(),
+            scopes: Default::default(),
         }
     }
 }

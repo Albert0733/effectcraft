@@ -17,13 +17,7 @@ macro_rules! stub {
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
-        // Layer ▸ New (3D / content-aware fill).
-        stub!("layer.newContentAwareFill", "Content-Aware Fill Layer...", ["Layer", "New"], "{}"),
         // Mask options not in the mask model yet; pen / vertex editing (timeline milestone).
-        // Time (timeline milestone).
-        stub!("layer.alignVideoToData", "Align Video to Data", ["Layer", "Time"], "{}"),
-        stub!("layer.autoTrace", "Auto-trace...", ["Layer"], "{}"),
-        stub!("layer.sceneEditDetection", "Scene Edit Detection...", ["Layer"], "{}"),
         // Cameras / lights / materials / 3D views (3D milestone).
         stub!("camera.stereoRig", "Create Stereo 3D Rig", ["Layer", "Camera"], "{}"),
         stub!("camera.orbitNull", "Create Orbit Null", ["Layer", "Camera"], "{}"),
@@ -39,7 +33,5 @@ pub fn specs() -> Vec<CommandSpec> {
         // Keyframes / text / tracking.
         stub!("keys.audioToKeyframes", "Convert Audio to Keyframes", ["Animation", "Keyframe Assistant"], "{}"),
         stub!("keys.rpfCameraImport", "RPF Camera Import", ["Animation", "Keyframe Assistant"], "{}"),
-        // Workspaces and panels that don't exist yet.
-        stub!("window.unavailablePanel", "Panel", [], "{panel}"),
     ]
 }

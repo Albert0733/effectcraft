@@ -1986,6 +1986,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                         actions.push(("effect.apply".into(), json!({"effect": e, "layers": [l.0]})));
                     }
                 }
+                crate::panels::DragPayload::Files(paths) => actions.push(("mediaBrowser.import".into(), json!({"paths": paths, "addToComp": true}))),
                 crate::panels::DragPayload::Property { .. } => {}
             }
             egui::DragAndDrop::clear_payload(&ctx);

@@ -942,19 +942,19 @@ Window
   Audio | window.panel {"panel":"audio"} | Cmd+4
   Brushes | window.panel {"panel":"brushes"} | Cmd+9
   Character | window.panel {"panel":"character"} | Cmd+6
-  Content-Aware Fill | window.unavailablePanel {"panel":"contentAwareFill"}
+  Content-Aware Fill | window.panel {"panel":"contentAwareFill"}
   Effects & Presets | window.panel {"panel":"effectsPresets"} | Cmd+5
   Essential Graphics | window.panel {"panel":"essentialGraphics"}
   Info | window.panel {"panel":"info"} | Cmd+2
-  Lumetri Scopes | window.unavailablePanel {"panel":"lumetriScopes"}
+  Lumetri Scopes | window.panel {"panel":"lumetriScopes"}
   Mask Interpolation | window.panel {"panel":"maskInterpolation"}
-  Media Browser | window.unavailablePanel {"panel":"mediaBrowser"}
-  Metadata | window.unavailablePanel {"panel":"metadata"}
+  Media Browser | window.panel {"panel":"mediaBrowser"}
+  Metadata | window.panel {"panel":"metadata"}
   Motion Sketch | window.panel {"panel":"motionSketch"}
   Paint | window.panel {"panel":"paint"} | Cmd+8
   Paragraph | window.panel {"panel":"paragraph"} | Cmd+7
   Preview | window.panel {"panel":"preview"} | Cmd+3
-  Progress | window.unavailablePanel {"panel":"progress"}
+  Progress | window.panel {"panel":"progress"}
   Properties | window.panel {"panel":"properties"}
   Script Console | window.panel {"panel":"scriptConsole"}
   Smoother | window.panel {"panel":"smoother"}
@@ -965,7 +965,7 @@ Window
   Composition | window.panel {"panel":"composition"}
   Effect Controls | window.panel {"panel":"effectControls"} | F3
   Flowchart | window.panel {"panel":"flowchart"}
-  Footage | window.unavailablePanel {"panel":"footage"}
+  Footage | window.panel {"panel":"footage"}
   Layer | window.panel {"panel":"layer"}
   Project | window.panel {"panel":"project"} | Cmd+0
   Render Queue | window.panel {"panel":"renderQueue"} | Cmd+Alt+0

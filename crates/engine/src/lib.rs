@@ -13,8 +13,10 @@ pub mod camera_track;
 pub mod commands;
 pub mod config;
 pub mod demo;
+pub mod jobs;
 pub mod links;
 pub mod mask_track;
+pub mod media_browser;
 pub mod menus;
 pub mod offload;
 pub mod prefs;
@@ -43,6 +45,7 @@ pub use effectcraft_effects as effects;
 pub use effectcraft_geom as geom;
 pub use effectcraft_keyframe as keyframe;
 pub use effectcraft_project as project;
+pub use effectcraft_raster as raster;
 pub use effectcraft_render as render;
 pub use effectcraft_text as text;
 pub use effectcraft_time as time;
@@ -216,6 +219,15 @@ pub struct EditorState {
     /// Essential Graphics can expose).
     #[serde(default)]
     pub essential_solo: bool,
+    /// The Footage panel: the footage shown, its time and In/Out marks (source time).
+    #[serde(default)]
+    pub footage_panel: Option<commands::footage_panel::FootageView>,
+    /// Media Browser: the folder shown and the favourites.
+    #[serde(default)]
+    pub media_browser: media_browser::BrowserState,
+    /// Content-Aware Fill panel settings.
+    #[serde(default)]
+    pub content_fill: commands::content_fill::FillSettings,
 }
 
 fn one_view() -> u8 {
@@ -322,6 +334,11 @@ pub struct Session {
     pub offload: Option<Arc<dyn offload::Offload>>,
     /// Analyses running in the [`Session::offload`] worker.
     pub offloaded: Vec<offload::OffloadedJob>,
+    /// Generic background tasks (Content-Aware Fill, Scene Edit Detection), see [`jobs`].
+    pub tasks: Vec<jobs::Task>,
+    /// Finished tasks, newest last (Progress panel, `jobs.list`).
+    pub job_log: Vec<jobs::JobRecord>,
+    pub next_task_id: u64,
 }
 
 /// A script to run (see [`Session::script`]).
@@ -378,6 +395,9 @@ impl Default for Session {
             script: None,
             offload: None,
             offloaded: vec![],
+            tasks: vec![],
+            job_log: vec![],
+            next_task_id: 1,
         }
     }
 }
@@ -634,6 +654,7 @@ impl Session {
         self.stop_roto();
         self.roto_job = None;
         self.roto_pending.clear();
+        self.drop_tasks();
         p.fix_next_id();
         upgrade_effects(&mut p);
         self.project = Arc::new(p);
@@ -742,5 +763,7 @@ pub fn text_families() -> Vec<String> {
 }
 #[cfg(test)]
 mod tests_paint;
+#[cfg(test)]
+mod tests_panels;
 #[cfg(test)]
 mod tests_roto;

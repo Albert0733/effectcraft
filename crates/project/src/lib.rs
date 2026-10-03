@@ -118,6 +118,9 @@ pub struct ProjectSettings {
     /// when a GPU adapter exists) or Mercury Software Only (`false`, the CPU compositor).
     #[serde(default = "yes")]
     pub gpu_acceleration: bool,
+    /// The project's comment (Metadata panel).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub comment: String,
 }
 
 impl Default for ProjectSettings {
@@ -131,6 +134,7 @@ impl Default for ProjectSettings {
             frame_start: 0,
             audio_sample_rate: 48_000,
             gpu_acceleration: true,
+            comment: String::new(),
         }
     }
 }

@@ -24,9 +24,8 @@ renders); stroke taper/wave and multi-segment dashes; variable mask feather poin
 rendering of 3D runs and adjustment layers; Render Queue field render, crop/resize and templates;
 approximated effects (Subspace Warp, Key Cleaner) and Liquify's viewer brush; Advanced 3D motion blur
 and blend modes; a few viewer and colour-management menu items; OpenType features and variable
-font axes; AI/EPS/PDF import; more codecs; 59 preferences not yet wired; ScriptUI;
-Lumetri Scopes, Footage, Media Browser and Metadata panels; Content-Aware Fill; face tracking; and
-the "better than After Effects" items (a plug-in API, branching history, GPU particles).
+font axes; AI/EPS/PDF import; more codecs; 59 preferences not yet wired; ScriptUI; face
+tracking; and the "better than After Effects" items (a plug-in API, branching history, GPU particles).
 
 The sections below are the original audit (morning of 2 October, ≈ 64%) and its updates, kept for
 history.
@@ -166,6 +165,25 @@ style runs; the Layer Style dialog (LYR-9); Graph Editor snapping to markers and
 (ANM-4; the reference graph existed); viewer ROI resize handles, Pan Behind snapping and 3D
 Reference Axes; Animate Text ▸ Variable Font Axes. Remaining in these rows: Lottie can't carry
 taper/wave, Advanced 3D's DOF has no iris shapes, and variable axes don't change advances.
+
+## Update: M13.6 panels and content tools
+
+The last placeholder panels became real panels with automation ids: **Lumetri Scopes**
+(waveform RGB / Luma / YC, vectorscope YUV / HLS, histogram, parade RGB / YUV; Rec. 601 / 709 /
+2020, 8-bit or float scale, clamp; `scopes.analyze`), **Footage** (double-click footage: its own
+time ruler, play, In/Out, Overlay Edit and Ripple Insert Edit; `footage.*`), **Media Browser**
+(desktop file system, favourites, thumbnails, import and drag to the Project panel or timeline;
+`mediaBrowser.*`), **Metadata** (codec, size, rate, duration, colour profile, file dates; item
+and project comments; `item.metadata`) and **Progress** (every render and analysis with
+progress and cancel; `jobs.*`). **Content-Aware Fill** (panel and Layer ▸ New ▸ Content-Aware
+Fill Layer): Object / Surface / Edge Blend, Work Area / Entire Duration, Alpha Expansion,
+Lighting Correction and a reference frame from a layer, rendered to a PNG sequence in a Fill
+layer above the source as a background job. **Scene Edit Detection** (markers, split, split and
+precompose), **Auto-trace** (alpha / RGB / luminance, current frame or work area, to the layer
+or a new layer) and **Align Video to Data** (JSON / CSV / TSV time keys) replace their disabled
+menu entries. Not yet: creating a reference frame by editing a still (After Effects hands it to
+Photoshop), Content-Aware Fill's learned model (ours is PatchMatch + flow propagation), and Media
+Browser in the web app.
 
 ## Highest-value gaps, in order
 
