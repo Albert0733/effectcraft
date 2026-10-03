@@ -6,6 +6,7 @@ pub mod dialogs;
 pub mod dialogs_3d;
 pub mod effect_controls;
 pub mod effects_presets;
+pub mod flowchart;
 pub mod forms;
 pub mod fx_widgets;
 pub mod graph;
@@ -91,7 +92,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: PanelKind, rect: Rec
         PanelKind::Layer => layer_panel::show(app, ui, rect),
         PanelKind::Paint => paint_panels::paint(app, ui, rect),
         PanelKind::Brushes => paint_panels::brushes(app, ui, rect),
-        other => misc::placeholder(app, ui, rect, other),
+        PanelKind::Flowchart => flowchart::show(app, ui, rect),
     }
 }
 

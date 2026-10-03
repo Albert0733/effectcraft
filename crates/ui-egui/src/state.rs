@@ -584,6 +584,9 @@ pub struct UiState {
     /// Composition Mini-Flowchart popup position (open when set).
     #[serde(default)]
     pub mini_flowchart: Option<[f32; 2]>,
+    /// Flowchart panel options (layers, effects, solids, direction, root comp).
+    #[serde(default)]
+    pub flowchart: crate::panels::flowchart::FlowOptions,
 }
 
 impl Default for UiState {
@@ -634,6 +637,7 @@ impl Default for UiState {
             layer_view: None,
             anim_tools: AnimToolsState::default(),
             mini_flowchart: None,
+            flowchart: Default::default(),
         }
     }
 }

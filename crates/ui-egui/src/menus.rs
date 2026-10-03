@@ -72,6 +72,8 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("timeline.column", "Show/Hide Timeline Column", [], None),
     uic!("timeline.sourceName", "Source Name / Layer Name", [], None),
     uic!("timeline.search", "Search Timeline", [], None),
+    uic!("flowchart.options", "Flowchart Options", [], None),
+    uic!("flowchart.graph", "Flowchart Graph", [], None),
     uic!("timeline.collapseAll", "Collapse All", [], Some("Cmd+`")),
     uic!("tool.selection", "Selection Tool", [], Some("V")),
     uic!("tool.hand", "Hand Tool", [], Some("H")),
@@ -331,6 +333,7 @@ pub fn invoke(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, params: V
             tl.source_name = params.get("value").and_then(Value::as_bool).unwrap_or(!tl.source_name);
             return Ok(json!({"sourceName": tl.source_name}));
         }
+        "flowchart.options" | "flowchart.graph" => return crate::panels::flowchart::command(app, id, &params),
         "timeline.search" => {
             app.ui.timeline.search = params.get("query").and_then(Value::as_str).unwrap_or_default().to_string();
             app.show_panel(PanelKind::Timeline);
@@ -712,6 +715,13 @@ pub fn frontend(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, p: Valu
             Value::Null
         }
         "comp.flowchart" => {
+            // Chart the active comp; Layer ▸ Reveal ▸ Reveal Layer in Project Flowchart shows
+            // layers and selects the layer's node.
+            app.ui.flowchart.root = app.session.active_comp_id().map(|c| c.0);
+            if let (Some(c), Some(l)) = (app.session.active_comp_id(), app.session.state.selected_layers.first()) {
+                app.ui.flowchart.layers = true;
+                app.ui.flowchart.selected = Some(format!("layer:{}:{}", c.0, l.0));
+            }
             app.show_panel(PanelKind::Flowchart);
             Value::Null
         }

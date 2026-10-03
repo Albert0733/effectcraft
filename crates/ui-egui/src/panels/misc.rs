@@ -1,4 +1,4 @@
-//! Smaller panels: Preview, Audio, History, Markers, the Home screen and placeholders.
+//! Smaller panels: Preview, Audio, History, Markers and placeholders.
 
 use egui::{Align2, Color32, Rect, Sense, Stroke, pos2, vec2};
 use serde_json::json;
