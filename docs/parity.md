@@ -2,18 +2,28 @@
 
 How close EffectCraft is to After Effects 2026, feature by feature, and how much work is left.
 
-## Current status (audit at commit `fa26ad9`, 2 October 2026, late)
+## Current status (audit at commit `978e8d7`, 3 October 2026)
 
 | Measure | Value |
 |---|---|
-| **Feature parity, weighted by tier** (P0 ×3, P1 ×2, P2 ×1) | **≈ 93%** |
-| Unweighted | ≈ 91% |
-| P0 / P1 / P2 | ≈ 96% / 90% / 65% |
-| Features done / partial / missing | 41 / 50 / 1 of 92 (missing: a plug-in API) |
-| **Effects** | **298 of 298** After Effects 2026 effects exist (some still simplified) |
-| Disabled menu entries left | 26 commands (31 menu items) |
-| Remaining work | ≈ 50–55 agent-hours at the pace measured so far (≈ 150 by the original conservative audit scale) |
-| **Wall-clock estimate** | **≈ 11–14 hours** with five agents in parallel; ≈ 6–8 hours for 100% of P0 + P1 |
+| **Feature parity, weighted by tier** (P0 ×3, P1 ×2, P2 ×1) | **≈ 94%** counting every partial feature as half done; ≈ 98% using per-feature fractions |
+| Unweighted | ≈ 94% (half-credit) / 98% (fractions) |
+| P0 / P1 / P2 | ≈ 96% / 92% / 85% (half-credit); 99% / 97% / 96% (fractions) |
+| Features done / partial / missing | 80 / 12 / 0 of 92 |
+| **Effects** | **298 of 298** After Effects 2026 effects exist; 42 still simplified ([effects.md](effects.md)); 58 run on the GPU |
+| Disabled menu entries left | 0 (the stub list is empty) |
+| Remaining work | ≈ 19–22 agent-hours at the pace measured so far (≈ 58 on the conservative audit scale) |
+| **Wall-clock estimate** | **≈ 4–5 hours** with five agents in parallel; ≈ 3 hours for 100% of P0 + P1 |
+
+Partial features: effect implementations (42 simplified effects), the Preview panel's settings
+(range, play from, skip, frame rate, full screen), GPU coverage (Advanced 3D, more GPU effects),
+the web app (no threads for viewer frames and Roto Brush), the Learn panel and Align to Selection /
+Distribute, Advanced 3D (iris shapes, collapsed precomps, extruded strokes), ScriptUI resource
+strings and `onDraw`, Essential Graphics font and scale controls, and the learned-model quality of
+Roto Brush and face tracking (both are classical). Menu items still absent: Save Frame As ▸
+Photoshop Layers / ProEXR, Open in Essential Graphics, Vanishing Point import, Watch Folder.
+
+### Previous audit (commit `fa26ad9`, 2 October 2026, late): ≈ 93%
 
 By area: Layers 98%, Output 95%, Compositions 95%, Automation 96%, Paint 95%, Text 95%, Import 96%,
 Animation 94%, Masks 94%, Preview 94%, Interface 93%, Shapes 93%, 3D 91%, Audio 90%, Project 90%,
