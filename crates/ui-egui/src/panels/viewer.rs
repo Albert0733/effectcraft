@@ -1097,8 +1097,11 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         let merge = format!("viewer-drag-{}", ui.data(|d| d.get_temp::<u64>(egui::Id::new("viewer-drag-n")).unwrap_or(0)));
         match g {
             Gesture::Pan { start_pan } => {
-                let d = resp.total_drag_delta().unwrap_or_default();
-                app.ui.viewer.pan = [start_pan[0] + d.x, start_pan[1] + d.y];
+                // No total drag on the release frame: keep the pan reached so far (it used to
+                // snap back to where the drag began).
+                if let Some(d) = resp.total_drag_delta() {
+                    app.ui.viewer.pan = [start_pan[0] + d.x, start_pan[1] + d.y];
+                }
             }
             Gesture::Move { layers, start, snap_src } => {
                 let mut d = [cpt[0] - start[0], cpt[1] - start[1]];

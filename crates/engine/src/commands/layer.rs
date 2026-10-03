@@ -689,6 +689,18 @@ fn arrange(s: &mut Session, p: &Value) -> Result<Value> {
     let (cid, ids) = layers_p(s, p)?;
     let how = str_p(p, "to").unwrap_or("front").to_string();
     let index = p.get("index").and_then(Value::as_u64).map(|i| i as usize);
+    // `above`: put the layers right above that one (the timeline's drag to reorder).
+    let above = match p.get("above") {
+        Some(v) => {
+            let comp = s.project.comp(cid).ok_or(EngineError::NoComp)?;
+            let a = resolve_layer(comp, v).ok_or_else(|| bad("layer.arrange", "no such layer for `above`"))?;
+            if ids.contains(&a) {
+                return Err(bad("layer.arrange", "`above` must be a layer that isn't being moved"));
+            }
+            Some(a)
+        }
+        None => None,
+    };
     s.edit("Arrange Layers", None, |proj, _| {
         let comp = proj.comp_mut(cid).ok_or(EngineError::NoComp)?;
         let n = comp.layers.len();
@@ -704,6 +716,7 @@ fn arrange(s: &mut Session, p: &Value) -> Result<Value> {
             }
         });
         let at = match (how.as_str(), index) {
+            _ if above.is_some() => comp.layers.iter().position(|l| Some(l.id) == above).unwrap_or(comp.layers.len()),
             (_, Some(i)) => i.saturating_sub(1).min(comp.layers.len()),
             ("front", _) => 0,
             ("back", _) => comp.layers.len(),
@@ -1144,7 +1157,7 @@ pub fn specs() -> Vec<CommandSpec> {
             p["frames"] = json!(1);
             slip(s, &p)
         }),
-        cmd!("layer.arrange", "Arrange", ["Layer", "Arrange"], None, "{layers?, to: front|forward|backward|back, index?}", has_layers, arrange),
+        cmd!("layer.arrange", "Arrange", ["Layer", "Arrange"], None, "{layers?, to: front|forward|backward|back, index?, above?: layer}", has_layers, arrange),
         cmd!(
             "layer.precompose",
             "Pre-compose...",

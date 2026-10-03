@@ -724,6 +724,15 @@ fn layer_icon(l: &Layer, project: &effectcraft_engine::project::Project) -> Icon
     }
 }
 
+/// Layers being dragged to a new place in the stack (timeline rows).
+fn layer_drag_id() -> egui::Id {
+    egui::Id::new("tl-layer-drag")
+}
+/// Set on the frame the reorder drag is released.
+fn layer_drop_id() -> egui::Id {
+    egui::Id::new("tl-layer-drop")
+}
+
 pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let ctx = ui.ctx().clone();
@@ -1210,10 +1219,22 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     let lpn = lp.with_clip_rect(name_rect.intersect(lp.clip_rect()));
                     lpn.text(pos2(name_rect.min.x, cy), Align2::LEFT_CENTER, display_name(app, layer), Tokens::ui(12.0), name_col);
                 }
-                // Row click → select; double-click → rename; drag → reorder (later).
+                // Row click → select; double-click → rename; drag → reorder.
                 let row_x0 = if vis.num { cw.num } else { cw.name + 16.0 };
-                let row_resp =
-                    ui.interact(Rect::from_min_max(pos2(row_x0, r.min.y), pos2(cw.name_end, r.max.y)), egui::Id::new(("row", layer.id.0)), Sense::click());
+                let row_resp = ui.interact(
+                    Rect::from_min_max(pos2(row_x0, r.min.y), pos2(cw.name_end, r.max.y)),
+                    egui::Id::new(("row", layer.id.0)),
+                    Sense::click_and_drag(),
+                );
+                if row_resp.drag_started() {
+                    // The selected layers move together; an unselected row moves alone.
+                    let moving: Vec<u64> =
+                        if is_sel { comp.layers.iter().filter(|l| selected.contains(&l.id)).map(|l| l.id.0).collect() } else { vec![layer.id.0] };
+                    ctx.data_mut(|d| d.insert_temp(layer_drag_id(), moving));
+                }
+                if row_resp.drag_stopped() {
+                    ctx.data_mut(|d| d.insert_temp(layer_drop_id(), true));
+                }
                 app.auto.add(&format!("timeline.layer.{}.row", layer.id.0), left, &layer.name);
                 if row_resp.clicked() {
                     let m = ui.input(|i| i.modifiers);
@@ -1903,6 +1924,38 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         gp.rect_filled(br, 0.0, t.accent.gamma_multiply(0.12));
         gp.rect_stroke(br, 0.0, Stroke::new(1.0, t.accent), StrokeKind::Middle);
         ctx.data_mut(|d| d.insert_temp(egui::Id::new("tl-box"), br));
+    }
+    // Layer reorder drag: a line where the layers will land; the release moves them there.
+    if let Some(moving) = ctx.data(|d| d.get_temp::<Vec<u64>>(layer_drag_id())) {
+        let dropped = ctx.data_mut(|d| d.remove_temp::<bool>(layer_drop_id())).unwrap_or(false);
+        let layer_rows: Vec<(Rect, LayerId)> = hit_rows.iter().filter(|(_, r)| matches!(r.kind, RowKind::Layer)).map(|(rr, r)| (*rr, r.layer)).collect();
+        if let Some(py) = ui.input(|i| i.pointer.interact_pos().or(i.pointer.latest_pos())).map(|p| p.y)
+            && let Some(last) = layer_rows.last()
+        {
+            // The first layer row whose middle is below the pointer: the layers go above it.
+            let at = layer_rows.iter().position(|(rr, _)| py < rr.center().y);
+            let line_y = at.map(|i| layer_rows[i].0.min.y).unwrap_or(last.0.max.y);
+            let target = at.and_then(|i| layer_rows[i..].iter().find(|(_, l)| !moving.contains(&l.0)).map(|(_, l)| *l));
+            if dropped {
+                ctx.data_mut(|d| d.remove::<Vec<u64>>(layer_drag_id()));
+                // Only when the order changes (no empty undo step for a drop in place).
+                let mut order: Vec<u64> = comp.layers.iter().map(|l| l.id.0).filter(|id| !moving.contains(id)).collect();
+                let at = target.and_then(|t| order.iter().position(|id| *id == t.0)).unwrap_or(order.len());
+                order.splice(at..at, moving.iter().copied());
+                if order != comp.layers.iter().map(|l| l.id.0).collect::<Vec<_>>() {
+                    let params = match target {
+                        Some(t) => json!({"layers": moving, "above": t.0}),
+                        None => json!({"layers": moving, "to": "back"}),
+                    };
+                    actions.push(("layer.arrange".into(), params));
+                }
+            } else {
+                ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
+                p.with_clip_rect(rows_rect).line_segment([pos2(rect.min.x, line_y), pos2(graph_x0, line_y)], Stroke::new(2.0, t.accent));
+            }
+        } else if dropped {
+            ctx.data_mut(|d| d.remove::<Vec<u64>>(layer_drag_id()));
+        }
     }
     if empty.drag_stopped()
         && let Some(br) = ctx.data(|d| d.get_temp::<Rect>(egui::Id::new("tl-box")))

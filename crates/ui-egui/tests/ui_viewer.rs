@@ -502,3 +502,61 @@ fn puppet_marquee_selects_pins_and_alt_drag_works_over_the_art() {
     let sel: Vec<u64> = h.state().session.state.selected_props.iter().map(|(_, u)| *u).collect();
     assert_eq!(sel, vec![bend]);
 }
+
+/// Drag with `button` from `from` to `to` in steps, then release.
+fn drag_with(h: &mut Harness<'_, EffectcraftApp>, button: egui::PointerButton, from: Pos2, to: Pos2) {
+    h.input_mut().events.push(Event::PointerMoved(from));
+    h.input_mut().events.push(Event::PointerButton { pos: from, button, pressed: true, modifiers: Default::default() });
+    h.step();
+    for i in 1..=8 {
+        h.input_mut().events.push(Event::PointerMoved(from + (to - from) * (i as f32 / 8.0)));
+        h.step();
+    }
+    h.input_mut().events.push(Event::PointerButton { pos: to, button, pressed: false, modifiers: Default::default() });
+    h.run_steps(3);
+}
+
+#[test]
+fn middle_and_hand_drags_pan_the_viewer_and_the_pan_stays_after_release() {
+    let mut h = harness();
+    let c = rect(&h, "viewer.comp").center();
+    let before = h.state().ui.viewer.pan;
+    // Middle-button drag with the Selection tool: pans, and stays panned after the release.
+    drag_with(&mut h, egui::PointerButton::Middle, c, c + vec2(120.0, 60.0));
+    let after = h.state().ui.viewer.pan;
+    assert!((after[0] - before[0] - 120.0).abs() < 1.0 && (after[1] - before[1] - 60.0).abs() < 1.0, "{before:?} → {after:?}");
+    assert_eq!(h.state().ui.tool, Tool::Selection, "the tool is unchanged");
+    // The Hand tool's primary drag keeps its pan too.
+    h.state_mut().ui.tool = Tool::Hand;
+    h.run_steps(2);
+    let c = rect(&h, "viewer.comp").center();
+    drag_with(&mut h, egui::PointerButton::Primary, c, c - vec2(50.0, 30.0));
+    let end = h.state().ui.viewer.pan;
+    assert!((end[0] - after[0] + 50.0).abs() < 1.0 && (end[1] - after[1] + 30.0).abs() < 1.0, "{after:?} → {end:?}");
+}
+
+#[test]
+fn timeline_rows_drag_to_reorder_layers() {
+    let mut h = harness();
+    let names = |h: &Harness<'_, EffectcraftApp>| h.state().session.active_comp().unwrap().layers.iter().map(|l| l.name.clone()).collect::<Vec<_>>();
+    assert_eq!(names(&h), ["Box", "Plate"]);
+    let row = |h: &Harness<'_, EffectcraftApp>, name: &str| {
+        let l = h.state().session.active_comp().unwrap().layers.iter().find(|l| l.name == name).unwrap().id.0;
+        rect(h, &format!("timeline.layer.{l}.row"))
+    };
+    // Drag "Box" (top) below "Plate": it becomes the bottom layer, in one undo step.
+    let (from, plate) = (row(&h, "Box").center(), row(&h, "Plate"));
+    let steps = h.state().session.history.undo.len();
+    drag(&mut h, from, plate.center() + vec2(0.0, plate.height() * 0.4));
+    assert_eq!(names(&h), ["Plate", "Box"]);
+    assert_eq!(h.state().session.history.undo.len(), steps + 1);
+    // Dropping a layer where it already is changes nothing.
+    let b = row(&h, "Box").center();
+    drag(&mut h, b, b + vec2(0.0, 3.0));
+    assert_eq!(names(&h), ["Plate", "Box"]);
+    assert_eq!(h.state().session.history.undo.len(), steps + 1);
+    // And back to the top.
+    let (from, top) = (row(&h, "Box").center(), row(&h, "Plate"));
+    drag(&mut h, from, top.center() - vec2(0.0, top.height() * 0.4));
+    assert_eq!(names(&h), ["Box", "Plate"]);
+}
