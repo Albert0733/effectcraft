@@ -144,7 +144,10 @@ mod imp {
                 err(format!("cannot connect to {host}: {last}"))
             }
             "listen" => {
-                let port = p.get("port").and_then(J::as_u64).unwrap_or(0) as u16;
+                let port = match p.get("port").and_then(J::as_f64).unwrap_or(0.0) {
+                    v if v.fract() == 0.0 && (0.0..=65535.0).contains(&v) => v as u16,
+                    v => return err(format!("bad port {v} (0 to 65535)")),
+                };
                 match TcpListener::bind(("127.0.0.1", port)).and_then(|l| l.set_nonblocking(true).map(|_| l)) {
                     Ok(l) => {
                         let port = l.local_addr().map(|a| a.port()).unwrap_or(port);
