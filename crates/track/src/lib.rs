@@ -22,6 +22,7 @@ pub mod fit;
 pub mod klt;
 pub mod mask;
 pub mod plane;
+pub mod roto;
 pub mod solve;
 pub mod stabilize;
 

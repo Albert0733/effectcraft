@@ -725,6 +725,7 @@ impl EffectcraftApp {
         // Warp Stabilizer: finish analyses and start queued (re-)analyses in the background.
         if self.session.warp_job.is_some() || !self.session.warp_pending.is_empty() {
             self.session.poll_warp(true);
+            self.session.poll_roto(true);
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
         self.apply_prefs(&ctx);

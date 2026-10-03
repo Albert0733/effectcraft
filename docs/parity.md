@@ -73,11 +73,11 @@ library groundwork for mask tracking and Warp Stabilizer.
 | Remaining (audit-scale agent-hours) | ≈ 167 | ≈ 100 |
 | Wall clock, five parallel agents | 42–50 h | **≈ 8–10 h at today's measured pace; ≈ 25 h by the audit's conservative figures** |
 
-What is left is concentrated in large systems: Roto Brush and Refine Edge, the 3D camera tracker,
+What is left is concentrated in large systems: the 3D camera tracker,
 the Warp Stabilizer and mask-tracking UI on top of
 the new tracking library, SVG/PSD import, WebM, a disk cache,
 native macOS menus, and wasm threads. (The missing effect categories, 3D Channel, Immersive Video
-and OCIO, landed in M9.11; the scripting object model in M14.4.)
+and OCIO, landed in M9.11; the scripting object model in M14.4; Roto Brush and Refine Edge in M6.7.)
 
 ## By area
 
@@ -97,7 +97,7 @@ and OCIO, landed in M9.11; the scripting object model in M14.4.)
 | Effects | ≈ 75% | 5.0 | GPU versions of more effects and the 3D Camera Tracker (every other After Effects effect exists since M9.11 and M12.5) |
 | Interface | 55% | 10.4 | drag-to-dock and floating panels, preferences, native macOS menus (viewer rulers/snapping/channels/snapshots landed in M0.13) |
 | Project | 53% | 8.1 | 8/16/32-bit pipeline and colour management, auto-save, proxies, folder moves |
-| Masks & roto | 52% | 10.0 | Roto Brush, variable-width mask feather points (mask tracking and Mask Interpolation landed in M6.6) |
+| Masks & roto | 68% | 6.0 | variable-width mask feather points, Roto Brush's learned (3.0) segmentation model (mask tracking and Mask Interpolation landed in M6.6; Roto Brush & Refine Edge with graph-cut segmentation, flow propagation, edge matting, decontamination and Freeze in M6.7) |
 | Preview | 55% | 6.1 | GPU 3D and adjustment layers, disk cache (region of interest, snapshots, exposure and Fast Previews landed in M0.13) |
 | Tracking | ≈ 70% | 4.0 | 3D camera tracker, face tracking and Subspace Warp's mesh warp (Rolling Shutter Repair landed in M9.11; point tracker, mask tracking and Warp Stabilizer landed in M6.x / M12.5) |
 | Paint | 0% | 4.0 | Brush, Clone Stamp, Eraser |
