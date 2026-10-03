@@ -77,6 +77,10 @@ fn settings_menu(it: &RenderQueueItem) -> Vec<(String, Value)> {
     v.push(("-".into(), Value::Null));
     v.push((mark(s.motion_blur, "Motion Blur: On for Checked Layers"), json!({"motionBlur": !s.motion_blur})));
     v.push((mark(s.skip_existing, "Skip Existing Files"), json!({"skipExisting": !s.skip_existing})));
+    v.push(("-".into(), Value::Null));
+    for (u, k) in effectcraft_engine::project::render_queue::ProxyUse::ALL.iter().zip(["current", "all", "comp", "none"]) {
+        v.push((mark(s.proxy_use == *u, &format!("Proxy Use: {}", u.label())), json!({"proxyUse": k})));
+    }
     v
 }
 
@@ -108,7 +112,7 @@ fn output_menu(it: &RenderQueueItem, available: &[OutputFormat]) -> Vec<(String,
                 v.push((mark(o.bitrate_kbps == kbps, &format!("Bitrate: {} Mbps", kbps / 1000)), json!({"bitrate": kbps})));
             }
         }
-        OutputFormat::JpegSequence => {
+        OutputFormat::JpegSequence | OutputFormat::WebM => {
             v.push(("-".into(), Value::Null));
             for q in [60u8, 80, 90, 100] {
                 v.push((mark(o.quality == q, &format!("Quality: {q}")), json!({"quality": q})));

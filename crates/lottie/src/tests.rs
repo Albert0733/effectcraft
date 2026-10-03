@@ -593,6 +593,7 @@ fn images_embed_as_base64_and_come_back() {
             missing: false,
             sequence: vec![],
             color_profile: None,
+            ..Default::default()
         }),
     );
     let c = comp(&p, cid);

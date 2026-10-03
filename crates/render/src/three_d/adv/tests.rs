@@ -303,7 +303,7 @@ fn extruded_text_renders_as_a_mesh() {
         set(l, "geometryOptions/bevelStyle", Value::Enum(1));
         set(l, "transform/rotationY", Value::Scalar(40.0));
     });
-    let ctx = crate::EvalCtx { project: &p, comp_id: cid, comp: p.comp(cid).unwrap(), time: Tick::ZERO, expr: None };
+    let ctx = crate::EvalCtx { project: &p, comp_id: cid, comp: p.comp(cid).unwrap(), time: Tick::ZERO, expr: None, footage: None };
     let l = &ctx.comp.layers[0];
     let params = scene::extrusion_params(&ctx, l).unwrap();
     let meshes = scene::extruded_meshes(&ctx, l, &params);

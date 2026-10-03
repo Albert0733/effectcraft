@@ -16,18 +16,22 @@ cpal or muda. Everything in L0 to L4, the egui UI and the web app also build for
 | L0 | `time` | `Tick` (254 016 000 000 per second), rational frame rates incl. NTSC, SMPTE and drop-frame timecode |
 | L0 | `geom` | Vectors, matrices, quaternions, the layer transform (anchor, position, scale, orientation, rotation) |
 | L0 | `color` | sRGB and linear, HSL/HSV, luminance, the 38 blend modes, label colors |
+| L0 | `vp9enc` | VP9 intra-frame encoder (profile 0, 8-bit 4:2:0; lossless at quality 100) for WebM export, from the VP9 bitstream specification |
+| L0 | `opusenc` | Opus (CELT) encoder: RFC 6716 CELT-only fullband 48 kHz 20 ms packets, mono/stereo, and the RFC 7845 `OpusHead`, for WebM export audio |
 | L1 | `raster` | Premultiplied float images, sampling, affine and projective warps, blurs, compositing (parallel with rayon) |
 | L1 | `keyframe` | Animated values, keyframes with temporal ease and spatial Bezier, roving, hold, velocity |
+| L1 | `psd` | Photoshop PSD/PSB reader (layers, groups, masks, blend modes, text, layer effects, adjustment layers; 8/16/32-bit; RGB/CMYK/Gray/Lab) and a minimal writer, from Adobe's published format specification |
 | L1 | `path` | Bezier paths, path operators (trim, offset, round corners, zig zag, twist, merge…), stroking, coverage masks |
 | L2 | `project` | The document: items, compositions, layers, the property tree, render queue model, `.ecproj` serde |
 | L2 | `text` | Fonts, shaping, layout, per-glyph geometry, text animators and selectors |
 | L2 | `effects` | The effect registry (241 effects) and their CPU implementations |
+| L2 | `svg` | SVG import (W3C SVG 1.1/2 static subset: shapes, paths, transforms, `use`, CSS, gradients) and rasterisation at any scale |
 | L2 | `model` | 3D models for Advanced 3D: glTF 2.0 (`.gltf`/`.glb`) and OBJ/MTL import (meshes, PBR metallic-roughness materials and textures, node hierarchy, skins, animations), parametric primitives, extruded/bevelled outline meshes and polygon triangulation |
 | L2 | `track` | Motion tracking: feature/search region point tracking (pyramid normalized cross-correlation, Lucas–Kanade sub-pixel refinement), confidence, homography/affine/similarity solves |
 | L3 | `render` | Evaluation and compositing: sources, masks, effects, transforms, 3D, motion blur, mattes, blending, layer cache, audio mixdown |
-| L3 | `media` | Footage decoding (FilmCraft's pure-Rust codecs), image sequences, frame cache |
+| L3 | `media` | Footage decoding (FilmCraft's pure-Rust codecs), image sequences, Photoshop and SVG stills, frame cache |
 | L3 | `expr` | The expression engine (JavaScript via boa) with the After Effects object model |
-| L3 | `export` | Render queue encoding: H.264, ProRes, PNG/JPEG/TIFF/EXR sequences, GIF, audio |
+| L3 | `export` | Render queue encoding: H.264, ProRes, WebM (VP9 + alpha, Opus), PNG/JPEG/TIFF/EXR sequences, GIF, WAV/AIFF |
 | L3 | `gpu` | The GPU compositor and GPU effects on wgpu compute shaders (Metal, Vulkan, Direct3D 12, WebGPU), checked against the CPU renderer |
 | L3 | `lottie` | Lottie JSON / dotLottie import and export (layers, precomps, eased and spatial keyframes, shapes, masks, mattes) with a warnings list for what Lottie cannot express |
 | L4 | `engine` | `Session`: project, undo history, editor state, the command registry and menus |
@@ -106,6 +110,14 @@ its evaluated inputs, excluding the transform. Static and transform-only layers 
 editing one layer re-renders only that layer. Effects that read the clock directly are declared in
 `effects::TIME_DEPENDENT`, and a test checks every registered effect against that list.
 
+A persistent **disk cache** (`render::disk_cache`, Settings ▸ Media & Disk Cache) backs both
+the layer cache and the viewer's RAM preview: layer buffers that were slow to render and every
+preview frame are written (LZ4, atomic rename, checksummed) under 128-bit content keys — the
+comp's content hash (the comp, what it uses, footage file size and time) plus frame, scale and
+view for frames; the layer key salted with the footage fingerprint for layers — so entries
+survive restarts and never go stale. LRU eviction keeps it under the size limit; Edit ▸ Purge
+empties it, `cache.diskStats` reports it, and the timeline draws disk-only frames in blue.
+
 **Time effects** (Echo, Posterize Time, Timewarp…) read the layer at other times through
 `EffectHost::self_at`: the renderer renders the layer's source and masks (plus, optionally, the
 effects before it) at that layer time via `Renderer::layer_input`, cached under separate *input*
@@ -154,7 +166,8 @@ chain with one upload and one readback. Tests render scenes on both paths and co
 (≤ 1/255 at 8 bpc, ≤ 1e-3 at 32 bpc); they skip without an adapter. The desktop viewer builds the
 `Gpu` on egui-wgpu's device and shows frames from GPU textures without reading them back
 (`ui-egui::frames`); headless renders, the CLI (unless `--gpu`) and CI use the CPU. On the web
-(WebGPU) the GPU composites viewer frames; steps that need a readback fall back to the CPU.
+(WebGPU) the GPU composites viewer frames; steps that need a readback fall back to the CPU (the
+Info panel's pixel readout reads GPU frames back asynchronously).
 
 **Colour and bit depth** (`crates/render/src/color.rs`, `crates/color/src/space.rs`). Pixels are
 `f32`, but 8 and 16 bpc projects clamp and quantise each layer after its source and masks and
@@ -207,6 +220,40 @@ auto-scale; cached per analysis and settings) and warps each frame; Synthesize E
 borders from neighbouring frames read with `EffectHost::self_at`. The effect lives in the
 effects crate, hence the `effects → track` edge.
 
+**Essential Graphics** (`project::essential`, `engine::commands::essential`): a comp's
+`essential` field lists its exposed controls (properties, Media Replacement, groups, comments).
+Every precomp layer of such a comp gets an Essential Properties group (`GroupKind::Essential`,
+children `eg<control id>`), kept in step by `Session::edit`; editing a child overrides it for
+that instance. The renderer draws an instance with overrides from a copy of the project with the
+overridden source properties set (`essential::with_overrides`). Templates are `.ectemplate`
+ZIPs: `manifest.json` (controls), `project.ecproj` (the comp and its dependencies), `media/…` and
+`poster.png`; importing offsets every id past the project's (`essential::offset_ids`).
+**Responsive Design — Time**: a time-stretched precomp maps time piecewise so its protected
+marker regions play at 100 % (`eval::responsive_source_time`).
+
+**Proxies and interpretation**: an item's `proxy` (footage or comp) is decoded in its place at
+the source's nominal size when `RenderOpts::proxy` (Render Settings ▸ Proxy Use) allows it.
+Interpret Footage's Separate Fields turns each field into a frame at twice the rate (the other
+lines interpolated); pixel aspect stretches footage, solids and precomps in the comp
+(`EvalCtx::par_ratio`, not inherited by children); Invert Alpha and Interpret As Linear Light
+apply after decoding.
+
+**3D Camera Tracker** (`effects::camera_tracker`, `engine::camera_track`, `effectcraft-track`'s
+`camtrack`): `camera.analyze` / `track.camera` render the layer's input to the effect on a
+background thread and run structure from motion in two steps. Step 1 follows Shi–Tomasi features
+through the clip with pyramidal Lucas–Kanade (forward–backward checked, re-detected where the frame
+has none) into long 2D tracks. Step 2 solves the camera: parallax keyframes; a two-view start from
+the essential matrix (normalised 8-point in RANSAC) or a planar homography decomposition; incremental
+resection and triangulation; a sparse Levenberg–Marquardt bundle adjustment (Schur complement over
+the points, Huber loss) with the focal length fixed, shared, or per frame; a log-spaced and
+golden-section focal search for Fixed Angle of View / Variable Zoom; a rotation-only model for tripod
+pans, chosen by Auto Detect when it explains the tracks as well. Tracks and solve are stored as JSON
+in hidden effect parameters with keys: changing the layer's frames clears both, changing Shot Type,
+Angle of View, Solve Method or deleting points only re-solves. The solve's canonical frame maps to
+comp space so the first frame's camera is the default comp camera (or so a chosen ground plane is
+the X-Z plane at the origin); `camera.createFromSolve` keys a one-node "3D Tracker Camera" on every
+frame and places text, solids, nulls or a shadow catcher and light on the target plane.
+
 **Roto Brush & Refine Edge** (`effectcraft_track::roto`, `effects::roto`, `engine::roto`):
 strokes (foreground, background, Refine Edge) are stored as JSON in the effect's hidden Strokes
 parameter with the base frame and segmentation span. Each frame is segmented by graph cut
@@ -224,7 +271,11 @@ in the effect.
 
 Expressions are JavaScript, run by boa, with After Effects' object model (`thisComp`, `thisLayer`,
 `time`, `value`, `wiggle`, `loopOut`, vector maths on arrays, and so on). A syntax error keeps the
-text, disables the expression and shows a warning, like After Effects.
+text, disables the expression and shows a warning, like After Effects. `sampleImage` renders the
+sampled layer through the evaluating renderer's footage source (`EvalCtx::footage`), cached per
+thread and frame; `footage(name)` reads data footage (JSON, CSV, TSV imported with File ▸ Import,
+text kept in the project) through `sourceData`, `sourceText` and `dataValue`. `expr.errors`
+lists failing expressions for the viewer's error bar.
 
 ## 5a. Scripting
 
@@ -259,6 +310,14 @@ inspect and click the interface. See [agents.md](agents.md) and
 
 Settings (`engine::prefs`), keyboard shortcut presets (`engine::shortcuts`) and auto-save /
 crash recovery (`engine::autosave`) live in the engine too; they persist through a
-`ConfigStore` the frontend provides (a directory on the desktop, `localStorage` on the web).
+`ConfigStore` the frontend provides (a directory on the desktop; the Origin Private File System,
+or IndexedDB, on the web). Auto-saves go through the store's `FileOps` (the file system by
+default, the browser storage on the web).
+
+Renders and analyses run on background threads on the desktop. Where there are no threads (the
+browser), `engine::offload` sends them to a second engine instance instead: the session's
+`Offload` ships the serialized project, the footage it reads and the job (`WorkerRequest`) to a
+Web Worker, and the worker's replies (progress, item status, the analysed property group) are
+applied on the UI thread.
 The shortcut dispatcher and the menus read the active preset. See
 [preferences.md](preferences.md).

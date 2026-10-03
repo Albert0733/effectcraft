@@ -92,7 +92,66 @@ pub fn info() -> JsValue {
     }
     v["version"] = json!(env!("CARGO_PKG_VERSION"));
     v["threads"] = json!(false);
+    v["workers"] = from_js(&crate::worker::stats());
+    v["audio"] = from_js(&crate::audio::state());
+    if let Some(e) = crate::persist::last_error() {
+        v["storage"]["error"] = json!(e);
+    }
     to_js(&v)
+}
+
+/// Save the project to browser storage without downloading it: `path` (default: its current
+/// path, or `/<project name>.ecproj`). Resolves with `{path, bytes}`.
+#[wasm_bindgen(js_name = saveToBrowser)]
+pub fn save_to_browser(path: Option<String>) -> js_sys::Promise {
+    js_sys::Promise::new(&mut |resolve, reject| {
+        let path = path.clone();
+        crate::post(move |app| {
+            let p = path.or_else(|| app.session.path.clone()).unwrap_or_else(|| format!("/{}.ecproj", app.session.project_name()));
+            let p = if p.starts_with('/') { p } else { format!("/{p}") };
+            crate::files::save_quietly(&p);
+            match app.session.execute("file.saveAs", json!({"path": p})) {
+                Ok(v) => {
+                    let _ = resolve.call1(&JsValue::NULL, &to_js(&v));
+                }
+                Err(e) => {
+                    let _ = reject.call1(&JsValue::NULL, &JsValue::from_str(&e.to_string()));
+                }
+            }
+        });
+    })
+}
+
+/// What browser storage holds: `{backend, usage, quota, persisted, files: [{path, size,
+/// modified}], config: [name]}` (render outputs, which are not stored, are left out).
+#[wasm_bindgen(js_name = listStored)]
+pub async fn list_stored() -> JsValue {
+    let est = wasm_bindgen_futures::JsFuture::from(crate::persist::store_estimate()).await.map(|v| from_js(&v)).unwrap_or(json!({}));
+    let files: Vec<Value> = crate::files::STORE
+        .files()
+        .into_iter()
+        .filter(|f| f.3)
+        .map(|(path, size, modified, _)| json!({"path": path, "size": size, "modified": modified}))
+        .collect();
+    let config: Vec<Value> =
+        crate::files::STORE.lock().list(crate::store::CONFIG).into_iter().map(|(k, ..)| json!(k.trim_start_matches(crate::store::CONFIG))).collect();
+    let mut v = est;
+    v["files"] = json!(files);
+    v["config"] = json!(config);
+    v["pending"] = json!(crate::files::STORE.lock().has_pending());
+    to_js(&v)
+}
+
+/// Remove a stored file (media, project, auto-save). Resolves with whether it existed.
+#[wasm_bindgen(js_name = removeStored)]
+pub fn remove_stored(path: String) -> bool {
+    crate::files::STORE.remove_file(&path)
+}
+
+/// Resolves once every change is written to browser storage.
+#[wasm_bindgen]
+pub fn flush() -> js_sys::Promise {
+    crate::persist::flushed()
 }
 
 /// Settle the promises whose replies arrived (called every frame).

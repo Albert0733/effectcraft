@@ -140,6 +140,8 @@ pub struct EffectcraftApp {
     /// Last displayed image (Info panel colour, eyedroppers, histograms). GPU frames fill it on
     /// demand ([`EffectcraftApp::viewer_pixels`]).
     pub(crate) viewer_image: Option<Arc<egui::ColorImage>>,
+    /// wasm32: an asynchronous readback of a GPU viewer frame (key asked for, result).
+    viewer_readback: (Option<FrameKey>, Arc<std::sync::Mutex<Option<(FrameKey, Arc<egui::ColorImage>)>>>),
     /// egui-wgpu's device, once the first frame arrives (desktop and WebGPU).
     pub(crate) wgpu: Option<eframe::egui_wgpu::RenderState>,
     /// The GPU compositor on that device (None: no usable adapter → CPU only).
@@ -200,6 +202,7 @@ impl EffectcraftApp {
             viewer_native: None,
             viewer_shown: None,
             viewer_image: None,
+            viewer_readback: Default::default(),
             wgpu: None,
             gpu: None,
             gpu_checked: false,
@@ -325,8 +328,21 @@ impl EffectcraftApp {
             expr: self.session.expr.clone(),
             layer_cache: self.session.layer_cache.clone(),
             gpu: self.gpu.clone(),
-            gpu_display: false,
+            gpu_display: self.gpu_display(),
+            disk: self.session.disk_cache.clone(),
         }
+    }
+
+    /// Keep GPU-composited viewer frames on the GPU (drawn from their texture). The browser can't
+    /// read frames back (its thread can't wait for the GPU), so there the viewer shows GPU frames
+    /// directly whenever it draws them plainly (RGB, no exposure, no region of interest); the
+    /// desktop reads them back (see [`frames::RenderSource::gpu_display`]).
+    fn gpu_display(&self) -> bool {
+        let v = &self.session.state.viewer;
+        cfg!(target_arch = "wasm32")
+            && v.channel == effectcraft_engine::viewer::Channel::Rgb
+            && v.exposure == 0.0
+            && self.session.state.region_of_interest.is_none()
     }
 
     /// Set up the GPU compositor on egui-wgpu's device (once). Without an adapter that runs
@@ -360,14 +376,38 @@ impl EffectcraftApp {
 
     /// The viewer's current pixels as 8-bit premultiplied RGBA, reading a GPU frame back the
     /// first time something asks for it.
+    ///
+    /// The browser can't wait for the GPU: there the first call starts an asynchronous readback
+    /// and returns `None`; a later call (the next frame) has the pixels.
     pub fn viewer_pixels(&mut self) -> Option<Arc<egui::ColorImage>> {
-        if self.viewer_image.is_none()
-            && let (Some((_, _, f)), Some(g)) = (&self.viewer_native, &self.gpu)
-            && self.viewer_shown.as_ref().map(|s| s.1) == self.viewer_native.as_ref().map(|n| n.1)
-            && let Some(bytes) = g.read_display(f)
-        {
+        let to_image = |bytes: Vec<u8>, w: u32, h: u32| {
             let px = bytes.chunks_exact(4).map(|c| egui::Color32::from_rgba_premultiplied(c[0], c[1], c[2], c[3])).collect();
-            self.viewer_image = Some(Arc::new(egui::ColorImage::new([f.width as usize, f.height as usize], px)));
+            Arc::new(egui::ColorImage::new([w as usize, h as usize], px))
+        };
+        if self.viewer_image.is_none()
+            && let (Some((_, key, f)), Some(g)) = (&self.viewer_native, &self.gpu)
+            && self.viewer_shown.as_ref().map(|s| s.1) == Some(*key)
+        {
+            if cfg!(target_arch = "wasm32") {
+                let ready = self.viewer_readback.1.lock().ok().and_then(|mut r| r.take_if(|r| r.0 == *key));
+                if let Some((_, img)) = ready {
+                    self.viewer_image = Some(img);
+                } else if self.viewer_readback.0 != Some(*key) {
+                    self.viewer_readback.0 = Some(*key);
+                    let (slot, k, (w, h)) = (self.viewer_readback.1.clone(), *key, (f.width, f.height));
+                    let ctx = self.frames.context();
+                    g.read_display_async(f, move |bytes| {
+                        if let (Some(b), Ok(mut s)) = (bytes, slot.lock()) {
+                            *s = Some((k, to_image(b, w, h)));
+                        }
+                        if let Some(c) = ctx {
+                            c.request_repaint();
+                        }
+                    });
+                }
+            } else if let Some(bytes) = g.read_display(f) {
+                self.viewer_image = Some(to_image(bytes, f.width, f.height));
+            }
         }
         self.viewer_image.clone()
     }
@@ -423,13 +463,11 @@ impl EffectcraftApp {
         self.request_frame_with(comp, frame, scale, true);
     }
 
-    fn request_frame_with(&self, comp: ItemId, frame: i64, scale: f64, urgent: bool) {
-        let Some(c) = self.session.project.comp(comp) else { return };
-        let key = self.frame_key(comp, frame, scale);
-        let t = c.frame_rate.tick_of(frame);
+    /// Render options of viewer frames of `comp` at `scale`.
+    pub fn frame_opts(&self, comp: ItemId, scale: f64) -> RenderOpts {
         let (draft, _) = self.session.state.viewer.fast_previews.render(self.ui.viewer.interacting);
         let roi = self.session.state.region_of_interest.filter(|_| self.session.active_comp_id() == Some(comp));
-        let opts = RenderOpts {
+        RenderOpts {
             scale,
             motion_blur: true,
             guides: true,
@@ -437,7 +475,15 @@ impl EffectcraftApp {
             view: self.session.view_camera(comp),
             roi,
             backend: effectcraft_engine::render::Backend::Auto,
-        };
+            proxy: Default::default(),
+        }
+    }
+
+    fn request_frame_with(&self, comp: ItemId, frame: i64, scale: f64, urgent: bool) {
+        let Some(c) = self.session.project.comp(comp) else { return };
+        let key = self.frame_key(comp, frame, scale);
+        let t = c.frame_rate.tick_of(frame);
+        let opts = self.frame_opts(comp, scale);
         if urgent {
             self.frames.request_urgent(&self.render_source(), key, comp, t, opts);
         } else {
@@ -534,7 +580,8 @@ impl EffectcraftApp {
                 queued += 1;
             }
         }
-        if let Some(a) = &self.audio {
+        if let Some(a) = &mut self.audio {
+            a.pump();
             self.meter.update(a.feed.take_peaks(), now);
         } else if self.meter.active() {
             self.meter.update([0.0; 2], now);
@@ -740,10 +787,20 @@ impl EffectcraftApp {
             self.session.poll_mask_track();
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
         }
+        // Analyses running in a worker (the web app).
+        if !self.session.offloaded.is_empty() {
+            self.session.poll_offload();
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
         // Warp Stabilizer: finish analyses and start queued (re-)analyses in the background.
         if self.session.warp_job.is_some() || !self.session.warp_pending.is_empty() {
             self.session.poll_warp(true);
             self.session.poll_roto(true);
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
+        // 3D Camera Tracker: likewise (tracking, then solving).
+        if self.session.camera_job.is_some() || !self.session.camera_pending.is_empty() {
+            self.session.poll_camera(true);
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
         self.apply_prefs(&ctx);

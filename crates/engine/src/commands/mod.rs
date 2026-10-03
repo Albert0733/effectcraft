@@ -4,12 +4,16 @@
 mod anim;
 pub mod anim_tools;
 mod animation;
+mod camera_cmds;
 mod comp;
 mod comp_more;
+mod create;
 mod edit;
 mod effect;
+pub mod essential;
+pub mod expr_tools;
 mod file;
-mod file_more;
+pub(crate) mod file_more;
 mod focus;
 mod frontend;
 mod help;
@@ -30,6 +34,7 @@ mod paths;
 mod project_items;
 mod prop;
 mod prop_groups;
+mod proxy;
 pub mod puppet;
 mod query;
 mod render_queue;
@@ -127,6 +132,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(help::specs());
         v.extend(query::specs());
         v.extend(layer_menu::specs());
+        v.extend(create::specs());
         v.extend(animation::specs());
         v.extend(view::specs());
         v.extend(viewer_cmds::specs());
@@ -141,14 +147,23 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(track::specs());
         v.extend(mask_interp::specs());
         v.extend(warp_cmds::specs());
+        v.extend(camera_cmds::specs());
         v.extend(roto_cmds::specs());
         v.extend(paint::specs());
         v.extend(puppet::specs());
         v.extend(liquify::specs());
         v.extend(settings::specs());
+        v.extend(essential::specs());
+        v.extend(expr_tools::specs());
+        v.extend(proxy::specs());
         v.extend(stubs::specs());
         v
     })
+}
+
+/// Set `footage` as the proxy of `item` (File ▸ Create Proxy's post-render action).
+pub(crate) fn proxy_set(s: &mut Session, item: ItemId, footage: effectcraft_project::Footage) -> Result<()> {
+    proxy::set_proxy_footage(s, &[item], footage)
 }
 
 /// (id, name) of the text animation presets.

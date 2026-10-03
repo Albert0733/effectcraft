@@ -52,6 +52,7 @@ impl Importer for ModelImporter {
             missing: false,
             sequence: vec![],
             color_profile: None,
+            ..Default::default()
         })
     }
 }

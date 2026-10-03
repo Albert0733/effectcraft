@@ -9,18 +9,22 @@
 //! (compositions are `Arc`s, so untouched comps are shared).
 
 pub mod autosave;
+pub mod camera_track;
 pub mod commands;
 pub mod config;
 pub mod demo;
 pub mod links;
 pub mod mask_track;
 pub mod menus;
+pub mod offload;
 pub mod prefs;
+pub mod psd_import;
 pub mod render_queue;
 pub mod roto;
 mod session_settings;
 pub mod shortcuts;
 pub mod tracking;
+pub mod vector;
 pub mod viewer;
 pub mod warp;
 
@@ -172,6 +176,9 @@ pub struct EditorState {
     /// Tracker panel ▸ Method in mask mode (Track Mask).
     #[serde(default)]
     pub mask_track_method: mask_track::MaskMethod,
+    /// 3D Camera Tracker: the selected track points (ids) in the viewer.
+    #[serde(default)]
+    pub camera_points: Vec<u32>,
     /// Mask Interpolation panel options.
     #[serde(default)]
     pub mask_interp: commands::mask_interp::MaskInterpOptions,
@@ -202,6 +209,13 @@ pub struct EditorState {
     /// Composition viewer display options (Show Channel, exposure, snapshot, Fast Previews).
     #[serde(default)]
     pub viewer: commands::viewer_cmds::ViewOptions,
+    /// Essential Graphics panel ▸ Primary composition (`None` = the active comp).
+    #[serde(default)]
+    pub essential_primary: Option<ItemId>,
+    /// Essential Graphics panel ▸ Solo Supported Properties (the timeline shows only properties
+    /// Essential Graphics can expose).
+    #[serde(default)]
+    pub essential_solo: bool,
 }
 
 fn one_view() -> u8 {
@@ -268,6 +282,10 @@ pub struct Session {
     pub warp_job: Option<warp::WarpJob>,
     /// Warp Stabilizers waiting for (re-)analysis: (comp, layer, effect uid).
     pub warp_pending: Vec<(ItemId, LayerId, Uid)>,
+    /// The running (or finished, not yet polled) 3D Camera Tracker analysis.
+    pub camera_job: Option<camera_track::CameraJob>,
+    /// 3D Camera Trackers waiting for (re-)analysis: (comp, layer, effect uid).
+    pub camera_pending: Vec<(ItemId, LayerId, Uid)>,
     /// The running (or finished, not yet polled) Roto Brush propagation / Freeze.
     pub roto_job: Option<roto::RotoJob>,
     /// Roto Brush instances edited since their last propagation: (comp, layer, effect uid).
@@ -277,6 +295,8 @@ pub struct Session {
     pub journal: Vec<(String, Value)>,
     /// Processed-layer pixels reused across frames and edits (content-keyed, never stale).
     pub layer_cache: Arc<LayerCache>,
+    /// The persistent disk cache (Settings ▸ Media & Disk Cache), when enabled.
+    pub disk_cache: Option<Arc<effectcraft_render::disk_cache::DiskCache>>,
     /// Settings (Preferences).
     pub prefs: prefs::Prefs,
     /// Bumped whenever settings change (frontends re-apply theme, labels…).
@@ -297,6 +317,11 @@ pub struct Session {
     /// The JavaScript scripting engine (set by the host that links `effectcraft-script`):
     /// `script.run`, File ▸ Scripts ▸ Run Script File… (`.jsx`/`.js`) and the Script Console.
     pub script: Option<ScriptRunner>,
+    /// Runs renders and analyses off the UI thread where there are no threads (the web app's
+    /// Web Workers, see [`offload`]); `None` = threads (desktop) or inline (wasm32).
+    pub offload: Option<Arc<dyn offload::Offload>>,
+    /// Analyses running in the [`Session::offload`] worker.
+    pub offloaded: Vec<offload::OffloadedJob>,
 }
 
 /// A script to run (see [`Session::script`]).
@@ -334,11 +359,14 @@ impl Default for Session {
             mask_job: None,
             warp_job: None,
             warp_pending: vec![],
+            camera_job: None,
+            camera_pending: vec![],
             roto_job: None,
             roto_pending: vec![],
             events: vec![],
             journal: vec![],
             layer_cache: Arc::new(LayerCache::default()),
+            disk_cache: None,
             prefs: prefs::Prefs::default(),
             prefs_revision: 0,
             config: None,
@@ -348,6 +376,8 @@ impl Default for Session {
             autosave: autosave::AutoSaveState::default(),
             snapshot: None,
             script: None,
+            offload: None,
+            offloaded: vec![],
         }
     }
 }
@@ -362,7 +392,8 @@ impl Session {
         let spec = commands::find(id).ok_or_else(|| EngineError::UnknownCommand(id.to_string()))?;
         if let Err(why) = (spec.enabled)(self) {
             // Explicit targets (agents, scripts) don't need a UI selection.
-            let explicit = ["layer", "layers", "prop", "keys"].iter().any(|k| params.get(k).is_some()) && commands::has_comp(self).is_ok();
+            let explicit = (["layer", "layers", "prop", "keys"].iter().any(|k| params.get(k).is_some()) && commands::has_comp(self).is_ok())
+                || ["item", "items"].iter().any(|k| params.get(k).is_some());
             if !explicit {
                 return Err(EngineError::Disabled(id.to_string(), why));
             }
@@ -397,10 +428,18 @@ impl Session {
         let r = f(&mut p, &mut st)?;
         // Layer styles: one Global Light per comp, whichever layer edited it.
         effectcraft_project::styles::sync_global_light(&before, &mut p);
+        // Essential Properties of precomp layers follow their comps' Essential Graphics.
+        effectcraft_project::essential::sync_project(&before, &mut p);
         // Warp Stabilizer analyses made from other frames are cleared (and queued again).
         for w in warp::invalidate(&before, &mut p) {
             if !self.warp_pending.contains(&w) {
                 self.warp_pending.push(w);
+            }
+        }
+        // So are 3D Camera Tracker tracks (and solves made with other settings).
+        for w in camera_track::invalidate(&before, &mut p) {
+            if !self.camera_pending.contains(&w) {
+                self.camera_pending.push(w);
             }
         }
         // Roto Brush Input Keys follow the frames; edited instances propagate again.
@@ -428,6 +467,9 @@ impl Session {
 
     pub fn bump(&mut self) {
         self.revision += 1;
+        if self.disk_cache.is_some() {
+            self.layer_cache.set_disk_salt(effectcraft_render::disk_cache::footage_salt(&self.project));
+        }
         self.events.push(Event::ProjectChanged { revision: self.revision });
     }
 
@@ -586,6 +628,9 @@ impl Session {
         self.stop_warp();
         self.warp_job = None;
         self.warp_pending.clear();
+        self.stop_camera();
+        self.camera_job = None;
+        self.camera_pending.clear();
         self.stop_roto();
         self.roto_job = None;
         self.roto_pending.clear();
@@ -612,7 +657,13 @@ mod tests_3d;
 #[cfg(test)]
 mod tests_anim_tools;
 #[cfg(test)]
+mod tests_camera_track;
+#[cfg(test)]
+mod tests_disk_cache;
+#[cfg(test)]
 mod tests_effects;
+#[cfg(test)]
+mod tests_essential;
 #[cfg(test)]
 mod tests_fidelity;
 #[cfg(test)]
@@ -627,6 +678,8 @@ mod tests_menu_cmds;
 mod tests_model3d;
 #[cfg(test)]
 mod tests_project_items;
+#[cfg(test)]
+mod tests_proxy;
 #[cfg(test)]
 mod tests_settings;
 #[cfg(test)]
@@ -643,6 +696,8 @@ mod tests_text_edit;
 mod tests_timeline;
 #[cfg(test)]
 mod tests_track;
+#[cfg(test)]
+mod tests_vector_import;
 #[cfg(test)]
 mod tests_viewer;
 

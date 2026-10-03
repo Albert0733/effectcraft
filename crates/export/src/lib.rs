@@ -7,6 +7,8 @@
 //! | PNG / JPEG / TIFF sequence | one file per frame | 8-bit | PNG, TIFF | — |
 //! | OpenEXR sequence | one file per frame | 32-bit float, linear light, premultiplied | yes | — |
 //! | Animated GIF | GIF89a | 256-colour palette per frame (NeuQuant) | 1-bit | — |
+//! | WebM | WebM (Matroska) | VP9 profile 0 intra frames (`effectcraft-vp9enc`), 8-bit 4:2:0 | VP9 alpha (BlockAdditional) | Opus (`effectcraft-opusenc`), 48 kHz stereo |
+//! | WAV / AIFF | RIFF WAVE / AIFF | — | — | 16-bit PCM stereo (audio only) |
 //!
 //! Frames are rendered in parallel batches (rayon; one batch ≈ one frame per core) and handed to
 //! the encoder in order. Progress is reported after each batch through a callback that can cancel
@@ -18,6 +20,7 @@
 
 mod encode;
 mod out;
+mod webm;
 
 use web_time::Instant;
 
@@ -131,6 +134,9 @@ pub fn export(job: &Job, progress: &mut dyn FnMut(&Progress) -> bool) -> Result<
     let mut report = match job.output.format {
         OutputFormat::H264 | OutputFormat::ProRes => encode::movie(job, comp, w, h, &mut st)?,
         OutputFormat::Gif => gif_export(job, comp, w, h, &mut st)?,
+        OutputFormat::WebM => webm::webm(job, comp, w, h, &mut st)?,
+        OutputFormat::Wav => webm::audio_file(job, comp, false, &mut st)?,
+        OutputFormat::Aiff => webm::audio_file(job, comp, true, &mut st)?,
         f if f.is_sequence() => sequence(job, comp, w, h, &mut st)?,
         f => return Err(ExportError::Unsupported(f.label().into())),
     };
@@ -176,6 +182,7 @@ pub(crate) fn render_frame(job: &Job, comp: &Comp, i: u64) -> Image {
         view: None,
         backend: effectcraft_render::Backend::Auto,
         roi: None,
+        proxy: job.settings.proxy_use,
     };
     let mut r = Renderer::new(job.project, job.footage, opts);
     r.expr = job.expr;

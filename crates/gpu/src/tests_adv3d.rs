@@ -91,7 +91,7 @@ fn scene_project() -> (Project, ItemId) {
 
 fn scene(p: &Project, cid: ItemId) -> Scene {
     let r = Renderer::new(p, &NoFootage, RenderOpts::default());
-    let ctx = EvalCtx { project: p, comp_id: cid, comp: p.comp(cid).unwrap(), time: Tick::ZERO, expr: None };
+    let ctx = EvalCtx { project: p, comp_id: cid, comp: p.comp(cid).unwrap(), time: Tick::ZERO, expr: None, footage: None };
     let run: Vec<&effectcraft_project::Layer> = ctx.comp.layers.iter().rev().filter(|l| l.is_3d() && l.has_video()).collect();
     adv::scene_of(&r, &ctx, &run, (ctx.comp.width, ctx.comp.height))
 }

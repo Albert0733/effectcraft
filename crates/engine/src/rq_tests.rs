@@ -16,8 +16,8 @@ fn demo() -> Session {
 }
 
 /// Records exports; fails items whose path contains "fail"; honours cancellation.
-struct MockExporter {
-    log: Mutex<Vec<String>>,
+pub(crate) struct MockExporter {
+    pub(crate) log: Mutex<Vec<String>>,
 }
 
 impl Exporter for MockExporter {
@@ -159,6 +159,6 @@ fn without_exporter() {
     s.execute("renderQueue.add", json!({})).unwrap();
     assert!(!s.is_enabled("renderQueue.render"));
     let f = s.execute("renderQueue.formats", json!({})).unwrap();
-    assert_eq!(f["formats"].as_array().unwrap().len(), 7);
+    assert_eq!(f["formats"].as_array().unwrap().len(), 10);
     assert_eq!(f["formats"][0]["available"], false);
 }

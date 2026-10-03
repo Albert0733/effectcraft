@@ -104,6 +104,10 @@ fn apply_settings(rs: &mut RenderSettings, p: &Value, cmd: &str) -> Result<bool>
     {
         return Err(bad(cmd, "end must be after start"));
     }
+    if let Some(u) = str_p(p, "proxyUse") {
+        rs.proxy_use = effectcraft_project::render_queue::ProxyUse::parse(u).ok_or_else(|| bad(cmd, "proxyUse: current|all|comp|none"))?;
+        any = true;
+    }
     match p.get("frameRate") {
         Some(Value::Null) => {
             rs.frame_rate = None;
@@ -131,7 +135,7 @@ fn apply_settings(rs: &mut RenderSettings, p: &Value, cmd: &str) -> Result<bool>
 fn apply_output(om: &mut OutputModule, p: &Value, cmd: &str) -> Result<bool> {
     let mut any = false;
     if let Some(f) = str_p(p, "format") {
-        let f = OutputFormat::from_name(f).ok_or_else(|| bad(cmd, "format: h264|prores|png|jpeg|tiff|exr|gif"))?;
+        let f = OutputFormat::from_name(f).ok_or_else(|| bad(cmd, "format: h264|prores|webm|png|jpeg|tiff|exr|gif|wav|aiff"))?;
         om.set_format(f);
         any = true;
     }
@@ -256,7 +260,7 @@ fn add(s: &mut Session, p: &Value) -> Result<Value> {
     let cid = s.comp_for_queue(p).ok_or(EngineError::NoComp)?;
     let mut it = RenderQueueItem::new(0, cid);
     if let Some(f) = str_p(p, "format") {
-        let f = OutputFormat::from_name(f).ok_or_else(|| bad("renderQueue.add", "format: h264|prores|png|jpeg|tiff|exr|gif"))?;
+        let f = OutputFormat::from_name(f).ok_or_else(|| bad("renderQueue.add", "format: h264|prores|webm|png|jpeg|tiff|exr|gif|wav|aiff"))?;
         it.output = OutputModule::for_format(f);
     }
     apply_settings(&mut it.settings, p, "renderQueue.add")?;
@@ -434,7 +438,7 @@ fn add_output_module(s: &mut Session, p: &Value) -> Result<Value> {
     let n = it.extra_outputs.len() + 2;
     let mut om = it.output.clone();
     if let Some(f) = str_p(p, "format") {
-        let f = OutputFormat::from_name(f).ok_or_else(|| bad("render.addOutputModule", "format: h264|prores|png|jpeg|tiff|exr|gif"))?;
+        let f = OutputFormat::from_name(f).ok_or_else(|| bad("render.addOutputModule", "format: h264|prores|webm|png|jpeg|tiff|exr|gif|wav|aiff"))?;
         om = OutputModule::for_format(f);
     }
     if str_p(p, "output").is_none() && str_p(p, "path").is_none() {
@@ -509,7 +513,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Add to Render Queue",
             ["Composition"],
             Some("Cmd+M"),
-            "{comp?: id|name, format?: h264|prores|png|jpeg|tiff|exr|gif, output?: path|template, quality?: best|draft|1-100 (jpeg), resolution?: full|half|third|quarter|scale, timeSpan?: workArea|comp|custom, start?: s, end?: s, frameRate?: fps|null, motionBlur?: bool, skipExisting?: bool, channels?: rgb|rgba, bitrate?: kbps, proresProfile?: proxy|lt|standard|hq|4444|4444xq, audio?: auto|on|off, sampleRate?, loop?: bool}",
+            "{comp?: id|name, format?: h264|prores|webm|png|jpeg|tiff|exr|gif|wav|aiff, output?: path|template, quality?: best|draft|1-100 (jpeg, webm), resolution?: full|half|third|quarter|scale, timeSpan?: workArea|comp|custom, start?: s, end?: s, frameRate?: fps|null, motionBlur?: bool, skipExisting?: bool, proxyUse?: current|all|comp|none, channels?: rgb|rgba, bitrate?: kbps, proresProfile?: proxy|lt|standard|hq|4444|4444xq, audio?: auto|on|off, sampleRate?, loop?: bool}",
             can_add,
             add
         ),
@@ -520,7 +524,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Render Settings...",
             [],
             None,
-            "{item?|index?, quality?: best|draft, resolution?: full|half|third|quarter|scale, timeSpan?: workArea|comp|custom, start?: s, end?: s, frameRate?: fps|null, motionBlur?: bool, skipExisting?: bool}",
+            "{item?|index?, quality?: best|draft, resolution?: full|half|third|quarter|scale, timeSpan?: workArea|comp|custom, start?: s, end?: s, frameRate?: fps|null, motionBlur?: bool, skipExisting?: bool, proxyUse?: current|all|comp|none}",
             has_items,
             set_render_settings
         ),

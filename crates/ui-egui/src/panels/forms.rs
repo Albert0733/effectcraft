@@ -108,6 +108,16 @@ fn has(p: &Value, keys: &[&str]) -> bool {
 }
 
 /// If `id` is a dialog command invoked without its parameters, open its form and return true.
+/// The import includes a Photoshop document.
+fn is_layered(p: &Value) -> bool {
+    let psd = |v: &Value| v.as_str().is_some_and(|s| matches!(s.rsplit('.').next().map(str::to_ascii_lowercase).as_deref(), Some("psd" | "psb")));
+    match p.get("paths").or(p.get("path")) {
+        Some(Value::Array(a)) => a.iter().any(psd),
+        Some(v) => psd(v),
+        None => false,
+    }
+}
+
 pub fn open_form(app: &mut EffectcraftApp, id: &str, p: &Value) -> bool {
     let s = &app.session;
     let comp = s.active_comp();
@@ -116,6 +126,16 @@ pub fn open_form(app: &mut EffectcraftApp, id: &str, p: &Value) -> bool {
     let lt = layer.map(|l| l.layer_time(t)).unwrap_or(t);
     let base = p.clone();
     let (title, fields): (String, Vec<Field>) = match id {
+        // Photoshop files: Import Kind (Footage / Composition / – Retain Layer Sizes).
+        "file.import" if !has(p, &["importAs"]) && is_layered(p) => (
+            "Import Photoshop File".into(),
+            vec![Field::choice(
+                "importAs",
+                "Import Kind",
+                &[("Footage", json!("footage")), ("Composition", json!("composition")), ("Composition - Retain Layer Sizes", json!("compositionLayerSizes"))],
+                1,
+            )],
+        ),
         "layer.setTransform" if !has(p, &["value"]) => {
             let prop = p.get("prop").and_then(Value::as_str).unwrap_or("position");
             let cur = layer.and_then(|l| l.transform()).and_then(|tr| tr.get(if prop == "anchorPoint" { "anchor" } else { prop })).map(|pr| pr.value_at(lt));
@@ -218,27 +238,48 @@ pub fn open_form(app: &mut EffectcraftApp, id: &str, p: &Value) -> bool {
                 ),
             ],
         ),
-        "file.interpretFootage" if !has(p, &["frameRate", "alpha", "loop", "pixelAspect", "colorProfile"]) => {
-            let f = s.state.project_selection.first().and_then(|i| s.project.item(*i)).and_then(|it| match &it.kind {
-                effectcraft_engine::project::ItemKind::Footage(f) => Some(f.clone()),
+        "file.interpretFootage" | "file.interpretProxy"
+            if !has(p, &["frameRate", "alpha", "loop", "pixelAspect", "colorProfile", "fields", "invertAlpha", "matteColor", "linearLight"]) =>
+        {
+            let proxy = id == "file.interpretProxy";
+            let f = s.state.project_selection.first().and_then(|i| s.project.item(*i)).and_then(|it| match (&it.kind, &it.proxy) {
+                (_, Some(px)) if proxy => Some(px.footage.clone()),
+                (effectcraft_engine::project::ItemKind::Footage(f), _) if !proxy => Some(f.clone()),
                 _ => None,
             });
             let Some(f) = f else { return false };
+            let hex = |c: [f32; 3]| format!("#{:02x}{:02x}{:02x}", (c[0] * 255.0).round() as u8, (c[1] * 255.0).round() as u8, (c[2] * 255.0).round() as u8);
             (
-                "Interpret Footage".into(),
+                if proxy { "Interpret Footage: Proxy".into() } else { "Interpret Footage".into() },
                 vec![
-                    Field::num("frameRate", "Frame rate", f.frame_rate.as_f64()),
+                    // Main Options ▸ Alpha.
                     Field::choice(
                         "alpha",
                         "Alpha",
-                        &[("Straight", json!("straight")), ("Premultiplied", json!("premultiplied")), ("Ignore", json!("ignore"))],
+                        &[
+                            ("Interpret Straight - Unmatted", json!("straight")),
+                            ("Interpret Premultiplied - Matted With Color", json!("premultiplied")),
+                            ("Ignore", json!("ignore")),
+                            ("Guess", json!("guess")),
+                        ],
                         f.alpha as usize,
                     ),
+                    Field::text("matteColor", "Matte color (premultiplied)", &hex(f.premul_color)),
+                    Field::bool("invertAlpha", "Invert Alpha", f.invert_alpha),
+                    // Main Options ▸ Frame Rate, Fields and Pulldown, Other Options.
+                    Field::num("frameRate", "Assume this frame rate", f.frame_rate.as_f64()),
+                    Field::choice(
+                        "fields",
+                        "Separate Fields",
+                        &[("Off", json!("off")), ("Upper Field First", json!("upper")), ("Lower Field First", json!("lower"))],
+                        f.fields as usize,
+                    ),
+                    Field::num("pixelAspect", "Pixel Aspect Ratio", f.pixel_aspect),
                     Field::num("loop", "Loop (times)", f.loop_count as f64),
-                    Field::num("pixelAspect", "Pixel aspect ratio", f.pixel_aspect),
+                    // Color.
                     Field::choice(
                         "colorProfile",
-                        "Color profile",
+                        "Assign Profile",
                         &[
                             ("Embedded / sRGB", json!("auto")),
                             ("sRGB IEC61966-2.1", json!("srgb")),
@@ -248,6 +289,7 @@ pub fn open_form(app: &mut EffectcraftApp, id: &str, p: &Value) -> bool {
                         ],
                         f.color_profile.map_or(0, |c| 1 + effectcraft_engine::project::ColorSpace::ALL.iter().position(|x| *x == c).unwrap_or(0)),
                     ),
+                    Field::bool("linearLight", "Interpret As Linear Light", f.linear_light),
                 ],
             )
         }

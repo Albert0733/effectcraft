@@ -39,6 +39,51 @@ pub enum TimeSpan {
     Custom { start: Tick, end: Tick },
 }
 
+/// Render Settings ▸ Proxy Use: which proxies a render uses.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ProxyUse {
+    /// Each item's Use Proxy switch (what the viewer shows).
+    #[default]
+    CurrentSettings,
+    /// Every item that has a proxy uses it.
+    UseAll,
+    /// Only compositions' proxies.
+    UseCompOnly,
+    /// No proxies (full-resolution sources).
+    UseNone,
+}
+
+impl ProxyUse {
+    pub const ALL: [ProxyUse; 4] = [ProxyUse::CurrentSettings, ProxyUse::UseAll, ProxyUse::UseCompOnly, ProxyUse::UseNone];
+    pub fn label(self) -> &'static str {
+        match self {
+            ProxyUse::CurrentSettings => "Current Settings",
+            ProxyUse::UseAll => "Use All Proxies",
+            ProxyUse::UseCompOnly => "Use Comp Proxies Only",
+            ProxyUse::UseNone => "Use No Proxies",
+        }
+    }
+    pub fn parse(s: &str) -> Option<ProxyUse> {
+        match s.to_ascii_lowercase().replace([' ', '_', '-'], "").as_str() {
+            "current" | "currentsettings" => Some(ProxyUse::CurrentSettings),
+            "all" | "useall" | "useallproxies" => Some(ProxyUse::UseAll),
+            "comp" | "componly" | "usecompproxiesonly" | "usecomponly" => Some(ProxyUse::UseCompOnly),
+            "none" | "usenone" | "usenoproxies" => Some(ProxyUse::UseNone),
+            _ => None,
+        }
+    }
+    /// Whether an item's proxy is used: `comp` = the item is a composition, `enabled` = its Use
+    /// Proxy switch.
+    pub fn uses(self, comp: bool, enabled: bool) -> bool {
+        match self {
+            ProxyUse::CurrentSettings => enabled,
+            ProxyUse::UseAll => true,
+            ProxyUse::UseCompOnly => comp,
+            ProxyUse::UseNone => false,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RenderSettings {
@@ -52,6 +97,8 @@ pub struct RenderSettings {
     pub motion_blur: bool,
     /// Image sequences: skip frames whose file already exists.
     pub skip_existing: bool,
+    /// Proxy Use (Best Settings: Use No Proxies).
+    pub proxy_use: ProxyUse,
 }
 
 impl Default for RenderSettings {
@@ -63,6 +110,7 @@ impl Default for RenderSettings {
             frame_rate: None,
             motion_blur: true,
             skip_existing: false,
+            proxy_use: ProxyUse::UseNone,
         }
     }
 }
@@ -136,17 +184,26 @@ pub enum OutputFormat {
     ExrSequence,
     /// Animated GIF.
     Gif,
+    /// WebM: VP9 video (alpha with RGB + Alpha) + Opus audio.
+    WebM,
+    /// Audio only: WAV (16-bit PCM).
+    Wav,
+    /// Audio only: AIFF (16-bit PCM).
+    Aiff,
 }
 
 impl OutputFormat {
-    pub const ALL: [OutputFormat; 7] = [
+    pub const ALL: [OutputFormat; 10] = [
         OutputFormat::H264,
         OutputFormat::ProRes,
+        OutputFormat::WebM,
         OutputFormat::PngSequence,
         OutputFormat::JpegSequence,
         OutputFormat::TiffSequence,
         OutputFormat::ExrSequence,
         OutputFormat::Gif,
+        OutputFormat::Wav,
+        OutputFormat::Aiff,
     ];
 
     pub fn label(self) -> &'static str {
@@ -158,6 +215,9 @@ impl OutputFormat {
             OutputFormat::TiffSequence => "TIFF Sequence",
             OutputFormat::ExrSequence => "OpenEXR Sequence",
             OutputFormat::Gif => "Animated GIF",
+            OutputFormat::WebM => "WebM (VP9 + Opus)",
+            OutputFormat::Wav => "WAV",
+            OutputFormat::Aiff => "AIFF",
         }
     }
     pub fn extension(self) -> &'static str {
@@ -169,19 +229,26 @@ impl OutputFormat {
             OutputFormat::TiffSequence => "tif",
             OutputFormat::ExrSequence => "exr",
             OutputFormat::Gif => "gif",
+            OutputFormat::WebM => "webm",
+            OutputFormat::Wav => "wav",
+            OutputFormat::Aiff => "aif",
         }
     }
     pub fn is_sequence(self) -> bool {
         matches!(self, OutputFormat::PngSequence | OutputFormat::JpegSequence | OutputFormat::TiffSequence | OutputFormat::ExrSequence)
     }
     pub fn is_movie(self) -> bool {
-        matches!(self, OutputFormat::H264 | OutputFormat::ProRes)
+        matches!(self, OutputFormat::H264 | OutputFormat::ProRes | OutputFormat::WebM)
+    }
+    /// Audio-only outputs (no video is rendered).
+    pub fn is_audio_only(self) -> bool {
+        matches!(self, OutputFormat::Wav | OutputFormat::Aiff)
     }
     pub fn supports_alpha(self) -> bool {
-        !matches!(self, OutputFormat::H264 | OutputFormat::JpegSequence)
+        !matches!(self, OutputFormat::H264 | OutputFormat::JpegSequence | OutputFormat::Wav | OutputFormat::Aiff)
     }
     pub fn supports_audio(self) -> bool {
-        self.is_movie()
+        self.is_movie() || self.is_audio_only()
     }
     /// The written frame size for a rendered size: H.264 needs even dimensions (rounded down,
     /// at least 2).
@@ -201,6 +268,9 @@ impl OutputFormat {
             "tif" | "tiff" | "tiffsequence" => OutputFormat::TiffSequence,
             "exr" | "openexr" | "openexrsequence" => OutputFormat::ExrSequence,
             "gif" | "animatedgif" => OutputFormat::Gif,
+            "webm" | "vp9" | "webmvp9opus" => OutputFormat::WebM,
+            "wav" | "wave" => OutputFormat::Wav,
+            "aif" | "aiff" | "aifc" => OutputFormat::Aiff,
             _ => return None,
         })
     }
@@ -419,6 +489,8 @@ pub enum PostRenderAction {
     Import,
     /// Import it and replace every use of the rendered composition (Composition ▸ Pre-render).
     ImportAndReplace,
+    /// Set the rendered file as the composition's proxy (File ▸ Create Proxy).
+    SetProxy,
 }
 
 impl PostRenderAction {
@@ -430,6 +502,7 @@ impl PostRenderAction {
             PostRenderAction::None => "None",
             PostRenderAction::Import => "Import",
             PostRenderAction::ImportAndReplace => "Import & Replace Usage",
+            PostRenderAction::SetProxy => "Set Proxy",
         }
     }
 }

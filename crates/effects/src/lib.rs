@@ -9,6 +9,7 @@
 pub mod audio_fx;
 mod blur2;
 mod blur3;
+pub mod camera_tracker;
 mod channel;
 mod channel2;
 mod channel3d;
@@ -382,6 +383,7 @@ pub fn registry() -> &'static [EffectSpec] {
         v.extend(paint::specs());
         v.extend(puppet::specs());
         v.extend(warp_stab::specs());
+        v.extend(camera_tracker::specs());
         v.extend(roto::specs());
         v.sort_by(|a, b| a.category.cmp(b.category).then(a.name.cmp(b.name)));
         for s in v.iter_mut() {
@@ -530,6 +532,8 @@ pub const TIME_DEPENDENT: &[&str] = &[
     "ec.obsolete.mochashape",
     // Each frame gets its own stabilizing warp.
     warp_stab::ID,
+    // Render Track Points draws each frame's solved points.
+    camera_tracker::ID,
     // Each frame has its own segmentation.
     roto::ID,
 ];

@@ -36,11 +36,14 @@ pub struct EvalCtx<'a> {
     /// Comp time.
     pub time: Tick,
     pub expr: Option<&'a dyn ExprHost>,
+    /// Footage frames for expressions that read rendered pixels (`sampleImage`): the renderer's
+    /// own source while rendering; `None` renders footage as transparent.
+    pub footage: Option<&'a dyn crate::FootageSource>,
 }
 
 impl<'a> EvalCtx<'a> {
     pub fn new(project: &'a Project, comp_id: ItemId, comp: &'a Comp, time: Tick) -> EvalCtx<'a> {
-        EvalCtx { project, comp_id, comp, time, expr: None }
+        EvalCtx { project, comp_id, comp, time, expr: None, footage: None }
     }
     pub fn at(&self, time: Tick) -> EvalCtx<'a> {
         EvalCtx { time, ..*self }
@@ -100,6 +103,15 @@ impl<'a> EvalCtx<'a> {
         if let Some(tr) = layer.props.get("timeRemap") {
             return Tick::from_seconds_f64(self.value(layer, tr).as_f64());
         }
+        // Responsive Design — Time: a time-stretched precomp keeps its protected regions at
+        // their original speed.
+        if let LayerSource::Comp { item } = layer.source
+            && (layer.stretch - 100.0).abs() > 1e-9
+            && let Some(nc) = self.project.comp(item)
+            && let Some(t) = responsive_source_time(nc, layer.stretch / 100.0, (self.time - layer.start_time).seconds())
+        {
+            return t;
+        }
         layer.layer_time(self.time)
     }
     pub fn layer(&self, id: LayerId) -> Option<&'a Layer> {
@@ -108,6 +120,28 @@ impl<'a> EvalCtx<'a> {
 
     /// Local (parent-space) transform of a layer.
     pub fn local_matrix(&self, layer: &Layer) -> Mat4 {
+        self.local_matrix_par(layer, 1.0)
+    }
+
+    /// Source pixel aspect relative to the comp's: non-square footage (or solids, or precomps
+    /// with another pixel aspect) is stretched horizontally by this factor in the comp.
+    pub fn par_ratio(&self, layer: &Layer) -> f64 {
+        let par = match &layer.source {
+            LayerSource::Footage { item } | LayerSource::Solid { item } | LayerSource::Comp { item } => match self.project.item(*item).map(|i| &i.kind) {
+                Some(effectcraft_project::ItemKind::Footage(f)) => f.pixel_aspect,
+                Some(effectcraft_project::ItemKind::Solid(s)) => s.pixel_aspect,
+                Some(effectcraft_project::ItemKind::Comp(c)) => c.pixel_aspect,
+                _ => 1.0,
+            },
+            _ => 1.0,
+        };
+        let r = par / if self.comp.pixel_aspect > 0.0 { self.comp.pixel_aspect } else { 1.0 };
+        if r.is_finite() && r > 0.0 && (r - 1.0).abs() > 1e-9 { r } else { 1.0 }
+    }
+
+    /// [`Self::local_matrix`] with the source's pixel aspect folded into the scale (`par`; 1 for
+    /// a parent's matrix, which children don't inherit).
+    fn local_matrix_par(&self, layer: &Layer, par: f64) -> Mat4 {
         let Some(tr) = layer.transform() else { return Mat4::IDENTITY };
         let three = layer.is_3d();
         let pos = self.position(layer, tr);
@@ -118,6 +152,7 @@ impl<'a> EvalCtx<'a> {
         }
         let anchor = self.v3(layer, tr, "anchor", [0.0; 3]);
         let mut scale = self.v3(layer, tr, "scale", [100.0; 3]);
+        scale[0] *= par;
         if !three {
             scale[2] = 100.0;
             let a = Vec3::from([anchor[0], anchor[1], 0.0]);
@@ -142,7 +177,7 @@ impl<'a> EvalCtx<'a> {
 
     /// Layer space → comp (world) space, including parents.
     pub fn world_matrix(&self, layer: &Layer) -> Mat4 {
-        let mut m = self.local_matrix(layer);
+        let mut m = self.local_matrix_par(layer, self.par_ratio(layer));
         let mut cur = layer.parent;
         let mut guard = 0;
         while let Some(pid) = cur {
@@ -183,6 +218,73 @@ impl<'a> EvalCtx<'a> {
             (Mat3([[m[0][0], m[0][1], m[0][3]], [m[1][0], m[1][1], m[1][3]], [0.0, 0.0, 1.0]]), 0.0)
         }
     }
+}
+
+/// The protected regions of a comp (Responsive Design — Time markers), merged, sorted and
+/// clamped to the comp, in seconds.
+pub fn protected_regions(comp: &Comp) -> Vec<(f64, f64)> {
+    let d = comp.duration.seconds();
+    let mut v: Vec<(f64, f64)> = comp
+        .markers
+        .iter()
+        .filter(|m| m.protected && m.duration > Tick::ZERO)
+        .map(|m| (m.time.seconds().clamp(0.0, d), (m.time + m.duration).seconds().clamp(0.0, d)))
+        .filter(|(a, b)| b > a)
+        .collect();
+    v.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut out: Vec<(f64, f64)> = vec![];
+    for (a, b) in v {
+        match out.last_mut() {
+            Some(last) if a <= last.1 => last.1 = last.1.max(b),
+            _ => out.push((a, b)),
+        }
+    }
+    out
+}
+
+/// Source time of a precomp time-stretched by `stretch` (1 = 100%), `elapsed` comp seconds
+/// after the layer's start, with Responsive Design — Time: protected regions play at their
+/// original speed and the unprotected parts absorb the whole stretch. `None` when the comp has
+/// no protected regions or the stretch can't be absorbed (reversed, or shorter than the
+/// protected regions), so the plain stretch applies.
+pub fn responsive_source_time(comp: &Comp, stretch: f64, elapsed: f64) -> Option<Tick> {
+    let regions = protected_regions(comp);
+    if regions.is_empty() || stretch <= 0.0 {
+        return None;
+    }
+    let d = comp.duration.seconds();
+    let lp: f64 = regions.iter().map(|(a, b)| b - a).sum();
+    let lu = d - lp;
+    let k = if lu > 1e-9 { (d * stretch - lp) / lu } else { 1.0 };
+    if k <= 1e-9 {
+        return None;
+    }
+    if elapsed < 0.0 {
+        return Some(Tick::from_seconds_f64(elapsed / k));
+    }
+    // Segments in source order: (start, end, protected).
+    let mut segs = vec![];
+    let mut at = 0.0;
+    for (a, b) in &regions {
+        if *a > at {
+            segs.push((at, *a, false));
+        }
+        segs.push((*a, *b, true));
+        at = *b;
+    }
+    if d > at {
+        segs.push((at, d, false));
+    }
+    let mut pos = 0.0;
+    for (a, b, prot) in segs {
+        let speed = if prot { 1.0 } else { k };
+        let len = (b - a) * speed;
+        if elapsed < pos + len {
+            return Some(Tick::from_seconds_f64(a + (elapsed - pos) / speed));
+        }
+        pos += len;
+    }
+    Some(Tick::from_seconds_f64(d + (elapsed - pos) / k))
 }
 
 /// Size of a layer's source in layer pixels.

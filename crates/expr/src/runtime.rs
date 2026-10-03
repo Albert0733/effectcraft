@@ -145,6 +145,19 @@ fn native_host(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsV
             t: secs(num(args, 4, ctx)?),
             pre: arg(args, 5).to_boolean(),
         },
+        11 => Req::Footage { name: string(args, 1, ctx)? },
+        12 => Req::FootageData { name: string(args, 1, ctx)? },
+        13 => Req::Sample {
+            comp: id(args, 1, ctx)?,
+            layer: id(args, 2, ctx)?,
+            x: secs(num(args, 3, ctx)?),
+            y: secs(num(args, 4, ctx)?),
+            rx: secs(num(args, 5, ctx)?),
+            ry: secs(num(args, 6, ctx)?),
+            post: arg(args, 7).to_boolean(),
+            t: secs(num(args, 8, ctx)?),
+        },
+        14 => Req::Project,
         _ => return Err(JsNativeError::typ().with_message("unknown host request").into()),
     };
     let found = FRAMES.with(|f| {

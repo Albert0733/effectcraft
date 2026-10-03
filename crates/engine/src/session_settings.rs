@@ -27,6 +27,7 @@ impl Session {
         self.prefs.normalize();
         self.layer_cache.set_budget(self.prefs.layer_cache_bytes());
         self.footage.set_cache_budget(self.prefs.media_cache_bytes());
+        self.configure_disk_cache();
         // Fewer undo levels apply right away.
         let levels = self.prefs.general.undo_levels.max(1) as usize;
         if self.history.undo.len() > levels {
@@ -34,6 +35,43 @@ impl Session {
             self.history.undo.drain(..extra);
         }
         self.prefs_revision += 1;
+    }
+
+    /// Apply Settings ▸ Media & Disk Cache ▸ Disk Cache: open (or close) the persistent cache
+    /// and attach it to the layer cache. Without a folder setting the platform cache folder is
+    /// used, but only by frontends with a settings store (headless sessions stay off disk).
+    pub fn configure_disk_cache(&mut self) {
+        use effectcraft_render::disk_cache::{DiskCache, default_folder, footage_salt};
+        let d = &self.prefs.disk;
+        let folder = if d.disk_cache_folder.trim().is_empty() {
+            (self.config.is_some() && !cfg!(target_arch = "wasm32")).then(default_folder)
+        } else {
+            Some(std::path::PathBuf::from(d.disk_cache_folder.trim()))
+        };
+        let max = d.disk_cache_max_gb.max(1) as u64 * (1 << 30);
+        // (no file system in the browser: the disk cache stays off there)
+        let Some(folder) = folder.filter(|_| d.disk_cache_enabled && !cfg!(target_arch = "wasm32")) else {
+            self.disk_cache = None;
+            self.layer_cache.set_disk(None);
+            return;
+        };
+        let dc = match &self.disk_cache {
+            Some(c) if c.folder() == folder.as_path() => {
+                c.set_max_bytes(max);
+                c.clone()
+            }
+            _ => match DiskCache::open(&folder, max) {
+                Ok(c) => c,
+                Err(e) => {
+                    log::warn!("disk cache at {}: {e}", folder.display());
+                    self.disk_cache = None;
+                    self.layer_cache.set_disk(None);
+                    return;
+                }
+            },
+        };
+        self.layer_cache.set_disk(Some((dc.clone(), footage_salt(&self.project))));
+        self.disk_cache = Some(dc);
     }
 
     /// Write settings to the config store.
@@ -89,11 +127,19 @@ impl Session {
         self.config.as_ref().and_then(|c| c.dir())
     }
 
+    /// Where auto-saves live: the config store's [`crate::config::FileOps`], else the file system.
+    pub fn file_ops(&self) -> &dyn crate::config::FileOps {
+        match &self.config {
+            Some(c) => c.files(),
+            None => &crate::config::StdFiles,
+        }
+    }
+
     /// Write an auto-save now (whether or not the project is dirty). Returns its path.
     pub fn autosave_now(&mut self) -> Result<String> {
         let json = self.project.to_json();
         let root = self.default_autosave_root();
-        let (path, slot) = autosave::write(&self.prefs, self.path.as_deref(), root.as_deref(), self.autosave.last_slot, &json)
+        let (path, slot) = autosave::write_in(self.file_ops(), &self.prefs, self.path.as_deref(), root.as_deref(), self.autosave.last_slot, &json)
             .map_err(|e| EngineError::Other(format!("auto-save failed: {e}")))?;
         let p = path.to_string_lossy().to_string();
         self.autosave.last_slot = Some(slot);

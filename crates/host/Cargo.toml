@@ -19,3 +19,7 @@ effectcraft-export = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
+effectcraft-psd = { workspace = true }
+effectcraft-svg = { workspace = true }
+effectcraft-raster = { workspace = true }
+effectcraft-time = { workspace = true }

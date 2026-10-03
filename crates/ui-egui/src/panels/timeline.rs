@@ -494,6 +494,19 @@ fn build_rows(app: &EffectcraftApp, comp: &Comp) -> Vec<Row> {
             continue;
         }
         rows.push(Row { layer: l.id, depth: 0, kind: RowKind::Layer });
+        // Essential Graphics ▸ Solo Supported Properties: every property it can expose.
+        if app.session.state.essential_solo {
+            let mut v = vec![];
+            for (i, c) in l.props.children.iter().enumerate() {
+                if c.match_id() == effectcraft_engine::project::essential::GROUP {
+                    continue;
+                }
+                let g = PropGroup { children: vec![l.props.children[i].clone()], ..PropGroup::new(0, "", "") };
+                collect_props(&g, &mut v, &|p| prop_visible(p, l) && effectcraft_engine::project::essential::control_type(p).is_some());
+            }
+            rows.extend(v.into_iter().map(|uid| Row { layer: l.id, depth: 1, kind: RowKind::Prop { uid } }));
+            continue;
+        }
         if !tl.open_layers.contains(&l.id.0) {
             continue;
         }
@@ -855,6 +868,31 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     if let Some((a, b)) = run {
         draw_run(a, b);
     }
+    // Disk-cached frames not in RAM (blue), like After Effects.
+    if app.session.disk_cache.is_some() {
+        let frames = comp.frame_rate.frame_at(comp.duration);
+        let opts = app.frame_opts(cid, scale_key as f64 / 1000.0);
+        let disk = app.frames.disk_frames(&app.render_source(), app.session.revision, cid.0, scale_key, app.view_hash(cid), frames, &opts);
+        let draw_blue = |a: i64, b: i64| {
+            let x0 = tm.x(a as f64 * fd);
+            let x1 = tm.x((b + 1) as f64 * fd);
+            p.rect_filled(Rect::from_min_max(pos2(x0, cy0), pos2(x1, cy0 + 2.5)), 0.0, t.cache_blue);
+        };
+        let mut run: Option<(i64, i64)> = None;
+        for f in disk {
+            run = match run {
+                Some((a, b)) if f == b + 1 => Some((a, f)),
+                Some((a, b)) => {
+                    draw_blue(a, b);
+                    Some((f, f))
+                }
+                None => Some((f, f)),
+            };
+        }
+        if let Some((a, b)) = run {
+            draw_blue(a, b);
+        }
+    }
     // Ticks + labels.
     // Label spacing in whole frames (AE: `00:15f`-style seconds:frames labels).
     let fps_i = fr.as_f64().round().max(1.0) as i64;
@@ -1030,7 +1068,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     app.ui.timeline.scroll_y = app.ui.timeline.scroll_y.min(max_scroll);
     let snap_project = app.session.project.clone();
     let snap_expr = app.session.expr.clone();
-    let ectx = EvalCtx { project: &snap_project, comp_id: cid, comp: &comp, time, expr: snap_expr.as_deref() };
+    let ectx = EvalCtx { project: &snap_project, comp_id: cid, comp: &comp, time, expr: snap_expr.as_deref(), footage: None };
     let lp = p.with_clip_rect(rows_rect.intersect(Rect::from_min_max(rows_rect.min, pos2(graph_x0 - 1.0, rows_rect.max.y))));
     let gp = p.with_clip_rect(rows_rect.intersect(Rect::from_min_max(pos2(graph_x0, rows_rect.min.y), rows_rect.max)));
     let mut y = rows_rect.min.y - app.ui.timeline.scroll_y;
@@ -1495,6 +1533,40 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     lp.text(wr.center(), Align2::CENTER_CENTER, "⚠", Tokens::ui(12.0), Color32::from_rgb(0xf0, 0xa0, 0x30));
                     let _ = ui.interact(wr, egui::Id::new(("expr-err", uid)), Sense::hover()).on_hover_text(e);
                 }
+                // ⓕ: the Expression Language menu inserts at the cursor.
+                let lang_r = Rect::from_center_size(pos2(cw.switches + 70.0, cy), vec2(16.0, 16.0));
+                let lang = ui.interact(lang_r, egui::Id::new(("expr-lang", uid)), Sense::click()).on_hover_text("Expression Language Menu");
+                lp.circle_stroke(lang_r.center(), 6.5, Stroke::new(1.0, if lang.hovered() { t.text } else { t.text_dim }));
+                lp.text(lang_r.center(), Align2::CENTER_CENTER, "f", Tokens::semibold(10.0), if lang.hovered() { t.text } else { t.text_dim });
+                app.auto.add(&format!("timeline.prop.{uid}.exprLanguage"), lang_r, "Expression Language Menu");
+                let mut picked: Option<&'static str> = None;
+                egui::Popup::menu(&lang).show(|ui| {
+                    for (cat, items) in effectcraft_engine::commands::expr_tools::language_menu() {
+                        ui.menu_button(cat, |ui| {
+                            for (label, text) in items {
+                                if ui.button(label).clicked() {
+                                    picked = Some(text);
+                                    ui.close();
+                                }
+                            }
+                        });
+                    }
+                });
+                if let Some(text) = picked {
+                    let edit_id = egui::Id::new(("expr-edit", uid));
+                    let buf_id = egui::Id::new(("expr-buf", uid));
+                    let cur: String = ctx.data(|d| d.get_temp(buf_id)).unwrap_or_else(|| ex.text.clone());
+                    let at = egui::text_edit::TextEditState::load(&ctx, edit_id)
+                        .and_then(|st| st.cursor.char_range())
+                        .map(|r| r.primary.index.0)
+                        .unwrap_or(cur.chars().count())
+                        .min(cur.chars().count());
+                    let byte = cur.char_indices().nth(at).map(|(b, _)| b).unwrap_or(cur.len());
+                    let mut next = cur.clone();
+                    next.insert_str(byte, text);
+                    actions.push(("prop.setExpression".into(), json!({"layer": layer.id.0, "prop": uid, "expression": next})));
+                    ctx.data_mut(|d| d.remove::<String>(buf_id));
+                }
                 // The editor in the time-graph area.
                 ui.set_clip_rect(right_clip);
                 gp.rect_filled(Rect::from_min_max(pos2(graph_x0, r.min.y), r.max), 0.0, Color32::from_rgb(0x1a, 0x1a, 0x1a));
@@ -1606,8 +1678,19 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     Tokens::ui(12.0),
                     if prop.has_expression() { Color32::from_rgb(0xe8, 0x7c, 0x5c) } else { t.text },
                 );
-                let name_resp =
-                    ui.interact(Rect::from_min_max(pos2(name_x, r.min.y), pos2(cw.switches - 2.0, r.max.y)), egui::Id::new(("pname", uid)), Sense::click());
+                let name_resp = ui.interact(
+                    Rect::from_min_max(pos2(name_x, r.min.y), pos2(cw.switches - 2.0, r.max.y)),
+                    egui::Id::new(("pname", uid)),
+                    Sense::click_and_drag(),
+                );
+                if name_resp.drag_started() {
+                    // Drop on the Essential Graphics panel to expose the property.
+                    egui::DragAndDrop::set_payload(&ctx, crate::panels::DragPayload::Property { layer: layer.id.0, prop: *uid });
+                }
+                if name_resp.dragged() {
+                    egui::Tooltip::always_open(ctx.clone(), ui.layer_id(), egui::Id::new("prop-drag-tip"), egui::PopupAnchor::Pointer)
+                        .show(|ui| ui.label(&prop.name));
+                }
                 if name_resp.clicked() {
                     actions.push(("prop.select".into(), json!({"layer": layer.id.0, "prop": uid, "add": ui.input(|i| i.modifiers.shift)})));
                 }
@@ -1889,6 +1972,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
 
     // Drop targets: footage/comps from the Project panel, effects from Effects & Presets.
     if let Some(payload) = egui::DragAndDrop::payload::<crate::panels::DragPayload>(&ctx)
+        && !matches!(*payload, crate::panels::DragPayload::Property { .. })
         && ui.rect_contains_pointer(rows_rect)
     {
         p.rect_stroke(rows_rect, 0.0, Stroke::new(2.0, t.accent), StrokeKind::Inside);
@@ -1902,6 +1986,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                         actions.push(("effect.apply".into(), json!({"effect": e, "layers": [l.0]})));
                     }
                 }
+                crate::panels::DragPayload::Property { .. } => {}
             }
             egui::DragAndDrop::clear_payload(&ctx);
         }
