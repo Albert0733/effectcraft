@@ -179,12 +179,30 @@ pub struct Group {
     /// A soft mask (PDF `SMask` in the graphics state): the group shows where the mask's
     /// luminosity (or alpha) is high.
     pub mask: Option<Box<SoftMask>>,
+    /// Composited on its own (a transparent backdrop, as SVG groups and PDF isolated
+    /// transparency groups are) rather than over what is below it (PDF non-isolated groups and
+    /// clipping groups: blend modes inside reach the backdrop). Matters only when the group is
+    /// drawn offscreen (clip, mask, blend mode, opacity or knockout).
+    pub isolated: bool,
+    /// A PDF knockout group: each child composites with the group's initial backdrop instead
+    /// of with the children below it.
+    pub knockout: bool,
 }
 
 impl Group {
     /// An empty, opaque, unclipped group.
     pub fn new(name: &str) -> Group {
-        Group { name: name.to_string(), transform: Affine::IDENTITY, opacity: 1.0, children: vec![], clip: vec![], blend: BlendMode::Normal, mask: None }
+        Group {
+            name: name.to_string(),
+            transform: Affine::IDENTITY,
+            opacity: 1.0,
+            children: vec![],
+            clip: vec![],
+            blend: BlendMode::Normal,
+            mask: None,
+            isolated: true,
+            knockout: false,
+        }
     }
 }
 
@@ -753,7 +771,17 @@ impl<'a, 'i> Parser<'a, 'i> {
                 for c in n.children() {
                     self.node(c, &st, &mut children, depth + 1);
                 }
-                out.push(Node::Group(Group { name: Self::element_name(n), transform, opacity, children, clip: vec![], blend: BlendMode::Normal, mask: None }));
+                out.push(Node::Group(Group {
+                    name: Self::element_name(n),
+                    transform,
+                    opacity,
+                    children,
+                    clip: vec![],
+                    blend: BlendMode::Normal,
+                    mask: None,
+                    isolated: true,
+                    knockout: false,
+                }));
             }
             "svg" => {
                 // Nested viewport.
@@ -780,6 +808,8 @@ impl<'a, 'i> Parser<'a, 'i> {
                     clip: vec![],
                     blend: BlendMode::Normal,
                     mask: None,
+                    isolated: true,
+                    knockout: false,
                 }));
             }
             "use" => {
@@ -809,11 +839,23 @@ impl<'a, 'i> Parser<'a, 'i> {
                         clip: vec![],
                         blend: BlendMode::Normal,
                         mask: None,
+                        isolated: true,
+                        knockout: false,
                     }));
                 } else {
                     self.node(target, &st, &mut children, depth + 1);
                 }
-                out.push(Node::Group(Group { name: Self::element_name(n), transform, opacity, children, clip: vec![], blend: BlendMode::Normal, mask: None }));
+                out.push(Node::Group(Group {
+                    name: Self::element_name(n),
+                    transform,
+                    opacity,
+                    children,
+                    clip: vec![],
+                    blend: BlendMode::Normal,
+                    mask: None,
+                    isolated: true,
+                    knockout: false,
+                }));
             }
             "path" | "rect" | "circle" | "ellipse" | "line" | "polyline" | "polygon" => {
                 if !st.visible {
@@ -861,6 +903,8 @@ impl<'a, 'i> Parser<'a, 'i> {
                             clip: vec![],
                             blend: BlendMode::Normal,
                             mask: None,
+                            isolated: true,
+                            knockout: false,
                         }));
                     }
                 }
@@ -1056,7 +1100,7 @@ pub fn parse(bytes: &[u8]) -> Result<Doc, Error> {
     Ok(Doc {
         width: dw,
         height: dh,
-        root: Group { name: "svg".into(), transform, opacity, children, clip: vec![], blend: BlendMode::Normal, mask: None },
+        root: Group { name: "svg".into(), transform, opacity, children, clip: vec![], blend: BlendMode::Normal, mask: None, isolated: true, knockout: false },
         skipped: std::mem::take(&mut p.skipped),
     })
 }

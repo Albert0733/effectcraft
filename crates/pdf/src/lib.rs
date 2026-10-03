@@ -8,6 +8,7 @@
 //! (Illustrator layers), with content outside them gathered into groups of its own.
 
 mod build;
+mod ccitt;
 mod cff;
 mod color;
 mod encoding;
@@ -16,6 +17,7 @@ mod image;
 mod object;
 mod page;
 mod ps;
+mod shading;
 mod type1;
 pub mod write;
 
@@ -192,3 +194,9 @@ pub fn layer_doc(doc: &Doc, index: usize) -> Doc {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_groups;
+#[cfg(test)]
+mod tests_import;
+#[cfg(test)]
+mod tests_shading;

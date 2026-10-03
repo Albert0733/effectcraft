@@ -119,7 +119,8 @@ showpage\n%%EOF\n";
 fn eps_postscript_subset() {
     let doc = parse(EPS.as_bytes()).unwrap();
     assert_eq!((doc.width, doc.height), (100.0, 100.0));
-    assert!(doc.skipped.contains(&"text".to_string()));
+    assert!(doc.skipped.is_empty(), "{:?}", doc.skipped);
+    assert!(shape_names(&doc).contains(&"Text: text".to_string()), "EPS text is drawn: {:?}", shape_names(&doc));
     let at = |x, y| px(&doc, x, y);
     assert!(at(25, 75)[0] > 0.99 && at(25, 75)[3] > 0.99, "red box {:?}", at(25, 75));
     assert!(at(70, 50)[2] > 0.99, "blue disc {:?}", at(70, 50));
@@ -152,11 +153,11 @@ fn filters_decode() {
 // ------------------------------------------------------------------ M13.6: text, images,
 // patterns, soft masks, blend modes, pages
 
-type Objs = Vec<(u32, String, Option<Vec<u8>>)>;
+pub(crate) type Objs = Vec<(u32, String, Option<Vec<u8>>)>;
 
 /// A one-page 200×100 PDF: `resources` is the page's resource dictionary body, `extra` more
 /// objects (numbered from 10).
-fn page_pdf(content: &str, resources: &str, extra: Objs) -> Vec<u8> {
+pub(crate) fn page_pdf(content: &str, resources: &str, extra: Objs) -> Vec<u8> {
     let mut objs: Objs = vec![
         (1, "<< /Type /Catalog /Pages 2 0 R >>".into(), None),
         (2, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into(), None),
@@ -167,12 +168,12 @@ fn page_pdf(content: &str, resources: &str, extra: Objs) -> Vec<u8> {
     pdf(&objs, 1)
 }
 
-fn render(doc: &Doc) -> effectcraft_raster::Image {
+pub(crate) fn render(doc: &Doc) -> effectcraft_raster::Image {
     let (w, h) = doc.pixel_size();
     effectcraft_svg::rasterize(doc, w, h, 1.0)
 }
 
-fn coverage(img: &effectcraft_raster::Image, x0: i64, y0: i64, x1: i64, y1: i64) -> f32 {
+pub(crate) fn coverage(img: &effectcraft_raster::Image, x0: i64, y0: i64, x1: i64, y1: i64) -> f32 {
     let mut s = 0.0;
     for y in y0..y1 {
         for x in x0..x1 {
@@ -182,7 +183,7 @@ fn coverage(img: &effectcraft_raster::Image, x0: i64, y0: i64, x1: i64, y1: i64)
     s
 }
 
-fn shape_names(doc: &Doc) -> Vec<String> {
+pub(crate) fn shape_names(doc: &Doc) -> Vec<String> {
     fn walk(g: &effectcraft_svg::Group, out: &mut Vec<String>) {
         for c in &g.children {
             match c {
@@ -223,7 +224,7 @@ fn square_cff() -> Vec<u8> {
 
 const SQUARE_FONT: &str = "<< /Type /Font /Subtype /Type1 /BaseFont /Square /FirstChar 65 /LastChar 65 /Widths [600] /Encoding << /Differences [65 /square] >> /FontDescriptor 11 0 R >>";
 
-fn square_font_objs() -> Objs {
+pub(crate) fn square_font_objs() -> Objs {
     vec![
         (10, SQUARE_FONT.into(), None),
         (11, "<< /Type /FontDescriptor /FontName /Square /Flags 32 /FontFile3 12 0 R >>".into(), None),

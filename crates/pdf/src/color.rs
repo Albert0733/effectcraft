@@ -167,6 +167,16 @@ pub enum Func {
         decode: Vec<f64>,
         samples: Vec<f64>,
     },
+    /// Type 0 with several inputs (function-based shadings): multilinear interpolation, the
+    /// first input varying fastest in the sample table.
+    SampledN {
+        domain: Vec<f64>,
+        size: Vec<usize>,
+        outputs: usize,
+        encode: Vec<f64>,
+        decode: Vec<f64>,
+        samples: Vec<f64>,
+    },
     /// An array of one-output functions.
     Array(Vec<Func>),
     /// Type 4: a PostScript calculator program (§7.10.5).
@@ -385,20 +395,23 @@ impl Func {
             0 => {
                 let Obj::Stream(sd, raw) = o else { return Func::Unsupported };
                 let Some(data) = decode_stream(file, sd, raw) else { return Func::Unsupported };
-                let size = file.get(d, "Size").map(|x| file.nums(x)).and_then(|v| v.first().copied()).unwrap_or(0.0) as usize;
+                let sizes: Vec<usize> = file.get(d, "Size").map(|x| file.nums(x)).unwrap_or_default().iter().map(|v| v.max(0.0) as usize).collect();
+                let size = sizes.first().copied().unwrap_or(0);
                 let bps = file.get_num(d, "BitsPerSample").unwrap_or(8.0) as usize;
                 let range = file.get(d, "Range").map(|x| file.nums(x)).unwrap_or_default();
                 let outputs = range.len() / 2;
                 if size == 0 || outputs == 0 || !matches!(bps, 1 | 2 | 4 | 8 | 12 | 16 | 24 | 32) {
                     return Func::Unsupported;
                 }
+                let total = sizes.iter().try_fold(1usize, |a, b| a.checked_mul(*b)).filter(|t| *t > 0 && *t <= 1 << 22);
+                let Some(total) = total else { return Func::Unsupported };
                 let enc = file.get(d, "Encode").map(|x| file.nums(x)).unwrap_or_default();
                 let encode = [enc.first().copied().unwrap_or(0.0), enc.get(1).copied().unwrap_or(size as f64 - 1.0)];
                 let decode = file.get(d, "Decode").map(|x| file.nums(x)).filter(|v| v.len() >= outputs * 2).unwrap_or_else(|| range.clone());
                 let max = ((1u64 << bps) - 1) as f64;
                 let mut samples = Vec::with_capacity(size * outputs);
                 let mut bit = 0usize;
-                for _ in 0..size * outputs {
+                for _ in 0..total * outputs {
                     let mut v = 0u64;
                     for _ in 0..bps {
                         let byte = data.get(bit / 8).copied().unwrap_or(0);
@@ -406,6 +419,13 @@ impl Func {
                         bit += 1;
                     }
                     samples.push(v as f64 / max);
+                }
+                if sizes.len() > 1 {
+                    let m = sizes.len();
+                    let encode =
+                        (0..m).flat_map(|i| [enc.get(2 * i).copied().unwrap_or(0.0), enc.get(2 * i + 1).copied().unwrap_or(sizes[i] as f64 - 1.0)]).collect();
+                    let domain = (0..m).flat_map(|i| [dom.get(2 * i).copied().unwrap_or(0.0), dom.get(2 * i + 1).copied().unwrap_or(1.0)]).collect();
+                    return Func::SampledN { domain, size: sizes, outputs, encode, decode, samples };
                 }
                 Func::Sampled { domain, size, outputs, encode, decode, samples }
             }
@@ -441,8 +461,50 @@ impl Func {
             let k = st.len().saturating_sub(n);
             return st[k..].iter().enumerate().map(|(i, v)| v.clamp(range[2 * i], range[2 * i + 1])).collect();
         }
-        let t = input.first().copied().unwrap_or(0.0);
-        self.eval1(t)
+        match self {
+            Func::SampledN { domain, size, outputs, encode, decode, samples } => {
+                let m = size.len();
+                // Each input → a sample-table coordinate, then the 2^m surrounding samples.
+                let mut base = vec![0usize; m];
+                let mut frac = vec![0.0f64; m];
+                for i in 0..m {
+                    let x = input.get(i).copied().unwrap_or(0.0);
+                    let (d0, d1) = (domain[2 * i], domain[2 * i + 1]);
+                    let x = x.clamp(d0.min(d1), d0.max(d1));
+                    let e = if d1 != d0 { encode[2 * i] + (x - d0) / (d1 - d0) * (encode[2 * i + 1] - encode[2 * i]) } else { encode[2 * i] };
+                    let e = if e.is_finite() { e.clamp(0.0, size[i] as f64 - 1.0) } else { 0.0 };
+                    base[i] = e.floor() as usize;
+                    frac[i] = e - e.floor();
+                }
+                let corners = if m <= 6 { 1usize << m } else { 1 };
+                let mut out = vec![0.0; *outputs];
+                for c in 0..corners {
+                    let mut w = 1.0;
+                    let mut idx = 0usize;
+                    let mut stride = 1usize;
+                    for i in 0..m {
+                        let up = m <= 6 && (c >> i) & 1 == 1;
+                        w *= if up { frac[i] } else { 1.0 - frac[i] };
+                        let k = if up { (base[i] + 1).min(size[i] - 1) } else { base[i] };
+                        idx += k * stride;
+                        stride *= size[i];
+                    }
+                    if w == 0.0 {
+                        continue;
+                    }
+                    for (o, v) in out.iter_mut().enumerate() {
+                        *v += w * samples.get(idx * outputs + o).copied().unwrap_or(0.0);
+                    }
+                }
+                for (o, v) in out.iter_mut().enumerate() {
+                    let (d0, d1) = (decode.get(2 * o).copied().unwrap_or(0.0), decode.get(2 * o + 1).copied().unwrap_or(1.0));
+                    *v = d0 + *v * (d1 - d0);
+                }
+                out
+            }
+            Func::Array(fs) if input.len() > 1 => fs.iter().map(|f| f.eval(input).first().copied().unwrap_or(0.0)).collect(),
+            _ => self.eval1(input.first().copied().unwrap_or(0.0)),
+        }
     }
 
     pub fn eval1(&self, t: f64) -> Vec<f64> {
@@ -481,7 +543,7 @@ impl Func {
                     .collect()
             }
             Func::Array(fs) => fs.iter().map(|f| f.eval1(t).first().copied().unwrap_or(0.0)).collect(),
-            Func::Calc { .. } => self.eval(&[t]),
+            Func::Calc { .. } | Func::SampledN { .. } => self.eval(&[t]),
             Func::Unsupported => vec![0.5],
         }
     }

@@ -515,11 +515,18 @@ pub enum OutputFormat {
     Wav,
     /// Audio only: AIFF (16-bit PCM).
     Aiff,
+    /// HEVC (H.265) video (+ AAC audio) in MP4 (`hvc1`).
+    Hevc,
+    /// AV1 video (+ AAC audio) in MP4 (`av01`). WebM with AV1: [`OutputFormat::WebM`] with
+    /// [`WebmVideoCodec::Av1`].
+    Av1,
 }
 
 impl OutputFormat {
-    pub const ALL: [OutputFormat; 10] = [
+    pub const ALL: [OutputFormat; 12] = [
         OutputFormat::H264,
+        OutputFormat::Hevc,
+        OutputFormat::Av1,
         OutputFormat::ProRes,
         OutputFormat::WebM,
         OutputFormat::PngSequence,
@@ -543,6 +550,8 @@ impl OutputFormat {
             OutputFormat::WebM => "WebM (VP9 + Opus)",
             OutputFormat::Wav => "WAV",
             OutputFormat::Aiff => "AIFF",
+            OutputFormat::Hevc => "HEVC (H.265)",
+            OutputFormat::Av1 => "AV1",
         }
     }
     pub fn extension(self) -> &'static str {
@@ -557,29 +566,34 @@ impl OutputFormat {
             OutputFormat::WebM => "webm",
             OutputFormat::Wav => "wav",
             OutputFormat::Aiff => "aif",
+            OutputFormat::Hevc | OutputFormat::Av1 => "mp4",
         }
     }
     pub fn is_sequence(self) -> bool {
         matches!(self, OutputFormat::PngSequence | OutputFormat::JpegSequence | OutputFormat::TiffSequence | OutputFormat::ExrSequence)
     }
     pub fn is_movie(self) -> bool {
-        matches!(self, OutputFormat::H264 | OutputFormat::ProRes | OutputFormat::WebM)
+        matches!(self, OutputFormat::H264 | OutputFormat::ProRes | OutputFormat::WebM | OutputFormat::Hevc | OutputFormat::Av1)
+    }
+    /// Formats whose video codec options live in [`OutputModule::codec`] (HEVC, AV1).
+    pub fn has_codec_options(self) -> bool {
+        matches!(self, OutputFormat::Hevc | OutputFormat::Av1)
     }
     /// Audio-only outputs (no video is rendered).
     pub fn is_audio_only(self) -> bool {
         matches!(self, OutputFormat::Wav | OutputFormat::Aiff)
     }
     pub fn supports_alpha(self) -> bool {
-        !matches!(self, OutputFormat::H264 | OutputFormat::JpegSequence | OutputFormat::Wav | OutputFormat::Aiff)
+        !matches!(self, OutputFormat::H264 | OutputFormat::Hevc | OutputFormat::Av1 | OutputFormat::JpegSequence | OutputFormat::Wav | OutputFormat::Aiff)
     }
     pub fn supports_audio(self) -> bool {
         self.is_movie() || self.is_audio_only()
     }
-    /// The written frame size for a rendered size: H.264 needs even dimensions (rounded down,
+    /// The written frame size for a rendered size: H.264 and HEVC need even dimensions (rounded down,
     /// at least 2).
     pub fn coded_size(self, w: u32, h: u32) -> (u32, u32) {
         let even = |v: u32| if v < 2 { 2 } else { v & !1 };
-        if self == OutputFormat::H264 { (even(w), even(h)) } else { (w, h) }
+        if matches!(self, OutputFormat::H264 | OutputFormat::Hevc) { (even(w), even(h)) } else { (w, h) }
     }
     /// Parse a format name: `h264`, `mp4`, `prores`, `mov`, `png`, `jpeg`/`jpg`, `tiff`/`tif`,
     /// `exr`, `gif`, or a label.
@@ -587,6 +601,8 @@ impl OutputFormat {
         let n = s.trim().to_ascii_lowercase().replace([' ', '.', '-', '_'], "");
         Some(match n.as_str() {
             "h264" | "mp4" | "avc" => OutputFormat::H264,
+            "hevc" | "h265" | "hevch265" | "hvc1" | "x265" => OutputFormat::Hevc,
+            "av1" | "av01" | "mp4av1" => OutputFormat::Av1,
             "prores" | "mov" | "quicktime" | "quicktimeprores" => OutputFormat::ProRes,
             "png" | "pngsequence" => OutputFormat::PngSequence,
             "jpg" | "jpeg" | "jpegsequence" => OutputFormat::JpegSequence,
@@ -800,6 +816,155 @@ impl ProResProfile {
     }
 }
 
+/// HEVC / AV1 profile: 8-bit (HEVC Main, AV1 Main 8-bit) or 10-bit (HEVC Main 10, AV1 Main 10-bit).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CodecProfile {
+    #[default]
+    Main,
+    Main10,
+}
+
+impl CodecProfile {
+    pub const ALL: [CodecProfile; 2] = [CodecProfile::Main, CodecProfile::Main10];
+    pub fn label(self) -> &'static str {
+        match self {
+            CodecProfile::Main => "Main",
+            CodecProfile::Main10 => "Main 10",
+        }
+    }
+    pub fn bit_depth(self) -> u8 {
+        match self {
+            CodecProfile::Main => 8,
+            CodecProfile::Main10 => 10,
+        }
+    }
+    pub fn from_name(s: &str) -> Option<CodecProfile> {
+        match s.to_ascii_lowercase().replace([' ', '-', '_'], "").as_str() {
+            "main" | "main8" | "8" | "8bit" => Some(CodecProfile::Main),
+            "main10" | "10" | "10bit" => Some(CodecProfile::Main10),
+            _ => None,
+        }
+    }
+}
+
+/// HEVC / AV1 rate control: a target bitrate ([`OutputModule::bitrate_kbps`]) or constant
+/// quality ([`VideoCodecOptions::quality`], CRF-like).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RateControlMode {
+    #[default]
+    Bitrate,
+    Quality,
+}
+
+impl RateControlMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            RateControlMode::Bitrate => "Target Bitrate",
+            RateControlMode::Quality => "Constant Quality",
+        }
+    }
+    pub fn from_name(s: &str) -> Option<RateControlMode> {
+        match s.to_ascii_lowercase().replace([' ', '-', '_'], "").as_str() {
+            "bitrate" | "vbr" | "abr" | "targetbitrate" => Some(RateControlMode::Bitrate),
+            "quality" | "crf" | "cq" | "constantquality" | "qp" => Some(RateControlMode::Quality),
+            _ => None,
+        }
+    }
+}
+
+/// Video codec options of the HEVC and AV1 formats (and AV1 in WebM).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VideoCodecOptions {
+    pub profile: CodecProfile,
+    /// Level × 10 (`41` = level 4.1); `None` picks the lowest level that fits the frame size and rate.
+    pub level: Option<u8>,
+    pub rate_control: RateControlMode,
+    /// Constant-quality setting 1–100 (100 ≈ visually lossless), used with [`RateControlMode::Quality`].
+    pub quality: u8,
+}
+
+impl Default for VideoCodecOptions {
+    fn default() -> Self {
+        VideoCodecOptions { profile: CodecProfile::Main, level: None, rate_control: RateControlMode::Bitrate, quality: 70 }
+    }
+}
+
+impl VideoCodecOptions {
+    /// HEVC levels (× 10) offered in the UI (Main tier).
+    pub const HEVC_LEVELS: [u8; 13] = [10, 20, 21, 30, 31, 40, 41, 50, 51, 52, 60, 61, 62];
+    /// AV1 levels (× 10) offered in the UI.
+    pub const AV1_LEVELS: [u8; 14] = [20, 21, 30, 31, 40, 41, 50, 51, 52, 53, 60, 61, 62, 63];
+    /// HEVC QP (0–51) for the constant-quality setting.
+    pub fn hevc_qp(&self) -> u8 {
+        (4.0 + (100 - self.quality.clamp(1, 100)) as f64 * 0.45).round() as u8
+    }
+    /// AV1 `base_q_idx` (1–255) for the constant-quality setting.
+    pub fn av1_qindex(&self) -> u8 {
+        (4.0 + (100 - self.quality.clamp(1, 100)) as f64 * 2.4).round() as u8
+    }
+    /// `general_level_idc` (30 × level).
+    pub fn hevc_level_idc(&self) -> Option<u8> {
+        self.level.map(|l| l.saturating_mul(3))
+    }
+    /// AV1 `seq_level_idx`: (major − 2) × 4 + minor.
+    pub fn av1_level_idx(&self) -> Option<u8> {
+        self.level.map(|l| ((l / 10).clamp(2, 7) - 2) * 4 + (l % 10).min(3))
+    }
+    pub fn level_label(&self) -> String {
+        match self.level {
+            None => "Auto".into(),
+            Some(l) => format!("{}.{}", l / 10, l % 10),
+        }
+    }
+    /// Parse `"auto"`, `"4.1"`, `"41"` (level × 10). `None` when unparsable; `Some(None)` = auto.
+    pub fn parse_level(s: &str) -> Option<Option<u8>> {
+        let s = s.trim().to_ascii_lowercase();
+        if s == "auto" || s.is_empty() {
+            return Some(None);
+        }
+        let v: f64 = s.trim_start_matches('l').parse().ok()?;
+        let l = if v >= 10.0 { v.round() } else { (v * 10.0).round() };
+        (10.0..=73.0).contains(&l).then_some(Some(l as u8))
+    }
+}
+
+/// The video codec of a WebM output.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WebmVideoCodec {
+    #[default]
+    Vp9,
+    /// AV1 (`V_AV1`) with the [`OutputModule::codec`] options; no alpha.
+    Av1,
+}
+
+impl WebmVideoCodec {
+    pub fn label(self) -> &'static str {
+        match self {
+            WebmVideoCodec::Vp9 => "VP9",
+            WebmVideoCodec::Av1 => "AV1",
+        }
+    }
+}
+
+/// Opus coding application: general audio (music and mixed content) or voice (speech-tuned
+/// SILK / hybrid coding at low bitrates).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OpusApplication {
+    #[default]
+    Audio,
+    Voip,
+}
+
+impl OpusApplication {
+    pub fn label(self) -> &'static str {
+        match self {
+            OpusApplication::Audio => "Audio",
+            OpusApplication::Voip => "Voice",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct OutputModule {
@@ -814,7 +979,7 @@ pub struct OutputModule {
     pub output: String,
     /// JPEG / WebM quality 1–100.
     pub quality: u8,
-    /// H.264 target bitrate (and WebM's when `webm_bitrate`).
+    /// H.264 target bitrate (and WebM's when `webm_bitrate`; HEVC / AV1 with [`RateControlMode::Bitrate`]).
     pub bitrate_kbps: u32,
     /// WebM: rate control by `bitrate_kbps` instead of `quality`.
     pub webm_bitrate: bool,
@@ -830,6 +995,13 @@ pub struct OutputModule {
     pub audio_format: AudioFormat,
     /// GIF: loop forever.
     pub gif_loop: bool,
+    /// HEVC / AV1 options.
+    pub codec: VideoCodecOptions,
+    /// WebM video codec.
+    pub webm_codec: WebmVideoCodec,
+    /// WebM Opus audio bitrate (stereo total), kbit/s.
+    pub opus_bitrate_kbps: u32,
+    pub opus_application: OpusApplication,
     /// Include Project Link: kept for parity; EffectCraft's writers have no place to store a
     /// link back to the project, so it changes nothing in the file.
     pub include_project_link: bool,
@@ -855,6 +1027,10 @@ impl Default for OutputModule {
             audio_channels: 2,
             audio_format: AudioFormat::S16,
             gif_loop: true,
+            codec: VideoCodecOptions::default(),
+            webm_codec: WebmVideoCodec::Vp9,
+            opus_bitrate_kbps: 192,
+            opus_application: OpusApplication::Audio,
             include_project_link: true,
         }
     }
@@ -941,7 +1117,7 @@ impl OutputModule {
     pub fn set_format(&mut self, format: OutputFormat) {
         let old = self.format;
         self.format = format;
-        if !format.supports_alpha() && self.channels == Channels::Rgba {
+        if !self.supports_alpha() && self.channels == Channels::Rgba {
             self.channels = Channels::Rgb;
         }
         if self.output.contains("[fileExtension]") {
@@ -961,6 +1137,24 @@ impl OutputModule {
         }
         self.output = format!("{stem}.{}", format.extension());
     }
+    /// Whether this module can write alpha (the format can, and WebM uses VP9).
+    pub fn supports_alpha(&self) -> bool {
+        self.format.supports_alpha() && !(self.format == OutputFormat::WebM && self.webm_codec == WebmVideoCodec::Av1)
+    }
+    /// The key-frame interval in frames at `fps` ([`OutputModule::keyframe_interval`]; automatic: 2 s).
+    pub fn keyint(&self, fps: f64) -> u32 {
+        if self.keyframe_interval > 0 { self.keyframe_interval } else { (fps * 2.0).round().max(1.0) as u32 }
+    }
+    /// Codec options summary: `Main · 10000 kbps · Level Auto · Key every auto`.
+    fn codec_summary(&self) -> String {
+        let c = &self.codec;
+        let rate = match c.rate_control {
+            RateControlMode::Bitrate => format!("{} kbps", self.bitrate_kbps),
+            RateControlMode::Quality => format!("Quality {}", c.quality),
+        };
+        let gop = if self.keyframe_interval == 0 { "auto".to_string() } else { self.keyframe_interval.to_string() };
+        format!("{} · {rate} · Level {} · Key every {gop}", c.profile.label(), c.level_label())
+    }
     /// One-line summary shown next to "Output Module:".
     pub fn summary(&self) -> String {
         if !self.name.is_empty() {
@@ -973,6 +1167,10 @@ impl OutputModule {
                 "{} · {ch}",
                 if self.channels == Channels::Rgba && !self.prores_profile.is_4444() { "Apple ProRes 4444" } else { self.prores_profile.label() }
             ),
+            OutputFormat::Hevc | OutputFormat::Av1 => format!("{} · {}", self.format.label(), self.codec_summary()),
+            OutputFormat::WebM if self.webm_codec == WebmVideoCodec::Av1 => {
+                format!("WebM (AV1 + Opus {} kbps) · {}", self.opus_bitrate_kbps, self.codec_summary())
+            }
             f => format!("{} · {ch}", f.label()),
         }
     }
@@ -1352,5 +1550,43 @@ mod tests {
         assert_eq!(s.frame_count(&c), 30);
         assert_eq!(s.first_frame(&c), 30);
         assert!(s.frame_time(&c, 0) >= Tick::from_seconds_f64(1.0));
+    }
+
+    #[test]
+    fn hevc_av1_codec_options() {
+        assert_eq!(OutputFormat::from_name("H.265"), Some(OutputFormat::Hevc));
+        assert_eq!(OutputFormat::from_name("hevc"), Some(OutputFormat::Hevc));
+        assert_eq!(OutputFormat::from_name("AV1"), Some(OutputFormat::Av1));
+        assert_eq!(OutputFormat::Hevc.coded_size(33, 17), (32, 16));
+        assert_eq!(OutputFormat::Av1.coded_size(33, 17), (33, 17));
+        assert!(!OutputFormat::Hevc.supports_alpha() && OutputFormat::Av1.is_movie() && OutputFormat::Av1.supports_audio());
+        assert_eq!(VideoCodecOptions::parse_level("4.1"), Some(Some(41)));
+        assert_eq!(VideoCodecOptions::parse_level("51"), Some(Some(51)));
+        assert_eq!(VideoCodecOptions::parse_level("auto"), Some(None));
+        assert_eq!(VideoCodecOptions::parse_level("9"), None);
+        let mut o = VideoCodecOptions { level: Some(41), ..Default::default() };
+        assert_eq!((o.hevc_level_idc(), o.av1_level_idx()), (Some(123), Some(9)));
+        o.level = Some(20);
+        assert_eq!(o.av1_level_idx(), Some(0));
+        o.quality = 100;
+        assert_eq!((o.hevc_qp(), o.av1_qindex()), (4, 4));
+        o.quality = 1;
+        assert!(o.hevc_qp() <= 51 && o.av1_qindex() >= 240);
+        // WebM with AV1 has no alpha; switching drops RGB + Alpha.
+        let mut m = OutputModule::for_format(OutputFormat::WebM);
+        m.channels = Channels::Rgba;
+        assert!(m.supports_alpha());
+        m.webm_codec = WebmVideoCodec::Av1;
+        assert!(!m.supports_alpha());
+        assert!(m.summary().starts_with("WebM (AV1 + Opus 192 kbps)"), "{}", m.summary());
+        let mut h = OutputModule::for_format(OutputFormat::Hevc);
+        assert_eq!(h.keyint(29.97), 60);
+        h.keyframe_interval = 1;
+        assert_eq!(h.keyint(29.97), 1);
+        h.keyframe_interval = 0;
+        assert_eq!(h.summary(), "HEVC (H.265) · Main · 10000 kbps · Level Auto · Key every auto");
+        // Older projects (no codec fields) load with the defaults.
+        let old: OutputModule = serde_json::from_str(r#"{"format":"H264","bitrate_kbps":5000}"#).unwrap();
+        assert_eq!((old.codec, old.webm_codec, old.opus_bitrate_kbps), (VideoCodecOptions::default(), WebmVideoCodec::Vp9, 192));
     }
 }

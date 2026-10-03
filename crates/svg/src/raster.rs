@@ -31,26 +31,62 @@ fn draw_group(g: &Group, m: Affine, opacity: f64, dst: &mut Image) {
     if o <= 0.0 {
         return;
     }
-    let isolated = !g.clip.is_empty() || g.mask.is_some() || g.blend != BlendMode::Normal || (g.opacity < 1.0 && g.children.len() > 1);
-    if !isolated {
+    let offscreen = !g.clip.is_empty()
+        || g.mask.is_some()
+        || g.blend != BlendMode::Normal
+        || (g.opacity < 1.0 && !matches!(g.children.as_slice(), [Node::Shape(_) | Node::Image(_)]))
+        || g.knockout;
+    if !offscreen {
         for c in &g.children {
             draw_node(c, m, o, dst);
         }
         return;
     }
-    // Draw the children on their own, keep what every clip path covers and the soft mask
-    // lets through, then composite with the group's opacity and blend mode.
-    let mut tmp = Image::new(dst.width, dst.height);
-    for c in &g.children {
-        draw_node(c, m, 1.0, &mut tmp);
+    let only_clip = g.mask.is_none() && g.blend == BlendMode::Normal && o >= 1.0 && !g.knockout;
+    // Draw the children on their own (isolated) or over a copy of the backdrop, keep what
+    // every clip path covers and the soft mask lets through, then composite with the group's
+    // opacity and blend mode.
+    let backdrop = if g.isolated { None } else { Some(dst.clone()) };
+    let mut tmp = match &backdrop {
+        Some(b) => b.clone(),
+        None => Image::new(dst.width, dst.height),
+    };
+    draw_children(g, m, &mut tmp, backdrop.as_ref());
+    if let Some(b) = &backdrop {
+        if only_clip {
+            // A non-isolated clipping group: the backdrop where the clip excludes the children.
+            let cov = clip_coverage(g, m, dst.width, dst.height);
+            dst.data.par_iter_mut().zip(tmp.data.par_iter()).zip(cov.par_iter()).for_each(|((d, t), c)| {
+                for i in 0..4 {
+                    d[i] = d[i] * (1.0 - c) + t[i] * c;
+                }
+            });
+            return;
+        }
+        // Remove the backdrop's contribution (ISO 32000-1 §11.4.8): with the group's own
+        // alpha αg (its children alone), C = Cn + (Cn − C0)·(α0/αg − α0).
+        let mut solo = Image::new(dst.width, dst.height);
+        draw_children(g, m, &mut solo, None);
+        tmp.data.par_iter_mut().zip(b.data.par_iter()).zip(solo.data.par_iter()).for_each(|((t, b0), s)| {
+            let ag = s[3];
+            if ag <= 0.0 {
+                *t = [0.0; 4];
+                return;
+            }
+            let un = |c: &[f32; 4]| if c[3] > 0.0 { [c[0] / c[3], c[1] / c[3], c[2] / c[3]] } else { [0.0; 3] };
+            let (cn, c0, a0) = (un(t), un(b0), b0[3]);
+            let k = a0 / ag - a0;
+            let mut out = [0.0; 4];
+            for i in 0..3 {
+                out[i] = (cn[i] + (cn[i] - c0[i]) * k).clamp(0.0, 1.0) * ag;
+            }
+            out[3] = ag;
+            *t = out;
+        });
     }
-    for (path, rule) in &g.clip {
-        let rule = match rule {
-            FillRule::NonZero => effectcraft_path::FillRule::NonZero,
-            FillRule::EvenOdd => effectcraft_path::FillRule::EvenOdd,
-        };
-        let cov = effectcraft_path::fill_coverage(std::slice::from_ref(path), &mat3(m), dst.width, dst.height, rule);
-        tmp.data.par_iter_mut().zip(cov.data.par_iter()).for_each(|(p, c)| {
+    if !g.clip.is_empty() {
+        let cov = clip_coverage(g, m, dst.width, dst.height);
+        tmp.data.par_iter_mut().zip(cov.par_iter()).for_each(|(p, c)| {
             for v in p.iter_mut() {
                 *v *= c;
             }
@@ -86,6 +122,76 @@ fn draw_group(g: &Group, m: Affine, opacity: f64, dst: &mut Image) {
                 *d = blend_pixel(mode, *d, s);
             }
         });
+    }
+}
+
+/// The product of a group's clip-path coverages.
+fn clip_coverage(g: &Group, m: Affine, w: u32, h: u32) -> Vec<f32> {
+    let mut out = vec![1.0f32; w as usize * h as usize];
+    for (path, rule) in &g.clip {
+        let rule = match rule {
+            FillRule::NonZero => effectcraft_path::FillRule::NonZero,
+            FillRule::EvenOdd => effectcraft_path::FillRule::EvenOdd,
+        };
+        let cov = effectcraft_path::fill_coverage(std::slice::from_ref(path), &mat3(m), w, h, rule);
+        out.par_iter_mut().zip(cov.data.par_iter()).for_each(|(o, c)| *o *= c);
+    }
+    out
+}
+
+/// Draw a group's children into `dst`. Knockout groups composite each child with the
+/// group's initial backdrop (`backdrop`, or transparent) instead of with the children below:
+/// where the child has shape `f`, `dst = dst·(1 − f) + child + backdrop·(f − αchild)`.
+fn draw_children(g: &Group, m: Affine, dst: &mut Image, backdrop: Option<&Image>) {
+    if !g.knockout {
+        for c in &g.children {
+            draw_node(c, m, 1.0, dst);
+        }
+        return;
+    }
+    for c in &g.children {
+        let mut ci = Image::new(dst.width, dst.height);
+        draw_node(c, m, 1.0, &mut ci);
+        // Shape: the child drawn fully opaque (constant opacities to 1).
+        let mut si = Image::new(dst.width, dst.height);
+        draw_node(&opaque(c), m, 1.0, &mut si);
+        let zero = [0.0f32; 4];
+        dst.data.par_iter_mut().enumerate().for_each(|(i, d)| {
+            let (cp, f) = (ci.data[i], si.data[i][3].max(ci.data[i][3]));
+            if f <= 0.0 {
+                return;
+            }
+            let b = backdrop.map(|b| b.data[i]).unwrap_or(zero);
+            for k in 0..4 {
+                d[k] = d[k] * (1.0 - f) + cp[k] + b[k] * (f - cp[3]);
+            }
+        });
+    }
+}
+
+/// A node with its constant opacities set to 1 (its shape, for knockout groups).
+fn opaque(n: &Node) -> Node {
+    match n {
+        Node::Group(g) => {
+            let mut g = g.clone();
+            g.opacity = 1.0;
+            g.children = g.children.iter().map(opaque).collect();
+            Node::Group(g)
+        }
+        Node::Shape(s) => {
+            let mut s = s.clone();
+            s.opacity = 1.0;
+            s.fill_opacity = 1.0;
+            if let Some(st) = &mut s.stroke {
+                st.opacity = 1.0;
+            }
+            Node::Shape(s)
+        }
+        Node::Image(i) => {
+            let mut i = i.clone();
+            i.opacity = 1.0;
+            Node::Image(i)
+        }
     }
 }
 

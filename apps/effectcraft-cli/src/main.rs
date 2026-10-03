@@ -9,9 +9,11 @@
 //! effectcraft-cli get <comp> <layer> <path> [--time S]        read a property
 //! effectcraft-cli set <comp> <layer> <path> <value> [--time S] [--expression E]
 //! effectcraft-cli render-frame [--comp C] [--time S|--frame N] [--max-side PX|--scale K] [--out F.png]
-//! effectcraft-cli render [--comp C] --out FILE [--format h264|prores|webm|png|jpeg|tiff|exr|gif|wav|aiff] [--start S] [--end S]
+//! effectcraft-cli render [--comp C] --out FILE [--format h264|hevc|av1|prores|webm|png|jpeg|tiff|exr|gif|wav|aiff] [--start S] [--end S]
 //!     [--work-area] [--fps N] [--resolution full|half|third|quarter|K] [--quality best|draft] [--channels rgb|rgba]
 //!     [--jpeg-quality N] [--bitrate KBPS] [--prores proxy|lt|standard|hq|4444|4444xq] [--audio auto|on|off]
+//!     [--profile main|main10] [--level auto|4.1] [--rate-control bitrate|quality] [--video-quality 1-100]
+//!     [--keyint FRAMES] [--webm-codec vp9|av1] [--audio-bitrate KBPS] [--opus-app audio|voice]
 //! effectcraft-cli render F.ecproj --queue                    render the project's Render Queue
 //! effectcraft-cli bench [--comp C] [--time S] [--scale K] [--n N] [--play N] [--gpu [--adv3d]]   render timings
 //!     (--gpu: CPU vs GPU ms/frame for every comp at Full and Half)
@@ -44,7 +46,11 @@ const USAGE: &str = "usage: effectcraft-cli <info|commands|exec|run|props|get|se
   render-frame [--comp C] [--time S | --frame N] [--max-side PX | --scale K] [--out F.png]
   render [--comp C] --out FILE [--format F] [--start S] [--end S] [--work-area] [--fps N]
          [--resolution full|half|third|quarter|K] [--quality best|draft] [--channels rgb|rgba]
-         [--jpeg-quality N] [--bitrate KBPS] [--prores PROFILE] [--audio auto|on|off] | --queue
+         [--jpeg-quality N] [--bitrate KBPS] [--prores PROFILE] [--audio auto|on|off]
+         [--profile main|main10] [--level auto|4.1] [--rate-control bitrate|quality] [--video-quality N]
+         [--keyint FRAMES] [--webm-codec vp9|av1] [--audio-bitrate KBPS] [--opus-app audio|voice] | --queue
+                                           (formats h264|hevc|av1|prores|webm|png|jpeg|tiff|exr|gif|wav|aiff;
+                                           --profile..--keyint: HEVC / AV1, --audio-bitrate/--opus-app: WebM Opus)
   bench [--comp C] [--time S] [--scale K] [--n N] [--play N] [--gpu [--adv3d]]   per-layer/effect render timings;
                                            --play N renders N consecutive frames with/without the layer cache;
                                            --gpu compares CPU and GPU ms/frame for every comp at Full and Half
@@ -85,6 +91,14 @@ const VALUED: &[&str] = &[
     "--bitrate",
     "--prores",
     "--audio",
+    "--profile",
+    "--level",
+    "--rate-control",
+    "--video-quality",
+    "--keyint",
+    "--webm-codec",
+    "--audio-bitrate",
+    "--opus-app",
 ];
 
 struct Args {
@@ -545,6 +559,22 @@ fn render(args: &Args, json_out: bool) -> Result<(), Failure> {
         }
         if let Some(v) = args.num("--bitrate")? {
             p["bitrate"] = json!(v);
+        }
+        for (flag, key) in [
+            ("--profile", "profile"),
+            ("--level", "level"),
+            ("--rate-control", "rateControl"),
+            ("--webm-codec", "webmCodec"),
+            ("--opus-app", "opusApplication"),
+        ] {
+            if let Some(v) = args.opt(flag) {
+                p[key] = json!(v);
+            }
+        }
+        for (flag, key) in [("--video-quality", "quality"), ("--keyint", "keyframeInterval"), ("--audio-bitrate", "audioBitrate")] {
+            if let Some(v) = args.num(flag)? {
+                p[key] = json!(v);
+            }
         }
         // Render exactly this item: unqueue whatever the project's queue already holds.
         for k in 0..s.project.render_queue.len() {
