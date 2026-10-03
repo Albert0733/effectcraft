@@ -452,7 +452,9 @@ impl Session {
         if let Err(why) = (spec.enabled)(self) {
             // Explicit targets (agents, scripts) don't need a UI selection.
             let explicit = (["layer", "layers", "prop", "keys"].iter().any(|k| params.get(k).is_some()) && commands::has_comp(self).is_ok())
-                || ["item", "items"].iter().any(|k| params.get(k).is_some());
+                || ["item", "items"].iter().any(|k| params.get(k).is_some())
+                // An explicit composition (the enablement looks at the active one).
+                || params.get("comp").is_some_and(|c| !c.is_null() && self.resolve_comp(Some(c)).is_ok());
             if !explicit {
                 return Err(EngineError::Disabled(id.to_string(), why));
             }

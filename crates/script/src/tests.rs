@@ -87,6 +87,19 @@ fn builds_a_comp_end_to_end() {
 }
 
 #[test]
+fn fill_parameters_use_documented_match_names() {
+    // M13.15: `ADBE Fill-0002` is Fill's Color (All Masks is -0007), not the second row.
+    let mut s = session();
+    let o = ok(
+        &mut s,
+        r#"var c = app.project.items.addComp("F", 100, 100, 1, 1, 12); var l = c.layers.addSolid([1,1,1], "S", 100, 100, 1);
+           var fx = l.property("ADBE Effect Parade").addProperty("ADBE Fill");
+           [fx.property("ADBE Fill-0002").name, fx.property("ADBE Fill-0007").name, fx.property(2).matchName].join("|")"#,
+    );
+    assert_eq!(o.result, json!("Color|All Masks|ADBE Fill-0007"));
+}
+
+#[test]
 fn undo_steps_without_a_group() {
     let mut s = session();
     ok(&mut s, r#"var c = app.project.items.addComp("A", 100, 100, 1, 1, 24); c.layers.addNull(); c.layers.addNull();"#);

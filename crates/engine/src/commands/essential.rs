@@ -25,8 +25,20 @@ use crate::{EngineError, Result, Session, cmd, query};
 pub const TEMPLATE_FORMAT: &str = "effectcraft-template";
 pub const TEMPLATE_VERSION: u32 = 1;
 
-fn control_p(p: &Value, cmd: &str) -> Result<u64> {
-    p.get("control").and_then(Value::as_u64).ok_or_else(|| bad(cmd, "missing `control` (control id)"))
+/// `control`: a control id, or its name in the comp's Essential Graphics (`"Title"`).
+fn control_p(s: &Session, comp: ItemId, p: &Value, cmd: &str) -> Result<u64> {
+    match p.get("control") {
+        Some(Value::Number(n)) => n.as_u64().ok_or_else(|| bad(cmd, "`control` is a control id or name")),
+        Some(Value::String(name)) => {
+            let eg = s.project.comp(comp).and_then(|c| c.essential.as_ref());
+            let all: Vec<(u64, String)> = eg.map(|e| e.flat().into_iter().map(|c| (c.id, c.name.clone())).collect()).unwrap_or_default();
+            all.iter().find(|(_, n)| n == name).or_else(|| all.iter().find(|(_, n)| n.eq_ignore_ascii_case(name))).map(|(id, _)| *id).ok_or_else(|| {
+                let names: Vec<&str> = all.iter().map(|(_, n)| n.as_str()).collect();
+                bad(cmd, format!("no control named `{name}` (controls: {})", names.join(", ")))
+            })
+        }
+        _ => Err(bad(cmd, "missing `control` (control id or name, see essential.list)")),
+    }
 }
 
 /// Comp whose Essential Graphics a command edits: `comp`, else the panel's Primary comp, else
@@ -231,7 +243,7 @@ fn add_comment(s: &mut Session, p: &Value) -> Result<Value> {
 fn rename(s: &mut Session, p: &Value) -> Result<Value> {
     const C: &str = "essential.rename";
     let cid = eg_comp(s, p)?;
-    let id = control_p(p, C)?;
+    let id = control_p(s, cid, p, C)?;
     let name = str_p(p, "name").or(str_p(p, "text")).ok_or_else(|| bad(C, "missing `name`"))?.to_string();
     s.edit("Rename Essential Graphics Control", None, |proj, _| {
         let c = eg_of(proj, cid)?.find_mut(id).ok_or_else(|| bad(C, format!("no control {id}")))?;
@@ -248,7 +260,7 @@ fn rename(s: &mut Session, p: &Value) -> Result<Value> {
 fn remove(s: &mut Session, p: &Value) -> Result<Value> {
     const C: &str = "essential.remove";
     let cid = eg_comp(s, p)?;
-    let id = control_p(p, C)?;
+    let id = control_p(s, cid, p, C)?;
     s.edit("Remove Essential Graphics Control", None, |proj, _| {
         eg_of(proj, cid)?.remove(id).ok_or_else(|| bad(C, format!("no control {id}")))?;
         Ok(())
@@ -259,7 +271,7 @@ fn remove(s: &mut Session, p: &Value) -> Result<Value> {
 fn move_control(s: &mut Session, p: &Value) -> Result<Value> {
     const C: &str = "essential.move";
     let cid = eg_comp(s, p)?;
-    let id = control_p(p, C)?;
+    let id = control_p(s, cid, p, C)?;
     let group = p.get("group").and_then(Value::as_u64);
     let index = p.get("index").and_then(Value::as_u64).map(|i| i as usize);
     if group == Some(id) {
@@ -484,7 +496,7 @@ fn instance_json(s: &mut Session, p: &Value) -> Result<Value> {
 fn set_override(s: &mut Session, p: &Value) -> Result<Value> {
     const C: &str = "essential.set";
     let (cid, lid, src) = instance(s, p, C)?;
-    let control = control_p(p, C)?;
+    let control = control_p(s, src, p, C)?;
     let uid = master_uid(s, cid, lid, control).ok_or_else(|| bad(C, format!("no control {control} on this instance")))?;
     if let Some(item) = p.get("item") {
         let item = match item {
@@ -872,7 +884,7 @@ pub fn specs() -> Vec<CommandSpec> {
             super::always,
             import_template
         ),
-        cmd!("essential.set", "Set Essential Property", [], None, "{layer, control, value | item (media)}", has_instance, set_override),
+        cmd!("essential.set", "Set Essential Property", [], None, "{layer, control: id|name, value | item (media)}", has_instance, set_override),
         cmd!("essential.pushToComp", "Push Override Values to Source", [], None, "{layer, control? (default: all overridden)}", has_instance, push_to_comp),
         cmd!("essential.revert", "Revert", [], None, "{layer, control? (default: all overridden)}", has_instance, revert),
         cmd!("effect.editDropdown", "Edit Dropdown Menu", [], None, "{layer, path?|prop?, items: [string]}", has_comp, edit_dropdown),
