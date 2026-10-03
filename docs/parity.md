@@ -89,16 +89,16 @@ Timeline column/search depth, the Home screen and every After Effects workspace 
 | Audio | 85% | 0.5 | audio to keyframes |
 | Import | 78% | 4.5 | PSD, SVG as shapes, Lottie |
 | Automation | ≈ 90% | 0.8 | scripting covers the documented core object model (AUT-2, M14.4: `app`, project items, comps, layers, properties and keyframes, text documents, markers, render queue, Script Console, `effectcraft-cli script`, MCP `run_script`); still missing: ScriptUI panels/dialogs, `.jsxbin`, sockets |
-| Shapes | 68% | 3.9 | taper and wave strokes (pen tool for shape paths and vertex editing landed in M6.5) |
+| Shapes | ≈ 80% | 1.5 | Lottie can't carry stroke taper/wave (stroke Taper and Wave, Dash 2/Gap 2/Dash 3/Gap 3 and radial-gradient Highlight Length/Angle landed in M13.5; pen tool for shape paths and vertex editing in M6.5) |
 | Compositions | 72% | 6.0 | Essential Graphics panel (the marker dialog and Composition Flowchart landed) |
-| Animation | 65% | 10.4 | puppet, Wiggler/Smoother/Motion Sketch (motion-path handles and the graph editor transform box landed in M5.8) |
-| Text | ≈ 86% | 1.3 | vertical type is basic (upright characters, no tate-chu-yoko), no OpenType feature panel, no extruded strokes (extruded, bevelled text landed in M7.6); per-character styles, paragraph settings, on-canvas editing and the `sourceText` style API landed (M9.9–M9.10) |
+| Animation | 67% | 10.0 | puppet, Wiggler/Smoother/Motion Sketch (motion-path handles and the graph editor transform box landed in M5.8; keyframe colour labels and Select Keyframe Label Group, Graph Editor snapping to markers / layer ends in M13.5) |
+| Text | ≈ 91% | 0.8 | no OpenType feature panel, no extruded strokes, variable-axis animation changes outlines but not advances (vertical Roman / Tate-Chu-Yoko, forced LTR paragraphs, caret on animated and path text, Variable Font Axes and Lottie style runs landed in M13.5; extruded, bevelled text in M7.6; per-character styles, paragraph settings, on-canvas editing and the `sourceText` style API in M9.9–M9.10) |
 | Web | 60% | 2.5 | threads, browser storage, audio |
-| 3D | 72% | 12.0 | 3D camera tracker, multi-view layouts, Advanced 3D motion blur and blend modes, cameras/lights from models; Advanced 3D (glTF/OBJ models, primitives, extruded text and shapes, PBR, image-based light, shadow maps, GPU rasteriser) landed in M7.4–M7.6 |
+| 3D | 74% | 11.3 | 3D camera tracker, multi-view layouts, Advanced 3D motion blur and blend modes (and iris bokeh in Advanced 3D's depth of field), cameras/lights from models; Classic 3D iris-shaped bokeh with highlights, progressive DOF on tilted layers and the focus-link commands landed in M13.5; Advanced 3D (glTF/OBJ models, primitives, extruded text and shapes, PBR, image-based light, shadow maps, GPU rasteriser) in M7.4–M7.6 |
 | Effects | ≈ 75% | 5.0 | GPU versions of more effects and the 3D Camera Tracker (every other After Effects effect exists since M9.11 and M12.5) |
-| Interface | 70% | 6.0 | Timeline horizontal scrolling of many columns, a richer Learn area (native macOS menu bar, Timeline columns/search/reveal-add, Home screen with recent projects and all AE workspaces landed; viewer rulers/snapping/channels/snapshots landed in M0.13) |
+| Interface | 74% | 5.0 | a richer Learn area (Timeline outline and Project panel columns scroll horizontally, the Layer Style dialog, ROI resize handles, Pan Behind snapping and 3D Reference Axes landed in M13.5; native macOS menu bar, Timeline columns/search/reveal-add, Home screen with recent projects and all AE workspaces landed; viewer rulers/snapping/channels/snapshots landed in M0.13) |
 | Project | 53% | 8.1 | 8/16/32-bit pipeline and colour management, auto-save, proxies, folder moves |
-| Masks & roto | 68% | 6.0 | variable-width mask feather points, Roto Brush's learned (3.0) segmentation model (mask tracking and Mask Interpolation landed in M6.6; Roto Brush & Refine Edge with graph-cut segmentation, flow propagation, edge matting, decontamination and Freeze in M6.7) |
+| Masks & roto | 74% | 5.0 | Roto Brush's learned (3.0) segmentation model (variable-width mask feather points with the Mask Feather tool landed in M13.5; mask tracking and Mask Interpolation landed in M6.6; Roto Brush & Refine Edge with graph-cut segmentation, flow propagation, edge matting, decontamination and Freeze in M6.7) |
 | Preview | 55% | 6.1 | GPU 3D and adjustment layers, disk cache (region of interest, snapshots, exposure and Fast Previews landed in M0.13) |
 | Tracking | ≈ 70% | 4.0 | 3D camera tracker, face tracking and Subspace Warp's mesh warp (Rolling Shutter Repair landed in M9.11; point tracker, mask tracking and Warp Stabilizer landed in M6.x / M12.5) |
 | Paint | 0% | 4.0 | Brush, Clone Stamp, Eraser |
@@ -122,6 +122,21 @@ Mocha and Cineware are third-party and not counted.
 | Keying | Key Light | The full Keylight 1.2 control set under a generic name ("Keylight" is a vendor trademark); `lookup("Keylight (1.2)")` finds it. |
 | Utility | Color Profile Converter | Our colour spaces and ACES; rendering intents (perceptual gamut compression, relative / absolute colorimetric, saturation). |
 | Obsolete | mocha shape | Mocha's export format is not public: reads a documented JSON shape format instead. |
+
+## Update: M13.5 long-tail polish
+
+Stroke Taper / Wave / multi-segment dashes and the radial gradient highlight (SHP-2);
+variable-width mask feather points (MSK-1; mask motion blur verified by tests); the Adaptive
+Sample Limit driving per-layer motion-blur samples (LYR-10); Classic 3D depth of field with
+the camera's iris shape, rotation, roundness, aspect ratio, diffraction fringe and highlights,
+progressive blur on tilted layers, and Link Focus Distance to Point of Interest / to Layer and
+Set Focus Distance to Layer (3D-1); Timeline outline and Project panel column scrolling;
+keyframe colour labels and Select Keyframe Label Group (ANM-1); vertical Roman text,
+Tate-Chu-Yoko, forced LTR paragraphs, the editing caret on animated / path text and Lottie
+style runs; the Layer Style dialog (LYR-9); Graph Editor snapping to markers and layer ends
+(ANM-4; the reference graph existed); viewer ROI resize handles, Pan Behind snapping and 3D
+Reference Axes; Animate Text ▸ Variable Font Axes. Remaining in these rows: Lottie can't carry
+taper/wave, Advanced 3D's DOF has no iris shapes, and variable axes don't change advances.
 
 ## Highest-value gaps, in order
 
