@@ -522,6 +522,13 @@ impl PropGroup {
         })
     }
     /// Parent group of the node with `uid`.
+    pub fn parent_of(&self, uid: Uid) -> Option<&PropGroup> {
+        if self.children.iter().any(|c| c.uid() == uid) {
+            return Some(self);
+        }
+        self.groups().find_map(|g| g.parent_of(uid))
+    }
+    /// Parent group of the node with `uid`.
     pub fn parent_of_mut(&mut self, uid: Uid) -> Option<&mut PropGroup> {
         if self.children.iter().any(|c| c.uid() == uid) {
             return Some(self);

@@ -1393,6 +1393,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 }
                 lp.text(pos2(indent + 10.0, cy), Align2::LEFT_CENTER, name, Tokens::ui(12.0), t.text);
                 text_anim_popups(app, ui, &lp, layer, *uid, cw.switches, cy, &mut actions);
+                dash_buttons(app, ui, &lp, layer, *uid, cw.switches, cy, &mut actions);
                 // Mask mode + inverted inline.
                 if let Some(g) = layer.props.find_group(*uid)
                     && let GroupKind::Mask { mode, inverted, .. } = g.kind
@@ -1999,6 +2000,37 @@ fn walk_groups(g: &PropGroup, out: &mut Vec<u64>) {
     for sg in g.groups() {
         out.push(sg.uid);
         walk_groups(sg, out);
+    }
+}
+
+/// A stroke's Dashes "+" / "−" buttons (add or remove a Dash/Gap pair).
+#[allow(clippy::too_many_arguments)]
+fn dash_buttons(
+    app: &mut EffectcraftApp,
+    ui: &mut egui::Ui,
+    p: &egui::Painter,
+    layer: &Layer,
+    uid: u64,
+    x: f32,
+    cy: f32,
+    actions: &mut Vec<(String, serde_json::Value)>,
+) {
+    if !matches!(layer.source, LayerSource::Shape) || layer.props.find_group(uid).is_none_or(|g| g.match_id != "dashes") {
+        return;
+    }
+    let Some(stroke) = layer.props.parent_of(uid).map(|g| g.uid) else { return };
+    let t = app.tokens;
+    for (i, (sym, id, tip)) in
+        [("+", "shape.dashes.add", "Add a Dash or Gap"), ("\u{2212}", "shape.dashes.remove", "Remove a Dash or Gap")].into_iter().enumerate()
+    {
+        let r = Rect::from_center_size(pos2(x + 12.0 + i as f32 * 20.0, cy), vec2(16.0, 16.0));
+        let resp = ui.interact(r, egui::Id::new(("tl-dash", uid, i)), Sense::click()).on_hover_text(tip);
+        p.rect_stroke(r.shrink(1.0), 2.0, Stroke::new(1.0, t.separator), StrokeKind::Inside);
+        p.text(r.center(), Align2::CENTER_CENTER, sym, Tokens::ui(12.0), if resp.hovered() { t.text } else { t.text_dim });
+        app.auto.add(&format!("timeline.group.{uid}.{}", if i == 0 { "addDash" } else { "removeDash" }), r, tip);
+        if resp.clicked() {
+            actions.push((id.into(), json!({"layer": layer.id.0, "prop": stroke})));
+        }
     }
 }
 

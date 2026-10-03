@@ -10,14 +10,78 @@ pub struct ShapePath {
     pub in_tangents: Vec<[f64; 2]>,
     pub out_tangents: Vec<[f64; 2]>,
     pub closed: bool,
+    /// Variable-width mask feather points (Mask Feather tool). They travel with the path, so a
+    /// Mask Path keyframe carries them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub feather: Vec<FeatherPoint>,
+}
+
+/// A mask feather point: a position on the path (segment `segment`, from vertex `segment` to the
+/// next, at Bezier parameter `t`), a signed feather `radius` in pixels (positive = outer
+/// feather, negative = inner) and a `tension` 0–1 (0: the radius blends smoothly to the
+/// neighbouring points, 1: linearly).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct FeatherPoint {
+    pub segment: usize,
+    pub t: f64,
+    pub radius: f64,
+    #[serde(default)]
+    pub tension: f64,
 }
 
 impl ShapePath {
     pub fn polygon(points: &[[f64; 2]], closed: bool) -> ShapePath {
-        ShapePath { vertices: points.to_vec(), in_tangents: vec![[0.0; 2]; points.len()], out_tangents: vec![[0.0; 2]; points.len()], closed }
+        ShapePath {
+            vertices: points.to_vec(),
+            in_tangents: vec![[0.0; 2]; points.len()],
+            out_tangents: vec![[0.0; 2]; points.len()],
+            closed,
+            feather: Vec::new(),
+        }
     }
     pub fn len(&self) -> usize {
         self.vertices.len()
+    }
+    /// Number of segments (vertex to next vertex, the closing one included).
+    pub fn segment_count(&self) -> usize {
+        let n = self.vertices.len();
+        if self.closed { n } else { n.saturating_sub(1) }
+    }
+    /// Keep feather points in place after a vertex was inserted at `i` (segments from `i` on
+    /// shift by one; a split of segment `i - 1` at parameter `split` re-parameterises its points).
+    pub fn feather_after_insert(&mut self, i: usize, split: Option<f64>) {
+        for f in &mut self.feather {
+            if i > 0 && f.segment == i - 1 {
+                if let Some(t) = split.filter(|t| *t > 0.0 && *t < 1.0) {
+                    if f.t < t {
+                        f.t /= t;
+                    } else {
+                        f.segment += 1;
+                        f.t = (f.t - t) / (1.0 - t);
+                    }
+                }
+            } else if f.segment >= i {
+                f.segment += 1;
+            }
+        }
+    }
+    /// Keep feather points after vertex `i` was removed: its two segments merge.
+    pub fn feather_after_remove(&mut self, i: usize) {
+        let segs = self.segment_count();
+        self.feather.retain_mut(|f| {
+            if i == 0 && f.segment == 0 && !self.closed {
+                return false;
+            }
+            if i > 0 && f.segment == i - 1 {
+                f.t *= 0.5;
+            } else if f.segment == i && i > 0 {
+                f.segment = i - 1;
+                f.t = 0.5 + f.t * 0.5;
+            } else if f.segment > i || (i == 0 && f.segment > 0) {
+                f.segment -= 1;
+            }
+            f.segment < segs.max(1)
+        });
     }
     pub fn is_empty(&self) -> bool {
         self.vertices.is_empty()
@@ -36,6 +100,7 @@ impl ShapePath {
             in_tangents: vec![[-rx * K, 0.0], [0.0, -ry * K], [rx * K, 0.0], [0.0, ry * K]],
             out_tangents: vec![[rx * K, 0.0], [0.0, ry * K], [-rx * K, 0.0], [0.0, -ry * K]],
             closed: true,
+            feather: Vec::new(),
         }
     }
     fn lerp(&self, o: &ShapePath, t: f64) -> ShapePath {
@@ -48,6 +113,29 @@ impl ShapePath {
             in_tangents: l(&self.in_tangents, &o.in_tangents),
             out_tangents: l(&self.out_tangents, &o.out_tangents),
             closed: self.closed,
+            // Feather points interpolate when both keys have the same points.
+            feather: if self.feather.len() == o.feather.len() {
+                self.feather
+                    .iter()
+                    .zip(&o.feather)
+                    .map(|(a, b)| FeatherPoint {
+                        segment: if t < 1.0 { a.segment } else { b.segment },
+                        t: if a.segment == b.segment {
+                            a.t + (b.t - a.t) * t
+                        } else if t < 1.0 {
+                            a.t
+                        } else {
+                            b.t
+                        },
+                        radius: a.radius + (b.radius - a.radius) * t,
+                        tension: a.tension + (b.tension - a.tension) * t,
+                    })
+                    .collect()
+            } else if t < 1.0 {
+                self.feather.clone()
+            } else {
+                o.feather.clone()
+            },
         }
     }
 }

@@ -33,6 +33,7 @@ mod query;
 mod render_queue;
 pub mod roto_cmds;
 mod settings;
+mod shape_stroke;
 mod stubs;
 mod styles;
 mod text_anim;
@@ -127,6 +128,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(animation::specs());
         v.extend(view::specs());
         v.extend(viewer_cmds::specs());
+        v.extend(shape_stroke::specs());
         v.extend(key_transform::specs());
         v.extend(file_more::specs());
         v.extend(lottie::specs());

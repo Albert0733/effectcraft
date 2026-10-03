@@ -1,0 +1,221 @@
+//! M13.5 long-tail parity: stroke taper/wave/dashes, and the other small gaps (commands, undo,
+//! serde).
+
+use serde_json::{Value, json};
+
+use crate::Session;
+use effectcraft_project::{LayerId, Project};
+
+pub(crate) fn comp(w: u32, h: u32) -> Session {
+    let mut s = Session::default();
+    s.execute("comp.new", json!({"name": "Tail", "width": w, "height": h, "frameRate": 30, "duration": 2})).unwrap();
+    s
+}
+
+pub(crate) fn roundtrip(s: &Session) -> Project {
+    Project::from_json(&s.project.to_json()).unwrap()
+}
+
+/// A horizontal open path 160 px long across a 200×100 comp, 10 px red stroke and no fill.
+fn line_layer(s: &mut Session) -> (u64, u64) {
+    let r = s.execute("shape.newPath", json!({"vertices": [[20, 50], [180, 50]], "fill": false, "stroke": [1, 0, 0], "strokeWidth": 10})).unwrap();
+    let lid = r["layer"].as_u64().unwrap();
+    let l = s.active_comp().unwrap().layer(LayerId(lid)).unwrap();
+    let stroke = l.props.find_group(r["group"].as_u64().unwrap()).unwrap().sub("contents").unwrap().sub("stroke").unwrap().uid;
+    (lid, stroke)
+}
+
+fn column(s: &Session, x: u32) -> f32 {
+    let cid = s.active_comp_id().unwrap();
+    let img = s.render(cid, effectcraft_time::Tick::ZERO, Default::default());
+    (0..img.height).map(|y| img.data[(y * img.width + x) as usize][3]).sum()
+}
+
+#[test]
+fn stroke_taper_wave_commands_render_undo_and_serde() {
+    let mut s = comp(200, 100);
+    let (lid, stroke) = line_layer(&mut s);
+    assert!((column(&s, 30) - 10.0).abs() < 0.6);
+    let r = s.execute("shape.stroke.taper", json!({"layer": lid, "startLength": 40, "startWidth": 0})).unwrap();
+    assert_eq!(r["stroke"], json!(stroke));
+    assert!((column(&s, 30) - 2.5).abs() < 0.8, "tapered start: {}", column(&s, 30));
+    // Percent units.
+    s.execute("shape.stroke.taper", json!({"layer": lid, "units": "percent", "startLength": 25})).unwrap();
+    assert!((column(&s, 30) - 2.5).abs() < 0.8, "25 % of 160 px = 40 px: {}", column(&s, 30));
+    s.execute("edit.undo", json!({})).unwrap();
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!((column(&s, 30) - 10.0).abs() < 0.6, "undo restores the plain stroke");
+    s.execute("edit.redo", json!({})).unwrap();
+    assert!((column(&s, 30) - 2.5).abs() < 0.8);
+    // Wave in cycles.
+    s.execute("shape.stroke.wave", json!({"layer": lid, "amount": 100, "units": "cycles", "cycles": 4})).unwrap();
+    assert!(column(&s, 120) < 0.6, "trough at 100 px (2.5 cycles): {}", column(&s, 120));
+    // Values are ordinary animatable properties that survive save/load.
+    let back = roundtrip(&s);
+    let l = back.comp(s.active_comp_id().unwrap()).unwrap().layer(LayerId(lid)).unwrap();
+    let g = l.props.find_group(stroke).unwrap();
+    assert_eq!(g.prop("wave/cycles").unwrap().value.as_f64(), 4.0);
+    assert_eq!(g.prop("taper/startLength").unwrap().value.as_f64(), 40.0);
+    assert!(s.execute("shape.stroke.wave", json!({"layer": lid, "units": "furlongs"})).is_err());
+}
+
+#[test]
+fn dashes_plus_minus_buttons() {
+    let mut s = comp(200, 100);
+    let (lid, stroke) = line_layer(&mut s);
+    let add = |s: &mut Session| s.execute("shape.dashes.add", json!({"layer": lid, "prop": stroke})).unwrap()["added"].as_str().unwrap().to_string();
+    assert_eq!(add(&mut s), "dash");
+    s.execute("prop.set", json!({"layer": lid, "prop": dash_uid(&s, lid, stroke, "dash"), "value": 20})).unwrap();
+    assert_eq!(add(&mut s), "dash2");
+    assert_eq!(add(&mut s), "dash3");
+    assert!(s.execute("shape.dashes.add", json!({"layer": lid})).is_err(), "three pairs at most");
+    let names = |s: &Session| {
+        let l = s.active_comp().unwrap().layer(LayerId(lid)).unwrap();
+        l.props.find_group(stroke).unwrap().sub("dashes").unwrap().children.iter().map(|n| n.match_id().to_string()).collect::<Vec<_>>()
+    };
+    assert_eq!(names(&s), ["dash", "gap", "dash2", "gap2", "dash3", "gap3", "offset"]);
+    // Dash 20, Gap 20 (= dash), Dash 2 20, Gap 2 20…: set Dash 2 to 5.
+    s.execute("prop.set", json!({"layer": lid, "prop": dash_uid(&s, lid, stroke, "gap"), "value": 10})).unwrap();
+    s.execute("prop.set", json!({"layer": lid, "prop": dash_uid(&s, lid, stroke, "dash2"), "value": 5})).unwrap();
+    s.execute("prop.set", json!({"layer": lid, "prop": dash_uid(&s, lid, stroke, "gap2"), "value": 15})).unwrap();
+    s.execute("shape.dashes.remove", json!({"layer": lid})).unwrap();
+    assert_eq!(names(&s), ["dash", "gap", "dash2", "gap2", "offset"]);
+    // Pattern 20 on, 10 off, 5 on, 15 off from x = 20 (butt caps).
+    assert!(column(&s, 30) > 9.0 && column(&s, 45) < 0.1 && column(&s, 52) > 9.0 && column(&s, 60) < 0.1 && column(&s, 80) > 9.0);
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(names(&s).len(), 7);
+    let back = roundtrip(&s);
+    let l = back.comp(s.active_comp_id().unwrap()).unwrap().layer(LayerId(lid)).unwrap();
+    assert_eq!(l.props.find_group(stroke).unwrap().prop("dashes/dash2").unwrap().value.as_f64(), 5.0);
+}
+
+fn dash_uid(s: &Session, lid: u64, stroke: u64, m: &str) -> Value {
+    let l = s.active_comp().unwrap().layer(LayerId(lid)).unwrap();
+    json!(l.props.find_group(stroke).unwrap().sub("dashes").unwrap().get(m).unwrap().uid)
+}
+
+/// A white 200×200 solid in a 200×200 comp with a 100×100 rectangular mask (50…150).
+fn masked_solid(s: &mut Session) -> (u64, u64) {
+    let l = s.execute("layer.newSolid", json!({"color": "#ffffff", "width": 200, "height": 200})).unwrap()["layer"].as_u64().unwrap();
+    let r = s.execute("mask.new", json!({"layer": l, "vertices": [[50, 50], [150, 50], [150, 150], [50, 150]], "closed": true})).unwrap();
+    (l, r["mask"].as_u64().unwrap())
+}
+
+fn render_at(s: &Session, t: f64) -> effectcraft_raster::Image {
+    let cid = s.active_comp_id().unwrap();
+    s.render(cid, effectcraft_time::Tick::from_seconds_f64(t), Default::default())
+}
+
+fn alpha_at(s: &Session, x: u32, y: u32, t: f64) -> f32 {
+    let img = render_at(s, t);
+    img.data[(y * img.width + x) as usize][3]
+}
+
+#[test]
+fn variable_mask_feather_points() {
+    let mut s = comp(200, 200);
+    let (l, m) = masked_solid(&mut s);
+    s.execute("layer.mask.featherFalloff", json!({"layer": l, "mode": "linear"})).unwrap();
+    assert!(alpha_at(&s, 100, 45, 0.0) < 0.01);
+    // Mask Feather tool: click on the path and drag out above the top edge → an outer point of 20 px.
+    let r = s.execute("mask.featherPoint.add", json!({"layer": l, "mask": m, "point": [100, 30]})).unwrap();
+    assert_eq!(r["index"], json!(0));
+    let pts = s.execute("mask.featherPoint.list", json!({"layer": l, "mask": m})).unwrap();
+    let p0 = &pts["points"][0];
+    assert_eq!(p0["segment"], json!(0));
+    assert!((p0["t"].as_f64().unwrap() - 0.5).abs() < 1e-3 && (p0["radius"].as_f64().unwrap() - 20.0).abs() < 1e-3, "{pts}");
+    let soft = alpha_at(&s, 100, 39, 0.0);
+    assert!((soft - 0.475).abs() < 0.06, "{soft}");
+    // An inner point dragged inside the bottom edge.
+    s.execute("mask.featherPoint.add", json!({"layer": l, "mask": m, "point": [100, 130], "tension": 100})).unwrap();
+    let pts = s.execute("mask.featherPoint.list", json!({"layer": l, "mask": m})).unwrap();
+    assert!((pts["points"][1]["radius"].as_f64().unwrap() + 20.0).abs() < 1e-3, "{pts}");
+    assert!((alpha_at(&s, 100, 140, 0.0) - 0.475).abs() < 0.08, "{}", alpha_at(&s, 100, 140, 0.0));
+    assert!(alpha_at(&s, 100, 152, 0.0) < 0.01);
+    // Drag the radius; undo; redo.
+    s.execute("mask.featherPoint.set", json!({"layer": l, "mask": m, "index": 0, "radius": 40})).unwrap();
+    assert!(alpha_at(&s, 100, 39, 0.0) > 0.7);
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!((alpha_at(&s, 100, 39, 0.0) - soft).abs() < 0.08);
+    s.execute("edit.redo", json!({})).unwrap();
+    // Inserting a vertex keeps the points where they were on the path.
+    let before = alpha_at(&s, 100, 39, 0.0);
+    s.execute("mask.insertVertex", json!({"layer": l, "mask": m, "segment": 0, "t": 0.25})).unwrap();
+    let pts = s.execute("mask.featherPoint.list", json!({"layer": l, "mask": m})).unwrap();
+    assert_eq!(pts["points"][0]["segment"], json!(1));
+    assert!((pts["points"][0]["t"].as_f64().unwrap() - 1.0 / 3.0).abs() < 1e-6);
+    assert!((alpha_at(&s, 100, 39, 0.0) - before).abs() < 0.02);
+    // Serde: the points travel in the Mask Path value.
+    let back = roundtrip(&s);
+    let lay = back.comp(s.active_comp_id().unwrap()).unwrap().layer(LayerId(l)).unwrap();
+    let effectcraft_keyframe::Value::Path(sp) = &lay.props.find_group(m).unwrap().get("path").unwrap().value else { panic!() };
+    assert_eq!(sp.feather.len(), 2);
+    s.execute("mask.featherPoint.remove", json!({"layer": l, "mask": m, "all": true})).unwrap();
+    assert!(alpha_at(&s, 100, 39, 0.0) < 0.01);
+    assert!(s.execute("mask.featherPoint.set", json!({"layer": l, "mask": m, "index": 0, "radius": 1})).is_err());
+}
+
+#[test]
+fn mask_motion_blur_ramps_across_the_motion() {
+    let mut s = comp(200, 200);
+    let (l, m) = masked_solid(&mut s);
+    s.execute("comp.settings", json!({"shutterAngle": 360, "shutterPhase": 0})).unwrap();
+    s.execute("layer.mask.motionBlur", json!({"layer": l, "mode": "on"})).unwrap();
+    s.execute("prop.addKey", json!({"layer": l, "path": "masks/#1/path", "time": 0.0})).unwrap();
+    s.execute("time.set", json!({"time": 1.0})).unwrap();
+    // 30 px in 30 frames: 1 px per frame; with a 360° shutter at frame 15 the right edge sweeps
+    // 165…166, so pixel 165 is half covered.
+    let verts: Vec<Value> = (0..4).map(|i| json!({"layer": l, "mask": m, "index": i})).collect();
+    s.execute("mask.moveVertices", json!({"vertices": verts, "delta": [30, 0]})).unwrap();
+    let a = alpha_at(&s, 165, 100, 0.5);
+    assert!(a > 0.3 && a < 0.7, "{a}");
+    s.execute("layer.mask.motionBlur", json!({"layer": l, "mode": "off"})).unwrap();
+    let hard = alpha_at(&s, 165, 100, 0.5);
+    assert!(!(0.3..0.7).contains(&hard), "{hard}");
+}
+
+#[test]
+fn adaptive_sample_limit_drives_layer_samples() {
+    assert_eq!(effectcraft_render::adaptive_samples(0.5, 16, 128), 16);
+    assert_eq!(effectcraft_render::adaptive_samples(100.0, 16, 128), 100);
+    assert_eq!(effectcraft_render::adaptive_samples(400.0, 16, 128), 128);
+    assert_eq!(effectcraft_render::adaptive_samples(400.0, 16, 9999), 256);
+    let mut s = comp(400, 100);
+    s.execute("comp.settings", json!({"shutterAngle": 360, "shutterPhase": 0})).unwrap();
+    let l = s.execute("layer.newSolid", json!({"color": "#ffffff", "width": 20, "height": 20})).unwrap()["layer"].as_u64().unwrap();
+    s.execute("layer.setSwitch", json!({"layers": [l], "switch": "motionBlur", "value": true})).unwrap();
+    // 100 px per frame (keys 3 frames apart, 300 px).
+    s.execute("prop.addKey", json!({"layer": l, "path": "transform/position", "time": 0.0, "value": [50, 50]})).unwrap();
+    s.execute("prop.addKey", json!({"layer": l, "path": "transform/position", "time": 0.1, "value": [350, 50]})).unwrap();
+    let max_step = |s: &Session| {
+        let img = render_at(s, 1.0 / 30.0);
+        let row: Vec<f32> = (0..img.width).map(|x| img.data[(50 * img.width + x) as usize][3]).collect();
+        row.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0f32, f32::max)
+    };
+    s.execute("comp.settings", json!({"adaptiveSampleLimit": 16})).unwrap();
+    let coarse = max_step(&s);
+    s.execute("comp.settings", json!({"adaptiveSampleLimit": 256})).unwrap();
+    let fine = max_step(&s);
+    assert!(coarse > 0.05, "16 samples over 100 px leave visible steps: {coarse}");
+    assert!(fine < 0.03, "≈100 samples give a smooth ramp: {fine}");
+    assert_eq!(s.active_comp().unwrap().motion_blur_adaptive_limit, 256);
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(s.active_comp().unwrap().motion_blur_adaptive_limit, 16);
+    assert_eq!(roundtrip(&s).comp(s.active_comp_id().unwrap()).unwrap().motion_blur_adaptive_limit, 16);
+    // Older projects without the field read the After Effects default.
+    fn strip(v: &mut Value) {
+        match v {
+            Value::Object(o) => {
+                o.remove("motion_blur_adaptive_limit");
+                o.values_mut().for_each(strip);
+            }
+            Value::Array(a) => a.iter_mut().for_each(strip),
+            _ => {}
+        }
+    }
+    let mut v: Value = serde_json::from_str(&s.project.to_json()).unwrap();
+    strip(&mut v);
+    let json = v.to_string();
+    assert!(!json.contains("motion_blur_adaptive_limit"));
+    assert_eq!(Project::from_json(&json).unwrap().comp(s.active_comp_id().unwrap()).unwrap().motion_blur_adaptive_limit, 128);
+}

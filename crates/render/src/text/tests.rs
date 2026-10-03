@@ -228,7 +228,7 @@ fn anchor_grouping_line_rotates_around_line_centre() {
 fn mask(p: &mut Project, l: &mut Layer, pts: &[[f64; 2]], closed: bool) {
     let mut next = p.next_id;
     let mut ids = Ids(&mut next);
-    let sp = ShapePath { vertices: pts.to_vec(), in_tangents: vec![[0.0; 2]; pts.len()], out_tangents: vec![[0.0; 2]; pts.len()], closed };
+    let sp = ShapePath { vertices: pts.to_vec(), in_tangents: vec![[0.0; 2]; pts.len()], out_tangents: vec![[0.0; 2]; pts.len()], closed, feather: Vec::new() };
     let g = build::mask(&mut ids, "Mask 1", sp, MaskMode::None, [255, 255, 0]);
     p.next_id = next;
     let masks = l.props.group_mut("masks").unwrap();

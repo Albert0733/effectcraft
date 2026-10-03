@@ -295,3 +295,41 @@ fn timeline_alt_drag_scales_a_key_group_in_time() {
     assert_eq!(ts[0], 0.0);
     assert!((ts[2] - 3.0).abs() < 0.1 && (ts[1] - 1.5).abs() < 0.1, "{ts:?}");
 }
+
+#[test]
+fn mask_feather_tool_adds_and_drags_feather_points() {
+    let mut h = harness();
+    // A mask on the Box (80×80 at the comp centre, comp 280…360 × 140…220): layer 10…70.
+    let (box_id, mask) = {
+        let s = &mut h.state_mut().session;
+        let b = s.active_comp().unwrap().layers.iter().find(|l| l.name == "Box").unwrap().id;
+        let m = s.execute("mask.new", json!({"layer": b.0, "vertices": [[10, 10], [70, 10], [70, 70], [10, 70]], "closed": true})).unwrap()["mask"]
+            .as_u64()
+            .unwrap();
+        s.execute("layer.select", json!({"layers": [b.0]})).unwrap();
+        (b, m)
+    };
+    h.state_mut().ui.tool = Tool::MaskFeather;
+    h.run_steps(3);
+    // Press on the top edge (comp 320,150) and drag 12 px up: an outer feather point of ≈12 px.
+    let from = screen(&h, [320.0, 150.0]);
+    let z = rect(&h, "viewer.comp").width() / 640.0;
+    drag(&mut h, from, from - vec2(0.0, 12.0 * z));
+    let pts = h.state_mut().session.execute("mask.featherPoint.list", json!({"layer": box_id.0, "mask": mask})).unwrap();
+    let r = pts["points"][0]["radius"].as_f64().unwrap();
+    assert!((r - 12.0).abs() < 1.5, "{pts}");
+    assert_eq!(pts["points"][0]["segment"], json!(0));
+    // The handle is registered; dragging it inwards makes it an inner feather point.
+    h.run_steps(2);
+    let handle = rect(&h, &format!("viewer.mask.{mask}.feather.0")).center();
+    let to = screen(&h, [320.0, 160.0]);
+    drag(&mut h, handle, to);
+    let pts = h.state_mut().session.execute("mask.featherPoint.list", json!({"layer": box_id.0, "mask": mask})).unwrap();
+    let r = pts["points"][0]["radius"].as_f64().unwrap();
+    assert!((r + 10.0).abs() < 1.5, "{pts}");
+    assert_eq!(pts["points"].as_array().unwrap().len(), 1);
+    // One drag = one undo step each.
+    h.state_mut().session.execute("edit.undo", json!({})).unwrap();
+    let pts = h.state_mut().session.execute("mask.featherPoint.list", json!({"layer": box_id.0, "mask": mask})).unwrap();
+    assert!(pts["points"][0]["radius"].as_f64().unwrap() > 0.0);
+}

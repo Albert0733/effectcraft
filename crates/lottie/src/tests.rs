@@ -280,6 +280,7 @@ fn shape_contents_roundtrip() {
                 in_tangents: vec![[0.0, 0.0], [-10.0, 0.0], [0.0, 0.0]],
                 out_tangents: vec![[0.0, 0.0], [10.0, 0.0], [0.0, 0.0]],
                 closed: true,
+                feather: Vec::new(),
             },
         );
         let grad = Gradient {

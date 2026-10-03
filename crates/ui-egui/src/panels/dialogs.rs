@@ -66,6 +66,7 @@ pub fn open_comp_settings(app: &mut EffectcraftApp) -> Result<(), String> {
         shutter_angle: c.shutter_angle,
         shutter_phase: c.shutter_phase,
         samples: c.motion_blur_samples,
+        adaptive_limit: c.motion_blur_adaptive_limit,
         advanced_3d: c.renderer == effectcraft_engine::project::Renderer::Advanced3D,
         ..Default::default()
     };

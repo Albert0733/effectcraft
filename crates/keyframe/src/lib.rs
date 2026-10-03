@@ -14,7 +14,7 @@ pub mod value;
 use effectcraft_time::{TICKS_PER_SECOND, Tick};
 use serde::{Deserialize, Serialize};
 pub use text_doc::{BaselineOption, CharStyle, Composer, Direction, Kerning, ParaStyle, StyleRun};
-pub use value::{Gradient, Justify, ShapePath, TextDoc, Value};
+pub use value::{FeatherPoint, Gradient, Justify, ShapePath, TextDoc, Value};
 
 /// Temporal interpolation on one side of a keyframe.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
