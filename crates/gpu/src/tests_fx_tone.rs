@@ -1,9 +1,13 @@
 //! GPU colour-correction family effects vs the CPU effects (the oracle): direct on a buffer at
 //! full and half resolution, as adjustment, and composited at 8 and 32 bpc.
 
-use effectcraft_keyframe::Value;
+use effectcraft_color::Label;
+use effectcraft_keyframe::{Keyframe, Value};
+use effectcraft_project::{BitDepth, Comp, ItemKind, LayerSource, build};
+use effectcraft_render::RenderOpts;
+use effectcraft_time::{FrameRate, Tick};
 
-use crate::tests::{c, effect_case, n};
+use crate::tests::{Scene, c, check, compare_at, effect_case, n, opts, set};
 
 fn e(v: u32) -> Value {
     Value::Enum(v)
@@ -140,5 +144,42 @@ fn shadow_highlight_neutralizer_invert() {
     effect_case("ec.color.cccolorneutralizer", &[("highlightsBalance", c(0.9, 1.0, 0.8)), ("brights", n(40.0)), ("blendWOriginal", n(25.0))]);
     for ch in 4..=11 {
         effect_case("ec.channel.invert", &[("channel", e(ch)), ("blend", n(20.0))]);
+    }
+}
+
+/// Color Stabilizer reads its reference frame through the effect host: a precomp whose content
+/// moves, at a nonzero time (the direct cases have no host and pass the layer through).
+#[test]
+fn color_stabilizer() {
+    effect_case("ec.color.colorstabilizer", &[]);
+    for depth in [BitDepth::Bpc8, BitDepth::Bpc32] {
+        for mode in [0, 1, 2] {
+            let mut s = Scene::new(depth);
+            let bg = s.solid([0.15, 0.1, 0.2], 97, 61);
+            s.push(bg);
+            let inner = Comp::new(60, 40, FrameRate::FPS_30, Tick::from_seconds_f64(2.0));
+            let inner_id = s.p.add_item("Inner", Label::Sandstone, None, ItemKind::Comp(inner.into()));
+            let mut a = s.footage(50, 34);
+            let pos = a.props.prop_mut("transform/position").unwrap();
+            pos.keys = vec![Keyframe::new(Tick::ZERO, crate::tests::v3(22.0, 18.0)), Keyframe::new(Tick::from_seconds_f64(1.0), crate::tests::v3(38.0, 24.0))];
+            let op = a.props.prop_mut("transform/opacity").unwrap();
+            op.keys = vec![Keyframe::new(Tick::ZERO, Value::Scalar(100.0)), Keyframe::new(Tick::from_seconds_f64(1.0), Value::Scalar(40.0))];
+            s.p.comp_mut(inner_id).unwrap().layers = vec![a];
+            let mut l = build::layer(&mut s.p, &s.comp, "Inner", LayerSource::Comp { item: inner_id }, (60, 40), None);
+            let vals = [
+                ("stabilize", e(mode)),
+                ("blackPoint", Value::Vec2([18.0, 20.0])),
+                ("midPoint", Value::Vec2([30.0, 18.0])),
+                ("whitePoint", Value::Vec2([42.0, 22.0])),
+                ("sampleSize", n(4.0)),
+            ];
+            s.effect(&mut l, "ec.color.colorstabilizer", &vals);
+            set(&mut l, "transform/rotation", Value::Scalar(8.0));
+            s.push(l);
+            let t = Tick::from_seconds_f64(0.5);
+            let label = format!("color stabilizer {mode} {depth:?}");
+            check(&label, compare_at(&s, opts(), t), 0.0);
+            check(&format!("{label} half"), compare_at(&s, RenderOpts { scale: 0.5, ..opts() }, t), 0.0);
+        }
     }
 }

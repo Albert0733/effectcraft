@@ -147,6 +147,7 @@ fn fxt_eq_look(table: u32, n: u32, v: f32) -> f32 {
 // 16 Auto Levels / Contrast / Color apply  17 Equalize apply  18 Invert (HLS / YIQ channels)
 // 19 luminance plane  20 Shadow/Highlight (aux = (shadow base, highlight base))
 // 21 pack src.x, aux.x  22 Shadow/Highlight clip remap  23 CC Color Neutralizer
+// 24 Color Stabilizer (data: per channel n, then 5 × (x, y))
 @compute @workgroup_size(16, 16)
 fn fxt_point(@builtin(global_invocation_id) gid: vec3<u32>) {
     let dims = out_dims();
@@ -688,6 +689,29 @@ fn fxt_point(@builtin(global_invocation_id) gid: vec3<u32>) {
                 r[k] = max(v, 0.0);
             }
             r = fxt_mix(r, c, P.f[3].y);
+            o = vec4<f32>(r * a, a);
+        }
+        case 24u: {
+            if (a <= 0.0) {
+                break;
+            }
+            var r: vec3<f32>;
+            for (var k = 0u; k < 3u; k++) {
+                let base = k * 11u;
+                let n = u32(data[base]);
+                let v = c[k];
+                // slice::partition_point(x < v), clamped to 1..n-1.
+                var i = 0u;
+                while (i < n && data[base + 1u + 2u * i] < v) {
+                    i++;
+                }
+                i = clamp(i, 1u, n - 1u);
+                let ax = data[base + 1u + 2u * (i - 1u)];
+                let ay = data[base + 2u + 2u * (i - 1u)];
+                let cx = data[base + 1u + 2u * i];
+                let cy = data[base + 2u + 2u * i];
+                r[k] = ay + (cy - ay) * (v - ax) / max(cx - ax, 1e-9);
+            }
             o = vec4<f32>(r * a, a);
         }
         default: {}

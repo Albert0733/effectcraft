@@ -90,6 +90,8 @@ pub use transition::place_layer;
 pub use noise::remove_grain_level;
 pub use noise3::{FractalGpu, fractal_gpu};
 pub use time_fx::{posterized_time, time_frames};
+// effectcraft-gpu fx_tone.
+pub use ocio::color_stabilizer_maps;
 
 /// Effect categories in Effects & Presets order.
 pub const CATEGORIES: &[&str] = &[
@@ -856,6 +858,7 @@ pub const GPU_EFFECTS: &[&str] = &[
     "ec.color.equalize",
     "ec.color.shadowhighlight",
     "ec.color.cccolorneutralizer",
+    "ec.color.colorstabilizer",
     // effectcraft-gpu fx_stylize (stylize, distort)
     //
     // effectcraft-gpu fx_noise (noise, blur, time)

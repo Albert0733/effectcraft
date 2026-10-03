@@ -39,6 +39,7 @@ pub(crate) const IDS: &[&str] = &[
     "ec.color.equalize",
     "ec.color.shadowhighlight",
     "ec.color.cccolorneutralizer",
+    "ec.color.colorstabilizer",
 ];
 
 /// Run effect `id` (one of [`IDS`]); `None` = this parameter combination runs on the CPU.
@@ -318,6 +319,25 @@ fn point(e: &mut Enc, id: &str, ctx: &EffectCtx, b: GBuf) -> Option<GBuf> {
             p.u[0] = [13, pr.e("clipMethod"), pr.b("gamutWarning") as u32, 0];
             p.f[0] = [level, level * (1.0 - comp), 0.0, 0.0];
             p.f[1] = rgb(pr.color("gamutWarningColor"));
+        }
+        "ec.color.colorstabilizer" => {
+            // The sample means are measured on the CPU (the frame is read back).
+            if ctx.env.host.is_none() {
+                return Some(b);
+            }
+            let img = e.download(&b.img)?;
+            let cpu = effectcraft_effects::Buf { img, offset: b.offset, scale: b.scale };
+            let Some(maps) = effectcraft_effects::color_stabilizer_maps(ctx, &cpu) else { return Some(b) };
+            let mut d = vec![];
+            for m in &maps {
+                d.push(m.len() as f32);
+                for i in 0..5 {
+                    let (x, y) = m.get(i).copied().unwrap_or((0.0, 0.0));
+                    d.extend([x as f32, y as f32]);
+                }
+            }
+            p.u[0][0] = 24;
+            data = Some(d);
         }
         "ec.color.cccolorneutralizer" => {
             let pairs = [("shadowsUnbalance", "shadowsBalance"), ("midtonesUnbalance", "midtonesBalance"), ("highlightsUnbalance", "highlightsBalance")];
