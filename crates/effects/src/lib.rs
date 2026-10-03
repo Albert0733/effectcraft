@@ -829,6 +829,8 @@ pub const GPU_EFFECTS: &[&str] = &[
     "ec.key.unmult",
     "ec.matte.simplechoker",
     "ec.matte.mattechoker",
+    "ec.matte.refinesoft",
+    "ec.matte.refinehard",
     "ec.channel.setmatte",
     "ec.channel.setchannels",
     "ec.channel.shiftchannels",

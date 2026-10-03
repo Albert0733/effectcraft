@@ -89,6 +89,8 @@ const CPU_ONLY_CONTROLS: &[(&str, &[&str])] = &[
     ("ec.blur.cameralens", &["irisProperties/diffractionFringe", "blurMap/blurMapLayer"]),
     ("ec.noise.removegrain", &["temporalFiltering/enabled"]),
     ("ec.distort.liquify", &["viewFreezeAreaMask", "viewMesh"]),
+    ("ec.matte.refinesoft", &["reduceChatter", "useMotionBlur", "invert"]),
+    ("ec.matte.refinehard", &["reduceChatter", "useMotionBlur", "invert"]),
 ];
 
 /// Whether the GPU kernel of effect `id` covers the instance's current settings (see

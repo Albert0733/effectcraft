@@ -5,7 +5,7 @@
 
 EffectCraft ships 306 effects with 3009 parameters in total, grouped into the same categories as the Effects & Presets panel. Every effect is our own implementation, written from public behaviour descriptions and standard image-processing literature. Parameter names, order, popup options, units, defaults and ranges follow the reference application so that projects, expressions and muscle memory carry over.
 
-- **GPU**: 150 effects also run on the GPU compositor with identical results.
+- **GPU**: 152 effects also run on the GPU compositor with identical results.
 - **32**: 306 effects process 32-bit float (HDR, overbright) pixels without clamping.
 - **Status**: 306 implemented in full, 0 partial (what is missing is listed).
 
@@ -255,8 +255,8 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 |---|---|---:|:-:|:-:|---|
 | Matte Choker | `ec.matte.mattechoker` | 7 | GPU | 32 | Implemented |
 | Mocha shape | `ec.obsolete.mochashape` | 6 |  | 32 | Implemented |
-| Refine Hard Matte | `ec.matte.refinehard` | 16 |  | 32 | Implemented |
-| Refine Soft Matte | `ec.matte.refinesoft` | 18 |  | 32 | Implemented |
+| Refine Hard Matte | `ec.matte.refinehard` | 16 | GPU | 32 | Implemented |
+| Refine Soft Matte | `ec.matte.refinesoft` | 18 | GPU | 32 | Implemented |
 | Roto Brush & Refine Edge | `ec.matte.rotobrush` | 24 |  | 32 | Implemented |
 | Simple Choker | `ec.matte.simplechoker` | 2 | GPU | 32 | Implemented |
 

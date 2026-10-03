@@ -163,6 +163,10 @@ fn fxk_overflow(op: u32, v: f32, how: u32) -> f32 {
 // 22 Screen Key matte     23 Screen Key output  24 alpha plane        25 Key Cleaner output
 // 26 Matte Choker ramp    27 util::set_alpha (aux.x = alpha, data = fill)
 // 28 matte view (alpha as opaque grey)
+// Refine Soft / Hard Matte: 29 guide pack (luminance, alpha, products); 30 guided-filter
+// coefficients from the box means (f[0].x = eps); 31 refined alpha (src = boxed coefficients,
+// aux = pack, data = edge band); 32 edge band (src.y − aux.y > 1e-3); 33 choke / contrast /
+// invert; 34 View Edge Region; 35 decontamination (aux.x = refined alpha, data = colour estimate)
 @compute @workgroup_size(16, 16)
 fn fxk_point(@builtin(global_invocation_id) gid: vec3<u32>) {
     let dims = out_dims();
@@ -736,6 +740,73 @@ fn fxk_point(@builtin(global_invocation_id) gid: vec3<u32>) {
                 cc = fxk_straight(fxk_rows(p));
             }
             o = fxk_premul(cc, na);
+        }
+        case 29u: {
+            let g = luminance(px.xyz);
+            o = vec4<f32>(g, px.w, g * px.w, g * g);
+        }
+        case 30u: {
+            let var_g = px.w - px.x * px.x;
+            let cov = px.z - px.x * px.y;
+            let ca = cov / (var_g + f0.x);
+            o = vec4<f32>(ca, px.y - ca * px.x, 0.0, 0.0);
+        }
+        case 31u: {
+            let q = textureLoad(aux, p, 0);
+            if (fxk_rows(p).x != 0.0) {
+                o = vec4<f32>(clamp(px.x * q.x + px.y, 0.0, 1.0));
+            } else {
+                o = vec4<f32>(q.y);
+            }
+        }
+        case 32u: {
+            o = vec4<f32>(select(0.0, 1.0, px.y - textureLoad(aux, p, 0).y > 1e-3));
+        }
+        case 33u: {
+            var v = px.x;
+            let choke = f0.x;
+            if (choke > 0.0) {
+                v = (v - choke) / (1.0 - choke);
+            } else if (choke < 0.0) {
+                v = v / (1.0 + choke);
+            }
+            if (abs(f0.y - 1.0) > 1e-6) {
+                v = (v - 0.5) * f0.y + 0.5;
+            }
+            v = clamp(v, 0.0, 1.0);
+            if (u0.y != 0u) {
+                v = 1.0 - v;
+            }
+            o = vec4<f32>(v);
+        }
+        case 34u: {
+            let v = px.x;
+            if (textureLoad(aux, p, 0).x != 0.0) {
+                o = vec4<f32>(0.5 + 0.5 * v, 0.5 * v, 0.5 * v, 1.0);
+            } else {
+                o = vec4<f32>(v, v, v, 1.0);
+            }
+        }
+        case 35u: {
+            let n = textureLoad(aux, p, 0).x;
+            let a0 = px.w;
+            var t = 0.0;
+            if (a0 > 1e-4 && a0 < 0.999) {
+                t = 1.0 - a0;
+            } else if (u0.w != 0u && n > 1e-4 && n < 0.999) {
+                t = 1.0 - n;
+            }
+            let strength = f0.x * t;
+            if (u0.y != 0u) {
+                let v = select(0.0, strength, u0.z != 0u);
+                o = vec4<f32>(v, v, v, 1.0);
+            } else if (P.u[3].y != 0u && strength > 0.0 && a0 > 1e-4) {
+                let q = fxk_rows(p);
+                if (q.w > 1e-4) {
+                    let cc = c + (q.xyz / q.w - c) * strength;
+                    o = fxk_premul(cc, a0);
+                }
+            }
         }
         case 28u: {
             let v = clamp(px.w, 0.0, 1.0);

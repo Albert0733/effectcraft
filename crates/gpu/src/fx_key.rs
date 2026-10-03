@@ -15,7 +15,7 @@ use effectcraft_effects::EffectCtx;
 use effectcraft_effects::util::{SRC_ORDER, Src};
 
 use crate::context::{Enc, GpuImage, Params};
-use crate::effects::{GBuf, gaussian_blur};
+use crate::effects::{GBuf, box_passes, gaussian_blur};
 use crate::fx_color::{DILATE_X, ERODE_X, morph_frac};
 
 /// Compute entry points in `fx_key.wgsl`.
@@ -36,6 +36,8 @@ pub(crate) const IDS: &[&str] = &[
     "ec.key.unmult",
     "ec.matte.simplechoker",
     "ec.matte.mattechoker",
+    "ec.matte.refinesoft",
+    "ec.matte.refinehard",
     "ec.channel.setmatte",
     "ec.channel.setchannels",
     "ec.channel.shiftchannels",
@@ -58,6 +60,8 @@ pub(crate) fn apply(e: &mut Enc, id: &str, ctx: &EffectCtx, b: GBuf) -> Option<G
         "ec.key.keycleaner" => key_cleaner(e, ctx, b),
         "ec.matte.simplechoker" => simple_choker(e, ctx, b),
         "ec.matte.mattechoker" => matte_choker(e, ctx, b),
+        "ec.matte.refinesoft" => refine(e, ctx, b, false),
+        "ec.matte.refinehard" => refine(e, ctx, b, true),
         "ec.channel.setchannels" => set_channels(e, ctx, b),
         _ => point(e, id, ctx, b),
     }
@@ -353,6 +357,81 @@ fn matte_choker(e: &mut Enc, ctx: &EffectCtx, mut b: GBuf) -> Option<GBuf> {
     }
     b.img = set_alpha(e, &b.img, &a);
     Some(b)
+}
+
+/// matte::refine (Refine Soft / Hard Matte) for one frame: Reduce Chatter, the matte motion
+/// blur (they read neighbouring frames) and Invert run on the CPU.
+fn refine(e: &mut Enc, ctx: &EffectCtx, b: GBuf, hard: bool) -> Option<GBuf> {
+    let pr = ctx.params;
+    // Invert gives alpha to the empty areas, whose colour then comes from a blur of nearly
+    // transparent pixels (util::set_alpha): ill-conditioned, so it renders on the CPU.
+    if pr.f("reduceChatter") > 0.0 || pr.b("useMotionBlur") || pr.b("invert") {
+        return None;
+    }
+    let dk = |id: &str| if hard { id.to_string() } else { format!("decontamination/{id}") };
+    let r = (pr.f("radius") * b.scale).round().max(1.0) as usize;
+    let smooth = pr.f("smooth") as f32 / 100.0;
+    let feather = pr.f("feather") / 100.0 * r as f64 * 0.5;
+    let choke = (pr.f("choke") - if hard { 0.0 } else { pr.f("shiftEdge") }).clamp(-100.0, 100.0) as f32 / 100.0 * 0.5;
+    let decon = pr.b("decontaminate");
+    let decon_amt = pr.f(&dk("decontaminationAmount")) as f32 / 100.0;
+    let extend = pr.b(&dk("extendWhereSmoothed"));
+    let decon_r = r as f64 + pr.f(&dk("increaseDecontaminationRadius")).max(0.0) * b.scale;
+    let view_map = pr.b(&dk("viewDecontaminationMap"));
+    let contrast = if hard { pr.f("alphaContrast") as f32 / 100.0 } else { 1.0 + pr.f("contrast").max(0.0) as f32 / 100.0 * 3.0 };
+    let edge_details = hard || pr.b("calculateEdgeDetails");
+    let view_edges = !hard && pr.b("viewEdgeRegion");
+    let (w, h) = (b.img.width, b.img.height);
+
+    // (luminance guide, alpha, guide × alpha, guide²); the edge band from the alpha's range.
+    let pack = run(e, &op(29), &b.img, None, None);
+    let hi = morph_frac(e, &pack, r as f64, [2, 1, 2, 2]);
+    let lo = morph_frac(e, &pack, r as f64, [2, 0, 2, 2]);
+    let band = run(e, &op(32), &hi, Some(&lo), None);
+    let mut na = if edge_details {
+        let eps = 1e-4 + smooth * smooth * 0.05;
+        let means = box_passes(e, &pack, &[r], &[r], true);
+        let mut p = op(30);
+        p.f[0][0] = eps;
+        let coef = run(e, &p, &means, None, None);
+        let coef = box_passes(e, &coef, &[r], &[r], true);
+        let (rows, row) = e.image_rows(&band);
+        let mut p = op(31);
+        p.u[3][0] = row;
+        run(e, &p, &coef, Some(&pack), Some(&rows))
+    } else {
+        let a = run(e, &op(24), &b.img, None, None);
+        if smooth > 0.0 {
+            let s = smooth as f64 * r as f64 * 0.5;
+            gaussian_blur(e, &a, s, s, true)
+        } else {
+            a
+        }
+    };
+    if feather > 0.0 {
+        na = gaussian_blur(e, &na, feather, feather, true);
+    }
+    let mut p = op(33);
+    p.u[0][1] = pr.b("invert") as u32;
+    p.f[0] = [choke, contrast, 0.0, 0.0];
+    let na = run(e, &p, &na, None, None);
+    if view_edges {
+        let img = run(e, &op(34), &na, Some(&band), None);
+        return Some(GBuf { img, ..b });
+    }
+    let est = (decon && decon_amt > 0.0 && !view_map).then(|| gaussian_blur(e, &b.img, decon_r * 0.5, decon_r * 0.5, true));
+    let rows = est.as_ref().map(|img| e.image_rows(img));
+    let mut p = op(35);
+    p.u[0] = [35, view_map as u32, (decon && (view_map || decon_amt > 0.0)) as u32, extend as u32];
+    p.u[3] = [rows.as_ref().map_or(0, |r| r.1), rows.is_some() as u32, 0, 0];
+    p.f[0][0] = decon_amt;
+    let img = run(e, &p, &b.img, Some(&na), rows.as_ref().map(|r| &r.0));
+    if view_map {
+        return Some(GBuf { img, ..b });
+    }
+    debug_assert_eq!((img.width, img.height), (w, h));
+    let img = set_alpha(e, &img, &na);
+    Some(GBuf { img, ..b })
 }
 
 // ---------------------------------------------------------------- channel

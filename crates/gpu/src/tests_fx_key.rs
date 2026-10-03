@@ -140,6 +140,18 @@ fn chokers() {
 }
 
 #[test]
+fn refine_mattes() {
+    effect_case("ec.matte.refinesoft", &[]);
+    effect_case("ec.matte.refinesoft", &[("radius", n(4.0)), ("smooth", n(40.0)), ("feather", n(30.0)), ("contrast", n(20.0)), ("shiftEdge", n(-25.0))]);
+    effect_case("ec.matte.refinesoft", &[("calculateEdgeDetails", off()), ("smooth", n(50.0)), ("shiftEdge", n(30.0))]);
+    effect_case("ec.matte.refinesoft", &[("radius", n(3.0)), ("viewEdgeRegion", on())]);
+    effect_case("ec.matte.refinesoft", &[("decontamination/viewDecontaminationMap", on()), ("decontamination/extendWhereSmoothed", off())]);
+    effect_case("ec.matte.refinesoft", &[("decontamination/increaseDecontaminationRadius", n(4.0)), ("decontamination/decontaminationAmount", n(60.0))]);
+    effect_case("ec.matte.refinehard", &[]);
+    effect_case("ec.matte.refinehard", &[("choke", n(20.0)), ("feather", n(20.0)), ("decontaminate", off())]);
+}
+
+#[test]
 fn channel_effects() {
     effect_case("ec.channel.setchannels", &[("setRedTo", e(2)), ("setGreenTo", e(4)), ("setBlueTo", e(5)), ("setAlphaTo", e(6))]);
     effect_case("ec.channel.shiftchannels", &[("takeRedFrom", e(3)), ("takeGreenFrom", e(7)), ("takeAlphaFrom", e(4))]);
