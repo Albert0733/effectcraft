@@ -6,7 +6,7 @@ fn all_entries(nodes: &[MenuNode], path: &mut Vec<String>, out: &mut Vec<(Vec<St
     for n in nodes {
         match n {
             MenuNode::Item(e) => out.push((path.clone(), e.clone())),
-            MenuNode::Separator => {}
+            MenuNode::Separator | MenuNode::Dynamic { .. } => {}
             MenuNode::Submenu { label, children } => {
                 path.push(label.clone());
                 all_entries(children, path, out);

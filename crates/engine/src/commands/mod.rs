@@ -4,6 +4,7 @@
 mod anim;
 pub mod anim_tools;
 mod animation;
+mod app_more;
 mod camera_cmds;
 mod comp;
 mod comp_more;
@@ -19,6 +20,7 @@ mod frontend;
 mod help;
 mod key_labels;
 mod key_transform;
+mod keys_more;
 mod layer;
 mod layer_menu;
 mod layer_time;
@@ -52,6 +54,13 @@ mod track;
 mod view;
 pub mod viewer_cmds;
 mod warp_cmds;
+#[cfg(test)]
+pub(crate) use app_more::report_text as report_text_for_tests;
+pub(crate) use app_more::view_command;
+#[cfg(test)]
+pub(crate) use file::missing_frames as missing_frames_for_tests;
+#[cfg(test)]
+pub(crate) use keys_more::amplitudes as amplitudes_for_tests;
 #[cfg(test)]
 pub(crate) use mask::split_segment as split_segment_for_tests;
 
@@ -155,6 +164,8 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(puppet::specs());
         v.extend(liquify::specs());
         v.extend(settings::specs());
+        v.extend(app_more::specs());
+        v.extend(keys_more::specs());
         v.extend(essential::specs());
         v.extend(expr_tools::specs());
         v.extend(proxy::specs());

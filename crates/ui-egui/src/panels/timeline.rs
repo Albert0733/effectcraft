@@ -1573,15 +1573,17 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 let er = Rect::from_min_max(pos2(graph_x0 + 8.0, r.min.y + 3.0), pos2(rect.max.x - 14.0, r.max.y - 3.0));
                 let buf_id = egui::Id::new(("expr-buf", uid));
                 let mut buf: String = ctx.data(|d| d.get_temp(buf_id)).unwrap_or_else(|| ex.text.clone());
-                let mut child = ui.new_child(egui::UiBuilder::new().max_rect(er));
-                let resp = child.add(
-                    egui::TextEdit::multiline(&mut buf)
-                        .id(egui::Id::new(("expr-edit", uid)))
-                        .font(Tokens::mono(11.5))
-                        .text_color(if ex.enabled { expr_col } else { t.text_dim })
-                        .desired_width(er.width())
-                        .desired_rows((*lines).clamp(1, 8))
-                        .frame(egui::Frame::NONE),
+                // Settings ▸ Scripting & Expressions ▸ Expressions Editor.
+                let sp = app.session.prefs.scripting.clone();
+                let resp = super::expr_editor::editor(
+                    ui,
+                    egui::Id::new(("expr-edit", uid)),
+                    &mut buf,
+                    er,
+                    &sp,
+                    if ex.enabled { expr_col } else { t.text_dim },
+                    (*lines).clamp(1, 8),
+                    &t,
                 );
                 app.auto.add(&format!("timeline.prop.{uid}.expression"), er, &prop.name);
                 let commit = resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter) && (i.modifiers.command || i.modifiers.ctrl));

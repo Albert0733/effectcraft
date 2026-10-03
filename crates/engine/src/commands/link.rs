@@ -101,7 +101,7 @@ fn quote(s: &str) -> String {
 }
 
 /// The AE expression reference to property `uid` of `target` as seen from a property of `from`.
-pub(crate) fn reference(comp: &Comp, from: &Layer, target: &Layer, uid: Uid) -> Option<String> {
+pub(crate) fn reference(comp: &Comp, from: &Layer, target: &Layer, uid: Uid, compact: bool) -> Option<String> {
     let chain = target.props.node_chain(uid)?;
     let mut parts: Vec<String> = vec![];
     let mut pending: Option<&str> = None;
@@ -125,6 +125,15 @@ pub(crate) fn reference(comp: &Comp, from: &Layer, target: &Layer, uid: Uid) -> 
     }
     let mut out = if from.id == target.id { String::new() } else { format!("thisComp.layer({}).", quote(&target.name)) };
     let _ = comp;
+    if !compact {
+        // Match names: language-independent, like After Effects with Compact English off.
+        let chain = target.props.node_chain(uid)?;
+        let mut out = if from.id == target.id { "thisLayer".to_string() } else { format!("thisComp.layer({})", quote(&target.name)) };
+        for n in chain {
+            out.push_str(&format!("({})", quote(n.match_id())));
+        }
+        return Some(out);
+    }
     for (i, p) in parts.iter().enumerate() {
         if i > 0 && !p.starts_with('(') {
             out.push('.');
@@ -152,7 +161,7 @@ fn pick_whip(s: &mut Session, p: &Value) -> Result<Value> {
     let comp = s.project.comp(cid).ok_or(EngineError::NoComp)?;
     let from = comp.layer(lid).ok_or(EngineError::NoComp)?;
     let target = comp.layer(tl).ok_or(EngineError::NoComp)?;
-    let r = reference(comp, from, target, tu).ok_or_else(|| bad("prop.pickWhip", "no such target property"))?;
+    let r = reference(comp, from, target, tu, s.prefs.general.expression_pick_whip_compact).ok_or_else(|| bad("prop.pickWhip", "no such target property"))?;
     let (me, them) = (from.props.find(uid).ok_or(EngineError::NoComp)?, target.props.find(tu).ok_or(EngineError::NoComp)?);
     let (dm, dt) = (dims(from, me), dims(target, them));
     let text = if dt == 1 && dm > 1 {

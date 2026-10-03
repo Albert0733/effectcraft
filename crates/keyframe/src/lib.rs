@@ -520,6 +520,7 @@ pub fn set_key(keys: &mut Vec<Keyframe>, key: Keyframe) -> usize {
             k.spatial_in = old.spatial_in;
             k.spatial_out = old.spatial_out;
             k.spatial_auto = old.spatial_auto;
+            k.label = old.label;
             keys[i] = k;
             i
         }

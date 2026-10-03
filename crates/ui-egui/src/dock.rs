@@ -779,6 +779,10 @@ pub fn draw_group_chrome(
         }
     } else {
         let strip = Rect::from_min_size(g.rect.min, vec2(g.rect.width(), t.tab_h));
+        if t.gradients {
+            // Settings ▸ Appearance ▸ Use Gradients.
+            crate::theme::gradient_rect(&painter, strip.shrink2(vec2(t.radius, 0.0)), t.grad_top(t.panel_bg), t.panel_bg);
+        }
         let mut x = strip.min.x + 12.0;
         let text_y = strip.min.y + 16.0;
         for (i, p) in g.panels.iter().enumerate() {

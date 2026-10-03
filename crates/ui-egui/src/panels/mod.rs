@@ -9,6 +9,7 @@ pub mod effect_controls;
 pub mod effects_presets;
 pub mod essential;
 pub mod expr_bar;
+pub mod expr_editor;
 pub mod flowchart;
 pub mod forms;
 pub mod fx_widgets;

@@ -13,6 +13,9 @@ pub struct FaceNames {
     pub full_name: String,
     pub weight: u16,
     pub italic: bool,
+    /// The family name in another language than English (CJK, Arabic… fonts), when the font
+    /// has one (Settings ▸ Type ▸ Show Font Names in English off shows it).
+    pub native_family: Option<String>,
 }
 
 fn be16(b: &[u8], o: usize) -> Option<u16> {
@@ -75,6 +78,7 @@ fn read_face<R: Read + Seek>(r: &mut R, off: u64, index: u32) -> Option<FaceName
     let family = get(16).or_else(|| get(1))?;
     let style = get(17).or_else(|| get(2)).unwrap_or_else(|| "Regular".into());
     let full_name = get(4).unwrap_or_else(|| format!("{family} {style}"));
+    let native_family = native_name(&nb, 16).or_else(|| native_name(&nb, 1)).filter(|n| *n != family);
     let (mut weight, mut italic) = (400u16, false);
     if let Some((oo, ol)) = os2
         && let Some(ob) = read_at(r, oo, ol.min(78))
@@ -84,7 +88,28 @@ fn read_face<R: Read + Seek>(r: &mut R, off: u64, index: u32) -> Option<FaceName
     }
     let sl = style.to_ascii_lowercase();
     italic |= sl.contains("italic") || sl.contains("oblique");
-    Some(FaceNames { index, family, style, full_name, weight, italic })
+    Some(FaceNames { index, family, style, full_name, weight, italic, native_family })
+}
+
+/// A Windows Unicode name-table string by id in a language other than US English.
+fn native_name(b: &[u8], id: u16) -> Option<String> {
+    let count = be16(b, 2)? as usize;
+    let storage = be16(b, 4)? as usize;
+    for i in 0..count {
+        let r = 6 + i * 12;
+        let (plat, enc, lang, nid, len, off) =
+            (be16(b, r)?, be16(b, r + 2)?, be16(b, r + 4)?, be16(b, r + 6)?, be16(b, r + 8)? as usize, be16(b, r + 10)? as usize);
+        if nid != id || plat != 3 || !(enc == 1 || enc == 10) || lang == 0x409 {
+            continue;
+        }
+        let raw = b.get(storage + off..storage + off + len)?;
+        let u: Vec<u16> = raw.chunks_exact(2).map(|c| u16::from_be_bytes([c[0], c[1]])).collect();
+        let s = String::from_utf16_lossy(&u);
+        if !s.trim().is_empty() {
+            return Some(s);
+        }
+    }
+    None
 }
 
 /// A name-table string by id, preferring Windows Unicode English, then any Unicode, then Mac Roman.
