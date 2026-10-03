@@ -947,11 +947,38 @@ fn caustics(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let k = wave_h * depth * (1.0 - 1.0 / ior) * lw * 2.0;
     let (cx, cy) = (b.offset[0] + ctx.layer_size[0] * 0.5 * s, b.offset[1] + ctx.layer_size[1] * 0.5 * s);
     let (lx, ly) = b.to_px(lpos);
-    let lv = {
-        let v = [(lx - cx) / lw.max(1.0), (ly - cy) / lw.max(1.0), lheight];
-        let n = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    // Light Type: Distant Source (one direction, from the light position above the layer
+    // centre), Point Source (from the light position to each pixel) or First Comp Light.
+    let light_type = pr.e("lighting/lightType");
+    let comp_light = if light_type == 2 { ctx.env.host.and_then(|h| h.comp_scene()).and_then(|sc| sc.light) } else { None };
+    let (lc, li, lx, ly, lheight, point) = match (light_type, comp_light) {
+        (2, Some(l)) => {
+            let c = [l.color[0], l.color[1], l.color[2], 1.0];
+            // Comp space: z away from the viewer; the light above the water is at −z.
+            let (px, py) = (l.pos[0] * s + b.offset[0], l.pos[1] * s + b.offset[1]);
+            (c, li, px, py, (-l.pos[2] / ctx.layer_size[0].max(1.0)).max(0.01), l.kind == 1)
+        }
+        (2, None) => (lc, 0.0, lx, ly, lheight, false),
+        (1, _) => (lc, li, lx, ly, lheight, true),
+        _ => (lc, li, lx, ly, lheight, false),
+    };
+    let norm3 = |v: [f64; 3]| {
+        let n = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt().max(1e-12);
         [(v[0] / n) as f32, (v[1] / n) as f32, (v[2] / n) as f32]
     };
+    let lv_at = |x: f64, y: f64| {
+        if point {
+            norm3([(lx - x) / lw.max(1.0), (ly - y) / lw.max(1.0), lheight])
+        } else {
+            norm3([(lx - cx) / lw.max(1.0), (ly - cy) / lw.max(1.0), lheight])
+        }
+    };
+    // Sky: the layer the water surface reflects (Surface Opacity 1 = a mirror of it).
+    let sky = ctx.layer_param("sky/sky", true).map(|o| crate::util::fit_layer(ctx, &b, &o, pr.e("sky/skySizeDiffers") == 1));
+    let sky_scaling = pr.get("sky/scaling").map(Value::as_f64).unwrap_or(1.0).max(0.01);
+    let sky_repeat = pr.e("sky/repeatMode");
+    let sky_int = pr.get("sky/intensity").map(Value::as_f64).unwrap_or(0.3) as f32;
+    let convergence = pr.get("sky/convergence").map(Value::as_f64).unwrap_or(0.5).clamp(0.0, 1.0);
     let grad = |x: usize, y: usize| -> (f64, f64) {
         match &height {
             Some(pl) => {
@@ -991,6 +1018,7 @@ fn caustics(ctx: &EffectCtx, mut b: Buf) -> Buf {
                 let m = (v[0] * v[0] + v[1] * v[1] + 1.0).sqrt();
                 [(v[0] / m) as f32, (v[1] / m) as f32, (v[2] / m) as f32]
             };
+            let lv = lv_at(x as f64 + 0.5, y as f64 + 0.5);
             let nl = (n[0] * lv[0] + n[1] * lv[1] + n[2] * lv[2]).max(0.0);
             let hv = {
                 let v = [lv[0], lv[1], lv[2] + 1.0];
@@ -999,9 +1027,21 @@ fn caustics(ctx: &EffectCtx, mut b: Buf) -> Buf {
             };
             let spec = (n[0] * hv[0] + n[1] * hv[1] + n[2] * hv[2]).max(0.0).powf(sharp) * specular * li;
             let light = ambient + diffuse * li * nl + cstr * focus * li;
+            // The surface: its colour lit like the water, or the sky it reflects (sampled along
+            // the surface normal; Convergence pulls the reflection towards the pixel itself).
+            let surface: [f32; 3] = match &sky {
+                Some(sk) => {
+                    let reach = (1.0 - convergence) * lw * 0.5;
+                    let (rx, ry) = (x as f64 + 0.5 + n[0] as f64 * reach, y as f64 + 0.5 + n[1] as f64 * reach);
+                    let (rx, ry) = (cx + (rx - cx) / sky_scaling, cy + (ry - cy) / sky_scaling);
+                    let (sc, _) = unpremul(sample_repeat(sk, rx, ry, sky_repeat));
+                    std::array::from_fn(|q| sc[q] * sky_int * 3.0 * surf[q])
+                }
+                None => std::array::from_fn(|q| surf[q] * (ambient + diffuse * li * nl)),
+            };
             let cc: [f32; 3] = std::array::from_fn(|q| {
                 let base = c[q] * light * lc[q];
-                base * (1.0 - surf_op) + surf[q] * surf_op * (ambient + diffuse * li * nl) + spec * lc[q]
+                base * (1.0 - surf_op) + surface[q] * surf_op + spec * lc[q]
             });
             let a = (a + surf_op * (1.0 - a)).min(1.0);
             *px = [cc[0] * a, cc[1] * a, cc[2] * a, a];
@@ -1085,7 +1125,36 @@ fn wave_world(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let dt = 1.0 / (sps * sub as f32);
     let cell = 1.0 / (nx - 1) as f32;
     let weights: Vec<Vec<f32>> = prods.iter().map(|p| (0..nx * ny).map(|i| p.weight((i % nx) as f32 * cell, (i / nx) as f32 * cell)).collect()).collect();
-    let key = params_key(ctx, &Buf { img: Image::new(0, 0), offset: [0.0; 2], scale: if pr.b("simulation/gridResDownsamples") { b.scale } else { 1.0 } }, 4);
+    // Ground: the ground layer's first frame, its luminance an elevation (× Steepness). Where
+    // it rises above Height the grid is dry (a wall the waves reflect from); shallow water
+    // slows the waves by Wave Strength.
+    let ground = pr.get("ground/ground").and_then(Value::as_layer).and_then(|id| {
+        let host = ctx.env.host?;
+        host.layer_at(id, ctx.env.comp_time - ctx.time, true)
+    });
+    let steep = pr.get("ground/steepness").map(Value::as_f64).unwrap_or(0.25) as f32;
+    let level = pr.get("ground/height").map(Value::as_f64).unwrap_or(0.25) as f32;
+    let wave_strength = pr.f("ground/waveStrength").clamp(0.0, 1.0) as f32;
+    // Water depth per grid point (None without ground: deep everywhere).
+    let depth: Option<Vec<f32>> = ground.as_ref().map(|lp| {
+        let (gw, gh) = (lp.size[0].max(1.0), lp.size[1].max(1.0));
+        (0..nx * ny)
+            .map(|i| {
+                let (fx, fy) = ((i % nx) as f64 / (nx - 1) as f64, (i / nx) as f64 / (ny - 1) as f64);
+                let (c, a) = unpremul(lp.buf.img.sample_bilinear_clamped(fx * gw * lp.buf.scale + lp.buf.offset[0], fy * gh * lp.buf.scale + lp.buf.offset[1]));
+                level - steep * effectcraft_color::luminance(c[0], c[1], c[2]) * a
+            })
+            .collect()
+    });
+    let speed_k: Vec<f32> = match &depth {
+        Some(d) => d.iter().map(|&v| if v <= 0.0 { 0.0 } else { 1.0 - wave_strength * (1.0 - (v / level.max(1e-3)).clamp(0.0, 1.0).sqrt()) }).collect(),
+        None => vec![1.0; nx * ny],
+    };
+    let mut key =
+        params_key(ctx, &Buf { img: Image::new(0, 0), offset: [0.0; 2], scale: if pr.b("simulation/gridResDownsamples") { b.scale } else { 1.0 } }, 4);
+    if let Some(d) = &depth {
+        key ^= d.iter().fold(0u64, |a, v| a.rotate_left(3) ^ v.to_bits() as u64);
+    }
     let steps = crate::sim::steps_at(ctx.time + preroll);
     let st = WAVE_CACHE.run(
         key,
@@ -1101,7 +1170,7 @@ fn wave_world(ctx: &EffectCtx, mut b: Buf) -> Buf {
                         let i = y * nx + x;
                         let g = |xx: usize, yy: usize| w.u[yy * nx + xx];
                         let l = g(x.saturating_sub(1), y) + g((x + 1).min(nx - 1), y) + g(x, y.saturating_sub(1)) + g(x, (y + 1).min(ny - 1)) - 4.0 * w.u[i];
-                        acc[i] = c2 * l - damping * 4.0 * w.v[i];
+                        acc[i] = c2 * speed_k[i] * speed_k[i] * l - damping * 4.0 * w.v[i];
                     }
                 }
                 for i in 0..nx * ny {
@@ -1119,6 +1188,13 @@ fn wave_world(ctx: &EffectCtx, mut b: Buf) -> Buf {
                             w.u[i] += (target - w.u[i]) * wt[i];
                             w.v[i] *= 1.0 - wt[i];
                         }
+                    }
+                }
+                // Dry ground holds the surface flat.
+                for i in 0..nx * ny {
+                    if speed_k[i] <= 0.0 {
+                        w.u[i] = 0.0;
+                        w.v[i] = 0.0;
                     }
                 }
                 // Edges: reflective ones mirror; the others absorb in a thin sponge layer.
@@ -1168,22 +1244,38 @@ fn wave_world(ctx: &EffectCtx, mut b: Buf) -> Buf {
         let contrast = pr.f("heightMapControls/contrast") as f32;
         let gamma = pr.f("heightMapControls/gamma").max(0.01) as f32;
         let alpha = 1.0 - pr.f("heightMapControls/transparency") as f32;
+        let dry_transparent = pr.e("heightMapControls/renderDryAreasAs") == 1;
+        let dry_at = |x: f64, y: f64| -> bool {
+            let Some(d) = &depth else { return false };
+            let gx = (x / lw.max(1.0) * (st.nx - 1) as f64).round().clamp(0.0, (st.nx - 1) as f64) as usize;
+            let gy = (y / lw.max(1.0) * (st.nx - 1) as f64).round().clamp(0.0, (st.ny - 1) as f64) as usize;
+            d[gy * st.nx + gx] <= 0.0
+        };
         b.img.rows_mut().for_each(|(y, row)| {
             for (x, px) in row.iter_mut().enumerate() {
                 let lx = (x as f64 + 0.5 - b.offset[0]) / s;
                 let ly = (y as f64 + 0.5 - b.offset[1]) / s;
                 let v = (bright + contrast * sample(lx, ly)).clamp(0.0, 1.0).powf(1.0 / gamma);
-                *px = [v * alpha, v * alpha, v * alpha, alpha];
+                let al = if dry_transparent && dry_at(lx, ly) { 0.0 } else { alpha };
+                *px = [v * al, v * al, v * al, al];
             }
         });
     } else {
-        // Wireframe preview: the grid seen at an angle, heights lifting the lines.
-        let lift = lh as f32 * 0.25;
+        // Wireframe preview: the grid turned by Horizontal Rotation about the vertical axis,
+        // tilted by Vertical Rotation, heights scaled by Vertical Scale.
+        let hr = pr.f("wireframeControls/horizontalRotation").to_radians();
+        let vr = pr.get("wireframeControls/verticalRotation").map(Value::as_f64).unwrap_or(53.0).to_radians();
+        let vs = pr.get("wireframeControls/verticalScale").map(Value::as_f64).unwrap_or(0.5);
+        let (sh, ch) = hr.sin_cos();
+        let (sv, cv) = vr.sin_cos();
         let to = |x: usize, y: usize| -> [f32; 2] {
-            let lx = x as f64 / (st.nx - 1) as f64 * lw;
-            let ly = y as f64 / (st.nx - 1) as f64 * lw;
-            let (px, py) = b.to_px([lx, lh * 0.25 + ly * 0.6]);
-            [px as f32, py as f32 - st.u[y * st.nx + x] * lift * s as f32]
+            // Grid point relative to the layer centre (layer px), height in layer px.
+            let gx = x as f64 / (st.nx - 1) as f64 * lw - lw * 0.5;
+            let gy = y as f64 / (st.nx - 1) as f64 * lw - (st.ny - 1) as f64 / (st.nx - 1) as f64 * lw * 0.5;
+            let hgt = st.u[y * st.nx + x] as f64 * vs * lh * 0.5;
+            let (rx, ry) = (gx * ch - gy * sh, gx * sh + gy * ch);
+            let (px, py) = b.to_px([lw * 0.5 + rx, lh * 0.5 + ry * cv - hgt * sv]);
+            [px as f32, py as f32]
         };
         let mut lines = Vec::new();
         for y in 0..st.ny {
@@ -1680,6 +1772,13 @@ pub fn specs() -> Vec<EffectSpec> {
                 p("water/surfaceColor", "Surface Color", col(1.0, 1.0, 1.0), ParamUi::Color),
                 p("water/surfaceOpacity", "Surface Opacity", num(0.3), slider(0.0, 1.0, 0.0, 1.0, 3)),
                 p("water/causticsStrength", "Caustics Strength", num(0.0), slider(0.0, 1.0, 0.0, 1.0, 3)),
+                p("sky/sky", "Sky", Value::Layer(None), ParamUi::Layer),
+                p("sky/scaling", "Scaling", num(1.0), slider(0.01, 10.0, 0.1, 3.0, 3)),
+                p("sky/repeatMode", "Repeat Mode", Value::Enum(2), popup(&["Once", "Tiled", "Reflected"])),
+                p("sky/skySizeDiffers", "If Layer Size Differs", Value::Enum(1), popup(&["Center", "Stretch to Fit"])),
+                p("sky/intensity", "Intensity", num(0.3), slider(0.0, 1.0, 0.0, 1.0, 3)),
+                p("sky/convergence", "Convergence", num(0.5), slider(0.0, 1.0, 0.0, 1.0, 3)),
+                p("lighting/lightType", "Light Type", Value::Enum(0), popup(&crate::card3d::LIGHT_TYPES)),
                 p("lighting/lightIntensity", "Light Intensity", num(1.0), slider(0.0, 4.0, 0.0, 2.0, 2)),
                 p("lighting/lightColor", "Light Color", col(1.0, 1.0, 1.0), ParamUi::Color),
                 p("lighting/lightPosition", "Light Position", pt(0.0, 0.0), ParamUi::Point),
@@ -1697,9 +1796,13 @@ pub fn specs() -> Vec<EffectSpec> {
             {
                 let mut v = vec![
                     p("view", "View", Value::Enum(0), popup(&["Wireframe Preview", "Height Map"])),
+                    p("wireframeControls/horizontalRotation", "Horizontal Rotation", num(0.0), ParamUi::Angle),
+                    p("wireframeControls/verticalRotation", "Vertical Rotation", num(53.0), slider(0.0, 90.0, 0.0, 90.0, 1)),
+                    p("wireframeControls/verticalScale", "Vertical Scale", num(0.5), slider(0.0, 10.0, 0.0, 2.0, 3)),
                     p("heightMapControls/brightness", "Brightness", num(0.5), slider(-1.0, 2.0, 0.0, 1.0, 3)),
                     p("heightMapControls/contrast", "Contrast", num(0.75), slider(0.0, 4.0, 0.0, 2.0, 3)),
                     p("heightMapControls/gamma", "Gamma Adjustment", num(1.0), slider(0.01, 10.0, 0.2, 5.0, 3)),
+                    p("heightMapControls/renderDryAreasAs", "Render Dry Areas As", Value::Enum(0), popup(&["Solid", "Transparent"])),
                     p("heightMapControls/transparency", "Transparency", num(0.0), slider(0.0, 1.0, 0.0, 1.0, 3)),
                     p("simulation/gridResolution", "Grid Resolution", num(60.0), slider(1.0, 400.0, 1.0, 200.0, 0)),
                     p("simulation/gridResDownsamples", "Grid Res Downsamples", Value::Bool(false), ParamUi::Checkbox),
@@ -1707,6 +1810,10 @@ pub fn specs() -> Vec<EffectSpec> {
                     p("simulation/damping", "Damping", num(0.05), slider(0.0, 5.0, 0.0, 1.0, 3)),
                     p("simulation/reflectEdges", "Reflect Edges", Value::Enum(0), popup(&["None", "Left", "Top", "Right", "Bottom", "All"])),
                     p("simulation/preRoll", "Pre-roll (seconds)", num(0.0), slider(0.0, 30.0, 0.0, 10.0, 2)),
+                    p("ground/ground", "Ground", Value::Layer(None), ParamUi::Layer),
+                    p("ground/steepness", "Steepness", num(0.25), slider(0.0, 2.0, 0.0, 1.0, 3)),
+                    p("ground/height", "Height", num(0.25), slider(0.0, 2.0, 0.0, 1.0, 3)),
+                    p("ground/waveStrength", "Wave Strength", num(0.0), slider(0.0, 1.0, 0.0, 1.0, 3)),
                 ];
                 v.extend(producer_params(1, 0.5, (0.5, 0.5)));
                 v.extend(producer_params(2, 0.0, (0.25, 0.25)));
@@ -1939,6 +2046,57 @@ mod tests {
         let b = run("ec.sim.caustics", &[], src.clone(), 0.0);
         assert_eq!(b, run("ec.sim.caustics", &[], src.clone(), 0.0));
         assert!(sum_diff(&b, &src) > 0.1);
+    }
+
+    #[test]
+    fn caustics_sky_and_light_types() {
+        let src = Image::filled(32, 32, [0.5, 0.5, 0.5, 1.0]);
+        let env = EffectEnv { host: Some(&FoamHost), ..Default::default() };
+        let run_h = |vals: &[(&str, Value)]| run_fx("ec.sim.caustics", vals, src.clone(), 0.0, env).img;
+        // A mirror-like surface shows the (green) sky.
+        let mirror = [("water/surfaceOpacity", num(1.0)), ("sky/sky", Value::Layer(Some(2))), ("sky/intensity", num(1.0))];
+        let p = run_h(&mirror).get(16, 16);
+        assert!(p[1] > p[0] + 0.3 && p[1] > p[2] + 0.3, "{p:?}");
+        // Point Source lights pixels by their own direction to the light: the image is no
+        // longer uniform; Distant Source lights the flat water evenly.
+        let lit = |t: u32| {
+            run_h(&[
+                ("lighting/lightType", Value::Enum(t)),
+                ("lighting/lightPosition", pt(0.0, 0.0)),
+                ("lighting/lightHeight", num(0.2)),
+                ("water/surfaceOpacity", num(0.0)),
+            ])
+        };
+        let (distant, point) = (lit(0), lit(1));
+        assert!((distant.get(2, 2)[0] - distant.get(30, 30)[0]).abs() < 1e-5);
+        assert!(point.get(2, 2)[0] > point.get(30, 30)[0] + 0.02, "{:?} {:?}", point.get(2, 2), point.get(30, 30));
+        // First Comp Light without a comp light: ambient only.
+        let none = run_h(&[("lighting/lightType", Value::Enum(2)), ("water/surfaceOpacity", num(0.0))]);
+        assert!(none.get(16, 16)[0] < distant.get(16, 16)[0]);
+    }
+
+    #[test]
+    fn wave_world_wireframe_controls_ground_and_dry_areas() {
+        let base = [("producer1/producer1Position", pt(8.0, 16.0)), ("simulation/gridResolution", num(24.0))];
+        let wire = |extra: &[(&str, Value)]| run("ec.sim.waveworld", &[base.as_slice(), extra].concat(), Image::new(32, 32), 0.5);
+        assert_ne!(wire(&[]), wire(&[("wireframeControls/horizontalRotation", num(40.0))]));
+        assert_ne!(wire(&[]), wire(&[("wireframeControls/verticalScale", num(3.0))]));
+        // Ground (left dark, right light): the light side rises above the water and is dry.
+        let env = EffectEnv { host: Some(&FoamHost), ..Default::default() };
+        let hm = |extra: &[(&str, Value)]| {
+            let mut v: Vec<(&str, Value)> = base.to_vec();
+            v.extend([("view", Value::Enum(1)), ("ground/ground", Value::Layer(Some(1))), ("ground/steepness", num(0.5)), ("ground/height", num(0.25))]);
+            v.extend_from_slice(extra);
+            run_fx("ec.sim.waveworld", &v, Image::new(32, 32), 1.0, env).img
+        };
+        let solid = hm(&[]);
+        let clear = hm(&[("heightMapControls/renderDryAreasAs", Value::Enum(1))]);
+        assert!(solid.get(30, 16)[3] > 0.99 && clear.get(30, 16)[3] == 0.0);
+        assert!(clear.get(4, 16)[3] > 0.99, "wet side stays");
+        // Dry ground stays flat: mid grey (brightness 0.5) there.
+        assert!((solid.get(30, 16)[0] - 0.5).abs() < 1e-4);
+        // Wave Strength slows waves over shallow water: the surface differs.
+        assert_ne!(hm(&[]), hm(&[("ground/waveStrength", num(1.0))]));
     }
 
     #[test]
