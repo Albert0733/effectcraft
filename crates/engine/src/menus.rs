@@ -168,6 +168,17 @@ pub fn checked(s: &Session, command: &str, params: &Value) -> Option<bool> {
         "view.layout" => Some(params.get("views").and_then(Value::as_u64) == Some(s.state.view_layout.max(1) as u64)),
         "view.shareViewOptions" => Some(s.state.share_view_options),
         "view.snapping" => Some(s.state.snapping),
+        "view.displayColorManagement" => Some(s.state.viewer.display_color_management),
+        "view.simulateOutput" => {
+            let want = pstr("profile")?;
+            let sim = s.state.viewer.simulation;
+            Some(if want == "custom" {
+                sim.profile != crate::viewer::SimProfile::None && sim == s.state.viewer.custom_simulation
+            } else {
+                crate::viewer::SimProfile::parse(want) == Some(sim.profile)
+                    && (sim != s.state.viewer.custom_simulation || sim.profile == crate::viewer::SimProfile::None)
+            })
+        }
         "layer.mask.motionBlur" | "layer.mask.featherFalloff" | "path.rotoBezier" => {
             use effectcraft_project::{FeatherFalloff, GroupKind, MaskMotionBlur};
             let GroupKind::Mask { motion_blur, feather_falloff, roto_bezier, .. } = layer?.masks()?.groups().next()?.kind else { return None };
@@ -855,6 +866,9 @@ View
     SDTV PAL | view.simulateOutput {"profile":"pal"}
     Legacy Macintosh RGB (Gamma 1.8) | view.simulateOutput {"profile":"mac18"}
     Internet Standard RGB (sRGB) | view.simulateOutput {"profile":"srgb"}
+    UHDTV (Rec. 2020) | view.simulateOutput {"profile":"rec2020"}
+    Display P3 | view.simulateOutput {"profile":"p3"}
+    Linear (1.0 Gamma) | view.simulateOutput {"profile":"linear"}
     Custom... | view.simulateOutput {"profile":"custom"}
   ---
   Show Rulers | view.rulers

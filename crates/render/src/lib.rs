@@ -82,6 +82,9 @@ struct FxHost<'r, 'a, 'c> {
 const MAX_FX_DEPTH: usize = 8;
 
 impl EffectHost for FxHost<'_, '_, '_> {
+    fn particles(&self) -> Option<&dyn effectcraft_effects::psim::ParticleSim> {
+        self.r.active_accel().and_then(|a| a.particles())
+    }
     fn layer(&self, id: u64, masks_and_effects: bool) -> Option<LayerPixels> {
         let other = self.ctx.layer(effectcraft_project::LayerId(id))?;
         if other.id == self.layer.id || self.r.depth > MAX_FX_DEPTH {
@@ -239,6 +242,46 @@ pub trait Accelerator: Send + Sync {
     /// ([`three_d::adv::raster::render`]). `None` = not handled (the CPU renders it).
     fn raster_3d(&self, _scene: &three_d::adv::Scene) -> Option<three_d::adv::Target> {
         None
+    }
+    /// A particle simulation backend (GPU particles) for the stepped particle effects, with
+    /// the CPU simulation's semantics. `None` = they simulate on the CPU.
+    fn particles(&self) -> Option<&dyn effectcraft_effects::psim::ParticleSim> {
+        None
+    }
+}
+
+/// Where an effect stack runs (see [`Renderer::run_effects_on`]): a CPU buffer, or an image
+/// resident on an accelerator.
+pub trait FxTarget {
+    /// Run a chain of accelerator-supported effects (quantising after each to the bit depth).
+    /// `false` = not handled: the effects then run one by one through [`FxTarget::cpu`].
+    fn gpu(&mut self, steps: &[FxStep]) -> bool;
+    /// Run one CPU effect: `f` maps the buffer.
+    fn cpu(&mut self, f: &mut dyn FnMut(Buf) -> Buf);
+}
+
+/// The CPU effect target (GPU chains go through [`Accelerator::effects`]: upload, readback).
+struct CpuFx<'a> {
+    accel: Option<&'a dyn Accelerator>,
+    levels: Option<f32>,
+    buf: Option<Buf>,
+}
+
+impl FxTarget for CpuFx<'_> {
+    fn gpu(&mut self, steps: &[FxStep]) -> bool {
+        let (Some(a), Some(b)) = (self.accel, &self.buf) else { return false };
+        match a.effects(steps, b, self.levels) {
+            Some(out) => {
+                self.buf = Some(out);
+                true
+            }
+            None => false,
+        }
+    }
+    fn cpu(&mut self, f: &mut dyn FnMut(Buf) -> Buf) {
+        if let Some(b) = self.buf.take() {
+            self.buf = Some(f(b));
+        }
     }
 }
 
@@ -494,11 +537,8 @@ impl<'a> Renderer<'a> {
     /// Render a composition at comp time `t` (transparent background, comp size × scale).
     /// Top-level frames go to the GPU when [`Self::active_accel`] is set and handles them.
     pub fn comp_frame(&self, comp_id: ItemId, t: Tick) -> Image {
-        // Auto keeps comps with 3D layers on the CPU compositor: 3D runs are still composited on
-        // the CPU, and the GPU path's readback/upload around them makes such comps slower.
-        let auto_3d = self.opts.backend == Backend::Auto && self.project.comp(comp_id).is_some_and(|c| c.has_3d());
+        // Classic 3D runs composite on the GPU too (M12.7), so Auto sends 3D comps there as well.
         if self.depth == 0
-            && !auto_3d
             && let Some(a) = self.active_accel()
             && let Some(img) = a.comp_frame(self, comp_id, t)
         {
@@ -551,6 +591,12 @@ impl<'a> Renderer<'a> {
             color::convert(&mut canvas, &c);
             self.pipe.quantize(&mut canvas);
         }
+        if self.depth == 0
+            && let Some((lin, mode, enc)) = self.pipe.output_hdr()
+        {
+            color::output_hdr(&mut canvas, lin, mode, enc);
+            self.pipe.quantize(&mut canvas);
+        }
         canvas
     }
 
@@ -595,19 +641,28 @@ impl<'a> Renderer<'a> {
     }
 
     /// Run the first `limit` effects of the layer's stack (by position; disabled ones count).
-    fn apply_effects_timed(
+    fn apply_effects_timed(&self, ctx: &EvalCtx, layer: &Layer, buf: Buf, adjustment: bool, limit: usize, timing: Option<&mut Vec<(String, f64)>>) -> Buf {
+        let mut t = CpuFx { accel: self.active_accel(), levels: self.pipe.levels, buf: Some(buf) };
+        self.run_effect_stack(ctx, layer, adjustment, limit, timing, &mut t);
+        t.buf.unwrap_or_else(|| Buf { img: Image::new(1, 1), offset: [0.0; 2], scale: self.opts.scale })
+    }
+
+    /// Run the layer's video effect stack on `target`: runs of GPU-capable effects go to
+    /// [`FxTarget::gpu`] (when an accelerator is active and supports them), the rest to
+    /// [`FxTarget::cpu`] one by one (quantised to the bit depth after each).
+    fn run_effect_stack(
         &self,
         ctx: &EvalCtx,
         layer: &Layer,
-        mut buf: Buf,
         adjustment: bool,
         limit: usize,
         mut timing: Option<&mut Vec<(String, f64)>>,
-    ) -> Buf {
+        target: &mut dyn FxTarget,
+    ) {
         if !layer.switches.effects {
-            return buf;
+            return;
         }
-        let Some(fx) = layer.effects() else { return buf };
+        let Some(fx) = layer.effects() else { return };
         let lt = layer.layer_time(ctx.time);
         let size = source_size(self.project, layer);
         let layer_size = if size.0 == 0 { [ctx.comp.width as f64, ctx.comp.height as f64] } else { [size.0 as f64, size.1 as f64] };
@@ -638,7 +693,7 @@ impl<'a> Renderer<'a> {
         let mut k = 0;
         while k < stack.len() {
             let (i, g, spec) = stack[k];
-            // A run of GPU effects goes to the accelerator in one upload / readback.
+            // A run of GPU effects goes to the accelerator in one go.
             if let Some(a) = accel
                 && spec.gpu
                 && a.supports_effect(spec.id)
@@ -654,8 +709,7 @@ impl<'a> Renderer<'a> {
                     })
                     .collect();
                 let t0 = web_time::Instant::now();
-                if let Some(out) = a.effects(&steps, &buf, self.pipe.levels) {
-                    buf = out;
+                if target.gpu(&steps) {
                     if let Some(v) = timing.as_deref_mut() {
                         let ms = t0.elapsed().as_secs_f64() * 1e3 / run.len() as f64;
                         v.extend(run.iter().map(|(_, _, s)| (format!("{} (gpu)", s.id), ms)));
@@ -670,14 +724,16 @@ impl<'a> Renderer<'a> {
             let env = EffectEnv { effect_index: i, ..env };
             let ectx = EffectCtx { params: &params, time: lt.seconds(), layer_size, seed: g.uid as u32, adjustment, env };
             let t0 = web_time::Instant::now();
-            buf = effectcraft_effects::apply(spec, &ectx, buf);
-            // 8/16 bpc effects write integer pixels.
-            self.pipe.quantize(&mut buf.img);
+            target.cpu(&mut |buf| {
+                let mut buf = effectcraft_effects::apply(spec, &ectx, buf);
+                // 8/16 bpc effects write integer pixels.
+                self.pipe.quantize(&mut buf.img);
+                buf
+            });
             if let Some(v) = timing.as_deref_mut() {
                 v.push((spec.id.to_string(), t0.elapsed().as_secs_f64() * 1e3));
             }
         }
-        buf
     }
 
     /// Source pixels of a layer in layer space (before masks/effects).
@@ -1016,7 +1072,7 @@ impl<'a> Renderer<'a> {
 
     /// The region of interest of a top-level 2D frame: (x, y) offset of the output in output
     /// pixels and its size. `None` renders the whole comp (no ROI, or a nested comp).
-    fn roi_offset(&self) -> Option<(f64, f64, u32, u32)> {
+    pub(crate) fn roi_offset(&self) -> Option<(f64, f64, u32, u32)> {
         let r = self.opts.roi.filter(|_| self.depth == 0)?;
         let s = self.opts.scale;
         if r[2] <= 0.0 || r[3] <= 0.0 {
@@ -1256,17 +1312,29 @@ impl<'a> Renderer<'a> {
     }
 
     /// Apply the track matte / preserve transparency to an isolated layer render, then blend.
-    fn composite_iso(&self, ctx: &EvalCtx, layer: &Layer, mut iso: Image, canvas: &mut Image, opacity: f32) {
+    fn composite_iso(&self, ctx: &EvalCtx, layer: &Layer, iso: Image, canvas: &mut Image, opacity: f32) {
+        self.composite_iso_with(ctx, layer, iso, canvas, opacity, None);
+    }
+
+    /// [`Self::composite_iso`] with the track matte's pixels already drawn (`matte`, e.g. a 3D
+    /// matte seen through the camera); otherwise the matte layer is placed in 2D.
+    pub(crate) fn composite_iso_with(&self, ctx: &EvalCtx, layer: &Layer, mut iso: Image, canvas: &mut Image, opacity: f32, matte_img: Option<Image>) {
         let matte = layer.track_matte.and_then(|tm| ctx.comp.layer(tm.layer).filter(|m| m.id != layer.id).map(|m| (m, tm.kind)));
         let preserve = layer.preserve_transparency;
         if let Some((m, kind)) = matte {
-            let mut mimg = Image::new(canvas.width, canvas.height);
-            if m.is_active_at(ctx.time)
-                && let Some(mb) = self.layer_buf(ctx, m)
-            {
-                let mo = ctx.opacity(m) as f32;
-                self.place(ctx, m, &mb, &mut mimg, BlendMode::Normal, mo);
-            }
+            let mimg = match matte_img {
+                Some(i) if i.width == canvas.width && i.height == canvas.height => i,
+                _ => {
+                    let mut mimg = Image::new(canvas.width, canvas.height);
+                    if m.is_active_at(ctx.time)
+                        && let Some(mb) = self.layer_buf(ctx, m)
+                    {
+                        let mo = ctx.opacity(m) as f32;
+                        self.place(ctx, m, &mb, &mut mimg, BlendMode::Normal, mo);
+                    }
+                    mimg
+                }
+            };
             iso.data.par_iter_mut().zip(mimg.data.par_iter()).for_each(|(p, q)| {
                 let k = match kind {
                     MatteKind::Alpha => q[3],
@@ -1383,6 +1451,29 @@ impl<'a> Renderer<'a> {
     /// Draw a run of consecutive 3D layers into `canvas` (CPU).
     pub fn draw_3d_run(&self, ctx: &EvalCtx<'a>, run: &[&Layer], canvas: &mut Image) {
         three_d::compose::draw_run(self, ctx, run, canvas);
+    }
+
+    /// A run of consecutive 3D layers prepared for an accelerator (planes, lights, shadow
+    /// casters; see [`three_d::Run3d`]) at output size `out`. `None` = draw it with
+    /// [`Self::draw_3d_run`] (adjustment or wireframe layers in the run, Advanced 3D).
+    pub fn prepare_3d_run(&self, ctx: &EvalCtx<'a>, run: &[&Layer], out: (u32, u32)) -> Option<three_d::Run3d> {
+        three_d::compose::gpu_run(self, ctx, run, out)
+    }
+
+    /// Run the layer's effect stack on `target` (an accelerator's resident image): GPU-capable
+    /// runs through [`FxTarget::gpu`], the others through [`FxTarget::cpu`], with the CPU's
+    /// parameters and environment. `adjustment`: the stack runs on the comp below (adjustment
+    /// layers).
+    pub fn run_effects_on(&self, ctx: &EvalCtx, layer: &Layer, adjustment: bool, target: &mut dyn FxTarget) {
+        self.run_effect_stack(ctx, layer, adjustment, usize::MAX, None, target);
+    }
+
+    /// An adjustment layer's footprint (its source with masks applied, layer space): where
+    /// its effects show. `None` = the layer changes nothing.
+    pub fn adjustment_footprint(&self, ctx: &EvalCtx, layer: &Layer) -> Option<Buf> {
+        let mut foot = self.source(ctx, layer)?;
+        let _ = masks::apply(ctx, layer, &mut foot);
+        Some(foot)
     }
 
     /// Draw one 2D layer into `canvas` on the CPU (any kind: adjustment, wireframe, styled…).

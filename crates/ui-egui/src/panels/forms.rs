@@ -286,6 +286,10 @@ pub fn open_form(app: &mut EffectcraftApp, id: &str, p: &Value) -> bool {
                             ("HDTV (Rec. 709)", json!("rec709")),
                             ("Rec. 2020", json!("rec2020")),
                             ("Display P3", json!("p3")),
+                            ("ACEScg", json!("acescg")),
+                            ("ACES2065-1", json!("aces2065")),
+                            ("Rec. 2100 PQ", json!("rec2100pq")),
+                            ("Rec. 2100 HLG", json!("rec2100hlg")),
                         ],
                         f.color_profile.map_or(0, |c| 1 + effectcraft_engine::project::ColorSpace::ALL.iter().position(|x| *x == c).unwrap_or(0)),
                     ),
@@ -316,8 +320,27 @@ pub fn open_form(app: &mut EffectcraftApp, id: &str, p: &Value) -> bool {
                     Field::choice(
                         "timeDisplay",
                         "Time display style",
-                        &[("Timecode", json!("timecode")), ("Frames", json!("frames"))],
-                        usize::from(matches!(st.time_display, effectcraft_engine::project::TimeDisplayStyle::Frames)),
+                        &[
+                            ("Timecode", json!("timecode")),
+                            ("Frames", json!("frames")),
+                            ("Feet + Frames (35mm)", json!("feet35")),
+                            ("Feet + Frames (16mm)", json!("feet16")),
+                        ],
+                        {
+                            use effectcraft_engine::project::TimeDisplayStyle as T;
+                            match st.time_display {
+                                T::Timecode => 0,
+                                T::Frames => 1,
+                                T::Feet35 => 2,
+                                T::Feet16 => 3,
+                            }
+                        },
+                    ),
+                    Field::choice(
+                        "colorEngine",
+                        "Color engine",
+                        &[("Adobe-style built-in", json!("adobe")), ("OCIO (built-in ACES config)", json!("ocio"))],
+                        usize::from(st.color_engine == effectcraft_engine::project::ColorEngine::Ocio),
                     ),
                     Field::choice(
                         "workingSpace",
@@ -328,11 +351,42 @@ pub fn open_form(app: &mut EffectcraftApp, id: &str, p: &Value) -> bool {
                             ("HDTV (Rec. 709)", json!("rec709")),
                             ("Rec. 2020", json!("rec2020")),
                             ("Display P3", json!("p3")),
+                            ("ACEScg", json!("acescg")),
+                            ("ACES2065-1", json!("aces2065")),
                         ],
-                        st.working_space.map_or(0, |c| 1 + effectcraft_engine::project::ColorSpace::ALL.iter().position(|x| *x == c).unwrap_or(0)),
+                        st.working_space.map_or(0, |c| 1 + effectcraft_engine::project::ColorSpace::WORKING.iter().position(|x| *x == c).unwrap_or(0)),
                     ),
                     Field::bool("linearize", "Linearize working space", st.linearize),
                     Field::bool("blendLinear", "Blend colors using 1.0 gamma", st.blend_linear),
+                    Field::choice(
+                        "hdr",
+                        "HDR on SDR displays and outputs",
+                        &[("Clip", json!("clip")), ("Compand", json!("compand")), ("Tone map", json!("toneMap"))],
+                        st.hdr as usize,
+                    ),
+                    Field::choice(
+                        "outputSpace",
+                        "Output color space",
+                        &[
+                            ("sRGB IEC61966-2.1 (default)", json!("default")),
+                            ("HDTV (Rec. 709)", json!("rec709")),
+                            ("Rec. 2020", json!("rec2020")),
+                            ("Display P3", json!("p3")),
+                            ("Rec. 2100 PQ (HDR)", json!("rec2100pq")),
+                            ("Rec. 2100 HLG (HDR)", json!("rec2100hlg")),
+                        ],
+                        {
+                            use effectcraft_engine::project::ColorSpace as C;
+                            match st.output_space {
+                                Some(C::Rec709) => 1,
+                                Some(C::Rec2020) => 2,
+                                Some(C::DisplayP3) => 3,
+                                Some(C::Rec2100Pq) => 4,
+                                Some(C::Rec2100Hlg) => 5,
+                                _ => 0,
+                            }
+                        },
+                    ),
                     // Video Rendering and Effects ▸ Use.
                     Field::choice(
                         "renderer",

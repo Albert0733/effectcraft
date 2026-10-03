@@ -559,6 +559,10 @@ pub const DISPLAYS: &[(&str, [[f64; 2]; 3], Tf)] =
 
 pub const VIEWS: &[&str] = &["Standard", "Tone Mapped", "Raw"];
 
+/// Configuration popup: the built-in config, or a custom `.ocio` file (Config File: a path or
+/// the config's text; spaces chosen by name, see [`crate::ocio_config`]).
+pub const CONFIGS: &[&str] = &["Built-in (EffectCraft minimal)", "Custom (.ocio file)"];
+
 /// Built-in looks: CDLs applied in ACEScct.
 pub fn looks() -> Vec<(&'static str, Cdl)> {
     let grey = 0.413_588_402_492_442_1; // ACEScct of 0.18
@@ -647,7 +651,35 @@ fn space_at(i: u32) -> &'static Space {
     &SPACES[(i as usize).min(SPACES.len() - 1)]
 }
 
+/// The custom config chosen by an effect (Configuration ▸ Custom with a readable file).
+fn custom_config(ctx: &EffectCtx) -> Option<std::sync::Arc<crate::ocio_config::Config>> {
+    if ctx.params.e("config") != 1 {
+        return None;
+    }
+    crate::ocio_config::load_config(ctx.params.s("configFile"))
+}
+
+/// A space of a custom config by its typed name, else by the built-in popup's name.
+fn custom_space<'c>(cfg: &'c crate::ocio_config::Config, name: &str, popup: u32) -> Option<&'c crate::ocio_config::ConfigSpace> {
+    cfg.space(name).or_else(|| cfg.space(space_at(popup).name))
+}
+
 fn ocio_cst(ctx: &EffectCtx, mut b: Buf) -> Buf {
+    // Custom configuration that can't be read: pixels pass through.
+    if ctx.params.e("config") == 1 && custom_config(ctx).is_none() {
+        return b;
+    }
+    if let Some(cfg) = custom_config(ctx) {
+        let (Some(a), Some(z)) = (
+            custom_space(&cfg, ctx.params.s("sourceName"), ctx.params.e("source")),
+            custom_space(&cfg, ctx.params.s("destinationName"), ctx.params.e("destination")),
+        ) else {
+            return b;
+        };
+        let (a, z) = if ctx.params.e("direction") == 1 { (z, a) } else { (a, z) };
+        map_px(&mut b, |c| cfg.convert(a, z, c.map(|v| v as f64)).map(|v| v as f32));
+        return b;
+    }
     let (a, z) = (space_at(ctx.params.e("source")), space_at(ctx.params.e("destination")));
     let (a, z) = if ctx.params.e("direction") == 1 { (z, a) } else { (a, z) };
     if a.name == z.name {
@@ -683,6 +715,21 @@ fn ocio_cdl(ctx: &EffectCtx, mut b: Buf) -> Buf {
 }
 
 fn ocio_display(ctx: &EffectCtx, mut b: Buf) -> Buf {
+    // Custom configuration that can't be read: pixels pass through.
+    if ctx.params.e("config") == 1 && custom_config(ctx).is_none() {
+        return b;
+    }
+    if let Some(cfg) = custom_config(ctx) {
+        // The display's view names a colour space of the config.
+        let display = DISPLAYS.get(ctx.params.e("display") as usize).map_or("", |d| d.0);
+        let view = VIEWS.get(ctx.params.e("view") as usize).copied().unwrap_or("");
+        let dn = if ctx.params.s("displayName").is_empty() { display } else { ctx.params.s("displayName") };
+        let vn = if ctx.params.s("viewName").is_empty() { view } else { ctx.params.s("viewName") };
+        let (Some(a), Some(z)) = (custom_space(&cfg, ctx.params.s("sourceName"), ctx.params.e("source")), cfg.view_space(dn, vn)) else { return b };
+        let (a, z) = if ctx.params.e("direction") == 1 { (z, a) } else { (a, z) };
+        map_px(&mut b, |c| cfg.convert(a, z, c.map(|v| v as f64)).map(|v| v as f32));
+        return b;
+    }
     let input = space_at(ctx.params.e("source"));
     let f = display_xform(input, ctx.params.e("display") as usize, ctx.params.e("view") as usize, ctx.params.e("direction") == 1);
     map_px(&mut b, f);
@@ -758,6 +805,10 @@ fn profile(ctx: &EffectCtx, i: u32) -> (Space, bool) {
         ColorSpace::Rec709 => sp("Rec.709", REC709, D65, Tf::Gamma(2.4)),
         ColorSpace::Rec2020 => sp("Rec.2020", REC2020, D65, Tf::Gamma(2.4)),
         ColorSpace::DisplayP3 => sp("Display P3", P3, D65, Tf::Srgb),
+        ColorSpace::AcesCg => *space_by_name("ACEScg").expect("built-in"),
+        ColorSpace::Aces2065 => *space_by_name("ACES2065-1").expect("built-in"),
+        // HDR encodings are output spaces, never a working space.
+        ColorSpace::Rec2100Pq | ColorSpace::Rec2100Hlg => sp("Rec.2020", REC2020, D65, Tf::Gamma(2.4)),
     };
     match i {
         0 => (ws(ctx.env.working_space.unwrap_or(ColorSpace::Srgb)), ctx.env.working_linear),
@@ -919,9 +970,12 @@ pub fn specs() -> Vec<EffectSpec> {
             "OCIO Color Space Transform",
             cc,
             vec![
-                p("config", "Configuration", Value::Enum(0), popup(&["Built-in (EffectCraft minimal)"])),
+                p("config", "Configuration", Value::Enum(0), popup(CONFIGS)),
+                p("configFile", "Config File (.ocio)", Value::Str(String::new()), ParamUi::Text),
                 space_param("source", "Source", lin709),
+                p("sourceName", "Source (config name)", Value::Str(String::new()), ParamUi::Text),
                 space_param("destination", "Destination", srgb),
+                p("destinationName", "Destination (config name)", Value::Str(String::new()), ParamUi::Text),
                 direction(),
             ],
             ocio_cst,
@@ -931,10 +985,14 @@ pub fn specs() -> Vec<EffectSpec> {
             "OCIO Display Transform",
             cc,
             vec![
-                p("config", "Configuration", Value::Enum(0), popup(&["Built-in (EffectCraft minimal)"])),
+                p("config", "Configuration", Value::Enum(0), popup(CONFIGS)),
+                p("configFile", "Config File (.ocio)", Value::Str(String::new()), ParamUi::Text),
                 space_param("source", "Input Color Space", lin709),
+                p("sourceName", "Source (config name)", Value::Str(String::new()), ParamUi::Text),
                 p("display", "Display Device", Value::Enum(0), popup(&DISPLAYS.iter().map(|d| d.0).collect::<Vec<_>>())),
+                p("displayName", "Display (config name)", Value::Str(String::new()), ParamUi::Text),
                 p("view", "View Transform", Value::Enum(0), popup(VIEWS)),
+                p("viewName", "View (config name)", Value::Str(String::new()), ParamUi::Text),
                 direction(),
             ],
             ocio_display,

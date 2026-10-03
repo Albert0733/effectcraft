@@ -95,6 +95,62 @@ pub enum TimeDisplayStyle {
     #[default]
     Timecode,
     Frames,
+    /// Feet + Frames, 35 mm film (16 frames per foot).
+    Feet35,
+    /// Feet + Frames, 16 mm film (40 frames per foot).
+    Feet16,
+}
+
+impl TimeDisplayStyle {
+    /// Frames per foot of the Feet + Frames styles.
+    pub fn frames_per_foot(self) -> Option<i64> {
+        match self {
+            TimeDisplayStyle::Feet35 => Some(16),
+            TimeDisplayStyle::Feet16 => Some(40),
+            _ => None,
+        }
+    }
+    pub fn id(self) -> &'static str {
+        match self {
+            TimeDisplayStyle::Timecode => "timecode",
+            TimeDisplayStyle::Frames => "frames",
+            TimeDisplayStyle::Feet35 => "feet35",
+            TimeDisplayStyle::Feet16 => "feet16",
+        }
+    }
+    pub fn parse(s: &str) -> Option<TimeDisplayStyle> {
+        let k: String = s.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>().to_ascii_lowercase();
+        match k.as_str() {
+            "timecode" => Some(TimeDisplayStyle::Timecode),
+            "frames" => Some(TimeDisplayStyle::Frames),
+            "feet35" | "feetframes" | "feetandframes" | "feet35mm" | "35mm" | "feetframes35mm" => Some(TimeDisplayStyle::Feet35),
+            "feet16" | "feet16mm" | "16mm" | "feetframes16mm" => Some(TimeDisplayStyle::Feet16),
+            _ => None,
+        }
+    }
+}
+
+/// Project Settings ▸ Color ▸ Color Engine.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ColorEngine {
+    /// Built-in colour management (ICC-style working spaces).
+    #[default]
+    Adobe,
+    /// OCIO managed, with the built-in configuration (ACES working spaces).
+    Ocio,
+}
+
+/// Project Settings ▸ Color ▸ HDR: how over-range (HDR) values reach a standard-dynamic-range
+/// display or output.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum HdrMode {
+    /// Values above 1.0 clip.
+    #[default]
+    Clip,
+    /// Highlights above 80% are companded (an exponential knee) into the remaining range.
+    Compand,
+    /// Extended Reinhard tone mapping of luminance (white at 4.0).
+    ToneMap,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -121,6 +177,16 @@ pub struct ProjectSettings {
     /// The project's comment (Metadata panel).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub comment: String,
+    /// Color Engine (Adobe-style built-in or OCIO with ACES working spaces).
+    #[serde(default)]
+    pub color_engine: ColorEngine,
+    /// HDR handling for standard-dynamic-range output (display and renders).
+    #[serde(default)]
+    pub hdr: HdrMode,
+    /// The space the top-level comp is output in (renders and the viewer's source). `None` =
+    /// sRGB; Rec. 2100 PQ / HLG give HDR output.
+    #[serde(default)]
+    pub output_space: Option<ColorSpace>,
 }
 
 impl Default for ProjectSettings {
@@ -135,6 +201,9 @@ impl Default for ProjectSettings {
             audio_sample_rate: 48_000,
             gpu_acceleration: true,
             comment: String::new(),
+            color_engine: ColorEngine::Adobe,
+            hdr: HdrMode::Clip,
+            output_space: None,
         }
     }
 }
@@ -556,6 +625,10 @@ pub struct Layer {
     /// reflections) of Advanced 3D comps instead of being drawn.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub environment: bool,
+    /// Layer ▸ Light ▸ Create Environment Light Background Layer: the layer's (equirectangular)
+    /// image is drawn as the 3D scene's backdrop, seen through the camera, instead of as a card.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub environment_background: bool,
     /// The property tree (Masks, Effects, Transform, Text, Contents, Camera/Light options…).
     pub props: PropGroup,
 }

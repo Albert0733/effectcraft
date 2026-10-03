@@ -1,5 +1,6 @@
 //! Time navigation (CTI) commands.
 
+use effectcraft_project::{Comp, TimeDisplayStyle};
 use effectcraft_time::Tick;
 use serde_json::{Value, json};
 
@@ -9,7 +10,36 @@ use crate::{EngineError, Result, Session, cmd};
 fn report(s: &Session) -> Value {
     let t = s.time();
     let frame = s.active_comp().map(|c| c.frame_rate.frame_at(t)).unwrap_or(0);
-    json!({"time": t.seconds(), "frame": frame})
+    let display = s.active_comp().map(|c| display_time(s, c, t));
+    json!({"time": t.seconds(), "frame": frame, "display": display})
+}
+
+/// A comp time as the project's Time Display Style shows it: timecode (`0:00:02:15`, `;` for
+/// drop-frame), frames (`00063`, from Start Numbering Frames At) or Feet + Frames (`0003+15`).
+pub fn display_time(s: &Session, comp: &Comp, t: Tick) -> String {
+    let fr = comp.frame_rate;
+    let st = &s.project.settings;
+    match st.time_display {
+        TimeDisplayStyle::Frames => format!("{:05}", fr.frame_at(t) + st.frame_start),
+        TimeDisplayStyle::Feet35 | TimeDisplayStyle::Feet16 => {
+            effectcraft_time::format_feet_frames(fr.frame_at(t + comp.display_start) + st.frame_start, st.time_display.frames_per_foot().unwrap_or(16))
+        }
+        TimeDisplayStyle::Timecode => effectcraft_time::format_timecode_ae(fr.frame_at(t + comp.display_start), fr, false),
+    }
+}
+
+/// Parse a time typed in the project's Time Display Style (relative `+n`/`-n` from frame
+/// `current`) into a comp frame.
+pub fn parse_display_time(s: &Session, comp: &Comp, text: &str, current: i64) -> std::result::Result<i64, String> {
+    let fr = comp.frame_rate;
+    let st = &s.project.settings;
+    match st.time_display.frames_per_foot() {
+        Some(pf) => {
+            let start = fr.frame_at(comp.display_start) + st.frame_start;
+            effectcraft_time::parse_feet_frames(text, pf, current + start).map(|f| f - start).map_err(|e| e.0)
+        }
+        None => effectcraft_time::parse_timecode(text, fr, fr.supports_drop_frame(), current).map_err(|e| e.0),
+    }
 }
 
 fn set(s: &mut Session, p: &Value) -> Result<Value> {
@@ -18,7 +48,7 @@ fn set(s: &mut Session, p: &Value) -> Result<Value> {
         comp.frame_rate.tick_of(f)
     } else if let Some(tc) = str_p(p, "timecode") {
         let cur = comp.frame_rate.frame_at(s.time());
-        let f = effectcraft_time::parse_timecode(tc, comp.frame_rate, comp.frame_rate.supports_drop_frame(), cur).map_err(|e| super::bad("time.set", e.0))?;
+        let f = parse_display_time(s, comp, tc, cur).map_err(|e| super::bad("time.set", e))?;
         comp.frame_rate.tick_of(f)
     } else {
         Tick::from_seconds_f64(f_p(p, "time").ok_or_else(|| super::bad("time.set", "need `time`, `frame` or `timecode`"))?)

@@ -414,7 +414,8 @@ fn grid_warp(src: &Image, w: u32, h: u32, nx: usize, ny: usize, dest: &[Pt], src
     out
 }
 
-fn parse_mesh(s: &str) -> Vec<Pt> {
+/// Mesh Warp's `mesh` parameter: the vertex offsets (layer pixels), row-major.
+pub fn parse_mesh(s: &str) -> Vec<(f64, f64)> {
     s.split(|c: char| c.is_whitespace() || c == ';')
         .filter(|t| !t.is_empty())
         .filter_map(|t| {

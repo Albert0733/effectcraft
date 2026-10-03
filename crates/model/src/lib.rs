@@ -295,6 +295,10 @@ pub struct Node {
     pub matrix: Option<Mat4>,
     pub mesh: Option<usize>,
     pub skin: Option<usize>,
+    /// A camera of [`Model::cameras`] at this node (looking down the node's −Z, +Y up).
+    pub camera: Option<usize>,
+    /// A light of [`Model::lights`] at this node (`KHR_lights_punctual`, shining down −Z).
+    pub light: Option<usize>,
     pub children: Vec<usize>,
 }
 
@@ -308,6 +312,8 @@ impl Default for Node {
             matrix: None,
             mesh: None,
             skin: None,
+            camera: None,
+            light: None,
             children: vec![],
         }
     }
@@ -495,6 +501,60 @@ pub struct Model {
     pub textures: Vec<Arc<Texture>>,
     pub skins: Vec<Skin>,
     pub animations: Vec<Animation>,
+    /// Cameras embedded in the file (glTF `cameras`).
+    pub cameras: Vec<ModelCamera>,
+    /// Punctual lights embedded in the file (glTF `KHR_lights_punctual`).
+    pub lights: Vec<ModelLight>,
+}
+
+/// A camera embedded in a model file.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModelCamera {
+    pub name: String,
+    pub projection: CameraProjection,
+}
+
+/// glTF camera projections.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum CameraProjection {
+    /// Vertical field of view (radians), optional aspect ratio, near plane.
+    Perspective { yfov: f64, aspect: Option<f64>, znear: f64 },
+    /// Half the orthographic view's width and height (model units).
+    Orthographic { xmag: f64, ymag: f64 },
+}
+
+/// Kinds of `KHR_lights_punctual` lights.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ModelLightKind {
+    Directional,
+    Point,
+    /// Inner and outer cone angles (radians, from the axis).
+    Spot {
+        inner: f64,
+        outer: f64,
+    },
+}
+
+/// A punctual light embedded in a model file.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModelLight {
+    pub name: String,
+    pub kind: ModelLightKind,
+    /// Linear RGB.
+    pub color: [f64; 3],
+    /// Candela (point, spot) or lux (directional).
+    pub intensity: f64,
+    pub range: Option<f64>,
+}
+
+/// A camera or light placed in model space by [`Model::placed`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Placed {
+    /// Index into [`Model::cameras`] or [`Model::lights`].
+    pub index: usize,
+    pub node: usize,
+    /// Node → model space.
+    pub world: Mat4,
 }
 
 /// One mesh placed in model space by [`Model::instances`].
@@ -577,6 +637,31 @@ impl Model {
             stack.extend(n.children.iter().rev());
         }
         out
+    }
+
+    /// The scene's cameras (`lights = false`) or lights (`true`) placed at animation `clip`
+    /// time `t`, in node order.
+    pub fn placed(&self, lights: bool, clip: Option<usize>, t: f64) -> Vec<Placed> {
+        let world = self.world_pose(&self.local_pose(clip, t));
+        let mut reach = vec![false; self.nodes.len()];
+        let mut stack: Vec<usize> = self.roots.clone();
+        while let Some(i) = stack.pop() {
+            if i >= self.nodes.len() || reach[i] {
+                continue;
+            }
+            reach[i] = true;
+            stack.extend(self.nodes[i].children.iter().copied());
+        }
+        let count = if lights { self.lights.len() } else { self.cameras.len() };
+        self.nodes
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| reach[*i])
+            .filter_map(|(i, n)| {
+                let index = if lights { n.light } else { n.camera }?;
+                (index < count).then_some(Placed { index, node: i, world: world[i] })
+            })
+            .collect()
     }
 
     /// Model-space bounds of the rest pose (None for an empty model).

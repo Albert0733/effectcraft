@@ -828,3 +828,19 @@ fn pointwise(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     textureStore(out, p, px);
 }
+
+// Adjustment layer finish (Renderer::draw_adjustment): canvas `src` moves toward the adjusted
+// comp `aux` by the footprint's alpha × opacity. The footprint is `data` (RGBA f32 rows of
+// u[0].x pixels); f[0].x = opacity.
+@compute @workgroup_size(16, 16)
+fn adjust_mix(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let dims = out_dims();
+    let p = vec2<i32>(gid.xy);
+    if (p.x >= dims.x || p.y >= dims.y) {
+        return;
+    }
+    let c = textureLoad(src, p, 0);
+    let a = textureLoad(aux, p, 0);
+    let k = data[(gid.y * P.u[0].x + gid.x) * 4u + 3u] * P.f[0].x;
+    textureStore(out, p, c + (a - c) * k);
+}

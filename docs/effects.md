@@ -3,11 +3,11 @@
 <!-- Generated from the effect registry (crates/effects/src/catalog.rs); do not edit by hand.
      Regenerate: UPDATE_DOCS=1 cargo test -p effectcraft-effects --lib effects_doc_is_current -->
 
-EffectCraft ships 303 effects with 2434 parameters in total, grouped into the same categories as the Effects & Presets panel. Every effect is our own implementation, written from public behaviour descriptions and standard image-processing literature. Parameter names, order, popup options, units, defaults and ranges follow the reference application so that projects, expressions and muscle memory carry over.
+EffectCraft ships 304 effects with 2446 parameters in total, grouped into the same categories as the Effects & Presets panel. Every effect is our own implementation, written from public behaviour descriptions and standard image-processing literature. Parameter names, order, popup options, units, defaults and ranges follow the reference application so that projects, expressions and muscle memory carry over.
 
-- **GPU**: 24 effects also run on the GPU compositor with identical results.
-- **32**: 303 effects process 32-bit float (HDR, overbright) pixels without clamping.
-- **Status**: 261 implemented in full, 42 partial (what is missing is listed).
+- **GPU**: 59 effects also run on the GPU compositor with identical results.
+- **32**: 304 effects process 32-bit float (HDR, overbright) pixels without clamping.
+- **Status**: 262 implemented in full, 42 partial (what is missing is listed).
 
 Effects are addressed by id (`ec.<category>.<name>`) or display name in commands, scripts and the control channel, and every parameter by its id (`effects/#1/blurriness`).
 
@@ -49,16 +49,16 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 | Bilateral Blur | `ec.blur.bilateral` | 3 |  | 32 | Implemented |
 | CC Cross Blur | `ec.blur.cccross` | 3 |  | 32 | Implemented |
 | CC Radial Blur | `ec.blur.ccradial` | 4 |  | 32 | Implemented |
-| CC Radial Fast Blur | `ec.blur.ccradialfast` | 3 |  | 32 | Implemented |
+| CC Radial Fast Blur | `ec.blur.ccradialfast` | 3 | GPU | 32 | Implemented |
 | CC Vector Blur | `ec.blur.ccvector` | 4 |  | 32 | Implemented |
-| Camera Lens Blur | `ec.blur.cameralens` | 10 |  | 32 | Partial: no Diffraction Fringe or Blur Map layer |
+| Camera Lens Blur | `ec.blur.cameralens` | 10 | GPU | 32 | Partial: no Diffraction Fringe or Blur Map layer |
 | Camera-Shake Deblur | `ec.blur.camerashakedeblur` | 8 |  | 32 | Implemented |
 | Channel Blur | `ec.blur.channel` | 6 |  | 32 | Implemented |
 | Compound Blur | `ec.blur.compound` | 4 |  | 32 | Implemented |
 | Directional Blur | `ec.blur.directional` | 2 | GPU | 32 | Implemented |
 | Fast Box Blur | `ec.blur.fastbox` | 4 | GPU | 32 | Implemented |
 | Gaussian Blur | `ec.blur.gaussian` | 3 | GPU | 32 | Implemented |
-| Radial Blur | `ec.blur.radial` | 4 |  | 32 | Implemented |
+| Radial Blur | `ec.blur.radial` | 4 | GPU | 32 | Implemented |
 | Sharpen | `ec.blur.sharpen` | 1 |  | 32 | Implemented |
 | Smart Blur | `ec.blur.smart` | 3 |  | 32 | Implemented |
 | Unsharp Mask | `ec.blur.unsharp` | 3 |  | 32 | Implemented |
@@ -88,7 +88,7 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 | Auto Color | `ec.color.autocolor` | 6 |  | 32 | Implemented |
 | Auto Contrast | `ec.color.autocontrast` | 5 |  | 32 | Implemented |
 | Auto Levels | `ec.color.autolevels` | 5 |  | 32 | Implemented |
-| Black & White | `ec.color.blackwhite` | 8 |  | 32 | Implemented |
+| Black & White | `ec.color.blackwhite` | 8 | GPU | 32 | Implemented |
 | Brightness & Contrast | `ec.color.brightnesscontrast` | 3 | GPU | 32 | Implemented |
 | Broadcast Colors | `ec.color.broadcast` | 3 |  | 32 | Implemented |
 | CC Color Neutralizer | `ec.color.cccolorneutralizer` | 11 |  | 32 | Implemented |
@@ -97,12 +97,12 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 | CC Toner | `ec.color.cctoner` | 7 |  | 32 | Implemented |
 | Change Color | `ec.color.changecolor` | 9 |  | 32 | Implemented |
 | Change to Color | `ec.color.changetocolor` | 9 |  | 32 | Implemented |
-| Channel Mixer | `ec.color.channelmixer` | 13 |  | 32 | Implemented |
-| Color Balance | `ec.color.colorbalance` | 10 |  | 32 | Implemented |
+| Channel Mixer | `ec.color.channelmixer` | 13 | GPU | 32 | Implemented |
+| Color Balance | `ec.color.colorbalance` | 10 | GPU | 32 | Implemented |
 | Color Balance (HLS) | `ec.color.colorbalancehls` | 3 |  | 32 | Implemented |
 | Color Link | `ec.color.colorlink` | 6 |  | 32 | Implemented |
 | Color Stabilizer | `ec.color.colorstabilizer` | 6 |  | 32 | Implemented |
-| Colorama | `ec.color.colorama` | 5 |  | 32 | Partial: no Add Phase, editable Output Cycle, Modify, Pixel Selection or Masking |
+| Colorama | `ec.color.colorama` | 5 | GPU | 32 | Partial: no Add Phase, editable Output Cycle, Modify, Pixel Selection or Masking |
 | Curves | `ec.color.curves` | 0 | GPU | 32 | Partial: no Channel popup |
 | Equalize | `ec.color.equalize` | 2 |  | 32 | Implemented |
 | Exposure | `ec.color.exposure` | 14 | GPU | 32 | Implemented |
@@ -111,19 +111,19 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 | Leave Color | `ec.color.leavecolor` | 5 |  | 32 | Implemented |
 | Levels | `ec.color.levels` | 7 | GPU | 32 | Partial: master channel only (no Channel popup) |
 | Levels (Individual Controls) | `ec.color.levelsic` | 27 |  | 32 | Implemented |
-| Lumetri Color | `ec.color.lumetri` | 38 |  | 32 | Partial: no HSL Secondary, hue/saturation curves, HDR mode or look files |
+| Lumetri Color | `ec.color.lumetri` | 38 | GPU | 32 | Partial: no HSL Secondary, hue/saturation curves, HDR mode or look files |
 | OCIO CDL Transform | `ec.color.ociocdl` | 12 |  | 32 | Implemented |
-| OCIO Color Space Transform | `ec.color.ociocolorspace` | 4 |  | 32 | Implemented |
-| OCIO Display Transform | `ec.color.ociodisplay` | 5 |  | 32 | Implemented |
+| OCIO Color Space Transform | `ec.color.ociocolorspace` | 7 |  | 32 | Implemented |
+| OCIO Display Transform | `ec.color.ociodisplay` | 9 |  | 32 | Implemented |
 | OCIO File Transform | `ec.color.ociofile` | 4 |  | 32 | Implemented |
 | OCIO Look Transform | `ec.color.ociolook` | 6 |  | 32 | Implemented |
 | PS Arbitrary Map | `ec.color.psarbitrarymap` | 2 |  | 32 | Implemented |
 | Photo Filter | `ec.color.photofilter` | 4 |  | 32 | Implemented |
-| Selective Color | `ec.color.selectivecolor` | 37 |  | 32 | Partial: simplified Colors / Details layout |
+| Selective Color | `ec.color.selectivecolor` | 37 | GPU | 32 | Partial: simplified Colors / Details layout |
 | Shadow/Highlight | `ec.color.shadowhighlight` | 14 |  | 32 | Implemented |
 | Tint | `ec.color.tint` | 3 | GPU | 32 | Implemented |
-| Tritone | `ec.color.tritone` | 4 |  | 32 | Implemented |
-| Vibrance | `ec.color.vibrance` | 2 |  | 32 | Implemented |
+| Tritone | `ec.color.tritone` | 4 | GPU | 32 | Implemented |
+| Vibrance | `ec.color.vibrance` | 2 | GPU | 32 | Implemented |
 | Video Limiter | `ec.color.videolimiter` | 5 |  | 32 | Implemented |
 
 ## Distort
@@ -131,13 +131,13 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 | Effect | Id | Params | GPU | 32 | Status |
 |---|---|---:|:-:|:-:|---|
 | Bezier Warp | `ec.distort.bezierwarp` | 13 |  | 32 | Implemented |
-| Bulge | `ec.distort.bulge` | 6 |  | 32 | Implemented |
+| Bulge | `ec.distort.bulge` | 6 | GPU | 32 | Implemented |
 | CC Bend It | `ec.distort.ccbendit` | 4 |  | 32 | Implemented |
 | CC Bender | `ec.distort.ccbender` | 5 |  | 32 | Implemented |
 | CC Blobbylize | `ec.distort.ccblobbylize` | 15 |  | 32 | Implemented |
 | CC Flo Motion | `ec.distort.ccflomotion` | 7 |  | 32 | Implemented |
 | CC Griddler | `ec.distort.ccgriddler` | 5 |  | 32 | Implemented |
-| CC Lens | `ec.distort.cclens` | 3 |  | 32 | Implemented |
+| CC Lens | `ec.distort.cclens` | 3 | GPU | 32 | Implemented |
 | CC Page Turn | `ec.distort.ccpageturn` | 7 |  | 32 | Implemented |
 | CC Power Pin | `ec.distort.ccpowerpin` | 10 |  | 32 | Implemented |
 | CC Ripple Pulse | `ec.distort.ccripplepulse` | 5 |  | 32 | Implemented |
@@ -148,27 +148,27 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 | CC Tiler | `ec.distort.cctiler` | 3 |  | 32 | Implemented |
 | Corner Pin | `ec.distort.cornerpin` | 4 |  | 32 | Implemented |
 | Detail-preserving Upscale | `ec.distort.upscale` | 4 |  | 32 | Implemented |
-| Displacement Map | `ec.distort.displacementmap` | 8 |  | 32 | Implemented |
+| Displacement Map | `ec.distort.displacementmap` | 8 | GPU | 32 | Implemented |
 | Liquify | `ec.distort.liquify` | 12 |  | 32 | Implemented |
 | Magnify | `ec.distort.magnify` | 10 |  | 32 | Implemented |
-| Mesh Warp | `ec.distort.meshwarp` | 3 |  | 32 | Implemented |
+| Mesh Warp | `ec.distort.meshwarp` | 3 | GPU | 32 | Implemented |
 | Mirror | `ec.distort.mirror` | 2 |  | 32 | Implemented |
 | Offset | `ec.distort.offset` | 2 |  | 32 | Implemented |
 | Optics Compensation | `ec.distort.opticscompensation` | 5 |  | 32 | Partial: no Optimal Pixels |
 | Polar Coordinates | `ec.distort.polar` | 2 |  | 32 | Implemented |
 | Puppet | `ec.distort.puppet` | 1 |  | 32 | Implemented |
 | Reshape | `ec.distort.reshape` | 6 |  | 32 | Partial: no correspondence points |
-| Ripple | `ec.distort.ripple` | 7 |  | 32 | Implemented |
+| Ripple | `ec.distort.ripple` | 7 | GPU | 32 | Implemented |
 | Rolling Shutter Repair | `ec.distort.rollingshutterrepair` | 5 |  | 32 | Partial: Pixel Motion Detail has no effect |
 | Smear | `ec.distort.smear` | 8 |  | 32 | Implemented |
 | Spherize | `ec.distort.spherize` | 2 |  | 32 | Implemented |
 | Transform | `ec.distort.transform` | 10 | GPU | 32 | Partial: no shutter-angle motion blur |
-| Turbulent Displace | `ec.distort.turbulentdisplace` | 11 |  | 32 | Partial: no locked pinning variants |
-| Twirl | `ec.distort.twirl` | 3 |  | 32 | Implemented |
+| Turbulent Displace | `ec.distort.turbulentdisplace` | 11 | GPU | 32 | Partial: no locked pinning variants |
+| Twirl | `ec.distort.twirl` | 3 | GPU | 32 | Implemented |
 | Twirl (Legacy) | `ec.distort.twirllegacy` | 3 |  | 32 | Implemented |
 | Warp | `ec.distort.warp` | 5 |  | 32 | Implemented |
 | Warp Stabilizer | `ec.distort.warpstabilizer` | 20 |  | 32 | Implemented |
-| Wave Warp | `ec.distort.wavewarp` | 7 |  | 32 | Implemented |
+| Wave Warp | `ec.distort.wavewarp` | 7 | GPU | 32 | Implemented |
 
 ## Expression Controls
 
@@ -182,12 +182,13 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 | Layer Control | `ec.control.layer` | 1 | GPU | 32 | Implemented |
 | Point Control | `ec.control.point` | 1 | GPU | 32 | Implemented |
 | Slider Control | `ec.control.slider` | 1 | GPU | 32 | Implemented |
+| Stereo 3D Controls | `ec.control.stereo3d` | 5 | GPU | 32 | Implemented |
 
 ## Generate
 
 | Effect | Id | Params | GPU | 32 | Status |
 |---|---|---:|:-:|:-:|---|
-| 4-Color Gradient | `ec.generate.fourcolor` | 12 |  | 32 | Implemented |
+| 4-Color Gradient | `ec.generate.fourcolor` | 12 | GPU | 32 | Implemented |
 | Advanced Lightning | `ec.generate.advancedlightning` | 16 |  | 32 | Partial: no Alpha Obstacle; most Expert Settings missing |
 | Audio Spectrum | `ec.generate.audiospectrum` | 23 |  | 32 | Implemented |
 | Audio Waveform | `ec.generate.audiowaveform` | 17 |  | 32 | Implemented |
@@ -197,15 +198,15 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 | CC Light Rays | `ec.generate.cclightrays` | 8 |  | 32 | Implemented |
 | CC Light Sweep | `ec.generate.cclightsweep` | 9 |  | 32 | Implemented |
 | CC Threads | `ec.generate.ccthreads` | 8 |  | 32 | Implemented |
-| Cell Pattern | `ec.generate.cellpattern` | 14 |  | 32 | Partial: HQ variants render like the standard ones |
-| Checkerboard | `ec.generate.checkerboard` | 10 |  | 32 | Implemented |
+| Cell Pattern | `ec.generate.cellpattern` | 14 | GPU | 32 | Partial: HQ variants render like the standard ones |
+| Checkerboard | `ec.generate.checkerboard` | 10 | GPU | 32 | Implemented |
 | Circle | `ec.generate.circle` | 11 |  | 32 | Implemented |
 | Ellipse | `ec.generate.ellipse` | 8 |  | 32 | Implemented |
 | Eyedropper Fill | `ec.generate.eyedropperfill` | 5 |  | 32 | Implemented |
 | Fill | `ec.generate.fill` | 3 | GPU | 32 | Partial: no Fill Mask / All Masks / feather |
 | Fractal | `ec.generate.fractal` | 21 |  | 32 | Implemented |
 | Gradient Ramp | `ec.generate.gradientramp` | 7 | GPU | 32 | Implemented |
-| Grid | `ec.generate.grid` | 12 |  | 32 | Implemented |
+| Grid | `ec.generate.grid` | 12 | GPU | 32 | Implemented |
 | Lens Flare | `ec.generate.lensflare` | 4 |  | 32 | Implemented |
 | Paint Bucket | `ec.generate.paintbucket` | 11 |  | 32 | Implemented |
 | Radio Waves | `ec.generate.radiowaves` | 17 |  | 32 | Partial: no Image Contours or Mask wave types, Parameters Are Set At, reflection or stroke profile |
@@ -243,8 +244,8 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 | Extract | `ec.key.extract` | 6 |  | 32 | Implemented |
 | Inner/Outer Key | `ec.key.innerouter` | 10 |  | 32 | Partial: one additional mask per side; no cleanup strokes |
 | Key Cleaner | `ec.key.keycleaner` | 4 |  | 32 | Implemented |
-| Key Light | `ec.keying.keylight` | 42 |  | 32 | Partial: no Source Crops X/Y Method or Edge Colour; no colour suppression / balancing |
-| Linear Color Key | `ec.key.linearcolor` | 6 |  | 32 | Implemented |
+| Key Light | `ec.keying.keylight` | 42 | GPU | 32 | Partial: no Source Crops X/Y Method or Edge Colour; no colour suppression / balancing |
+| Linear Color Key | `ec.key.linearcolor` | 6 | GPU | 32 | Implemented |
 | Screen Key | `ec.key.screen` | 11 |  | 32 | Implemented |
 | Unmult | `ec.key.unmult` | 6 |  | 32 | Implemented |
 
@@ -263,14 +264,14 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 
 | Effect | Id | Params | GPU | 32 | Status |
 |---|---|---:|:-:|:-:|---|
-| Add Grain | `ec.noise.addgrain` | 22 |  | 32 | Partial: no preview region, presets, channel balance or temporal controls |
+| Add Grain | `ec.noise.addgrain` | 22 | GPU | 32 | Partial: no preview region, presets, channel balance or temporal controls |
 | Curl Noise | `ec.noise.curlnoise` | 10 |  | 32 | Implemented |
 | Dust & Scratches | `ec.noise.dustscratches` | 3 |  | 32 | Implemented |
 | Fractal Noise | `ec.noise.fractal` | 26 | GPU | 32 | Implemented |
 | Match Grain | `ec.noise.matchgrain` | 25 |  | 32 | Partial: no preview region, presets, sampling or temporal controls |
 | Median | `ec.noise.median` | 2 |  | 32 | Implemented |
 | Median (Legacy) | `ec.noise.medianlegacy` | 2 |  | 32 | Implemented |
-| Noise | `ec.noise.noise` | 3 |  | 32 | Implemented |
+| Noise | `ec.noise.noise` | 3 | GPU | 32 | Implemented |
 | Noise Alpha | `ec.noise.noisealpha` | 8 |  | 32 | Implemented |
 | Noise HLS | `ec.noise.noisehls` | 6 |  | 32 | Implemented |
 | Noise HLS Auto | `ec.noise.noisehlsauto` | 6 |  | 32 | Implemented |
@@ -353,10 +354,10 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 | CC Vignette | `ec.stylize.ccvignette` | 4 |  | 32 | Implemented |
 | Cartoon | `ec.stylize.cartoon` | 11 |  | 32 | Partial: no Edge Enhancement |
 | Color Emboss | `ec.stylize.coloremboss` | 4 |  | 32 | Implemented |
-| Emboss | `ec.stylize.emboss` | 4 |  | 32 | Implemented |
-| Find Edges | `ec.stylize.findedges` | 2 |  | 32 | Implemented |
+| Emboss | `ec.stylize.emboss` | 4 | GPU | 32 | Implemented |
+| Find Edges | `ec.stylize.findedges` | 2 | GPU | 32 | Implemented |
 | Glow | `ec.stylize.glow` | 13 | GPU | 32 | Partial: no Glow Operation or arbitrary colour map |
-| Mosaic | `ec.stylize.mosaic` | 3 |  | 32 | Implemented |
+| Mosaic | `ec.stylize.mosaic` | 3 | GPU | 32 | Implemented |
 | Motion Tile | `ec.stylize.motiontile` | 8 |  | 32 | Implemented |
 | Posterize | `ec.stylize.posterize` | 1 |  | 32 | Implemented |
 | Roughen Edges | `ec.stylize.roughenedges` | 13 |  | 32 | Implemented |
@@ -401,11 +402,11 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 | CC Twister | `ec.transition.cctwister` | 5 |  | 32 | Implemented |
 | CC WarpoMatic | `ec.transition.ccwarpomatic` | 8 |  | 32 | Implemented |
 | Card Wipe | `ec.transition.cardwipe` | 12 |  | 32 | Partial: 2D flip only; no back layer picker, camera, lighting or jitter |
-| Gradient Wipe | `ec.transition.gradientwipe` | 5 |  | 32 | Implemented |
+| Gradient Wipe | `ec.transition.gradientwipe` | 5 | GPU | 32 | Implemented |
 | Iris Wipe | `ec.transition.iriswipe` | 7 |  | 32 | Implemented |
-| Linear Wipe | `ec.transition.linearwipe` | 3 |  | 32 | Implemented |
-| Radial Wipe | `ec.transition.radialwipe` | 5 |  | 32 | Implemented |
-| Venetian Blinds | `ec.transition.venetian` | 4 |  | 32 | Implemented |
+| Linear Wipe | `ec.transition.linearwipe` | 3 | GPU | 32 | Implemented |
+| Radial Wipe | `ec.transition.radialwipe` | 5 | GPU | 32 | Implemented |
+| Venetian Blinds | `ec.transition.venetian` | 4 | GPU | 32 | Implemented |
 
 ## Utility
 
