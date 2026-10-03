@@ -46,7 +46,7 @@ fn undo_then_new_step_keeps_a_branch() {
     let branch: Vec<&Value> = st.iter().filter(|n| n["depth"] == 1).collect();
     assert_eq!(branch.len(), 2, "B and C sit on a branch: {st:?}");
     // Jump to C on the old branch.
-    let c = st.iter().filter(|n| n["depth"] == 1).last().unwrap()["index"].as_u64().unwrap();
+    let c = st.iter().rfind(|n| n["depth"] == 1).unwrap()["index"].as_u64().unwrap();
     let r = s.execute("edit.history.goto", json!({"index": c})).unwrap();
     assert_eq!(r["label"], "New Solid", "{r}");
     assert_eq!(names(&s), ["C", "B", "A"]);
