@@ -61,7 +61,7 @@ const CELL_PATTERNS: [&str; 12] = [
 ];
 
 /// Shaping used for Cell Pattern option `i` (see [`cell_value`]).
-fn pattern_kind(i: u32) -> u32 {
+pub fn pattern_kind(i: u32) -> u32 {
     match i {
         0..=5 => i,
         6 => 1,
