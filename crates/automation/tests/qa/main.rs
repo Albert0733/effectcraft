@@ -5,5 +5,6 @@
 mod compositing;
 mod harness;
 mod kinetic;
+mod lifecycle;
 mod shapes;
 mod tracking;

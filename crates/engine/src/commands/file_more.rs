@@ -313,6 +313,9 @@ fn find_missing(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn collect_files(s: &mut Session, p: &Value) -> Result<Value> {
     let folder = str_p(p, "folder").ok_or_else(|| bad("file.collectFiles", "missing `folder`"))?.trim_end_matches('/').to_string();
+    // Collect Files makes its folder (and the footage folder inside it).
+    #[cfg(not(target_arch = "wasm32"))]
+    std::fs::create_dir_all(format!("{folder}/(Footage)")).map_err(|e| EngineError::Other(format!("cannot create {folder}: {e}")))?;
     let mut proj = (*s.project).clone();
     let mut copied = 0;
     let mut errors = vec![];

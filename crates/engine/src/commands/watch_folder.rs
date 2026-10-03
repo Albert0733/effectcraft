@@ -146,7 +146,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Poll Watch Folder",
             [],
             None,
-            "{folder? (default: the watched one)} → renders new projects now: [{project, state: done|failed, items: [{comp, status, output}]}]",
+            "{folder? (default: the watched one)} → renders new projects now: {watching, rendered: [{project, state: done|failed, items: [{comp, status, output}]}]}",
             |s: &Session| if s.state.watch_folder.is_some() { Ok(()) } else { Err("no folder is being watched".into()) },
             poll_cmd
         ),
