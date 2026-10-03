@@ -28,8 +28,15 @@
 //!    tripod solution when it explains the tracks as well as the general one (a quick rotation fit
 //!    at the general solution's focal length skips the tripod search when it clearly fails).
 //!
-//! The camera model has square pixels, the principal point at the layer centre and no lens
-//! distortion. Camera space is x right, y down, z forward (After Effects' convention); a camera
+//! 5. **Lens distortion** (Solve Lens Distortion, or Detailed Analysis): radial distortion
+//!    `p_d = p (1 + k1 ρ² + k2 ρ⁴)` (ρ = distance from the principal point over half the frame
+//!    diagonal; Brown's model without the tangential terms) is solved jointly with the cameras
+//!    and points in a final bundle adjustment on the raw tracks; the whole solve is then repeated
+//!    on tracks undistorted with that estimate (the linear initialisations assume a pinhole
+//!    camera) and adjusted jointly again. The solve stores `k1, k2`; the effect can undistort
+//!    its output so composited 3D layers line up.
+//!
+//! The camera model has square pixels and the principal point at the layer centre. Camera space is x right, y down, z forward (After Effects' convention); a camera
 //! is `(R, C, f)` with `X_cam = R (X − C)` and pixel `u = f x / z + w / 2`.
 //!
 //! The solve is stored in a canonical frame: the first solved frame's camera is at the origin
@@ -102,6 +109,69 @@ impl CameraTracks {
     }
     pub fn track(&self, id: u32) -> Option<&Track2D> {
         self.tracks.binary_search_by_key(&id, |t| t.id).ok().map(|i| &self.tracks[i])
+    }
+}
+
+/// Radial lens distortion around the principal point (see the module docs).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Distortion {
+    pub k1: f64,
+    pub k2: f64,
+    /// Normalisation radius ρ = 1 (pixels): half the frame diagonal; 0 = no distortion.
+    pub radius: f64,
+}
+
+impl Distortion {
+    pub const NONE: Distortion = Distortion { k1: 0.0, k2: 0.0, radius: 0.0 };
+
+    /// No distortion for frames of `size` (the radius set, coefficients zero).
+    pub fn for_size(size: [f64; 2]) -> Distortion {
+        Distortion { k1: 0.0, k2: 0.0, radius: 0.5 * size[0].hypot(size[1]) }
+    }
+    pub fn is_none(&self) -> bool {
+        self.radius <= 0.0 || (self.k1 == 0.0 && self.k2 == 0.0)
+    }
+    fn rho2(&self, p: [f64; 2]) -> f64 {
+        (p[0] * p[0] + p[1] * p[1]) / (self.radius * self.radius)
+    }
+    /// Ideal → distorted (pixels relative to the principal point).
+    pub fn distort(&self, p: [f64; 2]) -> [f64; 2] {
+        if self.radius <= 0.0 {
+            return p;
+        }
+        let r2 = self.rho2(p);
+        let d = 1.0 + self.k1 * r2 + self.k2 * r2 * r2;
+        [p[0] * d, p[1] * d]
+    }
+    /// Distorted → ideal (fixed-point iteration).
+    pub fn undistort(&self, q: [f64; 2]) -> [f64; 2] {
+        if self.is_none() {
+            return q;
+        }
+        let mut p = q;
+        for _ in 0..30 {
+            let r2 = self.rho2(p);
+            let d = 1.0 + self.k1 * r2 + self.k2 * r2 * r2;
+            if d.abs() < 1e-6 {
+                break;
+            }
+            p = [q[0] / d, q[1] / d];
+        }
+        p
+    }
+    /// `d distort / d p` (2 × 2, row-major) and `d distort / d (k1, k2)` (rows x, y).
+    pub fn jacobian(&self, p: [f64; 2]) -> ([[f64; 2]; 2], [[f64; 2]; 2]) {
+        if self.radius <= 0.0 {
+            return ([[1.0, 0.0], [0.0, 1.0]], [[0.0; 2]; 2]);
+        }
+        let r2 = self.rho2(p);
+        let d = 1.0 + self.k1 * r2 + self.k2 * r2 * r2;
+        // d(r2)/dp = 2 p / R².
+        let dd = (self.k1 + 2.0 * self.k2 * r2) * 2.0 / (self.radius * self.radius);
+        let j = [[d + p[0] * dd * p[0], p[0] * dd * p[1]], [p[1] * dd * p[0], d + p[1] * dd * p[1]]];
+        let k = [[p[0] * r2, p[0] * r2 * r2], [p[1] * r2, p[1] * r2 * r2]];
+        (j, k)
     }
 }
 
@@ -178,6 +248,8 @@ pub struct SolveSettings {
     pub method: SolveMethod,
     /// Track ids the user deleted.
     pub deleted: Vec<u32>,
+    /// Solve radial lens distortion jointly with the cameras.
+    pub lens_distortion: bool,
 }
 
 /// The solved camera of one frame.
@@ -261,6 +333,9 @@ pub struct CameraSolve {
     pub points: Vec<SolvedPoint>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ground: Option<Ground>,
+    /// The solved lens distortion (Solve Lens Distortion).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub distortion: Option<Distortion>,
 }
 
 impl CameraSolve {
@@ -353,6 +428,36 @@ impl CameraSolve {
             }
             None => Similarity { s: zoom0, r: linalg::I3, t: [comp[0] * 0.5, comp[1] * 0.5, -zoom0] },
         }
+    }
+
+    /// An ideal (pinhole) image point → where it appears in the footage (layer pixels), through
+    /// the solved lens distortion.
+    pub fn to_image(&self, p: [f64; 2]) -> [f64; 2] {
+        match &self.distortion {
+            Some(d) if !d.is_none() => {
+                let c = [self.size[0] * 0.5, self.size[1] * 0.5];
+                let q = d.distort([p[0] - c[0], p[1] - c[1]]);
+                [q[0] + c[0], q[1] + c[1]]
+            }
+            _ => p,
+        }
+    }
+    /// A footage point → its ideal (undistorted) position.
+    pub fn to_ideal(&self, p: [f64; 2]) -> [f64; 2] {
+        match &self.distortion {
+            Some(d) if !d.is_none() => {
+                let c = [self.size[0] * 0.5, self.size[1] * 0.5];
+                let q = d.undistort([p[0] - c[0], p[1] - c[1]]);
+                [q[0] + c[0], q[1] + c[1]]
+            }
+            _ => p,
+        }
+    }
+    /// Project world point `x` on frame `k`: through the lens distortion into the footage, or
+    /// (`undistorted`) into the undistorted image.
+    pub fn project(&self, k: usize, x: V3, undistorted: bool) -> Option<[f64; 2]> {
+        let q = self.frames.get(k)?.project(self.size, x)?;
+        Some(if undistorted { q } else { self.to_image(q) })
     }
 
     /// The first solved frame.

@@ -8,8 +8,12 @@
 //! Shot Type, Angle of View, Solve Method and deleted points it was solved with, so changing
 //! those re-solves without re-tracking). **Method Used** and **Average Error** report the solve.
 //!
-//! The effect passes its input through; with **Render Track Points** on it draws the solved
-//! points (as the viewer shows them) into the frame. The viewer overlay, target and the Create
+//! **Solve Lens Distortion** (Advanced; also on with Detailed Analysis) solves radial lens
+//! distortion `k1, k2` jointly with the camera; **Undistort Footage** then renders the input
+//! undistorted (the pinhole image the solved camera sees) so 3D layers line up with it.
+//!
+//! The effect passes its input through (undistorted when asked); with **Render Track Points**
+//! on it draws the solved points (as the viewer shows them) into the frame. The viewer overlay, target and the Create
 //! commands live in the engine and the UI.
 
 use std::collections::HashMap;
@@ -19,6 +23,7 @@ use effectcraft_keyframe::Value;
 use effectcraft_project::ParamUi;
 use effectcraft_raster::{Image, Px};
 use effectcraft_track::camtrack::{CameraSolve, CameraTracks, ShotType, SolveMethod, SolveSettings, linalg, point_color};
+use rayon::prelude::*;
 
 use crate::warp_stab::param;
 use crate::{Buf, EffectCtx, EffectSpec, Params, num, p, popup, slider};
@@ -58,6 +63,8 @@ pub fn specs() -> Vec<EffectSpec> {
             p(METHOD_USED, "Method Used", Value::Str(String::new()), ParamUi::Hidden),
             p(AVERAGE_ERROR, "Average Error", num(0.0), ParamUi::Hidden),
             p("advanced/detailedAnalysis", "Detailed Analysis", Value::Bool(false), ParamUi::Checkbox),
+            p("advanced/lensDistortion", "Solve Lens Distortion", Value::Bool(false), ParamUi::Checkbox),
+            p("advanced/undistort", "Undistort Footage", Value::Bool(false), ParamUi::Checkbox),
             p("advanced/autoDeletePoints", "Auto-delete Points Across Time", Value::Bool(true), ParamUi::Checkbox),
             p("advanced/hideWarningBanner", "Hide Warning Banner", Value::Bool(false), ParamUi::Checkbox),
             p(TRACKS, "Tracks", Value::Str(String::new()), ParamUi::Hidden),
@@ -104,13 +111,15 @@ pub fn settings(params: &Params) -> SolveSettings {
         hfov: f(params, "horizontalAngleOfView"),
         method: SolveMethod::ALL.get(e(params, "advanced/solveMethod") as usize).copied().unwrap_or_default(),
         deleted: del,
+        lens_distortion: b(params, "advanced/lensDistortion") || b(params, "advanced/detailedAnalysis"),
     }
 }
 
 /// What a solve depends on besides the tracks.
 pub fn solve_key(st: &SolveSettings) -> String {
     let hfov = if st.shot == ShotType::SpecifyAngle { format!("{:.4}", st.hfov) } else { String::new() };
-    format!("{:?}|{hfov}|{:?}|{:?}", st.shot, st.method, st.deleted)
+    let lens = if st.lens_distortion { "|lens" } else { "" };
+    format!("{:?}|{hfov}|{:?}|{:?}{lens}", st.shot, st.method, st.deleted)
 }
 
 fn fnv(bytes: &[u8]) -> u64 {
@@ -165,16 +174,47 @@ pub fn target_radius(size_pct: f64, z: f64, median_z: f64) -> f64 {
     (6.0 * size_pct / 100.0 * (median_z / z.max(1e-9))).clamp(1.5, 40.0)
 }
 
-/// The solved points visible on frame `k`: (id, layer pixel position, camera depth).
+/// The solved points visible on frame `k`: (id, layer pixel position in the footage, camera
+/// depth).
 pub fn projected(solve: &CameraSolve, k: usize) -> Vec<(u32, [f64; 2], f64)> {
+    projected_with(solve, k, false)
+}
+
+/// [`projected`] into the footage, or (`undistorted`) into the undistorted image.
+pub fn projected_with(solve: &CameraSolve, k: usize, undistorted: bool) -> Vec<(u32, [f64; 2], f64)> {
     let Some(cam) = solve.frames.get(k) else { return vec![] };
     solve
         .visible(k)
         .filter_map(|p| {
             let c = cam.to_cam(p.pos);
-            cam.project(solve.size, p.pos).map(|q| (p.id, q, c[2]))
+            solve.project(k, p.pos, undistorted).map(|q| (p.id, q, c[2]))
         })
         .collect()
+}
+
+/// Whether the instance renders its input undistorted (Undistort Footage with a solved
+/// distortion).
+pub fn undistorts(params: &Params, solve: &CameraSolve) -> bool {
+    b(params, "advanced/undistort") && solve.distortion.is_some_and(|d| !d.is_none())
+}
+
+/// The input resampled through the solved distortion: every output pixel shows the footage
+/// at its distorted position (transparent where that falls outside the layer).
+fn undistort(buf: &Buf, sol: &CameraSolve) -> Buf {
+    let sc = if buf.scale > 0.0 { buf.scale } else { 1.0 };
+    let mut out = Image::new(buf.img.width, buf.img.height);
+    let size = sol.size;
+    out.rows_mut().for_each(|(y, row)| {
+        for (x, px) in row.iter_mut().enumerate() {
+            let p = [(x as f64 + 0.5 - buf.offset[0]) / sc, (y as f64 + 0.5 - buf.offset[1]) / sc];
+            let q = sol.to_image(p);
+            if q[0] < 0.0 || q[1] < 0.0 || q[0] > size[0] || q[1] > size[1] {
+                continue;
+            }
+            *px = buf.img.sample_bilinear_clamped(q[0] * sc + buf.offset[0], q[1] * sc + buf.offset[1]);
+        }
+    });
+    Buf { img: out, offset: buf.offset, scale: buf.scale }
 }
 
 /// Median of the depths.
@@ -188,15 +228,23 @@ pub fn median_depth(v: &[(u32, [f64; 2], f64)]) -> f64 {
 }
 
 fn render(ctx: &EffectCtx, mut buf: Buf) -> Buf {
-    if !b(ctx.params, "renderTrackPoints") {
+    let points = b(ctx.params, "renderTrackPoints");
+    if !points && !b(ctx.params, "advanced/undistort") {
         return buf;
     }
     let Some(sol) = solve(ctx.params) else { return buf };
     if (sol.size[0] - ctx.layer_size[0]).abs() > 0.5 || (sol.size[1] - ctx.layer_size[1]).abs() > 0.5 {
         return buf;
     }
+    let und = undistorts(ctx.params, &sol);
+    if und {
+        buf = undistort(&buf, &sol);
+    }
+    if !points {
+        return buf;
+    }
     let Some(k) = sol.frame_at(ctx.time) else { return buf };
-    let pts = projected(&sol, k);
+    let pts = projected_with(&sol, k, und);
     let med = median_depth(&pts);
     let size = f(ctx.params, "trackPointSize");
     let sc = if buf.scale > 0.0 { buf.scale } else { 1.0 };
@@ -287,5 +335,37 @@ mod tests {
         let st = settings(&Params::default());
         assert_eq!(st.shot, ShotType::FixedAngle);
         assert!(solve_key(&st).contains("FixedAngle"));
+        assert!(!st.lens_distortion && !solve_key(&st).contains("lens"));
+    }
+
+    #[test]
+    fn undistort_footage_remaps_through_the_solved_lens() {
+        use effectcraft_track::camtrack::Distortion;
+        let sol = CameraSolve {
+            version: 1,
+            size: [64.0, 48.0],
+            start: 0.0,
+            frame_duration: 1.0 / 30.0,
+            frames: vec![SolvedFrame { rot: [0.0; 3], center: [0.0; 3], focal: 50.0, solved: true }],
+            distortion: Some(Distortion { k1: -0.2, k2: 0.0, radius: 40.0 }),
+            ..Default::default()
+        };
+        let mut params = params_with(&sol, false);
+        params.values.insert("advanced/undistort".into(), Value::Bool(true));
+        assert!(undistorts(&params, &sol));
+        // A horizontal ramp: undistortion keeps the centre and pulls edge content outwards.
+        let mut img = Image::new(64, 48);
+        for (i, px) in img.data.iter_mut().enumerate() {
+            let x = (i % 64) as f32 / 64.0;
+            *px = [x, x, x, 1.0];
+        }
+        let ctx = EffectCtx { params: &params, time: 0.0, layer_size: [64.0, 48.0], seed: 0, adjustment: false, env: EffectEnv::default() };
+        let out = render(&ctx, Buf { img: img.clone(), offset: [0.0; 2], scale: 1.0 });
+        let at = |im: &Image, x: u32, y: u32| im.data[im.idx(x, y)][0];
+        assert!((at(&out.img, 32, 24) - at(&img, 32, 24)).abs() < 0.02);
+        // Barrel distortion compresses the edges: the ideal pixel at x = 56 shows footage nearer the centre.
+        assert!(at(&out.img, 56, 24) < at(&img, 56, 24) - 0.01, "{} vs {}", at(&out.img, 56, 24), at(&img, 56, 24));
+        let sp = sol.to_image([56.0, 24.0]);
+        assert!(sp[0] < 56.0 && (sol.to_ideal(sp)[0] - 56.0).abs() < 1e-6);
     }
 }

@@ -105,7 +105,7 @@ fn path_error(s: &CameraSolve, t: &Truth) -> (f64, f64) {
 }
 
 fn settings(shot: ShotType, method: SolveMethod) -> SolveSettings {
-    SolveSettings { shot, hfov: 0.0, method, deleted: vec![] }
+    SolveSettings { shot, hfov: 0.0, method, deleted: vec![], lens_distortion: false }
 }
 
 #[test]
@@ -149,7 +149,8 @@ fn specified_angle_of_view_is_kept() {
     let pts = random_points(300, 5, [0.0, 0.0, 10.0], [14.0, 8.0, 8.0]);
     let tr = tracks_of(&pts, &t, 6, true);
     let hfov = 2.0 * (W * 0.5 / f).atan().to_degrees();
-    let s = solve(&tr, &SolveSettings { shot: ShotType::SpecifyAngle, hfov, method: SolveMethod::Typical, deleted: vec![] }, None).unwrap();
+    let s =
+        solve(&tr, &SolveSettings { shot: ShotType::SpecifyAngle, hfov, method: SolveMethod::Typical, deleted: vec![], lens_distortion: false }, None).unwrap();
     assert!((s.focal() - f).abs() < 1e-6);
     assert!(s.average_error < 0.5);
     let (pe, _) = path_error(&s, &t);
@@ -226,7 +227,9 @@ fn mostly_flat_scene_and_ground_plane() {
     }
     // Ground plane from the solved (coplanar) points: every point lies on it.
     let hfov = 2.0 * (W * 0.5 / f).atan().to_degrees();
-    let mut s = solve(&tr, &SolveSettings { shot: ShotType::SpecifyAngle, hfov, method: SolveMethod::MostlyFlat, deleted: vec![] }, None).expect("solve");
+    let mut s =
+        solve(&tr, &SolveSettings { shot: ShotType::SpecifyAngle, hfov, method: SolveMethod::MostlyFlat, deleted: vec![], lens_distortion: false }, None)
+            .expect("solve");
     let ids: Vec<u32> = s.visible(0).map(|p| p.id).take(12).collect();
     let g = s.ground_from(&ids, 0).expect("ground");
     let spread = s.points.iter().map(|p| dot(sub(p.pos, g.origin), g.normal).abs()).fold(0.0, f64::max);
@@ -251,7 +254,9 @@ fn deleted_tracks_are_ignored_and_cancel_stops() {
     let tr = tracks_of(&pts, &t, 14, true);
     let deleted: Vec<u32> = (0..40).collect();
     let hfov = 2.0 * (W * 0.5 / 1000.0f64).atan().to_degrees();
-    let s = solve(&tr, &SolveSettings { shot: ShotType::SpecifyAngle, hfov, method: SolveMethod::Typical, deleted: deleted.clone() }, None).unwrap();
+    let s =
+        solve(&tr, &SolveSettings { shot: ShotType::SpecifyAngle, hfov, method: SolveMethod::Typical, deleted: deleted.clone(), lens_distortion: false }, None)
+            .unwrap();
     assert!(s.points.iter().all(|p| !deleted.contains(&p.id)));
     let stop = std::sync::atomic::AtomicBool::new(true);
     let r = solve(&tr, &settings(ShotType::FixedAngle, SolveMethod::Typical), Some(&stop));
@@ -435,4 +440,56 @@ fn solve_saved_tracks() {
         s.points.len(),
         t0.elapsed()
     );
+}
+
+/// Pass every track position through a lens distortion (around the frame centre).
+fn distort_tracks(t: &CameraTracks, d: &Distortion) -> CameraTracks {
+    let mut t = t.clone();
+    for tr in t.tracks.iter_mut() {
+        for p in tr.pts.iter_mut() {
+            let q = d.distort([p[0] as f64 - W / 2.0, p[1] as f64 - H / 2.0]);
+            *p = [(q[0] + W / 2.0) as f32, (q[1] + H / 2.0) as f32];
+        }
+    }
+    t
+}
+
+#[test]
+fn lens_distortion_is_recovered_in_the_bundle_adjustment() {
+    let f = 1000.0;
+    let t = moving_camera(36, |_| f);
+    let pts = random_points(450, 7, [0.0, 0.0, 10.0], [16.0, 9.0, 8.0]);
+    let truth = Distortion { k1: -0.12, k2: 0.03, radius: 0.5 * W.hypot(H) };
+    let tr = distort_tracks(&tracks_of(&pts, &t, 8, true), &truth);
+    let plain = solve(&tr, &settings(ShotType::FixedAngle, SolveMethod::Typical), None).expect("pinhole solve");
+    let lens = solve(&tr, &SolveSettings { lens_distortion: true, ..settings(ShotType::FixedAngle, SolveMethod::Typical) }, None).expect("lens solve");
+    let d = lens.distortion.expect("distortion solved");
+    eprintln!(
+        "pinhole error {:.3} px (focal {:.1}); with distortion {:.3} px (focal {:.1}), k1 {:.4} k2 {:.4}",
+        plain.average_error,
+        plain.focal(),
+        lens.average_error,
+        lens.focal(),
+        d.k1,
+        d.k2
+    );
+    assert!(plain.distortion.is_none());
+    assert!((d.k1 - truth.k1).abs() < 0.005, "k1 {}", d.k1);
+    assert!((d.k2 - truth.k2).abs() < 0.01, "k2 {}", d.k2);
+    // The distortion model explains the tracks: about the noise level, far below the pinhole fit.
+    assert!(lens.average_error < 0.3, "{}", lens.average_error);
+    assert!(lens.average_error < 0.5 * plain.average_error, "{} vs {}", lens.average_error, plain.average_error);
+    assert!((lens.focal() - f).abs() < 0.02 * f, "focal {}", lens.focal());
+    let (path, rot) = path_error(&lens, &t);
+    assert!(path < 0.01 && rot < 0.3, "path {path} rot {rot}");
+    // Projection through the lens lands on the (distorted) tracks; undistorting inverts it.
+    let p = [100.0, 80.0];
+    let q = lens.to_image(p);
+    let back = lens.to_ideal(q);
+    assert!((back[0] - p[0]).abs() < 1e-6 && (back[1] - p[1]).abs() < 1e-6);
+    let sp = &lens.points[0];
+    let k = sp.first as usize;
+    let obs = tr.track(sp.id).and_then(|t| t.at(k as u32)).expect("observed");
+    let proj = lens.project(k, sp.pos, false).expect("in front");
+    assert!((proj[0] - obs[0]).hypot(proj[1] - obs[1]) < 2.0, "{proj:?} vs {obs:?}");
 }
