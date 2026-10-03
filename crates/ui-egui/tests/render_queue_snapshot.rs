@@ -41,3 +41,26 @@ fn render_queue_panel_snapshot() {
     }
     img.save(&out).unwrap();
 }
+
+/// Edit ▸ Templates ▸ Output Module… (`RQ_TEMPLATES_SNAPSHOT=/abs/out.png`).
+#[test]
+#[ignore]
+fn templates_dialog_snapshot() {
+    let mut s = Session::default();
+    s.execute("file.openDemoProject", json!({})).unwrap();
+    s.execute("renderQueue.add", json!({"output": "/renders/[compName].[fileExtension]"})).unwrap();
+    s.execute("renderQueue.saveTemplate", json!({"kind": "outputModule", "name": "Web Delivery", "item": s.project.render_queue[0].id, "params": {"format": "webm", "resize": {"preset": "HDTV 720"}}}))
+        .unwrap();
+    let kind = std::env::var("RQ_TEMPLATES_KIND").unwrap_or_else(|_| "outputModule".into());
+    s.execute("app.templates", json!({"kind": kind})).unwrap();
+    let mut app = Some(EffectcraftApp::new(s));
+    let mut h = Harness::builder().with_size(egui::vec2(1400.0, 900.0)).build_eframe(|_| app.take().expect("app"));
+    h.run_steps(4);
+    assert!(h.state().dialog.is_some(), "the Templates dialog is open");
+    let img = h.render().expect("render");
+    let out = std::env::var("RQ_TEMPLATES_SNAPSHOT").unwrap_or_else(|_| concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/test-out/rq_templates.png").into());
+    if let Some(d) = std::path::Path::new(&out).parent() {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    img.save(&out).unwrap();
+}

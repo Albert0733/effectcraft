@@ -40,10 +40,26 @@ impl Exporter for FileExporter {
             output: &job.item.output,
             path: job.path,
             sink: self.sink.as_deref(),
+            options: effectcraft_export::JobOptions {
+                log: job.item.log,
+                label: job.label.clone(),
+                storage: job.storage,
+                overflow: job.project.render_prefs.overflow_folders.clone(),
+            },
             nested_switches: job.nested_switches,
         };
         match effectcraft_export::export(&j, &mut |p| progress(p.done, p.total)) {
-            Ok(r) => Ok(ExportResult { path: r.path, frames: r.frames, width: r.width, height: r.height, bytes: r.bytes, seconds: r.seconds, audio: r.audio }),
+            Ok(r) => Ok(ExportResult {
+                path: r.path,
+                frames: r.frames,
+                width: r.width,
+                height: r.height,
+                bytes: r.bytes,
+                seconds: r.seconds,
+                audio: r.audio,
+                log: r.log,
+                overflow: r.overflow,
+            }),
             Err(effectcraft_export::ExportError::Cancelled) => Err(effectcraft_engine::render_queue::CANCELLED.into()),
             Err(e) => Err(e.to_string()),
         }

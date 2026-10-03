@@ -33,6 +33,7 @@ pub mod properties;
 pub mod puppet_tool;
 pub mod render_queue;
 pub mod roto_tool;
+pub mod rq_templates;
 pub mod scopes_panel;
 pub mod script_console;
 pub mod scriptui_view;

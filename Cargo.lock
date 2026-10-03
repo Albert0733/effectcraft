@@ -1238,6 +1238,7 @@ name = "effectcraft-export"
 version = "0.1.0"
 dependencies = [
  "effectcraft-color",
+ "effectcraft-keyframe",
  "effectcraft-media",
  "effectcraft-opusenc",
  "effectcraft-project",

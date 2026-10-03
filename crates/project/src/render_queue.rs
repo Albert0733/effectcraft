@@ -84,38 +84,329 @@ impl ProxyUse {
     }
 }
 
+/// Render Settings ▸ Field Render: interlaced output, each frame woven from two fields rendered
+/// half a frame apart.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FieldRender {
+    #[default]
+    Off,
+    /// The upper field (lines 0, 2, 4…) holds the earlier time.
+    UpperFirst,
+    LowerFirst,
+}
+
+impl FieldRender {
+    pub const ALL: [FieldRender; 3] = [FieldRender::Off, FieldRender::UpperFirst, FieldRender::LowerFirst];
+    pub fn label(self) -> &'static str {
+        match self {
+            FieldRender::Off => "Off",
+            FieldRender::UpperFirst => "Upper Field First",
+            FieldRender::LowerFirst => "Lower Field First",
+        }
+    }
+    pub fn parse(s: &str) -> Option<FieldRender> {
+        match norm(s).as_str() {
+            "off" | "none" | "progressive" => Some(FieldRender::Off),
+            "upper" | "upperfirst" | "upperfieldfirst" => Some(FieldRender::UpperFirst),
+            "lower" | "lowerfirst" | "lowerfieldfirst" => Some(FieldRender::LowerFirst),
+            _ => None,
+        }
+    }
+}
+
+fn norm(s: &str) -> String {
+    s.to_ascii_lowercase().replace([' ', '_', '-', '.', ':', '&'], "")
+}
+
+/// Render Settings ▸ 3:2 Pulldown: with field rendering, four film frames (at 4/5 of the output
+/// rate) spread over five interlaced frames in 2:3 cadence. The phase names which of the five
+/// frames are Whole (both fields from one film frame) or Split.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Pulldown {
+    #[default]
+    Off,
+    Wssww,
+    Sswww,
+    Swwws,
+    Wwwss,
+    Wwssw,
+}
+
+/// Film frame (within a group of four) of each of the ten fields of the 2:3 cadence.
+const CADENCE: [i64; 10] = [0, 0, 1, 1, 1, 2, 2, 3, 3, 3];
+
+impl Pulldown {
+    pub const ALL: [Pulldown; 6] = [Pulldown::Off, Pulldown::Wssww, Pulldown::Sswww, Pulldown::Swwws, Pulldown::Wwwss, Pulldown::Wwssw];
+    pub fn label(self) -> &'static str {
+        match self {
+            Pulldown::Off => "Off",
+            Pulldown::Wssww => "WSSWW",
+            Pulldown::Sswww => "SSWWW",
+            Pulldown::Swwws => "SWWWS",
+            Pulldown::Wwwss => "WWWSS",
+            Pulldown::Wwssw => "WWSSW",
+        }
+    }
+    pub fn parse(s: &str) -> Option<Pulldown> {
+        let n = norm(s);
+        if matches!(n.as_str(), "off" | "none") {
+            return Some(Pulldown::Off);
+        }
+        Pulldown::ALL.into_iter().find(|p| p.label().eq_ignore_ascii_case(&n))
+    }
+    /// Offset (in frames) into the WWSSW base cadence.
+    fn rotation(self) -> Option<i64> {
+        Some(match self {
+            Pulldown::Off => return None,
+            Pulldown::Wwssw => 0,
+            Pulldown::Wssww => 1,
+            Pulldown::Sswww => 2,
+            Pulldown::Swwws => 3,
+            Pulldown::Wwwss => 4,
+        })
+    }
+    /// The film frames (counted from the first film frame of the render) of the first and
+    /// second field of output frame `k`.
+    pub fn fields(self, k: u64) -> Option<(i64, i64)> {
+        let r = self.rotation()?;
+        let film = |f: i64| f.div_euclid(10) * 4 + CADENCE[f.rem_euclid(10) as usize];
+        let f0 = 2 * (k as i64 + r);
+        let base = film(2 * r);
+        Some((film(f0) - base, film(f0 + 1) - base))
+    }
+    /// The W/S pattern of five consecutive output frames.
+    pub fn pattern(self) -> String {
+        (0..5).filter_map(|k| self.fields(k).map(|(a, b)| if a == b { 'W' } else { 'S' })).collect()
+    }
+}
+
+/// A layer switch override (Render Settings ▸ Frame Blending / Motion Blur).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SwitchOverride {
+    /// The layer switches and the composition's enable switch.
+    #[default]
+    Current,
+    /// Every layer whose switch is on, whatever the composition's enable switch.
+    OnForChecked,
+    OffForAll,
+}
+
+impl SwitchOverride {
+    pub const ALL: [SwitchOverride; 3] = [SwitchOverride::Current, SwitchOverride::OnForChecked, SwitchOverride::OffForAll];
+    pub fn label(self) -> &'static str {
+        match self {
+            SwitchOverride::Current => "Current Settings",
+            SwitchOverride::OnForChecked => "On for Checked Layers",
+            SwitchOverride::OffForAll => "Off for All Layers",
+        }
+    }
+    pub fn parse(s: &str) -> Option<SwitchOverride> {
+        match norm(s).as_str() {
+            "current" | "currentsettings" => Some(SwitchOverride::Current),
+            "on" | "onforchecked" | "onforcheckedlayers" | "true" => Some(SwitchOverride::OnForChecked),
+            "off" | "offforall" | "offforalllayers" | "false" => Some(SwitchOverride::OffForAll),
+            _ => None,
+        }
+    }
+}
+
+/// Render Settings ▸ Effects.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EffectsMode {
+    #[default]
+    Current,
+    AllOn,
+    AllOff,
+}
+
+impl EffectsMode {
+    pub const ALL: [EffectsMode; 3] = [EffectsMode::Current, EffectsMode::AllOn, EffectsMode::AllOff];
+    pub fn label(self) -> &'static str {
+        match self {
+            EffectsMode::Current => "Current Settings",
+            EffectsMode::AllOn => "All On",
+            EffectsMode::AllOff => "All Off",
+        }
+    }
+    pub fn parse(s: &str) -> Option<EffectsMode> {
+        match norm(s).as_str() {
+            "current" | "currentsettings" => Some(EffectsMode::Current),
+            "allon" | "on" => Some(EffectsMode::AllOn),
+            "alloff" | "off" => Some(EffectsMode::AllOff),
+            _ => None,
+        }
+    }
+}
+
+/// Render Settings ▸ Solo Switches / Guide Layers: the current switches, or all off.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CurrentOrOff {
+    #[default]
+    Current,
+    AllOff,
+}
+
+impl CurrentOrOff {
+    pub fn label(self) -> &'static str {
+        match self {
+            CurrentOrOff::Current => "Current Settings",
+            CurrentOrOff::AllOff => "All Off",
+        }
+    }
+    pub fn parse(s: &str) -> Option<CurrentOrOff> {
+        match norm(s).as_str() {
+            "current" | "currentsettings" | "on" => Some(CurrentOrOff::Current),
+            "alloff" | "off" => Some(CurrentOrOff::AllOff),
+            _ => None,
+        }
+    }
+}
+
+/// Render Settings ▸ Color Depth.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ColorDepth {
+    /// The project's bit depth.
+    #[default]
+    Current,
+    Bpc8,
+    Bpc16,
+    Bpc32,
+}
+
+impl ColorDepth {
+    pub const ALL: [ColorDepth; 4] = [ColorDepth::Current, ColorDepth::Bpc8, ColorDepth::Bpc16, ColorDepth::Bpc32];
+    pub fn label(self) -> &'static str {
+        match self {
+            ColorDepth::Current => "Current Settings",
+            ColorDepth::Bpc8 => "8 bits per channel",
+            ColorDepth::Bpc16 => "16 bits per channel",
+            ColorDepth::Bpc32 => "32 bits per channel",
+        }
+    }
+    pub fn parse(s: &str) -> Option<ColorDepth> {
+        match norm(s).as_str() {
+            "current" | "currentsettings" => Some(ColorDepth::Current),
+            "8" | "8bpc" | "8bitsperchannel" => Some(ColorDepth::Bpc8),
+            "16" | "16bpc" | "16bitsperchannel" => Some(ColorDepth::Bpc16),
+            "32" | "32bpc" | "32bitsperchannel" | "float" => Some(ColorDepth::Bpc32),
+            _ => None,
+        }
+    }
+    /// The depth renders use in a project of depth `project`.
+    pub fn resolve(self, project: crate::BitDepth) -> crate::BitDepth {
+        match self {
+            ColorDepth::Current => project,
+            ColorDepth::Bpc8 => crate::BitDepth::Bpc8,
+            ColorDepth::Bpc16 => crate::BitDepth::Bpc16,
+            ColorDepth::Bpc32 => crate::BitDepth::Bpc32,
+        }
+    }
+}
+
+/// How one output frame is sampled in time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FrameSample {
+    Progressive(Tick),
+    /// Two fields woven together: `first` goes to the dominant field.
+    Fields {
+        first: Tick,
+        second: Tick,
+        upper_first: bool,
+    },
+}
+
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RenderSettings {
+    /// The template these settings came from ("" or "Custom" once edited).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub name: String,
     pub quality: RenderQuality,
     /// Output scale (1 = Full, 0.5 = Half, 1/3 = Third, 0.25 = Quarter).
     pub resolution: f64,
     pub time_span: TimeSpan,
-    /// `None` = use the comp's frame rate.
+    /// `None` = use the comp's frame rate (Time Sampling ▸ Use comp's frame rate).
     pub frame_rate: Option<FrameRate>,
-    /// Motion blur for layers with the switch on (and the comp's Enable Motion Blur).
+    /// Motion blur allowed at all (false = Off for All Layers; see `motion_blur_mode`).
     pub motion_blur: bool,
+    /// Motion Blur: Current Settings / On for Checked Layers / Off for All Layers.
+    pub motion_blur_mode: SwitchOverride,
+    /// Frame Blending: Current Settings / On for Checked Layers / Off for All Layers.
+    pub frame_blending: SwitchOverride,
+    /// Field Render.
+    pub field_render: FieldRender,
+    /// 3:2 Pulldown phase (with field rendering).
+    pub pulldown: Pulldown,
+    /// Effects: Current Settings / All On / All Off.
+    pub effects: EffectsMode,
+    /// Solo Switches: Current Settings / All Off.
+    pub solo: CurrentOrOff,
+    /// Guide Layers: Current Settings / All Off.
+    pub guide_layers: CurrentOrOff,
+    /// Color Depth.
+    pub color_depth: ColorDepth,
     /// Image sequences: skip frames whose file already exists.
     pub skip_existing: bool,
     /// Proxy Use (Best Settings: Use No Proxies).
     pub proxy_use: ProxyUse,
+    /// Use Storage Overflow: when the output volume is full, continue in the project's overflow
+    /// folders.
+    #[serde(default = "default_true")]
+    pub storage_overflow: bool,
 }
 
 impl Default for RenderSettings {
     fn default() -> Self {
         RenderSettings {
+            name: String::new(),
             quality: RenderQuality::Best,
             resolution: 1.0,
             time_span: TimeSpan::WorkArea,
             frame_rate: None,
             motion_blur: true,
+            motion_blur_mode: SwitchOverride::Current,
+            frame_blending: SwitchOverride::Current,
+            field_render: FieldRender::Off,
+            pulldown: Pulldown::Off,
+            effects: EffectsMode::Current,
+            solo: CurrentOrOff::Current,
+            guide_layers: CurrentOrOff::AllOff,
+            color_depth: ColorDepth::Current,
             skip_existing: false,
             proxy_use: ProxyUse::UseNone,
+            storage_overflow: true,
         }
     }
 }
 
 impl RenderSettings {
+    /// Effective Motion Blur override.
+    pub fn motion_blur_override(&self) -> SwitchOverride {
+        if self.motion_blur { self.motion_blur_mode } else { SwitchOverride::OffForAll }
+    }
+    /// How output frame `i` is sampled (field rendering and 3:2 pulldown).
+    pub fn sample(&self, comp: &Comp, i: u64) -> FrameSample {
+        let upper_first = match self.field_render {
+            FieldRender::Off => return FrameSample::Progressive(self.frame_time(comp, i)),
+            FieldRender::UpperFirst => true,
+            FieldRender::LowerFirst => false,
+        };
+        let r = self.rate(comp);
+        if let Some((a, b)) = self.pulldown.fields(i) {
+            // Film frames at 4/5 of the output rate, from the first one starting in the span.
+            let film = FrameRate::new(r.num * 4, r.den * 5);
+            let f0 = Self::ceil_frame(film, self.span(comp).0);
+            return FrameSample::Fields { first: film.tick_of(f0 + a), second: film.tick_of(f0 + b), upper_first };
+        }
+        let f = self.first_frame(comp) + i as i64;
+        let t = r.tick_of(f);
+        let half = Tick((r.tick_of(f + 1).0 - t.0) / 2);
+        FrameSample::Fields { first: t, second: Tick(t.0 + half.0), upper_first }
+    }
     /// The comp-time span `[start, end)` to render.
     pub fn span(&self, comp: &Comp) -> (Tick, Tick) {
         let (a, b) = match self.time_span {
@@ -162,10 +453,44 @@ impl RenderSettings {
             _ => "Custom",
         }
     }
-    /// One-line summary shown next to "Render Settings:" (AE shows the template name).
+    /// One-line summary shown next to "Render Settings:" (the template name, like AE).
     pub fn summary(&self) -> String {
+        if !self.name.is_empty() {
+            return self.name.clone();
+        }
         let q = if self.quality == RenderQuality::Best { "Best Settings" } else { "Draft Settings" };
         format!("{q} · {}", self.resolution_label())
+    }
+    /// Every setting as `(label, value)` lines (render logs, the settings dialog).
+    pub fn describe(&self, comp: Option<&Comp>) -> Vec<(&'static str, String)> {
+        let span = match self.time_span {
+            TimeSpan::WorkArea => "Work Area Only".to_string(),
+            TimeSpan::LengthOfComp => "Length of Comp".to_string(),
+            TimeSpan::Custom { start, end } => format!("Custom ({:.3}s – {:.3}s)", start.seconds(), end.seconds()),
+        };
+        let rate = match (self.frame_rate, comp) {
+            (Some(r), _) => format!("{:.3} fps", r.as_f64()),
+            (None, Some(c)) => format!("Use comp's frame rate ({:.3})", c.frame_rate.as_f64()),
+            (None, None) => "Use comp's frame rate".into(),
+        };
+        vec![
+            ("Template", if self.name.is_empty() { "Custom".into() } else { self.name.clone() }),
+            ("Quality", format!("{:?}", self.quality)),
+            ("Resolution", format!("{} ({:.3})", self.resolution_label(), self.resolution)),
+            ("Proxy Use", self.proxy_use.label().into()),
+            ("Effects", self.effects.label().into()),
+            ("Solo Switches", self.solo.label().into()),
+            ("Guide Layers", self.guide_layers.label().into()),
+            ("Color Depth", self.color_depth.label().into()),
+            ("Frame Blending", self.frame_blending.label().into()),
+            ("Field Render", self.field_render.label().into()),
+            ("3:2 Pulldown", self.pulldown.label().into()),
+            ("Motion Blur", self.motion_blur_override().label().into()),
+            ("Time Span", span),
+            ("Frame Rate", rate),
+            ("Skip Existing Files", if self.skip_existing { "On" } else { "Off" }.into()),
+            ("Use Storage Overflow", if self.storage_overflow { "On" } else { "Off" }.into()),
+        ]
     }
 }
 
@@ -287,8 +612,30 @@ pub enum Channels {
     /// Opaque, composited over the comp background colour.
     #[default]
     Rgb,
-    /// With straight (unmatted) alpha.
+    /// With alpha (straight or premultiplied: [`AlphaMode`]).
     Rgba,
+    /// The alpha channel alone, as an opaque greyscale matte.
+    Alpha,
+}
+
+impl Channels {
+    pub fn label(self) -> &'static str {
+        match self {
+            Channels::Rgb => "RGB",
+            Channels::Rgba => "RGB + Alpha",
+            Channels::Alpha => "Alpha",
+        }
+    }
+}
+
+/// Output Module ▸ Color: how RGB is stored with alpha.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AlphaMode {
+    /// Unmatted colour.
+    #[default]
+    Straight,
+    /// Colour multiplied by alpha (matted with black).
+    Premultiplied,
 }
 
 /// Output Module ▸ Audio Output.
@@ -299,6 +646,121 @@ pub enum AudioOutput {
     Auto,
     On,
     Off,
+}
+
+/// Output Module ▸ Audio Output ▸ sample format (PCM outputs: WAV, AIFF, QuickTime).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AudioFormat {
+    #[default]
+    S16,
+    S24,
+    /// 32-bit float (WAV, QuickTime; AIFF writes 24-bit).
+    F32,
+}
+
+impl AudioFormat {
+    pub fn label(self) -> &'static str {
+        match self {
+            AudioFormat::S16 => "16 Bit",
+            AudioFormat::S24 => "24 Bit",
+            AudioFormat::F32 => "32 Bit Float",
+        }
+    }
+    pub fn parse(s: &str) -> Option<AudioFormat> {
+        match norm(s).as_str() {
+            "16" | "16bit" | "s16" => Some(AudioFormat::S16),
+            "24" | "24bit" | "s24" => Some(AudioFormat::S24),
+            "32" | "32bit" | "32bitfloat" | "f32" | "float" => Some(AudioFormat::F32),
+            _ => None,
+        }
+    }
+}
+
+/// Output Module ▸ Crop (pixels of the rendered frame; negative values add transparent pixels).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Crop {
+    pub enabled: bool,
+    /// Use Region of Interest: crop to `roi` (comp pixels, captured from the viewer's region of
+    /// interest when the option is turned on) instead of the edge values.
+    pub use_roi: bool,
+    pub roi: Option<[f64; 4]>,
+    pub top: i32,
+    pub left: i32,
+    pub bottom: i32,
+    pub right: i32,
+}
+
+impl Crop {
+    /// Edges `(top, left, bottom, right)` in pixels of a `w`×`h` frame rendered at `scale`.
+    pub fn edges(&self, w: u32, h: u32, scale: f64) -> (i32, i32, i32, i32) {
+        if !self.enabled {
+            return (0, 0, 0, 0);
+        }
+        if self.use_roi
+            && let Some([x, y, rw, rh]) = self.roi
+        {
+            let l = (x * scale).round() as i32;
+            let t = (y * scale).round() as i32;
+            let r = w as i32 - ((x + rw) * scale).round() as i32;
+            let b = h as i32 - ((y + rh) * scale).round() as i32;
+            return (t, l, b, r);
+        }
+        (self.top, self.left, self.bottom, self.right)
+    }
+}
+
+/// Output Module ▸ Resize quality.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ResizeQuality {
+    /// Bilinear.
+    Low,
+    /// Bicubic.
+    #[default]
+    High,
+}
+
+/// Output Module ▸ Resize.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Resize {
+    pub enabled: bool,
+    pub width: u32,
+    pub height: u32,
+    /// Lock Aspect Ratio: setting one dimension derives the other from the rendered frame.
+    pub lock_aspect: bool,
+    pub quality: ResizeQuality,
+}
+
+impl Default for Resize {
+    fn default() -> Self {
+        Resize { enabled: false, width: 1920, height: 1080, lock_aspect: true, quality: ResizeQuality::High }
+    }
+}
+
+/// Output Module ▸ Resize ▸ Resize to: presets.
+pub const RESIZE_PRESETS: [(&str, u32, u32); 10] = [
+    ("HDTV 1080", 1920, 1080),
+    ("HDTV 720", 1280, 720),
+    ("UHD 4K", 3840, 2160),
+    ("DCI 2K", 2048, 1080),
+    ("DCI 4K", 4096, 2160),
+    ("NTSC DV", 720, 480),
+    ("PAL D1/DV", 720, 576),
+    ("Square 1080", 1080, 1080),
+    ("Vertical 1080×1920", 1080, 1920),
+    ("Web 640×360", 640, 360),
+];
+
+/// Output Module ▸ Post-Render Action.
+pub fn post_render_parse(s: &str) -> Option<PostRenderAction> {
+    match norm(s).as_str() {
+        "none" => Some(PostRenderAction::None),
+        "import" => Some(PostRenderAction::Import),
+        "importreplace" | "importandreplace" | "importandreplaceusage" | "importreplaceusage" | "replace" => Some(PostRenderAction::ImportAndReplace),
+        "setproxy" | "proxy" => Some(PostRenderAction::SetProxy),
+        _ => None,
+    }
 }
 
 /// ProRes flavour.
@@ -341,38 +803,133 @@ impl ProResProfile {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct OutputModule {
+    /// The template this module came from ("" or "Custom" once edited).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub name: String,
     pub format: OutputFormat,
     pub channels: Channels,
+    /// Color: straight or premultiplied RGB with alpha.
+    pub alpha_mode: AlphaMode,
     /// Output path or template (see the module docs).
     pub output: String,
-    /// JPEG quality 1–100.
+    /// JPEG / WebM quality 1–100.
     pub quality: u8,
-    /// H.264 target bitrate.
+    /// H.264 target bitrate (and WebM's when `webm_bitrate`).
     pub bitrate_kbps: u32,
+    /// WebM: rate control by `bitrate_kbps` instead of `quality`.
+    pub webm_bitrate: bool,
+    /// Movies: frames between key frames (0 = automatic, two seconds).
+    pub keyframe_interval: u32,
     pub prores_profile: ProResProfile,
+    pub crop: Crop,
+    pub resize: Resize,
     pub audio: AudioOutput,
     pub audio_sample_rate: u32,
+    /// 1 (mono) or 2 (stereo).
+    pub audio_channels: u8,
+    pub audio_format: AudioFormat,
     /// GIF: loop forever.
     pub gif_loop: bool,
+    /// Include Project Link: kept for parity; EffectCraft's writers have no place to store a
+    /// link back to the project, so it changes nothing in the file.
+    pub include_project_link: bool,
 }
 
 impl Default for OutputModule {
     fn default() -> Self {
         OutputModule {
+            name: String::new(),
             format: OutputFormat::H264,
             channels: Channels::Rgb,
+            alpha_mode: AlphaMode::Straight,
             output: DEFAULT_TEMPLATE.into(),
             quality: 90,
             bitrate_kbps: 10_000,
+            webm_bitrate: false,
+            keyframe_interval: 0,
             prores_profile: ProResProfile::Hq,
+            crop: Crop::default(),
+            resize: Resize::default(),
             audio: AudioOutput::Auto,
             audio_sample_rate: 48_000,
+            audio_channels: 2,
+            audio_format: AudioFormat::S16,
             gif_loop: true,
+            include_project_link: true,
         }
     }
 }
 
 impl OutputModule {
+    /// The size of the frames this module writes for frames rendered at `w`×`h` with render
+    /// scale `scale`: after Crop and Resize (before codec rounding).
+    pub fn frame_size(&self, w: u32, h: u32, scale: f64) -> (u32, u32) {
+        let (t, l, b, r) = self.crop.edges(w, h, scale);
+        let cw = (w as i32 - l - r).max(1) as u32;
+        let ch = (h as i32 - t - b).max(1) as u32;
+        if !self.resize.enabled {
+            return (cw, ch);
+        }
+        let (mut rw, mut rh) = (self.resize.width.max(1), self.resize.height.max(1));
+        if self.resize.lock_aspect {
+            // Width rules; height follows the cropped frame's aspect.
+            rh = ((rw as f64 * ch as f64 / cw as f64).round() as u32).max(1);
+        }
+        rw = rw.min(30_000);
+        rh = rh.min(30_000);
+        (rw, rh)
+    }
+    /// The written frame size of an item (Render Settings resolution, Crop, Resize, codec
+    /// rounding).
+    pub fn output_size(&self, comp: &Comp, settings: &RenderSettings) -> (u32, u32) {
+        let (w, h) = settings.output_size(comp);
+        let (w, h) = self.frame_size(w, h, settings.resolution.clamp(0.01, 4.0));
+        self.format.coded_size(w, h)
+    }
+    /// Every setting as `(label, value)` lines (render logs).
+    pub fn describe(&self) -> Vec<(&'static str, String)> {
+        let mut v = vec![
+            ("Template", if self.name.is_empty() { "Custom".into() } else { self.name.clone() }),
+            ("Format", self.format.label().into()),
+            ("Channels", self.channels.label().into()),
+            ("Output To", self.output.clone()),
+        ];
+        if self.channels == Channels::Rgba {
+            v.insert(3, ("Color", format!("{:?}", self.alpha_mode)));
+        }
+        match self.format {
+            OutputFormat::H264 => v.push(("Bitrate", format!("{} kbps", self.bitrate_kbps))),
+            OutputFormat::ProRes => v.push(("Codec", self.prores_profile.label().into())),
+            OutputFormat::WebM if self.webm_bitrate => v.push(("Bitrate", format!("{} kbps", self.bitrate_kbps))),
+            OutputFormat::WebM | OutputFormat::JpegSequence => v.push(("Quality", self.quality.to_string())),
+            _ => {}
+        }
+        if self.crop.enabled {
+            let c = &self.crop;
+            v.push((
+                "Crop",
+                if c.use_roi { format!("Region of Interest {:?}", c.roi) } else { format!("T {} L {} B {} R {}", c.top, c.left, c.bottom, c.right) },
+            ));
+        }
+        if self.resize.enabled {
+            let r = &self.resize;
+            v.push(("Resize", format!("{}×{} ({:?} quality{})", r.width, r.height, r.quality, if r.lock_aspect { ", aspect locked" } else { "" })));
+        }
+        if self.format.supports_audio() {
+            v.push((
+                "Audio Output",
+                format!(
+                    "{:?} · {} Hz · {} · {}",
+                    self.audio,
+                    self.audio_sample_rate,
+                    if self.audio_channels == 1 { "Mono" } else { "Stereo" },
+                    self.audio_format.label()
+                ),
+            ));
+        }
+        v.push(("Include Project Link", if self.include_project_link { "On" } else { "Off" }.into()));
+        v
+    }
     pub fn for_format(format: OutputFormat) -> OutputModule {
         let mut m = OutputModule { format, ..Default::default() };
         if format.is_sequence() {
@@ -384,7 +941,7 @@ impl OutputModule {
     pub fn set_format(&mut self, format: OutputFormat) {
         let old = self.format;
         self.format = format;
-        if !format.supports_alpha() {
+        if !format.supports_alpha() && self.channels == Channels::Rgba {
             self.channels = Channels::Rgb;
         }
         if self.output.contains("[fileExtension]") {
@@ -406,10 +963,10 @@ impl OutputModule {
     }
     /// One-line summary shown next to "Output Module:".
     pub fn summary(&self) -> String {
-        let ch = match self.channels {
-            Channels::Rgb => "RGB",
-            Channels::Rgba => "RGB + Alpha",
-        };
+        if !self.name.is_empty() {
+            return self.name.clone();
+        }
+        let ch = self.channels.label();
         match self.format {
             OutputFormat::H264 => format!("H.264 · {} kbps", self.bitrate_kbps),
             OutputFormat::ProRes => format!(
@@ -478,6 +1035,85 @@ pub struct RenderQueueItem {
     /// Post-Render Action of the first output module.
     #[serde(default, skip_serializing_if = "PostRenderAction::is_none")]
     pub post_render: PostRenderAction,
+    /// The Log menu: what the render log next to the output records.
+    #[serde(default, skip_serializing_if = "RenderLog::is_default")]
+    pub log: RenderLog,
+}
+
+/// Render Queue item ▸ Log.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RenderLog {
+    /// A log only when the render fails.
+    #[default]
+    ErrorsOnly,
+    /// Always: the result plus every Render Settings and Output Module setting.
+    PlusSettings,
+    /// Also one line per rendered frame.
+    PlusPerFrameInfo,
+}
+
+impl RenderLog {
+    pub const ALL: [RenderLog; 3] = [RenderLog::ErrorsOnly, RenderLog::PlusSettings, RenderLog::PlusPerFrameInfo];
+    pub fn is_default(&self) -> bool {
+        *self == RenderLog::ErrorsOnly
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            RenderLog::ErrorsOnly => "Errors Only",
+            RenderLog::PlusSettings => "Plus Settings",
+            RenderLog::PlusPerFrameInfo => "Plus Per Frame Info",
+        }
+    }
+    pub fn parse(s: &str) -> Option<RenderLog> {
+        match norm(s).as_str() {
+            "errors" | "errorsonly" => Some(RenderLog::ErrorsOnly),
+            "settings" | "plussettings" => Some(RenderLog::PlusSettings),
+            "perframe" | "plusperframe" | "plusperframeinfo" | "frames" => Some(RenderLog::PlusPerFrameInfo),
+            _ => None,
+        }
+    }
+}
+
+/// The render log's path for an output: next to it, `<name>_RenderLog.txt` (a sequence's
+/// frame-number run is dropped).
+pub fn log_path(output: &str) -> String {
+    let p = std::path::Path::new(output);
+    let stem = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+    let mut stem: String = stem.replace("_[#####]", "").replace("[#####]", "");
+    if let Some(i) = stem.find('#') {
+        let n = stem[i..].chars().take_while(|c| *c == '#').count();
+        stem.replace_range(i..i + n, "");
+    }
+    let stem = stem.trim_end_matches(['_', '.', ' ']);
+    let name = format!("{}_RenderLog.txt", if stem.is_empty() { "Render" } else { stem });
+    match p.parent().filter(|d| !d.as_os_str().is_empty()) {
+        Some(d) => d.join(name).to_string_lossy().to_string(),
+        None => name,
+    }
+}
+
+/// Storage hook (Render Settings ▸ Use Storage Overflow): whether `bytes` more fit on the volume
+/// holding `path`. The desktop app has no quota by default; tests and hosts with quotas supply
+/// one.
+pub trait StorageQuota: Send + Sync {
+    fn has_room(&self, path: &str, bytes: u64) -> bool;
+}
+
+/// Project-wide Render Queue preferences.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RenderQueuePrefs {
+    /// Notify when the render finishes (a sound and a notification in the desktop app).
+    pub notify: bool,
+    /// Storage overflow folders, used in order when the output volume is full.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub overflow_folders: Vec<String>,
+}
+
+impl RenderQueuePrefs {
+    pub fn is_default(&self) -> bool {
+        *self == RenderQueuePrefs::default()
+    }
 }
 
 /// What happens after an item renders (Output Module ▸ Post-Render Action).
@@ -521,6 +1157,7 @@ impl RenderQueueItem {
             last_output: None,
             extra_outputs: vec![],
             post_render: PostRenderAction::None,
+            log: RenderLog::ErrorsOnly,
         }
     }
     /// Every output module, the first one first.
@@ -610,6 +1247,90 @@ mod tests {
         assert_eq!(OutputFormat::from_name("TIFF"), Some(OutputFormat::TiffSequence));
         assert_eq!(ProResProfile::from_name("4444"), Some(ProResProfile::P4444));
         assert_eq!(ProResProfile::from_name("hq"), Some(ProResProfile::Hq));
+    }
+
+    #[test]
+    fn pulldown_cadence() {
+        assert_eq!(Pulldown::Wwssw.pattern(), "WWSSW");
+        for p in &Pulldown::ALL[1..] {
+            assert_eq!(p.pattern(), p.label(), "{p:?}");
+        }
+        // 2:3 cadence: ten fields carry four film frames; every output frame starts on film 0.
+        for p in &Pulldown::ALL[1..] {
+            let mut fields = vec![];
+            for k in 0..10 {
+                let (a, b) = p.fields(k).unwrap();
+                fields.extend([a, b]);
+            }
+            assert_eq!(fields[0], 0, "{p:?}");
+            assert!(fields.windows(2).all(|w| w[1] == w[0] || w[1] == w[0] + 1), "{p:?}: {fields:?}");
+            // 20 fields = 8 film frames' worth of cadence (a phase may start or end mid-frame).
+            assert!((7..=8).contains(&(*fields.last().unwrap() - fields[0])), "{p:?} {fields:?}");
+            // Each film frame appears in 2 or 3 consecutive fields, alternating.
+            let mut runs = vec![];
+            let mut n = 1;
+            for w in fields.windows(2) {
+                if w[1] == w[0] {
+                    n += 1;
+                } else {
+                    runs.push(n);
+                    n = 1;
+                }
+            }
+            assert!(runs[1..].iter().all(|r| *r == 2 || *r == 3), "{p:?}: {runs:?}");
+            assert!(runs[1..].windows(2).all(|w| w[0] != w[1]), "2 and 3 alternate: {p:?}: {runs:?}");
+        }
+        assert_eq!(Pulldown::parse("sswww"), Some(Pulldown::Sswww));
+        // With field rendering at 29.97, film frames are 23.976 fps.
+        let c = Comp::new(64, 48, FrameRate::new(30000, 1001), Tick::from_seconds_f64(2.0));
+        let s = RenderSettings { field_render: FieldRender::UpperFirst, pulldown: Pulldown::Wssww, time_span: TimeSpan::LengthOfComp, ..Default::default() };
+        let film = FrameRate::new(24000, 1001);
+        match s.sample(&c, 1) {
+            FrameSample::Fields { first, second, upper_first } => {
+                assert!(upper_first);
+                assert_eq!((first, second), (film.tick_of(0), film.tick_of(1)), "WSSWW: frame 1 is split between film frames 0 and 1");
+            }
+            f => panic!("{f:?}"),
+        }
+    }
+
+    #[test]
+    fn field_samples_are_half_a_frame_apart() {
+        let c = Comp::new(64, 48, FrameRate::new(25, 1), Tick::from_seconds_f64(2.0));
+        let s = RenderSettings { field_render: FieldRender::LowerFirst, time_span: TimeSpan::LengthOfComp, ..Default::default() };
+        assert_eq!(s.sample(&c, 3), FrameSample::Fields { first: Tick::from_seconds_f64(0.12), second: Tick::from_seconds_f64(0.14), upper_first: false });
+        let p = RenderSettings { time_span: TimeSpan::LengthOfComp, ..Default::default() };
+        assert_eq!(p.sample(&c, 3), FrameSample::Progressive(Tick::from_seconds_f64(0.12)));
+    }
+
+    #[test]
+    fn crop_and_resize_sizes() {
+        let c = Comp::new(1920, 1080, FrameRate::new(25, 1), Tick::from_seconds_f64(1.0));
+        let rs = RenderSettings::default();
+        let mut m = OutputModule::default();
+        assert_eq!(m.output_size(&c, &rs), (1920, 1080));
+        m.crop = Crop { enabled: true, top: 10, left: 20, bottom: 30, right: 41, ..Default::default() };
+        assert_eq!(m.output_size(&c, &rs), (1858, 1040), "H.264 rounds the odd width down");
+        m.format = OutputFormat::PngSequence;
+        assert_eq!(m.output_size(&c, &rs), (1859, 1040));
+        // Region of interest, at half resolution.
+        m.crop = Crop { enabled: true, use_roi: true, roi: Some([100.0, 50.0, 800.0, 400.0]), ..Default::default() };
+        let half = RenderSettings { resolution: 0.5, ..Default::default() };
+        assert_eq!(m.output_size(&c, &half), (400, 200));
+        // Negative crop pads.
+        m.crop = Crop { enabled: true, top: -10, bottom: -10, ..Default::default() };
+        assert_eq!(m.output_size(&c, &rs), (1920, 1100));
+        // Resize: fixed, and with the aspect locked to the (cropped) frame.
+        m.crop = Crop::default();
+        m.resize = Resize { enabled: true, width: 1280, height: 999, lock_aspect: false, quality: ResizeQuality::High };
+        assert_eq!(m.output_size(&c, &rs), (1280, 999));
+        m.resize.lock_aspect = true;
+        assert_eq!(m.output_size(&c, &rs), (1280, 720));
+        m.crop = Crop { enabled: true, left: 480, right: 480, ..Default::default() };
+        assert_eq!(m.output_size(&c, &rs), (1280, 1440), "960×1080 cropped, then 1280 wide at 8:9");
+        assert_eq!(log_path("/out/Main_[#####].png"), "/out/Main_RenderLog.txt");
+        assert_eq!(log_path("/out/a.mov"), "/out/a_RenderLog.txt");
+        assert_eq!(log_path("seq###.tif"), "seq_RenderLog.txt");
     }
 
     #[test]

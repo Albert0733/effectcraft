@@ -285,6 +285,8 @@ pub struct Session {
     pub importer: Option<Arc<dyn Importer>>,
     /// Render Queue encoder (the export layer); `None` = export unavailable.
     pub exporter: Option<Arc<dyn Exporter>>,
+    /// Free-space hook for Render Settings ▸ Use Storage Overflow (`None`: never full).
+    pub storage_quota: Option<Arc<dyn effectcraft_project::render_queue::StorageQuota>>,
     /// The running (or finished, not yet polled) render.
     pub render_job: Option<render_queue::RenderJob>,
     /// The running (or finished, not yet polled) track analysis.
@@ -386,6 +388,7 @@ impl Default for Session {
             expr_check: None,
             importer: None,
             exporter: None,
+            storage_quota: None,
             render_job: None,
             track_job: None,
             mask_job: None,

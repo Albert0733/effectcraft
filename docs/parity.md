@@ -20,14 +20,14 @@ Animation 94%, Masks 94%, Preview 94%, Interface 93%, Shapes 93%, 3D 91%, Audio 
 Tracking 96%, Effects 85%, Web 65%.
 
 What is left, in priority order: the web app's depth (threads, storage, audio, non-blocking
-renders); stroke taper/wave and multi-segment dashes; variable mask feather points; camera iris/bokeh and focus-link commands; Render Queue field render, crop/resize and templates;
+renders); stroke taper/wave and multi-segment dashes; variable mask feather points; camera iris/bokeh and focus-link commands; 
 approximated effects (Key Cleaner) and Liquify's viewer brush; text in imported
 PDF/AI files and Illustrator procset EPS; and more codecs. Face tracking and a true Subspace Warp
 landed in M13.3. ScriptUI (dialogs that block `show()`, palettes, dockable ScriptUI panels, File ▸ Scripts install
 and sample scripts), puppet pin recording and the remaining "better than After Effects" items — a
 versioned effect plug-in API with sandboxed WebAssembly plug-ins ([plugins.md](plugins.md)),
 branching undo history in the History panel, and a bit-identical rendering test across runs and
-thread counts — landed in M13.1 (GPU particles landed in M12.7).
+thread counts — landed in M13.1 (GPU particles landed in M12.7). Render Queue field render, crop/resize, templates and logs, and VP9 inter frames landed in M10.2.
 
 The sections below are the original audit (morning of 2 October, ≈ 64%) and its updates, kept for
 history.
@@ -112,7 +112,7 @@ the disk cache in the formats wave; the 3D Camera Tracker in M12.6.)
 | Area | Weighted parity | Remaining (agent-hours) | Biggest gaps |
 |---|---|---|---|
 | Layers | 88% | 4.8 | frame blending, collapse transformations, slip edit |
-| Output | 90% | 3.0 | multiple output modules, pre-render (WebM with VP9 alpha + Opus and WAV/AIFF audio-only landed: VP9 is intra-only, Opus CELT-only) |
+| Output | 97% | 0.8 | Render Settings complete (field render + 3:2 pulldown, effects/solo/guide/depth/blending/blur overrides, time sampling, storage overflow), Output Module crop/ROI/resize, alpha modes, post-render actions, PCM formats, templates with defaults, render logs, Notify (M10.2); WebM VP9 key + inter frames with motion search, loop filter and rate control. Left: Opus is CELT-only, Photoshop sequence output, overflow for movies only checks at file creation |
 | Audio | 85% | 0.5 | audio to keyframes |
 | Import | 94% | 1.0 | text and images inside PDF/AI files, Illustrator EPS relying on Adobe procsets, smart-object perspective/warps, PSD 3D layers (PDF / PDF-compatible AI / EPS vector footage with Continuously Rasterize, layered composition import and Create Shapes from Vector Layer, and PSD smart objects with embedded files landed in M13.2; PSD as footage/composition/retain layer sizes, SVG footage earlier) |
 | Automation | ≈ 97% | 0.3 | `.jsxbin`, sockets, ScriptUI resource strings and custom `onDraw` graphics (the core object model landed in M14.4; ScriptUI windows/dialogs/dockable panels with `scriptui.*` agent commands, File ▸ Scripts install + sample scripts, and the effect plug-in API (EFF-6, WebAssembly) landed in M13.1) |

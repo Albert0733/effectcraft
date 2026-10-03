@@ -74,6 +74,8 @@ pub enum Dialog {
     Precompose,
     /// Layer ▸ Layer Styles ▸ Layer Style Options…
     LayerStyles,
+    /// Edit ▸ Templates ▸ Render Settings… / Output Module….
+    RenderTemplates,
 }
 
 /// Host hooks provided by the native app (file pickers etc.).
