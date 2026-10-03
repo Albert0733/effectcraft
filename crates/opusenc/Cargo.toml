@@ -1,6 +1,6 @@
 [package]
 name = "effectcraft-opusenc"
-description = "Clean-room pure-Rust Opus encoder (RFC 6716 CELT-only, fullband 48 kHz, 20 ms; RFC 7845 OpusHead) for WebM export audio"
+description = "Clean-room pure-Rust Opus encoder (RFC 6716 SILK NB/MB/WB, hybrid SWB/FB and CELT FB modes, 48 kHz, 20 ms; RFC 7845 OpusHead) for WebM export audio"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,3 +10,6 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+
+[dev-dependencies]
+filmcraft-opus = { workspace = true }

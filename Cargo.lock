@@ -1408,6 +1408,9 @@ dependencies = [
 [[package]]
 name = "effectcraft-opusenc"
 version = "0.1.0"
+dependencies = [
+ "filmcraft-opus",
+]
 
 [[package]]
 name = "effectcraft-path"
