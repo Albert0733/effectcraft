@@ -423,6 +423,63 @@ fn depth_of_field_blurs_out_of_focus_layers() {
     assert!(b.get(66, 50)[3] > 0.01);
 }
 
+/// Pixels in column `x` whose alpha is strictly between 0.05 and 0.95.
+fn soft_px(img: &effectcraft_raster::Image, x: i64) -> usize {
+    (0..img.height as i64).filter(|&y| (0.05..0.95).contains(&img.get(x, y)[3])).count()
+}
+
+#[test]
+fn tilted_layer_blurs_progressively_with_depth() {
+    let (mut p, cid, comp) = setup();
+    let mut cam = camera(&mut p, &comp);
+    set(&mut cam, "cameraOptions/dof", Value::Bool(true));
+    set(&mut cam, "cameraOptions/aperture", Value::Scalar(80.0));
+    set(&mut cam, "cameraOptions/irisShape", Value::Enum(4)); // Hexagon
+    let mut s = solid3(&mut p, &comp, [1.0, 1.0, 1.0], 160, 40, [100.0, 50.0, 0.0]);
+    set(&mut s, "transform/rotationY", Value::Scalar(60.0));
+    push(&mut p, cid, cam);
+    push(&mut p, cid, s);
+    let img = render(&p, cid);
+    // The centre column sits on the focal plane: a hard top edge. The ends are 70 px in front of
+    // and behind it: soft.
+    let xs: Vec<i64> = (0..W as i64).filter(|&x| img.get(x, 50)[3] > 0.5).collect();
+    let (x0, x1) = (xs[0], *xs.last().unwrap());
+    let at = |f: f64| x0 + ((x1 - x0) as f64 * f) as i64;
+    let (centre, left, right) = (soft_px(&img, 100), soft_px(&img, at(0.1)), soft_px(&img, at(0.9)));
+    assert!(centre <= 2, "centre {centre}");
+    assert!(left >= 4 && right >= 4, "ends {left} {right}");
+}
+
+#[test]
+fn iris_shape_and_highlights_shape_the_bokeh() {
+    // A small bright square far out of focus: its blur takes the iris' shape.
+    let spot = |shape: u32, gain: f64| {
+        let (mut p, cid, comp) = setup();
+        let mut cam = camera(&mut p, &comp);
+        set(&mut cam, "cameraOptions/dof", Value::Bool(true));
+        set(&mut cam, "cameraOptions/aperture", Value::Scalar(120.0));
+        set(&mut cam, "cameraOptions/focusDistance", Value::Scalar(zoom() * 0.5));
+        set(&mut cam, "cameraOptions/irisShape", Value::Enum(shape));
+        set(&mut cam, "cameraOptions/highlightGain", Value::Scalar(gain));
+        set(&mut cam, "cameraOptions/highlightThreshold", Value::Scalar(200.0));
+        let s = solid3(&mut p, &comp, [1.0, 1.0, 1.0], 2, 2, [100.0, 50.0, 0.0]);
+        push(&mut p, cid, cam);
+        push(&mut p, cid, s);
+        render(&p, cid)
+    };
+    let area = |img: &effectcraft_raster::Image| img.data.iter().filter(|q| q[3] > 1e-4).count();
+    let (tri, dec, rect) = (spot(1, 0.0), spot(8, 0.0), spot(0, 0.0));
+    assert!(area(&tri) * 3 < area(&dec) * 2, "triangle {} vs decagon {}", area(&tri), area(&dec));
+    // Fast Rectangle: a box.
+    let (x0, x1) = (0..W as i64).filter(|&x| rect.get(x, 50)[3] > 1e-4).fold((i64::MAX, 0), |(a, b), x| (a.min(x), b.max(x)));
+    let y_extent = (0..H as i64).filter(|&y| rect.get(100, y)[3] > 1e-4).count() as i64;
+    assert!(((x1 - x0 + 1) - y_extent).abs() <= 2, "square box {} vs {}", x1 - x0 + 1, y_extent);
+    // Highlight Gain brightens the blurred highlight.
+    let lit = spot(8, 100.0);
+    let sum = |img: &effectcraft_raster::Image| img.data.iter().map(|q| q[0]).sum::<f32>();
+    assert!(sum(&lit) > sum(&dec) * 1.5, "{} vs {}", sum(&lit), sum(&dec));
+}
+
 // ---------------------------------------------------------------- views
 
 #[test]

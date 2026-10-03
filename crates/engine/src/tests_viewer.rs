@@ -292,6 +292,7 @@ fn split_segment_keeps_curve_shape() {
         in_tangents: vec![[0.0; 2], [0.0, -50.0]],
         out_tangents: vec![[30.0, 60.0], [0.0; 2]],
         closed: false,
+        feather: Vec::new(),
     };
     let seg = |sp: &ShapePath, i: usize, t: f64| {
         let (a, d) = (sp.vertices[i], sp.vertices[i + 1]);

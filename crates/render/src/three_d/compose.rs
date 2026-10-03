@@ -206,26 +206,10 @@ fn prepare_with<'a>(
     let cam = camera_for(r, ctx);
     let outer = r.collapse3d.map_or(Mat4::IDENTITY, |c| c.world);
     let world = outer * ctx.world_matrix(layer) * local;
-    // Depth of field: blur the layer by its circle of confusion at its centre.
+    // Depth of field: a bokeh blur by each buffer pixel's circle of confusion (constant for a
+    // layer facing the camera, progressive for a tilted one).
     if let Some(dof) = cam.dof.filter(|_| !ctx.comp.draft_3d && !r.opts.draft) {
-        let b = buf_bounds(&buf);
-        let centre = world.apply(vec3((b[0] + b[2]) * 0.5, (b[1] + b[3]) * 0.5, 0.0));
-        let z = cam.depth(centre);
-        let coc = dof.coc(z);
-        // Comp pixels on screen per layer pixel at that depth.
-        let k = cam.zoom / z.max(NEAR) * world.apply_vec(vec3(1.0, 0.0, 0.0)).length().max(1e-9);
-        let radius = coc * 0.5 / k * buf.scale;
-        if radius > 0.3 {
-            let sigma = radius / 1.5;
-            let pad = (sigma * 3.0).ceil() as u32 + 1;
-            let padded = buf.img.padded(pad);
-            // The (cached, shared) layer buffer stays untouched; the blurred copy is per frame.
-            buf = Arc::new(Buf {
-                img: effectcraft_raster::gaussian_blur(&padded, sigma, sigma, false),
-                offset: [buf.offset[0] + pad as f64, buf.offset[1] + pad as f64],
-                scale: buf.scale,
-            });
-        }
+        buf = dof_blur(&cam, &dof, world, buf);
     }
     let n = if in_run { mb_samples(r, ctx, layer) } else { 1 };
     let geos: Vec<Geo> = if n <= 1 {
@@ -267,6 +251,47 @@ fn prepare_with<'a>(
         bounds,
         bbox,
     })
+}
+
+/// Blur radius (buffer pixels) of every buffer pixel of a plane at `world` (layer → world), from
+/// its camera depth: the circle of confusion over the on-screen size of one layer pixel there.
+fn dof_radii(cam: &CameraState, dof: &super::camera::Dof, world: Mat4, buf: &Buf) -> Vec<f32> {
+    let s = buf.scale.max(1e-9);
+    let sx = world.apply_vec(vec3(1.0, 0.0, 0.0)).length().max(1e-9);
+    let (w, h) = (buf.img.width as usize, buf.img.height as usize);
+    let at = |x: f64, y: f64| cam.depth(world.apply(vec3((x - buf.offset[0]) / s, (y - buf.offset[1]) / s, 0.0)));
+    // Camera depth is affine across a plane.
+    let z0 = at(0.5, 0.5);
+    let (zx, zy) = (at(1.5, 0.5) - z0, at(0.5, 1.5) - z0);
+    let mut out = vec![0.0f32; w * h];
+    out.par_chunks_mut(w.max(1)).enumerate().for_each(|(y, row)| {
+        for (x, o) in row.iter_mut().enumerate() {
+            let z = z0 + zx * x as f64 + zy * y as f64;
+            if z <= super::camera::NEAR {
+                continue;
+            }
+            // coc · ½ / (zoom / z · sx) · scale
+            *o = (dof.coc(z) * 0.5 * z / (cam.zoom * sx) * s) as f32;
+        }
+    });
+    out
+}
+
+/// Depth of field for one plane: highlights boosted, then a bokeh-shaped blur by depth.
+fn dof_blur(cam: &CameraState, dof: &super::camera::Dof, world: Mat4, buf: Arc<Buf>) -> Arc<Buf> {
+    let radii = dof_radii(cam, dof, world, &buf);
+    let rmax = radii.iter().copied().fold(0.0f32, f32::max) as f64;
+    if rmax <= 0.3 {
+        return buf;
+    }
+    let a = dof.iris.aspect.clamp(0.01, 100.0).sqrt().max(1.0 / dof.iris.aspect.clamp(0.01, 100.0).sqrt());
+    let pad = (rmax * a).ceil() as u32 + 2;
+    let mut padded = buf.img.padded(pad);
+    super::bokeh::boost_highlights(&mut padded, &dof.highlight);
+    let pbuf = Buf { img: padded, offset: [buf.offset[0] + pad as f64, buf.offset[1] + pad as f64], scale: buf.scale };
+    let pr = dof_radii(cam, dof, world, &pbuf);
+    // The (cached, shared) layer buffer stays untouched; the blurred copy is per frame.
+    Arc::new(Buf { img: super::bokeh::progressive_blur(&pbuf.img, &dof.iris, &pr), offset: pbuf.offset, scale: pbuf.scale })
 }
 
 /// Screen-space track matte factor for a layer, or None.
