@@ -117,6 +117,11 @@ fn libdav1d_decodes_bit_exact() {
     // all-intra at a fine quantizer (large coefficients, Golomb codes)
     let pics: Vec<Pic> = (0..2).map(|t| noise(64, 48, 8, t as u32 + 3)).collect();
     check("noise-intra", cfg(64, 48, 8, RateControl::ConstantQ(4), 1), &pics);
+    // the finest quantizer: the largest coefficients, 8 and 10 bit, intra and inter
+    let pics: Vec<Pic> = (0..3).map(|t| noise(72, 40, 8, t as u32 + 11)).collect();
+    check("noise-q1", cfg(72, 40, 8, RateControl::ConstantQ(1), 2), &pics);
+    let pics: Vec<Pic> = (0..3).map(|t| noise(40, 72, 10, t as u32 + 21)).collect();
+    check("noise-q1-10", cfg(40, 72, 10, RateControl::ConstantQ(1), 2), &pics);
     // odd sizes, 8 and 10 bit
     let pics: Vec<Pic> = (0..4).map(|t| synth(33, 17, 8, t)).collect();
     check("odd8", cfg(33, 17, 8, RateControl::ConstantQ(60), 3), &pics);

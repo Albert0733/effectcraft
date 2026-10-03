@@ -95,3 +95,70 @@ impl Cdfs {
         })
     }
 }
+
+impl Cdfs {
+    /// The counter reset of load_cdfs( ): the last entry of every CDF array is set to 0.
+    pub fn clear_counts(&mut self) {
+        macro_rules! clr {
+            ($($f:ident),*) => { $( self.$f.clear_count(); )* };
+        }
+        clr!(
+            y_mode,
+            uv_mode_cfl_not_allowed,
+            uv_mode_cfl_allowed,
+            angle_delta,
+            partition_w8,
+            partition_w16,
+            partition_w32,
+            partition_w64,
+            skip,
+            is_inter,
+            single_ref,
+            new_mv,
+            zero_mv,
+            ref_mv,
+            drl_mode,
+            mv_joint,
+            mv_class,
+            mv_class0_bit,
+            mv_fr,
+            mv_class0_fr,
+            mv_sign,
+            mv_bit,
+            intra_tx_type_set2,
+            inter_tx_type_set3,
+            txb_skip,
+            eob_pt_16,
+            eob_pt_32,
+            eob_pt_64,
+            eob_pt_128,
+            eob_pt_256,
+            eob_pt_512,
+            eob_pt_1024,
+            eob_extra,
+            dc_sign,
+            coeff_base_eob,
+            coeff_base,
+            coeff_br
+        );
+    }
+}
+
+/// Zeroes the adaptation counter (last element) of every innermost CDF array.
+trait ClearCount {
+    fn clear_count(&mut self);
+}
+
+impl<const N: usize> ClearCount for [u16; N] {
+    fn clear_count(&mut self) {
+        self[N - 1] = 0;
+    }
+}
+
+impl<T: ClearCount, const M: usize> ClearCount for [T; M] {
+    fn clear_count(&mut self) {
+        for e in self.iter_mut() {
+            e.clear_count();
+        }
+    }
+}

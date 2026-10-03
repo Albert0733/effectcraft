@@ -275,7 +275,7 @@ impl Encoder {
         w.f(1, 0); // disable_cdf_update
         w.f(1, 0); // frame_size_override_flag
         if !key {
-            w.f(3, 7); // primary_ref_frame = PRIMARY_REF_NONE
+            w.f(3, 0); // primary_ref_frame: LAST_FRAME's saved CDFs
             w.f(8, 1); // refresh_frame_flags: slot 0 becomes LAST for the next frame
             for _ in 0..7 {
                 w.f(3, 0); // ref_frame_idx[ i ]
@@ -288,7 +288,7 @@ impl Encoder {
         } else {
             w.f(1, 0); // render_and_frame_size_different
         }
-        w.f(1, 1); // disable_frame_end_update_cdf
+        w.f(1, 0); // disable_frame_end_update_cdf
         // tile_info( ): uniform spacing, one tile
         let g = &self.geom;
         let tile_log2 = |blk: usize, target: usize| {
@@ -364,7 +364,7 @@ impl Encoder {
         let g = &self.geom;
         let refr = if key { None } else { self.refr.as_ref() };
         let mut dec = Decider::new(g, self.cfg.bit_depth as u32, qidx, key, src, refr);
-        let mut tw = TileWriter::new(g, key, qidx);
+        let mut tw = TileWriter::new(g, key, qidx, refr.map(|r| &*r.cdfs));
         for sbr in 0..g.sb_rows {
             tw.start_sb_row();
             for sbc in 0..g.sb_cols {
@@ -374,7 +374,7 @@ impl Encoder {
         }
         let lf_level = self.pick_filter_level(&dec.rec, &tw.lf_info(), src, qidx);
         loop_filter(&mut dec.rec, &tw.lf_info(), [lf_level; 4], self.cfg.bit_depth as u32, false);
-        let tile = tw.finish();
+        let (tile, cdfs) = tw.finish();
         let mut w = BitWriter::new();
         self.frame_header(&mut w, key, qidx, lf_level);
         w.byte_align();
@@ -383,7 +383,7 @@ impl Encoder {
         payload.extend_from_slice(&tile);
         let mut out = Vec::with_capacity(payload.len() + 8);
         obu(OBU_FRAME, &payload, &mut out);
-        let rf = RefFrame { planes: dec.rec, mvs: dec.mvs, lf_level };
+        let rf = RefFrame { planes: dec.rec, mvs: dec.mvs, lf_level, cdfs };
         (out, rf)
     }
 

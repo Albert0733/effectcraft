@@ -22,8 +22,8 @@ reconstruction, so prediction never drifts.
   `Encoder::av1c()` returns the `AV1CodecConfigurationRecord` (also the WebM `CodecPrivate`).
 - **Frames**: a `KEY_FRAME` every `keyint` frames, `INTER_FRAME`s otherwise. Inter frames use
   slot 0 (the previous reconstruction) for all seven references and refresh slot 0 only, so
-  `LAST_FRAME` is always the previous frame. `primary_ref_frame = PRIMARY_REF_NONE` (default
-  CDFs every frame), symbol-level CDF adaptation on, frame-end CDF update off. One tile,
+  `LAST_FRAME` is always the previous frame. CDFs adapt per symbol and are saved at the end of
+  every frame; inter frames load them from `LAST_FRAME` (`primary_ref_frame` = 0). One tile,
   `TX_MODE_LARGEST`, `reduced_tx_set`, no segmentation, no delta q / lf.
 - **Deblocking**: the normative loop filter (7.14) runs on the reconstruction; the frame level
   (the same for both luma directions and both chroma planes, no deltas, sharpness 0) is searched
@@ -40,8 +40,9 @@ reconstruction, so prediction never drifts.
   from neighbour / co-located / parent candidates, a whole-sample diamond search and half- then
   quarter-sample refinement (`allow_high_precision_mv` = 0); the normative 8-tap `EIGHTTAP`
   prediction for luma and chroma; skip blocks; per-block intra / inter choice.
-- **Residual**: one transform per plane and block (4x4 ... 32x32): `DCT_DCT` for luma, the
-  mode-dependent `DCT` / `ADST` combination for intra chroma; dead-zone quantisation with the
+- **Residual**: one transform per plane and block (4x4 ... 32x32): for intra luma `DCT_DCT` or
+  the mode's preferred `ADST` combination (rate-distortion choice over the two best modes), the
+  mode-dependent type for intra chroma, `DCT_DCT` for inter blocks; dead-zone quantisation with the
   spec's `Dc_Qlookup` / `Ac_Qlookup`; the normative dequantisation and inverse transforms in the
   reconstruction loop; full coefficient coding (all_zero, tx type, eob_pt, eob_extra,
   coeff_base_eob, coeff_base, coeff_br, dc_sign, Golomb) with the exact contexts.

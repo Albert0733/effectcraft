@@ -80,14 +80,23 @@ fn is_directional(mode: usize) -> bool {
 }
 
 impl<'a> TileWriter<'a> {
-    pub fn new(g: &'a FrameGeom, intra_only: bool, qidx: u8) -> Self {
+    /// `init`: the CDFs saved by the primary reference frame (load_cdfs), or None for the
+    /// defaults (init_non_coeff_cdfs / init_coeff_cdfs).
+    pub fn new(g: &'a FrameGeom, intra_only: bool, qidx: u8, init: Option<&Cdfs>) -> Self {
         let n = g.mi_cols * g.mi_rows;
         TileWriter {
             g,
             intra_only,
             qidx,
             sw: SymbolWriter::new(false),
-            cdf: Cdfs::new(qidx as u32),
+            cdf: match init {
+                Some(c) => {
+                    let mut c = Box::new(c.clone());
+                    c.clear_counts();
+                    c
+                }
+                None => Cdfs::new(qidx as u32),
+            },
             kf_y_mode: DEFAULT_INTRA_FRAME_Y_MODE_CDF,
             mi: Mi {
                 cols: g.mi_cols,
@@ -114,8 +123,9 @@ impl<'a> TileWriter<'a> {
         }
     }
 
-    pub fn finish(self) -> Vec<u8> {
-        self.sw.finish()
+    /// The tile data and the final CDFs (saved for the frame-end CDF update).
+    pub fn finish(self) -> (Vec<u8>, Box<Cdfs>) {
+        (self.sw.finish(), self.cdf)
     }
 
     /// The mode info the loop filter needs.

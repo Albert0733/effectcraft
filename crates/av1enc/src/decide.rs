@@ -35,6 +35,8 @@ pub(crate) struct RefFrame {
     pub mvs: Vec<[i32; 2]>,
     /// The frame's loop filter level.
     pub lf_level: u32,
+    /// The CDFs saved at the end of the frame (loaded by the next frame).
+    pub cdfs: Box<crate::cdf::Cdfs>,
 }
 
 pub(crate) struct FrameGeom {
@@ -339,19 +341,45 @@ impl<'a> Decider<'a> {
             bit_depth: bd,
         };
         let ed = edges(&self.rec[0], &e);
-        let mut best = (f64::MAX, DC_PRED);
-        for &mode in INTRA_MODES_USED.iter() {
+        // the two best modes by SAD, then a rate-distortion choice of mode and transform type
+        let mut ranked: Vec<(f64, usize)> = INTRA_MODES_USED
+            .iter()
+            .map(|&mode| {
+                predict_intra(&ed, &e, mode, &mut pred);
+                let sad = self.sad(0, c * 4, r * 4, n, &pred[..n * n]) as f64;
+                (sad + self.lambda_sad * if mode == DC_PRED { 1.0 } else { MODE_BITS_INTRA }, mode)
+            })
+            .collect();
+        ranked.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let tx_y = tx_size_for(log2);
+        let mut best: Option<(f64, usize, usize, TxResult, Option<Vec<u16>>)> = None;
+        for &(_, mode) in ranked.iter().take(2) {
             predict_intra(&ed, &e, mode, &mut pred);
-            let sad = self.sad(0, c * 4, r * 4, n, &pred[..n * n]) as f64;
-            let cost = sad + self.lambda_sad * if mode == DC_PRED { 1.0 } else { MODE_BITS_INTRA };
-            if cost < best.0 {
-                best = (cost, mode);
-                best_pred[..n * n].copy_from_slice(&pred[..n * n]);
+            let mut types = vec![DCT_DCT];
+            let alt = MODE_TO_TXFM[mode] as usize;
+            if alt != DCT_DCT && tx_in_set(tx_set(tx_y, false), false, alt) {
+                types.push(alt);
+            }
+            for &t in &types {
+                let (res, recon) = self.try_tx(0, c * 4, r * 4, log2, t, &pred[..n * n], true);
+                let type_bits = if !res.nonzero || tx_set(tx_y, false) == TX_SET_DCTONLY {
+                    0.0
+                } else if t == DCT_DCT {
+                    1.0
+                } else {
+                    2.0
+                };
+                let mode_bits = if mode == DC_PRED { 1.0 } else { MODE_BITS_INTRA };
+                let cost = res.dist + self.lambda * (res.bits + type_bits + mode_bits);
+                if best.as_ref().is_none_or(|b| cost < b.0) {
+                    best_pred[..n * n].copy_from_slice(&pred[..n * n]);
+                    best = Some((cost, mode, t, res, recon));
+                }
             }
         }
-        let y_mode = best.1;
-        let tx_y = tx_size_for(log2);
-        let ty = self.code_tx(0, c * 4, r * 4, log2, DCT_DCT, &best_pred[..n * n], true);
+        let (_, y_mode, tx_type_y, ty, recon) = best.expect("an intra mode");
+        self.put(0, c * 4, r * 4, n, recon.as_deref().unwrap_or(&best_pred[..n * n]));
+        let tx_type_y = if ty.nonzero { tx_type_y } else { DCT_DCT };
         self.mark_decoded(0, r, c, n4);
         // chroma (one mode for both planes)
         let cn = n >> 1;
@@ -391,12 +419,11 @@ impl<'a> Decider<'a> {
             tuv.push(self.code_tx(1 + i, c * 2, r * 2, clog2, uv_type, &pred[..cn * cn], true));
             self.mark_decoded(1 + i, r, c, n4);
         }
-        let _ = tx_y;
         let skip = !ty.nonzero && !tuv[0].nonzero && !tuv[1].nonzero;
         let dist = ty.dist + tuv[0].dist + tuv[1].dist;
         let bits = if skip { 1.0 } else { ty.bits + tuv[0].bits + tuv[1].bits + 1.0 } + MODE_BITS_INTRA + 2.0;
         let [u, v]: [TxResult; 2] = tuv.try_into().ok().expect("two chroma planes");
-        let leaf = Leaf { bsize, is_inter: false, y_mode, uv_mode, tx_type_y: DCT_DCT, mv: [0, 0], skip, coefs: [ty.levels, u.levels, v.levels] };
+        let leaf = Leaf { bsize, is_inter: false, y_mode, uv_mode, tx_type_y, mv: [0, 0], skip, coefs: [ty.levels, u.levels, v.levels] };
         (leaf, dist + self.lambda * bits)
     }
 
@@ -688,6 +715,15 @@ impl<'a> Decider<'a> {
     /// Transform, quantise and reconstruct one square transform block of `plane` at (x, y)
     /// over the prediction `pred`; the reconstruction is written to `rec`.
     fn code_tx(&mut self, p: usize, x: usize, y: usize, log2: u32, tx_type: usize, pred: &[u16], intra: bool) -> TxResult {
+        let (res, recon) = self.try_tx(p, x, y, log2, tx_type, pred, intra);
+        let n = 1usize << log2;
+        self.put(p, x, y, n, recon.as_deref().unwrap_or(pred));
+        res
+    }
+
+    /// Transform and quantise one block; returns the result and its reconstruction (None: the
+    /// prediction) without writing it.
+    fn try_tx(&self, p: usize, x: usize, y: usize, log2: u32, tx_type: usize, pred: &[u16], intra: bool) -> (TxResult, Option<Vec<u16>>) {
         let n = 1usize << log2;
         let tx_sz = tx_size_for(log2);
         let bd = self.bd;
@@ -715,19 +751,16 @@ impl<'a> Decider<'a> {
         }
         let zero_dist = self.sse(p, x, y, n, pred);
         if !nonzero {
-            self.put(p, x, y, n, pred);
-            return TxResult { levels, nonzero, dist: zero_dist, bits: 1.0 };
+            return (TxResult { levels, nonzero, dist: zero_dist, bits: 1.0 }, None);
         }
         let recon = self.reconstruct(&levels, tx_sz, tx_type, pred, n, bd);
         let dist = self.sse(p, x, y, n, &recon);
         let bits = estimate_bits(&levels, tx_sz);
         if dist + self.lambda * bits >= zero_dist + self.lambda {
             levels.iter_mut().for_each(|l| *l = 0);
-            self.put(p, x, y, n, pred);
-            return TxResult { levels, nonzero: false, dist: zero_dist, bits: 1.0 };
+            return (TxResult { levels, nonzero: false, dist: zero_dist, bits: 1.0 }, None);
         }
-        self.put(p, x, y, n, &recon);
-        TxResult { levels, nonzero: true, dist, bits }
+        (TxResult { levels, nonzero: true, dist, bits }, Some(recon))
     }
 
     /// Dequantisation (7.12.3) and the inverse transform, added to the prediction.
