@@ -55,7 +55,9 @@ mod fx_key;
 mod fx_light;
 mod fx_noise;
 mod fx_stylize;
+mod fx_text;
 mod fx_tone;
+mod fx_transition;
 mod fx_warp;
 mod ops;
 mod particles;
@@ -216,7 +218,11 @@ mod tests_fx_noise;
 #[cfg(test)]
 mod tests_fx_stylize;
 #[cfg(test)]
+mod tests_fx_text;
+#[cfg(test)]
 mod tests_fx_tone;
+#[cfg(test)]
+mod tests_fx_transition;
 #[cfg(test)]
 mod tests_fx_warp;
 #[cfg(test)]

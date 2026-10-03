@@ -94,6 +94,7 @@ pub use transition::place_layer;
 // effectcraft-gpu fx_noise.
 pub use noise::remove_grain_level;
 pub use noise3::{FractalGpu, fractal_gpu};
+pub use textfx::{TextLayer, text_layer};
 pub use time_fx::{posterized_time, time_frames};
 // effectcraft-gpu fx_tone.
 pub use ocio::color_stabilizer_maps;
@@ -936,6 +937,28 @@ pub const GPU_EFFECTS: &[&str] = &[
     "ec.generate.cclightburst",
     "ec.generate.cclightsweep",
     "ec.transition.cclightwipe",
+    // effectcraft-gpu fx_transition (transitions, perspective)
+    "ec.transition.blockdissolve",
+    "ec.transition.ccglasswipe",
+    "ec.transition.ccgridwipe",
+    "ec.transition.ccimagewipe",
+    "ec.transition.ccjaws",
+    "ec.transition.cclinesweep",
+    "ec.transition.ccradialscalewipe",
+    "ec.transition.ccscalewipe",
+    "ec.transition.cctwister",
+    "ec.transition.ccwarpomatic",
+    "ec.perspective.radialshadow",
+    "ec.distort.ccbender",
+    "ec.distort.ccblobbylize",
+    "ec.perspective.cccylinder",
+    "ec.perspective.ccsphere",
+    "ec.perspective.ccspotlight",
+    "ec.perspective.ccenvironment",
+    "ec.perspective.3dglasses",
+    // effectcraft-gpu fx_text (glyph coverage rasterised on the CPU)
+    "ec.text.numbers",
+    "ec.text.timecode",
 ];
 
 /// Effects whose output depends on [`EffectCtx::time`] directly (not only through animated

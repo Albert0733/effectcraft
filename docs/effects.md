@@ -5,7 +5,7 @@
 
 EffectCraft ships 306 effects with 3009 parameters in total, grouped into the same categories as the Effects & Presets panel. Every effect is our own implementation, written from public behaviour descriptions and standard image-processing literature. Parameter names, order, popup options, units, defaults and ranges follow the reference application so that projects, expressions and muscle memory carry over.
 
-- **GPU**: 170 effects also run on the GPU compositor with identical results.
+- **GPU**: 190 effects also run on the GPU compositor with identical results.
 - **32**: 306 effects process 32-bit float (HDR, overbright) pixels without clamping.
 - **Status**: 306 implemented in full, 0 partial (what is missing is listed).
 
@@ -133,8 +133,8 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 | Bezier Warp | `ec.distort.bezierwarp` | 13 | GPU | 32 | Implemented |
 | Bulge | `ec.distort.bulge` | 6 | GPU | 32 | Implemented |
 | CC Bend It | `ec.distort.ccbendit` | 4 | GPU | 32 | Implemented |
-| CC Bender | `ec.distort.ccbender` | 5 |  | 32 | Implemented |
-| CC Blobbylize | `ec.distort.ccblobbylize` | 15 |  | 32 | Implemented |
+| CC Bender | `ec.distort.ccbender` | 5 | GPU | 32 | Implemented |
+| CC Blobbylize | `ec.distort.ccblobbylize` | 15 | GPU | 32 | Implemented |
 | CC Flo Motion | `ec.distort.ccflomotion` | 7 | GPU | 32 | Implemented |
 | CC Griddler | `ec.distort.ccgriddler` | 5 | GPU | 32 | Implemented |
 | CC Lens | `ec.distort.cclens` | 3 | GPU | 32 | Implemented |
@@ -303,15 +303,15 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 | Effect | Id | Params | GPU | 32 | Status |
 |---|---|---:|:-:|:-:|---|
 | 3D Camera Tracker | `ec.perspective.cameratracker` | 12 |  | 32 | Implemented |
-| 3D Glasses | `ec.perspective.3dglasses` | 8 |  | 32 | Implemented |
+| 3D Glasses | `ec.perspective.3dglasses` | 8 | GPU | 32 | Implemented |
 | Bevel Alpha | `ec.perspective.bevelalpha` | 4 | GPU | 32 | Implemented |
 | Bevel Edges | `ec.perspective.beveledges` | 4 | GPU | 32 | Implemented |
-| CC Cylinder | `ec.perspective.cccylinder` | 12 |  | 32 | Implemented |
-| CC Environment | `ec.perspective.ccenvironment` | 4 |  | 32 | Implemented |
-| CC Sphere | `ec.perspective.ccsphere` | 14 |  | 32 | Implemented |
-| CC Spotlight | `ec.perspective.ccspotlight` | 8 |  | 32 | Implemented |
+| CC Cylinder | `ec.perspective.cccylinder` | 12 | GPU | 32 | Implemented |
+| CC Environment | `ec.perspective.ccenvironment` | 4 | GPU | 32 | Implemented |
+| CC Sphere | `ec.perspective.ccsphere` | 14 | GPU | 32 | Implemented |
+| CC Spotlight | `ec.perspective.ccspotlight` | 8 | GPU | 32 | Implemented |
 | Drop Shadow | `ec.perspective.dropshadow` | 6 | GPU | 32 | Implemented |
-| Radial Shadow | `ec.perspective.radialshadow` | 9 |  | 32 | Implemented |
+| Radial Shadow | `ec.perspective.radialshadow` | 9 | GPU | 32 | Implemented |
 
 ## Simulation
 
@@ -370,8 +370,8 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 
 | Effect | Id | Params | GPU | 32 | Status |
 |---|---|---:|:-:|:-:|---|
-| Numbers | `ec.text.numbers` | 14 |  | 32 | Implemented |
-| Timecode | `ec.text.timecode` | 12 |  | 32 | Implemented |
+| Numbers | `ec.text.numbers` | 14 | GPU | 32 | Implemented |
+| Timecode | `ec.text.timecode` | 12 | GPU | 32 | Implemented |
 
 ## Time
 
@@ -390,17 +390,17 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 
 | Effect | Id | Params | GPU | 32 | Status |
 |---|---|---:|:-:|:-:|---|
-| Block Dissolve | `ec.transition.blockdissolve` | 5 |  | 32 | Implemented |
-| CC Glass Wipe | `ec.transition.ccglasswipe` | 5 |  | 32 | Implemented |
-| CC Grid Wipe | `ec.transition.ccgridwipe` | 7 |  | 32 | Implemented |
-| CC Image Wipe | `ec.transition.ccimagewipe` | 7 |  | 32 | Implemented |
-| CC Jaws | `ec.transition.ccjaws` | 6 |  | 32 | Implemented |
+| Block Dissolve | `ec.transition.blockdissolve` | 5 | GPU | 32 | Implemented |
+| CC Glass Wipe | `ec.transition.ccglasswipe` | 5 | GPU | 32 | Implemented |
+| CC Grid Wipe | `ec.transition.ccgridwipe` | 7 | GPU | 32 | Implemented |
+| CC Image Wipe | `ec.transition.ccimagewipe` | 7 | GPU | 32 | Implemented |
+| CC Jaws | `ec.transition.ccjaws` | 6 | GPU | 32 | Implemented |
 | CC Light Wipe | `ec.transition.cclightwipe` | 8 | GPU | 32 | Implemented |
-| CC Line Sweep | `ec.transition.cclinesweep` | 5 |  | 32 | Implemented |
-| CC Radial ScaleWipe | `ec.transition.ccradialscalewipe` | 3 |  | 32 | Implemented |
-| CC Scale Wipe | `ec.transition.ccscalewipe` | 3 |  | 32 | Implemented |
-| CC Twister | `ec.transition.cctwister` | 5 |  | 32 | Implemented |
-| CC WarpoMatic | `ec.transition.ccwarpomatic` | 8 |  | 32 | Implemented |
+| CC Line Sweep | `ec.transition.cclinesweep` | 5 | GPU | 32 | Implemented |
+| CC Radial ScaleWipe | `ec.transition.ccradialscalewipe` | 3 | GPU | 32 | Implemented |
+| CC Scale Wipe | `ec.transition.ccscalewipe` | 3 | GPU | 32 | Implemented |
+| CC Twister | `ec.transition.cctwister` | 5 | GPU | 32 | Implemented |
+| CC WarpoMatic | `ec.transition.ccwarpomatic` | 8 | GPU | 32 | Implemented |
 | Card Wipe | `ec.transition.cardwipe` | 44 |  | 32 | Implemented |
 | Gradient Wipe | `ec.transition.gradientwipe` | 5 | GPU | 32 | Implemented |
 | Iris Wipe | `ec.transition.iriswipe` | 7 | GPU | 32 | Implemented |
