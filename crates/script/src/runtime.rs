@@ -282,7 +282,7 @@ fn normalize(p: &str) -> std::path::PathBuf {
         .unwrap_or(out)
 }
 
-const GATE: &str = "Preferences ▸ Scripting & Expressions ▸ Allow Scripts to Write Files and Access Network";
+pub(crate) const GATE: &str = "Preferences ▸ Scripting & Expressions ▸ Allow Scripts to Write Files and Access Network";
 
 /// The file-access gate: reads under the project's folder are always allowed; other reads, all
 /// writes and listing other folders need the Allow Scripts to Write Files preference.
@@ -375,13 +375,14 @@ pub(crate) fn new_context() -> Result<Context, String> {
     let limits = ctx.runtime_limits_mut();
     limits.set_loop_iteration_limit(200_000_000);
     limits.set_recursion_limit(2000);
-    let natives: [(JsString, usize, fn(&JsValue, &[JsValue], &mut Context) -> JsResult<JsValue>); 9] = [
+    let natives: [(JsString, usize, fn(&JsValue, &[JsValue], &mut Context) -> JsResult<JsValue>); 10] = [
         (js_string!("__exec"), 2, native_exec),
         (js_string!("__query"), 2, native_query),
         (js_string!("__print"), 1, native_print),
         (js_string!("__undo"), 2, native_undo),
         (js_string!("__task"), 3, native_task),
         (js_string!("__file"), 3, native_file),
+        (js_string!("__sock"), 3, crate::socket::native_sock),
         (js_string!("__uiNewId"), 0, crate::ui::native_new_id),
         (js_string!("__uiModal"), 1, crate::ui::native_modal),
         (js_string!("__uiLayoutNative"), 1, crate::ui::native_layout),

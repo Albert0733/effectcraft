@@ -3,9 +3,10 @@
 //! computed; what the user does goes back through the `scriptui.click` / `scriptui.set` /
 //! `scriptui.close` commands, which run the script's handlers. Every control registers an
 //! automation id `scriptui.<window>.<control>` (and `scriptui.<window>.<name>` when the script
-//! named it).
+//! named it). Controls with an `onDraw` handler are painted from their draw list; edit texts and
+//! sliders send live `changing` updates (onChanging) while typing / dragging.
 
-use effectcraft_engine::scriptui::{ScriptWindow, Widget, WidgetKind, WindowKind, layout};
+use effectcraft_engine::scriptui::{DrawOp, PathSeg, ScriptWindow, Widget, WidgetKind, WindowKind, layout};
 use egui::{Align2, Color32, Rect, Sense, Stroke, StrokeKind, UiBuilder, pos2, vec2};
 use serde_json::{Value, json};
 
@@ -16,6 +17,8 @@ use crate::theme::Tokens;
 enum Act {
     Click(u32, u32),
     Set(u32, u32, Value),
+    /// A live update (each keystroke / slider step): fires onChanging.
+    Changing(u32, u32, Value),
     Close(u32),
 }
 
@@ -78,6 +81,27 @@ fn draw_widget(app: &mut EffectcraftApp, ui: &mut egui::Ui, origin: egui::Pos2, 
     register(app, win, w, rect);
     let id = egui::Id::new(("sui", win, w.id));
     let tip = |r: egui::Response| if w.help_tip.is_empty() { r } else { r.on_hover_text(&w.help_tip) };
+    // onDraw: the script paints the control. Without drawOSControl() its paint replaces the
+    // default look (buttons and toggles still respond to clicks); with it, it goes on top.
+    let custom = w.handlers.iter().any(|h| h == "onDraw");
+    let os = w.draw.iter().any(|d| matches!(d, DrawOp::Os));
+    if custom && !os {
+        if w.kind.is_container() {
+            paint_draw(ui, rect, &w.draw, &t);
+            draw_children(app, ui, origin, win, w, acts);
+            return;
+        }
+        let clickable = matches!(w.kind, WidgetKind::Button | WidgetKind::IconButton | WidgetKind::Checkbox | WidgetKind::RadioButton);
+        let r = ui.interact(rect, id, if clickable && w.enabled { Sense::click() } else { Sense::hover() });
+        paint_draw(ui, rect, &w.draw, &t);
+        if tip(r).clicked() && clickable {
+            acts.push(Act::Click(win, w.id));
+        }
+        return;
+    }
+    if custom && w.kind.is_container() {
+        paint_draw(ui, rect, &w.draw, &t);
+    }
     match w.kind {
         WidgetKind::Group | WidgetKind::Tab | WidgetKind::Window | WidgetKind::TabbedPanel => draw_children(app, ui, origin, win, w, acts),
         WidgetKind::Panel => {
@@ -112,8 +136,16 @@ fn draw_widget(app: &mut EffectcraftApp, ui: &mut egui::Ui, origin: egui::Pos2, 
             let te = te.id(id).interactive(!w.read_only).font(Tokens::ui(12.0));
             let r = ui.add_enabled_ui(w.enabled, |ui| ui.put(rect, te)).inner;
             let r = tip(r);
-            if r.lost_focus() && buf != w.text {
+            // Live updates already sent the text: the commit still runs onChange.
+            let dirty_id = id.with("dirty");
+            let dirty = ui.data(|d| d.get_temp::<bool>(dirty_id)).unwrap_or(false);
+            if r.lost_focus() && (buf != w.text || dirty) {
                 acts.push(Act::Set(win, w.id, json!(buf)));
+                ui.data_mut(|d| d.remove::<bool>(dirty_id));
+            } else if r.changed() && w.handlers.iter().any(|h| h == "onChanging") {
+                // Each keystroke reaches the script's onChanging (onChange runs on commit).
+                acts.push(Act::Changing(win, w.id, json!(buf)));
+                ui.data_mut(|d| d.insert_temp(dirty_id, true));
             }
             ui.data_mut(|d| d.insert_temp(id, buf));
         }
@@ -145,6 +177,10 @@ fn draw_widget(app: &mut EffectcraftApp, ui: &mut egui::Ui, origin: egui::Pos2, 
                 .inner;
             let r = tip(r);
             if r.dragged() {
+                // Live: each step of the drag reaches the script (onChanging).
+                if r.changed() {
+                    acts.push(Act::Changing(win, w.id, json!(v)));
+                }
                 ui.data_mut(|d| d.insert_temp(id, v));
             } else {
                 ui.data_mut(|d| d.remove::<f64>(id));
@@ -203,6 +239,45 @@ fn draw_widget(app: &mut EffectcraftApp, ui: &mut egui::Ui, origin: egui::Pos2, 
             ui.painter().rect_stroke(rect, 2.0, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
         }
     }
+    if custom && !w.kind.is_container() {
+        paint_draw(ui, rect, &w.draw, &t);
+    }
+}
+
+/// Paint an onDraw draw list in `rect` (control coordinates → screen).
+fn paint_draw(ui: &egui::Ui, rect: Rect, ops: &[DrawOp], t: &Tokens) {
+    let p = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
+    let col = |c: &Option<[f32; 4]>, theme: Color32| match c {
+        Some(c) => egui::Rgba::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]).into(),
+        None => theme,
+    };
+    let at = |x: f64, y: f64| rect.min + vec2(x as f32, y as f32);
+    for op in ops {
+        match op {
+            DrawOp::Fill { color, path } => {
+                let c = col(color, t.field_bg);
+                for (pts, _) in PathSeg::polylines(path, 48) {
+                    let pts: Vec<egui::Pos2> = pts.iter().map(|q| at(q[0], q[1])).collect();
+                    p.add(egui::Shape::convex_polygon(pts, c, Stroke::NONE));
+                }
+            }
+            DrawOp::Stroke { color, width, path } => {
+                let s = Stroke::new(*width as f32, col(color, t.text));
+                for (pts, closed) in PathSeg::polylines(path, 48) {
+                    let pts: Vec<egui::Pos2> = pts.iter().map(|q| at(q[0], q[1])).collect();
+                    p.add(if closed { egui::Shape::closed_line(pts, s) } else { egui::Shape::line(pts, s) });
+                }
+            }
+            DrawOp::Text { text, color, x, y, size, .. } => {
+                p.text(at(*x, *y), Align2::LEFT_TOP, text, Tokens::ui(*size as f32), col(color, t.text));
+            }
+            DrawOp::Image { x, y, w, h } => {
+                let r = Rect::from_min_size(at(*x, *y), vec2(*w as f32, *h as f32));
+                p.rect_stroke(r, 0.0, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
+            }
+            DrawOp::Os => {}
+        }
+    }
 }
 
 /// Checkboxes and radio buttons sit at the left of their (possibly filled) bounds.
@@ -216,6 +291,7 @@ fn perform(app: &mut EffectcraftApp, ctx: &egui::Context, acts: Vec<Act>) {
         let (cmd, p) = match a {
             Act::Click(w, id) => ("scriptui.click", json!({"window": w, "widget": id})),
             Act::Set(w, id, v) => ("scriptui.set", json!({"window": w, "widget": id, "value": v})),
+            Act::Changing(w, id, v) => ("scriptui.set", json!({"window": w, "widget": id, "value": v, "changing": true})),
             Act::Close(w) => ("scriptui.close", json!({"window": w})),
         };
         match crate::menus::invoke(app, ctx, cmd, p) {

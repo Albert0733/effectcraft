@@ -188,7 +188,7 @@ pub fn specs() -> Vec<CommandSpec> {
         crate::query!(
             "scriptui.get",
             "Script Window Controls",
-            "{window?: id | title} → {id, title, kind, root: {id, type, name, text, value, checked, items, selection, bounds, enabled, children…}}",
+            "{window?: id | title} → {id, title, kind, root: {id, type, name, text, value, checked, items, selection, bounds, enabled, draw (onDraw paint list), children…}}",
             scriptui::get
         ),
         cmd!(
@@ -205,7 +205,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Set Script Window Control",
             [],
             None,
-            "{window?, widget, value: text | number | bool | item index | item text} (edit text, sliders, checkboxes, lists) → fires onChanging / onChange",
+            "{window?, widget, value: text | number | bool | item index | item text, changing?: bool (a live update: each keystroke / slider step; fires onChanging only)} (edit text, sliders, checkboxes, lists) → fires onChanging / onChange",
             always,
             scriptui::set
         ),

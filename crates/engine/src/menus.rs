@@ -505,6 +505,7 @@ File
     Placeholder... | file.importPlaceholder
     Solid... | file.importSolid
     Lottie... | file.importLottie
+    Vanishing Point (.vpe)... | file.importVanishingPoint
     Essential Graphics Template... | essential.importTemplate
   Import Recent Footage
     @dynamic:recentFootage
@@ -528,6 +529,7 @@ File
     Find Missing Effects | file.findMissing {"what":"effects"}
     Find Missing Fonts | file.findMissing {"what":"fonts"}
     Find Missing Footage | file.findMissing {"what":"footage"}
+  Watch Folder... | file.watchFolder
   ---
   Scripts
     @dynamic:scripts
@@ -664,9 +666,12 @@ Composition
     Audio | playback.audio
   Save Frame As
     File... | comp.saveFrameAs
+    Photoshop Layers... | comp.saveFrameAsPsd
+    ProEXR... | comp.saveFrameAsExr
   Pre-render... | render.preRender
   Save Current Preview... | render.saveCurrentPreview
   ---
+  Open in Essential Graphics | comp.openInEssentialGraphics
   Responsive Design — Time
     Create Intro | comp.responsiveTime {"op":"intro"}
     Create Outro | comp.responsiveTime {"op":"outro"}
@@ -1165,6 +1170,8 @@ Window
   Timeline | window.panel {"panel":"timeline"}
   @dynamic:openViewers
   ---
+  Create Nulls From Paths | window.panel {"panel":"createNullsFromPaths"}
+  VR Comp Editor | window.panel {"panel":"vrCompEditor"}
   @dynamic:scriptPanels
 Help
   EffectCraft Help... | help.docs {"page":"help"} | F1
@@ -1173,6 +1180,9 @@ Help
   Effect Reference... | help.docs {"page":"effects"}
   Animation Presets... | anim.browsePresets
   Keyboard Shortcuts... | app.keyboardShortcuts
+  ---
+  In-App Tutorials... | help.inAppTutorials
+  Online Tutorials... | help.onlineTutorials
   ---
   System Compatibility Report... | help.systemReport
   Enable Logging | help.enableLogging
