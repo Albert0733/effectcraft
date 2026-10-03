@@ -5,7 +5,8 @@
 //! ITU-R BT.601 / BT.709 / BT.2020 coefficients, colour differences `Cb = (B − Y) / (2(1 − Kb))`
 //! and `Cr = (R − Y) / (2(1 − Kr))` (each in −0.5…0.5). Values are read straight (un-premultiplied)
 //! from the frame. Every scope is a [`Scope`]: a `width × height` grid of three density planes
-//! (one per trace colour) normalised so the busiest cell is 1, ready to be tinted and drawn.
+//! (one per trace colour) on a logarithmic scale where the busiest cell is 1, ready to be tinted
+//! and drawn.
 //!
 //! Scales: **8-bit** maps 0…1 to the plot (0…255 graticule); **float** maps −0.25…1.25 so
 //! super-white and sub-black values stay visible. **Clamp** limits the signal to 0…1 first.
@@ -178,10 +179,12 @@ impl Scope {
         self
     }
     fn normalise(&mut self) {
-        // Square-root density so faint traces stay visible next to dense ones.
+        // Logarithmic density (like a phosphor trace) so faint traces stay visible next to
+        // dense ones.
         let max = self.counts.iter().flat_map(|p| p.iter()).copied().max().unwrap_or(0).max(1) as f32;
+        let k = 1.0 / (1.0 + max).ln();
         for c in 0..3 {
-            self.planes[c] = self.counts[c].iter().map(|&n| (n as f32 / max).sqrt()).collect();
+            self.planes[c] = self.counts[c].iter().map(|&n| if n == 0 { 0.0 } else { (0.25 + 0.75 * (1.0 + n as f32).ln() * k).min(1.0) }).collect();
         }
     }
     /// Total count of plane `c`.

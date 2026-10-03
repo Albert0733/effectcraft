@@ -102,3 +102,43 @@ fn progress_panel_cancels_a_job() {
     assert!(h.state().session.jobs().is_empty());
     assert_eq!(h.state().session.job_log.last().unwrap().status, "cancelled");
 }
+
+/// Headless look at the panels (wgpu offscreen; needs a GPU adapter). Run with
+/// `PANELS_SNAPSHOT=/abs/dir cargo test -p effectcraft-ui-egui --test ui_panels -- --ignored`.
+#[test]
+#[ignore]
+fn panels_snapshot() {
+    let mut s = Session::default();
+    s.execute("file.openDemoProject", json!({})).unwrap();
+    let solid = s.project.items.values().find(|i| matches!(i.kind, effectcraft_engine::project::ItemKind::Solid(_))).map(|i| i.id.0);
+    let mut app = Some(EffectcraftApp::new(s));
+    let mut h = Harness::builder().with_size(egui::vec2(1600.0, 1000.0)).build_eframe(|_| app.take().expect("app"));
+    h.run_steps(3);
+    let ctx = h.ctx.clone();
+    effectcraft_ui_egui::menus::invoke(h.state_mut(), &ctx, "window.workspace", json!({"name": "All Panels"})).unwrap();
+    h.run_steps(3);
+    let dir = std::env::var("PANELS_SNAPSHOT").unwrap_or_else(|_| concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/test-out").into());
+    std::fs::create_dir_all(&dir).unwrap();
+    if let Some(id) = solid {
+        h.state_mut().session.execute("footage.open", json!({"item": id})).unwrap();
+    }
+    for (panel, scope) in [
+        ("lumetriScopes", "waveformRgb"),
+        ("lumetriScopes", "vectorscopeYuv"),
+        ("lumetriScopes", "histogram"),
+        ("lumetriScopes", "paradeRgb"),
+        ("contentAwareFill", ""),
+        ("metadata", ""),
+        ("progress", ""),
+        ("mediaBrowser", ""),
+        ("footage", ""),
+    ] {
+        if !scope.is_empty() {
+            h.state_mut().ui.scopes.scope = scope.into();
+        }
+        open(&mut h, panel);
+        h.run_steps(3);
+        let img = h.render().expect("render");
+        img.save(format!("{dir}/{panel}{scope}.png")).unwrap();
+    }
+}

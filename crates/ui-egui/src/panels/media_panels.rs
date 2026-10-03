@@ -104,11 +104,13 @@ pub fn media_browser(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     if only != st.importable_only {
         kit::exec(app, "mediaBrowser.go", json!({"path": dir, "importableOnly": only}));
     }
-    x += 100.0;
-    p.text(pos2(x, y + 10.0), Align2::LEFT_CENTER, &dir, Tokens::ui(11.5), t.text_dim);
-    app.auto.add("mediaBrowser.path", Rect::from_min_max(pos2(x, y), pos2(rect.max.x - 8.0, y + 20.0)), &dir);
+    // The path on its own row.
+    let _ = x;
+    let py = y + 24.0;
+    p.text(pos2(rect.min.x + 10.0, py + 9.0), Align2::LEFT_CENTER, &dir, Tokens::ui(11.5), t.text_dim);
+    app.auto.add("mediaBrowser.path", Rect::from_min_max(pos2(rect.min.x + 8.0, py), pos2(rect.max.x - 8.0, py + 18.0)), &dir);
     // Left column: favourites.
-    let side = Rect::from_min_max(pos2(rect.min.x, rect.min.y + 32.0), pos2(rect.min.x + 160.0_f32.min(rect.width() * 0.3), rect.max.y));
+    let side = Rect::from_min_max(pos2(rect.min.x, rect.min.y + 54.0), pos2(rect.min.x + 160.0_f32.min(rect.width() * 0.3), rect.max.y));
     p.line_segment([side.right_top(), side.right_bottom()], Stroke::new(1.0, t.separator));
     p.text(pos2(side.min.x + 10.0, side.min.y + 10.0), Align2::LEFT_CENTER, "Favorites", Tokens::semibold(11.5), t.text_dim);
     let mut fy = side.min.y + 22.0;

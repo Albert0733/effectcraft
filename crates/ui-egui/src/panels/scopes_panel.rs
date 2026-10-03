@@ -62,11 +62,13 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         st.float = i == 1;
     }
     x += 78.0;
-    st.clamp = kit::checkbox(app, ui, pos2(x, y + 2.0), "scopes.clamp", "Clamp Signal", st.clamp);
+    // Narrow panels: Clamp Signal on a second row.
+    let (cx, cy, top) = if x + 110.0 > rect.max.x { (rect.min.x + 8.0, y + 26.0, 60.0) } else { (x, y, 34.0) };
+    st.clamp = kit::checkbox(app, ui, pos2(cx, cy + 2.0), "scopes.clamp", "Clamp Signal", st.clamp);
     if st != app.ui.scopes {
         app.ui.scopes = st.clone();
     }
-    let area = Rect::from_min_max(pos2(rect.min.x + 8.0, rect.min.y + 34.0), pos2(rect.max.x - 8.0, rect.max.y - 8.0));
+    let area = Rect::from_min_max(pos2(rect.min.x + 8.0, rect.min.y + top), pos2(rect.max.x - 8.0, rect.max.y - 8.0));
     if area.width() < 40.0 || area.height() < 40.0 {
         return;
     }

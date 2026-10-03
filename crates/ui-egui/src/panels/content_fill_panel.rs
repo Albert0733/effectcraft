@@ -45,7 +45,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 .unwrap_or(0);
             format!("{} — {masks} subtracting mask(s)", l.name)
         }
-        None => "Select a layer with transparent areas (e.g. a Subtract mask)".into(),
+        None => "Select a layer with a Subtract mask".into(),
     };
     p.text(pos2(x0, y + 9.0), Align2::LEFT_CENTER, &target, Tokens::ui(11.5), if layer.is_some() { t.text_dim } else { t.text_faint });
     app.auto.add("contentFill.target", Rect::from_min_size(pos2(x0, y), vec2(rect.width() - 24.0, 18.0)), &target);
