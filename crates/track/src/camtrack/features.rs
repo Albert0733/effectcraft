@@ -89,7 +89,7 @@ impl TrackAnalyzer {
                 let (cx, cy) = ((p[0] / cell) as usize, (p[1] / cell) as usize);
                 !occ.get(cy * gw + cx).copied().unwrap_or(true)
             };
-            let opts = CornerOpts { max_features: want - self.active.len().min(want), min_distance: md, quality: 0.005, window: 2, border: 8 };
+            let opts = CornerOpts { max_features: want - self.active.len().min(want), min_distance: md, quality: 0.001, window: 2, border: 8 };
             for p in good_features(&pyr, &opts, Some(&free)) {
                 let l = pyr.to_layer(p);
                 let id = self.tracks.len() as u32;

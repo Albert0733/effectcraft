@@ -15,7 +15,7 @@ rendered, does not count as done.
 | P1 (professional daily use) | ≈ 38% |
 | P2 (long tail) | ≈ 17% |
 | Features done / partial / missing | 18 / 60 / 14 of 92 |
-| **Effects** | **257 of 298** After Effects 2026 effects by name (86%); ≈ 70% allowing for simplified implementations |
+| **Effects** | **258 of 298** After Effects 2026 effects by name (87%); ≈ 70% allowing for simplified implementations |
 | Remaining work | ≈ **167 agent-hours** (139 h of features + ≈ 20% for 1:1 polish against After Effects) |
 | Wall-clock estimate | ≈ **42–50 hours** with five agents working in parallel and one integrating; ≈ 31–35 h for P0 + P1 only |
 
@@ -73,7 +73,7 @@ library groundwork for mask tracking and Warp Stabilizer.
 | Remaining (audit-scale agent-hours) | ≈ 167 | ≈ 100 |
 | Wall clock, five parallel agents | 42–50 h | **≈ 8–10 h at today's measured pace; ≈ 25 h by the audit's conservative figures** |
 
-What is left is concentrated in large systems: Roto Brush and Refine Edge, the 3D camera tracker,
+What is left is concentrated in large systems: Roto Brush and Refine Edge,
 Advanced 3D (models, PBR, image-based lighting), the Warp Stabilizer and mask-tracking UI on top of
 the new tracking library, a JavaScript scripting object model, SVG/PSD import, WebM, a disk cache,
 the missing effect categories (3D Channel, Immersive Video, OCIO), native macOS menus, and
@@ -93,13 +93,13 @@ wasm threads.
 | Animation | 65% | 10.4 | puppet, Wiggler/Smoother/Motion Sketch (motion-path handles and the graph editor transform box landed in M5.8) |
 | Text | ≈ 85% | 1.5 | vertical type is basic (upright characters, no tate-chu-yoko), no OpenType feature panel, no text on 3D bevels; per-character styles, paragraph settings, on-canvas editing and the `sourceText` style API landed (M9.9–M9.10) |
 | Web | 60% | 2.5 | threads, browser storage, audio |
-| 3D | 58% | 20.5 | Advanced 3D (models, PBR, image-based light), 3D camera tracker, multi-view layouts |
+| 3D | 62% | 18.5 | Advanced 3D (models, PBR, image-based light), multi-view layouts (the 3D Camera Tracker landed in M12.6) |
 | Effects | 58% | 13.6 | Effect Controls widgets (angle dial, point crosshair, eyedropper, curves), GPU versions of more effects, 41 missing effects |
 | Interface | 55% | 10.4 | drag-to-dock and floating panels, preferences, native macOS menus (viewer rulers/snapping/channels/snapshots landed in M0.13) |
 | Project | 53% | 8.1 | 8/16/32-bit pipeline and colour management, auto-save, proxies, folder moves |
 | Masks & roto | 52% | 10.0 | Roto Brush, variable-width mask feather points (mask tracking and Mask Interpolation landed in M6.6) |
 | Preview | 55% | 6.1 | GPU 3D and adjustment layers, disk cache (region of interest, snapshots, exposure and Fast Previews landed in M0.13) |
-| Tracking | ≈ 70% | 4.0 | 3D camera tracker, face tracking, Subspace Warp's mesh warp and rolling-shutter repair (point tracker, mask tracking and Warp Stabilizer landed in M6.x / M12.5) |
+| Tracking | ≈ 85% | 2.5 | face tracking, Subspace Warp's mesh warp, rolling-shutter repair, lens distortion in the camera solve (point tracker, mask tracking, Warp Stabilizer and the 3D Camera Tracker landed in M6.x / M12.5 / M12.6) |
 | Paint | 0% | 4.0 | Brush, Clone Stamp, Eraser |
 
 ## Effects still missing
@@ -107,7 +107,7 @@ wasm threads.
 Immersive Video (all 12), 3D Channel (all 8, including Cryptomatte), Color Stabilizer and the five
 OCIO transforms, CC Flo Motion, Liquify, Rolling Shutter Repair, Compressor,
 Distortion and Gate (audio), Camera-Shake Deblur, CC Radial Blur, CC Hair, Particle Playground,
-Keylight (our Screen Key stands in), Color Profile Converter and the 3D Camera Tracker. Boris FX
+Keylight (our Screen Key stands in) and Color Profile Converter. Boris FX
 Mocha and Cineware are third-party and not counted.
 
 ## Highest-value gaps, in order

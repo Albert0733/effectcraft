@@ -298,6 +298,23 @@ pub fn sym_eigen(a: &[f64], n: usize) -> (Vec<f64>, Vec<f64>) {
     (vals, vecs)
 }
 
+/// Dot product, four lanes (lets the compiler vectorise).
+fn dot_n(a: &[f64], b: &[f64]) -> f64 {
+    let mut acc = [0.0f64; 4];
+    let (ca, cb) = (a.chunks_exact(4), b.chunks_exact(4));
+    let (ra, rb) = (ca.remainder(), cb.remainder());
+    for (x, y) in ca.zip(cb) {
+        for k in 0..4 {
+            acc[k] += x[k] * y[k];
+        }
+    }
+    let mut s = acc[0] + acc[1] + acc[2] + acc[3];
+    for (x, y) in ra.iter().zip(rb) {
+        s += x * y;
+    }
+    s
+}
+
 /// Solve `A x = b` for a symmetric positive definite `A` (`n × n`, row-major) in place by
 /// Cholesky factorisation. Returns false when `A` is not positive definite.
 pub fn cholesky_solve(a: &mut [f64], n: usize, b: &mut [f64]) -> bool {
@@ -313,16 +330,9 @@ pub fn cholesky_solve(a: &mut [f64], n: usize, b: &mut [f64]) -> bool {
         a[j * n + j] = d;
         let (head, tail) = a.split_at_mut((j + 1) * n);
         let rowj = &head[j * n..j * n + j];
-        // Rows below j are independent.
-        use rayon::prelude::*;
-        let work = |row: &mut [f64]| {
-            let s: f64 = row[j] - row[..j].iter().zip(rowj).map(|(a, b)| a * b).sum::<f64>();
-            row[j] = s / d;
-        };
-        if n - j > 192 {
-            tail.par_chunks_mut(n).for_each(work);
-        } else {
-            tail.chunks_mut(n).for_each(work);
+        // Rows below j (sequential: per-column parallel dispatch costs more than it saves).
+        for row in tail.chunks_mut(n) {
+            row[j] = (row[j] - dot_n(&row[..j], rowj)) / d;
         }
     }
     // Forward: L y = b.

@@ -9,6 +9,7 @@
 //! (compositions are `Arc`s, so untouched comps are shared).
 
 pub mod autosave;
+pub mod camera_track;
 pub mod commands;
 pub mod config;
 pub mod demo;
@@ -41,6 +42,7 @@ pub use effectcraft_project as project;
 pub use effectcraft_render as render;
 pub use effectcraft_text as text;
 pub use effectcraft_time as time;
+pub use effectcraft_track as track;
 pub use render_queue::{ExportJob, ExportResult, Exporter, JobState};
 
 #[derive(Debug, thiserror::Error)]
@@ -170,6 +172,9 @@ pub struct EditorState {
     /// Tracker panel ▸ Method in mask mode (Track Mask).
     #[serde(default)]
     pub mask_track_method: mask_track::MaskMethod,
+    /// 3D Camera Tracker: the selected track points (ids) in the viewer.
+    #[serde(default)]
+    pub camera_points: Vec<u32>,
     /// Mask Interpolation panel options.
     #[serde(default)]
     pub mask_interp: commands::mask_interp::MaskInterpOptions,
@@ -263,6 +268,10 @@ pub struct Session {
     pub warp_job: Option<warp::WarpJob>,
     /// Warp Stabilizers waiting for (re-)analysis: (comp, layer, effect uid).
     pub warp_pending: Vec<(ItemId, LayerId, Uid)>,
+    /// The running (or finished, not yet polled) 3D Camera Tracker analysis.
+    pub camera_job: Option<camera_track::CameraJob>,
+    /// 3D Camera Trackers waiting for (re-)analysis: (comp, layer, effect uid).
+    pub camera_pending: Vec<(ItemId, LayerId, Uid)>,
     pub events: Vec<Event>,
     /// Commands executed: (id, params).
     pub journal: Vec<(String, Value)>,
@@ -308,6 +317,8 @@ impl Default for Session {
             mask_job: None,
             warp_job: None,
             warp_pending: vec![],
+            camera_job: None,
+            camera_pending: vec![],
             events: vec![],
             journal: vec![],
             layer_cache: Arc::new(LayerCache::default()),
@@ -372,6 +383,12 @@ impl Session {
         for w in warp::invalidate(&before, &mut p) {
             if !self.warp_pending.contains(&w) {
                 self.warp_pending.push(w);
+            }
+        }
+        // So are 3D Camera Tracker tracks (and solves made with other settings).
+        for w in camera_track::invalidate(&before, &mut p) {
+            if !self.camera_pending.contains(&w) {
+                self.camera_pending.push(w);
             }
         }
         let same = merge.is_some() && merge.map(str::to_string) == self.history.merge_key;
@@ -551,6 +568,9 @@ impl Session {
         self.stop_warp();
         self.warp_job = None;
         self.warp_pending.clear();
+        self.stop_camera();
+        self.camera_job = None;
+        self.camera_pending.clear();
         p.fix_next_id();
         self.project = Arc::new(p);
         self.history = History::default();
@@ -573,6 +593,8 @@ mod tests;
 mod tests_3d;
 #[cfg(test)]
 mod tests_anim_tools;
+#[cfg(test)]
+mod tests_camera_track;
 #[cfg(test)]
 mod tests_effects;
 #[cfg(test)]

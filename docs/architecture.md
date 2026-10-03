@@ -176,6 +176,22 @@ auto-scale; cached per analysis and settings) and warps each frame; Synthesize E
 borders from neighbouring frames read with `EffectHost::self_at`. The effect lives in the
 effects crate, hence the `effects → track` edge.
 
+**3D Camera Tracker** (`effects::camera_tracker`, `engine::camera_track`, `effectcraft-track`'s
+`camtrack`): `camera.analyze` / `track.camera` render the layer's input to the effect on a
+background thread and run structure from motion in two steps. Step 1 follows Shi–Tomasi features
+through the clip with pyramidal Lucas–Kanade (forward–backward checked, re-detected where the frame
+has none) into long 2D tracks. Step 2 solves the camera: parallax keyframes; a two-view start from
+the essential matrix (normalised 8-point in RANSAC) or a planar homography decomposition; incremental
+resection and triangulation; a sparse Levenberg–Marquardt bundle adjustment (Schur complement over
+the points, Huber loss) with the focal length fixed, shared, or per frame; a log-spaced and
+golden-section focal search for Fixed Angle of View / Variable Zoom; a rotation-only model for tripod
+pans, chosen by Auto Detect when it explains the tracks as well. Tracks and solve are stored as JSON
+in hidden effect parameters with keys: changing the layer's frames clears both, changing Shot Type,
+Angle of View, Solve Method or deleting points only re-solves. The solve's canonical frame maps to
+comp space so the first frame's camera is the default comp camera (or so a chosen ground plane is
+the X-Z plane at the origin); `camera.createFromSolve` keys a one-node "3D Tracker Camera" on every
+frame and places text, solids, nulls or a shadow catcher and light on the target plane.
+
 ## 5. Expressions
 
 Expressions are JavaScript, run by boa, with After Effects' object model (`thisComp`, `thisLayer`,

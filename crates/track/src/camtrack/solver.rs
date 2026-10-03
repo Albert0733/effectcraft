@@ -37,8 +37,9 @@ struct Data {
     tracks: Vec<(u32, usize, Vec<[f64; 2]>)>,
     /// Per frame: (track index, position).
     by_frame: Vec<Vec<(u32, [f64; 2])>>,
-    /// Tracking noise scale (pixels).
-    noise: f64,
+    /// Tracking noise scale (pixels): starts from the analysis resolution and is re-estimated
+    /// from the residuals once the keyframes are solved.
+    noise_bits: std::sync::atomic::AtomicU64,
 }
 
 impl Data {
@@ -58,23 +59,31 @@ impl Data {
             }
             tracks.push((tr.id, tr.start as usize, pts));
         }
-        Data { n, w: t.size[0], tracks, by_frame, noise: t.factor.max(1.0) }
+        let noise = (0.5 * t.factor).max(0.5);
+        Data { n, w: t.size[0], tracks, by_frame, noise_bits: std::sync::atomic::AtomicU64::new(noise.to_bits()) }
     }
     fn at(&self, ti: u32, k: usize) -> Option<[f64; 2]> {
         let (_, s, p) = &self.tracks[ti as usize];
         k.checked_sub(*s).and_then(|i| p.get(i).copied())
     }
+    fn noise(&self) -> f64 {
+        f64::from_bits(self.noise_bits.load(Ordering::Relaxed))
+    }
+    fn set_noise(&self, v: f64) {
+        self.noise_bits.store(v.to_bits(), Ordering::Relaxed);
+    }
     fn inlier_thr(&self) -> f64 {
-        4.0 * self.noise
+        4.0 * self.noise()
     }
     fn huber(&self) -> f64 {
-        1.0 * self.noise
+        self.noise()
     }
 }
 
 /// Parallax-based keyframes: a new keyframe when the median feature motion since the last
-/// exceeds 3 % of the width, when fewer than 60 % of its features survive, or before the shared
-/// features drop below 24. The first and last frames with features are keyframes.
+/// exceeds 1.5 % of the width, when fewer than 70 % of its features survive, after 12 frames, or
+/// before the shared features drop below 24. The first and last frames with features are
+/// keyframes.
 fn keyframes(d: &Data) -> Vec<usize> {
     let Some(first) = (0..d.n).find(|k| d.by_frame[*k].len() >= 8) else { return vec![] };
     let mut kf = vec![first];
@@ -97,7 +106,7 @@ fn keyframes(d: &Data) -> Vec<usize> {
         disp.sort_by(f64::total_cmp);
         let med = disp.get(disp.len() / 2).copied().unwrap_or(0.0);
         let ratio = disp.len() as f64 / base.len().max(1) as f64;
-        if med > 0.03 * d.w || ratio < 0.6 || disp.len() < 24 {
+        if med > 0.015 * d.w || ratio < 0.7 || disp.len() < 24 || j - last >= 12 {
             last = j;
             kf.push(j);
         }
@@ -405,7 +414,7 @@ fn init_pair(d: &Data, a: usize, b: usize, f: f64, use_e: bool, use_h: bool) -> 
     }
     let x1: Vec<[f64; 2]> = sh.iter().map(|s| [s.1[0] / f, s.1[1] / f]).collect();
     let x2: Vec<[f64; 2]> = sh.iter().map(|s| [s.2[0] / f, s.2[1] / f]).collect();
-    let thr = 2.0 * d.noise / f;
+    let thr = 2.0 * d.noise() / f;
     let mut cands: Vec<Pose> = vec![];
     if use_e && let Some((e, inl)) = geometry::ransac_essential(&x1, &x2, thr, 400, (a * 7919 + b) as u64) {
         let (p1, p2): (Vec<[f64; 2]>, Vec<[f64; 2]>) = (0..x1.len()).filter(|i| inl[*i]).map(|i| (x1[i], x2[i])).unzip();
@@ -415,7 +424,7 @@ fn init_pair(d: &Data, a: usize, b: usize, f: f64, use_e: bool, use_h: bool) -> 
     }
     if use_h {
         let (s1, s2): (Vec<[f64; 2]>, Vec<[f64; 2]>) = sh.iter().map(|s| (s.1, s.2)).unzip();
-        if let Some(fit) = ransac(Model::Homography, &s1, &s2, 2.0 * d.noise, 500, (a * 31 + b) as u64) {
+        if let Some(fit) = ransac(Model::Homography, &s1, &s2, 2.0 * d.noise(), 500, (a * 31 + b) as u64) {
             let h = fit.h.0;
             // Normalised: K⁻¹ H K with K = diag(f, f, 1).
             let hn = [[h[0][0], h[0][1], h[0][2] / f], [h[1][0], h[1][1], h[1][2] / f], [h[2][0] * f, h[2][1] * f, h[2][2]]];
@@ -651,6 +660,12 @@ pub fn solve(tracks: &CameraTracks, s: &SolveSettings, cancel: Option<&AtomicBoo
     let try_general = matches!(s.method, SolveMethod::Auto | SolveMethod::Typical | SolveMethod::MostlyFlat);
     let try_tripod = matches!(s.method, SolveMethod::Auto | SolveMethod::TripodPan);
 
+    let t0 = web_time::Instant::now();
+    let lap = |what: &str| {
+        if debug() {
+            eprintln!("{what}: {:.2} s", t0.elapsed().as_secs_f64());
+        }
+    };
     let mut results: Vec<(Attempt, f64)> = vec![];
     if try_general {
         let f = match fixed_f {
@@ -666,7 +681,20 @@ pub fn solve(tracks: &CameraTracks, s: &SolveSettings, cancel: Option<&AtomicBoo
             results.push((a, f));
         }
     }
-    if try_tripod && !cancelled() {
+    lap("general");
+    // Auto Detect: a quick tripod check at the general solve's focal length; when a rotation
+    // clearly cannot explain the tracks, the tripod search is skipped.
+    let tripod_plausible = match (s.method, results.first()) {
+        (SolveMethod::Auto, Some((g, f))) => {
+            let quick = tripod(&d, &mini, *f, &tcfg, cancel).map(|a| a.err).unwrap_or(f64::INFINITY);
+            if debug() {
+                eprintln!("quick tripod check: {quick:.3} vs general {:.3}", g.err);
+            }
+            quick <= 3.0 * g.err + d.noise()
+        }
+        _ => true,
+    };
+    if try_tripod && tripod_plausible && !cancelled() {
         let f = match fixed_f {
             Some(f) => f,
             None => search_focal(d.w, &|f| tripod(&d, &mini, f, &Cfg { per_frame_f: variable, ..tcfg }, cancel).map(|a| a.err).unwrap_or(f64::INFINITY)),
@@ -696,7 +724,7 @@ pub fn solve(tracks: &CameraTracks, s: &SolveSettings, cancel: Option<&AtomicBoo
                 if debug() {
                     eprintln!("auto: general {eg:.4} tripod {et:.4} baseline/depth {:.4}", base / med);
                 }
-                if et <= (eg * 1.25).max(eg + 0.05 * d.noise) || base / med < 0.01 { t } else { g }
+                if et <= (eg * 1.25).max(eg + 0.05 * d.noise()) || base / med < 0.01 { t } else { g }
             }
             (Some(g), None) => g,
             (None, Some(t)) => t,
@@ -717,15 +745,44 @@ pub fn solve(tracks: &CameraTracks, s: &SolveSettings, cancel: Option<&AtomicBoo
         (None, true) => FocalMode::PerCamera(F_PRIOR),
         (None, false) => FocalMode::Shared,
     };
+    lap("tripod");
     // Keyframes: adjust with the focal length free, reject, re-triangulate, adjust again.
     let kf_frames: Vec<usize> = r.cams.keys().copied().collect();
     r.adjust(&d, &kf_frames, &cfg, focal, 40);
     r.reject(&d);
+    // Re-estimate the tracking noise from the inlier residuals (robustly, from their median:
+    // for 2D Gaussian noise of deviation σ the median distance is 1.1774 σ), then tighten the
+    // thresholds: observations of moving objects and occlusion edges become outliers.
+    let mut res: Vec<f64> = vec![];
+    for (k, c) in &r.cams {
+        for (ti, uv) in &d.by_frame[*k] {
+            if r.outliers.contains(&(*ti, *k)) {
+                continue;
+            }
+            if let Some(e) = r.pts.get(ti).and_then(|x| bundle::residual(c, *x, *uv)) {
+                res.push(e[0].hypot(e[1]));
+            }
+        }
+    }
+    if res.len() > 20 {
+        res.sort_by(f64::total_cmp);
+        let sigma = res[res.len() / 2] / 1.1774;
+        let floor = 0.05 * tracks.factor.max(1.0);
+        d.set_noise((1.5 * sigma).clamp(floor, d.noise()));
+        if debug() {
+            eprintln!("noise: σ {sigma:.3} → {:.3}", d.noise());
+        }
+        r.outliers.clear();
+        r.reject(&d);
+    }
     r.triangulate(&d, kind, 1.0, 1.0);
     r.adjust(&d, &kf_frames, &cfg, focal, 40);
+    r.reject(&d);
+    r.adjust(&d, &kf_frames, &cfg, focal, 20);
     if cancelled() {
         return err("cancelled");
     }
+    lap("keyframe adjustment");
     // Every other frame: resect from the points (nearest registered camera first).
     let mut todo: Vec<usize> = (0..d.n).filter(|k| !r.cams.contains_key(k)).collect();
     todo.sort_by_key(|k| r.cams.keys().map(|c| c.abs_diff(*k)).min().unwrap_or(usize::MAX));
@@ -746,6 +803,7 @@ pub fn solve(tracks: &CameraTracks, s: &SolveSettings, cancel: Option<&AtomicBoo
     if cancelled() {
         return err("cancelled");
     }
+    lap("resection");
     // Points for the tracks that only lived between keyframes, then the final adjustment over
     // every frame (when that stays affordable).
     r.triangulate(&d, kind, 1.0, 1.0);
@@ -786,6 +844,7 @@ pub fn solve(tracks: &CameraTracks, s: &SolveSettings, cancel: Option<&AtomicBoo
         }
         (m, _) => m,
     };
+    lap("final adjustment");
     Ok(finish(&d, tracks, s, r, method, kind))
 }
 

@@ -13,7 +13,10 @@
 //!    the other keyframes are added incrementally (**resection** by robust pose refinement,
 //!    **triangulation** of new tracks by the linear method of H&Z §12.2); a sparse
 //!    **Levenberg–Marquardt bundle adjustment** with the Schur complement over the points
-//!    ([`bundle`]) refines everything; the frames between keyframes are resected last.
+//!    ([`bundle`]) refines everything; the frames between keyframes are resected last. Inlier
+//!    thresholds start from the analysis resolution and are re-estimated from the residuals
+//!    (median absolute residual) once the keyframes are solved, so features on moving objects,
+//!    occlusion edges and screen-locked overlays drop out.
 //! 3. **Focal length**: *Specify Angle of View* fixes it; *Fixed Angle of View* searches it
 //!    (the reprojection error of the keyframe reconstruction over a log-spaced range of focal
 //!    lengths, refined by golden-section search) and then adjusts it in the bundle adjustment
@@ -22,7 +25,8 @@
 //! 4. **Tripod pan** shots (no camera translation) are solved as a pure rotation: frame-to-frame
 //!    rotations from the tracked rays (orthogonal Procrustes) refined by the same bundle
 //!    adjustment with the camera centres fixed. *Auto Detect* solves both ways and keeps the
-//!    tripod solution when it explains the tracks as well as the general one.
+//!    tripod solution when it explains the tracks as well as the general one (a quick rotation fit
+//!    at the general solution's focal length skips the tripod search when it clearly fails).
 //!
 //! The camera model has square pixels, the principal point at the layer centre and no lens
 //! distortion. Camera space is x right, y down, z forward (After Effects' convention); a camera

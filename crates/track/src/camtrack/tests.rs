@@ -358,3 +358,81 @@ fn perf_long_clip() {
     eprintln!("300 frames, {} tracks: {:?} err {:.3} focal {:.1} in {:?}", tr.tracks.len(), s.method_used, s.average_error, s.focal(), t0.elapsed());
     assert!(s.average_error < 0.5);
 }
+
+/// Solve tracks saved from the app (`EC_CAMTRACK_FILE=tracks.json cargo test -p effectcraft-track
+/// --release solve_saved_tracks -- --ignored --nocapture`): a debugging aid.
+#[test]
+#[ignore]
+fn solve_saved_tracks() {
+    let Some(path) = std::env::var_os("EC_CAMTRACK_FILE") else { return };
+    let mut tr = CameraTracks::from_json(&std::fs::read_to_string(path).unwrap()).unwrap();
+    if let Some(maxy) = std::env::var("EC_CAMTRACK_MAXY").ok().and_then(|v| v.parse::<f32>().ok()) {
+        tr.tracks.retain(|t| t.pts.iter().all(|p| p[1] < maxy));
+    }
+    let shot = if std::env::var_os("EC_CAMTRACK_VARIABLE").is_some() { ShotType::VariableZoom } else { ShotType::FixedAngle };
+    let t0 = std::time::Instant::now();
+    // With the true cameras (`[{pos, poi, zoom}]` per frame, two-node), how consistent are the
+    // tracks themselves?
+    if let Some(tp) = std::env::var_os("EC_CAMTRACK_TRUTH") {
+        let v: Vec<serde_json::Value> = serde_json::from_str(&std::fs::read_to_string(tp).unwrap()).unwrap();
+        let g = |x: &serde_json::Value| -> V3 { [x[0].as_f64().unwrap(), x[1].as_f64().unwrap(), x[2].as_f64().unwrap()] };
+        let cams: Vec<(super::geometry::Pose, f64)> = v
+            .iter()
+            .map(|c| {
+                let (pos, poi) = (g(&c["pos"]), g(&c["poi"]));
+                let fwd = normalize(sub(poi, pos));
+                let d0 = [0.0, 1.0, 0.0];
+                let down = normalize(sub(d0, scale(fwd, dot(d0, fwd))));
+                let right = cross(down, fwd);
+                (super::geometry::Pose { r: [right, down, fwd], c: pos }, c["zoom"].as_f64().unwrap())
+            })
+            .collect();
+        let (w, h) = (tr.size[0], tr.size[1]);
+        let mut means = vec![];
+        let mut drop_ids = vec![];
+        for t in &tr.tracks {
+            let views: Vec<(super::geometry::Pose, [f64; 2])> = t
+                .pts
+                .iter()
+                .enumerate()
+                .map(|(i, p)| {
+                    let (pose, z) = cams[t.start as usize + i];
+                    (pose, [(p[0] as f64 - w / 2.0) / z, (p[1] as f64 - h / 2.0) / z])
+                })
+                .collect();
+            let Some(x) = super::geometry::triangulate(&views) else { continue };
+            let e: Vec<f64> = views.iter().filter_map(|(p, o)| super::geometry::reproj2(p, x, *o).map(|e| e.sqrt() * cams[0].1)).collect();
+            means.push((e.iter().sum::<f64>() / e.len().max(1) as f64, t.pts[0]));
+            if std::env::var_os("EC_CAMTRACK_TRUTH_FILTER").is_some() && means.last().unwrap().0 > 1.0 {
+                drop_ids.push(t.id);
+            }
+        }
+        tr.tracks.retain(|t| !drop_ids.contains(&t.id));
+        means.sort_by(|a, b| a.0.total_cmp(&b.0));
+        eprintln!(
+            "true-camera track errors (px): median {:.2}; quartiles {:?}",
+            means[means.len() / 2].0,
+            [means[means.len() / 4].0, means[means.len() * 3 / 4].0]
+        );
+        for m in means.iter().step_by(6) {
+            eprintln!("  {:.2} at {:?}", m.0, m.1);
+        }
+    }
+    let mut st = settings(shot, SolveMethod::Auto);
+    if let Some(a) = std::env::var("EC_CAMTRACK_AOV").ok().and_then(|v| v.parse::<f64>().ok()) {
+        st.shot = ShotType::SpecifyAngle;
+        st.hfov = a;
+    }
+    let s = solve(&tr, &st, None).expect("solve");
+    eprintln!(
+        "{} frames, {} tracks: {:?} err {:.3} focal {:.1} (hfov {:.1}) points {} in {:?}",
+        tr.frames,
+        tr.tracks.len(),
+        s.method_used,
+        s.average_error,
+        s.focal(),
+        s.hfov(s.focal()),
+        s.points.len(),
+        t0.elapsed()
+    );
+}

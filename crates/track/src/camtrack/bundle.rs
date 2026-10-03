@@ -173,6 +173,9 @@ pub fn adjust(cams: &mut [BaCam], pts: &mut [V3], obs: &[BaObs], o: &BaOpts) -> 
     }
     let mut cur = cost(cams, pts, obs, o);
     let initial = cur;
+    let t0 = web_time::Instant::now();
+    let mut tries = 0usize;
+    let dbg = std::env::var_os("EC_CAMTRACK_DEBUG").is_some() && l.n > 200;
     let mut lambda = 1e-4;
     let mut iters = 0;
     if l.n == 0 && o.fix_points {
@@ -231,7 +234,10 @@ pub fn adjust(cams: &mut [BaCam], pts: &mut [V3], obs: &[BaObs], o: &BaOpts) -> 
                     for (ia, ja) in &jc {
                         let wv =
                             [w * (ja[0] * jx[0][0] + ja[1] * jx[1][0]), w * (ja[0] * jx[0][1] + ja[1] * jx[1][1]), w * (ja[0] * jx[0][2] + ja[1] * jx[1][2])];
-                        match ps.w.iter_mut().find(|e| e.0 == *ia) {
+                        // Each observation of a point is on another camera: only the shared focal
+                        // length repeats.
+                        let found = if Some(*ia) == l.shared { ps.w.iter_mut().find(|e| e.0 == *ia) } else { None };
+                        match found {
                             Some(e) => e.1 = add(e.1, wv),
                             None => ps.w.push((*ia, wv)),
                         }
@@ -294,31 +300,67 @@ pub fn adjust(cams: &mut [BaCam], pts: &mut [V3], obs: &[BaObs], o: &BaOpts) -> 
         // ---- Try steps with increasing damping.
         let mut accepted = false;
         for _try in 0..12 {
+            tries += 1;
             let mut s = base_s.clone();
             let mut rhs = base_bc.clone();
             for i in 0..n {
                 let d = s[i * n + i];
                 s[i * n + i] = d + lambda * d.max(1e-6 * mean_diag);
             }
-            // Schur complement over the points.
-            let mut vinv: Vec<Option<M3>> = vec![None; npts];
+            // Schur complement over the points: S −= W V⁻¹ Wᵀ, rhs −= W V⁻¹ bp (in parallel
+            // chunks of points when the reduced system is small enough to copy per thread).
+            let vinv: Vec<Option<M3>> = if o.fix_points {
+                vec![None; npts]
+            } else {
+                systems
+                    .par_iter()
+                    .map(|ps| {
+                        let mut v = ps.v;
+                        let vd = (v[0][0] + v[1][1] + v[2][2]) / 3.0;
+                        for k in 0..3 {
+                            v[k][k] += lambda * v[k][k].max(1e-6 * vd.max(1e-12)) + 1e-12;
+                        }
+                        inv3(&v)
+                    })
+                    .collect()
+            };
             if !o.fix_points {
-                for (j, ps) in systems.iter().enumerate() {
-                    let mut v = ps.v;
-                    let vd = (v[0][0] + v[1][1] + v[2][2]) / 3.0;
-                    for k in 0..3 {
-                        v[k][k] += lambda * v[k][k].max(1e-6 * vd.max(1e-12)) + 1e-12;
-                    }
-                    let Some(vi) = inv3(&v) else { continue };
-                    vinv[j] = Some(vi);
-                    let vb = mv(&vi, ps.bp);
-                    let wv: Vec<V3> = ps.w.iter().map(|(_, w)| mv(&vi, *w)).collect();
-                    for (a, (ia, wa)) in ps.w.iter().enumerate() {
-                        rhs[*ia] -= dot(*wa, vb);
-                        for (ib, wb) in &ps.w {
-                            s[ia * n + ib] -= dot(wv[a], *wb);
+                let reduce = |range: std::ops::Range<usize>, s: &mut [f64], rhs: &mut [f64]| {
+                    for j in range {
+                        let (Some(vi), ps) = (&vinv[j], &systems[j]) else { continue };
+                        let vb = mv(vi, ps.bp);
+                        let wv: Vec<V3> = ps.w.iter().map(|(_, w)| mv(vi, *w)).collect();
+                        for (a, (ia, wa)) in ps.w.iter().enumerate() {
+                            rhs[*ia] -= dot(*wa, vb);
+                            for (ib, wb) in &ps.w[a..] {
+                                let d = dot(wv[a], *wb);
+                                s[ia * n + ib] -= d;
+                                if ia != ib {
+                                    s[ib * n + ia] -= d;
+                                }
+                            }
                         }
                     }
+                };
+                let chunks = rayon::current_num_threads().clamp(1, 8);
+                if n <= 1200 && npts >= 64 && chunks > 1 {
+                    let per = npts.div_ceil(chunks);
+                    let parts: Vec<(Vec<f64>, Vec<f64>)> = (0..chunks)
+                        .into_par_iter()
+                        .map(|t| {
+                            let (mut ds, mut dr) = (vec![0.0; n * n], vec![0.0; n]);
+                            reduce(t * per..((t + 1) * per).min(npts), &mut ds, &mut dr);
+                            (ds, dr)
+                        })
+                        .collect();
+                    for (ds, dr) in parts {
+                        s.par_iter_mut().zip(ds.par_iter()).for_each(|(x, y)| *x += y);
+                        for (x, y) in rhs.iter_mut().zip(dr) {
+                            *x += y;
+                        }
+                    }
+                } else {
+                    reduce(0..npts, &mut s, &mut rhs);
                 }
             }
             let mut dc = rhs;
@@ -363,9 +405,18 @@ pub fn adjust(cams: &mut [BaCam], pts: &mut [V3], obs: &[BaObs], o: &BaOpts) -> 
                 let gain = cur - c2;
                 cur = c2;
                 lambda = (lambda / 3.0).max(1e-9);
-                accepted = gain > 1e-10 * cur.max(1e-12);
+                accepted = gain > 1e-6 * cur.max(1e-12);
                 if !accepted {
                     // Converged (tiny improvement).
+                    if dbg {
+                        eprintln!(
+                            "ba n={} pts={} obs={} iters={iters} tries={tries} {:.2}s cost {initial:.1} -> {cur:.1}",
+                            l.n,
+                            npts,
+                            obs.len(),
+                            t0.elapsed().as_secs_f64()
+                        );
+                    }
                     return BaReport { initial_cost: initial, cost: cur, iterations: iters };
                 }
                 break;
@@ -375,6 +426,9 @@ pub fn adjust(cams: &mut [BaCam], pts: &mut [V3], obs: &[BaObs], o: &BaOpts) -> 
         if !accepted {
             break;
         }
+    }
+    if dbg {
+        eprintln!("ba n={} pts={} obs={} iters={iters} tries={tries} {:.2}s cost {initial:.1} -> {cur:.1}", l.n, npts, obs.len(), t0.elapsed().as_secs_f64());
     }
     BaReport { initial_cost: initial, cost: cur, iterations: iters }
 }
