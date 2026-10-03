@@ -36,11 +36,14 @@ pub struct EvalCtx<'a> {
     /// Comp time.
     pub time: Tick,
     pub expr: Option<&'a dyn ExprHost>,
+    /// Footage frames for expressions that read rendered pixels (`sampleImage`): the renderer's
+    /// own source while rendering; `None` renders footage as transparent.
+    pub footage: Option<&'a dyn crate::FootageSource>,
 }
 
 impl<'a> EvalCtx<'a> {
     pub fn new(project: &'a Project, comp_id: ItemId, comp: &'a Comp, time: Tick) -> EvalCtx<'a> {
-        EvalCtx { project, comp_id, comp, time, expr: None }
+        EvalCtx { project, comp_id, comp, time, expr: None, footage: None }
     }
     pub fn at(&self, time: Tick) -> EvalCtx<'a> {
         EvalCtx { time, ..*self }

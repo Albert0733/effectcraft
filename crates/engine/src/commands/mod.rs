@@ -9,6 +9,7 @@ mod comp_more;
 mod edit;
 mod effect;
 pub mod essential;
+pub mod expr_tools;
 mod file;
 mod file_more;
 mod frontend;
@@ -138,6 +139,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(liquify::specs());
         v.extend(settings::specs());
         v.extend(essential::specs());
+        v.extend(expr_tools::specs());
         v.extend(stubs::specs());
         v
     })

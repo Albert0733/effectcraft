@@ -239,6 +239,9 @@ fn add_item(s: &mut Session, p: &Value) -> Result<Value> {
             let d = (s.prefs.import.still_footage == "seconds").then(|| Tick::from_seconds_f64(s.prefs.import.still_seconds));
             (LayerSource::Footage { item }, (f.width, f.height), d)
         }
+        ItemKind::Footage(f) if f.kind == effectcraft_project::FootageKind::Data => {
+            return Err(bad("layer.addItem", "data files can't be layers; read them in expressions with footage(\"name\").sourceData"));
+        }
         ItemKind::Footage(f) if f.kind == effectcraft_project::FootageKind::Model => {
             return super::model3d::new_model(s, &serde_json::json!({"comp": cid.0, "item": item.0, "time": f_p(p, "time")}));
         }
@@ -505,7 +508,8 @@ fn set_parent(s: &mut Session, p: &Value) -> Result<Value> {
     // Like AE's pick-whip, parenting keeps the layer where it is: its transform is re-expressed
     // in the new parent's space (Position, Rotation, Scale), unless `compensate: false`.
     let compensate = b_p(p, "compensate").unwrap_or(true);
-    let ectx = effectcraft_render::EvalCtx { project: &s.project, comp_id: cid, comp, time: s.time(), expr: s.expr.as_deref() };
+    let ectx =
+        effectcraft_render::EvalCtx { project: &s.project, comp_id: cid, comp, time: s.time(), expr: s.expr.as_deref(), footage: Some(s.footage.as_ref()) };
     let space = |id: Option<LayerId>| -> effectcraft_geom::Mat3 {
         id.and_then(|i| comp.layer(i)).filter(|l| !l.is_3d()).map(|l| ectx.layer_to_comp(l).0).unwrap_or(effectcraft_geom::Mat3::IDENTITY)
     };

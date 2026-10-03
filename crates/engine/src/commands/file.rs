@@ -84,12 +84,23 @@ fn import(s: &mut Session, p: &Value) -> Result<Value> {
         Some(Value::String(x)) => vec![x.clone()],
         _ => return Err(bad("file.import", "missing `paths`")),
     };
-    let importer = s.importer.clone().ok_or_else(|| EngineError::Other("media import is not available in this build".into()))?;
     let mut ids = vec![];
     let mut errors = vec![];
     let mut probed = vec![];
     let seq_rate = effectcraft_time::FrameRate::from_f64(s.prefs.import.sequence_fps);
     for path in &paths {
+        // Data files (JSON, CSV, TSV) for data-driven animation: kept as text in the project.
+        if let Some(f) = data_footage(s, path) {
+            match f {
+                Ok(f) => probed.push((path.clone(), f)),
+                Err(e) => errors.push(format!("{path}: {e}")),
+            }
+            continue;
+        }
+        let Some(importer) = s.importer.clone() else {
+            errors.push(format!("{path}: media import is not available in this build"));
+            continue;
+        };
         match importer.probe(path) {
             Ok(mut f) => {
                 // Settings ▸ Import ▸ Sequence Footage frames per second.
@@ -120,6 +131,25 @@ fn import(s: &mut Session, p: &Value) -> Result<Value> {
         Ok(())
     })?;
     Ok(json!({"items": ids, "errors": errors}))
+}
+
+/// Extensions imported as data footage.
+pub const DATA_EXTENSIONS: &[&str] = &["json", "csv", "tsv"];
+
+/// A data footage item for `path` (JSON / CSV / TSV), `None` for other files.
+pub(crate) fn data_footage(s: &Session, path: &str) -> Option<std::result::Result<effectcraft_project::Footage, String>> {
+    let ext = std::path::Path::new(path).extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+    if !DATA_EXTENSIONS.contains(&ext.as_str()) {
+        return None;
+    }
+    Some((|| {
+        let bytes = s.services.read_file(path).map_err(|e| e.to_string())?;
+        let text = String::from_utf8(bytes).map_err(|_| "data files must be UTF-8 text".to_string())?;
+        if ext == "json" {
+            serde_json::from_str::<Value>(text.trim_start_matches('\u{feff}')).map_err(|e| format!("invalid JSON: {e}"))?;
+        }
+        Ok(effectcraft_project::Footage { path: path.to_string(), kind: FootageKind::Data, codec: ext.to_uppercase(), data: Some(text), ..Default::default() })
+    })())
 }
 
 fn project_settings(s: &mut Session, p: &Value) -> Result<Value> {

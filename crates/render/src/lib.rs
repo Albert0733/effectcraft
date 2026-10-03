@@ -451,7 +451,7 @@ impl<'a> Renderer<'a> {
     }
 
     fn ctx(&self, comp_id: ItemId, comp: &'a Comp, t: Tick) -> EvalCtx<'a> {
-        EvalCtx { project: self.project, comp_id, comp, time: t, expr: self.expr }
+        EvalCtx { project: self.project, comp_id, comp, time: t, expr: self.expr, footage: Some(self.footage) }
     }
 
     /// The accelerator to use for this render, if any (see [`Backend`]).
