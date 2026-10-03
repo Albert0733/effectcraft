@@ -8,6 +8,7 @@ pub mod anim_tools;
 mod animation;
 pub(crate) mod app_more;
 mod autotrace;
+mod batch;
 mod camera_cmds;
 mod comp;
 pub(crate) mod comp_more;
@@ -155,6 +156,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(render_queue::specs());
         v.extend(help::specs());
         v.extend(query::specs());
+        v.extend(batch::specs());
         v.extend(layer_menu::specs());
         v.extend(create::specs());
         v.extend(animation::specs());
@@ -413,11 +415,14 @@ pub(crate) fn layer_p(s: &Session, p: &Value, cmd: &str) -> Result<(ItemId, Laye
 pub(crate) fn layers_p(s: &Session, p: &Value) -> Result<(ItemId, Vec<LayerId>)> {
     let cid = comp_id(s, p)?;
     let comp = s.project.comp(cid).ok_or(EngineError::NoComp)?;
+    // Explicit references that match no layer are an error (agents otherwise get a silent no-op).
+    let resolve =
+        |v: &Value| resolve_layer(comp, v).ok_or_else(|| EngineError::Other(format!("no layer {v} (use a layer id, \"#n\" or a name from comp.info)")));
     if let Some(Value::Array(a)) = p.get("layers") {
-        return Ok((cid, a.iter().filter_map(|v| resolve_layer(comp, v)).collect()));
+        return Ok((cid, a.iter().map(resolve).collect::<Result<_>>()?));
     }
-    if let Some(v) = p.get("layer") {
-        return Ok((cid, resolve_layer(comp, v).into_iter().collect()));
+    if let Some(v) = p.get("layer").filter(|v| !v.is_null()) {
+        return Ok((cid, vec![resolve(v)?]));
     }
     Ok((cid, s.state.selected_layers.iter().copied().filter(|l| comp.layer(*l).is_some()).collect()))
 }

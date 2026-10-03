@@ -452,7 +452,9 @@ impl Session {
         if let Err(why) = (spec.enabled)(self) {
             // Explicit targets (agents, scripts) don't need a UI selection.
             let explicit = (["layer", "layers", "prop", "keys"].iter().any(|k| params.get(k).is_some()) && commands::has_comp(self).is_ok())
-                || ["item", "items"].iter().any(|k| params.get(k).is_some());
+                || ["item", "items"].iter().any(|k| params.get(k).is_some())
+                // An explicit composition (the enablement looks at the active one).
+                || params.get("comp").is_some_and(|c| !c.is_null() && self.resolve_comp(Some(c)).is_ok());
             if !explicit {
                 return Err(EngineError::Disabled(id.to_string(), why));
             }
@@ -710,6 +712,19 @@ impl Session {
         let scale = if max_side == 0 { 1.0 } else { (max_side as f64 / long).min(1.0) };
         let img = self.render(comp, t, RenderOpts { scale, backend: effectcraft_render::Backend::Auto, ..Default::default() });
         Ok((img.width, img.height, img.to_rgba8_over(c.background)))
+    }
+
+    /// [`Session::render_rgba8`], or with `transparent` the frame's own straight alpha (what a
+    /// render with RGB + Alpha channels writes) instead of compositing over the background.
+    pub fn render_rgba8_alpha(&self, comp: ItemId, t: Tick, max_side: u32, transparent: bool) -> Result<(u32, u32, Vec<u8>)> {
+        if !transparent {
+            return self.render_rgba8(comp, t, max_side);
+        }
+        let c = self.project.comp(comp).ok_or(EngineError::NoComp)?;
+        let long = c.width.max(c.height).max(1) as f64;
+        let scale = if max_side == 0 { 1.0 } else { (max_side as f64 / long).min(1.0) };
+        let img = self.render(comp, t, RenderOpts { scale, backend: effectcraft_render::Backend::Auto, ..Default::default() });
+        Ok((img.width, img.height, img.to_rgba8()))
     }
 
     /// Replace the whole project (open/new), resetting history and state.

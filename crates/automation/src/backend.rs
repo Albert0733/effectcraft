@@ -67,16 +67,25 @@ impl Backend {
     /// Render a comp frame (comp time `time` seconds, default the CTI) as PNG, longest side at most
     /// `max_side` (0 = full size).
     pub fn render(&mut self, comp: Option<&Value>, time: Option<f64>, max_side: u32) -> Result<Frame> {
+        self.render_with(comp, time, max_side, false)
+    }
+
+    /// [`Backend::render`]; `transparent` keeps the frame's alpha instead of compositing it over
+    /// the comp's background colour.
+    pub fn render_with(&mut self, comp: Option<&Value>, time: Option<f64>, max_side: u32, transparent: bool) -> Result<Frame> {
         match self {
             Backend::Headless(s) => {
                 let cid = s.resolve_comp(comp).map_err(|_| no_comp(comp))?;
                 let t = time.map(Tick::from_seconds_f64).unwrap_or_else(|| s.time());
-                let (w, h, rgba) = s.render_rgba8(cid, t, max_side)?;
+                let (w, h, rgba) = s.render_rgba8_alpha(cid, t, max_side, transparent)?;
                 let png = encode_png(w, h, rgba, max_side)?;
                 Ok(Frame { png, comp: json!(cid.0), time: t.seconds(), width: w, height: h })
             }
             Backend::Bridge(b) => {
                 let mut p = json!({"max_side": max_side, "base64": true});
+                if transparent {
+                    p["transparent"] = json!(true);
+                }
                 if let Some(t) = time {
                     p["time"] = json!(t);
                 }

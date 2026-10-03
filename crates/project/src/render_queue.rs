@@ -1277,10 +1277,12 @@ impl RenderLog {
 pub fn log_path(output: &str) -> String {
     let p = std::path::Path::new(output);
     let stem = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-    let mut stem: String = stem.replace("_[#####]", "").replace("[#####]", "");
+    let mut stem = stem;
     if let Some(i) = stem.find('#') {
+        // The run of `#`s, with its brackets when it has them (`[###]`, `[#####]`).
         let n = stem[i..].chars().take_while(|c| *c == '#').count();
-        stem.replace_range(i..i + n, "");
+        let (a, b) = if stem[..i].ends_with('[') && stem[i + n..].starts_with(']') { (i - 1, i + n + 1) } else { (i, i + n) };
+        stem.replace_range(a..b, "");
     }
     let stem = stem.trim_end_matches(['_', '.', ' ']);
     let name = format!("{}_RenderLog.txt", if stem.is_empty() { "Render" } else { stem });
@@ -1529,6 +1531,7 @@ mod tests {
         assert_eq!(log_path("/out/Main_[#####].png"), "/out/Main_RenderLog.txt");
         assert_eq!(log_path("/out/a.mov"), "/out/a_RenderLog.txt");
         assert_eq!(log_path("seq###.tif"), "seq_RenderLog.txt");
+        assert_eq!(log_path("gen/g_[###].png"), "gen/g_RenderLog.txt", "any bracketed run (M13.15)");
     }
 
     #[test]

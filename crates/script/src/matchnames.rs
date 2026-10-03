@@ -366,6 +366,18 @@ pub fn shape_kind(name: &str) -> Option<&'static str> {
     })
 }
 
+/// Effects whose documented parameter match names are not numbered in display order:
+/// (effect id, param match id, number). Fill lists All Masks second but it is `-0007`.
+const PARAM_NUMBERS: &[(&str, &str, usize)] = &[
+    ("ec.generate.fill", "fillMask", 1),
+    ("ec.generate.fill", "color", 2),
+    ("ec.generate.fill", "horizontalFeather", 3),
+    ("ec.generate.fill", "verticalFeather", 4),
+    ("ec.generate.fill", "opacity", 5),
+    ("ec.generate.fill", "invert", 6),
+    ("ec.generate.fill", "allMasks", 7),
+];
+
 /// Match name of the node at the end of `chain` (layer root's children → … → node). `effect`
 /// params are numbered `<effect match name>-0001…` in parameter order, like After Effects.
 pub fn node(chain: &[&Node]) -> String {
@@ -388,7 +400,11 @@ pub fn node(chain: &[&Node]) -> String {
             let fx = parent.and_then(Node::as_group);
             match fx {
                 Some(g) => {
-                    let i = g.children.iter().position(|c| c.uid() == last.uid()).unwrap_or(0) + 1;
+                    let i = PARAM_NUMBERS
+                        .iter()
+                        .find(|(fx, p, _)| *fx == g.match_id && *p == id)
+                        .map(|(_, _, n)| *n)
+                        .unwrap_or_else(|| g.children.iter().position(|c| c.uid() == last.uid()).unwrap_or(0) + 1);
                     format!("{}-{i:04}", effect(&g.match_id))
                 }
                 None => own(),
