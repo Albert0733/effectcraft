@@ -221,7 +221,7 @@ pub fn sign_hiding(c: &[i32], l: &mut [i32], log2: u32, scan_idx: usize, qp: i32
         let mut best: Option<(i64, usize, i32)> = None;
         for p in first..=last {
             let i = idx(p);
-            let q = (c[i] as i64).abs() * scale >> (qbits - 8);
+            let q = ((c[i] as i64).abs() * scale) >> (qbits - 8);
             let a = l[i].abs() as i64;
             let err = |lv: i64| (q - (lv << 8)).abs();
             let mut consider = |cost: i64, d: i32| {
