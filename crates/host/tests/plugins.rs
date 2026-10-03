@@ -104,3 +104,58 @@ fn example_wasm_plugin_loads_and_renders() {
     let list = s.execute("effect.plugins.list", json!({})).unwrap();
     assert!(list["plugins"].as_array().unwrap().iter().any(|p| p["source"].as_str().unwrap_or("").ends_with(".wasm")));
 }
+
+/// A parameterless plug-in module (WebAssembly text): `render` is `ec_render`'s body.
+fn wat_plugin(id: &str, api: i32, render: &str) -> String {
+    let manifest = format!(r#"{{"api":1,"id":"{id}","name":"Host {id}","category":"Test Plug-ins","version":"1","params":[]}}"#);
+    let len = manifest.len();
+    let escaped = manifest.replace('"', "\\\"");
+    format!(
+        r#"(module
+  (memory (export "memory") 2)
+  (data (i32.const 16) "{escaped}")
+  (func (export "ec_api_version") (result i32) i32.const {api})
+  (func (export "ec_manifest_ptr") (result i32) i32.const 16)
+  (func (export "ec_manifest_len") (result i32) i32.const {len})
+  (func (export "ec_alloc") (param i32) (result i32) i32.const 1024)
+  (func (export "ec_render") (param i32 i32 i32 i32 i32 f64 f64) (result i32) {render}))"#
+    )
+}
+
+#[test]
+fn plugin_loading_reports_bad_modules_and_survives_failing_renders() {
+    let dir = std::env::temp_dir().join(format!("effectcraft-host-plugins-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let files = [
+        ("a-good.wasm", wat_plugin("org.test.host.good", 1, "i32.const 0").into_bytes()),
+        ("b-garbage.wasm", b"\0asm\x01\0\0\0garbage".to_vec()),
+        ("c-v2.wasm", wat_plugin("org.test.host.v2", 2, "i32.const 0").into_bytes()),
+        ("d-empty.wasm", vec![]),
+        ("e-trap.wasm", wat_plugin("org.test.host.trap", 1, "unreachable").into_bytes()),
+        ("notes.txt", b"not a plug-in".to_vec()),
+    ];
+    for (name, bytes) in &files {
+        std::fs::write(dir.join(name), bytes).unwrap();
+    }
+    let (mut s, l) = setup();
+    let r = s.execute("effect.plugins.load", json!({"folder": dir.to_string_lossy()})).unwrap();
+    let ids: Vec<&str> = r["loaded"].as_array().unwrap().iter().filter_map(|v| v["id"].as_str()).collect();
+    assert_eq!(ids, ["org.test.host.good", "org.test.host.trap"], "{r}");
+    let errs: Vec<String> = r["errors"].as_array().unwrap().iter().map(|e| e["path"].as_str().unwrap().to_string()).collect();
+    assert_eq!(errs.len(), 3, "{r}");
+    assert!(errs.iter().all(|p| !p.ends_with(".txt")));
+    assert!(r["errors"].to_string().contains("API 2"), "{r}");
+    // A single file: errors come back as command errors; loading twice is refused.
+    let good = dir.join("a-good.wasm").to_string_lossy().to_string();
+    assert!(s.execute("effect.plugins.load", json!({"path": good})).unwrap_err().to_string().contains("already registered"));
+    assert!(s.execute("effect.plugins.load", json!({"path": dir.join("missing.wasm").to_string_lossy()})).is_err());
+    assert!(s.execute("effect.plugins.load", json!({"folder": dir.join("missing").to_string_lossy()})).is_err());
+    assert!(s.execute("effect.plugins.load", json!({})).is_err());
+    // A plug-in that traps on every frame leaves the layer as it was.
+    let before = px(&s);
+    s.execute("effect.apply", json!({"layer": l, "effect": "org.test.host.trap"})).unwrap();
+    assert_eq!(px(&s), before);
+    s.execute("effect.apply", json!({"layer": l, "effect": "org.test.host.good"})).unwrap();
+    assert_eq!(px(&s), before);
+    let _ = std::fs::remove_dir_all(&dir);
+}

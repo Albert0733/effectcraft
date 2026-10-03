@@ -2,7 +2,7 @@
 
 use std::sync::Mutex;
 
-use wasmi::{Config, Engine, Instance, Linker, Memory, Module, Store, TypedFunc, WasmParams, WasmResults};
+use wasmi::{Config, Engine, Instance, Linker, Memory, Module, Store, StoreLimits, StoreLimitsBuilder, TypedFunc, WasmParams, WasmResults};
 
 use crate::{EffectPlugin, PLUGIN_API_VERSION, PluginFrame, PluginManifest, PluginParams};
 
@@ -10,12 +10,16 @@ use crate::{EffectPlugin, PLUGIN_API_VERSION, PluginFrame, PluginManifest, Plugi
 /// work, but a runaway loop stops instead of hanging the render.
 const FUEL_BASE: u64 = 50_000_000;
 const FUEL_PER_PIXEL: u64 = 20_000;
+/// The most linear memory a plug-in instance may have (a 4K float frame is ~130 MB).
+const MAX_MEMORY: usize = 1 << 30;
+/// The longest manifest read.
+const MAX_MANIFEST: i32 = 1 << 20;
 
 type RenderFn = TypedFunc<(i32, i32, i32, i32, i32, f64, f64), i32>;
 
 /// One instantiated module (renders running on several threads each take their own).
 struct Inst {
-    store: Store<()>,
+    store: Store<StoreLimits>,
     instance: Instance,
     memory: Memory,
     alloc: TypedFunc<i32, i32>,
@@ -37,9 +41,10 @@ fn err(e: impl std::fmt::Display) -> String {
 }
 
 fn instantiate(engine: &Engine, module: &Module) -> Result<Inst, String> {
-    let mut store = Store::new(engine, ());
+    let mut store = Store::new(engine, StoreLimitsBuilder::new().memory_size(MAX_MEMORY).instances(1).build());
+    store.limiter(|l| l);
     store.set_fuel(FUEL_BASE).map_err(err)?;
-    let linker = Linker::<()>::new(engine);
+    let linker = Linker::<StoreLimits>::new(engine);
     let instance = linker.instantiate_and_start(&mut store, module).map_err(|e| format!("instantiation failed: {e}"))?;
     let memory = instance.get_memory(&store, "memory").ok_or("the module exports no `memory`")?;
     let alloc = instance.get_typed_func::<i32, i32>(&store, "ec_alloc").map_err(|_| missing("ec_alloc"))?;
@@ -74,7 +79,10 @@ impl WasmPlugin {
         }
         let ptr = inst.func::<(), i32>("ec_manifest_ptr")?.call(&mut inst.store, ()).map_err(err)?;
         let len = inst.func::<(), i32>("ec_manifest_len")?.call(&mut inst.store, ()).map_err(err)?;
-        let mut text = vec![0u8; len.max(0) as usize];
+        if !(0..=MAX_MANIFEST).contains(&len) {
+            return Err(format!("bad manifest length {len}"));
+        }
+        let mut text = vec![0u8; len as usize];
         inst.memory.read(&inst.store, ptr as u32 as usize, &mut text).map_err(|e| format!("manifest out of bounds: {e}"))?;
         let manifest: PluginManifest = serde_json::from_slice(&text).map_err(|e| format!("bad manifest JSON: {e}"))?;
         manifest.validate()?;
