@@ -1221,6 +1221,7 @@ version = "0.1.0"
 dependencies = [
  "effectcraft-color",
  "effectcraft-media",
+ "effectcraft-opusenc",
  "effectcraft-project",
  "effectcraft-raster",
  "effectcraft-render",
@@ -1228,6 +1229,7 @@ dependencies = [
  "filmcraft-aac",
  "filmcraft-h264enc",
  "filmcraft-isobmff",
+ "filmcraft-opus",
  "filmcraft-prores",
  "gif",
  "image",
@@ -1346,6 +1348,10 @@ dependencies = [
  "rayon",
  "thiserror 2.0.21",
 ]
+
+[[package]]
+name = "effectcraft-opusenc"
+version = "0.1.0"
 
 [[package]]
 name = "effectcraft-path"
