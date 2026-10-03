@@ -848,6 +848,10 @@ pub struct SourceLayer {
     /// is the footage instead of the layer's pixels.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub embedded: Option<String>,
+    /// A smart object with a perspective quad or a warp: the footage is its embedded file baked
+    /// as placed (warped and pinned to its corners) over the placed bounds in document space.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub placed: bool,
 }
 
 fn one() -> u32 {

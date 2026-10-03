@@ -158,7 +158,7 @@ fn footage_item(proj: &mut Project, cx: &mut Ctx, index: usize, name: &str) -> (
         missing: false,
         sequence: vec![],
         color_profile: None,
-        layer: Some(SourceLayer { index: index as u32, name: name.to_string(), layer_size: retain && !l.rect.is_empty(), embedded: None }),
+        layer: Some(SourceLayer { index: index as u32, name: name.to_string(), layer_size: retain && !l.rect.is_empty(), embedded: None, placed: false }),
         ..Default::default()
     };
     let id = proj.add_item(&format!("{name}/{file}"), Label::Lavender, Some(cx.folder), ItemKind::Footage(f));
@@ -191,8 +191,20 @@ fn smart_object_layer(proj: &mut Project, cx: &mut Ctx, comp: &Comp, index: usiz
     let pl = &cx.psd.layers[index];
     let so = pl.smart_object.clone()?;
     let data = cx.psd.linked_data(&so.uuid)?;
-    let (w, h) = embedded_size(&so, data).filter(|s| s.0 > 0 && s.1 > 0)?;
+    let (cw, ch) = embedded_size(&so, data).filter(|s| s.0 > 0 && s.1 > 0)?;
     let file = cx.psd.linked.iter().find(|f| f.uuid == so.uuid).map(|f| f.name.clone()).unwrap_or_default();
+    // Perspective quads and warps are baked over the placed bounds, at up to 4× the document
+    // resolution when the embedded content has that much detail.
+    let bake = so.needs_bake();
+    let (w, h, k, bounds) = if bake {
+        let bb = so.placed_bounds(cw as f64, ch as f64);
+        let area = ((bb[2] - bb[0]) * (bb[3] - bb[1])).max(1.0);
+        let k = ((cw as f64 * ch as f64) / area).sqrt().clamp(1.0, 4.0);
+        let (w, h) = so.placed_size(cw as f64, ch as f64, k);
+        (w, h, k, bb)
+    } else {
+        (cw, ch, 1.0, [0.0; 4])
+    };
     let f = Footage {
         path: cx.path.to_string(),
         kind: FootageKind::Still,
@@ -204,13 +216,20 @@ fn smart_object_layer(proj: &mut Project, cx: &mut Ctx, comp: &Comp, index: usiz
         alpha: AlphaMode::Straight,
         loop_count: 1,
         codec: if effectcraft_psd::is_psd(data) { "PSD".into() } else { "PSD (embedded image)".into() },
-        layer: Some(SourceLayer { index: index as u32, name: name.to_string(), layer_size: true, embedded: Some(so.uuid.clone()) }),
+        layer: Some(SourceLayer { index: index as u32, name: name.to_string(), layer_size: true, embedded: Some(so.uuid.clone()), placed: bake }),
         ..Default::default()
     };
     let label = if file.is_empty() { name.to_string() } else { file };
     let id = proj.add_item(&format!("{label} (Smart Object)"), Label::Lavender, Some(cx.folder), ItemKind::Footage(f));
     cx.items.push(id);
     let mut l = build::layer(proj, comp, name, LayerSource::Footage { item: id }, (w, h), None);
+    if bake {
+        // The baked pixels cover the placed bounds: centred there, scaled back to 1×.
+        let c = [bounds[0] + w as f64 / k / 2.0, bounds[1] + h as f64 / k / 2.0];
+        set_vec2(&mut l, "transform/position", c);
+        set_vec2(&mut l, "transform/scale", [100.0 / k, 100.0 / k]);
+        return Some(l);
+    }
     let (c, sx, sy, rot) = so.placement(w as f64, h as f64);
     set_vec2(&mut l, "transform/position", c);
     set_vec2(&mut l, "transform/scale", [sx * 100.0, sy * 100.0]);

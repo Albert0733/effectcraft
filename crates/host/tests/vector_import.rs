@@ -405,3 +405,59 @@ fn pdf_pages_text_and_clips_to_masks() {
     let comp = s.project.comp(ItemId(r["comps"][0].as_u64().unwrap())).unwrap();
     assert_eq!((comp.width, comp.height), (120, 80));
 }
+
+#[test]
+fn psd_smart_objects_with_perspective_and_warp_bake_as_placed() {
+    let mut inner = WDoc::new(20, 10);
+    inner.layers =
+        vec![WLayer::solid("Red", Rect::new(0, 0, 10, 10), [1.0, 0.0, 0.0, 1.0]), WLayer::solid("Green", Rect::new(10, 0, 10, 10), [0.0, 1.0, 0.0, 1.0])];
+    let inner_bytes = write(&inner);
+    let mut d = WDoc::new(64, 48);
+    // A perspective trapezoid, and an affine placement with an Arc warp.
+    let trap = [[20.0, 4.0], [44.0, 10.0], [44.0, 38.0], [20.0, 44.0]];
+    let warp = warp_descriptor("warpArc", 50.0, 0.0, 0.0, [0.0, 0.0, 20.0, 10.0], None);
+    d.layers = vec![
+        WLayer::solid("Back", Rect::new(0, 0, 64, 48), [0.0, 0.0, 0.0, 1.0]),
+        WLayer::solid("Pinned", Rect::new(20, 4, 24, 40), [0.5, 0.5, 0.5, 1.0]).with_block(smart_object_block_warped("so-1", trap, [20.0, 10.0], None)),
+    ];
+    d.linked = vec![("so-1".into(), "inner.psd".into(), *b"8BPS", inner_bytes.clone())];
+    let mut d2 = WDoc::new(64, 48);
+    d2.layers = vec![
+        WLayer::solid("Back", Rect::new(0, 0, 64, 48), [0.0, 0.0, 0.0, 1.0]),
+        WLayer::solid("Arc", Rect::new(20, 10, 40, 20), [0.5, 0.5, 0.5, 1.0]).with_block(smart_object_block_warped(
+            "so-2",
+            [[20.0, 10.0], [60.0, 10.0], [60.0, 30.0], [20.0, 30.0]],
+            [20.0, 10.0],
+            Some(warp),
+        )),
+    ];
+    d2.linked = vec![("so-2".into(), "inner.psd".into(), *b"8BPS", inner_bytes)];
+    let parsed = effectcraft_psd::Psd::parse(write(&d2)).unwrap();
+    let so = parsed.layers.iter().find_map(|l| l.smart_object.clone()).unwrap();
+    assert_eq!(so.warp.as_ref().map(|w| w.style.as_str()), Some("warpArc"));
+    let mut s = effectcraft_host::session();
+    let render = |s: &mut effectcraft_engine::Session, doc: &WDoc, file: &str| {
+        let path = tmp(file);
+        std::fs::write(&path, write(doc)).unwrap();
+        let r = s.execute_checked("file.import", json!({"paths": [path], "importAs": "composition"})).unwrap();
+        assert_eq!(r["errors"], json!([]), "{r}");
+        let cid = ItemId(r["comps"][0].as_u64().unwrap());
+        let placed = s.project.comp(cid).unwrap().layers.iter().any(|l| {
+            let effectcraft_project::LayerSource::Footage { item } = l.source else { return false };
+            matches!(&s.project.item(item).unwrap().kind, effectcraft_project::ItemKind::Footage(f) if f.layer.as_ref().is_some_and(|x| x.placed))
+        });
+        assert!(placed, "{file}: baked as placed");
+        s.render(cid, effectcraft_time::Tick::ZERO, RenderOpts::default())
+    };
+    let img = render(&mut s, &d, "pinned.psd");
+    let (red, green) = (img.get(24, 24), img.get(40, 24));
+    assert!(red[0] > 0.9 && red[1] < 0.1, "{red:?}");
+    assert!(green[1] > 0.9 && green[0] < 0.1, "{green:?}");
+    // Above the slanted top edge (y = 4 + 6·(x − 20)/24): background.
+    assert!(img.get(42, 6)[0] < 0.05 && img.get(42, 6)[1] < 0.05, "{:?}", img.get(42, 6));
+    let img = render(&mut s, &d2, "arc.psd");
+    // The arc keeps the top centre and pulls the corners down and out.
+    let top = img.get(40, 11);
+    assert!(top[0] > 0.5 || top[1] > 0.5, "top centre covered {top:?}");
+    assert!(img.get(21, 11)[0] < 0.05 && img.get(21, 11)[1] < 0.05, "corner region empty {:?}", img.get(21, 11));
+}

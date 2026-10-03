@@ -75,13 +75,26 @@ pub(crate) fn decode(path: &str, bytes: &[u8], footage: &Footage, op: AlphaOp) -
         // A smart object's embedded file: an embedded document's merged image, or an image.
         if let Some(uuid) = footage.layer.as_ref().and_then(|l| l.embedded.as_deref()) {
             let data = psd.linked_data(uuid).ok_or_else(|| MediaError::Decode(format!("{path}: no embedded file {uuid}")))?;
-            if effectcraft_psd::is_psd(data) {
+            let px = if effectcraft_psd::is_psd(data) {
                 let inner = effectcraft_psd::Psd::parse(data.to_vec()).map_err(|e| MediaError::Decode(format!("{path} (smart object): {e}")))?;
-                let px = inner.composite().map_err(|e| MediaError::Decode(format!("{path} (smart object): {e}")))?;
-                return Ok(Some(straight_to_image(px.width, px.height, &px.data, op)));
+                inner.composite().map_err(|e| MediaError::Decode(format!("{path} (smart object): {e}")))?
+            } else {
+                let img = image::load_from_memory(data).map_err(|e| MediaError::Decode(format!("{path} (smart object): {e}")))?;
+                let rgba = img.to_rgba32f();
+                effectcraft_psd::Pixels { width: rgba.width(), height: rgba.height(), data: rgba.pixels().map(|p| p.0).collect() }
+            };
+            // A perspective quad or a warp: baked as placed.
+            let l = footage.layer.as_ref().expect("embedded implies a layer");
+            if l.placed
+                && let Some(so) = psd.layers.get(l.index as usize).and_then(|pl| pl.smart_object.as_ref())
+            {
+                let bb = so.placed_bounds(px.width as f64, px.height as f64);
+                let k = footage.width as f64 / (bb[2] - bb[0]).max(1e-9);
+                if let Some((baked, _)) = so.render_placed(&px, k, Some((footage.width, footage.height))) {
+                    return Ok(Some(straight_to_image(baked.width, baked.height, &baked.data, op)));
+                }
             }
-            let img = image::load_from_memory(data).map_err(|e| MediaError::Decode(format!("{path} (smart object): {e}")))?;
-            return Ok(Some(crate::convert::dynamic_to_image(&img, op)));
+            return Ok(Some(straight_to_image(px.width, px.height, &px.data, op)));
         }
         let px = match &footage.layer {
             Some(l) => psd.layer_pixels(l.index as usize, !l.layer_size),
