@@ -10,7 +10,7 @@ How close EffectCraft is to After Effects 2026, feature by feature, and how much
 | Unweighted | ≈ 97% (half-credit) / 99% (fractions) |
 | P0 / P1 / P2 | ≈ 99% / 96% / 90% (half-credit); 99.8% / 99.2% / 97.5% (fractions) |
 | Features done / partial / missing | 87 / 5 / 0 of 92 |
-| **Effects** | **306** effects (all After Effects 2026 effects), every one implemented in full ([effects.md](effects.md)); 166 run on the GPU |
+| **Effects** | **306** effects (all After Effects 2026 effects), every one implemented in full ([effects.md](effects.md)); 206 run on the GPU |
 | Disabled menu entries left | 1, on purpose: Import ▸ Vanishing Point (.vpe), whose format has no public specification |
 | Remaining work | ≈ 9–11 agent-hours at the pace measured so far (≈ 29 on the conservative audit scale); ≈ 6–7 without the learned-model items |
 | **Wall-clock estimate** | **≈ 2–2.5 hours** with five agents in parallel; ≈ 1.5 hours for 100% of P0 + P1 |
@@ -19,7 +19,7 @@ Partial features:
 
 | id | Tier | Done | What is missing |
 |---|---|---|---|
-| EFF-5 GPU effects | P1 | 0.85 | GPU kernels for the CC light / transition families, Numbers and Timecode, 3D Channel, the VR family, OCIO / LUT, Time effects and the simulations; Advanced 3D runs with blend modes, track mattes or environment backgrounds composite on the CPU |
+| EFF-5 GPU effects | P1 | 0.92 | GPU kernels for the CC light / transition families, Numbers and Timecode, Time effects and the stepped particle systems' sprite pass (3D Channel, the VR family, OCIO / LUT and the simulations' render passes landed in M13.23); Advanced 3D runs with blend modes, track mattes or environment backgrounds composite on the CPU |
 | WEB-1 Web app | P0 | 0.9 | GPU effects in the browser (needs WebGPU in the render workers or async readback), a disk cache in browser storage (OPFS), a storage manager, threads inside one engine instance |
 | UI-7 Home screen | P1 | 0.95 | A "start from a template" gallery |
 | MSK-4 Roto Brush | P2 | 0.85 | Segmentation is classical (graph cut + optical flow), not a learned model |
@@ -155,7 +155,7 @@ the disk cache in the formats wave; the 3D Camera Tracker in M12.6.)
 | Text | ≈ 96% | 0.3 | no extruded strokes (M13.12: the Variable Font Axes animator re-spaces the text — advances follow the animated axes; M13.6: variable font axes in the character style — `layer.setText variations`, the Character panel's Variable Font Axes fields — shape with HVAR / gvar advances and draw at that design-space position; OpenType features — stylistic sets, discretionary ligatures, contextual / stylistic alternates, swash, titling, ordinals, fractions, figure styles, true small caps / all small caps and superior / inferior glyphs with faux fallback — per character with the Character panel's OpenType popup and `text.fontFeatures` landed in M13.2; vertical Roman / Tate-Chu-Yoko, forced LTR paragraphs, caret on animated and path text, Variable Font Axes and Lottie style runs landed in M13.5; extruded, bevelled text in M7.6; per-character styles, paragraph settings, on-canvas editing and the `sourceText` style API in M9.9–M9.10) |
 | Web | 93% | 0.5 | GPU effects in the browser (WebGPU compositing only on the page), no disk cache, no shared-memory threads inside one engine instance (browser storage, Web Audio, Web Worker renders/analyses, WebGPU viewer and offline install landed in M15.2; viewer frames in frame workers fed by project diffs, Roto Brush propagation in a worker, non-blocking `wait: true` jobs and a browser Media Browser (File System Access folders, browser storage) in M13.10) |
 | 3D | 88% | 5.5 | multi-view layouts, the Extended Viewer for Advanced 3D comps (Classic 3D Extended Viewer landed in M13.5 UI completion); collapsed precomps of another size seen through the parent's camera render (fixed in M13.2); stereo rigs, orbit nulls, lights controlled by the camera, cameras/lights from glTF models, environment backgrounds, Advanced 3D motion blur, blend modes and track mattes landed in M7.7; Classic 3D iris-shaped bokeh with highlights, progressive depth of field on tilted layers and the focus-link commands landed in M13.5; Advanced 3D depth of field with the iris and highlight options, collapsed precomps as real Advanced 3D geometry and extruded text/shape strokes landed in M13.8; Advanced 3D (glTF/OBJ models, primitives, extruded text and shapes, PBR, image-based light, shadow maps, GPU rasteriser) in M7.4–M7.6; Advanced 3D end to end on the GPU (motion blur, iris depth of field, compositing) in M13.11 |
-| Effects | ≈ 85% | 3.0 | GPU versions of the remaining effects (166 run on the GPU since M13.13, EFF-5: Warp, Bezier Warp, Reshape, Smear, CC Bend It, CC Page Turn, Cartoon, Color Emboss, Circle, Ellipse, Iris Wipe, Bevel Alpha / Edges and Gaussian Blur (Legacy) joined the 152 of M13.9; simulations, 3D channel, VR, audio-driven, OCIO, text and the CC light / transition families still render on the CPU) and the missing controls listed as partial in [effects.md](effects.md) (every After Effects effect exists since M9.11, M12.5 and M12.6; parameter names, order, twirl-downs, popups, units and defaults were aligned in M9.12) |
+| Effects | ≈ 85% | 3.0 | GPU versions of the remaining effects (206 run on the GPU since M13.23, EFF-5: the 3D Channel and Immersive Video families, Apply Color LUT, the OCIO effects, Color Profile Converter and the simulations' render passes joined the 166 of M13.13; audio-driven, text, the stepped particle systems and the CC light / transition families still render on the CPU) and the missing controls listed as partial in [effects.md](effects.md) (every After Effects effect exists since M9.11, M12.5 and M12.6; parameter names, order, twirl-downs, popups, units and defaults were aligned in M9.12) |
 | Interface | 75% | 5.0 | more Learn tutorials and pixel-level fidelity of dialogs (the Home ▸ Templates gallery (eight original built-in templates, user templates from File ▸ Save as Template…) and View ▸ Simulate Output ▸ My Custom RGB… landed in M13.25; Timeline layer reordering by drag, a non-snapping viewer pan, a working rename field and twirl arrows, and the full set of property reveal shortcuts — double presses, Alt+Shift keyframes, Ctrl+` — landed in M13.17–M13.20; the Home ▸ Learn tab with interactive tutorials and a UI fidelity pass landed in M13.5 UI completion; visual editors for Lumetri RGB / hue-saturation curves, Colorama's output cycle wheel, Glow's colour map and Reshape's correspondence points (viewer handles), a scrolling Preview panel and AE-style Composition / Timeline tabs (close, label swatch, viewer lock) landed in M13.10; Timeline outline and Project panel columns scroll horizontally, the Layer Style dialog, ROI resize handles, Pan Behind snapping and 3D Reference Axes landed in M13.5; native macOS menu bar, Timeline columns/search/reveal-add, Home screen with recent projects and all AE workspaces landed; viewer rulers/snapping/channels/snapshots landed in M0.13) |
 | Project | ≈ 68% | 5.5 | auto-save, folder moves, OCIO displays beyond the built-in tone map (Color Engine with OCIO/ACES working spaces, HDR compand/tone mapping, Rec. 2100 PQ/HLG output, Feet + Frames, display colour management, Simulate Output and the locked viewer landed in M7.7; proxies and Interpret Footage fields / pixel aspect / alpha guess landed: PRJ-8, PRJ-3) |
 | Masks & roto | 74% | 5.0 | Roto Brush's learned (3.0) segmentation model (variable-width mask feather points with the Mask Feather tool landed in M13.5; mask tracking and Mask Interpolation landed in M6.6; Roto Brush & Refine Edge with graph-cut segmentation, flow propagation, edge matting, decontamination and Freeze in M6.7) |
@@ -372,6 +372,44 @@ in Settings (`customRgb`) and simulated like the built-in profiles, with Preserv
 (`view.customRgb`, `view.simulateOutput {profile: "myCustom"}`). Generic dialog forms now register
 `form.field.<key>`, `form.ok` and `form.cancel` automation ids. Not yet: LUT-based (`A2B0`)
 ICC profiles.
+
+## Update: M13.23 GPU effects, part B (EFF-5)
+
+40 more effects run on the GPU (206 in all), each checked against the CPU oracle (≤ 1/255 at
+8 bpc, ≤ 1e-3 at 32 bpc) directly on a buffer (full and half resolution, adjustment) and
+composited at 8 and 32 bpc:
+
+- **3D Channel** (`gpu::fx_depth`): 3D Channel Extract (every channel, Anti-alias), Cryptomatte,
+  Depth Matte, Depth of Field, EXtractoR, Fog 3D (with a Gradient Layer), ID Matte and
+  IDentifier. The layer's auxiliary channels upload as an extra texture at the aux resolution and
+  are resampled onto the buffer with the CPU's index arithmetic (tested at 1× and 2× aux
+  resolution and on padded buffers). Cryptomatte's ranks are reduced per aux pixel on the CPU
+  (selection coverage and ID colours), then looked up on the GPU.
+- **Immersive Video** (`gpu::fx_vr`): VR Blur, Chromatic Aberrations, Color Gradients, Converter
+  (all nine projections and cube layouts), De-Noise (guided filter and median), Digital Glitch,
+  Fractal Noise, Glow, Plane to Sphere, Rotate Sphere, Sharpen and Sphere to Plane, in mono and
+  both stereo layouts: the equirectangular maths (seam wrap, pole continuation, latitude-widened
+  box blurs) ported operation for operation. Exception: VR Converter re-projections that cross a
+  cube-face edge or a fisheye rim may pick the neighbouring face for directions within f32
+  rounding of the edge (the CPU decides in f64): up to 0.5 % of pixels allowed (measured 0).
+- **Colour management** (`gpu::fx_lut`): Apply Color LUT, OCIO CDL / Color Space / Display /
+  File / Look Transform and Color Profile Converter compile to colour programs
+  (`effects::color_program`, next to the CPU effects) interpreted per pixel; 1D / 3D LUTs and
+  cineSpace shapers are read from a storage buffer with the CPU's nearest / trilinear /
+  tetrahedral interpolation and inverses (not a hardware 3D texture: its filtering rounds the
+  weights and cannot do tetrahedral). Lumetri's Input LUT and Look no longer force the CPU.
+  Custom `.ocio` configurations render on the CPU. Exception: nearest-neighbour lattice lookups
+  may pick the other lattice point for 8 bpc inputs exactly on a rounding boundary (up to 1 %
+  of pixels allowed).
+- **Simulation render passes** (`gpu::fx_sim`): CC Rainfall, CC Snowfall, CC Star Burst, CC
+  Bubbles, CC Drizzle, CC Hair, CC Mr. Mercury, Caustics, Wave World, Foam, Shatter, Card Dance
+  and Card Wipe. The per-frame simulation / layout stays on the CPU and is shared with the CPU
+  effect as a plan (sprites, textured pieces, blobs, drops, the wave grid, Caustics' prepared
+  layers); a tiled rasteriser composites each pixel's items in the CPU's order and shading, with
+  layer-dependent colours (refracting rain, star-burst and hair roots, bubble refraction)
+  sampled per pixel. Piece plans read the frame back once (their gradient maps and textures
+  default to the layer). Shatter's wireframe views and Foam's User Defined texture,
+  Environment Map and flow-map preview render on the CPU.
 
 ## Highest-value gaps, in order
 

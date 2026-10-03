@@ -20,9 +20,13 @@
 //! GPU effects ([`effectcraft_effects::GPU_EFFECTS`]) run as compute kernels with the CPU
 //! effect's exact steps (padding, box-blur radii, parameter conversions); chains of them are
 //! uploaded and read back once. Each family lives in its own module with its own WGSL file
-//! (`fx_color`, `fx_distort`, `fx_extra`, `fx_generate`, `fx_key`, `fx_noise`, `fx_stylize`,
-//! `fx_tone`, `fx_warp`); settings a kernel cannot match fall back to the CPU
-//! (`catalog::gpu_supported`, or `None` from the family's `apply`).
+//! (`fx_color`, `fx_depth`, `fx_distort`, `fx_extra`, `fx_generate`, `fx_key`, `fx_lut`,
+//! `fx_noise`, `fx_sim`, `fx_stylize`, `fx_tone`, `fx_vr`, `fx_warp`); settings a kernel cannot
+//! match fall back to the CPU (`catalog::gpu_supported`, or `None` from the family's `apply`).
+//! The 3D Channel effects read the layer's aux channels as an extra texture (`fx_depth`), the
+//! colour-management effects interpret colour programs built next to the CPU effects
+//! (`fx_lut`), and simulations keep their state on the CPU and rasterise its per-frame plan here
+//! (`fx_sim`).
 //!
 //! Working textures come from a pool (`context::Pool`): a frame allocates several full-frame
 //! RGBA f32 images per layer, and creating and zeroing those cost more than compositing a small

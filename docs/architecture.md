@@ -193,9 +193,13 @@ GPU canvas; only the depth of field reads back its 8-byte radius range. Advanced
 blend modes, track mattes or Preserve Transparency and environment backgrounds take the CPU's
 2D compositing path (their scenes still render through `render_3d`). Wireframe outlines draw on
 the GPU from the CPU's pixel list (`Renderer::wireframe_pixels`). GPU
-effects (`effects::GPU_EFFECTS`, 166 of them: blurs, colour correction, keying incl. Key Light,
+effects (`effects::GPU_EFFECTS`, 206 of them: blurs, colour correction, keying incl. Key Light,
 mattes, channel, stylize, distortion and warps (Warp, Bezier Warp, Smear, Reshape, CC Bend It, CC
-Page Turn), Cartoon, bevels, shapes, transitions, generators, noise, grain and time; see
+Page Turn), Cartoon, bevels, shapes, transitions, generators, noise, grain, time, 3D Channel
+(aux channels as an extra texture), Immersive Video, colour management (colour programs from
+`effects::color_program`, LUTs in a storage buffer) and the simulations' render passes (the
+simulation stays on the CPU and hands its plan — sprites, pieces, blobs, grids — to a tiled
+rasteriser); see
 [effects.md](effects.md)) repeat the CPU effect's steps (padding, box radii, parameters, hashes)
 as kernels, in one module per family (`gpu::fx_*` with `shaders/fx_*.wgsl`); consecutive GPU
 effects run as one chain with one upload and one readback. Statistics that need the whole frame
