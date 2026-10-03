@@ -682,8 +682,7 @@ pub struct Plane3d {
 /// Prepare a run of 3D layers for an accelerator. `None` when the run must be drawn on the CPU
 /// (adjustment, wireframe or environment background layers, Advanced 3D).
 pub(crate) fn gpu_run(r: &Renderer, ctx: &EvalCtx, run: &[&Layer], out: (u32, u32)) -> Option<Run3d> {
-    if run.is_empty() || run.iter().any(|l| l.switches.adjustment || l.environment_background || r.quality(l) == effectcraft_project::Quality::Wireframe)
-    {
+    if run.is_empty() || run.iter().any(|l| l.switches.adjustment || l.environment_background || r.quality(l) == effectcraft_project::Quality::Wireframe) {
         return None;
     }
     if ctx.comp.renderer == effectcraft_project::Renderer::Advanced3D && r.collapse3d.is_none() {
