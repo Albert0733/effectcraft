@@ -144,7 +144,9 @@ fn fxt_eq_look(table: u32, n: u32, v: f32) -> f32 {
 //  5 Leave Color  6 Change Color  7 Broadcast Colors  8 Color Balance (HLS)  9 CC Toner
 // 10 CC Color Offset  11 CC Kernel  12 PS Arbitrary Map  13 Video Limiter
 // 14 Hue/Saturation with colour ranges  15 Levels with channel controls
-// 16 Auto Levels / Contrast / Color apply  17 Equalize apply
+// 16 Auto Levels / Contrast / Color apply  17 Equalize apply  18 Invert (HLS / YIQ channels)
+// 19 luminance plane  20 Shadow/Highlight (aux = (shadow base, highlight base))
+// 21 pack src.x, aux.x  22 Shadow/Highlight clip remap  23 CC Color Neutralizer
 @compute @workgroup_size(16, 16)
 fn fxt_point(@builtin(global_invocation_id) gid: vec3<u32>) {
     let dims = out_dims();
@@ -586,7 +588,118 @@ fn fxt_point(@builtin(global_invocation_id) gid: vec3<u32>) {
             let na = clamp(max(a, 0.0), 0.0, 1.0);
             o = vec4<f32>(r * na, na);
         }
+        case 18u: {
+            if (a <= 0.0) {
+                break;
+            }
+            let ch = u0.y;
+            var r: vec3<f32>;
+            if (ch <= 7u) {
+                var hsl = rgb_to_hsl(c);
+                if (ch == 4u || ch == 5u) {
+                    hsl.x = 1.0 - hsl.x;
+                }
+                if (ch == 4u || ch == 6u) {
+                    hsl.z = 1.0 - hsl.z;
+                }
+                if (ch == 4u || ch == 7u) {
+                    hsl.y = 1.0 - hsl.y;
+                }
+                r = hsl_to_rgb(hsl.x, hsl.y, hsl.z);
+            } else {
+                var q = vec3<f32>(
+                    0.299 * c.x + 0.587 * c.y + 0.114 * c.z,
+                    0.596 * c.x - 0.274 * c.y - 0.322 * c.z,
+                    0.211 * c.x - 0.523 * c.y + 0.312 * c.z,
+                );
+                if (ch == 8u || ch == 9u) {
+                    q.x = 1.0 - q.x;
+                }
+                if (ch == 8u || ch == 10u) {
+                    q.y = -q.y;
+                }
+                if (ch == 8u || ch == 11u) {
+                    q.z = -q.z;
+                }
+                r = max(
+                    vec3<f32>(q.x + 0.956 * q.y + 0.621 * q.z, q.x - 0.272 * q.y - 0.647 * q.z, q.x - 1.106 * q.y + 1.703 * q.z),
+                    vec3<f32>(0.0),
+                );
+            }
+            o = vec4<f32>((c + (r - c) * f0.x) * a, a);
+        }
+        case 19u: {
+            o = vec4<f32>(luminance(c));
+        }
+        case 20u: {
+            if (a <= 0.0) {
+                break;
+            }
+            let bases = textureLoad(aux, p, 0);
+            let s_amt = f0.x;
+            let h_amt = f0.y;
+            let ws0 = clamp(1.0 - bases.x / f0.z, 0.0, 1.0);
+            let wh0 = clamp((bases.y - (1.0 - f0.w)) / f0.w, 0.0, 1.0);
+            let ws = ws0 * ws0;
+            let wh = wh0 * wh0;
+            let gain = (1.0 + s_amt * ws * 2.0) * (1.0 - h_amt * wh * 0.5);
+            let l = luminance(c);
+            let nl = l * gain;
+            let sat = pow(max(gain, 1e-3), P.f[1].x);
+            var r = nl + (c - l) * sat;
+            let mc = P.f[1].y;
+            if (mc != 0.0) {
+                let shift = (0.5 + (nl - 0.5) * (1.0 + mc)) - nl;
+                r = r + shift;
+            }
+            r = fxt_mix(max(r, vec3<f32>(0.0)), c, P.f[1].z);
+            o = vec4<f32>(r * a, a);
+        }
+        case 21u: {
+            o = vec4<f32>(px.x, textureLoad(aux, p, 0).x, 0.0, 0.0);
+        }
+        case 22u: {
+            if (a <= 0.0 && px.x == 0.0 && px.y == 0.0 && px.z == 0.0) {
+                break;
+            }
+            let r = max(f0.x + (c - f0.y) * f0.z, vec3<f32>(0.0));
+            let na = clamp(max(a, 0.0), 0.0, 1.0);
+            o = vec4<f32>(r * na, na);
+        }
+        case 23u: {
+            if (a <= 0.0) {
+                break;
+            }
+            let l = clamp(luminance(c), 0.0, 1.0);
+            let ws = 1.0 - fxt_smoothstep(0.0, 0.5, l);
+            let wh = fxt_smoothstep(0.5, 1.0, l);
+            let wm = 1.0 - ws - wh;
+            let pin = P.f[3].x;
+            let keep = 1.0 - pin * clamp(1.0 - 4.0 * l * (1.0 - l), 0.0, 1.0);
+            let contrast = P.f[3].z;
+            let darks = P.f[4].x;
+            let brights = P.f[4].y;
+            var r: vec3<f32>;
+            for (var k = 0; k < 3; k++) {
+                let d = P.f[0][k] * ws + P.f[1][k] * wm + P.f[2][k] * wh;
+                var v = c[k] + d * keep;
+                v = 0.5 + (v - 0.5) * (1.0 + contrast);
+                v += darks * 0.25 * (1.0 - l) * (1.0 - l) + brights * 0.25 * l * l;
+                r[k] = max(v, 0.0);
+            }
+            r = fxt_mix(r, c, P.f[3].y);
+            o = vec4<f32>(r * a, a);
+        }
         default: {}
     }
     textureStore(out, p, o);
+}
+
+// util::smoothstep.
+fn fxt_smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
+    if (abs(e1 - e0) < 1e-9) {
+        return select(1.0, 0.0, x < e0);
+    }
+    let t = clamp((x - e0) / (e1 - e0), 0.0, 1.0);
+    return t * t * (3.0 - 2.0 * t);
 }

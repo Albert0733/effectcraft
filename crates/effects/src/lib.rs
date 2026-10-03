@@ -70,7 +70,7 @@ pub use color_fx::{
     HUESAT_CHANNELS, HUESAT_RANGES, LEVELS_CHANNELS, PHOTO_FILTER_CUSTOM, PHOTO_FILTERS, exposure_settings, fill_uses_masks, huesat_ranges_identity,
     levels_channel_ids, levels_channel_settings, levels_channels_identity, levels_clip,
 };
-pub use color2::{Curve, auto_correct_settings, equalize_tables};
+pub use color2::{Curve, auto_correct_settings, equalize_tables, luma_clip_points, shadow_highlight_amounts};
 pub use distort::transform_shutter;
 pub use distort2::parse_mesh;
 use effectcraft_keyframe::Value;
@@ -850,6 +850,8 @@ pub const GPU_EFFECTS: &[&str] = &[
     "ec.color.autocontrast",
     "ec.color.autocolor",
     "ec.color.equalize",
+    "ec.color.shadowhighlight",
+    "ec.color.cccolorneutralizer",
     // effectcraft-gpu fx_stylize (stylize, distort)
     //
     // effectcraft-gpu fx_noise (noise, blur, time)

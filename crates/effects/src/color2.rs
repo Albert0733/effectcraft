@@ -453,17 +453,29 @@ fn equalize(ctx: &EffectCtx, mut b: Buf) -> Buf {
 // ---------------------------------------------------------------------------------------------
 // Shadow/Highlight
 
-fn shadow_highlight(ctx: &EffectCtx, mut b: Buf) -> Buf {
+/// Shadow/Highlight's shadow and highlight amounts for `img` (Auto Amounts measures them).
+pub fn shadow_highlight_amounts(ctx: &EffectCtx, img: &Image) -> (f32, f32) {
     let (mut s_amt, mut h_amt) = (ctx.params.f("shadowAmount") as f32 / 100.0, ctx.params.f("highlightAmount") as f32 / 100.0);
-    let luma = Plane::luma(&b.img);
-    let src_hist = histograms(&b.img);
     if ctx.params.b("autoAmounts") {
         // Temporal Smoothing / Scene Detect average the analysis over neighbouring frames.
-        let mean =
-            if ctx.params.f("temporalSmoothing") > 0.0 { hist_mean(&smoothed_histograms(ctx, &b.img)[3]) as f32 } else { hist_mean(&src_hist[3]) as f32 };
+        let mean = if ctx.params.f("temporalSmoothing") > 0.0 { hist_mean(&smoothed_histograms(ctx, img)[3]) } else { hist_mean(&histograms(img)[3]) } as f32;
         s_amt = ((0.6 - mean) * 1.5).clamp(0.0, 1.0) * 0.8 + 0.1;
         h_amt = ((mean - 0.6) * 1.5).clamp(0.0, 1.0) * 0.8;
     }
+    (s_amt, h_amt)
+}
+
+/// The luminance values clipping `black` / `white` fractions of `img`'s alpha-weighted
+/// luminance histogram (Shadow/Highlight's Black / White Clip).
+pub fn luma_clip_points(img: &Image, black: f64, white: f64) -> (f32, f32) {
+    clip_points(&histograms(img)[3], black, white)
+}
+
+fn shadow_highlight(ctx: &EffectCtx, mut b: Buf) -> Buf {
+    let (s_amt, h_amt) = shadow_highlight_amounts(ctx, &b.img);
+    let luma = Plane::luma(&b.img);
+    let (bc, wc) = (ctx.params.f("moreOptions/blackClip").clamp(0.0, 49.0) / 100.0, ctx.params.f("moreOptions/whiteClip").clamp(0.0, 49.0) / 100.0);
+    let clip0 = (bc > 0.0 || wc > 0.0).then(|| luma_clip_points(&b.img, bc, wc));
     let s_tw = (ctx.params.f("moreOptions/shadowTonalWidth") as f32 / 100.0).max(0.01);
     let h_tw = (ctx.params.f("moreOptions/highlightTonalWidth") as f32 / 100.0).max(0.01);
     let s_r = ctx.params.f("moreOptions/shadowRadius").max(0.0) * b.scale / 2.0;
@@ -495,10 +507,8 @@ fn shadow_highlight(ctx: &EffectCtx, mut b: Buf) -> Buf {
     // Black / White Clip: the adjusted image's extremes (ignoring those fractions of pixels)
     // are mapped back onto the original's, so lifting shadows or recovering highlights doesn't
     // flatten the ends of the tonal range.
-    let (bc, wc) = (ctx.params.f("moreOptions/blackClip").clamp(0.0, 49.0) / 100.0, ctx.params.f("moreOptions/whiteClip").clamp(0.0, 49.0) / 100.0);
-    if bc > 0.0 || wc > 0.0 {
-        let (lo0, hi0) = clip_points(&src_hist[3], bc, wc);
-        let (lo1, hi1) = clip_points(&histograms(&b.img)[3], bc, wc);
+    if let Some((lo0, hi0)) = clip0 {
+        let (lo1, hi1) = luma_clip_points(&b.img, bc, wc);
         if (lo0, hi0) != (lo1, hi1) && hi1 - lo1 > 1e-3 {
             let k = (hi0 - lo0) / (hi1 - lo1);
             map_ca(&mut b.img, |c, a| (c.map(|v| (lo0 + (v - lo1) * k).max(0.0)), a));

@@ -13,7 +13,7 @@ use effectcraft_color::rgb_to_hsl;
 use effectcraft_effects::EffectCtx;
 
 use crate::context::{Enc, Params};
-use crate::effects::GBuf;
+use crate::effects::{GBuf, gaussian_blur};
 
 /// Compute entry points in `fx_tone.wgsl`.
 pub(crate) const KERNELS: &[&str] = &["fxt_point"];
@@ -37,11 +37,63 @@ pub(crate) const IDS: &[&str] = &[
     "ec.color.autocontrast",
     "ec.color.autocolor",
     "ec.color.equalize",
+    "ec.color.shadowhighlight",
+    "ec.color.cccolorneutralizer",
 ];
 
 /// Run effect `id` (one of [`IDS`]); `None` = this parameter combination runs on the CPU.
 pub(crate) fn apply(e: &mut Enc, id: &str, ctx: &EffectCtx, b: GBuf) -> Option<GBuf> {
-    point(e, id, ctx, b)
+    match id {
+        "ec.color.shadowhighlight" => shadow_highlight(e, ctx, b),
+        _ => point(e, id, ctx, b),
+    }
+}
+
+/// Invert in the HLS and YIQ channels (the base `pointwise` kernel does RGB and Alpha).
+pub(crate) fn invert(e: &mut Enc, ctx: &EffectCtx, b: GBuf) -> Option<GBuf> {
+    let mut p = op(18);
+    p.u[0][1] = ctx.params.e("channel");
+    p.f[0][0] = 1.0 - ctx.params.f("blend") as f32 / 100.0;
+    run(e, &p, b, None)
+}
+
+/// Shadow/Highlight: the amounts (Auto Amounts) and the Black / White Clip ranges are measured
+/// on the CPU; the luminance bases are blurred and the image adjusted on the GPU.
+fn shadow_highlight(e: &mut Enc, ctx: &EffectCtx, b: GBuf) -> Option<GBuf> {
+    let pr = ctx.params;
+    let src = e.download(&b.img)?;
+    let (s_amt, h_amt) = effectcraft_effects::shadow_highlight_amounts(ctx, &src);
+    let (bc, wc) = (pr.f("moreOptions/blackClip").clamp(0.0, 49.0) / 100.0, pr.f("moreOptions/whiteClip").clamp(0.0, 49.0) / 100.0);
+    let clip0 = (bc > 0.0 || wc > 0.0).then(|| effectcraft_effects::luma_clip_points(&src, bc, wc));
+    let s_r = pr.f("moreOptions/shadowRadius").max(0.0) * b.scale / 2.0;
+    let h_r = pr.f("moreOptions/highlightRadius").max(0.0) * b.scale / 2.0;
+    let (w, h) = (b.img.width, b.img.height);
+    let luma = e.image(w, h);
+    e.pixels("fxt_point", &op(19), &b.img, None, &luma, None);
+    let base_s = gaussian_blur(e, &luma, s_r, s_r, true);
+    let base_h = if (h_r - s_r).abs() < 1e-9 { base_s.clone() } else { gaussian_blur(e, &luma, h_r, h_r, true) };
+    let bases = e.image(w, h);
+    e.pixels("fxt_point", &op(21), &base_s, Some(&base_h), &bases, None);
+    let mut p = op(20);
+    p.f[0] =
+        [s_amt, h_amt, (pr.f("moreOptions/shadowTonalWidth") as f32 / 100.0).max(0.01), (pr.f("moreOptions/highlightTonalWidth") as f32 / 100.0).max(0.01)];
+    p.f[1] = [
+        pr.f("moreOptions/colorCorrection") as f32 / 100.0,
+        pr.f("moreOptions/midtoneContrast") as f32 / 100.0,
+        (pr.f("blend") / 100.0).clamp(0.0, 1.0) as f32,
+        0.0,
+    ];
+    let out = e.image(w, h);
+    e.pixels("fxt_point", &p, &b.img, Some(&bases), &out, None);
+    let Some((lo0, hi0)) = clip0 else { return Some(GBuf { img: out, ..b }) };
+    let adjusted = e.download(&out)?;
+    let (lo1, hi1) = effectcraft_effects::luma_clip_points(&adjusted, bc, wc);
+    if (lo0, hi0) == (lo1, hi1) || hi1 - lo1 <= 1e-3 {
+        return Some(GBuf { img: out, ..b });
+    }
+    let mut p = op(22);
+    p.f[0] = [lo0, lo1, (hi0 - lo0) / (hi1 - lo1), 0.0];
+    run(e, &p, GBuf { img: out, ..b }, None)
 }
 
 fn rgb(c: [f32; 4]) -> [f32; 4] {
@@ -266,6 +318,16 @@ fn point(e: &mut Enc, id: &str, ctx: &EffectCtx, b: GBuf) -> Option<GBuf> {
             p.u[0] = [13, pr.e("clipMethod"), pr.b("gamutWarning") as u32, 0];
             p.f[0] = [level, level * (1.0 - comp), 0.0, 0.0];
             p.f[1] = rgb(pr.color("gamutWarningColor"));
+        }
+        "ec.color.cccolorneutralizer" => {
+            let pairs = [("shadowsUnbalance", "shadowsBalance"), ("midtonesUnbalance", "midtonesBalance"), ("highlightsUnbalance", "highlightsBalance")];
+            for (i, (u, bal)) in pairs.iter().enumerate() {
+                let (u, v) = (pr.color(u), pr.color(bal));
+                p.f[i] = [v[0] - u[0], v[1] - u[1], v[2] - u[2], 0.0];
+            }
+            p.u[0][0] = 23;
+            p.f[3] = [f("pinning") / 100.0, f("blendWOriginal") / 100.0, f("contrast") / 100.0, 0.0];
+            p.f[4] = [f("darks") / 100.0, f("brights") / 100.0, 0.0, 0.0];
         }
         "ec.color.autolevels" | "ec.color.autocontrast" | "ec.color.autocolor" | "ec.color.equalize" => {
             // The histograms are measured on the CPU.

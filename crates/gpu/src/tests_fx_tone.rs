@@ -115,3 +115,30 @@ fn automatic_corrections() {
     effect_case("ec.color.equalize", &[("style", e(1)), ("amount", n(70.0))]);
     effect_case("ec.color.equalize", &[("style", e(2))]);
 }
+
+#[test]
+fn shadow_highlight_neutralizer_invert() {
+    effect_case("ec.color.shadowhighlight", &[]);
+    effect_case(
+        "ec.color.shadowhighlight",
+        &[
+            ("autoAmounts", off()),
+            ("shadowAmount", n(70.0)),
+            ("highlightAmount", n(40.0)),
+            ("moreOptions/shadowRadius", n(8.0)),
+            ("moreOptions/highlightRadius", n(15.0)),
+            ("moreOptions/midtoneContrast", n(30.0)),
+            ("moreOptions/blackClip", n(2.0)),
+            ("blend", n(20.0)),
+        ],
+    );
+    effect_case("ec.color.shadowhighlight", &[("moreOptions/blackClip", n(0.0)), ("moreOptions/whiteClip", n(0.0)), ("moreOptions/colorCorrection", n(-40.0))]);
+    effect_case(
+        "ec.color.cccolorneutralizer",
+        &[("shadowsBalance", c(0.1, 0.0, 0.05)), ("midtonesUnbalance", c(0.6, 0.5, 0.4)), ("pinning", n(40.0)), ("contrast", n(20.0)), ("darks", n(-30.0))],
+    );
+    effect_case("ec.color.cccolorneutralizer", &[("highlightsBalance", c(0.9, 1.0, 0.8)), ("brights", n(40.0)), ("blendWOriginal", n(25.0))]);
+    for ch in 4..=11 {
+        effect_case("ec.channel.invert", &[("channel", e(ch)), ("blend", n(20.0))]);
+    }
+}
