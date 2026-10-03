@@ -50,7 +50,6 @@ pub fn specs() -> Vec<CommandSpec> {
         stub!("keys.audioToKeyframes", "Convert Audio to Keyframes", ["Animation", "Keyframe Assistant"], "{}"),
         stub!("keys.rpfCameraImport", "RPF Camera Import", ["Animation", "Keyframe Assistant"], "{}"),
         stub!("text.animatorFontAxes", "Variable Font Axes", ["Animation", "Animate Text"], "{}"),
-        stub!("track.camera", "Track Camera", ["Animation"], "{}"),
         // Workspaces and panels that don't exist yet.
         stub!("window.unavailablePanel", "Panel", [], "{panel}"),
     ]

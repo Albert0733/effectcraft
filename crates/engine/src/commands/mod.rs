@@ -4,6 +4,7 @@
 mod anim;
 pub mod anim_tools;
 mod animation;
+mod camera_cmds;
 mod comp;
 mod comp_more;
 mod create;
@@ -137,6 +138,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(track::specs());
         v.extend(mask_interp::specs());
         v.extend(warp_cmds::specs());
+        v.extend(camera_cmds::specs());
         v.extend(roto_cmds::specs());
         v.extend(paint::specs());
         v.extend(puppet::specs());

@@ -750,6 +750,11 @@ impl EffectcraftApp {
             self.session.poll_roto(true);
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
+        // 3D Camera Tracker: likewise (tracking, then solving).
+        if self.session.camera_job.is_some() || !self.session.camera_pending.is_empty() {
+            self.session.poll_camera(true);
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
         self.apply_prefs(&ctx);
         self.handle_events(&ctx);
         self.tick_autosave(&ctx);
