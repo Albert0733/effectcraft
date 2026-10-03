@@ -349,7 +349,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "3D Model Layer",
             [],
             None,
-            "{item?: id|name (a 3D model footage item) | path?: .gltf|.glb|.obj file, name?, time? (s)}",
+            "{item?: id or name of a 3D model footage item, path?: a .gltf, .glb or .obj file to import, name?, time? (s)}",
             has_comp,
             new_model
         ),
