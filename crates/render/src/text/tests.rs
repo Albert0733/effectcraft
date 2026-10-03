@@ -228,7 +228,7 @@ fn anchor_grouping_line_rotates_around_line_centre() {
 fn mask(p: &mut Project, l: &mut Layer, pts: &[[f64; 2]], closed: bool) {
     let mut next = p.next_id;
     let mut ids = Ids(&mut next);
-    let sp = ShapePath { vertices: pts.to_vec(), in_tangents: vec![[0.0; 2]; pts.len()], out_tangents: vec![[0.0; 2]; pts.len()], closed };
+    let sp = ShapePath { vertices: pts.to_vec(), in_tangents: vec![[0.0; 2]; pts.len()], out_tangents: vec![[0.0; 2]; pts.len()], closed, feather: Vec::new() };
     let g = build::mask(&mut ids, "Mask 1", sp, MaskMode::None, [255, 255, 0]);
     p.next_id = next;
     let masks = l.props.group_mut("masks").unwrap();
@@ -415,4 +415,40 @@ fn keyframed_selector_animates() {
     assert_eq!(selection(&p, cid, 0.0, 1), vec![1.0; 4]);
     assert_eq!(selection(&p, cid, 0.5, 1), vec![0.0, 0.0, 1.0, 1.0]);
     assert_eq!(selection(&p, cid, 1.0, 1), vec![0.0; 4]);
+}
+
+#[test]
+fn caret_follows_animators_and_path_text() {
+    let (mut p, cid, comp) = setup(400, 400);
+    let mut l = text_layer(&mut p, &comp, doc("ABCD", 30.0));
+    let a = animator(&mut p, &mut l, &["position"], &["range"]);
+    set(&mut l, &format!("text/animators/#{a}/properties/position"), Value::Vec3([0.0, 50.0, 0.0]));
+    p.comp_mut(cid).unwrap().layers.push(l);
+    let c = ctx(&p, cid, 0.0);
+    let ly = &p.comp(cid).unwrap().layers[0];
+    let lay = layout_doc(&source_text(&c, ly).unwrap());
+    let maps = caret_maps(&c, ly, lay.chars);
+    assert_eq!(maps.len(), 5);
+    for (ci, m) in maps.iter().enumerate() {
+        let (top, _) = lay.caret(ci);
+        let q = m.apply(vec2(top.x, top.y));
+        assert!((q.x - top.x).abs() < 1e-6 && (q.y - top.y - 50.0).abs() < 1e-6, "caret {ci}: {top:?} → {q:?}");
+    }
+    // On a vertical path (x = 100, running down) the caret turns with the characters and sits
+    // on the path.
+    let (mut p, cid, comp) = setup(400, 400);
+    let mut l = text_layer(&mut p, &comp, doc("PATH", 30.0));
+    mask(&mut p, &mut l, &[[100.0, 20.0], [100.0, 380.0]], false);
+    set(&mut l, "text/pathOptions/path", Value::Enum(1));
+    p.comp_mut(cid).unwrap().layers.push(l);
+    let c = ctx(&p, cid, 0.0);
+    let ly = &p.comp(cid).unwrap().layers[0];
+    let lay = layout_doc(&source_text(&c, ly).unwrap());
+    let maps = caret_maps(&c, ly, lay.chars);
+    let (t, b) = lay.caret(2);
+    let (qt, qb) = (maps[2].apply(vec2(t.x, t.y)), maps[2].apply(vec2(b.x, b.y)));
+    assert!((qt.y - qb.y).abs() < 1.0 && (qt.x - qb.x).abs() > 20.0, "caret across the path: {qt:?} {qb:?}");
+    assert!(qb.x < 100.5 && qt.x > 100.0, "baseline end on the path, top to its right: {qt:?} {qb:?}");
+    let glyph_c = glyph_paths(&c, ly).iter().map(|g| effectcraft_path::bounds(std::slice::from_ref(&g.0)).unwrap().center().y).collect::<Vec<_>>();
+    assert!(qt.y > glyph_c[1] && qt.y < glyph_c[2], "between the 2nd and 3rd characters: {} in {glyph_c:?}", qt.y);
 }

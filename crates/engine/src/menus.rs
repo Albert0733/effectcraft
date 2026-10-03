@@ -677,6 +677,8 @@ Layer
     Matte with Layer Above | layer.trackMatte {"op":"above"}
     Matte with Layer Below | layer.trackMatte {"op":"below"}
   Layer Styles
+    Layer Style Options... | layer.style.options
+    ---
     Convert to Editable Styles | layer.style.convertToEditable
     Show All | layer.style.showAll
     Remove All | layer.style.removeAll

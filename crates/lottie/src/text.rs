@@ -171,6 +171,14 @@ pub(crate) fn export_text(ex: &mut Ex, layer: &Layer, fonts: &mut Vec<Json>) -> 
         }
     }
     let mut animators = vec![];
+    // Per-character styles: Lottie text documents have one style, so every run that differs
+    // from the base becomes a text animator whose range selector covers exactly its characters
+    // (index units). Fonts and faux styles per run can't be expressed.
+    if let Some(st) = tg.get("sourceText")
+        && let Value::Text(d) = &st.value
+    {
+        animators.extend(style_run_animators(ex, d, label));
+    }
     if let Some(list) = tg.sub("animators") {
         for a in list.groups() {
             animators.push(export_animator(ex, a, &format!("{label} ▸ {}", a.name)));
@@ -187,6 +195,62 @@ pub(crate) fn export_text(ex: &mut Ex, layer: &Layer, fonts: &mut Vec<Json>) -> 
         ex.warn(format!("{label}: text on a path is not exported"));
     }
     json!({"d": {"k": docs}, "a": animators, "m": m, "p": {}})
+}
+
+/// Text animators reproducing the style runs of `d` (fill, stroke, stroke width, size,
+/// tracking, baseline shift) over their character ranges.
+fn style_run_animators(ex: &mut Ex, d: &TextDoc, label: &str) -> Vec<Json> {
+    let base = d.base_style();
+    let mut out = vec![];
+    let mut start = 0usize;
+    let mut warned = false;
+    for run in d.runs() {
+        let (a, b) = (start, start + run.len);
+        start = b;
+        let s = &run.style;
+        if *s == base || run.len == 0 {
+            continue;
+        }
+        let k = |v: Json| json!({"a": 0, "k": v});
+        let mut props = Map::new();
+        if s.apply_fill && s.fill != base.fill {
+            props.insert("fc".into(), k(json!([s.fill[0] as f64, s.fill[1] as f64, s.fill[2] as f64, 1.0])));
+        }
+        if s.apply_stroke && s.stroke != base.stroke {
+            props.insert("sc".into(), k(json!([s.stroke[0] as f64, s.stroke[1] as f64, s.stroke[2] as f64, 1.0])));
+        }
+        if (s.stroke_width - base.stroke_width).abs() > 1e-9 {
+            props.insert("sw".into(), k(json!(s.stroke_width - base.stroke_width)));
+        }
+        if (s.size - base.size).abs() > 1e-9 && base.size > 0.0 {
+            let p = s.size / base.size * 100.0;
+            props.insert("s".into(), k(json!([p, p, 100.0])));
+        }
+        if (s.tracking - base.tracking).abs() > 1e-9 {
+            // Lottie tracking is in 1/1000 em like the Character panel's.
+            props.insert("t".into(), k(json!(s.tracking - base.tracking)));
+        }
+        if (s.baseline_shift - base.baseline_shift).abs() > 1e-9 {
+            props.insert("p".into(), k(json!([0.0, -(s.baseline_shift - base.baseline_shift), 0.0])));
+        }
+        let lost = s.font != base.font || s.style != base.style || s.faux_bold != base.faux_bold || s.faux_italic != base.faux_italic;
+        if lost && !warned {
+            ex.warn(format!("{label}: per-character fonts and faux styles are not part of Lottie text (base font used)"));
+            warned = true;
+        }
+        if props.is_empty() {
+            continue;
+        }
+        out.push(json!({
+            "nm": format!("Style {a}–{b}"),
+            "s": {
+                "t": 0, "xe": k(json!(0)), "ne": k(json!(0)), "a": k(json!(100)), "b": 1, "rn": 0, "sh": 1,
+                "r": 2, "m": k(json!(1)), "s": k(json!(a)), "e": k(json!(b)), "o": k(json!(0)),
+            },
+            "a": Json::Object(props),
+        }));
+    }
+    out
 }
 
 fn export_animator(ex: &mut Ex, a: &PropGroup, label: &str) -> Json {

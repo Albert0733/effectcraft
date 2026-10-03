@@ -87,6 +87,9 @@ fn apply_settings(c: &mut Comp, p: &Value) {
     if let Some(n) = p.get("motionBlurSamples").and_then(Value::as_u64) {
         c.motion_blur_samples = (n as u32).clamp(2, 64);
     }
+    if let Some(n) = p.get("adaptiveSampleLimit").and_then(Value::as_u64) {
+        c.motion_blur_adaptive_limit = (n as u32).clamp(16, 256);
+    }
 }
 
 fn new_comp(s: &mut Session, p: &Value) -> Result<Value> {
@@ -249,7 +252,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "New Composition...",
             ["Composition"],
             Some("Cmd+N"),
-            "{name?, width?, height?, frameRate?, duration? (s), startTime? (s) | startTimecode?, background? [r,g,b]|#hex, pixelAspect?, shutterAngle?, shutterPhase?, motionBlurSamples?, renderer? classic3D|advanced3D, anchor?, open?}",
+            "{name?, width?, height?, frameRate?, duration? (s), startTime? (s) | startTimecode?, background? [r,g,b]|#hex, pixelAspect?, shutterAngle?, shutterPhase?, motionBlurSamples?, adaptiveSampleLimit? (16–256), renderer? classic3D|advanced3D, anchor?, open?}",
             always,
             new_comp
         ),
@@ -258,7 +261,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Composition Settings...",
             ["Composition"],
             Some("Cmd+K"),
-            "{comp?, name?, width?, height?, anchor? 0-8 (resize anchor, 4 = center), frameRate?, duration?, startTime? (s) | startTimecode?, background?, shutterAngle?, shutterPhase?, motionBlurSamples?, pixelAspect?, renderer? classic3D|advanced3D}",
+            "{comp?, name?, width?, height?, anchor? 0-8 (resize anchor, 4 = center), frameRate?, duration?, startTime? (s) | startTimecode?, background?, shutterAngle?, shutterPhase?, motionBlurSamples?, adaptiveSampleLimit? (16–256), pixelAspect?, renderer? classic3D|advanced3D}",
             has_comp,
             settings
         ),

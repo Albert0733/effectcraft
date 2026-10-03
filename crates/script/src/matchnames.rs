@@ -162,6 +162,8 @@ const SHAPE_PROPS: &[(&str, &str, &str)] = &[
     ("stroke", "join", "ADBE Vector Stroke Line Join"),
     ("stroke", "miter", "ADBE Vector Stroke Miter Limit"),
     ("stroke", "dashes", "ADBE Vector Stroke Dashes"),
+    ("stroke", "taper", "ADBE Vector Stroke Taper"),
+    ("stroke", "wave", "ADBE Vector Stroke Wave"),
     ("trim", "start", "ADBE Vector Trim Start"),
     ("trim", "end", "ADBE Vector Trim End"),
     ("trim", "offset", "ADBE Vector Trim Offset"),

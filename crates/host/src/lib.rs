@@ -66,6 +66,50 @@ pub fn session() -> Session {
 mod tests {
     use serde_json::json;
 
+    /// Layer ▸ Camera ▸ Link Focus Distance to Point of Interest / to Layer: the expressions
+    /// evaluate to the camera's focus on the target.
+    #[test]
+    fn focus_link_expressions_track_the_target() {
+        use effectcraft_engine::geom::vec3;
+        let mut s = super::session();
+        s.execute("comp.new", json!({"name": "F", "width": 400, "height": 300, "duration": 2})).unwrap();
+        let t = s.execute("layer.newSolid", json!({"color": "#ffffff", "width": 50, "height": 50})).unwrap()["layer"].as_u64().unwrap();
+        s.execute("layer.setSwitch", json!({"layers": [t], "switch": "threeD", "value": true})).unwrap();
+        s.execute("layer.setTransform", json!({"layer": t, "prop": "position", "value": [260, 120, 400]})).unwrap();
+        let cam = s.execute("layer.newCamera", json!({})).unwrap()["layer"].as_u64().unwrap();
+        let cid = s.active_comp_id().unwrap();
+        let focus = |s: &effectcraft_engine::Session| {
+            let comp = s.project.comp(cid).unwrap();
+            let mut ctx = effectcraft_engine::render::EvalCtx::new(&s.project, cid, comp, s.time());
+            ctx.expr = s.expr.as_deref();
+            let l = comp.layer(effectcraft_engine::project::LayerId(cam)).unwrap();
+            ctx.value(l, l.props.prop("cameraOptions/focusDistance").unwrap()).as_f64()
+        };
+        let depth = |s: &effectcraft_engine::Session| {
+            let comp = s.project.comp(cid).unwrap();
+            let ctx = effectcraft_engine::render::EvalCtx::new(&s.project, cid, comp, s.time());
+            let c = comp.layer(effectcraft_engine::project::LayerId(cam)).unwrap();
+            let tl = comp.layer(effectcraft_engine::project::LayerId(t)).unwrap();
+            let cs = effectcraft_engine::render::three_d::camera::layer_camera(&ctx, c);
+            cs.depth(ctx.world_matrix(tl).apply(vec3(25.0, 25.0, 0.0)))
+        };
+        s.execute("layer.select", json!({"layers": [cam, t]})).unwrap();
+        let set = s.execute("camera.setFocusToLayer", json!({})).unwrap()["focusDistance"].as_f64().unwrap();
+        assert!((set - depth(&s)).abs() < 1e-6 && (focus(&s) - set).abs() < 1e-6);
+        s.execute("camera.linkFocusToLayer", json!({})).unwrap();
+        // Move the target: the linked focus follows.
+        s.execute("layer.setTransform", json!({"layer": t, "prop": "position", "value": [200, 150, 900]})).unwrap();
+        assert!((focus(&s) - depth(&s)).abs() < 1e-3, "{} vs {}", focus(&s), depth(&s));
+        s.execute("camera.linkFocusToPoi", json!({"camera": cam})).unwrap();
+        let poi = {
+            let l = s.active_comp().unwrap().layer(effectcraft_engine::project::LayerId(cam)).unwrap();
+            let p = l.props.prop("transform/position").unwrap().value.as_vec3();
+            let q = l.props.prop("transform/poi").unwrap().value.as_vec3();
+            ((p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2) + (p[2] - q[2]).powi(2)).sqrt()
+        };
+        assert!((focus(&s) - poi).abs() < 1e-6, "{} vs {poi}", focus(&s));
+    }
+
     #[test]
     fn wired_session_renders_demo_with_expressions() {
         let mut s = super::session();

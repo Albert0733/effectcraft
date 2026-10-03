@@ -71,6 +71,8 @@ pub enum Dialog {
     Marker,
     /// Layer ▸ Pre-compose.
     Precompose,
+    /// Layer ▸ Layer Styles ▸ Layer Style Options…
+    LayerStyles,
 }
 
 /// Host hooks provided by the native app (file pickers etc.).

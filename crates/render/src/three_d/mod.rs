@@ -6,6 +6,7 @@
 //! groups, as in After Effects).
 
 pub mod adv;
+pub mod bokeh;
 pub mod camera;
 pub(crate) mod compose;
 pub mod light;
