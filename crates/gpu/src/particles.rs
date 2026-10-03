@@ -109,7 +109,7 @@ fn uniforms(req: &SimRequest, n: u32, s0: u64, prev_n: u32) -> Vec<u8> {
 
 /// Simulate `req` (see [`effectcraft_effects::psim::ParticleSim`]).
 pub(crate) fn simulate(g: &GpuContext, req: &SimRequest) -> Option<Vec<SimParticle>> {
-    if !g.can_readback() || req.steps > u32::MAX as u64 {
+    if !g.can_wait() || req.steps > u32::MAX as u64 {
         return None;
     }
     let n = req.births.len() as u32;

@@ -549,6 +549,9 @@ fn purge_caches(s: &mut Session, p: &Value) -> Result<Value> {
     if disk && let Some(dc) = &s.disk_cache {
         disk_entries = dc.stats().entries;
         dc.clear();
+    } else if disk && let Some(h) = &s.storage {
+        // The browser's disk cache (Origin Private File System).
+        disk_entries = h.clear("diskCache").ok().and_then(|r| r["entries"].as_u64()).unwrap_or(0) as usize;
     }
     if matches!(what.as_str(), "all" | "image" | "memory" | "memoryAndDisk") {
         effectcraft_effects::roto::purge();
@@ -560,7 +563,11 @@ fn purge_caches(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// `cache.diskStats`: the disk cache's folder, limit and contents.
 pub(crate) fn disk_stats(s: &mut Session, _: &Value) -> Result<Value> {
-    let Some(dc) = &s.disk_cache else { return Ok(json!({"enabled": false})) };
+    let Some(dc) = &s.disk_cache else {
+        // The browser's disk cache (Origin Private File System), when the web app has one.
+        let web = s.storage.as_ref().map(|h| h.info()["diskCache"].clone()).filter(|d| d.is_object());
+        return Ok(web.unwrap_or_else(|| json!({"enabled": false})));
+    };
     let st = dc.stats();
     Ok(json!({
         "enabled": true,

@@ -34,6 +34,7 @@ pub mod roto;
 pub mod scriptui;
 mod session_settings;
 pub mod shortcuts;
+pub mod storage;
 pub mod sysinfo;
 pub mod tracking;
 pub mod vector;
@@ -362,6 +363,8 @@ pub struct Session {
     pub offloaded: Vec<offload::OffloadedJob>,
     /// What the Media Browser browses (`None`: the local file system where there is one).
     pub browser: Option<Arc<dyn media_browser::Browser>>,
+    /// The browser's storage (the web app; Settings ▸ Disk ▸ Browser Storage, `storage.*`).
+    pub storage: Option<Arc<dyn storage::StorageHost>>,
     /// Offloaded jobs that ended, newest last (kind, error): how a caller waiting for one
     /// (`wait: true` over the control channel in the browser) learns its outcome.
     pub offload_log: Vec<(offload::JobKind, Option<String>)>,
@@ -446,6 +449,7 @@ impl Default for Session {
             offloaded: vec![],
             offload_log: vec![],
             browser: None,
+            storage: None,
             tasks: vec![],
             job_log: vec![],
             next_task_id: 1,

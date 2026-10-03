@@ -816,6 +816,9 @@ pub enum Item {
     },
     /// Read-only information line.
     Note(&'static str),
+    /// The browser's storage manager (web app only, `storage.*`): usage and quota, persistent
+    /// storage, Clear buttons. Not shown where there is no browser storage.
+    BrowserStorage,
 }
 
 /// One page of the Settings dialog.
@@ -1032,6 +1035,7 @@ pub fn pages() -> Vec<Page> {
                 s("disk.diskCacheMaxGb", "Maximum Disk Cache Size", Kind::Int(1, 100_000, "GB"), true),
                 s("disk.diskCacheFolder", "Disk Cache Folder", Kind::Path, true),
                 Button { label: "Empty Disk Cache", command: "edit.purge", params: r#"{"what":"disk"}"# },
+                BrowserStorage,
                 Section("Media Cache"),
                 s("disk.mediaCacheFolder", "Database and Cache Folder", Kind::Path, true),
                 s("disk.conformedMediaFolder", "Conformed Audio Folder", Kind::Path, true),
@@ -1140,6 +1144,7 @@ pub fn pages_json() -> Value {
                     Item::Labels => json!({"labels": "labels.N.name / labels.N.color (N = 0..15)"}),
                     Item::AudioDevices { key } => json!({"type": "device", "key": key, "label": "Default Output"}),
                     Item::Note(t) => json!({"note": t}),
+                    Item::BrowserStorage => json!({"browserStorage": "storage.info / storage.persist / storage.clear (web app)"}),
                 })
                 .collect();
             json!({"id": p.id, "title": p.title, "items": items})

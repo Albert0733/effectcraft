@@ -60,6 +60,7 @@ fn page_ui(app: &mut EffectcraftApp, ui: &mut egui::Ui, page: &Page, cur: &Value
                 }
             }
             Item::Labels => labels_ui(app, ui, cur, acts),
+            Item::BrowserStorage => browser_storage_ui(app, ui, t, acts),
             Item::AudioDevices { key } => {
                 let devices: Vec<String> = app.hooks.audio_devices.as_ref().map(|f| f()).unwrap_or_default();
                 let sel = get(key).as_str().unwrap_or("").to_string();
@@ -191,6 +192,93 @@ fn page_ui(app: &mut EffectcraftApp, ui: &mut egui::Ui, page: &Page, cur: &Value
             }
         }
     }
+}
+
+/// Bytes as "12.3 MB".
+pub fn human_bytes(b: u64) -> String {
+    let units = ["bytes", "KB", "MB", "GB", "TB"];
+    let mut v = b as f64;
+    let mut u = 0;
+    while v >= 1000.0 && u + 1 < units.len() {
+        v /= 1000.0;
+        u += 1;
+    }
+    if u == 0 { format!("{b} bytes") } else { format!("{v:.1} {}", units[u]) }
+}
+
+/// Settings ▸ Disk ▸ Browser Storage (the web app's storage manager, `storage.*`): where the
+/// data lives, the origin's usage and quota, persistent storage, and Clear buttons.
+fn browser_storage_ui(app: &mut EffectcraftApp, ui: &mut egui::Ui, t: &Tokens, acts: &mut Vec<Act>) {
+    let Some(host) = app.session.storage.clone() else { return };
+    let info = host.info();
+    let u = |v: &Value| v.as_u64().unwrap_or(0);
+    ui.add_space(6.0);
+    ui.label(RichText::new("Browser Storage").font(Tokens::semibold(12.5)).color(t.tab_text_active));
+    ui.separator();
+    let backend = match info["backend"].as_str().unwrap_or("") {
+        "opfs" => "Origin Private File System",
+        "indexeddb" => "IndexedDB",
+        "memory" => "Memory only: nothing is kept after a reload",
+        "" => "Unknown",
+        other => other,
+    };
+    let r = ui.label(format!("Stored in: {backend}"));
+    reg(app, "settings.storage.backend", &r, backend);
+    let (usage, quota) = (u(&info["usage"]), u(&info["quota"]));
+    let frac = if quota > 0 { usage as f32 / quota as f32 } else { 0.0 };
+    let text = if quota > 0 { format!("{} of {} used ({:.1} %)", human_bytes(usage), human_bytes(quota), frac * 100.0) } else { "Usage unknown".into() };
+    let r = ui
+        .horizontal(|ui| {
+            ui.add(egui::ProgressBar::new(frac.clamp(0.0, 1.0)).desired_width(220.0).desired_height(8.0));
+            ui.label(&text);
+        })
+        .response;
+    reg(app, "settings.storage.usage", &r, &text);
+    let f = &info["files"];
+    let row = |what: &str, k: &str| format!("{what}: {} ({})", u(&f[k]["count"]), human_bytes(u(&f[k]["bytes"])));
+    ui.label(
+        RichText::new(format!("{} · {} · {}", row("Projects", "projects"), row("Imported media", "media"), row("Auto-saves", "autoSaves"))).color(t.text_dim),
+    );
+    let d = &info["diskCache"];
+    let dc = if d["enabled"].as_bool().unwrap_or(false) {
+        format!(
+            "Disk cache: {} frames, {} of {} (hits {}, misses {})",
+            u(&d["entries"]),
+            human_bytes(u(&d["bytes"])),
+            human_bytes(u(&d["maxBytes"])),
+            u(&d["hits"]),
+            u(&d["misses"])
+        )
+    } else {
+        "Disk cache: off".into()
+    };
+    let r = ui.label(RichText::new(&dc).color(t.text_dim));
+    reg(app, "settings.storage.diskCache", &r, &dc);
+    ui.horizontal(|ui| {
+        let persisted = info["persisted"].as_bool().unwrap_or(false);
+        let state = if persisted { "Persistent storage: granted" } else { "Persistent storage: not granted (the browser may clear it when space runs low)" };
+        ui.label(state);
+        if !persisted {
+            let r = ui.button("Request Persistent Storage");
+            reg(app, "settings.storage.persist", &r, "Request Persistent Storage");
+            if r.clicked() {
+                acts.push(Act::Run("storage.persist".into(), json!({})));
+            }
+        }
+    });
+    ui.horizontal_wrapped(|ui| {
+        for (what, label) in
+            [("diskCache", "Clear Disk Cache"), ("media", "Clear Imported Media"), ("autoSaves", "Clear Auto-Saves"), ("projects", "Clear Saved Projects")]
+        {
+            let r = ui.button(label);
+            reg(app, &format!("settings.storage.clear.{what}"), &r, label);
+            if r.clicked() {
+                acts.push(Act::Run("storage.clear".into(), json!({"what": what})));
+            }
+        }
+    });
+    // The numbers refresh in the background.
+    ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
 }
 
 fn labels_ui(app: &mut EffectcraftApp, ui: &mut egui::Ui, cur: &Value, acts: &mut Vec<Act>) {
