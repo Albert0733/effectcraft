@@ -60,8 +60,6 @@ pub fn specs() -> Vec<CommandSpec> {
         stub!("keys.rpfCameraImport", "RPF Camera Import", ["Animation", "Keyframe Assistant"], "{}"),
         stub!("text.animatorFontAxes", "Variable Font Axes", ["Animation", "Animate Text"], "{}"),
         stub!("track.camera", "Track Camera", ["Animation"], "{}"),
-        stub!("track.warpStabilizer", "Warp Stabilizer VFX", ["Animation"], "{}"),
-        stub!("track.mask", "Track Mask", ["Animation"], "{}"),
         // Workspaces and panels that don't exist yet.
         stub!("window.unavailablePanel", "Panel", [], "{panel}"),
     ]

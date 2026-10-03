@@ -1,4 +1,4 @@
-//! Wiggler, Smoother and Motion Sketch panels (Window menu). Their settings live in
+//! Wiggler, Smoother, Motion Sketch and Mask Interpolation panels (Window menu). Their settings live in
 //! [`crate::state::AnimToolsState`] (serde, so agents can read and set them); Apply runs the
 //! engine commands `keys.wiggle`, `keys.smooth` and `motion.sketch`.
 //!
@@ -293,4 +293,112 @@ pub fn sketch_overlay(app: &mut EffectcraftApp, ui: &mut egui::Ui) {
             painter.text(area.center_top() + vec2(0.0, 18.0), Align2::CENTER_CENTER, "Motion Sketch: drag to record", Tokens::ui(12.0), Color32::WHITE);
         }
     }
+}
+
+/// Mask Interpolation panel: Keyframe Rate / Fields, Linear Vertex Paths, Bending Resistance,
+/// Quality, Add Mask Shape Vertices, Matching Method, 1:1 Vertex Matches, First Vertices Match;
+/// Apply runs `mask.interpolate` on the selected Mask Path keyframes. The options live in the
+/// editor state (`mask.interpolationOptions`).
+pub fn mask_interpolation(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
+    let t = app.tokens;
+    let p = ui.painter().with_clip_rect(rect);
+    let x0 = rect.min.x + 12.0;
+    let xv = x0 + 130.0;
+    let w = (rect.max.x - xv - 12.0).clamp(80.0, 200.0);
+    let mut y = rect.min.y + 10.0;
+    let o = app.session.state.mask_interp.clone();
+    let mut changes = serde_json::Map::new();
+    label(&p, x0, y, "Keyframe Rate:", &t);
+    let auto = o.keyframe_rate.is_none();
+    if let Some(i) = choice(app, ui, Rect::from_min_size(pos2(xv, y), vec2(70.0, 20.0)), "maskInterp.rateMode", &["Auto", "Custom"], usize::from(!auto)) {
+        let fps = app.session.active_comp().map(|c| c.frame_rate.as_f64()).unwrap_or(30.0);
+        changes.insert("keyframeRate".into(), if i == 0 { json!("auto") } else { json!(fps) });
+    }
+    if let Some(r) = o.keyframe_rate {
+        let nr = number(app, ui, pos2(xv + 78.0, y), "maskInterp.rate", r, 0.5, (0.1, 1000.0), 1, " per second");
+        if (nr - r).abs() > 1e-9 {
+            changes.insert("keyframeRate".into(), json!(nr));
+        }
+    } else {
+        p.text(pos2(xv + 78.0, y + 9.0), Align2::LEFT_CENTER, "per second", Tokens::ui(12.0), t.text_dim);
+    }
+    y += ROW;
+    let mut check = |app: &mut EffectcraftApp, y: f32, key: &str, text: &str, on: bool| {
+        if checkbox(app, ui, pos2(x0, y + 2.0), &format!("maskInterp.{key}"), text, on) != on {
+            changes.insert(key.into(), json!(!on));
+        }
+    };
+    check(app, y, "keyframeFields", "Keyframe Fields (doubles rate)", o.keyframe_fields);
+    y += ROW;
+    check(app, y, "linearVertexPaths", "Use \"Linear\" Vertex Paths", o.linear_vertex_paths);
+    y += ROW;
+    label(&p, x0, y, "Bending Resistance:", &t);
+    let br = number(app, ui, pos2(xv, y), "maskInterp.bendingResistance", o.bending_resistance, 0.5, (0.0, 100.0), 0, "");
+    if (br - o.bending_resistance).abs() > 1e-9 {
+        changes.insert("bendingResistance".into(), json!(br));
+    }
+    y += ROW;
+    label(&p, x0, y, "Quality:", &t);
+    let q = number(app, ui, pos2(xv, y), "maskInterp.quality", o.quality, 0.5, (0.0, 100.0), 0, "");
+    if (q - o.quality).abs() > 1e-9 {
+        changes.insert("quality".into(), json!(q));
+    }
+    y += ROW;
+    let add_on = o.add_vertices.is_some();
+    if checkbox(app, ui, pos2(x0, y + 2.0), "maskInterp.addVerticesOn", "Add Mask Shape Vertices", add_on) != add_on {
+        changes.insert("addVertices".into(), if add_on { json!(false) } else { json!(5.0) });
+    }
+    y += ROW;
+    if let Some(v) = o.add_vertices {
+        let nv = number(app, ui, pos2(x0 + 22.0, y), "maskInterp.addVertices", v, 0.2, (0.1, 2000.0), 1, "");
+        if (nv - v).abs() > 1e-9 {
+            changes.insert("addVertices".into(), json!(nv));
+        }
+        let units = ["pixels", "total", "percent"];
+        let cur = units.iter().position(|u| *u == o.add_vertices_unit).unwrap_or(0);
+        if let Some(i) = choice(
+            app,
+            ui,
+            Rect::from_min_size(pos2(xv, y), vec2(w, 20.0)),
+            "maskInterp.addVerticesUnit",
+            &["Pixels Between Vertices", "Total Vertices", "Percentage of Outline"],
+            cur,
+        ) {
+            changes.insert("addVerticesUnit".into(), json!(units[i]));
+        }
+    }
+    y += ROW;
+    label(&p, x0, y, "Matching Method:", &t);
+    let methods = ["auto", "curve", "polyline"];
+    let cur = methods.iter().position(|m| *m == o.matching_method).unwrap_or(0);
+    if let Some(i) = choice(app, ui, Rect::from_min_size(pos2(xv, y), vec2(w, 20.0)), "maskInterp.matchingMethod", &["Auto", "Curve", "Polyline"], cur) {
+        changes.insert("matchingMethod".into(), json!(methods[i]));
+    }
+    y += ROW;
+    let mut check = |app: &mut EffectcraftApp, y: f32, key: &str, text: &str, on: bool| {
+        if checkbox(app, ui, pos2(x0, y + 2.0), &format!("maskInterp.{key}"), text, on) != on {
+            changes.insert(key.into(), json!(!on));
+        }
+    };
+    check(app, y, "oneToOne", "Use 1:1 Vertex Matches", o.one_to_one);
+    y += ROW;
+    check(app, y, "firstVerticesMatch", "First Vertices Match", o.first_vertices_match);
+    y += ROW + 8.0;
+    if !changes.is_empty()
+        && let Err(e) = app.session.execute("mask.interpolationOptions", serde_json::Value::Object(changes))
+    {
+        app.ui.status = e.to_string();
+    }
+    let b = Rect::from_min_size(pos2(rect.max.x - 92.0, y), vec2(80.0, 24.0));
+    let enabled = app.session.state.selected_keys.len() >= 2;
+    if widgets::text_button(ui, b, "Apply", enabled, &t, egui::Id::new("mi-apply")).clicked() {
+        match app.session.execute("mask.interpolate", json!({})) {
+            Ok(r) => app.ui.status = format!("Mask Interpolation: {} keyframes added ({} vertices)", r["keys"], r["vertices"]),
+            Err(e) => app.ui.status = e.to_string(),
+        }
+    }
+    app.auto.add("maskInterp.apply", b, "Apply");
+    let msg = if enabled { "Applies to the selected Mask Path keyframes" } else { "Select two or more Mask Path keyframes" };
+    p.text(pos2(x0, b.max.y + 16.0), Align2::LEFT_CENTER, msg, Tokens::ui(11.0), t.text_faint);
+    let _ = (Color32::WHITE, Sense::hover(), Stroke::NONE);
 }

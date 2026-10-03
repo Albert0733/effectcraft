@@ -100,6 +100,52 @@ effectcraft-cli run clip.ecproj track.motion '{"layer":"#2"}' \
   track.analyze '{"wait":true}' track.apply '{}' --save
 ```
 
+### Mask tracking and Mask Interpolation
+
+`track.mask` follows the pixels inside a mask and keys its Mask Path on every frame (vertices and
+tangents move with the fitted motion). `method` is `position`, `positionScale`,
+`positionScaleRotation` (the default, also kept as the Tracker panel's Method), `positionScaleRotationSkew`
+or `perspective`; `direction` is `forward|backward|frameForward|frameBackward` from the current
+time (or `start` / `end` in seconds). Like `track.analyze` it runs in the background in the app
+(progress in `track.status` under `mask`, `track.stop` cancels and keeps what was tracked) and is
+one undo step; `"wait": true` blocks.
+
+`mask.interpolate` (Window ▸ Mask Interpolation ▸ Apply) adds in-between Mask Path keys between
+each pair of selected Mask Path keys (or the existing keys at `times`, in seconds), giving both
+ends the same vertex count with a matched correspondence. Options: `keyframeRate` (number or
+`"auto"` = the comp rate), `keyframeFields`, `linearVertexPaths`, `bendingResistance`, `quality`,
+`addVertices` (number or `false`) with `addVerticesUnit` `pixels|total|percent`, `matchingMethod`
+`auto|curve|polyline`, `oneToOne`, `firstVerticesMatch`. `mask.interpolationOptions` sets the
+panel's defaults.
+
+```sh
+effectcraft-cli exec track.mask '{"layer":"#2","mask":1,"method":"perspective","wait":true}' clip.ecproj --save
+effectcraft-cli exec mask.interpolate '{"layer":"#2","mask":"Mask 1","times":[0,2],"addVertices":10}' clip.ecproj --save --json
+```
+
+### Warp Stabilizer
+
+Effect ▸ Distort ▸ Warp Stabilizer (`effect.apply {"effect":"Warp Stabilizer"}`), Animation ▸ Warp
+Stabilizer VFX and the Tracker panel's button (`track.warpStabilizer`, which applies the effect and
+starts analysing) stabilize a layer. `warp.analyze {layer?, effect?, wait?}` analyses every frame
+between the layer's In and Out points in the background ("Analyzing in background (step 1 of 2)",
+then "Stabilizing..."; `warp.status` reports `progress`, `banner`, whether the effect is
+`analyzed`, and the current frame's `warp` matrix, `autoScale` and `crop`); `warp.cancel` stops it
+without writing anything. The analysis is stored in the effect (saved with the project) and is
+one undo step; trimming, slipping, time-remapping or replacing the layer's source clears it and
+the app re-analyses automatically (headless: run `warp.analyze` again). Settings are ordinary
+properties under the instance's groups, e.g. `effects/#1/stabilization/result` (0 Smooth Motion,
+1 No Motion), `effects/#1/stabilization/smoothness`, `effects/#1/stabilization/method`,
+`effects/#1/borders/framing` (0 Stabilize Only … 3 Stabilize, Synthesize Edges),
+`effects/#1/borders/autoScale/maximumScale`, `effects/#1/advanced/showTrackPoints`.
+
+```sh
+effectcraft-cli run shaky.ecproj track.warpStabilizer '{"layer":"#1","wait":true}' \
+  prop.set '{"layer":"#1","path":"effects/#1/stabilization/result","value":1}' --save
+effectcraft-cli exec warp.analyze '{"layer":"#1","wait":true}' shaky.ecproj --save --json
+effectcraft-cli exec warp.status '{"layer":"#1"}' shaky.ecproj --json
+```
+
 ### Text: styles and editing
 
 Source Text holds character style runs and per-paragraph settings. `layer.setText` changes the

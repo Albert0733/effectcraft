@@ -97,15 +97,15 @@ wasm threads.
 | Effects | 58% | 13.6 | Effect Controls widgets (angle dial, point crosshair, eyedropper, curves), GPU versions of more effects, 41 missing effects |
 | Interface | 55% | 10.4 | drag-to-dock and floating panels, preferences, native macOS menus (viewer rulers/snapping/channels/snapshots landed in M0.13) |
 | Project | 53% | 8.1 | 8/16/32-bit pipeline and colour management, auto-save, proxies, folder moves |
-| Masks & roto | 44% | 13.0 | mask tracking, Roto Brush, variable-width mask feather points |
+| Masks & roto | 52% | 10.0 | Roto Brush, variable-width mask feather points (mask tracking and Mask Interpolation landed in M6.6) |
 | Preview | 55% | 6.1 | GPU 3D and adjustment layers, disk cache (region of interest, snapshots, exposure and Fast Previews landed in M0.13) |
-| Tracking | 0% | 13.0 | point tracker, Warp Stabilizer, mask and face tracking |
+| Tracking | ≈ 70% | 4.0 | 3D camera tracker, face tracking, Subspace Warp's mesh warp and rolling-shutter repair (point tracker, mask tracking and Warp Stabilizer landed in M6.x / M12.5) |
 | Paint | 0% | 4.0 | Brush, Clone Stamp, Eraser |
 
 ## Effects still missing
 
 Immersive Video (all 12), 3D Channel (all 8, including Cryptomatte), Color Stabilizer and the five
-OCIO transforms, CC Flo Motion, Liquify, Rolling Shutter Repair, Warp Stabilizer, Compressor,
+OCIO transforms, CC Flo Motion, Liquify, Rolling Shutter Repair, Compressor,
 Distortion and Gate (audio), Camera-Shake Deblur, CC Radial Blur, CC Hair, Particle Playground,
 Keylight (our Screen Key stands in), Color Profile Converter and the 3D Camera Tracker. Boris FX
 Mocha and Cineware are third-party and not counted.
