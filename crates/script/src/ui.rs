@@ -127,8 +127,22 @@ pub(crate) fn native_modal(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> 
 // ---------------------------------------------------------------- script-host threads
 
 pub(crate) enum ToHost {
+    /// Run the script (script-host threads exist only off the web: the browser runs scripts
+    /// inline).
+    #[cfg(not(target_arch = "wasm32"))]
     Start(Session),
     Event(Session, ScriptUiEvent),
+}
+
+impl ToHost {
+    /// The session a message carries (given back when the host has gone).
+    fn into_session(self) -> Session {
+        match self {
+            #[cfg(not(target_arch = "wasm32"))]
+            ToHost::Start(s) => s,
+            ToHost::Event(s, _) => s,
+        }
+    }
 }
 
 pub(crate) struct FromHost {
@@ -191,6 +205,7 @@ fn yield_wait(outcome: crate::Outcome, windows: Vec<ScriptWindow>, done: bool) -
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn host_main(name: String, code: String, link: Link) {
     let Ok(ToHost::Start(session)) = link.rx.recv() else { return };
     let mut a = Active::new(session, &name);
@@ -248,7 +263,9 @@ fn receive(session: &mut Session, host: u32, end: HostEnd) -> crate::Outcome {
     }
 }
 
-/// Run a script file on a new script-host thread (see the module docs).
+/// Run a script file on a new script-host thread (see the module docs). Not on the web, where
+/// scripts run inline.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn run_threaded(session: &mut Session, req: &effectcraft_engine::ScriptRequest) -> crate::Outcome {
     let host = new_host_id();
     let (to_tx, to_rx) = std::sync::mpsc::channel();
@@ -259,8 +276,8 @@ pub(crate) fn run_threaded(session: &mut Session, req: &effectcraft_engine::Scri
     if spawned.is_err() {
         return crate::runtime::run_inline(session, req);
     }
-    if let Err(std::sync::mpsc::SendError(ToHost::Start(s) | ToHost::Event(s, _))) = to_tx.send(ToHost::Start(std::mem::take(session))) {
-        *session = s;
+    if let Err(std::sync::mpsc::SendError(msg)) = to_tx.send(ToHost::Start(std::mem::take(session))) {
+        *session = msg.into_session();
         return crate::Outcome { error: Some(ScriptError { message: "the script host did not start".into(), ..Default::default() }), ..Default::default() };
     }
     receive(session, host, HostEnd { tx: to_tx, rx: from_rx })
@@ -302,8 +319,8 @@ pub fn dispatch_ui(session: &mut Session, ev: &ScriptUiEvent) -> Result<J, Strin
         session.script_ui.revision += 1;
         return Err("the script that made this window has ended".into());
     };
-    if let Err(std::sync::mpsc::SendError(ToHost::Event(s, _) | ToHost::Start(s))) = end.tx.send(ToHost::Event(std::mem::take(session), ev.clone())) {
-        *session = s;
+    if let Err(std::sync::mpsc::SendError(msg)) = end.tx.send(ToHost::Event(std::mem::take(session), ev.clone())) {
+        *session = msg.into_session();
         session.script_ui.windows.retain(|w| w.host != host);
         session.script_ui.revision += 1;
         return Err("the script that made this window has ended".into());

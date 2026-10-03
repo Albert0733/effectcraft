@@ -116,6 +116,8 @@ pub struct Widget {
     /// Frontends paint it instead of the control's default look, unless it contains
     /// [`DrawOp::Os`] (`drawOSControl()`), which draws the default look first.
     pub draw: Vec<DrawOp>,
+    /// The image of an image control or icon button.
+    pub image: Option<ImageRef>,
     pub children: Vec<Widget>,
 }
 
@@ -156,8 +158,37 @@ pub enum DrawOp {
     },
     /// `drawOSControl()`: the control's default look.
     Os,
-    /// `drawImage(image, x, y, w?, h?)` (drawn as a placeholder frame).
-    Image { x: f64, y: f64, w: f64, h: f64 },
+    /// `drawImage(image, x, y, w?, h?)`: `w` / `h` 0 = the image's own size.
+    Image {
+        #[serde(default)]
+        image: Option<ImageRef>,
+        x: f64,
+        y: f64,
+        w: f64,
+        h: f64,
+    },
+}
+
+/// A ScriptUIImage (`ScriptUI.newImage`, an image control's or icon button's image, a
+/// `drawImage` argument): an image file, or embedded PNG / JPEG bytes.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ImageRef {
+    /// File path (or a resource name we can't resolve: drawn as a placeholder).
+    pub src: Option<String>,
+    /// Embedded bytes as a binary string (one character per byte, as in resource strings).
+    pub data: Option<String>,
+    pub name: String,
+}
+
+impl ImageRef {
+    /// The encoded image bytes (the embedded data, else the file through `services`).
+    pub fn bytes(&self, services: &dyn crate::Services) -> Option<Vec<u8>> {
+        if let Some(d) = &self.data {
+            return d.chars().map(|c| u8::try_from(c as u32).ok()).collect();
+        }
+        services.read_file(self.src.as_deref()?).ok()
+    }
 }
 
 impl PathSeg {
@@ -205,6 +236,67 @@ impl PathSeg {
             }
         }
         flush(&mut cur, &mut out, false);
+        out
+    }
+
+    /// The area `fillPath` paints, as triangles: every subpath closed, overlapping subpaths
+    /// combined by the non-zero winding rule (`even_odd`: the even-odd rule), so concave,
+    /// self-intersecting and holed paths fill correctly (frontends' polygon fills are often
+    /// convex-only). Exact trapezoid decomposition: the plane is cut into horizontal bands at
+    /// every vertex and edge crossing; inside a band no edges cross, so each inside span is a
+    /// trapezoid (two triangles).
+    pub fn fill_triangles(path: &[PathSeg], n: usize, even_odd: bool) -> Vec<[[f64; 2]; 3]> {
+        // Non-horizontal edges, top to bottom, with their winding direction.
+        let mut edges: Vec<([f64; 2], [f64; 2], i32)> = vec![];
+        for (pts, _) in PathSeg::polylines(path, n) {
+            for i in 0..pts.len() {
+                let (a, b) = (pts[i], pts[(i + 1) % pts.len()]);
+                if !(a[0].is_finite() && a[1].is_finite() && b[0].is_finite() && b[1].is_finite()) || a[1] == b[1] {
+                    continue;
+                }
+                edges.push(if a[1] < b[1] { (a, b, 1) } else { (b, a, -1) });
+            }
+        }
+        if edges.len() < 2 {
+            return vec![];
+        }
+        let x_at = |e: &([f64; 2], [f64; 2], i32), y: f64| e.0[0] + (e.1[0] - e.0[0]) * (y - e.0[1]) / (e.1[1] - e.0[1]);
+        let mut ys: Vec<f64> = edges.iter().flat_map(|e| [e.0[1], e.1[1]]).collect();
+        // Where two edges cross, a band boundary.
+        for i in 0..edges.len() {
+            for j in i + 1..edges.len() {
+                let (a, b) = (&edges[i], &edges[j]);
+                let (lo, hi) = (a.0[1].max(b.0[1]), a.1[1].min(b.1[1]));
+                if hi <= lo {
+                    continue;
+                }
+                let (d0, d1) = (x_at(a, lo) - x_at(b, lo), x_at(a, hi) - x_at(b, hi));
+                if d0 * d1 < 0.0 {
+                    ys.push(lo + (hi - lo) * d0 / (d0 - d1));
+                }
+            }
+        }
+        ys.sort_by(f64::total_cmp);
+        ys.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+        let mut out = vec![];
+        let mut row: Vec<(f64, f64, f64, i32)> = vec![];
+        for w in ys.windows(2) {
+            let (ya, yb) = (w[0], w[1]);
+            let ym = (ya + yb) * 0.5;
+            row.clear();
+            row.extend(edges.iter().filter(|e| e.0[1] < ym && ym < e.1[1]).map(|e| (x_at(e, ym), x_at(e, ya), x_at(e, yb), e.2)));
+            row.sort_by(|a, b| a.0.total_cmp(&b.0));
+            let mut wind = 0;
+            for k in 0..row.len().saturating_sub(1) {
+                wind += row[k].3;
+                let inside = if even_odd { wind % 2 != 0 } else { wind != 0 };
+                if inside {
+                    let (l, r) = (row[k], row[k + 1]);
+                    out.push([[l.1, ya], [r.1, ya], [r.2, yb]]);
+                    out.push([[l.1, ya], [r.2, yb], [l.2, yb]]);
+                }
+            }
+        }
         out
     }
 }
@@ -688,5 +780,56 @@ mod tests {
         assert_eq!(ui.windows.iter().map(|w| w.id).collect::<Vec<_>>(), [2, 3]);
         let j = serde_json::to_value(&ui).unwrap();
         assert_eq!(j["windows"][0]["root"]["type"], "window");
+    }
+
+    fn area(tris: &[[[f64; 2]; 3]]) -> f64 {
+        tris.iter().map(|t| ((t[1][0] - t[0][0]) * (t[2][1] - t[0][1]) - (t[2][0] - t[0][0]) * (t[1][1] - t[0][1])).abs() * 0.5).sum()
+    }
+
+    fn poly(pts: &[[f64; 2]]) -> Vec<PathSeg> {
+        let mut v = vec![PathSeg::M { x: pts[0][0], y: pts[0][1] }];
+        v.extend(pts[1..].iter().map(|p| PathSeg::L { x: p[0], y: p[1] }));
+        v.push(PathSeg::Z);
+        v
+    }
+
+    fn covers(tris: &[[[f64; 2]; 3]], p: [f64; 2]) -> bool {
+        let s = |a: [f64; 2], b: [f64; 2]| (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0]);
+        tris.iter().any(|t| {
+            let (d0, d1, d2) = (s(t[0], t[1]), s(t[1], t[2]), s(t[2], t[0]));
+            (d0 >= 0.0 && d1 >= 0.0 && d2 >= 0.0) || (d0 <= 0.0 && d1 <= 0.0 && d2 <= 0.0)
+        })
+    }
+
+    #[test]
+    fn concave_self_intersecting_and_holed_fills() {
+        // An L (concave): area 3, the notch stays empty.
+        let l = poly(&[[0.0, 0.0], [2.0, 0.0], [2.0, 1.0], [1.0, 1.0], [1.0, 2.0], [0.0, 2.0]]);
+        let t = PathSeg::fill_triangles(&l, 48, false);
+        assert!((area(&t) - 3.0).abs() < 1e-9, "{}", area(&t));
+        assert!(covers(&t, [0.5, 1.5]) && !covers(&t, [1.5, 1.5]));
+        // A five-pointed star drawn in one stroke: non-zero fills the centre, even-odd doesn't.
+        let star: Vec<[f64; 2]> = (0..5)
+            .map(|i| {
+                let a = (i * 2 % 5) as f64 * std::f64::consts::TAU / 5.0 - std::f64::consts::FRAC_PI_2;
+                [50.0 + 40.0 * a.cos(), 50.0 + 40.0 * a.sin()]
+            })
+            .collect();
+        let nz = PathSeg::fill_triangles(&poly(&star), 48, false);
+        let eo = PathSeg::fill_triangles(&poly(&star), 48, true);
+        assert!(covers(&nz, [50.0, 50.0]) && !covers(&eo, [50.0, 50.0]));
+        assert!(covers(&eo, [50.0, 15.0]), "a point of the star");
+        assert!(area(&nz) > area(&eo));
+        // A rectangle with a hole (an inner square the other way round).
+        let mut holed = poly(&[[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]]);
+        holed.extend(poly(&[[3.0, 3.0], [3.0, 7.0], [7.0, 7.0], [7.0, 3.0]]));
+        let h = PathSeg::fill_triangles(&holed, 48, false);
+        assert!((area(&h) - 84.0).abs() < 1e-9 && !covers(&h, [5.0, 5.0]));
+        // rectPath + ellipsePath in one path; an unclosed subpath fills as if closed.
+        let shapes = vec![PathSeg::R { x: 0.0, y: 0.0, w: 4.0, h: 2.0 }, PathSeg::E { x: 10.0, y: 0.0, w: 20.0, h: 20.0 }];
+        let a = area(&PathSeg::fill_triangles(&shapes, 256, false));
+        assert!((a - 8.0 - std::f64::consts::PI * 100.0).abs() < 1.0, "{a}");
+        let open = vec![PathSeg::M { x: 0.0, y: 0.0 }, PathSeg::L { x: 4.0, y: 0.0 }, PathSeg::L { x: 0.0, y: 4.0 }];
+        assert!((area(&PathSeg::fill_triangles(&open, 48, false)) - 8.0).abs() < 1e-9);
     }
 }
