@@ -23,6 +23,7 @@ pub mod media_browser;
 pub mod media_cache;
 pub mod menus;
 pub mod offload;
+pub mod perf;
 pub mod prefs;
 pub mod preview;
 pub mod psd_import;

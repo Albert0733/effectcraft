@@ -1042,6 +1042,10 @@ impl Project {
     pub fn to_json(&self) -> String {
         serde_json::to_string_pretty(self).unwrap_or_default()
     }
+    /// [`Project::to_json`] without indentation: smaller and faster (auto-saves).
+    pub fn to_json_compact(&self) -> String {
+        serde_json::to_string(self).unwrap_or_default()
+    }
     pub fn from_json(s: &str) -> Result<Project, ProjectError> {
         let mut p: Project = serde_json::from_str(s).map_err(|e| ProjectError::Invalid(e.to_string()))?;
         if p.schema > SCHEMA_VERSION {

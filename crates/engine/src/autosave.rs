@@ -25,6 +25,12 @@ const EXT: &str = "ecproj";
 /// Auto-save bookkeeping of a session.
 #[derive(Clone, Debug, Default)]
 pub struct AutoSaveState {
+    /// Serialise and write on a background thread (frontends with an event loop turn this on;
+    /// ignored on wasm32). The UI thread then only picks the slot and snapshots the project
+    /// (an `Arc` clone), so a large project's auto-save never stalls a frame.
+    pub background: bool,
+    /// The background write in flight, if any.
+    pub pending: Option<PendingWrite>,
     /// Wall-clock seconds of the last auto-save (or of the first tick).
     pub last: Option<f64>,
     /// Slot written last in this session.
@@ -35,6 +41,37 @@ pub struct AutoSaveState {
     pub last_path: Option<String>,
     /// This session owns the crash-recovery sentinel ([`crate::Session::begin_recovery`]).
     pub sentinel: bool,
+}
+
+/// A background auto-save write ([`AutoSaveState::background`]).
+#[derive(Clone)]
+pub struct PendingWrite {
+    pub path: PathBuf,
+    handle: std::sync::Arc<std::sync::Mutex<Option<std::thread::JoinHandle<std::io::Result<()>>>>>,
+}
+
+impl std::fmt::Debug for PendingWrite {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PendingWrite").field("path", &self.path).finish()
+    }
+}
+
+impl PendingWrite {
+    pub fn spawn(path: PathBuf, work: impl FnOnce() -> std::io::Result<()> + Send + 'static) -> std::io::Result<PendingWrite> {
+        let h = std::thread::Builder::new().name("autosave".into()).spawn(work)?;
+        Ok(PendingWrite { path, handle: std::sync::Arc::new(std::sync::Mutex::new(Some(h))) })
+    }
+    pub fn is_finished(&self) -> bool {
+        self.handle.lock().map(|h| h.as_ref().is_none_or(|h| h.is_finished())).unwrap_or(true)
+    }
+    /// Wait for the write; its result (`Ok` if already collected).
+    pub fn join(&self) -> std::io::Result<()> {
+        let h = self.handle.lock().ok().and_then(|mut h| h.take());
+        match h {
+            Some(h) => h.join().unwrap_or_else(|_| Err(std::io::Error::other("auto-save thread panicked"))),
+            None => Ok(()),
+        }
+    }
 }
 
 /// File-name stem of a project (`/a/Intro.ecproj` → `Intro`; untitled → `Untitled Project`).
@@ -103,20 +140,41 @@ pub fn write_in(
     last_slot: Option<u32>,
     json: &str,
 ) -> std::io::Result<(PathBuf, u32)> {
+    let plan = plan_in(fs, prefs, project, fallback, last_slot)?;
+    plan.write(fs, json.as_bytes())?;
+    Ok((plan.path, plan.slot))
+}
+
+/// Where the next auto-save goes ([`plan_in`]).
+#[derive(Clone, Debug)]
+pub struct WritePlan {
+    pub path: PathBuf,
+    pub slot: u32,
+    /// Slots above the (lowered) maximum, removed after the write.
+    pub stale: Vec<PathBuf>,
+}
+
+impl WritePlan {
+    pub fn write(&self, fs: &dyn FileOps, data: &[u8]) -> std::io::Result<()> {
+        fs.write(&self.path, data)?;
+        for p in &self.stale {
+            let _ = fs.remove(p);
+        }
+        Ok(())
+    }
+}
+
+/// Pick the next auto-save slot (without writing anything).
+pub fn plan_in(fs: &dyn FileOps, prefs: &Prefs, project: Option<&str>, fallback: Option<&Path>, last_slot: Option<u32>) -> std::io::Result<WritePlan> {
     let dir = folder(prefs, project, fallback).ok_or_else(|| std::io::Error::other("no auto-save folder for an untitled project"))?;
     let stem = project_stem(project);
     let max = prefs.auto_save.max_versions.max(1);
     let have = existing_in(fs, &dir, &stem);
     let slot = next_slot(&have, last_slot, max);
     let path = dir.join(file_name(&stem, slot));
-    fs.write(&path, json.as_bytes())?;
     // Max versions lowered: drop slots above it.
-    for (n, p, _) in have {
-        if n > max {
-            let _ = fs.remove(&p);
-        }
-    }
-    Ok((path, slot))
+    let stale = have.into_iter().filter(|(n, _, _)| *n > max).map(|(_, p, _)| p).collect();
+    Ok(WritePlan { path, slot, stale })
 }
 
 /// The newest auto-save of a project, if any.
