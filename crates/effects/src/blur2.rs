@@ -282,9 +282,10 @@ fn iris_spans(r: f64, sides: u32, rotation_deg: f64, roundness: f64) -> Vec<(i64
 pub fn camera_lens_spans(ctx: &EffectCtx, r: f64) -> (Vec<(i64, i64, i64)>, f64) {
     let shape = ctx.params.e("irisProperties/irisShape");
     let sides = if shape >= 8 { 0 } else { shape + 3 };
-    let mut spans = iris_spans(r, sides, ctx.params.f("irisProperties/irisRotation"), ctx.params.f("irisProperties/irisRoundness").clamp(0.0, 100.0) / 100.0);
+    let roundness = ctx.params.f("irisProperties/irisRoundness").clamp(0.0, 100.0) / 100.0;
     // Aspect Ratio stretches the iris horizontally (> 1) or squeezes it (< 1).
     let aspect = ctx.params.f("irisProperties/irisAspectRatio");
+    let mut spans = iris_spans(r, sides, ctx.params.f("irisProperties/irisRotation"), roundness);
     if aspect > 0.0 && (aspect - 1.0).abs() > 1e-6 {
         for s in spans.iter_mut() {
             s.1 = (s.1 as f64 * aspect).round() as i64;
@@ -294,12 +295,23 @@ pub fn camera_lens_spans(ctx: &EffectCtx, r: f64) -> (Vec<(i64, i64, i64)>, f64)
     (spans, r * aspect.max(1.0))
 }
 
+/// Whether Camera Lens Blur needs more than plain iris spans (Diffraction Fringe or a Blur
+/// Map): the GPU kernel handles the plain blur only.
+pub fn camera_lens_plain(ctx: &EffectCtx) -> bool {
+    ctx.params.f("irisProperties/diffractionFringe") <= 0.0 && ctx.params.get("blurMap/blurMapLayer").and_then(|v| v.as_layer()).is_none()
+}
+
 fn camera_lens_blur(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let r = ctx.params.f("blurRadius").max(0.0) * b.scale;
     if r < 0.5 {
         return b;
     }
-    let (spans, reach) = camera_lens_spans(ctx, r);
+    let shape = ctx.params.e("irisProperties/irisShape");
+    let sides = if shape >= 8 { 0 } else { shape + 3 };
+    let roundness = ctx.params.f("irisProperties/irisRoundness").clamp(0.0, 100.0) / 100.0;
+    // Aspect Ratio stretches the iris horizontally (> 1) or squeezes it (< 1).
+    let aspect = ctx.params.f("irisProperties/irisAspectRatio");
+    let reach = r * aspect.max(1.0);
     let repeat = ctx.params.b("repeatEdge") || ctx.adjustment;
     if !repeat {
         b.pad(reach.ceil() as u32 + 1);
@@ -348,58 +360,148 @@ fn camera_lens_blur(ctx: &EffectCtx, mut b: Buf) -> Buf {
             v
         })
         .collect();
-    let count: i64 = spans.iter().map(|(_, l, r)| r - l + 1).sum();
-    let norm = 1.0 / count as f64;
-    let mut out = Image::new(src.width, src.height);
-    out.rows_mut().for_each(|(y, row)| {
-        for (x, o) in row.iter_mut().enumerate() {
-            let mut acc = [0.0f64; 4];
-            for &(dy, l, rr) in &spans {
-                let mut yy = y as i64 + dy;
-                if yy < 0 || yy >= h as i64 {
-                    if !repeat {
-                        continue;
-                    }
-                    yy = yy.clamp(0, h as i64 - 1);
+    // Sum of the source over the iris spans centred on (x, y).
+    let span_sum = |spans: &[(i64, i64, i64)], x: usize, y: usize| -> [f64; 4] {
+        let mut acc = [0.0f64; 4];
+        for &(dy, l, rr) in spans {
+            let mut yy = y as i64 + dy;
+            if yy < 0 || yy >= h as i64 {
+                if !repeat {
+                    continue;
                 }
-                let pre = &prefix[yy as usize];
-                let (mut a, mut bnd) = (x as i64 + l, x as i64 + rr);
-                if repeat {
-                    if a < 0 {
-                        let n = (-a).min(bnd - a + 1) as f64;
-                        let first = src.data[yy as usize * w];
-                        for c in 0..4 {
-                            acc[c] += first[c] as f64 * n;
-                        }
-                        a = 0;
-                    }
-                    if bnd >= w as i64 {
-                        let n = (bnd - (w as i64 - 1)).min(bnd - a + 1) as f64;
-                        let last = src.data[yy as usize * w + w - 1];
-                        for c in 0..4 {
-                            acc[c] += last[c] as f64 * n;
-                        }
-                        bnd = w as i64 - 1;
-                    }
-                } else {
-                    a = a.max(0);
-                    bnd = bnd.min(w as i64 - 1);
-                }
-                if a <= bnd {
+                yy = yy.clamp(0, h as i64 - 1);
+            }
+            let pre = &prefix[yy as usize];
+            let (mut a, mut bnd) = (x as i64 + l, x as i64 + rr);
+            if repeat {
+                if a < 0 {
+                    let n = (-a).min(bnd - a + 1) as f64;
+                    let first = src.data[yy as usize * w];
                     for c in 0..4 {
-                        acc[c] += pre[bnd as usize + 1][c] - pre[a as usize][c];
+                        acc[c] += first[c] as f64 * n;
                     }
+                    a = 0;
+                }
+                if bnd >= w as i64 {
+                    let n = (bnd - (w as i64 - 1)).min(bnd - a + 1) as f64;
+                    let last = src.data[yy as usize * w + w - 1];
+                    for c in 0..4 {
+                        acc[c] += last[c] as f64 * n;
+                    }
+                    bnd = w as i64 - 1;
+                }
+            } else {
+                a = a.max(0);
+                bnd = bnd.min(w as i64 - 1);
+            }
+            if a <= bnd {
+                for c in 0..4 {
+                    acc[c] += pre[bnd as usize + 1][c] - pre[a as usize][c];
                 }
             }
-            let mut px = acc.map(|v| (v * norm) as f32);
-            px[3] = px[3].clamp(0.0, 1.0);
-            if linear {
-                let (c, a) = unpremul(px);
-                px = premul(c.map(|v| effectcraft_color::linear_to_srgb(v.max(0.0))), a);
-            }
-            *o = px;
         }
+        acc
+    };
+    // Diffraction Fringe: the iris edge (outer 20 % of the radius) gets more of the energy:
+    // 0 = an even disc, 100 = a natural halo, 500 = all of it in the ring.
+    let fringe = (ctx.params.f("irisProperties/diffractionFringe") / 500.0).clamp(0.0, 1.0);
+    let (w_in, w_ring) = (1.0 - fringe, 1.0 + 4.0 * fringe);
+    let iris = |radius: f64| -> (Vec<(i64, i64, i64)>, Vec<(i64, i64, i64)>) {
+        let stretch = |mut s: Vec<(i64, i64, i64)>| {
+            if aspect > 0.0 && (aspect - 1.0).abs() > 1e-6 {
+                for v in s.iter_mut() {
+                    v.1 = (v.1 as f64 * aspect).round() as i64;
+                    v.2 = (v.2 as f64 * aspect).round() as i64;
+                }
+            }
+            s
+        };
+        let outer = stretch(iris_spans(radius, sides, ctx.params.f("irisProperties/irisRotation"), roundness));
+        let inner = if fringe > 0.0 && radius * 0.8 >= 1.0 {
+            stretch(iris_spans(radius * 0.8, sides, ctx.params.f("irisProperties/irisRotation"), roundness))
+        } else {
+            vec![]
+        };
+        (outer, inner)
+    };
+    let count = |s: &[(i64, i64, i64)]| s.iter().map(|(_, l, r)| (r - l + 1) as f64).sum::<f64>();
+    // One blurred pixel with the given iris.
+    let blur_px = |sp: &(Vec<(i64, i64, i64)>, Vec<(i64, i64, i64)>), x: usize, y: usize| -> [f32; 4] {
+        let (outer, inner) = sp;
+        let acc = if inner.is_empty() {
+            let n = count(outer).max(1.0);
+            span_sum(outer, x, y).map(|v| v / n)
+        } else {
+            let (so, si) = (span_sum(outer, x, y), span_sum(inner, x, y));
+            let (no, ni) = (count(outer), count(inner));
+            let norm = (w_in * ni + w_ring * (no - ni)).max(1e-9);
+            std::array::from_fn(|c| (w_in * si[c] + w_ring * (so[c] - si[c])) / norm)
+        };
+        let mut px = acc.map(|v| v as f32);
+        px[3] = px[3].clamp(0.0, 1.0);
+        if linear {
+            let (c, a) = unpremul(px);
+            px = premul(c.map(|v| effectcraft_color::linear_to_srgb(v.max(0.0))), a);
+        }
+        px
+    };
+    // Blur Map: per-pixel radius from a map layer (no blur at Blur Focal Distance, full radius
+    // at the farthest value).
+    let map = ctx.layer_param("blurMap/blurMapLayer", true).map(|o| {
+        let stretch = ctx.params.e("blurMap/placement") == 1;
+        let img = crate::util::fit_layer(ctx, &b, &o, stretch);
+        let ch = ctx.params.e("blurMap/channel");
+        let invert = ctx.params.b("blurMap/invertBlurMap");
+        let focal = (ctx.params.f("blurMap/blurFocalDistance") / 255.0).clamp(0.0, 1.0) as f32;
+        let span = focal.max(1.0 - focal).max(1e-3);
+        img.data
+            .iter()
+            .map(|p| {
+                let (c, a) = unpremul(*p);
+                let mut v = match ch {
+                    1 => a,
+                    2 => c[0].max(c[1]).max(c[2]) * a,
+                    _ => luminance(c[0], c[1], c[2]) * a,
+                };
+                if invert {
+                    v = 1.0 - v;
+                }
+                ((v - focal).abs() / span).clamp(0.0, 1.0)
+            })
+            .collect::<Vec<f32>>()
     });
+    let mut out = Image::new(src.width, src.height);
+    match &map {
+        None => {
+            let sp = iris(r);
+            out.rows_mut().for_each(|(y, row)| {
+                for (x, o) in row.iter_mut().enumerate() {
+                    *o = blur_px(&sp, x, y);
+                }
+            });
+        }
+        Some(m) => {
+            // Radii quantised to levels; each pixel blends the two nearest.
+            let levels = (r.ceil() as usize).clamp(1, 8);
+            let irises: Vec<_> = (0..=levels).map(|k| iris(r * k as f64 / levels as f64)).collect();
+            let srcd = &b.img.data;
+            out.rows_mut().for_each(|(y, row)| {
+                for (x, o) in row.iter_mut().enumerate() {
+                    let f = m[y * w + x] * levels as f32;
+                    let k0 = (f.floor() as usize).min(levels);
+                    let t = f - k0 as f32;
+                    let at = |k: usize| if k == 0 || r * k as f64 / (levels as f64) < 0.5 { srcd[y * w + x] } else { blur_px(&irises[k], x, y) };
+                    let a = at(k0);
+                    *o = if t > 1e-4 && k0 < levels {
+                        let bq = at(k0 + 1);
+                        std::array::from_fn(|c| a[c] + (bq[c] - a[c]) * t)
+                    } else {
+                        a
+                    };
+                }
+            });
+        }
+    }
     b.img = out;
     b
 }
@@ -604,6 +706,12 @@ pub fn specs() -> Vec<EffectSpec> {
                 p("irisProperties/irisRoundness", "Roundness", num(0.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
                 p("irisProperties/irisAspectRatio", "Aspect Ratio", num(1.0), slider(0.01, 100.0, 0.25, 4.0, 2)),
                 p("irisProperties/irisRotation", "Rotation", num(0.0), ParamUi::Angle),
+                p("irisProperties/diffractionFringe", "Diffraction Fringe", num(0.0), slider(0.0, 500.0, 0.0, 500.0, 1)),
+                p("blurMap/blurMapLayer", "Layer", Value::Layer(None), ParamUi::Layer),
+                p("blurMap/channel", "Channel", Value::Enum(0), popup(&["Luminance", "Alpha", "Color"])),
+                p("blurMap/placement", "Placement", Value::Enum(1), popup(&["Center", "Stretch"])),
+                p("blurMap/blurFocalDistance", "Blur Focal Distance", num(0.0), slider(0.0, 255.0, 0.0, 255.0, 0)),
+                p("blurMap/invertBlurMap", "Invert Blur Map", Value::Bool(false), ParamUi::Checkbox),
                 p("highlight/specularBrightness", "Gain", num(0.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
                 p("highlight/specularThreshold", "Threshold", num(255.0), slider(0.0, 255.0, 0.0, 255.0, 0)),
                 p("highlight/highlightSaturation", "Saturation", num(100.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
@@ -821,5 +929,39 @@ mod tests {
         // Luminance ≈ 0 → (almost) no blur.
         let pad = (out.img.width - 16) / 2;
         assert!(out.img.get(pad as i64, pad as i64)[0] < 0.005);
+    }
+
+    #[test]
+    fn camera_lens_blur_diffraction_fringe_and_blur_map() {
+        use crate::{EffectEnv, EffectHost, LayerPixels};
+        // A single bright point spreads into a disc; with Diffraction Fringe its rim is brighter.
+        let mut dot = Image::filled(41, 41, [0.0, 0.0, 0.0, 1.0]);
+        dot.set(20, 20, [1.0, 1.0, 1.0, 1.0]);
+        let v = [("blurRadius", num(10.0)), ("irisProperties/irisShape", Value::Enum(8)), ("repeatEdge", Value::Bool(true))];
+        let plain = run("ec.blur.cameralens", &dot, &v).img;
+        let ring = run("ec.blur.cameralens", &dot, &[v.as_slice(), &[("irisProperties/diffractionFringe", num(300.0))]].concat()).img;
+        assert!((plain.get(20, 20)[0] - plain.get(29, 20)[0]).abs() < 1e-5, "even disc");
+        assert!(ring.get(29, 20)[0] > ring.get(20, 20)[0] * 2.0, "{:?} {:?}", ring.get(29, 20), ring.get(20, 20));
+        // Blur Map: black (focal distance 0) stays sharp, white gets the full radius.
+        struct Half;
+        impl EffectHost for Half {
+            fn layer(&self, _: u64, _: bool) -> Option<LayerPixels> {
+                let mut m = Image::filled(40, 20, [0.0, 0.0, 0.0, 1.0]);
+                for y in 0..20 {
+                    for x in 20..40 {
+                        m.set(x, y, [1.0, 1.0, 1.0, 1.0]);
+                    }
+                }
+                Some(LayerPixels { buf: Buf { img: m, offset: [0.0; 2], scale: 1.0 }, size: [40.0, 20.0] })
+            }
+            fn audio(&self, _: u64, _: f64, _: usize, _: u32) -> Option<Vec<f32>> {
+                None
+            }
+        }
+        let stripes = crate::util::gen_image(40, 20, |x, _| if x % 4 < 2 { [1.0, 1.0, 1.0, 1.0] } else { [0.0, 0.0, 0.0, 1.0] });
+        let vals = [("blurRadius", num(6.0)), ("repeatEdge", Value::Bool(true)), ("blurMap/blurMapLayer", Value::Layer(Some(1)))];
+        let out = crate::run_fx("ec.blur.cameralens", &vals, stripes.clone(), 0.0, EffectEnv { host: Some(&Half), ..Default::default() }).img;
+        assert_eq!(out.get(4, 10), stripes.get(4, 10), "sharp where the map is at the focal distance");
+        assert!((out.get(30, 10)[0] - 0.5).abs() < 0.2, "{:?}", out.get(30, 10));
     }
 }

@@ -441,6 +441,37 @@ fn dial_row(app: &mut EffectcraftApp, ui: &mut egui::Ui, layer: &Layer, prop: &P
     }
 }
 
+/// The effect instance a row belongs to, for conditional visibility
+/// ([`effectcraft_engine::effects::catalog::param_shown`]): effect id, the instance's root
+/// group and the spec-id path of the group being drawn (`""` or `cameraPosition/`).
+struct FxScope<'a> {
+    effect: &'a str,
+    root: &'a PropGroup,
+    path: String,
+}
+
+impl<'a> FxScope<'a> {
+    fn sub(&self, m: &str) -> FxScope<'a> {
+        FxScope { effect: self.effect, root: self.root, path: format!("{}{m}/", self.path) }
+    }
+    /// Whether child `m` of the current group is shown.
+    fn shown(&self, layer: &Layer, ectx: &EvalCtx, m: &str) -> bool {
+        let root = self.root;
+        let value = |id: &str| -> Option<Value> {
+            let mut g = root;
+            let mut parts = id.split('/').peekable();
+            while let Some(part) = parts.next() {
+                if parts.peek().is_none() {
+                    return g.get(part).map(|p| ectx.value(layer, p));
+                }
+                g = g.sub(part)?;
+            }
+            None
+        };
+        effectcraft_engine::effects::catalog::param_shown(self.effect, &format!("{}{m}", self.path), &value)
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn group_rows(
     app: &mut EffectcraftApp,
@@ -452,6 +483,7 @@ fn group_rows(
     rect: Rect,
     y: &mut f32,
     depth: usize,
+    fx: &FxScope,
     actions: &mut Actions,
 ) {
     let t = app.tokens;
@@ -459,7 +491,7 @@ fn group_rows(
         let r = Rect::from_min_size(pos2(rect.min.x, *y), vec2(rect.width(), ROW));
         match c {
             Node::Prop(pr) => {
-                if matches!(pr.ui, ParamUi::Hidden) || pr.three_d_only && !layer.is_3d() {
+                if matches!(pr.ui, ParamUi::Hidden) || pr.three_d_only && !layer.is_3d() || !fx.shown(layer, ectx, &pr.match_id) {
                     continue;
                 }
                 *y += ROW;
@@ -486,7 +518,7 @@ fn group_rows(
             }
             Node::Group(sg) => {
                 // Paint strokes live in the Timeline only (AE's Paint shows Paint on Transparent).
-                if effectcraft_engine::effects::paint::is_paint(g) {
+                if effectcraft_engine::effects::paint::is_paint(g) || !fx.shown(layer, ectx, &sg.match_id) {
                     continue;
                 }
                 *y += ROW;
@@ -503,7 +535,8 @@ fn group_rows(
                     p.text(pos2(tw.max.x + 6.0, r.center().y), Align2::LEFT_CENTER, &sg.name, Tokens::ui(12.0), t.text);
                 }
                 if open {
-                    group_rows(app, ui, p, layer, sg, ectx, rect, y, depth + 1, actions);
+                    let sub = fx.sub(&sg.match_id);
+                    group_rows(app, ui, p, layer, sg, ectx, rect, y, depth + 1, &sub, actions);
                 }
             }
         }
@@ -642,12 +675,24 @@ fn channel_popup(
 fn curves_editor(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: &egui::Painter, layer: &Layer, g: &PropGroup, ectx: &EvalCtx, r: Rect, actions: &mut Actions) {
     let t = app.tokens;
     let euid = g.uid;
-    let ch = app.ui.fx_curve_channel.get(&euid).copied().unwrap_or(0).min(4);
+    // The channel lives in the effect's hidden Channel parameter (UI state for instances
+    // saved before it existed).
+    let chan_prop = g.get("channel");
+    let ch = match chan_prop {
+        Some(pr) => ectx.value(layer, pr).as_enum() as usize,
+        None => app.ui.fx_curve_channel.get(&euid).copied().unwrap_or(0),
+    }
+    .min(4);
     let x0 = r.min.x + 30.0;
     let cy = r.min.y + 17.0;
     let names: Vec<&str> = fw::CURVE_CHANNELS.iter().map(|c| c.1).collect();
     if let Some(n) = channel_popup(app, ui, p, x0, cy, ch, &names, egui::Id::new(("ec-cch", euid)), &format!("effectControls.effect.{euid}.curves.channel")) {
-        app.ui.fx_curve_channel.insert(euid, n);
+        match chan_prop {
+            Some(pr) => actions.push(("prop.set".into(), json!({"layer": layer.id.0, "prop": pr.uid, "value": n}))),
+            None => {
+                app.ui.fx_curve_channel.insert(euid, n);
+            }
+        }
     }
     let pencil = app.ui.fx_curve_pencil.contains(&euid);
     let mr = Rect::from_min_size(pos2(x0 + 146.0, cy - 9.0), vec2(56.0, 18.0));
@@ -696,7 +741,7 @@ fn curves_editor(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: &egui::Painter,
 /// Levels parameter ids for a channel: input black, input white, gamma, output black, output white.
 fn levels_ids(effect: &str, ch: usize) -> [String; 5] {
     if effect == "ec.color.levels" {
-        return ["inBlack", "inWhite", "gamma", "outBlack", "outWhite"].map(String::from);
+        return effectcraft_engine::effects::levels_channel_ids(ch);
     }
     // Levels (Individual Controls) nests each channel's controls in its twirl-down group.
     let pre = fw::LEVELS_CHANNELS[ch.min(4)].0;
@@ -721,7 +766,13 @@ fn levels_editor(
     let euid = g.uid;
     let x0 = r.min.x + 30.0;
     let cy = r.min.y + 17.0;
-    let ch = if effect == "ec.color.levelsic" { app.ui.fx_levels_channel.get(&euid).copied().unwrap_or(0).min(4) } else { 0 };
+    // Levels keeps its channel in the Channel parameter; Levels (Individual Controls) shows
+    // every channel and the popup only picks the histogram.
+    let ch = if effect == "ec.color.levelsic" {
+        app.ui.fx_levels_channel.get(&euid).copied().unwrap_or(0).min(4)
+    } else {
+        g.get("channel").map(|pr| ectx.value(layer, pr).as_enum() as usize).unwrap_or(0).min(4)
+    };
     if effect == "ec.color.levelsic" {
         let names: Vec<&str> = fw::LEVELS_CHANNELS.iter().map(|c| c.1).collect();
         if let Some(n) = channel_popup(app, ui, p, x0, cy, ch, &names, egui::Id::new(("ec-lch", euid)), &format!("effectControls.effect.{euid}.levels.channel"))
@@ -959,7 +1010,8 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     }
                 }
             }
-            group_rows(app, ui, &bp, &layer, g, &ectx, body, &mut y, 0, &mut actions);
+            let scope = FxScope { effect: effect.as_str(), root: g, path: String::new() };
+            group_rows(app, ui, &bp, &layer, g, &ectx, body, &mut y, 0, &scope, &mut actions);
         }
         y += 4.0;
     }

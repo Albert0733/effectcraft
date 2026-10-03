@@ -38,6 +38,10 @@ pub const PARAM_ID_ALIASES: &[(&str, &str, &str)] = &[
     ("ec.matte.rotobrush", "refineEdgeMatte/extendWhereSmoothed", "refineEdgeMatte/decontamination/extendWhereSmoothed"),
     ("ec.matte.rotobrush", "refineEdgeMatte/increaseDecontaminationRadius", "refineEdgeMatte/decontamination/increaseDecontaminationRadius"),
     ("ec.matte.rotobrush", "refineEdgeMatte/viewDecontaminationMap", "refineEdgeMatte/decontamination/viewDecontaminationMap"),
+    // Keying: Inner/Outer Key's single additional masks became Additional Foreground /
+    // Background 1 (of 10).
+    ("ec.key.innerouter", "additionalForeground", "additionalForeground/foreground1"),
+    ("ec.key.innerouter", "additionalBackground", "additionalBackground/background1"),
     // Generate: Radio Waves' growth speed was called Velocity; Velocity now moves the wave.
     ("ec.generate.radiowaves", "velocity", "waveMotion/expansion"),
 ];
@@ -153,6 +157,10 @@ pub fn legacy_default(effect: &str, param: &str) -> Option<Value> {
         ("ec.noise.removegrain", "noiseReductionSettings/mode") => Value::Enum(1),
         // Audio: the Compressor's release was always manual.
         ("ec.audio.compressor", "autoRelease") => Value::Bool(false),
+        // Keying: Advanced Spill Suppressor's Ultra mode had no hue tolerance.
+        ("ec.key.advancedspill", "ultraSettings/tolerance") => Value::Scalar(100.0),
+        // Transition: Block Dissolve's blocks had hard edges.
+        ("ec.transition.blockdissolve", "softEdges") => Value::Bool(false),
         _ => return None,
     })
 }
@@ -242,6 +250,18 @@ fn is_numeric_ui(u: &ParamUi) -> bool {
 /// point defaults of added parameters. Returns whether anything changed.
 pub fn upgrade_instance(spec: &EffectSpec, g: &mut PropGroup, ids: &mut Ids, layer_size: [f64; 2]) -> bool {
     let before = g.clone();
+    // Card Wipe's Back Layer was a None / Self popup; it is a layer parameter now, with "Self"
+    // kept in the hidden Back Layer Is Self switch.
+    let mut back_self = None;
+    if spec.id == "ec.transition.cardwipe"
+        && let Some(pr) = g.get_mut("backLayer")
+        && matches!(pr.ui, ParamUi::Popup { .. })
+    {
+        back_self = Some(pr.value.as_enum() == 1);
+        pr.value = Value::Layer(None);
+        pr.keys.clear();
+        pr.ui = ParamUi::Layer;
+    }
     for ps in &spec.params {
         // Locate the stored property: at its spec path, under an old id, or at top level
         // before it moved into a twirl-down group.
@@ -295,6 +315,11 @@ pub fn upgrade_instance(spec: &EffectSpec, g: &mut PropGroup, ids: &mut Ids, lay
                 None => g.children.push(src.into()),
             }
         }
+    }
+    if let Some(on) = back_self
+        && let Some(pr) = g.get_mut("backSelf")
+    {
+        pr.value = Value::Bool(on);
     }
     // Refresh twirl-down group names.
     fn names(g: &mut PropGroup) {
@@ -367,5 +392,79 @@ mod tests {
         assert!(upgrade_instance(spec, &mut g, &mut Ids(&mut next), [100.0, 50.0]));
         assert!(g.get("smoothness").is_none());
         assert_eq!(prop_at(&mut g, "stabilization/smoothness").unwrap().value, Value::Scalar(12.0));
+    }
+
+    #[test]
+    fn card_wipe_back_layer_popup_becomes_a_layer_parameter() {
+        let spec = find("ec.transition.cardwipe").unwrap();
+        let mut next = 1;
+        for (old, self_) in [(1, true), (0, false)] {
+            let mut g = instantiate(spec, &mut Ids(&mut next), "Card Wipe", [100.0, 50.0]);
+            take_prop(&mut g, "backSelf");
+            let pr = g.get_mut("backLayer").unwrap();
+            pr.ui = ParamUi::Popup { options: vec!["None".into(), "Self".into()] };
+            pr.value = Value::Enum(old);
+            assert!(upgrade_instance(spec, &mut g, &mut Ids(&mut next), [100.0, 50.0]));
+            assert_eq!(g.get("backLayer").unwrap().value, Value::Layer(None));
+            assert_eq!(g.get("backLayer").unwrap().ui, ParamUi::Layer);
+            assert_eq!(g.get("backSelf").unwrap().value, Value::Bool(self_));
+        }
+    }
+
+    #[test]
+    fn particle_playground_mapper_targets_remap_by_label() {
+        let spec = find("ec.sim.particleplayground").unwrap();
+        let mut next = 1;
+        let mut g = instantiate(spec, &mut Ids(&mut next), "Particle Playground", [100.0, 50.0]);
+        let old: Vec<String> =
+            ["None", "Red", "Green", "Blue", "Kinetic Friction", "Scale", "X", "Y", "X Speed", "Y Speed", "X Force", "Y Force", "Opacity", "Mass"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
+        let pr = prop_at(&mut g, "persistentPropertyMapper/mapRedTo").unwrap();
+        pr.ui = ParamUi::Popup { options: old };
+        pr.value = Value::Enum(8);
+        assert!(upgrade_instance(spec, &mut g, &mut Ids(&mut next), [100.0, 50.0]));
+        assert_eq!(prop_at(&mut g, "persistentPropertyMapper/mapRedTo").unwrap().value, Value::Enum(15), "X Speed");
+    }
+
+    #[test]
+    fn selective_color_ranges_move_into_details() {
+        let spec = find("ec.color.selectivecolor").unwrap();
+        let mut next = 1;
+        let mut g = instantiate(spec, &mut Ids(&mut next), "Selective Color", [100.0, 50.0]);
+        let mut pr = take_at(&mut g, "details/reds/redsCyan").unwrap();
+        pr.value = Value::Scalar(40.0);
+        g.children.push(pr.into());
+        assert!(upgrade_instance(spec, &mut g, &mut Ids(&mut next), [100.0, 50.0]));
+        assert!(g.get("redsCyan").is_none());
+        assert_eq!(prop_at(&mut g, "details/reds/redsCyan").unwrap().value, Value::Scalar(40.0));
+        assert_eq!(g.sub("details").unwrap().sub("reds").unwrap().name, "Reds");
+    }
+
+    #[test]
+    fn inner_outer_key_additional_masks_move_into_their_groups() {
+        let spec = find("ec.key.innerouter").unwrap();
+        let mut next = 1;
+        let mut g = instantiate(spec, &mut Ids(&mut next), "Inner/Outer Key", [100.0, 50.0]);
+        let mut pr = take_at(&mut g, "additionalForeground/foreground1").unwrap();
+        pr.match_id = "additionalForeground".into();
+        pr.value = Value::Enum(3);
+        g.children.push(pr.into());
+        assert!(upgrade_instance(spec, &mut g, &mut Ids(&mut next), [100.0, 50.0]));
+        assert!(g.get("additionalForeground").is_none());
+        assert_eq!(prop_at(&mut g, "additionalForeground/foreground1").unwrap().value, Value::Enum(3));
+    }
+
+    #[test]
+    fn match_grain_viewing_modes_remap_by_label() {
+        let spec = find("ec.noise.matchgrain").unwrap();
+        let mut next = 1;
+        let mut g = instantiate(spec, &mut Ids(&mut next), "Match Grain", [100.0, 50.0]);
+        let pr = g.get_mut("viewingMode").unwrap();
+        pr.ui = ParamUi::Popup { options: vec!["Final Output".into(), "Noise Samples".into(), "Blending Matte".into()] };
+        pr.value = Value::Enum(0);
+        assert!(upgrade_instance(spec, &mut g, &mut Ids(&mut next), [100.0, 50.0]));
+        assert_eq!(g.get("viewingMode").unwrap().value, Value::Enum(4), "Final Output");
     }
 }
