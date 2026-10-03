@@ -97,6 +97,8 @@ pub use noise3::{FractalGpu, fractal_gpu};
 pub use time_fx::{posterized_time, time_frames};
 // effectcraft-gpu fx_tone.
 pub use ocio::color_stabilizer_maps;
+// GPU effects, part B (3D Channel, Immersive Video, colour management, simulation render passes).
+pub use channel3d::{CRYPTO_LAYERS, id_color, selection_hashes};
 
 /// Effect categories in Effects & Presets order.
 pub const CATEGORIES: &[&str] = &[
@@ -931,6 +933,15 @@ pub const GPU_EFFECTS: &[&str] = &[
     "ec.perspective.bevelalpha",
     "ec.perspective.beveledges",
     "ec.obsolete.gaussianlegacy",
+    // GPU effects, part B: 3D Channel.
+    "ec.3d.channelextract",
+    "ec.3d.cryptomatte",
+    "ec.3d.depthmatte",
+    "ec.3d.depthoffield",
+    "ec.3d.extractor",
+    "ec.3d.fog3d",
+    "ec.3d.idmatte",
+    "ec.3d.identifier",
 ];
 
 /// Effects whose output depends on [`EffectCtx::time`] directly (not only through animated

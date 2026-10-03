@@ -314,6 +314,7 @@ impl GpuContext {
             include_str!("shaders/fx_tone.wgsl"),
             include_str!("shaders/fx_warp.wgsl"),
             include_str!("shaders/fx_extra.wgsl"),
+            include_str!("shaders/fx_depth.wgsl"),
         ]
         .concat();
         let module =
@@ -373,6 +374,7 @@ impl GpuContext {
             .chain(crate::fx_tone::KERNELS)
             .chain(crate::fx_warp::KERNELS)
             .chain(crate::fx_extra::KERNELS)
+            .chain(crate::fx_depth::KERNELS)
             .map(|e| (e, &layout))
             .chain(EXT_ENTRIES.iter().map(|e| (e, &layout_ext)))
             .map(|(e, layout)| {

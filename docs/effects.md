@@ -5,7 +5,7 @@
 
 EffectCraft ships 306 effects with 3009 parameters in total, grouped into the same categories as the Effects & Presets panel. Every effect is our own implementation, written from public behaviour descriptions and standard image-processing literature. Parameter names, order, popup options, units, defaults and ranges follow the reference application so that projects, expressions and muscle memory carry over.
 
-- **GPU**: 166 effects also run on the GPU compositor with identical results.
+- **GPU**: 174 effects also run on the GPU compositor with identical results.
 - **32**: 306 effects process 32-bit float (HDR, overbright) pixels without clamping.
 - **Status**: 306 implemented in full, 0 partial (what is missing is listed).
 
@@ -15,14 +15,14 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 
 | Effect | Id | Params | GPU | 32 | Status |
 |---|---|---:|:-:|:-:|---|
-| 3D Channel Extract | `ec.3d.channelextract` | 6 |  | 32 | Implemented |
-| Cryptomatte | `ec.3d.cryptomatte` | 4 |  | 32 | Implemented |
-| Depth Matte | `ec.3d.depthmatte` | 3 |  | 32 | Implemented |
-| Depth of Field | `ec.3d.depthoffield` | 4 |  | 32 | Implemented |
-| EXtractoR | `ec.3d.extractor` | 8 |  | 32 | Implemented |
-| Fog 3D | `ec.3d.fog3d` | 8 |  | 32 | Implemented |
-| ID Matte | `ec.3d.idmatte` | 5 |  | 32 | Implemented |
-| IDentifier | `ec.3d.identifier` | 3 |  | 32 | Implemented |
+| 3D Channel Extract | `ec.3d.channelextract` | 6 | GPU | 32 | Implemented |
+| Cryptomatte | `ec.3d.cryptomatte` | 4 | GPU | 32 | Implemented |
+| Depth Matte | `ec.3d.depthmatte` | 3 | GPU | 32 | Implemented |
+| Depth of Field | `ec.3d.depthoffield` | 4 | GPU | 32 | Implemented |
+| EXtractoR | `ec.3d.extractor` | 8 | GPU | 32 | Implemented |
+| Fog 3D | `ec.3d.fog3d` | 8 | GPU | 32 | Implemented |
+| ID Matte | `ec.3d.idmatte` | 5 | GPU | 32 | Implemented |
+| IDentifier | `ec.3d.identifier` | 3 | GPU | 32 | Implemented |
 
 ## Audio
 

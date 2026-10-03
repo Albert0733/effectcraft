@@ -48,6 +48,7 @@ mod classic3d;
 mod context;
 mod effects;
 mod fx_color;
+mod fx_depth;
 mod fx_distort;
 mod fx_extra;
 mod fx_generate;
@@ -200,6 +201,8 @@ mod tests_adjust;
 mod tests_adv3d;
 #[cfg(test)]
 mod tests_fx_color;
+#[cfg(test)]
+mod tests_fx_depth;
 #[cfg(test)]
 mod tests_fx_distort;
 #[cfg(test)]
