@@ -22,6 +22,7 @@ fn item_icon(it: &Item) -> Icon {
         ItemKind::Footage(f) => match f.kind {
             effectcraft_engine::project::FootageKind::Still | effectcraft_engine::project::FootageKind::Sequence => Icon::Image,
             effectcraft_engine::project::FootageKind::Audio => Icon::Audio,
+            effectcraft_engine::project::FootageKind::Model => Icon::Cube,
             _ => Icon::Footage,
         },
     }

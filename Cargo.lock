@@ -1195,6 +1195,7 @@ dependencies = [
  "effectcraft-geom",
  "effectcraft-keyframe",
  "effectcraft-lottie",
+ "effectcraft-model",
  "effectcraft-path",
  "effectcraft-project",
  "effectcraft-raster",
@@ -1322,6 +1323,7 @@ dependencies = [
 name = "effectcraft-media"
 version = "0.1.0"
 dependencies = [
+ "effectcraft-model",
  "effectcraft-project",
  "effectcraft-raster",
  "effectcraft-render",
@@ -1334,6 +1336,17 @@ dependencies = [
  "image",
  "log",
  "rayon",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "effectcraft-model"
+version = "0.1.0"
+dependencies = [
+ "effectcraft-geom",
+ "image",
+ "serde",
+ "serde_json",
  "thiserror 2.0.21",
 ]
 
@@ -1379,6 +1392,7 @@ dependencies = [
  "effectcraft-effects",
  "effectcraft-geom",
  "effectcraft-keyframe",
+ "effectcraft-model",
  "effectcraft-path",
  "effectcraft-project",
  "effectcraft-raster",

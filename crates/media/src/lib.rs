@@ -17,7 +17,7 @@ mod pool;
 mod probe;
 
 pub use pool::{DEFAULT_BUDGET, MediaPool, PoolStats};
-pub use probe::{DEFAULT_SEQUENCE_RATE, probe, probe_bytes, probe_single, sequence_files};
+pub use probe::{DEFAULT_SEQUENCE_RATE, probe, probe_bytes, probe_model, probe_single, sequence_files};
 
 /// Errors from probing or decoding footage.
 #[derive(Debug, thiserror::Error)]
@@ -50,10 +50,16 @@ pub const AUDIO_EXTENSIONS: &[&str] = filmcraft_media::AUDIO_EXTENSIONS;
 /// File extensions recognised as movies.
 pub const VIDEO_EXTENSIONS: &[&str] = &["mp4", "m4v", "mov", "mkv", "webm"];
 
+/// File extensions recognised as 3D models (Advanced 3D model layers).
+pub const MODEL_EXTENSIONS: &[&str] = &["gltf", "glb", "obj"];
+
 /// Whether `path` has an extension we can import.
 pub fn is_importable(path: &std::path::Path) -> bool {
     let ext = ext_of(path);
-    STILL_EXTENSIONS.contains(&ext.as_str()) || AUDIO_EXTENSIONS.contains(&ext.as_str()) || VIDEO_EXTENSIONS.contains(&ext.as_str())
+    MODEL_EXTENSIONS.contains(&ext.as_str())
+        || STILL_EXTENSIONS.contains(&ext.as_str())
+        || AUDIO_EXTENSIONS.contains(&ext.as_str())
+        || VIDEO_EXTENSIONS.contains(&ext.as_str())
 }
 
 pub(crate) fn ext_of(path: &std::path::Path) -> String {

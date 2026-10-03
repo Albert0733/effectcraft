@@ -22,6 +22,7 @@ effectcraft-project = { path = "crates/project" }
 effectcraft-text = { path = "crates/text" }
 effectcraft-effects = { path = "crates/effects" }
 effectcraft-track = { path = "crates/track" }
+effectcraft-model = { path = "crates/model" }
 effectcraft-render = { path = "crates/render" }
 effectcraft-gpu = { path = "crates/gpu" }
 effectcraft-media = { path = "crates/media" }

@@ -20,6 +20,7 @@ mod link;
 mod lottie;
 mod markers;
 mod mask;
+pub(crate) mod model3d;
 pub mod paint;
 mod paths;
 mod project_items;
@@ -99,6 +100,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(layer::specs());
         v.extend(styles::specs());
         v.extend(three_d::specs());
+        v.extend(model3d::specs());
         v.extend(text_anim::specs());
         v.extend(text_edit::specs());
         v.extend(layer_time::specs());
