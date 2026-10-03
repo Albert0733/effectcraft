@@ -32,7 +32,7 @@ pub(crate) fn render<'g>(e: &mut Enc<'g>, r: &Renderer, comp_id: ItemId, t: Tick
     if r.depth() > 16 || !e.g.fits(w, h) {
         return None;
     }
-    let mut canvas = e.image(w, h);
+    let mut canvas = e.zeros(w, h);
     draw_comp(e, r, &ctx, &mut canvas)?;
     let pipe = r.pipe();
     if let Some(c) = pipe.from_blend() {
@@ -127,7 +127,7 @@ fn draw_collapsed<'a>(e: &mut Enc, r: &Renderer<'a>, ctx: &EvalCtx<'a>, layer: &
         return Some(());
     }
     let Some((sub, nctx)) = r.collapse_into(ctx, layer, item, 1.0) else { return Some(()) };
-    let mut iso = e.image(canvas.width, canvas.height);
+    let mut iso = e.zeros(canvas.width, canvas.height);
     draw_comp(e, &sub, &nctx, &mut iso)?;
     composite_iso(e, r, ctx, layer, iso, canvas, opacity)
 }
@@ -156,7 +156,7 @@ fn draw_layer(e: &mut Enc, r: &Renderer, ctx: &EvalCtx, layer: &Layer, canvas: &
     let bl = styles::blending(ctx, layer);
     let (w, h) = (canvas.width, canvas.height);
     if r.track_matte(ctx, layer).is_some() || layer.preserve_transparency {
-        let mut iso = e.image(w, h);
+        let mut iso = e.zeros(w, h);
         for (b, m) in &st.passes {
             iso = place(e, r, ctx, layer, b, &iso, *m, 1.0)?;
         }
@@ -165,7 +165,7 @@ fn draw_layer(e: &mut Enc, r: &Renderer, ctx: &EvalCtx, layer: &Layer, canvas: &
     }
     let mut tmp = canvas.clone();
     if bl.knockout > 0 {
-        let k = place(e, r, ctx, layer, &st.content, &e.image(w, h), BlendMode::Normal, 1.0)?;
+        let k = place(e, r, ctx, layer, &st.content, &e.zeros(w, h), BlendMode::Normal, 1.0)?;
         tmp = ops::knockout(e, &tmp, &k);
     }
     for (b, m) in &st.passes {
@@ -183,7 +183,7 @@ fn draw_adjustment(e: &mut Enc, r: &Renderer, ctx: &EvalCtx, layer: &Layer, canv
     let opacity = r.layer_opacity(ctx, layer);
     let Some(foot) = r.adjustment_footprint(ctx, layer) else { return Some(()) };
     let (w, h) = (canvas.width, canvas.height);
-    let matte = place(e, r, ctx, layer, &Arc::new(foot), &e.image(w, h), BlendMode::Normal, 1.0)?;
+    let matte = place(e, r, ctx, layer, &foot, &e.zeros(w, h), BlendMode::Normal, 1.0)?;
     let pipe = r.pipe();
     // Effects run in the working space, not the linear blending space.
     let below = match pipe.from_blend() {
@@ -210,14 +210,14 @@ fn composite_layer(e: &mut Enc, r: &Renderer, ctx: &EvalCtx, layer: &Layer, buf:
         return Some(());
     }
     // Render in isolation, then matte / preserve transparency, then blend.
-    let iso = place(e, r, ctx, layer, buf, &e.image(canvas.width, canvas.height), BlendMode::Normal, 1.0)?;
+    let iso = place(e, r, ctx, layer, buf, &e.zeros(canvas.width, canvas.height), BlendMode::Normal, 1.0)?;
     composite_iso(e, r, ctx, layer, iso, canvas, opacity)
 }
 
 /// Track matte / Preserve Transparency on an isolated layer render, then blend.
 fn composite_iso(e: &mut Enc, r: &Renderer, ctx: &EvalCtx, layer: &Layer, mut iso: GpuImage, canvas: &mut GpuImage, opacity: f32) -> Option<()> {
     if let Some((m, kind)) = r.track_matte(ctx, layer) {
-        let mut mimg = e.image(canvas.width, canvas.height);
+        let mut mimg = e.zeros(canvas.width, canvas.height);
         if m.is_active_at(ctx.time)
             && let Some(mb) = r.layer_buf(ctx, m)
         {
@@ -243,7 +243,7 @@ fn place(e: &mut Enc, r: &Renderer, ctx: &EvalCtx, layer: &Layer, buf: &Arc<Buf>
     if let [m] = pl.matrices.as_slice() {
         return Some(ops::warp(e, target, &src, m, pl.sampling, mode, opacity, pl.seed, None));
     }
-    let mut acc = e.image(target.width, target.height);
+    let mut acc = e.zeros(target.width, target.height);
     let k = 1.0 / pl.matrices.len() as f32;
     for m in &pl.matrices {
         acc = ops::warp(e, &acc, &src, m, pl.sampling, BlendMode::Normal, 1.0, 0, Some(k));

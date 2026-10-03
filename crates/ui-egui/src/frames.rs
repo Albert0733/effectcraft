@@ -437,14 +437,36 @@ impl Worker {
         r.accel = job.src.gpu.as_ref().map(|g| g as &dyn effectcraft_engine::render::Accelerator);
         // The GPU leaves the frame in a texture for the viewer; otherwise (Software Only, no
         // adapter, or a frame the GPU cannot finish here) the CPU renders it.
-        let gpu_frame = match (&job.src.gpu, r.active_accel()) {
-            (Some(g), Some(_)) if job.src.gpu_display => g.render_display(&r, job.comp, job.t),
-            _ => None,
-        };
-        match gpu_frame {
-            Some(f) => FrameImage::Gpu(Arc::new(f)),
-            None => FrameImage::Cpu(Arc::new(to_color_image(&r.comp_frame(job.comp, job.t)))),
+        // Auto (Mercury GPU Acceleration) shows each comp on whichever compositor measured
+        // faster for it (light comps composite faster on the CPU).
+        if let (Some(g), Some(a)) = (&job.src.gpu, r.active_accel())
+            && job.src.gpu_display
+        {
+            // The browser cannot wait for the GPU to time it (and its CPU path is slow): always
+            // the GPU there.
+            let auto = if cfg!(target_arch = "wasm32") { None } else { r.frame_auto(a, job.comp, true) };
+            if auto.is_none_or(|(p, key)| p.choose(key)) {
+                let t0 = web_time::Instant::now();
+                if let Some(f) = g.render_display(&r, job.comp, job.t) {
+                    if let Some((p, key)) = auto {
+                        // Time the GPU's work, not just its recording.
+                        g.wait();
+                        p.record(key, true, t0.elapsed().as_secs_f64() * 1000.0);
+                    }
+                    return FrameImage::Gpu(Arc::new(f));
+                }
+                if let Some((p, key)) = auto {
+                    p.declined(key);
+                }
+            }
+            let t0 = web_time::Instant::now();
+            let img = to_color_image(&r.comp_frame_cpu(job.comp, job.t));
+            if let Some((p, key)) = auto {
+                p.record(key, false, t0.elapsed().as_secs_f64() * 1000.0);
+            }
+            return FrameImage::Cpu(Arc::new(img));
         }
+        FrameImage::Cpu(Arc::new(to_color_image(&r.comp_frame(job.comp, job.t))))
     }
 }
 

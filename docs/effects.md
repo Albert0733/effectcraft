@@ -5,7 +5,7 @@
 
 EffectCraft ships 306 effects with 3009 parameters in total, grouped into the same categories as the Effects & Presets panel. Every effect is our own implementation, written from public behaviour descriptions and standard image-processing literature. Parameter names, order, popup options, units, defaults and ranges follow the reference application so that projects, expressions and muscle memory carry over.
 
-- **GPU**: 152 effects also run on the GPU compositor with identical results.
+- **GPU**: 160 effects also run on the GPU compositor with identical results.
 - **32**: 306 effects process 32-bit float (HDR, overbright) pixels without clamping.
 - **Status**: 306 implemented in full, 0 partial (what is missing is listed).
 
@@ -130,15 +130,15 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 
 | Effect | Id | Params | GPU | 32 | Status |
 |---|---|---:|:-:|:-:|---|
-| Bezier Warp | `ec.distort.bezierwarp` | 13 |  | 32 | Implemented |
+| Bezier Warp | `ec.distort.bezierwarp` | 13 | GPU | 32 | Implemented |
 | Bulge | `ec.distort.bulge` | 6 | GPU | 32 | Implemented |
-| CC Bend It | `ec.distort.ccbendit` | 4 |  | 32 | Implemented |
+| CC Bend It | `ec.distort.ccbendit` | 4 | GPU | 32 | Implemented |
 | CC Bender | `ec.distort.ccbender` | 5 |  | 32 | Implemented |
 | CC Blobbylize | `ec.distort.ccblobbylize` | 15 |  | 32 | Implemented |
 | CC Flo Motion | `ec.distort.ccflomotion` | 7 | GPU | 32 | Implemented |
 | CC Griddler | `ec.distort.ccgriddler` | 5 | GPU | 32 | Implemented |
 | CC Lens | `ec.distort.cclens` | 3 | GPU | 32 | Implemented |
-| CC Page Turn | `ec.distort.ccpageturn` | 7 |  | 32 | Implemented |
+| CC Page Turn | `ec.distort.ccpageturn` | 7 | GPU | 32 | Implemented |
 | CC Power Pin | `ec.distort.ccpowerpin` | 10 | GPU | 32 | Implemented |
 | CC Ripple Pulse | `ec.distort.ccripplepulse` | 5 | GPU | 32 | Implemented |
 | CC Slant | `ec.distort.ccslant` | 4 | GPU | 32 | Implemented |
@@ -157,16 +157,16 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 | Optics Compensation | `ec.distort.opticscompensation` | 6 | GPU | 32 | Implemented |
 | Polar Coordinates | `ec.distort.polar` | 2 | GPU | 32 | Implemented |
 | Puppet | `ec.distort.puppet` | 1 |  | 32 | Implemented |
-| Reshape | `ec.distort.reshape` | 6 |  | 32 | Implemented |
+| Reshape | `ec.distort.reshape` | 6 | GPU | 32 | Implemented |
 | Ripple | `ec.distort.ripple` | 7 | GPU | 32 | Implemented |
 | Rolling Shutter Repair | `ec.distort.rollingshutterrepair` | 5 |  | 32 | Implemented |
-| Smear | `ec.distort.smear` | 8 |  | 32 | Implemented |
+| Smear | `ec.distort.smear` | 8 | GPU | 32 | Implemented |
 | Spherize | `ec.distort.spherize` | 2 | GPU | 32 | Implemented |
 | Transform | `ec.distort.transform` | 12 | GPU | 32 | Implemented |
 | Turbulent Displace | `ec.distort.turbulentdisplace` | 11 | GPU | 32 | Implemented |
 | Twirl | `ec.distort.twirl` | 3 | GPU | 32 | Implemented |
 | Twirl (Legacy) | `ec.distort.twirllegacy` | 3 | GPU | 32 | Implemented |
-| Warp | `ec.distort.warp` | 5 |  | 32 | Implemented |
+| Warp | `ec.distort.warp` | 5 | GPU | 32 | Implemented |
 | Warp Stabilizer | `ec.distort.warpstabilizer` | 20 |  | 32 | Implemented |
 | Wave Warp | `ec.distort.wavewarp` | 7 | GPU | 32 | Implemented |
 
@@ -352,8 +352,8 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 | CC Threshold | `ec.stylize.ccthreshold` | 4 | GPU | 32 | Implemented |
 | CC Threshold RGB | `ec.stylize.ccthresholdrgb` | 7 | GPU | 32 | Implemented |
 | CC Vignette | `ec.stylize.ccvignette` | 4 | GPU | 32 | Implemented |
-| Cartoon | `ec.stylize.cartoon` | 12 |  | 32 | Implemented |
-| Color Emboss | `ec.stylize.coloremboss` | 4 |  | 32 | Implemented |
+| Cartoon | `ec.stylize.cartoon` | 12 | GPU | 32 | Implemented |
+| Color Emboss | `ec.stylize.coloremboss` | 4 | GPU | 32 | Implemented |
 | Emboss | `ec.stylize.emboss` | 4 | GPU | 32 | Implemented |
 | Find Edges | `ec.stylize.findedges` | 2 | GPU | 32 | Implemented |
 | Glow | `ec.stylize.glow` | 14 | GPU | 32 | Implemented |

@@ -131,6 +131,7 @@ fn apply(e: &mut Enc, id: &str, ctx: &EffectCtx, b: GBuf) -> Option<GBuf> {
         _ if crate::fx_stylize::IDS.contains(&id) => crate::fx_stylize::apply(e, id, ctx, b),
         _ if crate::fx_noise::IDS.contains(&id) => crate::fx_noise::apply(e, id, ctx, b),
         _ if crate::fx_tone::IDS.contains(&id) => crate::fx_tone::apply(e, id, ctx, b),
+        _ if crate::fx_warp::IDS.contains(&id) => crate::fx_warp::apply(e, id, ctx, b),
         _ => pointwise(e, id, ctx, b),
     }
 }
@@ -162,7 +163,7 @@ pub(crate) fn box_passes(e: &mut Enc, img: &GpuImage, rx: &[usize], ry: &[usize]
         let (lines, n) = if vertical { (cur.width, cur.height) } else { (cur.height, cur.width) };
         let mut p = Params::default();
         p.u[0] = [r as u32, repeat as u32, block, 0];
-        let out = e.image(cur.width, cur.height);
+        let out = e.scratch(cur.width, cur.height);
         e.dispatch(if vertical { "box_v" } else { "box_h" }, &p, &cur, None, &out, None, (lines.div_ceil(64), n.div_ceil(block)));
         cur = out;
     }
@@ -225,7 +226,7 @@ fn directional(e: &mut Enc, ctx: &EffectCtx, mut b: GBuf) -> Option<GBuf> {
     let n = (len.ceil() as usize * 2 + 1).clamp(3, 257);
     let mut p = Params::default();
     p.f[0] = [a.sin() as f32, -a.cos() as f32, len as f32, n as f32];
-    let out = e.image(b.img.width, b.img.height);
+    let out = e.scratch(b.img.width, b.img.height);
     e.pixels("directional", &p, &b.img, None, &out, None);
     b.img = out;
     Some(b)
@@ -258,7 +259,7 @@ fn glow(e: &mut Enc, ctx: &EffectCtx, mut b: GBuf) -> Option<GBuf> {
     let mut p = Params::default();
     p.u[0][0] = ctx.params.e("operation").min(2);
     p.f[0][0] = intensity;
-    let out = e.image(b.img.width, b.img.height);
+    let out = e.scratch(b.img.width, b.img.height);
     e.pixels("glow_combine", &p, &b.img, Some(&blurred), &out, None);
     b.img = out;
     Some(b)
@@ -285,7 +286,7 @@ fn drop_shadow(e: &mut Enc, ctx: &EffectCtx, mut b: GBuf) -> Option<GBuf> {
         sh = gaussian_blur(e, &sh, soft / 2.0, soft / 2.0, false);
     }
     if !only {
-        let out = e.image(b.img.width, b.img.height);
+        let out = e.scratch(b.img.width, b.img.height);
         e.pixels("shadow_combine", &Params::default(), &sh, Some(&b.img), &out, None);
         sh = out;
     }
@@ -338,7 +339,7 @@ fn curves(e: &mut Enc, ctx: &EffectCtx, b: GBuf) -> Option<GBuf> {
     p.u[0][0] = 8;
     p.f[0] = [offs[0], offs[1], offs[2], offs[3]];
     p.f[1][0] = offs[4];
-    let out = e.image(b.img.width, b.img.height);
+    let out = e.scratch(b.img.width, b.img.height);
     e.pixels("pointwise", &p, &b.img, None, &out, Some(&buf));
     Some(GBuf { img: out, ..b })
 }
@@ -464,7 +465,7 @@ fn pointwise(e: &mut Enc, id: &str, ctx: &EffectCtx, b: GBuf) -> Option<GBuf> {
         }
         _ => return None,
     }
-    let out = e.image(b.img.width, b.img.height);
+    let out = e.scratch(b.img.width, b.img.height);
     e.pixels("pointwise", &p, &b.img, None, &out, None);
     Some(GBuf { img: out, ..b })
 }

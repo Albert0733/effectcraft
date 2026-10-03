@@ -71,7 +71,7 @@ pub(crate) fn apply(e: &mut Enc, id: &str, ctx: &EffectCtx, b: GBuf) -> Option<G
 /// Run a per-pixel kernel over the buffer.
 fn run(e: &mut Enc, entry: &str, p: &Params, b: GBuf, aux: Option<&crate::context::GpuImage>, data: Option<&[f32]>) -> Option<GBuf> {
     let buf = data.map(|d| e.data(d));
-    let out = e.image(b.img.width, b.img.height);
+    let out = e.scratch(b.img.width, b.img.height);
     e.pixels(entry, p, &b.img, aux, &out, buf.as_ref());
     Some(GBuf { img: out, ..b })
 }
@@ -149,7 +149,7 @@ fn camera_lens(e: &mut Enc, ctx: &EffectCtx, mut b: GBuf) -> Option<GBuf> {
         let mut p = Params::default();
         p.u[0] = [linear as u32, (boost > 1.0) as u32, 0, 0];
         p.f[0] = [thr, boost, sat, 0.0];
-        let out = e.image(w, h);
+        let out = e.scratch(w, h);
         e.pixels("gen_lens_pre", &p, &src, None, &out, None);
         src = out;
     }
@@ -172,7 +172,7 @@ fn camera_lens(e: &mut Enc, ctx: &EffectCtx, mut b: GBuf) -> Option<GBuf> {
     p.u[0] = [spans.len() as u32, repeat as u32, linear as u32, prefix as u32];
     p.f[0][0] = norm as f32;
     let buf = e.data(&data);
-    let out = e.image(w, h);
+    let out = e.scratch(w, h);
     e.pixels("gen_lens_blur", &p, &src, pre.as_ref(), &out, Some(&buf));
     b.img = out;
     Some(b)
@@ -275,7 +275,7 @@ fn gradient_wipe(e: &mut Enc, ctx: &EffectCtx, b: GBuf) -> Option<GBuf> {
     let mut p = Params::default();
     p.u[0][0] = ctx.params.b("invert") as u32;
     p.f[0] = [done, soft, 0.0, 0.0];
-    let out = e.image(b.img.width, b.img.height);
+    let out = e.scratch(b.img.width, b.img.height);
     e.pixels("gen_gradient_wipe", &p, &b.img, Some(grad.as_ref().unwrap_or(&b.img)), &out, None);
     Some(GBuf { img: out, ..b })
 }

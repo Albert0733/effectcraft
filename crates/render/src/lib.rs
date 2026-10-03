@@ -7,6 +7,7 @@
 //! Adjustment layers run their effects on everything below, limited by their own bounds/masks.
 
 pub mod audio;
+pub mod auto;
 pub mod cache;
 pub mod color;
 pub mod disk_cache;
@@ -20,6 +21,7 @@ pub mod three_d;
 
 use std::sync::Arc;
 
+pub use auto::{AutoKey, AutoPick};
 pub use cache::{CacheStats, LayerCache};
 use effectcraft_color::BlendMode;
 use effectcraft_effects::{Buf, EffectCtx, EffectEnv, EffectHost, LayerPixels, Params};
@@ -281,6 +283,11 @@ pub trait Accelerator: Send + Sync {
     /// A particle simulation backend (GPU particles) for the stepped particle effects, with
     /// the CPU simulation's semantics. `None` = they simulate on the CPU.
     fn particles(&self) -> Option<&dyn effectcraft_effects::psim::ParticleSim> {
+        None
+    }
+    /// Timing history [`Backend::Auto`] uses to send each comp's top-level frames to the
+    /// faster compositor. `None` = Auto always tries the accelerator first.
+    fn auto_pick(&self) -> Option<&AutoPick> {
         None
     }
 }
@@ -627,14 +634,41 @@ impl<'a> Renderer<'a> {
     /// Render a composition at comp time `t` (transparent background, comp size × scale).
     /// Top-level frames go to the GPU when [`Self::active_accel`] is set and handles them.
     pub fn comp_frame(&self, comp_id: ItemId, t: Tick) -> Image {
-        // Classic 3D runs composite on the GPU too (M12.7), so Auto sends 3D comps there as well.
+        // Classic 3D runs composite on the GPU too (M12.7), so Auto sends 3D comps there as well;
+        // Auto renders each comp on whichever compositor measured faster ([`AutoPick`]).
         if self.depth == 0
             && let Some(a) = self.active_accel()
-            && let Some(img) = a.comp_frame(self, comp_id, t)
         {
+            let auto = self.frame_auto(a, comp_id, false);
+            if auto.is_none_or(|(p, key)| p.choose(key)) {
+                let t0 = web_time::Instant::now();
+                if let Some(img) = a.comp_frame(self, comp_id, t) {
+                    if let Some((p, key)) = auto {
+                        p.record(key, true, t0.elapsed().as_secs_f64() * 1e3);
+                    }
+                    return img;
+                }
+                if let Some((p, key)) = auto {
+                    p.declined(key);
+                }
+            }
+            let t0 = web_time::Instant::now();
+            let img = self.comp_frame_cpu(comp_id, t);
+            if let Some((p, key)) = auto {
+                p.record(key, false, t0.elapsed().as_secs_f64() * 1e3);
+            }
             return img;
         }
         self.comp_frame_cpu(comp_id, t)
+    }
+
+    /// The Auto timing history and key for a top-level frame of `comp` (`None` unless the
+    /// backend is [`Backend::Auto`] and the accelerator keeps history).
+    pub fn frame_auto(&self, a: &'a dyn Accelerator, comp: ItemId, display: bool) -> Option<(&'a AutoPick, AutoKey)> {
+        if self.opts.backend != Backend::Auto || self.opts.roi.is_some() {
+            return None;
+        }
+        Some((a.auto_pick()?, AutoKey::new(comp, self.opts.scale, display)))
     }
 
     /// [`Self::comp_frame`] on the CPU compositor only.
@@ -1580,9 +1614,20 @@ impl<'a> Renderer<'a> {
 
     /// An adjustment layer's footprint (its source with masks applied, layer space): where
     /// its effects show. `None` = the layer changes nothing.
-    pub fn adjustment_footprint(&self, ctx: &EvalCtx, layer: &Layer) -> Option<Buf> {
+    pub fn adjustment_footprint(&self, ctx: &EvalCtx, layer: &Layer) -> Option<Arc<Buf>> {
+        // Cached, so an accelerator sees the same buffer (and uploads it once) every frame.
+        let key = self.cache.and_then(|_| cache::footprint_key(ctx, layer, self.raster_scale(ctx, layer), self.opts.draft));
+        if let (Some(c), Some(k)) = (self.cache, key)
+            && let Some(b) = c.get(k)
+        {
+            return Some(b);
+        }
         let mut foot = self.source(ctx, layer)?;
         let _ = masks::apply(ctx, layer, &mut foot);
+        let foot = Arc::new(foot);
+        if let (Some(c), Some(k)) = (self.cache, key) {
+            c.insert(k, foot.clone());
+        }
         Some(foot)
     }
 
@@ -1734,6 +1779,8 @@ pub fn render_frame(project: &Project, comp: ItemId, t: Tick, scale: f64) -> Ima
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_auto;
 #[cfg(test)]
 mod tests_remap;
 #[cfg(test)]

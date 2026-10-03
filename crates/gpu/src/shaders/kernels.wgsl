@@ -959,3 +959,16 @@ fn bokeh_gather(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     textureStore(out, p, acc);
 }
+
+// ---------------------------------------------------------------- pool
+
+// Set every pixel to f[0] (clearing reused working textures; NaN poison under test).
+@compute @workgroup_size(16, 16)
+fn fill(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let dims = out_dims();
+    let p = vec2<i32>(gid.xy);
+    if (p.x >= dims.x || p.y >= dims.y) {
+        return;
+    }
+    textureStore(out, p, P.f[0]);
+}

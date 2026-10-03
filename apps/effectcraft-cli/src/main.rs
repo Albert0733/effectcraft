@@ -788,7 +788,9 @@ fn adjustment_bench_comp(p: &mut effectcraft_engine::project::Project) -> Option
 
 /// `bench --gpu`: CPU vs GPU ms/frame for every comp (or `--comp`) at Full and Half. "cold"
 /// renders everything (no layer cache); "warm" reuses the layer cache (playback / scrubbing of
-/// unchanged layers: compositing cost); "viewer" is the GPU display path without readback.
+/// unchanged layers: compositing cost); "viewer" is the GPU display path without readback;
+/// "auto" is Backend::Auto (Mercury GPU Acceleration) choosing per comp from measured times,
+/// warm; "up/dn MB" are the GPU's uploads / readbacks per warm GPU frame.
 fn bench_gpu(s: &Session, args: &Args) -> Result<(), Failure> {
     use effectcraft_render::Backend;
     let gpu = effectcraft_gpu::Gpu::headless().ok_or_else(|| Failure::Error("--gpu: no usable GPU adapter".into()))?;
@@ -796,6 +798,7 @@ fn bench_gpu(s: &Session, args: &Args) -> Result<(), Failure> {
     // Every comp, plus an adjustment-layer comp built for the benchmark (the main comp under a
     // full-frame adjustment layer with a GPU effect stack).
     let mut project = (*s.project).clone();
+    project.settings.gpu_acceleration = true;
     let comps: Vec<ItemId> = match args.opt("--comp") {
         Some(_) => s.active_comp_id().into_iter().collect(),
         None => {
@@ -807,8 +810,8 @@ fn bench_gpu(s: &Session, args: &Args) -> Result<(), Failure> {
     let project = &project;
     eprintln!("GPU: {} — median of {n} runs (ms/frame)", effectcraft_render::Accelerator::name(&gpu));
     eprintln!(
-        "{:<28} {:>5} {:>10} {:>9} {:>9} {:>9} {:>9} {:>9} {:>8} {:>9}",
-        "comp", "res", "size", "cpu cold", "gpu cold", "cpu warm", "gpu warm", "gpu view", "speedup", "gpu≠cpu"
+        "{:<28} {:>5} {:>10} {:>9} {:>9} {:>9} {:>9} {:>9} {:>8} {:>9} {:>9} {:>11}",
+        "comp", "res", "size", "cpu cold", "gpu cold", "cpu warm", "gpu warm", "gpu view", "speedup", "auto", "gpu≠cpu", "up/dn MB"
     );
     for cid in comps {
         let Some(comp) = project.comp(cid) else { continue };
@@ -833,8 +836,19 @@ fn bench_gpu(s: &Session, args: &Args) -> Result<(), Failure> {
                 std::hint::black_box(mk(Backend::Cpu, Some(&cache)));
             });
             let gcache = LayerCache::default();
+            let t0 = gpu.context().transfer_stats();
             let gpu_warm = time_ms(n, || {
                 std::hint::black_box(mk(Backend::Gpu, Some(&gcache)));
+            });
+            let t1 = gpu.context().transfer_stats();
+            let per = |b: u64| b as f64 / (n + 1) as f64 / (1u64 << 20) as f64;
+            let traffic = format!("{:.1}/{:.1}", per(t1.upload_bytes - t0.upload_bytes), per(t1.readback_bytes - t0.readback_bytes));
+            // Auto: warm-up frames on both sides, then the measured choice.
+            for _ in 0..2 * effectcraft_render::AutoPick::WARMUP {
+                std::hint::black_box(mk(Backend::Auto, Some(&gcache)));
+            }
+            let auto = time_ms(n, || {
+                std::hint::black_box(mk(Backend::Auto, Some(&gcache)));
             });
             let view = time_ms(n, || {
                 let mut r = Renderer::new(project, s.footage.as_ref(), RenderOpts { scale, backend: Backend::Gpu, ..Default::default() });
@@ -852,7 +866,7 @@ fn bench_gpu(s: &Session, args: &Args) -> Result<(), Failure> {
             let pct = 100.0 * off as f64 / a.data.len().max(1) as f64;
             let speedup = cpu_warm / gpu_warm.max(1e-9);
             eprintln!(
-                "{name:<28} {label:>5} {size:>10} {cpu_cold:>9.2} {gpu_cold:>9.2} {cpu_warm:>9.2} {gpu_warm:>9.2} {view:>9.2} {speedup:>7.2}x {pct:>8.3}%"
+                "{name:<28} {label:>5} {size:>10} {cpu_cold:>9.2} {gpu_cold:>9.2} {cpu_warm:>9.2} {gpu_warm:>9.2} {view:>9.2} {speedup:>7.2}x {auto:>9.2} {pct:>8.3}% {traffic:>11}"
             );
         }
     }

@@ -71,7 +71,7 @@ pub(crate) fn apply(e: &mut Enc, id: &str, ctx: &EffectCtx, b: GBuf) -> Option<G
 
 /// One `fxk_point` pass over `src`'s size.
 fn run(e: &mut Enc, p: &Params, src: &GpuImage, aux: Option<&GpuImage>, data: Option<&wgpu::Buffer>) -> GpuImage {
-    let out = e.image(src.width, src.height);
+    let out = e.scratch(src.width, src.height);
     e.pixels("fxk_point", p, src, aux, &out, data);
     out
 }
@@ -105,7 +105,7 @@ fn fitted(e: &mut Enc, ctx: &EffectCtx, b: &GBuf, id: &str, masks_and_effects: b
     data.extend((0..h).map(|y| (((y as f64 + 0.5 - b.offset[1]) * inv * sy + dy) * o.buf.scale + o.buf.offset[1]) as f32));
     let src = e.g.upload_image(&o.buf.img)?;
     let buf = e.data(&data);
-    let out = e.image(w, h);
+    let out = e.scratch(w, h);
     e.pixels("fxk_fit", &Params::default(), &src, None, &out, Some(&buf));
     Some(Some(out))
 }
@@ -272,7 +272,7 @@ fn advanced_spill(e: &mut Enc, ctx: &EffectCtx, b: GBuf) -> Option<GBuf> {
         let mut cur = b.img.clone();
         let mut first = true;
         while first || cur.width > 1 || cur.height > 1 {
-            let out = e.image(cur.width.div_ceil(16), cur.height.div_ceil(16));
+            let out = e.scratch(cur.width.div_ceil(16), cur.height.div_ceil(16));
             let mut rp = Params::default();
             rp.u[0][0] = first as u32;
             e.pixels("fxk_reduce", &rp, &cur, None, &out, None);
