@@ -18,6 +18,7 @@ filmcraft-h264enc = { workspace = true }
 filmcraft-prores = { workspace = true }
 filmcraft-aac = { workspace = true }
 filmcraft-isobmff = { workspace = true }
+effectcraft-opusenc = { workspace = true }
 image = { workspace = true, features = ["png", "jpeg", "tiff", "exr"] }
 gif = { workspace = true }
 rayon = { workspace = true }
@@ -28,3 +29,4 @@ log = { workspace = true }
 [dev-dependencies]
 effectcraft-media = { workspace = true }
 effectcraft-color = { workspace = true }
+filmcraft-opus = { workspace = true }
