@@ -836,6 +836,8 @@ fn bench_gpu(s: &Session, args: &Args) -> Result<(), Failure> {
                 std::hint::black_box(mk(Backend::Cpu, Some(&cache)));
             });
             let gcache = LayerCache::default();
+            // Traffic in steady state: after the frame that fills the layer cache.
+            std::hint::black_box(mk(Backend::Gpu, Some(&gcache)));
             let t0 = gpu.context().transfer_stats();
             let gpu_warm = time_ms(n, || {
                 std::hint::black_box(mk(Backend::Gpu, Some(&gcache)));

@@ -158,20 +158,20 @@ fn draw_layer(e: &mut Enc, r: &Renderer, ctx: &EvalCtx, layer: &Layer, canvas: &
     if r.track_matte(ctx, layer).is_some() || layer.preserve_transparency {
         let mut iso = e.zeros(w, h);
         for (b, m) in &st.passes {
-            iso = place(e, r, ctx, layer, b, &iso, *m, 1.0)?;
+            iso = place(e, r, ctx, layer, b, &iso, *m, 1.0, None)?;
         }
-        iso = place(e, r, ctx, layer, &st.body, &iso, BlendMode::Normal, 1.0)?;
+        iso = place(e, r, ctx, layer, &st.body, &iso, BlendMode::Normal, 1.0, None)?;
         return composite_iso(e, r, ctx, layer, iso, canvas, opacity);
     }
     let mut tmp = canvas.clone();
     if bl.knockout > 0 {
-        let k = place(e, r, ctx, layer, &st.content, &e.zeros(w, h), BlendMode::Normal, 1.0)?;
+        let k = place(e, r, ctx, layer, &st.content, &e.zeros(w, h), BlendMode::Normal, 1.0, None)?;
         tmp = ops::knockout(e, &tmp, &k);
     }
     for (b, m) in &st.passes {
-        tmp = place(e, r, ctx, layer, b, &tmp, *m, 1.0)?;
+        tmp = place(e, r, ctx, layer, b, &tmp, *m, 1.0, None)?;
     }
-    tmp = place(e, r, ctx, layer, &st.body, &tmp, layer.blend_mode, 1.0)?;
+    tmp = place(e, r, ctx, layer, &st.body, &tmp, layer.blend_mode, 1.0, None)?;
     *canvas = ops::channel_mix(e, canvas, &tmp, bl.channels, opacity);
     Some(())
 }
@@ -183,7 +183,7 @@ fn draw_adjustment(e: &mut Enc, r: &Renderer, ctx: &EvalCtx, layer: &Layer, canv
     let opacity = r.layer_opacity(ctx, layer);
     let Some(foot) = r.adjustment_footprint(ctx, layer) else { return Some(()) };
     let (w, h) = (canvas.width, canvas.height);
-    let matte = place(e, r, ctx, layer, &foot, &e.zeros(w, h), BlendMode::Normal, 1.0)?;
+    let matte = place(e, r, ctx, layer, &foot, &e.zeros(w, h), BlendMode::Normal, 1.0, None)?;
     let pipe = r.pipe();
     // Effects run in the working space, not the linear blending space.
     let below = match pipe.from_blend() {
@@ -206,11 +206,12 @@ fn draw_adjustment(e: &mut Enc, r: &Renderer, ctx: &EvalCtx, layer: &Layer, canv
 fn composite_layer(e: &mut Enc, r: &Renderer, ctx: &EvalCtx, layer: &Layer, buf: &Arc<Buf>, canvas: &mut GpuImage, opacity: f32) -> Option<()> {
     let matte = r.track_matte(ctx, layer).is_some();
     if !matte && !layer.preserve_transparency {
-        *canvas = place(e, r, ctx, layer, buf, canvas, layer.blend_mode, opacity)?;
+        // The comp is quantised after the layer (8/16 bpc) in the same pass.
+        *canvas = place(e, r, ctx, layer, buf, canvas, layer.blend_mode, opacity, r.pipe().levels)?;
         return Some(());
     }
     // Render in isolation, then matte / preserve transparency, then blend.
-    let iso = place(e, r, ctx, layer, buf, &e.zeros(canvas.width, canvas.height), BlendMode::Normal, 1.0)?;
+    let iso = place(e, r, ctx, layer, buf, &e.zeros(canvas.width, canvas.height), BlendMode::Normal, 1.0, None)?;
     composite_iso(e, r, ctx, layer, iso, canvas, opacity)
 }
 
@@ -222,31 +223,43 @@ fn composite_iso(e: &mut Enc, r: &Renderer, ctx: &EvalCtx, layer: &Layer, mut is
             && let Some(mb) = r.layer_buf(ctx, m)
         {
             let mo = ctx.opacity(m) as f32;
-            mimg = place(e, r, ctx, m, &mb, &mimg, BlendMode::Normal, mo)?;
+            mimg = place(e, r, ctx, m, &mb, &mimg, BlendMode::Normal, mo, None)?;
         }
         iso = ops::matte(e, &iso, &mimg, kind);
     }
     if layer.preserve_transparency {
         iso = ops::preserve(e, &iso, canvas);
     }
-    *canvas = ops::blend_full(e, canvas, &iso, layer.blend_mode, opacity, layer.id.0 as u32);
+    *canvas = ops::blend_full(e, canvas, &iso, layer.blend_mode, opacity, layer.id.0 as u32, r.pipe().levels);
     Some(())
 }
 
-/// Draw a processed layer buffer onto `target` (transform, motion blur sub-samples).
-fn place(e: &mut Enc, r: &Renderer, ctx: &EvalCtx, layer: &Layer, buf: &Arc<Buf>, target: &GpuImage, mode: BlendMode, opacity: f32) -> Option<GpuImage> {
+/// Draw a processed layer buffer onto `target` (transform, motion blur sub-samples), quantising
+/// the result to `levels` when set.
+#[allow(clippy::too_many_arguments)]
+fn place(
+    e: &mut Enc,
+    r: &Renderer,
+    ctx: &EvalCtx,
+    layer: &Layer,
+    buf: &Arc<Buf>,
+    target: &GpuImage,
+    mode: BlendMode,
+    opacity: f32,
+    levels: Option<f32>,
+) -> Option<GpuImage> {
     if buf.img.is_empty() || opacity <= 0.0 {
         return Some(target.clone());
     }
     let src = e.g.upload_buf(buf)?;
     let pl = r.placement(ctx, layer, buf);
     if let [m] = pl.matrices.as_slice() {
-        return Some(ops::warp(e, target, &src, m, pl.sampling, mode, opacity, pl.seed, None));
+        return Some(ops::warp_q(e, target, &src, m, pl.sampling, mode, opacity, pl.seed, None, levels));
     }
     let mut acc = e.zeros(target.width, target.height);
     let k = 1.0 / pl.matrices.len() as f32;
     for m in &pl.matrices {
         acc = ops::warp(e, &acc, &src, m, pl.sampling, BlendMode::Normal, 1.0, 0, Some(k));
     }
-    Some(ops::blend_full(e, target, &acc, mode, opacity, pl.seed))
+    Some(ops::blend_full(e, target, &acc, mode, opacity, pl.seed, levels))
 }

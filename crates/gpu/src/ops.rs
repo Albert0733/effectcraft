@@ -45,6 +45,24 @@ pub fn warp(
     seed: u32,
     accumulate: Option<f32>,
 ) -> GpuImage {
+    warp_q(e, dst, src, m, sampling, mode, opacity, seed, accumulate, None)
+}
+
+/// [`warp`], clamping and quantising the result to `levels` (8/16 bpc: the comp after a layer,
+/// in the same pass).
+#[allow(clippy::too_many_arguments)]
+pub fn warp_q(
+    e: &mut Enc,
+    dst: &GpuImage,
+    src: &GpuImage,
+    m: &Mat3,
+    sampling: Sampling,
+    mode: BlendMode,
+    opacity: f32,
+    seed: u32,
+    accumulate: Option<f32>,
+    levels: Option<f32>,
+) -> GpuImage {
     if src.width == 0 || src.height == 0 || opacity <= 0.0 {
         return dst.clone();
     }
@@ -79,20 +97,23 @@ pub fn warp(
     p.f[0] = r[0];
     p.f[1] = r[1];
     p.f[2] = r[2];
-    p.f[3] = [opacity, accumulate.unwrap_or(1.0), 0.0, 0.0];
+    p.f[3] = [opacity, accumulate.unwrap_or(1.0), levels.unwrap_or(0.0), 0.0];
     p.f[4] = [x0 as f32, y0 as f32, x1 as f32, y1 as f32];
-    let out = e.scratch(dst.width, dst.height);
+    let mut out = e.scratch(dst.width, dst.height);
     e.pixels("warp_blend", &p, &img, Some(dst), &out, None);
+    out.levels = levels;
     out
 }
 
-/// `Image::blend_from`: blend `src` (same size) onto `dst`.
-pub fn blend_full(e: &mut Enc, dst: &GpuImage, src: &GpuImage, mode: BlendMode, opacity: f32, seed: u32) -> GpuImage {
+/// `Image::blend_from`: blend `src` (same size) onto `dst`, clamping and quantising the result
+/// to `levels` when set (see [`warp_q`]).
+pub fn blend_full(e: &mut Enc, dst: &GpuImage, src: &GpuImage, mode: BlendMode, opacity: f32, seed: u32, levels: Option<f32>) -> GpuImage {
     let mut p = Params::default();
     p.u[0] = [mode_id(mode), 0, seed, 0];
-    p.f[0] = [opacity, 0.0, 0.0, 0.0];
-    let out = e.scratch(dst.width, dst.height);
+    p.f[0] = [opacity, levels.unwrap_or(0.0), 0.0, 0.0];
+    let mut out = e.scratch(dst.width, dst.height);
     e.pixels("blend_full", &p, src, Some(dst), &out, None);
+    out.levels = levels;
     out
 }
 
@@ -147,10 +168,15 @@ pub fn adjust_mix(e: &mut Enc, canvas: &GpuImage, adjusted: &GpuImage, matte: &G
 
 /// Clamp and quantise to `levels` steps (8/16 bpc).
 pub fn quantize(e: &mut Enc, img: &GpuImage, levels: f32) -> GpuImage {
+    // Quantising is idempotent: an image a fused kernel already quantised stays as it is.
+    if img.levels == Some(levels) {
+        return img.clone();
+    }
     let mut p = Params::default();
     p.f[0][0] = levels;
-    let out = e.scratch(img.width, img.height);
+    let mut out = e.scratch(img.width, img.height);
     e.pixels("quantize", &p, img, None, &out, None);
+    out.levels = Some(levels);
     out
 }
 

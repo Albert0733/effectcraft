@@ -33,7 +33,7 @@ fn warp_blend(@builtin(global_invocation_id) gid: vec3<u32>) {
         if ((flags & 2u) != 0u) {
             d = vec4<f32>(0.0);
         }
-        textureStore(out, vec2<i32>(x, y), d);
+        store_q(vec2<i32>(x, y), d, P.f[3].z);
         return;
     }
     let r0 = P.f[0];
@@ -52,7 +52,7 @@ fn warp_blend(@builtin(global_invocation_id) gid: vec3<u32>) {
         if (stencil && (flags & 1u) == 0u) {
             d = blend_pixel(mode, d, vec4<f32>(0.0), 0.5);
         }
-        textureStore(out, vec2<i32>(x, y), d);
+        store_q(vec2<i32>(x, y), d, P.f[3].z);
         return;
     }
     var s = sample(src, sampling, px, py);
@@ -60,11 +60,11 @@ fn warp_blend(@builtin(global_invocation_id) gid: vec3<u32>) {
         if (s.w > 0.0) {
             d = d + s * P.f[3].y;
         }
-        textureStore(out, vec2<i32>(x, y), d);
+        store_q(vec2<i32>(x, y), d, P.f[3].z);
         return;
     }
     if (s.w <= 0.0 && !stencil) {
-        textureStore(out, vec2<i32>(x, y), d);
+        store_q(vec2<i32>(x, y), d, P.f[3].z);
         return;
     }
     let op = P.f[3].x;
@@ -75,7 +75,7 @@ fn warp_blend(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (mode == 1u || mode == 2u) {
         n = hash_noise(u32(x), u32(y), seed);
     }
-    textureStore(out, vec2<i32>(x, y), blend_pixel(mode, d, s, n));
+    store_q(vec2<i32>(x, y), blend_pixel(mode, d, s, n), P.f[3].z);
 }
 
 // Blend `src` (same size) onto `aux` (Image::blend_from).
@@ -91,7 +91,7 @@ fn blend_full(@builtin(global_invocation_id) gid: vec3<u32>) {
     let d = textureLoad(aux, p, 0);
     var s = textureLoad(src, p, 0);
     if (s.w <= 0.0 && !is_stencil(mode)) {
-        textureStore(out, p, d);
+        store_q(p, d, P.f[0].y);
         return;
     }
     s = s * P.f[0].x;
@@ -99,7 +99,7 @@ fn blend_full(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (mode == 1u || mode == 2u) {
         n = hash_noise(gid.x, gid.y, P.u[0].z);
     }
-    textureStore(out, p, blend_pixel(mode, d, s, n));
+    store_q(p, blend_pixel(mode, d, s, n), P.f[0].y);
 }
 
 // Track matte: `src` × matte factor of `aux`. u[0].x = 0 alpha, 1 alpha inverted, 2 luma,
@@ -179,15 +179,27 @@ fn quantize(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (p.x >= dims.x || p.y >= dims.y) {
         return;
     }
-    let levels = P.f[0].x;
+    textureStore(out, p, quantize_px(textureLoad(src, p, 0), P.f[0].x));
+}
+
+fn quantize_px(s: vec4<f32>, levels: f32) -> vec4<f32> {
     let inv = 1.0 / levels;
-    let s = textureLoad(src, p, 0);
     let a = round_away(clamp(s.w, 0.0, 1.0) * levels) * inv;
     var o = vec4<f32>(0.0, 0.0, 0.0, a);
     o.x = round_away(clamp(s.x, 0.0, a) * levels) * inv;
     o.y = round_away(clamp(s.y, 0.0, a) * levels) * inv;
     o.z = round_away(clamp(s.z, 0.0, a) * levels) * inv;
-    textureStore(out, p, o);
+    return o;
+}
+
+// Store a compositing result, clamped and quantised to `levels` when > 0 (8/16 bpc: the comp
+// after a layer, fused into the layer's composite).
+fn store_q(p: vec2<i32>, v: vec4<f32>, levels: f32) {
+    if (levels > 0.0) {
+        textureStore(out, p, quantize_px(v, levels));
+    } else {
+        textureStore(out, p, v);
+    }
 }
 
 // Colour conversion on straight colour (render::color::convert).

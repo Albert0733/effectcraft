@@ -56,12 +56,15 @@ pub struct GpuImage {
     pub width: u32,
     pub height: u32,
     _lease: Option<Arc<Lease>>,
+    /// Already clamped and quantised to this many levels (8/16 bpc), so quantising again is a
+    /// no-op (see `ops::quantize`).
+    pub(crate) levels: Option<f32>,
 }
 
 impl GpuImage {
     /// An image on a texture of its own (not pooled).
     pub fn new(texture: wgpu::Texture, width: u32, height: u32) -> GpuImage {
-        GpuImage { texture, width, height, _lease: None }
+        GpuImage { texture, width, height, _lease: None, levels: None }
     }
 }
 
@@ -503,7 +506,7 @@ impl GpuContext {
         let was_reused = reused.is_some();
         let texture = reused.unwrap_or_else(|| self.texture(w, h));
         let lease = Arc::new(Lease { texture: texture.clone(), pool: Arc::downgrade(&self.pool) });
-        (GpuImage { texture, width: w, height: h, _lease: Some(lease) }, was_reused)
+        (GpuImage { texture, width: w, height: h, _lease: Some(lease), levels: None }, was_reused)
     }
 
     /// Uploads and readbacks so far (images; uploads of cached layers count once).
