@@ -818,6 +818,60 @@ impl Phys {
     }
 }
 
+impl Phys {
+    /// The backend description (per-step and per-spawn constants evaluated here, in f32).
+    pub(crate) fn desc(&self) -> crate::psim::EngineDesc {
+        let mut drag = self.resistance;
+        if self.anim == 3 {
+            drag += 3.0 * self.extra.max(0.1);
+        }
+        let dt = (1.0 / SPS) as f32;
+        crate::psim::EngineDesc {
+            life: self.life,
+            producer: self.producer,
+            radius: self.radius,
+            anim: self.anim,
+            speed: self.speed,
+            gravity: self.gravity,
+            axis: norm3(self.axis),
+            extra: self.extra,
+            cone: (self.extra_angle.to_radians() * 0.5).tan().abs().min(20.0),
+            damp: (-drag * dt).exp(),
+            seed: self.seed,
+            flat: self.flat,
+        }
+    }
+}
+
+/// The state at layer time `ctx.time` from the host's particle backend (GPU particles), or
+/// `None` (simulate on the CPU).
+fn accelerated(ctx: &EffectCtx, key: u64, phys: &Phys) -> Option<std::sync::Arc<PState>> {
+    let backend = ctx.env.host?.particles()?;
+    let steps = steps_at(ctx.time);
+    let births = crate::psim::births(phys.rate, steps, phys.max)?;
+    let req = crate::psim::SimRequest { key, steps, births: &births, system: crate::psim::ParticleSystem::Engine(phys.desc()) };
+    let parts = backend.simulate(&req)?;
+    Some(std::sync::Arc::new(PState {
+        parts: parts.into_iter().map(|q| Particle { p: q.p, v: q.v, age: q.age, life: q.life, rnd: q.rnd, id: q.id }).collect(),
+        carry: 0.0,
+        next_id: births.len() as u32,
+    }))
+}
+
+/// The live particles of a stepped particle effect (`ec.sim.ccparticleworld`,
+/// `ec.sim.ccparticlesystems2`) at `ctx.time`: from the host's particle backend when it has
+/// one (GPU particles), else from the CPU simulation. For comparing the two.
+pub fn particle_state(id: &str, ctx: &EffectCtx) -> Option<Vec<crate::psim::SimParticle>> {
+    let (phys, cache, salt) = match id {
+        "ec.sim.ccparticleworld" => (pw_phys(ctx), &PW_CACHE, 1),
+        "ec.sim.ccparticlesystems2" => (ps2_phys(ctx), &PS2_CACHE, 2),
+        _ => return None,
+    };
+    let key = params_key(ctx, &Buf { img: Image::new(0, 0), offset: [0.0; 2], scale: 1.0 }, salt);
+    let st = accelerated(ctx, key, &phys).unwrap_or_else(|| simulate(cache, key, ctx.time, &phys));
+    Some(st.parts.iter().map(|q| crate::psim::SimParticle { p: q.p, v: q.v, age: q.age, life: q.life, rnd: q.rnd, id: q.id }).collect())
+}
+
 /// Run a particle system to layer time `t` through `cache`.
 pub(crate) fn simulate(cache: &SimCache<PState>, key: u64, t: f64, phys: &Phys) -> std::sync::Arc<PState> {
     cache.run(key, steps_at(t), PState::default, |st, i| phys.step(st, i))
@@ -859,10 +913,10 @@ fn type_sprite(kind: u32, x: f32, y: f32, r: f32, c: [f32; 4], vx: f32, vy: f32,
 
 static PW_CACHE: SimCache<PState> = SimCache::new(6);
 
-fn particle_world(ctx: &EffectCtx, mut b: Buf) -> Buf {
+/// CC Particle World's physics.
+fn pw_phys(ctx: &EffectCtx) -> Phys {
     let pr = ctx.params;
-    let (lw, lh) = (ctx.layer_size[0] as f32, ctx.layer_size[1] as f32);
-    let phys = Phys {
+    Phys {
         rate: pr.f("birthRate").max(0.0) * 120.0,
         life: pr.f("longevity").max(0.0) as f32,
         producer: [pr.f("producer/producerX") as f32, pr.f("producer/producerY") as f32, pr.f("producer/producerZ") as f32],
@@ -882,11 +936,18 @@ fn particle_world(ctx: &EffectCtx, mut b: Buf) -> Buf {
         seed: (pr.f("extras/randomSeed") as u32).wrapping_mul(0x9e3779b9) ^ ctx.seed,
         max: 40_000,
         flat: false,
-    };
+    }
+}
+
+fn particle_world(ctx: &EffectCtx, mut b: Buf) -> Buf {
+    let pr = ctx.params;
+    let (lw, lh) = (ctx.layer_size[0] as f32, ctx.layer_size[1] as f32);
+    let phys = pw_phys(ctx);
     if phys.rate <= 0.0 && ctx.time <= 0.0 {
         return b;
     }
-    let st = simulate(&PW_CACHE, params_key(ctx, &Buf { img: Image::new(0, 0), offset: [0.0; 2], scale: 1.0 }, 1), ctx.time, &phys);
+    let key = params_key(ctx, &Buf { img: Image::new(0, 0), offset: [0.0; 2], scale: 1.0 }, 1);
+    let st = accelerated(ctx, key, &phys).unwrap_or_else(|| simulate(&PW_CACHE, key, ctx.time, &phys));
     let kind = pr.e("particle/particleType");
     let birth = pr.color("particle/birthColor");
     let death = pr.color("particle/deathColor");
@@ -936,13 +997,14 @@ fn particle_world(ctx: &EffectCtx, mut b: Buf) -> Buf {
 
 static PS2_CACHE: SimCache<PState> = SimCache::new(6);
 
-fn particle_systems2(ctx: &EffectCtx, mut b: Buf) -> Buf {
+/// CC Particle Systems II's physics.
+fn ps2_phys(ctx: &EffectCtx) -> Phys {
     let pr = ctx.params;
     let lh = ctx.layer_size[1] as f32;
     let unit = lh.max(1.0);
     let pos = pr.v2("producer/position");
     let dir = (pr.f("physics/direction") as f32).to_radians();
-    let phys = Phys {
+    Phys {
         rate: pr.f("birthRate").max(0.0) * 60.0,
         life: pr.f("longevity").max(0.0) as f32,
         producer: [pos[0] as f32 / unit, pos[1] as f32 / unit, 0.0],
@@ -958,8 +1020,16 @@ fn particle_systems2(ctx: &EffectCtx, mut b: Buf) -> Buf {
         seed: (pr.f("randomSeed") as u32).wrapping_mul(0x85ebca6b) ^ ctx.seed,
         max: 40_000,
         flat: true,
-    };
-    let st = simulate(&PS2_CACHE, params_key(ctx, &Buf { img: Image::new(0, 0), offset: [0.0; 2], scale: 1.0 }, 2), ctx.time, &phys);
+    }
+}
+
+fn particle_systems2(ctx: &EffectCtx, mut b: Buf) -> Buf {
+    let pr = ctx.params;
+    let lh = ctx.layer_size[1] as f32;
+    let unit = lh.max(1.0);
+    let phys = ps2_phys(ctx);
+    let key = params_key(ctx, &Buf { img: Image::new(0, 0), offset: [0.0; 2], scale: 1.0 }, 2);
+    let st = accelerated(ctx, key, &phys).unwrap_or_else(|| simulate(&PS2_CACHE, key, ctx.time, &phys));
     let kind = pr.e("particle/particleType");
     let birth = pr.color("particle/birthColor");
     let death = pr.color("particle/deathColor");

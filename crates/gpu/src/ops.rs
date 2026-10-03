@@ -134,6 +134,17 @@ pub fn channel_mix(e: &mut Enc, canvas: &GpuImage, tmp: &GpuImage, channels: [bo
     out
 }
 
+/// Adjustment layer finish: move `canvas` toward `adjusted` by `matte`'s alpha × `opacity`.
+pub fn adjust_mix(e: &mut Enc, canvas: &GpuImage, adjusted: &GpuImage, matte: &GpuImage, opacity: f32) -> GpuImage {
+    let (rows, stride) = e.image_rows(matte);
+    let mut p = Params::default();
+    p.u[0][0] = stride;
+    p.f[0][0] = opacity;
+    let out = e.image(canvas.width, canvas.height);
+    e.pixels("adjust_mix", &p, canvas, Some(adjusted), &out, Some(&rows));
+    out
+}
+
 /// Clamp and quantise to `levels` steps (8/16 bpc).
 pub fn quantize(e: &mut Enc, img: &GpuImage, levels: f32) -> GpuImage {
     let mut p = Params::default();

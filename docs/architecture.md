@@ -163,17 +163,31 @@ accelerator is attached and the project's renderer is the GPU). A GPU frame walk
 sampling (nearest, bilinear, Catmull-Rom bicubic, the same minification pre-filter), motion-blur
 sub-samples are accumulated, and track mattes, Preserve Transparency, layer style passes,
 knockout, all 38 blend modes (a WGSL port of `color::blend`), the 8/16 bpc clamp-and-quantise steps
-and colour-space conversions run on the GPU. 3D runs, adjustment layers and wireframes run on the
-CPU between GPU steps (read back, draw, upload). GPU effects (`effects::GPU_EFFECTS`: Gaussian,
-Fast Box and Directional Blur, Glow, Levels, Curves, Hue/Saturation, Tint, Fill, Gradient Ramp,
-Fractal Noise, Drop Shadow, Brightness & Contrast, Exposure, Invert, Transform) repeat the CPU
-effect's steps (padding, box radii, parameters) as kernels; consecutive GPU effects run as one
+and colour-space conversions run on the GPU. Classic 3D runs composite on the GPU too
+(`gpu::classic3d`): the render crate prepares the planes (`Renderer::prepare_3d_run`: layer buffers
+with their bokeh depth of field, homographies per motion-blur sub-sample, materials, lights, track
+mattes), the GPU packs the buffers into one atlas texture and one kernel does the per-pixel
+fragment sort (intersecting planes, coplanar stack order), Blinn-Phong lighting, ray-cast shadows
+against the caster planes (Shadow Diffusion, Light Transmission) and blending. Adjustment layers
+run their effect stacks on the GPU-resident comp (`Renderer::run_effects_on` with an `FxTarget`):
+runs of GPU effects stay on the device and only non-GPU effects read back and upload. Advanced 3D
+compositing and wireframes still run on the CPU between GPU steps (read back, draw, upload). GPU
+effects (`effects::GPU_EFFECTS`, 58 of them: blurs, colour, keying incl. Key Light, distortion,
+transitions, generators, noise and grain; see [effects.md](effects.md)) repeat the CPU effect's
+steps (padding, box radii, parameters, hashes) as kernels; consecutive GPU effects run as one
 chain with one upload and one readback. Tests render scenes on both paths and compare them
 (≤ 1/255 at 8 bpc, ≤ 1e-3 at 32 bpc); they skip without an adapter. The desktop viewer builds the
 `Gpu` on egui-wgpu's device and shows frames from GPU textures without reading them back
 (`ui-egui::frames`); headless renders, the CLI (unless `--gpu`) and CI use the CPU. On the web
 (WebGPU) the GPU composites viewer frames; steps that need a readback fall back to the CPU (the
-Info panel's pixel readout reads GPU frames back asynchronously).
+Info panel's pixel readout reads GPU frames back asynchronously). **GPU particles**
+(`effects::psim`, `gpu::particles`): CC Particle World, CC Particle Systems II and Particle
+Playground cannons without interacting forces evolve every particle independently, so the GPU
+backend (reached through `EffectHost::particles` when the GPU compositor is active) simulates one
+particle per invocation from the CPU's birth schedule and keeps per-key state checkpoints on the
+GPU, like `SimCache`; the CPU simulation stays the oracle (tests compare ids and positions).
+`effectcraft-cli bench --gpu` reports CPU vs GPU ms/frame, speed-up and pixel agreement for every
+comp plus an adjustment-layer comp.
 
 **Colour and bit depth** (`crates/render/src/color.rs`, `crates/color/src/space.rs`). Pixels are
 `f32`, but 8 and 16 bpc projects clamp and quantise each layer after its source and masks and

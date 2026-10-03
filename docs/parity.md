@@ -20,12 +20,11 @@ Animation 94%, Masks 94%, Preview 94%, Interface 93%, Shapes 93%, 3D 91%, Audio 
 Tracking 88%, Effects 85%, Web 65%.
 
 What is left, in priority order: the web app's depth (threads, storage, audio, non-blocking
-renders); stroke taper/wave and multi-segment dashes; variable mask feather points; camera iris/bokeh and focus-link commands; GPU
-rendering of 3D runs and adjustment layers; Render Queue field render, crop/resize and templates;
+renders); stroke taper/wave and multi-segment dashes; variable mask feather points; camera iris/bokeh and focus-link commands; Render Queue field render, crop/resize and templates;
 approximated effects (Subspace Warp, Key Cleaner) and Liquify's viewer brush; OpenType features and variable
 font axes; AI/EPS/PDF import; more codecs; 59 preferences not yet wired; ScriptUI;
 Lumetri Scopes, Footage, Media Browser and Metadata panels; Content-Aware Fill; face tracking; and
-the "better than After Effects" items (a plug-in API, branching history, GPU particles).
+the "better than After Effects" items (a plug-in API, branching history; GPU particles landed in M12.7).
 
 The sections below are the original audit (morning of 2 October, ≈ 64%) and its updates, kept for
 history.
@@ -120,11 +119,11 @@ the disk cache in the formats wave; the 3D Camera Tracker in M12.6.)
 | Text | ≈ 91% | 0.8 | no OpenType feature panel, no extruded strokes, variable-axis animation changes outlines but not advances (vertical Roman / Tate-Chu-Yoko, forced LTR paragraphs, caret on animated and path text, Variable Font Axes and Lottie style runs landed in M13.5; extruded, bevelled text in M7.6; per-character styles, paragraph settings, on-canvas editing and the `sourceText` style API in M9.9–M9.10) |
 | Web | 85% | 1.0 | viewer frames and Roto Brush propagation still on the page's thread; GPU effects in the browser (browser storage, Web Audio, Web Worker renders/analyses, WebGPU viewer and offline install landed in M15.2) |
 | 3D | 85% | 6.5 | multi-view layouts, iris shapes in Advanced 3D's depth of field, collapsed 3D precomps in Advanced 3D, the Extended Viewer; stereo rigs, orbit nulls, lights controlled by the camera, cameras/lights from glTF models, environment backgrounds, Advanced 3D motion blur, blend modes and track mattes landed in M7.7; Classic 3D iris-shaped bokeh with highlights, progressive depth of field on tilted layers and the focus-link commands landed in M13.5; Advanced 3D (glTF/OBJ models, primitives, extruded text and shapes, PBR, image-based light, shadow maps, GPU rasteriser) in M7.4–M7.6 |
-| Effects | ≈ 80% | 4.5 | GPU versions of more effects and the missing controls listed as partial in [effects.md](effects.md) (every After Effects effect exists since M9.11, M12.5 and M12.6; parameter names, order, twirl-downs, popups, units and defaults were aligned in M9.12) |
+| Effects | ≈ 80% | 4.0 | GPU versions of the remaining effects (58 run on the GPU since M12.7) and the missing controls listed as partial in [effects.md](effects.md) (every After Effects effect exists since M9.11, M12.5 and M12.6; parameter names, order, twirl-downs, popups, units and defaults were aligned in M9.12) |
 | Interface | 74% | 5.0 | a richer Learn area (Timeline outline and Project panel columns scroll horizontally, the Layer Style dialog, ROI resize handles, Pan Behind snapping and 3D Reference Axes landed in M13.5; native macOS menu bar, Timeline columns/search/reveal-add, Home screen with recent projects and all AE workspaces landed; viewer rulers/snapping/channels/snapshots landed in M0.13) |
 | Project | ≈ 68% | 5.5 | auto-save, folder moves, OCIO displays beyond the built-in tone map (Color Engine with OCIO/ACES working spaces, HDR compand/tone mapping, Rec. 2100 PQ/HLG output, Feet + Frames, display colour management, Simulate Output and the locked viewer landed in M7.7; proxies and Interpret Footage fields / pixel aspect / alpha guess landed: PRJ-8, PRJ-3) |
 | Masks & roto | 74% | 5.0 | Roto Brush's learned (3.0) segmentation model (variable-width mask feather points with the Mask Feather tool landed in M13.5; mask tracking and Mask Interpolation landed in M6.6; Roto Brush & Refine Edge with graph-cut segmentation, flow propagation, edge matting, decontamination and Freeze in M6.7) |
-| Preview | 62% | 5.0 | GPU 3D and adjustment layers (persistent disk cache with the blue cache bar landed; region of interest, snapshots, exposure and Fast Previews landed in M0.13) |
+| Preview | 66% | 4.0 | GPU bokeh depth of field, wireframes and Advanced 3D compositing (Classic 3D runs and adjustment layers composite on the GPU since M12.7; persistent disk cache with the blue cache bar landed; region of interest, snapshots, exposure and Fast Previews landed in M0.13) |
 | Tracking | ≈ 85% | 2.5 | face tracking, Subspace Warp's mesh warp, lens distortion in the camera solve (Rolling Shutter Repair landed in M9.11; point tracker, mask tracking, Warp Stabilizer and the 3D Camera Tracker landed in M6.x / M12.5 / M12.6) |
 | Paint | 0% | 4.0 | Brush, Clone Stamp, Eraser |
 
@@ -171,8 +170,8 @@ taper/wave, Advanced 3D's DOF has no iris shapes, and variable axes don't change
 1. ~~On-canvas text editing and per-character styles~~ (landed: M9.9–M9.10).
 2. Effect Controls widgets: angle dial, point crosshair, eyedropper, curves and levels editors.
 3. ~~Viewer basics: snapping, rulers, channel view, snapshots, exposure, a drawable region of interest.~~ (M0.13)
-4. ~~A GPU (wgpu) compositor, then GPU effects~~ (M12.2: 2D compositing and 16 GPU effects; 3D runs
-   and adjustment layers still composite on the CPU).
+4. ~~A GPU (wgpu) compositor, then GPU effects~~ (M12.2: 2D compositing and 16 GPU effects; M12.7:
+   Classic 3D runs, adjustment layers, 58 GPU effects and GPU particles).
 5. ~~Pen tool for shape paths, shape vertex editing, free transform~~ (M6.5); the Layer viewer.
 6. ~~Motion-path handles in the viewer; graph editor transform box and snapping.~~ (M5.8)
 7. Point tracking and stabilization (in progress).
