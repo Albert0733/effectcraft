@@ -14,6 +14,7 @@ pub mod frames;
 pub mod header;
 pub mod icons;
 pub mod menus;
+pub mod native_menu;
 pub mod panels;
 pub mod state;
 pub mod theme;
@@ -86,6 +87,11 @@ pub struct Hooks {
     pub pick_folder: Option<Box<dyn Fn() -> Option<String>>>,
     /// Save dialog for other file kinds: (default name, extension).
     pub pick_save_file: Option<Box<dyn Fn(&str, &str) -> Option<String>>>,
+    /// The system clipboard's text (native menu Edit ▸ Paste into a text field).
+    pub clipboard_text: Option<Box<dyn Fn() -> Option<String>>>,
+    /// Application actions the OS performs (`app.hide`, `app.hideOthers`, `app.showAll` on
+    /// macOS). Returns false when the host doesn't handle the id.
+    pub app_action: Option<Box<dyn Fn(&str) -> bool>>,
 }
 
 #[derive(Default)]

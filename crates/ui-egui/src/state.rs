@@ -360,6 +360,18 @@ pub struct TimelineState {
     /// Properties whose inline expression editor is collapsed.
     #[serde(default)]
     pub expr_closed: BTreeSet<u64>,
+    /// Visible optional columns (column header right-click ▸ Columns): `av`, `keys`, `label`,
+    /// `num`, `comment`, `switches`, `parent`, `in`, `out`, `duration`, `stretch`. The name
+    /// column is always shown; Modes follows `show_modes` (F4).
+    #[serde(default = "default_tl_columns")]
+    pub columns: BTreeSet<String>,
+    /// The name column shows Source Name instead of Layer Name (click its header).
+    #[serde(default)]
+    pub source_name: bool,
+}
+
+pub fn default_tl_columns() -> BTreeSet<String> {
+    ["av", "label", "num", "switches", "parent"].map(String::from).into_iter().collect()
 }
 
 fn value_graph() -> String {
@@ -391,6 +403,8 @@ impl Default for TimelineState {
             graph_reference: false,
             graph_transform_box: true,
             expr_closed: BTreeSet::new(),
+            columns: default_tl_columns(),
+            source_name: false,
         }
     }
 }

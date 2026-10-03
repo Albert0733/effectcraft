@@ -17,9 +17,6 @@ macro_rules! stub {
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
-        // macOS application menu items handled by the OS.
-        stub!("app.hideOthers", "Hide Others", [], "{}"),
-        stub!("app.showAll", "Show All", [], "{}"),
         // Render queue / export (export milestone).
         stub!("file.createProxy", "Create Proxy", [], "{kind: still|movie}"),
         // Proxies (no proxy model yet).

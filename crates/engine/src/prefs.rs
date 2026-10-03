@@ -115,6 +115,8 @@ page!(Appearance {
     use_label_color_for_tabs: bool = true,
     cycle_mask_colors: bool = true,
     use_gradients: bool = true,
+    /// macOS: draw the menu bar inside the window instead of the system menu bar.
+    in_window_menu_bar_mac: bool = false,
 });
 
 page!(Grids {
@@ -740,6 +742,8 @@ pub fn pages() -> Vec<Page> {
                 s("appearance.useLabelColorForTabs", "Use Label Color for Related Tabs", B, false),
                 s("appearance.cycleMaskColors", "Cycle Mask Colors", B, false),
                 s("appearance.useGradients", "Use Gradients", B, false),
+                Section("Menu Bar"),
+                s("appearance.inWindowMenuBarMac", "Use In-Window Menu Bar on macOS", B, true),
             ],
         },
         Page {
