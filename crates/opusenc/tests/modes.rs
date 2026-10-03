@@ -224,6 +224,38 @@ fn invalid_mode_bandwidth_panics() {
 }
 
 #[test]
+fn extreme_inputs_stay_decodable() {
+    let len = 24_000;
+    let mut s = 1u32;
+    let noise: Vec<f32> = (0..len)
+        .map(|_| {
+            s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (s >> 8) as f32 / (1u32 << 23) as f32 - 1.0
+        })
+        .collect();
+    let square: Vec<f32> = (0..len).map(|i| if (i / 60) % 2 == 0 { 0.999 } else { -0.999 }).collect();
+    let clicks: Vec<f32> = (0..len).map(|i| if i % 4_801 == 0 { 1.0 } else { 0.0 }).collect();
+    let dc = vec![0.7f32; len];
+    let nan: Vec<f32> = (0..len).map(|i| if i % 1000 == 0 { f32::NAN } else { 0.1 * (i as f32 * 0.01).sin() }).collect();
+    for (name, x) in [("noise", &noise), ("square", &square), ("clicks", &clicks), ("dc", &dc), ("nan", &nan)] {
+        for (mode, bw, rate) in
+            [(Mode::Silk, Bandwidth::Narrowband, 6_000u32), (Mode::Silk, Bandwidth::Wideband, 40_000), (Mode::Hybrid, Bandwidth::Fullband, 24_000)]
+        {
+            for c in [1usize, 2] {
+                let planar: Vec<Vec<f32>> = if c == 1 { vec![x.clone()] } else { vec![x.clone(), x.iter().map(|v| -0.5 * v).collect()] };
+                let (enc, packets) = encode(OpusEncoder::with_mode(c as u8, rate * c as u32, mode, bw), &planar);
+                assert!(packets.iter().all(|p| p.len() >= 3 && p.len() <= 1276), "{name} {mode:?}: packet sizes");
+                let dec = decode(&enc.opus_head(), &packets);
+                let peak = dec.iter().flatten().fold(0f32, |m, v| m.max(v.abs()));
+                let snr = if name == "nan" { f64::NAN } else { snr_search(&planar[0], &dec[0], 2).0 };
+                eprintln!("{name} {mode:?}/{bw:?} {c} ch: peak {peak:.2}, SNR {snr:.1} dB, {:.1} kb/s", bitrate(&packets) / 1000.0);
+                assert!(dec.iter().all(|ch| ch.iter().all(|v| v.is_finite() && v.abs() <= 4.0)), "{name} {mode:?}/{bw:?} {c} ch: bad output");
+            }
+        }
+    }
+}
+
+#[test]
 fn silk_and_hybrid_silence() {
     for (mode, bw, rate) in [(Mode::Silk, Bandwidth::Wideband, 16_000u32), (Mode::Hybrid, Bandwidth::Fullband, 32_000)] {
         let x = vec![0f32; 48_000];

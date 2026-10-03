@@ -4,9 +4,10 @@
 //! search), its NLSFs are quantised, and the excitation is chosen sample by sample by running
 //! the decoder's exact fixed-point reconstruction (LTP and LPC synthesis with the dequantised
 //! Q12/Q14 coefficients, quantisation offsets and the pseudo-random sign sequence), so the
-//! encoder always holds the decoder's state and there is no drift. A per-frame search over a
-//! gain offset hits the bit budget. Stereo input is coded as mid/side with the decoder's
-//! stereo prediction (§4.2.8). No LBRR, no NLSF interpolation, no noise shaping.
+//! encoder always holds the decoder's state and there is no drift. A noise-feedback loop
+//! shapes the coding noise with a bandwidth-expanded LPC envelope, and a per-frame search over
+//! a gain offset hits the bit budget. Stereo input is coded as mid/side with the decoder's
+//! stereo prediction (§4.2.8). No LBRR, no NLSF interpolation.
 
 pub(crate) mod analysis;
 pub(crate) mod lpc;
