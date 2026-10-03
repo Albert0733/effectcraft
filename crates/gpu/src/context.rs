@@ -318,6 +318,7 @@ impl GpuContext {
             include_str!("shaders/fx_transition.wgsl"),
             include_str!("shaders/fx_text.wgsl"),
             include_str!("shaders/fx_time.wgsl"),
+            include_str!("shaders/sky.wgsl"),
         ]
         .concat();
         let module =
@@ -381,6 +382,7 @@ impl GpuContext {
             .chain(crate::fx_transition::KERNELS)
             .chain(crate::fx_text::KERNELS)
             .chain(crate::fx_time::KERNELS)
+            .chain(crate::adv3d::SKY_KERNELS)
             .map(|e| (e, &layout))
             .chain(EXT_ENTRIES.iter().map(|e| (e, &layout_ext)))
             .map(|(e, layout)| {

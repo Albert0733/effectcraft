@@ -358,7 +358,7 @@ pub(crate) struct Post {
     dummy_out: wgpu::TextureView,
 }
 
-const KERNELS: &[&str] = &["resolve", "radius_of", "boost", "prefix_rows", "gather", "finish", "wire"];
+const KERNELS: &[&str] = &["resolve", "radius_of", "boost", "prefix_rows", "gather", "finish", "wire", "occlude"];
 
 impl Post {
     fn new(device: &wgpu::Device) -> Post {
@@ -544,7 +544,7 @@ fn read_buffer(e: &mut Enc, buf: &wgpu::Buffer, size: u64) -> Option<Vec<u8>> {
 
 /// A resolved run on the GPU: premultiplied linear (or working-space) colour and camera depth
 /// (`BIG` where nothing was drawn), one entry per output pixel.
-struct Resolved {
+pub(crate) struct Resolved {
     acc: wgpu::Buffer,
     depth: wgpu::Buffer,
     width: u32,
@@ -557,7 +557,7 @@ const BIG: f32 = 3.0e38;
 /// Rasterise every motion-blur sub-sample of a prepared run, resolve and average them, then
 /// apply the depth of field (`render_prepared`'s steps). `None` = can't run here (sizes,
 /// limits, or a depth of field without readback); `Some(None)` = nothing drawn.
-fn resolve_run(e: &mut Enc, prep: &Prepared) -> Option<Option<Resolved>> {
+pub(crate) fn resolve_run(e: &mut Enc, prep: &Prepared) -> Option<Option<Resolved>> {
     let (w, h) = prep.out;
     let g = e.g;
     if !g.fits(w, h) || (prep.dof.is_some() && !g.can_readback()) {
@@ -661,7 +661,7 @@ fn depth_of_field(e: &mut Enc, acc: &wgpu::Buffer, depth: &wgpu::Buffer, (w, h):
 }
 
 /// The resolved run as an image in the canvas's encoding, composited over `canvas` when given.
-fn finish(e: &mut Enc, r: &Resolved, encode: bool, canvas: Option<&GpuImage>) -> GpuImage {
+pub(crate) fn finish(e: &mut Enc, r: &Resolved, encode: bool, canvas: Option<&GpuImage>) -> GpuImage {
     let out = e.image(r.width, r.height);
     let ov = out.texture.create_view(&Default::default());
     let cv = canvas.map(|c| c.texture.create_view(&Default::default()));
@@ -702,6 +702,38 @@ pub(crate) fn draw_run(e: &mut Enc, prep: &Prepared, canvas: &GpuImage) -> Optio
         None => Some(canvas.clone()),
         Some(r) => Some(finish(e, &r, !prep.linear, Some(canvas))),
     }
+}
+
+/// A layer rendered on its own (`iso`), finished, and hidden where the run's main scene is
+/// nearer (`adv::draw_run`'s 2D compositing path).
+pub(crate) fn occluded(e: &mut Enc, iso: &Resolved, main: &Resolved, encode: bool) -> GpuImage {
+    let img = finish(e, iso, encode, None);
+    let (w, h) = (iso.width, iso.height);
+    let out = e.image(w, h);
+    let (iv, ov) = (img.texture.create_view(&Default::default()), out.texture.create_view(&Default::default()));
+    let b =
+        Binds { color: Some(&iv), bufs: [None, Some(&iso.depth), Some(&main.acc), None, Some(&main.depth), None, None], out: Some(&ov), ..Default::default() };
+    dispatch(e, "occlude", [w, h, 0, 0], [0.0; 4], b, pixel_groups(w, h));
+    out
+}
+
+/// Kernels of `sky.wgsl` (the shared compute module).
+pub(crate) const SKY_KERNELS: &[&str] = &["adv_sky"];
+
+/// An Environment Light Background layer drawn over `canvas` (`three_d::compose::draw_sky`).
+pub(crate) fn sky(e: &mut Enc, sky: &effectcraft_render::three_d::SkyDraw, canvas: &GpuImage) -> Option<GpuImage> {
+    let img = e.g.upload_buf(&sky.buf)?;
+    let f3 = |v: [f64; 3], w: f64| [v[0] as f32, v[1] as f32, v[2] as f32, w as f32];
+    let mut p = crate::context::Params::default();
+    p.f[0] = f3(sky.fwd, sky.zoom);
+    p.f[1] = f3(sky.right, sky.ortho as u32 as f64);
+    p.f[2] = [sky.down[0] as f32, sky.down[1] as f32, sky.down[2] as f32, sky.rotation];
+    let s = sky.scale;
+    p.f[3] = [(sky.roi.0 / s - sky.view.0 / 2.0) as f32, (sky.roi.1 / s - sky.view.1 / 2.0) as f32, (1.0 / s) as f32, sky.opacity];
+    p.f[4] = [img.width as f32, img.height as f32, 0.0, 0.0];
+    let out = e.scratch(canvas.width, canvas.height);
+    e.pixels("adv_sky", &p, canvas, Some(&img), &out, None);
+    Some(out)
 }
 
 /// Wireframe-quality layer outlines: `canvas` with `pixels` set to opaque white

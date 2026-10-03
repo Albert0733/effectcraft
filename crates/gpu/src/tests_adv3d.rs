@@ -356,7 +356,7 @@ fn gpu_compositor_draws_advanced_3d_runs_on_the_device() {
     let (share, max) = off_share(&cpu.data, &gimg.data);
     eprintln!("walk: {:.3} % beyond 1/255 (max {max:.4})", share * 100.0);
     assert!(share <= 0.01, "{:.3} % of pixels differ", share * 100.0);
-    // A blend mode in the run takes the CPU's 2D path (its scene still renders on the GPU).
+    // A blend mode in the run takes the 2D compositing path (`SplitRun`, also on the GPU).
     p.comp_mut(cid).unwrap().layers.iter_mut().find(|l| l.switches.three_d && !l.is_light() && l.source.is_av()).unwrap().blend_mode =
         effectcraft_color::BlendMode::Screen;
     let (ctx, run) = run_of(&p, cid);
@@ -439,4 +439,91 @@ fn gpu_environment_light_on_flat_extrusions_has_no_nan() {
     let nan = t.color.iter().filter(|c| c.iter().any(|x| !x.is_finite())).count();
     assert_eq!(nan, 0, "non-finite pixels");
     compare(&s, &g);
+}
+
+/// Advanced 3D runs whose layers take the 2D compositing path (blend modes, a 2D and a 3D track
+/// matte, Preserve Transparency) and environment backgrounds composite on the GPU: against the
+/// CPU compositor on the same (GPU) rasters they agree to float rounding; against the CPU
+/// rasteriser within the raster tolerance.
+#[test]
+fn gpu_compositor_draws_split_advanced_3d_runs_and_skies() {
+    let Some(g) = gpu() else { return };
+    for case in 0..10 {
+        let (mut p, cid) = scene_project();
+        if case >= 4 {
+            p.settings.bit_depth = effectcraft_project::BitDepth::Bpc32;
+        }
+        let classic = case >= 8;
+        let case = if classic { 3 } else { case % 4 };
+        if classic {
+            // Classic 3D: the sky on the GPU too, then the run's planes.
+            p.comp_mut(cid).unwrap().renderer = R3::Classic3D;
+        }
+        let bg = p.add_item("B", Default::default(), None, ItemKind::Solid(Solid { color: [0.1, 0.1, 0.15], width: 240, height: 160, pixel_aspect: 1.0 }));
+        let comp = p.comp(cid).unwrap().clone();
+        let l = build::layer(&mut p, &comp, "B", LayerSource::Solid { item: bg }, (240, 160), None);
+        p.comp_mut(cid).unwrap().layers.push(l);
+        // A varying environment image (so the sky's lookup shows; a CPU effect, so the frame's
+        // only readback is its own).
+        let mut next = p.next_id;
+        let spec = effectcraft_effects::find("ec.generate.lensflare").unwrap();
+        let ramp = effectcraft_effects::instantiate(spec, &mut build::Ids(&mut next), spec.name, [32.0, 16.0]);
+        p.next_id = next;
+        if case == 3 {
+            // A 2D track matte layer above the run.
+            let sid = p.add_item("M", Default::default(), None, ItemKind::Solid(Solid { color: [1.0, 1.0, 1.0], width: 120, height: 90, pixel_aspect: 1.0 }));
+            add(&mut p, cid, LayerSource::Solid { item: sid }, |m| {
+                m.switches.video = false;
+                set(m, "transform/rotation", Value::Scalar(20.0));
+            });
+        }
+        let c = p.comp_mut(cid).unwrap();
+        let env = c.layers.iter_mut().find(|l| l.environment).unwrap();
+        env.props.sub_mut("effects").unwrap().children.push(ramp.into());
+        let ids: Vec<_> = c.layers.iter().filter(|l| l.switches.three_d && !l.is_light() && !l.environment && l.source.is_av()).map(|l| l.id).collect();
+        let top = c.layers[0].id;
+        fn by_id(c: &mut Comp, id: effectcraft_project::LayerId) -> &mut effectcraft_project::Layer {
+            c.layers.iter_mut().find(|l| l.id == id).unwrap()
+        }
+        match case {
+            0 => by_id(c, ids[1]).blend_mode = effectcraft_color::BlendMode::Screen,
+            1 => {
+                // The card is a 3D track matte (luma) for the sphere; the torus multiplies.
+                let card = ids[0];
+                by_id(c, ids[1]).blend_mode = effectcraft_color::BlendMode::Multiply;
+                by_id(c, ids[2]).track_matte = Some(effectcraft_project::TrackMatte { layer: card, kind: effectcraft_project::MatteKind::Luma });
+                by_id(c, ids[0]).switches.video = false;
+            }
+            2 => {
+                // Preserve Transparency and an Overlay layer.
+                by_id(c, ids[0]).preserve_transparency = true;
+                by_id(c, ids[1]).blend_mode = effectcraft_color::BlendMode::Overlay;
+            }
+            _ => {
+                // An environment background behind the run, and the 2D track matte.
+                c.layers.iter_mut().find(|l| l.environment).unwrap().environment_background = true;
+                by_id(c, ids[0]).track_matte = Some(effectcraft_project::TrackMatte { layer: top, kind: effectcraft_project::MatteKind::Alpha });
+            }
+        }
+        let (ctx, run) = run_of(&p, cid);
+        let r0 = Renderer::new(&p, &NoFootage, RenderOpts::default());
+        if case < 3 {
+            assert!(r0.split_adv_run(&ctx, &run, (240, 160)).is_some(), "case {case}: split");
+        }
+        let cpu = r0.comp_frame(cid, Tick::ZERO);
+        let mut r = Renderer::new(&p, &NoFootage, RenderOpts { backend: effectcraft_render::Backend::Gpu, ..Default::default() });
+        r.accel = Some(&g);
+        // The CPU compositor on the GPU's rasters.
+        let hybrid = r.comp_frame_cpu(cid, Tick::ZERO);
+        let before = g.context().transfer_stats().readbacks;
+        let gimg = g.render(&r, cid, Tick::ZERO).expect("gpu walk");
+        // On the device end to end: the frame's own readback only (no CPU fallback).
+        assert_eq!(g.context().transfer_stats().readbacks - before, 1, "case {case}: readbacks");
+        let (share, max) = off_share(&hybrid.data, &gimg.data);
+        eprintln!("split case {case}: gpu walk vs cpu compositing {:.4} % beyond 1/255 (max {max:.4})", share * 100.0);
+        assert!(share <= 0.001, "case {case}: {:.3} % of pixels differ (max {max})", share * 100.0);
+        let (share, max) = off_share(&cpu.data, &gimg.data);
+        eprintln!("split case {case}: gpu vs cpu {:.3} % beyond 1/255 (max {max:.4})", share * 100.0);
+        assert!(share <= 0.015, "case {case}: {:.3} % of pixels differ from the CPU", share * 100.0);
+    }
 }

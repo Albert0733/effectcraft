@@ -1606,6 +1606,25 @@ impl<'a> Renderer<'a> {
         three_d::adv::prepare_run(self, ctx, run, out)
     }
 
+    /// A run of consecutive 3D layers of an Advanced 3D comp whose layers need the 2D
+    /// compositing path (blend mode, track matte, Preserve Transparency), split for an
+    /// accelerator's compositor ([`three_d::adv::SplitRun`]). `None` = [`Self::prepare_adv_run`]
+    /// covers it, or it isn't an Advanced 3D run.
+    pub fn split_adv_run<'p>(&'p self, ctx: &'p EvalCtx<'a>, run: &'p [&'p Layer], out: (u32, u32)) -> Option<three_d::adv::SplitRun<'p, 'a>> {
+        three_d::adv::split_run(self, ctx, run, out)
+    }
+
+    /// Whether the comp's 3D layers draw with the Advanced 3D renderer.
+    pub fn is_adv3d(&self, ctx: &EvalCtx) -> bool {
+        three_d::adv::active(self, ctx)
+    }
+
+    /// An Environment Light Background layer ready to draw on an accelerator
+    /// ([`three_d::SkyDraw`]; the CPU draws it in `draw_3d_run`). `None` = nothing to draw.
+    pub fn sky_draw(&self, ctx: &EvalCtx, layer: &Layer) -> Option<three_d::SkyDraw> {
+        three_d::compose::sky_draw(self, ctx, layer)
+    }
+
     /// The pixels a Wireframe-quality layer sets (white, opaque) on a `size` canvas: its
     /// bounds' outline, one pixel wide. Empty when the layer has no bounds.
     pub fn wireframe_pixels(&self, ctx: &EvalCtx, layer: &Layer, size: (u32, u32)) -> Vec<(u32, u32)> {
