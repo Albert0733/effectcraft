@@ -210,16 +210,28 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let name_w = (rect.width() * 0.40).clamp(120.0, 260.0);
     let label_x = rect.min.x + name_w + 14.0;
     let mut cols: Vec<(&'static str, &'static str, f32, f32)> = vec![("name", "Name", rect.min.x + 26.0, name_w - 26.0), ("label", "", label_x - 8.0, 18.0)];
-    let mut x = label_x + 16.0;
+    // Optional columns wider than the panel scroll horizontally under the frozen Name and Label
+    // columns (Shift+wheel / trackpad over the list, or the scroll bar under it).
+    let opt_x0 = label_x + 16.0;
+    let natural_end = opt_x0 + app.ui.project_columns.iter().filter_map(|k| COLUMNS.iter().find(|c| c.0 == k)).map(|c| c.2 + 4.0).sum::<f32>();
+    let overflow = (natural_end - rect.max.x + 4.0).max(0.0);
+    app.ui.project_hscroll = app.ui.project_hscroll.clamp(0.0, overflow);
+    let hscroll = app.ui.project_hscroll;
+    let mut x = opt_x0 - hscroll;
     for key in app.ui.project_columns.clone() {
         if let Some((k, l, w)) = COLUMNS.iter().find(|c| c.0 == key) {
             cols.push((k, l, x, *w));
             x += w + 4.0;
         }
     }
+    let opt_clip = |r: Rect| Rect::from_min_max(pos2(r.min.x.max(opt_x0 - 4.0), r.min.y), r.max);
     let hp = p.with_clip_rect(hdr);
     for (key, label, x, w) in &cols {
         let hr = Rect::from_min_size(pos2(x - 4.0, hdr.min.y), vec2(*w, hdr.height()));
+        let hr = if matches!(*key, "name" | "label") { hr } else { opt_clip(hr) };
+        if hr.width() <= 0.0 {
+            continue;
+        }
         let resp = ui.interact(hr.intersect(hdr), egui::Id::new(("proj-sort", *key)), Sense::click());
         hp.with_clip_rect(hr).text(pos2(*x, hdr.center().y), Align2::LEFT_CENTER, *label, Tokens::ui(11.0), if resp.hovered() { t.text } else { t.text_dim });
         if *key == "label" {
@@ -252,6 +264,29 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let footer_h = 28.0;
     let list = Rect::from_min_max(pos2(rect.min.x, hdr.max.y), pos2(rect.max.x, rect.max.y - footer_h));
     let lp = p.with_clip_rect(list);
+    if overflow > 0.0 && ui.rect_contains_pointer(list) {
+        let (dx, dy, shift) = ui.input(|i| (i.smooth_scroll_delta.x, i.smooth_scroll_delta.y, i.modifiers.shift));
+        let d = if dx.abs() > 0.0 {
+            dx
+        } else if shift {
+            dy
+        } else {
+            0.0
+        };
+        app.ui.project_hscroll = (app.ui.project_hscroll - d).clamp(0.0, overflow);
+    }
+    if overflow > 0.0 {
+        let track = Rect::from_min_max(pos2(opt_x0, list.max.y - 5.0), pos2(rect.max.x - 4.0, list.max.y - 1.0));
+        let tw = (track.width() * track.width() / (track.width() + overflow)).max(16.0);
+        let thumb = Rect::from_min_size(pos2(track.min.x + (track.width() - tw) * (hscroll / overflow), track.min.y), vec2(tw, track.height()));
+        let sresp = ui.interact(track.expand2(vec2(0.0, 2.0)), egui::Id::new("proj-hscroll"), Sense::drag());
+        p.rect_filled(track, 2.0, t.field_bg);
+        p.rect_filled(thumb, 2.0, if sresp.hovered() || sresp.dragged() { t.text_dim } else { t.text_faint });
+        app.auto.add("project.hscroll", track, &format!("{hscroll}/{overflow}"));
+        if sresp.dragged() {
+            app.ui.project_hscroll = (hscroll + sresp.drag_delta().x * overflow / (track.width() - tw).max(1.0)).clamp(0.0, overflow);
+        }
+    }
     let mut y = list.min.y;
     let query = app.ui.project_search.to_lowercase();
     let mut rows: Vec<(ItemId, usize)> = vec![];
@@ -390,7 +425,10 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         }
         // Optional columns.
         for (key, _, cx, w) in cols.iter().skip(2) {
-            let cell = Rect::from_min_size(pos2(*cx, r.min.y), vec2(*w, r.height())).intersect(list);
+            let cell = opt_clip(Rect::from_min_size(pos2(*cx, r.min.y), vec2(*w, r.height())).intersect(list));
+            if cell.width() <= 0.0 {
+                continue;
+            }
             let cp = lp.with_clip_rect(cell);
             let txt = match *key {
                 "type" => it.type_name().to_string(),

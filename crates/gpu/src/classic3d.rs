@@ -1,6 +1,6 @@
 //! Classic 3D runs on the GPU (`classic3d.wgsl`): the CPU prepares the planes
 //! ([`Renderer::prepare_3d_run`](effectcraft_render::Renderer::prepare_3d_run): layer buffers,
-//! homographies, materials, lights, track mattes), the GPU blurs depth of field, packs the
+//! homographies, materials, lights, track mattes, bokeh depth of field), the GPU packs the
 //! buffers into one atlas texture and runs the per-pixel depth sort, lighting, ray-cast shadows
 //! and blending of `render::three_d::compose` in one kernel.
 
@@ -136,22 +136,11 @@ pub(crate) fn draw_run(e: &mut Enc, run: &Run3d, canvas: &GpuImage) -> Option<Gp
     {
         return None;
     }
-    // Plane textures: the (cached) layer upload, depth-of-field blurred when asked.
+    // Plane textures: the layer uploads (cached per buffer; bokeh depth of field is already in
+    // them).
     let mut texs: Vec<(GpuImage, [f64; 2])> = Vec::with_capacity(run.planes.len());
     for p in &run.planes {
-        let mut img = e.g.upload_buf(&p.buf)?;
-        let mut off = p.buf.offset;
-        if let Some((sigma, pad)) = p.dof {
-            let (pw, ph) = (img.width + 2 * pad, img.height + 2 * pad);
-            if !e.g.fits(pw, ph) {
-                return None;
-            }
-            let padded = e.image(pw, ph);
-            e.copy_into(&img, &padded, pad, pad);
-            img = crate::effects::gaussian_blur(e, &padded, sigma, sigma, false);
-            off = [off[0] + pad as f64, off[1] + pad as f64];
-        }
-        texs.push((img, off));
+        texs.push((e.g.upload_buf(&p.buf)?, p.buf.offset));
     }
     let sizes: Vec<(u32, u32)> = texs.iter().map(|(t, _)| (t.width, t.height)).collect();
     let (aw, ah, pos) = pack(&sizes, e.g.max_dim)?;

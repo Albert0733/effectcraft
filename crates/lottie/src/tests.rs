@@ -280,6 +280,7 @@ fn shape_contents_roundtrip() {
                 in_tangents: vec![[0.0, 0.0], [-10.0, 0.0], [0.0, 0.0]],
                 out_tangents: vec![[0.0, 0.0], [10.0, 0.0], [0.0, 0.0]],
                 closed: true,
+                feather: Vec::new(),
             },
         );
         let grad = Gradient {
@@ -699,4 +700,28 @@ fn fixture_legacy_keyframes_and_masks() {
     assert_eq!(masks.len(), 2);
     assert!(matches!(masks[1].kind, GroupKind::Mask { mode: MaskMode::Subtract, inverted: true, .. }));
     assert!(not_blank(&q, c, s(0.9)));
+}
+
+#[test]
+fn text_style_runs_export_as_range_animators() {
+    let (mut p, cid) = setup();
+    let c = comp(&p, cid);
+    let mut l = build::layer(&mut p, &c, "Runs", LayerSource::Text, (c.width, c.height), None);
+    let mut doc = TextDoc { text: "Hello".into(), size: 30.0, fill: [1.0, 1.0, 1.0, 1.0], ..Default::default() };
+    doc.apply_style(1..3, |st| {
+        st.fill = [1.0, 0.0, 0.0, 1.0];
+        st.baseline_shift = 6.0;
+    });
+    l.props.prop_mut("text/sourceText").unwrap().value = Value::Text(Box::new(doc));
+    l.props.prop_mut("transform/position").unwrap().value = Value::Vec3([30.0, 60.0, 0.0]);
+    push(&mut p, cid, l);
+    let (q, nc, _, json) = roundtrip(&p, cid, &ExportOptions::default());
+    let a = &json["layers"][0]["t"]["a"][0];
+    assert_eq!(a["s"]["r"], json!(2), "{a}");
+    assert_eq!(a["s"]["s"]["k"], json!(1));
+    assert_eq!(a["s"]["e"]["k"], json!(3));
+    assert_eq!(a["a"]["fc"]["k"], json!([1.0, 0.0, 0.0, 1.0]));
+    assert_eq!(a["a"]["p"]["k"], json!([0.0, -6.0, 0.0]));
+    // Played back as an animator, it looks the same.
+    compare_renders(&p, cid, &q, nc, 2.0 / 255.0);
 }

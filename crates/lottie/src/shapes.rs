@@ -49,6 +49,7 @@ pub(crate) fn to_path(j: &Json) -> Option<Value> {
         out_tangents: fit(pts("o")),
         vertices,
         closed: o.get("c").and_then(Json::as_bool).unwrap_or(false),
+        feather: Vec::new(),
     }))
 }
 
@@ -137,11 +138,17 @@ fn stroke_fields(o: &mut Out) {
     o.raw("lc", json!(o.e("cap") + 1));
     o.raw("lj", json!(o.e("join") + 1));
     o.raw("ml", json!(o.f("miter")));
+    let used = |g: Option<&PropGroup>, m: &str| g.and_then(|g| g.get(m)).is_some_and(|p| p.is_animated() || p.value.as_f64().abs() > 1e-9);
+    let (taper, wave) = (o.g.sub("taper"), o.g.sub("wave"));
+    if used(taper, "startLength") || used(taper, "endLength") || used(wave, "amount") {
+        let msg = format!("{}: stroke Taper and Wave have no Lottie equivalent (uniform width exported)", o.label);
+        o.ex.warn(msg);
+    }
     if let Some(d) = o.g.sub("dashes") {
         let dash = d.get("dash").map(|p| p.value.as_f64()).unwrap_or(0.0);
         if dash > 0.0 || d.any_animated() {
             let mut list = vec![];
-            for (n, m) in [("d", "dash"), ("g", "gap"), ("o", "offset")] {
+            for (n, m) in [("d", "dash"), ("g", "gap"), ("d", "dash2"), ("g", "gap2"), ("d", "dash3"), ("g", "gap3"), ("o", "offset")] {
                 if let Some(p) = d.get(m) {
                     let v = export_prop(o.ex, p, &anim::num, &format!("{} ▸ Dashes ▸ {}", o.label, p.name));
                     list.push(json!({"n": n, "nm": p.name, "v": v}));

@@ -105,6 +105,7 @@ pub fn transform_path(p: &ShapePath, h: &trk::Homography) -> ShapePath {
         in_tangents: p.vertices.iter().zip(&p.in_tangents).map(|(v, t)| h.apply_tangent(*v, *t)).collect(),
         out_tangents: p.vertices.iter().zip(&p.out_tangents).map(|(v, t)| h.apply_tangent(*v, *t)).collect(),
         closed: p.closed,
+        feather: p.feather.clone(),
     }
 }
 

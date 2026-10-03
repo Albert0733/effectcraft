@@ -1042,13 +1042,51 @@ impl<'a> Renderer<'a> {
             * Mat3::translate(vec2(-buf.offset[0], -buf.offset[1]))
     }
 
-    /// Motion-blur sub-samples for a layer (1 = no motion blur).
-    fn mb_samples(&self, ctx: &EvalCtx, layer: &Layer) -> usize {
-        if self.opts.motion_blur && ctx.comp.enable_motion_blur && layer.switches.motion_blur {
-            if self.opts.draft { 4 } else { ctx.comp.motion_blur_samples.clamp(2, 64) as usize }
-        } else {
-            1
+    /// Whether a layer is motion blurred.
+    fn mb_on(&self, ctx: &EvalCtx, layer: &Layer) -> bool {
+        self.opts.motion_blur && ctx.comp.enable_motion_blur && layer.switches.motion_blur
+    }
+
+    /// Motion-blur sub-samples for a layer buffer (1 = no motion blur). As in After Effects, a 2D
+    /// layer gets about one sample per output pixel its corners travel during the shutter,
+    /// at least Samples Per Frame and at most the comp's Adaptive Sample Limit; a layer that
+    /// does not move within the shutter is drawn once.
+    fn mb_samples(&self, ctx: &EvalCtx, layer: &Layer, buf: &Buf) -> usize {
+        if !self.mb_on(ctx, layer) {
+            return 1;
         }
+        let travel = self.shutter_travel(ctx, layer, buf);
+        if travel < 1e-3 {
+            return 1;
+        }
+        if self.opts.draft {
+            return 4;
+        }
+        adaptive_samples(travel, ctx.comp.motion_blur_samples, ctx.comp.motion_blur_adaptive_limit)
+    }
+
+    /// Largest distance (output pixels) a corner of the layer buffer moves during the shutter,
+    /// measured along the path at a few points.
+    fn shutter_travel(&self, ctx: &EvalCtx, layer: &Layer, buf: &Buf) -> f64 {
+        let fd = ctx.comp.frame_duration().seconds();
+        let (angle, phase) = (ctx.comp.shutter_angle / 360.0, ctx.comp.shutter_phase / 360.0);
+        let (w, h) = (buf.img.width as f64, buf.img.height as f64);
+        let corners = [(0.0, 0.0), (w, 0.0), (0.0, h), (w, h), (w * 0.5, h * 0.5)];
+        const PROBES: usize = 8;
+        let mut prev: Option<Vec<effectcraft_geom::Vec2>> = None;
+        let mut travel = vec![0.0f64; corners.len()];
+        for i in 0..PROBES {
+            let f = phase + angle * i as f64 / (PROBES - 1) as f64;
+            let m = self.buf_matrix(&ctx.at(ctx.time + Tick::from_seconds_f64(f * fd)), layer, buf);
+            let pts: Vec<_> = corners.iter().map(|&(x, y)| m.apply(vec2(x, y))).collect();
+            if let Some(p) = &prev {
+                for (k, (a, b)) in p.iter().zip(&pts).enumerate() {
+                    travel[k] += (b.x - a.x).hypot(b.y - a.y);
+                }
+            }
+            prev = Some(pts);
+        }
+        travel.into_iter().fold(0.0, f64::max)
     }
 
     /// Canvas pixels that compositing `buf` for `layer` can change: the transformed buffer's
@@ -1058,7 +1096,7 @@ impl<'a> Renderer<'a> {
     /// A quantised buffer placed pixel-exactly (integer translation, Normal, 100%) over a blank
     /// canvas leaves exactly its own (quantised) pixels: nothing to re-quantise.
     fn footprint(&self, ctx: &EvalCtx, layer: &Layer, buf: &Buf, opacity: f32, blank: bool) -> Region {
-        if layer.blend_mode.is_stencil() || self.mb_samples(ctx, layer) > 1 {
+        if layer.blend_mode.is_stencil() || self.mb_samples(ctx, layer, buf) > 1 {
             return Region::Full;
         }
         let m = self.buf_matrix(ctx, layer, buf);
@@ -1093,7 +1131,7 @@ impl<'a> Renderer<'a> {
     /// How a processed layer buffer lands in the output: one buffer → output matrix, or one per
     /// motion-blur sub-sample (averaged), with the layer's sampling filter and dissolve seed.
     pub fn placement(&self, ctx: &EvalCtx, layer: &Layer, buf: &Buf) -> Placement {
-        let samples = self.mb_samples(ctx, layer);
+        let samples = self.mb_samples(ctx, layer, buf);
         let (sampling, seed) = (self.sampling(layer), layer.id.0 as u32);
         if samples <= 1 {
             return Placement { matrices: vec![self.buf_matrix(ctx, layer, buf)], sampling, seed };
@@ -1461,6 +1499,14 @@ pub fn blend_frames(mode: FrameBlend, a: &Image, b: &Image, w: f32) -> Image {
 }
 
 /// Convenience: render one frame of a comp with no footage source.
+/// Adaptive motion-blur sample count for a layer whose corners travel `travel` output pixels
+/// during the shutter: one sample per pixel, clamped to Samples Per Frame … Adaptive Sample Limit.
+pub fn adaptive_samples(travel: f64, per_frame: u32, limit: u32) -> usize {
+    let lo = per_frame.clamp(2, 64) as f64;
+    let hi = (limit.clamp(16, 256) as f64).max(lo);
+    travel.ceil().clamp(lo, hi) as usize
+}
+
 pub fn render_frame(project: &Project, comp: ItemId, t: Tick, scale: f64) -> Image {
     Renderer::new(project, &NoFootage, RenderOpts { scale, ..Default::default() }).comp_frame(comp, t)
 }

@@ -54,6 +54,8 @@ struct Edited {
     /// Layer → comp.
     m: Mat3,
     inv: Mat3,
+    /// Per caret position: static layout → animated / on-path character placement.
+    carets: Vec<Mat3>,
 }
 
 impl Edited {
@@ -111,7 +113,8 @@ fn edited(app: &EffectcraftApp, ectx: &EvalCtx, lid: LayerId) -> Option<Edited> 
     let lay = layout_doc(&doc);
     let m = super::viewer::l2c(ectx, &layer).0;
     let inv = m.inverse()?;
-    Some(Edited { layer, doc, lay, m, inv })
+    let carets = effectcraft_engine::render::text::caret_maps(ectx, &layer, lay.chars);
+    Some(Edited { layer, doc, lay, m, inv, carets })
 }
 
 /// The topmost text layer whose text is under screen point `s`.
@@ -494,7 +497,14 @@ fn draw(app: &mut EffectcraftApp, ui: &mut egui::Ui, painter: &egui::Painter, ma
         }
     }
     // Caret (blinking) and IME composition.
+    // The caret follows the animated layout and text on a path.
     let (a, b) = e.lay.caret(caret);
+    let cm = e.carets.get(caret).copied().unwrap_or(Mat3::IDENTITY);
+    let anim = |p: Point| {
+        let q = cm.apply(gv2(p.x, p.y));
+        Point::new(q.x, q.y)
+    };
+    let (a, b) = (anim(a), anim(b));
     let (sa, sb) = (to_s(a), to_s(b));
     let now = ui.input(|i| i.time);
     let preedit: Option<String> = ui.data(|d| d.get_temp(egui::Id::new("viewer-text-preedit")));

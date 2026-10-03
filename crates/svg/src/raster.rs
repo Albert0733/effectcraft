@@ -100,6 +100,8 @@ fn draw_shape(s: &Shape, m: Affine, opacity: f64, dst: &mut Image) {
             },
             miter: st.miter,
             dash: st.dash.clone(),
+            taper: None,
+            wave: None,
         };
         let cov = effectcraft_path::stroke_coverage(std::slice::from_ref(&path), &style, &mat3(m), w, h);
         paint(dst, &cov, &st.paint, (opacity * st.opacity) as f32, m, bbox);

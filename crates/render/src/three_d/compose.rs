@@ -62,9 +62,6 @@ pub(crate) struct Item<'a> {
     winv: Mat4,
     bounds: [f64; 4],
     bbox: [i64; 4],
-    /// Depth of field left to an accelerator: Gaussian sigma and padding (buffer pixels) of the
-    /// blur `buf` still needs (`None` = `buf` is final).
-    dof: Option<(f64, u32)>,
 }
 
 impl Item<'_> {
@@ -174,25 +171,20 @@ fn mb_samples(r: &Renderer, ctx: &EvalCtx, layer: &Layer) -> usize {
 }
 
 /// Prepare a layer (buffer, geometry, material). `None` when it shows nothing.
-pub(crate) fn prepare<'a>(r: &Renderer, ctx: &EvalCtx<'a>, layer: &'a Layer, order: usize, out: (u32, u32), in_run: bool, defer_dof: bool) -> Option<Item<'a>> {
+pub(crate) fn prepare<'a>(r: &Renderer, ctx: &EvalCtx<'a>, layer: &'a Layer, order: usize, out: (u32, u32), in_run: bool) -> Option<Item<'a>> {
     let buf = r.blend_layer_buf(ctx, layer)?;
-    prepare_with(r, ctx, layer, order, out, in_run, buf, Mat4::IDENTITY, defer_dof)
+    prepare_with(r, ctx, layer, order, out, in_run, buf, Mat4::IDENTITY)
 }
 
 /// Prepare a layer as planes: one per character for per-character 3D text, else one.
 pub(crate) fn prepare_all<'a>(r: &Renderer, ctx: &EvalCtx<'a>, layer: &'a Layer, order: usize, out: (u32, u32), in_run: bool) -> Vec<Item<'a>> {
-    prepare_all_opt(r, ctx, layer, order, out, in_run, false)
-}
-
-/// [`prepare_all`], optionally leaving the depth-of-field blur to an accelerator.
-fn prepare_all_opt<'a>(r: &Renderer, ctx: &EvalCtx<'a>, layer: &'a Layer, order: usize, out: (u32, u32), in_run: bool, defer_dof: bool) -> Vec<Item<'a>> {
     if crate::text::per_char_3d(ctx, layer) {
         return crate::text::per_char_planes(ctx, layer, r.opts.scale)
             .into_iter()
-            .filter_map(|(buf, m)| prepare_with(r, ctx, layer, order, out, in_run, r.to_blend(Arc::new(buf), None), m, defer_dof))
+            .filter_map(|(buf, m)| prepare_with(r, ctx, layer, order, out, in_run, r.to_blend(Arc::new(buf), None), m))
             .collect();
     }
-    prepare(r, ctx, layer, order, out, in_run, defer_dof).into_iter().collect()
+    prepare(r, ctx, layer, order, out, in_run).into_iter().collect()
 }
 
 /// Prepare a plane showing `buf`, whose space maps into the layer through `local`.
@@ -206,7 +198,6 @@ fn prepare_with<'a>(
     in_run: bool,
     mut buf: Arc<Buf>,
     local: Mat4,
-    defer_dof: bool,
 ) -> Option<Item<'a>> {
     if buf.img.is_empty() {
         return None;
@@ -216,38 +207,12 @@ fn prepare_with<'a>(
     let cam = camera_for(r, ctx);
     let outer = r.collapse3d.map_or(Mat4::IDENTITY, |c| c.world);
     let world = outer * ctx.world_matrix(layer) * local;
-    // Depth of field: blur the layer by its circle of confusion at its centre.
-    let mut bounds = buf_bounds(&buf);
-    let mut deferred = None;
+    // Depth of field: a bokeh blur by each buffer pixel's circle of confusion (constant for a
+    // layer facing the camera, progressive for a tilted one).
     if let Some(dof) = cam.dof.filter(|_| !ctx.comp.draft_3d && !r.opts.draft) {
-        let b = buf_bounds(&buf);
-        let centre = world.apply(vec3((b[0] + b[2]) * 0.5, (b[1] + b[3]) * 0.5, 0.0));
-        let z = cam.depth(centre);
-        let coc = dof.coc(z);
-        // Comp pixels on screen per layer pixel at that depth.
-        let k = cam.zoom / z.max(NEAR) * world.apply_vec(vec3(1.0, 0.0, 0.0)).length().max(1e-9);
-        let radius = coc * 0.5 / k * buf.scale;
-        if radius > 0.3 {
-            let sigma = radius / 1.5;
-            let pad = (sigma * 3.0).ceil() as u32 + 1;
-            if defer_dof {
-                let s = buf.scale.max(1e-9);
-                let (w, h) = ((buf.img.width + 2 * pad) as f64, (buf.img.height + 2 * pad) as f64);
-                let o = [buf.offset[0] + pad as f64, buf.offset[1] + pad as f64];
-                bounds = [-o[0] / s, -o[1] / s, (w - o[0]) / s, (h - o[1]) / s];
-                deferred = Some((sigma, pad));
-            } else {
-                let padded = buf.img.padded(pad);
-                // The (cached, shared) layer buffer stays untouched; the blurred copy is per frame.
-                buf = Arc::new(Buf {
-                    img: effectcraft_raster::gaussian_blur(&padded, sigma, sigma, false),
-                    offset: [buf.offset[0] + pad as f64, buf.offset[1] + pad as f64],
-                    scale: buf.scale,
-                });
-                bounds = buf_bounds(&buf);
-            }
-        }
+        buf = dof_blur(&cam, &dof, world, buf);
     }
+    let bounds = buf_bounds(&buf);
     let n = if in_run { mb_samples(r, ctx, layer) } else { 1 };
     let geos: Vec<Geo> = if n <= 1 {
         geo(&cam, world, bounds, comp, s, out).into_iter().collect()
@@ -286,8 +251,48 @@ fn prepare_with<'a>(
         winv: world.inverse().unwrap_or(Mat4::IDENTITY),
         bounds,
         bbox,
-        dof: deferred,
     })
+}
+
+/// Blur radius (buffer pixels) of every buffer pixel of a plane at `world` (layer → world), from
+/// its camera depth: the circle of confusion over the on-screen size of one layer pixel there.
+fn dof_radii(cam: &CameraState, dof: &super::camera::Dof, world: Mat4, buf: &Buf) -> Vec<f32> {
+    let s = buf.scale.max(1e-9);
+    let sx = world.apply_vec(vec3(1.0, 0.0, 0.0)).length().max(1e-9);
+    let (w, h) = (buf.img.width as usize, buf.img.height as usize);
+    let at = |x: f64, y: f64| cam.depth(world.apply(vec3((x - buf.offset[0]) / s, (y - buf.offset[1]) / s, 0.0)));
+    // Camera depth is affine across a plane.
+    let z0 = at(0.5, 0.5);
+    let (zx, zy) = (at(1.5, 0.5) - z0, at(0.5, 1.5) - z0);
+    let mut out = vec![0.0f32; w * h];
+    out.par_chunks_mut(w.max(1)).enumerate().for_each(|(y, row)| {
+        for (x, o) in row.iter_mut().enumerate() {
+            let z = z0 + zx * x as f64 + zy * y as f64;
+            if z <= super::camera::NEAR {
+                continue;
+            }
+            // coc · ½ / (zoom / z · sx) · scale
+            *o = (dof.coc(z) * 0.5 * z / (cam.zoom * sx) * s) as f32;
+        }
+    });
+    out
+}
+
+/// Depth of field for one plane: highlights boosted, then a bokeh-shaped blur by depth.
+fn dof_blur(cam: &CameraState, dof: &super::camera::Dof, world: Mat4, buf: Arc<Buf>) -> Arc<Buf> {
+    let radii = dof_radii(cam, dof, world, &buf);
+    let rmax = radii.iter().copied().fold(0.0f32, f32::max) as f64;
+    if rmax <= 0.3 {
+        return buf;
+    }
+    let a = dof.iris.aspect.clamp(0.01, 100.0).sqrt().max(1.0 / dof.iris.aspect.clamp(0.01, 100.0).sqrt());
+    let pad = (rmax * a).ceil() as u32 + 2;
+    let mut padded = buf.img.padded(pad);
+    super::bokeh::boost_highlights(&mut padded, &dof.highlight);
+    let pbuf = Buf { img: padded, offset: [buf.offset[0] + pad as f64, buf.offset[1] + pad as f64], scale: buf.scale };
+    let pr = dof_radii(cam, dof, world, &pbuf);
+    // The (cached, shared) layer buffer stays untouched; the blurred copy is per frame.
+    Arc::new(Buf { img: super::bokeh::progressive_blur(&pbuf.img, &dof.iris, &pr), offset: pbuf.offset, scale: pbuf.scale })
 }
 
 /// Screen-space track matte factor for a layer, or None.
@@ -351,7 +356,7 @@ pub(crate) fn draw_run(r: &Renderer, ctx: &EvalCtx, run: &[&Layer], canvas: &mut
         return;
     }
     let out = (canvas.width, canvas.height);
-    let g = gather(r, ctx, run, out, false);
+    let g = gather(r, ctx, run, out);
     let casters: Vec<&Item> = g.items.iter().chain(g.extra.iter()).filter(|i| i.mat.casts_shadows != 0 && !i.geos.is_empty()).collect();
     composite(canvas, &g.items, &g.lights, &casters, run[0].id.0 as u32);
     for l in run.iter().filter(|l| l.switches.quality == effectcraft_project::Quality::Wireframe) {
@@ -367,7 +372,7 @@ struct Gathered<'a> {
     lights: Vec<LightState>,
 }
 
-fn gather<'a>(r: &Renderer<'a>, ctx: &EvalCtx<'a>, run: &[&'a Layer], out: (u32, u32), defer_dof: bool) -> Gathered<'a> {
+fn gather<'a>(r: &Renderer<'a>, ctx: &EvalCtx<'a>, run: &[&'a Layer], out: (u32, u32)) -> Gathered<'a> {
     // A collapsed precomp's 3D layers are lit by the outer comp's lights.
     let lights = scene_lights(&r.collapse3d.map_or(*ctx, |c| c.parent));
     let mut items: Vec<Item> = run
@@ -378,9 +383,9 @@ fn gather<'a>(r: &Renderer<'a>, ctx: &EvalCtx<'a>, run: &[&'a Layer], out: (u32,
             // Stack order with room for a collapsed precomp's layers in between.
             let i = i * 1024;
             if let Some(item) = r.collapsed(ctx, l) {
-                return collapsed_items(r, ctx, l, item, i, out, defer_dof);
+                return collapsed_items(r, ctx, l, item, i, out);
             }
-            let mut its = prepare_all_opt(r, ctx, l, i, out, true, defer_dof);
+            let mut its = prepare_all(r, ctx, l, i, out, true);
             if !its.is_empty() {
                 let m = matte_for(r, ctx, l, out);
                 for it in &mut its {
@@ -400,7 +405,7 @@ fn gather<'a>(r: &Renderer<'a>, ctx: &EvalCtx<'a>, run: &[&'a Layer], out: (u32,
             .par_iter()
             .filter(|l| l.switches.three_d && l.has_video() && l.is_active_at(ctx.time) && !in_run.contains(&l.id) && !l.switches.adjustment)
             .filter(|l| Material::of(ctx, l).casts_shadows != 0)
-            .flat_map_iter(|l| prepare_all_opt(r, ctx, l, 0, out, false, defer_dof))
+            .flat_map_iter(|l| prepare_all(r, ctx, l, 0, out, false))
             .collect();
     }
     items.sort_by_key(|i| i.order);
@@ -418,7 +423,6 @@ fn collapsed_items<'a>(
     item: effectcraft_project::ItemId,
     order: usize,
     out: (u32, u32),
-    defer_dof: bool,
 ) -> Vec<Item<'a>> {
     let op = ctx.opacity(layer) as f32 * r.opacity_mul();
     let Some((sub, nctx)) = r.collapse_into(ctx, layer, item, op) else { return vec![] };
@@ -436,7 +440,7 @@ fn collapsed_items<'a>(
         if nctx.opacity(l) <= 0.0 {
             continue;
         }
-        let mut its = prepare_all_opt(&sub, &nctx, l, order + 1 + k.min(1022), out, true, defer_dof);
+        let mut its = prepare_all(&sub, &nctx, l, order + 1 + k.min(1022), out, true);
         if !its.is_empty() {
             let m = matte_for(&sub, &nctx, l, out);
             for it in &mut its {
@@ -644,11 +648,8 @@ pub struct Run3d {
 /// One plane of a [`Run3d`].
 #[derive(Clone, Debug)]
 pub struct Plane3d {
-    /// The layer buffer (blending space). When `dof` is set, the plane shows this buffer padded
-    /// by `dof.1` pixels on every side and Gaussian-blurred with sigma `dof.0`
-    /// (`raster::gaussian_blur`, no edge repeat).
+    /// The layer buffer (blending space; depth of field already applied).
     pub buf: Arc<Buf>,
-    pub dof: Option<(f64, u32)>,
     pub bicubic: bool,
     /// One per motion-blur sub-sample (equal weights).
     pub geos: Vec<Geo>,
@@ -678,7 +679,7 @@ pub(crate) fn gpu_run(r: &Renderer, ctx: &EvalCtx, run: &[&Layer], out: (u32, u3
     if ctx.comp.renderer == effectcraft_project::Renderer::Advanced3D && r.collapse3d.is_none() {
         return None;
     }
-    let g = gather(r, ctx, run, out, true);
+    let g = gather(r, ctx, run, out);
     let planes: Vec<Plane3d> = g
         .items
         .into_iter()
@@ -687,7 +688,6 @@ pub(crate) fn gpu_run(r: &Renderer, ctx: &EvalCtx, run: &[&Layer], out: (u32, u3
             layer_id: it.layer.id.0 as u32,
             mode: it.layer.blend_mode,
             buf: it.buf,
-            dof: it.dof,
             bicubic: it.bicubic,
             geos: it.geos,
             mat: it.mat,

@@ -195,7 +195,12 @@ pub struct Comp {
     pub markers: Vec<Marker>,
     pub shutter_angle: f64,
     pub shutter_phase: f64,
+    /// Samples Per Frame: the minimum motion-blur samples (and the count for 3D layers).
     pub motion_blur_samples: u32,
+    /// Adaptive Sample Limit (Composition Settings ▸ Advanced): the most samples a 2D layer gets
+    /// when it moves far within the shutter.
+    #[serde(default = "adaptive_limit_default")]
+    pub motion_blur_adaptive_limit: u32,
     #[serde(default)]
     pub renderer: Renderer,
     /// Comp switches (timeline toolbar).
@@ -231,6 +236,10 @@ fn yes() -> bool {
     true
 }
 
+fn adaptive_limit_default() -> u32 {
+    128
+}
+
 impl Comp {
     pub fn new(width: u32, height: u32, frame_rate: FrameRate, duration: Tick) -> Comp {
         Comp {
@@ -247,6 +256,7 @@ impl Comp {
             shutter_angle: 180.0,
             shutter_phase: -90.0,
             motion_blur_samples: 16,
+            motion_blur_adaptive_limit: 128,
             renderer: Renderer::Classic3D,
             hide_shy: false,
             enable_motion_blur: true,

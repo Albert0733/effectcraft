@@ -717,6 +717,8 @@ mod tests_stubs;
 #[cfg(test)]
 mod tests_styles;
 #[cfg(test)]
+mod tests_tail;
+#[cfg(test)]
 mod tests_text;
 #[cfg(test)]
 mod tests_text_edit;

@@ -6,10 +6,12 @@
 //! (for Merge Paths) in [`boolean`] and curve offsetting in [`offset`].
 
 pub mod boolean;
+pub mod feather;
 mod fit;
 pub mod interp;
 pub mod offset;
 pub mod ops;
+pub mod varstroke;
 
 use effectcraft_geom::Mat3;
 use effectcraft_keyframe::ShapePath;
@@ -73,7 +75,13 @@ pub fn from_kurbo(path: &BezPath) -> Vec<ShapePath> {
         match *el {
             PathEl::MoveTo(p) => {
                 flush(&mut cur, &mut out);
-                cur = Some(ShapePath { vertices: vec![[p.x, p.y]], in_tangents: vec![[0.0; 2]], out_tangents: vec![[0.0; 2]], closed: false });
+                cur = Some(ShapePath {
+                    vertices: vec![[p.x, p.y]],
+                    in_tangents: vec![[0.0; 2]],
+                    out_tangents: vec![[0.0; 2]],
+                    closed: false,
+                    feather: Vec::new(),
+                });
                 last = p;
             }
             PathEl::LineTo(p) => {
@@ -251,11 +259,22 @@ pub struct StrokeStyle {
     pub miter: f64,
     /// Dash pattern (dash, gap, …) and offset.
     pub dash: Option<(Vec<f64>, f64)>,
+    /// Stroke Taper (variable width at the ends).
+    pub taper: Option<varstroke::Taper>,
+    /// Stroke Wave (periodic width).
+    pub wave: Option<varstroke::Wave>,
+}
+
+impl StrokeStyle {
+    /// Whether the width varies along the path (Taper or Wave active).
+    pub fn is_variable(&self) -> bool {
+        self.taper.as_ref().is_some_and(|t| t.is_active()) || self.wave.as_ref().is_some_and(|w| w.is_active())
+    }
 }
 
 impl Default for StrokeStyle {
     fn default() -> Self {
-        StrokeStyle { width: 1.0, cap: Cap::Butt, join: Join::Miter, miter: 4.0, dash: None }
+        StrokeStyle { width: 1.0, cap: Cap::Butt, join: Join::Miter, miter: 4.0, dash: None, taper: None, wave: None }
     }
 }
 
@@ -263,6 +282,9 @@ impl Default for StrokeStyle {
 pub fn stroke_outline(paths: &[BezPath], style: &StrokeStyle, res_scale: f64) -> Option<BezPath> {
     if style.width <= 0.0 {
         return None;
+    }
+    if style.is_variable() {
+        return varstroke::outline(paths, style, res_scale);
     }
     let mut all = BezPath::new();
     for p in paths {
