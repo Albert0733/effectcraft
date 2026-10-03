@@ -176,6 +176,7 @@ pub(crate) fn render_frame(job: &Job, comp: &Comp, i: u64) -> Image {
         view: None,
         backend: effectcraft_render::Backend::Auto,
         roi: None,
+        proxy: job.settings.proxy_use,
     };
     let mut r = Renderer::new(job.project, job.footage, opts);
     r.expr = job.expr;

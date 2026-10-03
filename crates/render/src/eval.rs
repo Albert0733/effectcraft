@@ -120,6 +120,28 @@ impl<'a> EvalCtx<'a> {
 
     /// Local (parent-space) transform of a layer.
     pub fn local_matrix(&self, layer: &Layer) -> Mat4 {
+        self.local_matrix_par(layer, 1.0)
+    }
+
+    /// Source pixel aspect relative to the comp's: non-square footage (or solids, or precomps
+    /// with another pixel aspect) is stretched horizontally by this factor in the comp.
+    pub fn par_ratio(&self, layer: &Layer) -> f64 {
+        let par = match &layer.source {
+            LayerSource::Footage { item } | LayerSource::Solid { item } | LayerSource::Comp { item } => match self.project.item(*item).map(|i| &i.kind) {
+                Some(effectcraft_project::ItemKind::Footage(f)) => f.pixel_aspect,
+                Some(effectcraft_project::ItemKind::Solid(s)) => s.pixel_aspect,
+                Some(effectcraft_project::ItemKind::Comp(c)) => c.pixel_aspect,
+                _ => 1.0,
+            },
+            _ => 1.0,
+        };
+        let r = par / if self.comp.pixel_aspect > 0.0 { self.comp.pixel_aspect } else { 1.0 };
+        if r.is_finite() && r > 0.0 && (r - 1.0).abs() > 1e-9 { r } else { 1.0 }
+    }
+
+    /// [`Self::local_matrix`] with the source's pixel aspect folded into the scale (`par`; 1 for
+    /// a parent's matrix, which children don't inherit).
+    fn local_matrix_par(&self, layer: &Layer, par: f64) -> Mat4 {
         let Some(tr) = layer.transform() else { return Mat4::IDENTITY };
         let three = layer.is_3d();
         let pos = self.position(layer, tr);
@@ -130,6 +152,7 @@ impl<'a> EvalCtx<'a> {
         }
         let anchor = self.v3(layer, tr, "anchor", [0.0; 3]);
         let mut scale = self.v3(layer, tr, "scale", [100.0; 3]);
+        scale[0] *= par;
         if !three {
             scale[2] = 100.0;
             let a = Vec3::from([anchor[0], anchor[1], 0.0]);
@@ -154,7 +177,7 @@ impl<'a> EvalCtx<'a> {
 
     /// Layer space → comp (world) space, including parents.
     pub fn world_matrix(&self, layer: &Layer) -> Mat4 {
-        let mut m = self.local_matrix(layer);
+        let mut m = self.local_matrix_par(layer, self.par_ratio(layer));
         let mut cur = layer.parent;
         let mut guard = 0;
         while let Some(pid) = cur {

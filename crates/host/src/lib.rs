@@ -297,6 +297,59 @@ mod tests {
         assert!(px[1] > 0.99 && px[0] < 0.01, "the box is filled with the sampled green: {px:?}");
     }
 
+    /// Proxies through the real media and export layers: Render Settings ▸ Proxy Use decides
+    /// whether an export uses the proxy, and Create Proxy renders and attaches one.
+    #[test]
+    fn proxies_in_exports_and_create_proxy() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/test-out/host-proxy");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = |n: &str| dir.join(n).to_string_lossy().to_string();
+        let mut s = super::session();
+        // Source and proxy stills, written by the app itself.
+        s.execute("comp.new", json!({"name": "Red", "width": 16, "height": 16, "frameRate": 10, "duration": 1})).unwrap();
+        let red = s.active_comp_id().unwrap();
+        s.execute("layer.newSolid", json!({"color": "#ff0000"})).unwrap();
+        s.execute("comp.saveFrameAs", json!({"path": p("red.png")})).unwrap();
+        s.execute("comp.new", json!({"name": "Blue", "width": 8, "height": 8, "frameRate": 10, "duration": 1})).unwrap();
+        s.execute("layer.newSolid", json!({"color": "#0000ff"})).unwrap();
+        s.execute("comp.saveFrameAs", json!({"path": p("blue.png")})).unwrap();
+        let foot = s.execute("file.import", json!({"paths": [p("red.png")]})).unwrap()["items"][0].as_u64().unwrap();
+        s.execute("file.setProxy", json!({"item": foot, "path": p("blue.png")})).unwrap();
+        s.execute("comp.new", json!({"name": "Out", "width": 16, "height": 16, "frameRate": 10, "duration": 1})).unwrap();
+        let out = s.active_comp_id().unwrap();
+        s.execute("layer.addItem", json!({"item": foot})).unwrap();
+        // Export one frame with each Proxy Use.
+        for (name, using) in [("all", "use_all_[#].png"), ("none", "use_none_[#].png")] {
+            s.execute(
+                "renderQueue.add",
+                json!({"comp": out.0, "format": "png", "output": p(using), "timeSpan": "custom", "start": 0.0, "end": 0.1, "proxyUse": name}),
+            )
+            .unwrap();
+        }
+        s.execute("renderQueue.render", json!({"wait": true})).unwrap();
+        s.poll_render();
+        let centre = |s: &mut effectcraft_engine::Session, path: &str| {
+            let id = s.execute("file.import", json!({"paths": [path]})).unwrap()["items"][0].as_u64().unwrap();
+            s.execute("comp.new", json!({"name": "Probe", "width": 16, "height": 16, "frameRate": 10, "duration": 1})).unwrap();
+            s.execute("layer.addItem", json!({"item": id})).unwrap();
+            let c = s.active_comp_id().unwrap();
+            s.render(c, Default::default(), Default::default()).get(8, 8)
+        };
+        let all = centre(&mut s, &p("use_all_0.png"));
+        assert!(all[2] > 0.99 && all[0] < 0.01, "Use All Proxies renders the blue proxy: {all:?}");
+        let none = centre(&mut s, &p("use_none_0.png"));
+        assert!(none[0] > 0.99 && none[2] < 0.01, "Use No Proxies renders the red source: {none:?}");
+        // Create Proxy ▸ Still: rendered at half size and attached to the comp.
+        s.execute("file.createProxy", json!({"kind": "still", "comp": red.0, "path": p("red_proxy_[#####].png")})).unwrap();
+        s.execute("renderQueue.render", json!({"wait": true})).unwrap();
+        s.poll_render();
+        let px = s.project.item(red).unwrap().proxy.clone().expect("Create Proxy attached the rendered still");
+        assert!(px.enabled);
+        assert_eq!((px.footage.width, px.footage.height), (8, 8));
+        assert!(std::path::Path::new(&px.footage.path).exists(), "{}", px.footage.path);
+    }
+
     #[test]
     fn expression_syntax_errors_disable_the_expression() {
         let mut s = super::session();

@@ -11,7 +11,7 @@ mod effect;
 pub mod essential;
 pub mod expr_tools;
 mod file;
-mod file_more;
+pub(crate) mod file_more;
 mod frontend;
 mod help;
 mod key_transform;
@@ -29,6 +29,7 @@ pub mod paint;
 mod paths;
 mod project_items;
 mod prop;
+mod proxy;
 pub mod puppet;
 mod query;
 mod render_queue;
@@ -140,9 +141,15 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(settings::specs());
         v.extend(essential::specs());
         v.extend(expr_tools::specs());
+        v.extend(proxy::specs());
         v.extend(stubs::specs());
         v
     })
+}
+
+/// Set `footage` as the proxy of `item` (File ▸ Create Proxy's post-render action).
+pub(crate) fn proxy_set(s: &mut Session, item: ItemId, footage: effectcraft_project::Footage) -> Result<()> {
+    proxy::set_proxy_footage(s, &[item], footage)
 }
 
 /// (id, name) of the text animation presets.

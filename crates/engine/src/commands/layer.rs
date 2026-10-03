@@ -53,7 +53,7 @@ fn new_solid_like(s: &mut Session, p: &Value, adjustment: bool) -> Result<Value>
     let name = str_p(p, "name").map(str::to_string).unwrap_or(default_name);
     let id = s.edit(if adjustment { "New Adjustment Layer" } else { "New Solid" }, None, |proj, st| {
         let folder = solids_folder(proj);
-        let sid = proj.add_item(&name, Label::Red, Some(folder), ItemKind::Solid(Solid { color, width: w, height: h, pixel_aspect: 1.0 }));
+        let sid = proj.add_item(&name, Label::Red, Some(folder), ItemKind::Solid(Solid { color, width: w, height: h, pixel_aspect: comp.pixel_aspect }));
         let mut l = build::layer(proj, &comp, &name, LayerSource::Solid { item: sid }, (w, h), None);
         if adjustment {
             l.switches.adjustment = true;

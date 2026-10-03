@@ -419,6 +419,7 @@ impl EffectcraftApp {
             view: self.session.view_camera(comp),
             roi,
             backend: effectcraft_engine::render::Backend::Auto,
+            proxy: Default::default(),
         };
         if urgent {
             self.frames.request_urgent(&self.render_source(), key, comp, t, opts);

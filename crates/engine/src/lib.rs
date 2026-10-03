@@ -340,7 +340,8 @@ impl Session {
         let spec = commands::find(id).ok_or_else(|| EngineError::UnknownCommand(id.to_string()))?;
         if let Err(why) = (spec.enabled)(self) {
             // Explicit targets (agents, scripts) don't need a UI selection.
-            let explicit = ["layer", "layers", "prop", "keys"].iter().any(|k| params.get(k).is_some()) && commands::has_comp(self).is_ok();
+            let explicit = (["layer", "layers", "prop", "keys"].iter().any(|k| params.get(k).is_some()) && commands::has_comp(self).is_ok())
+                || ["item", "items"].iter().any(|k| params.get(k).is_some());
             if !explicit {
                 return Err(EngineError::Disabled(id.to_string(), why));
             }
@@ -600,6 +601,8 @@ mod tests_menu_cmds;
 mod tests_model3d;
 #[cfg(test)]
 mod tests_project_items;
+#[cfg(test)]
+mod tests_proxy;
 #[cfg(test)]
 mod tests_settings;
 #[cfg(test)]
