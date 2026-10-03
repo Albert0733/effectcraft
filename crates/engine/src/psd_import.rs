@@ -207,7 +207,7 @@ fn build_layer(proj: &mut Project, cx: &mut Ctx, comp: &Comp, n: &Node) -> Optio
         let mut ids = Ids(&mut proj.next_id);
         for (k, sp) in vm.subpaths.iter().enumerate() {
             let n = sp.knots.len();
-            let mut path = ShapePath { vertices: vec![], in_tangents: vec![], out_tangents: vec![], closed: sp.closed };
+            let mut path = ShapePath { vertices: vec![], in_tangents: vec![], out_tangents: vec![], closed: sp.closed, feather: Vec::new() };
             for kn in &sp.knots {
                 let v = [kn[1][0] - origin[0], kn[1][1] - origin[1]];
                 path.vertices.push(v);
