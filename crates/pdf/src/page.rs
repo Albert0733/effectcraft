@@ -922,12 +922,33 @@ impl<'a> Interp<'a> {
         let m = f.get(d, "Matrix").map(|m| affine(&f.nums(m))).unwrap_or(Affine::IDENTITY);
         let form_res = f.get_dict(d, "Resources").cloned().unwrap_or_else(|| res.clone());
         self.saved.push((self.gs.clone(), self.b.depth()));
-        self.gs.ctm *= m;
+        // A transparency group XObject (§11.6.6) composites as one object: the current alpha
+        // (and the blend-mode and soft-mask groups already open around it) apply to its
+        // result, and its contents start from the initial alpha.
         let bb = f.get(d, "BBox").map(|b| f.nums(b)).unwrap_or_default();
-        if bb.len() == 4 {
-            let r = kurbo::Rect::new(bb[0], bb[1], bb[2], bb[3]);
-            self.b.clip(self.gs.ctm * r.to_path(0.1), FillRule::NonZero);
+        let bbox_path = |ctm: Affine| (bb.len() == 4).then(|| ctm * m * kurbo::Rect::new(bb[0], bb[1], bb[2], bb[3]).to_path(0.1));
+        let mut clipped = false;
+        if let Some(tg) = f.get_dict(d, "Group").filter(|g| f.get(g, "S").and_then(Obj::name) == Some("Transparency")) {
+            let mut grp = Group::new("Transparency Group");
+            // The bounding box clips the group itself (its children stay its direct children,
+            // as knockout needs).
+            if let Some(p) = bbox_path(self.gs.ctm) {
+                grp.clip.push((p, FillRule::NonZero));
+                clipped = true;
+            }
+            grp.opacity = self.gs.fill_alpha;
+            grp.isolated = matches!(f.get(tg, "I"), Some(Obj::Bool(true)));
+            grp.knockout = matches!(f.get(tg, "K"), Some(Obj::Bool(true)));
+            self.b.open_group(grp);
+            self.gs.fill_alpha = 1.0;
+            self.gs.stroke_alpha = 1.0;
+            self.gs.blend_depth = None;
+            self.gs.mask_depth = None;
         }
+        if !clipped && let Some(p) = bbox_path(self.gs.ctm) {
+            self.b.clip(p, FillRule::NonZero);
+        }
+        self.gs.ctm *= m;
         let base = self.gs.ctm;
         let path = std::mem::take(&mut self.path);
         let (tm, tlm) = (self.tm, self.tlm);

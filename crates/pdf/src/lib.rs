@@ -194,4 +194,6 @@ pub fn layer_doc(doc: &Doc, index: usize) -> Doc {
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod tests_groups;
+#[cfg(test)]
 mod tests_shading;
