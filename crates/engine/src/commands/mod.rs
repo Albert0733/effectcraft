@@ -200,6 +200,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(stubs::specs());
         v.extend(crate::storage::specs());
         v.extend(crate::learn::specs());
+        v.extend(crate::templates::specs());
         v.extend(crate::preview::specs());
         v
     })

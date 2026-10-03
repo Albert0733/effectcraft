@@ -283,6 +283,8 @@ pub struct Prefs {
     pub recent_fonts: Vec<String>,
     /// Preview panel: every shortcut's options.
     pub preview: crate::preview::PreviewSettings,
+    /// View ▸ Simulate Output ▸ My Custom RGB.
+    pub custom_rgb: crate::viewer::CustomRgb,
     /// Top-level keys this version doesn't know (kept for newer versions).
     #[serde(flatten)]
     pub extra: Extra,
@@ -315,6 +317,7 @@ impl Default for Prefs {
             recent_presets: vec![],
             recent_fonts: vec![],
             preview: crate::preview::PreviewSettings::default(),
+            custom_rgb: crate::viewer::CustomRgb::default(),
             extra: Extra::new(),
         }
     }

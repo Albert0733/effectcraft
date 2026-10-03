@@ -221,3 +221,68 @@ fn feet_and_frames_display_and_entry() {
     assert_eq!(s.project.settings.time_display, TimeDisplayStyle::Frames);
     assert_eq!(serde_json::to_value(TimeDisplayStyle::Feet16).unwrap(), json!("Feet16"));
 }
+
+/// View ▸ Simulate Output ▸ My Custom RGB…: typed-in primaries/white/gamma or an ICC profile,
+/// kept in Settings.
+#[test]
+fn my_custom_rgb_simulation() {
+    let mut s = session();
+    s.config = Some(std::sync::Arc::new(crate::config::MemoryConfig::default()));
+    s.execute("file.projectSettings", json!({"workingSpace": "srgb"})).unwrap();
+    // The default definition: Rec. 709 primaries, D65, gamma 2.2.
+    let d = crate::viewer::CustomRgb::default();
+    assert_eq!((d.white, d.gamma), ([0.3127, 0.3290], 2.2));
+    // Rec. 709 / D65 / gamma 1.8 behaves exactly like Legacy Macintosh RGB.
+    s.execute("view.simulateOutput", json!({"profile": "mac18", "preserveRgb": true})).unwrap();
+    let mut a = px(128, 90, 200);
+    DisplayColor::of(&s).unwrap().apply(&mut a);
+    let r = s
+        .execute(
+            "view.customRgb",
+            json!({"name": "Old Mac", "red": [0.64, 0.33], "green": [0.30, 0.60], "blue": [0.15, 0.06], "white": [0.3127, 0.3290], "gamma": 1.8, "srgbCurve": false, "preserveRgb": true}),
+        )
+        .unwrap();
+    assert_eq!((r["name"].as_str(), r["active"].as_bool()), (Some("Old Mac"), Some(true)));
+    assert_eq!(s.state.viewer.simulation, Simulation { profile: SimProfile::MyCustom, preserve_rgb: true });
+    let mut b = px(128, 90, 200);
+    DisplayColor::of(&s).unwrap().apply(&mut b);
+    assert_eq!(a, b);
+    assert_eq!(crate::menus::checked(&s, "view.customRgb", &json!({})), Some(true));
+    assert_eq!(crate::menus::checked(&s, "view.simulateOutput", &json!({"profile": "myCustom"})), Some(true));
+    // Persisted in Settings.
+    let saved = s.config.as_ref().unwrap().read(crate::prefs::PREFS_FILE).unwrap();
+    assert!(saved.contains("\"customRgb\"") && saved.contains("Old Mac"), "{saved}");
+    // Start from a built-in profile.
+    s.execute("view.customRgb", json!({"from": "rec2020", "preserveRgb": false})).unwrap();
+    assert_eq!(s.prefs.custom_rgb.red, [0.708, 0.292]);
+    // An ICC profile: the primaries, white and curve come from the file.
+    let p3 = [[0.680, 0.320], [0.265, 0.690], [0.150, 0.060]];
+    let icc = effectcraft_color::icc::write_matrix_profile("Studio Monitor", p3, [0.3127, 0.3290], 2.4);
+    let path = std::env::temp_dir().join(format!("ec-custom-{}.icc", std::process::id()));
+    std::fs::write(&path, icc).unwrap();
+    let r = s.execute("view.customRgb", json!({"icc": path.to_string_lossy()})).unwrap();
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(r["name"], "Studio Monitor");
+    let c = s.prefs.custom_rgb.clone();
+    assert!((c.green[0] - 0.265).abs() < 1e-3 && (c.green[1] - 0.690).abs() < 1e-3, "{c:?}");
+    assert!((c.gamma - 2.4).abs() < 0.01 && !c.srgb_curve);
+    assert!(DisplayColor::of(&s).is_some());
+    // The same path again keeps typed-in edits; an empty path forgets the profile.
+    s.execute("view.customRgb", json!({"icc": c.icc, "gamma": 2.0})).unwrap();
+    assert_eq!(s.prefs.custom_rgb.gamma, 2.0);
+    s.execute("view.customRgb", json!({"icc": ""})).unwrap();
+    assert!(s.prefs.custom_rgb.icc.is_empty());
+    // Bad definitions are refused and change nothing.
+    let before = s.prefs.custom_rgb.clone();
+    assert!(s.execute("view.customRgb", json!({"red": [0.3, 0.6], "green": [0.3, 0.6]})).is_err());
+    assert!(s.execute("view.customRgb", json!({"gamma": 0.0})).is_err());
+    assert!(s.execute("view.customRgb", json!({"white": [1.2, 0.3]})).is_err());
+    assert!(s.execute("view.customRgb", json!({"icc": "/no/such/profile.icc"})).is_err());
+    assert_eq!(s.prefs.custom_rgb, before);
+    // Define without simulating it.
+    s.execute("view.simulateOutput", json!({"profile": "none"})).unwrap();
+    s.execute("view.customRgb", json!({"reset": true, "apply": false})).unwrap();
+    assert_eq!(s.state.viewer.simulation.profile, SimProfile::None);
+    assert_eq!(s.prefs.custom_rgb, crate::viewer::CustomRgb::default());
+    assert_eq!(s.execute("view.displayColor", json!({})).unwrap()["customRgb"]["gamma"], json!(2.2));
+}

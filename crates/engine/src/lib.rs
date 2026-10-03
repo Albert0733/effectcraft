@@ -36,6 +36,7 @@ mod session_settings;
 pub mod shortcuts;
 pub mod storage;
 pub mod sysinfo;
+pub mod templates;
 pub mod tracking;
 pub mod vector;
 pub mod viewer;

@@ -25,14 +25,14 @@ once.
 
 ## How far from full parity
 
-Measured feature by feature in [docs/parity.md](docs/parity.md) (3 October 2026):
+Measured feature by feature in [docs/parity.md](docs/parity.md) (3 October 2026, evening):
 
-- **≈ 94% of After Effects' features, weighted by importance**, counting partial features as half
-  done (≈ 98% with per-feature fractions): 80 of 92 features done, 12 partial, none missing; all
-  298 After Effects effects, every one implemented in full.
-- **≈ 19–22 agent-hours of work remain**: about **4–5 hours of wall-clock time** with five Claude
-  Opus 5.5 agents in parallel, ≈ 3 hours for the essentials and daily-use features.
-- Hardest remaining pieces: the web app's threading, wider GPU effect coverage, Advanced 3D
-  completion, and learned-model quality for Roto Brush and face tracking.
+- **≈ 98% of After Effects' features, weighted by importance**, counting partial features as half
+  done (≈ 99.6% with per-feature fractions): 87 of 92 features done, 5 partial, none missing; all
+  306 effects implemented in full, 166 of them on the GPU.
+- **≈ 9–11 agent-hours of work remain**: about **2–2.5 hours of wall-clock time** with five Claude
+  Opus 5.5 agents in parallel, ≈ 1.5 hours for the essentials and daily-use features.
+- What is left: more GPU effects, GPU effects and a disk cache in the web app, a template gallery
+  on the Home screen, and learned-model quality for Roto Brush and face tracking.
 
 Come tell us what matters most to you on [Discord](https://discord.gg/artcraft).

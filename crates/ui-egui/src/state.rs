@@ -605,6 +605,9 @@ pub struct UiState {
     /// The Home screen shows its Learn tab (tutorials) instead of the recent projects.
     #[serde(default)]
     pub home_learn: bool,
+    /// The Home screen shows its Templates tab (New from Template gallery).
+    #[serde(default)]
+    pub home_templates: bool,
     /// Align panel: Align Layers to Selection (off: to the composition).
     #[serde(default)]
     pub align_to_selection: bool,
@@ -677,6 +680,7 @@ impl Default for UiState {
             tool_creates_shape: true,
             start_screen: false,
             home_learn: false,
+            home_templates: false,
             align_to_selection: false,
             cache_when_idle: false,
             tracker_source: None,
