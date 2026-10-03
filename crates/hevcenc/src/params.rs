@@ -189,7 +189,7 @@ pub fn pps() -> Vec<u8> {
     w.put(0, 1); // dependent_slice_segments_enabled_flag
     w.put(0, 1); // output_flag_present_flag
     w.put(0, 3); // num_extra_slice_header_bits
-    w.put(0, 1); // sign_data_hiding_enabled_flag
+    w.put(1, 1); // sign_data_hiding_enabled_flag
     w.put(0, 1); // cabac_init_present_flag
     w.ue(0); // num_ref_idx_l0_default_active_minus1
     w.ue(0); // num_ref_idx_l1_default_active_minus1

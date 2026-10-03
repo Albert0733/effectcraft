@@ -216,6 +216,35 @@ fn odd_multiple_sizes_and_cropping() {
     }
 }
 
+/// White noise at QP 0: large levels, escape codes with the maximum Rice parameter.
+#[test]
+fn noise_low_qp() {
+    let (w, h) = (48, 40);
+    let mut seed = 0x1234_5678u32;
+    let mut rnd = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        seed
+    };
+    for (profile, bd) in [(Profile::Main, 8u32), (Profile::Main10, 10)] {
+        let max = (1u32 << bd) - 1;
+        let pics: Vec<Pic> = (0..3)
+            .map(|_| {
+                let mut p = synth(w, h, bd, 0, 0);
+                for v in p.y.iter_mut().chain(p.u.iter_mut()).chain(p.v.iter_mut()) {
+                    *v = (rnd() % (max + 1)) as u16;
+                }
+                p
+            })
+            .collect();
+        let run = encode(cfg(w as u32, h as u32, 0, 2, profile), &pics);
+        assert!(run.psnr_y.iter().all(|&p| p > 45.0), "{:?}", run.psnr_y);
+        check_filmcraft(&run, w, h);
+        check_ffmpeg(&run, w, h, bd, &format!("noise{bd}"));
+    }
+}
+
 /// High QPs: strong deblocking, large skipped CUs.
 #[test]
 fn high_qp_deblocking() {

@@ -563,7 +563,14 @@ impl<'a> FrameCoder<'a> {
         let off = self.coefs.len();
         self.coefs.resize(off + n * n, 0);
         let lv = &mut self.coefs[off..off + n * n];
+        let scan = match intra_mode {
+            Some(m) if log2 == 2 || (log2 == 3 && c == 0) => scan_idx_for_mode(m),
+            _ => 0,
+        };
         let nz = transform::quantize(&coef[..n * n], lv, n, qp, intra, self.bd) > 0;
+        if nz {
+            transform::sign_hiding(&coef[..n * n], lv, log2, scan as usize, qp, self.bd);
+        }
         if nz {
             let d = &mut r[..n * n];
             transform::dequantize(lv, d, n, qp, self.bd);
@@ -581,10 +588,6 @@ impl<'a> FrameCoder<'a> {
         if nz && c == 0 {
             self.fill(x, y, n, |b| b.flags |= F_CBF);
         }
-        let scan = match intra_mode {
-            Some(m) if log2 == 2 || (log2 == 3 && c == 0) => scan_idx_for_mode(m),
-            _ => 0,
-        };
         self.tbs.push(Tb { c: c as u8, lx: lpos.0 as u32, ly: lpos.1 as u32, log2, nz, off, scan });
     }
 
@@ -1313,8 +1316,16 @@ fn residual_coding<S: Sink>(s: &mut S, lv: &[i32], log2: u32, c: usize, scan_idx
             gt2 = (abs_at(k) > 2) as u32;
             s.decision(GT2 + ctx_set + if c > 0 { 4 } else { 0 }, gt2);
         }
-        for k in 0..nsig {
+        // sign data hiding: the sign of the first coefficient in scan order (sig[nsig - 1]) is
+        // inferred from the parity of the sum of absolute levels
+        let hidden = sig[0] as i32 - sig[nsig - 1] as i32 > 3;
+        let nsigns = if hidden { nsig - 1 } else { nsig };
+        for k in 0..nsigns {
             s.bypass((at(xs, ys, sig[k] as usize) < 0) as u32);
+        }
+        if hidden {
+            let sum: u32 = (0..nsig).map(abs_at).sum();
+            debug_assert_eq!(at(xs, ys, sig[nsig - 1] as usize) < 0, sum & 1 == 1, "sign hiding parity");
         }
         let mut rice = 0u32;
         for k in 0..nsig {

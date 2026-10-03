@@ -193,6 +193,56 @@ pub fn quantize(c: &[i32], l: &mut [i32], n: usize, qp: i32, intra: bool, bit_de
     nz
 }
 
+/// Sign data hiding (7.3.8.11 signHidden): in every 4x4 sub-block whose first and last non-zero
+/// coefficients (in scan order) are more than 3 positions apart, the sign of the first one is not
+/// coded but inferred from the parity of the sum of absolute levels. Fix the parity where needed by
+/// the +-1 level change that adds the least quantisation error, without moving the first / last
+/// non-zero positions.
+pub fn sign_hiding(c: &[i32], l: &mut [i32], log2: u32, scan_idx: usize, qp: i32, bit_depth: u32) {
+    use crate::tables::{SCAN_4, scan_order};
+    let n = 1usize << log2;
+    let tshift = 15 - bit_depth as i32 - log2 as i32;
+    let qbits = 14 + qp / 6 + tshift;
+    let scale = QUANT_SCALE[(qp % 6) as usize];
+    let sb_scan = scan_order(log2 - 2, scan_idx);
+    let pos = &SCAN_4[scan_idx];
+    for &(xs, ys) in sb_scan {
+        let idx = |p: usize| (ys as usize * 4 + pos[p].1 as usize) * n + xs as usize * 4 + pos[p].0 as usize;
+        let (Some(first), Some(last)) = ((0..16).find(|&p| l[idx(p)] != 0), (0..16).rev().find(|&p| l[idx(p)] != 0)) else { continue };
+        if last - first <= 3 {
+            continue;
+        }
+        let sum: i32 = (0..16).map(|p| l[idx(p)].abs()).sum();
+        let negative = l[idx(first)] < 0;
+        if negative == (sum & 1 == 1) {
+            continue;
+        }
+        // cost of +-1 changes in 1/256 units of quantisation error
+        let mut best: Option<(i64, usize, i32)> = None;
+        for p in first..=last {
+            let i = idx(p);
+            let q = (c[i] as i64).abs() * scale >> (qbits - 8);
+            let a = l[i].abs() as i64;
+            let err = |lv: i64| (q - (lv << 8)).abs();
+            let mut consider = |cost: i64, d: i32| {
+                if best.is_none_or(|b| cost < b.0) {
+                    best = Some((cost, i, d));
+                }
+            };
+            if a < 32767 && (a > 0 || (p > first && p < last)) {
+                consider(err(a + 1) - err(a), 1);
+            }
+            if a > 1 || (a == 1 && p > first && p < last) {
+                consider(err(a - 1) - err(a), -1);
+            }
+        }
+        if let Some((_, i, d)) = best {
+            let a = l[i].abs() + d;
+            l[i] = if c[i] < 0 { -a } else { a };
+        }
+    }
+}
+
 /// Scaling process (8.6.2 / 8.6.3, flat scaling matrix): levels to scaled coefficients.
 pub fn dequantize(l: &[i32], d: &mut [i32], n: usize, qp: i32, bit_depth: u32) {
     let log2 = n.trailing_zeros();
