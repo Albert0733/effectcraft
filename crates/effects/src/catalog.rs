@@ -20,7 +20,6 @@ pub const PARTIAL: &[(&str, &str)] = &[
     ("ec.distort.reshape", "no correspondence points"),
     ("ec.distort.rollingshutterrepair", "Pixel Motion Detail has no effect"),
     ("ec.generate.advancedlightning", "no Alpha Obstacle; most Expert Settings missing"),
-    ("ec.generate.radiowaves", "no Image Contours or Mask wave types, Parameters Are Set At, reflection or stroke profile"),
     ("ec.generate.scribble", "no caps, joins or Start/End Apply To"),
     ("ec.generate.cellpattern", "HQ variants render like the standard ones"),
     ("ec.key.innerouter", "one additional mask per side; no cleanup strokes"),

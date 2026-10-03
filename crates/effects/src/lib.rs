@@ -269,6 +269,11 @@ pub trait EffectHost: Sync {
     fn comp_scene(&self) -> Option<CompScene> {
         None
     }
+    /// The running effect's own parameters evaluated at another **layer time** (Radio Waves'
+    /// Parameters Are Set At: Birth). `None` when unavailable.
+    fn params_at(&self, _layer_time: f64) -> Option<Params> {
+        None
+    }
 }
 
 /// Extra context the renderer may supply (all optional; `Default` is "nothing known").
@@ -615,6 +620,8 @@ pub const PARAM_GROUPS: &[(&str, &str)] = &[
     ("polygon", "Polygon"),
     ("waveMotion", "Wave Motion"),
     ("waveStroke", "Stroke"),
+    ("imageContour", "Image Contour"),
+    ("waveMask", "Mask"),
     ("coreSettings", "Core Settings"),
     ("glowSettings", "Glow Settings"),
     ("expertSettings", "Expert Settings"),

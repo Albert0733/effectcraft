@@ -349,60 +349,275 @@ fn outline_dist(pts: &[(f64, f64)], dx: f64, dy: f64) -> f64 {
     best
 }
 
+/// Radio Waves' Wave Type options.
+const RW_TYPES: [&str; 3] = ["Polygon", "Image Contours", "Mask"];
+/// Radio Waves' Stroke Profile options.
+const RW_PROFILES: [&str; 7] = ["Square", "Taper Front", "Taper Back", "Taper Both", "Sine", "Sawtooth Out", "Sawtooth In"];
+/// Image Contour's Value Channel options.
+const RW_CHANNELS: [&str; 8] = ["Red", "Green", "Blue", "Alpha", "Luminance", "Hue", "Lightness", "Saturation"];
+
+/// Stroke Profile weight across the stroke: `u` from −1 (inner edge) to 1 (outer edge).
+fn rw_profile(kind: u32, u: f64) -> f64 {
+    let u = u.clamp(-1.0, 1.0);
+    match kind {
+        1 => (1.0 - u) * 0.5,
+        2 => (1.0 + u) * 0.5,
+        3 => 1.0 - u.abs(),
+        4 => (u * PI * 0.5).cos(),
+        5 if u < 0.0 => 1.0 + u,
+        6 if u > 0.0 => 1.0 - u,
+        _ => 1.0,
+    }
+}
+
+/// Fold a coordinate into `[lo, hi]` by bouncing off the ends (Reflection).
+fn reflect(v: f64, lo: f64, hi: f64) -> f64 {
+    let span = hi - lo;
+    if span <= 0.0 {
+        return lo;
+    }
+    let t = (v - lo).rem_euclid(2.0 * span);
+    lo + if t > span { 2.0 * span - t } else { t }
+}
+
+/// The source shape of a contour wave: signed distance (buffer px, negative inside) on the
+/// buffer grid, and the point of the shape that sits on the Producer Point.
+struct Contour {
+    sdf: Plane,
+    anchor: (f64, f64),
+}
+
+/// Image Contours: the region of the source layer whose Value Channel passes Value Threshold.
+fn image_contour(ctx: &EffectCtx, b: &Buf) -> Option<Contour> {
+    let pr = ctx.params;
+    let lp = ctx.layer_param("imageContour/sourceLayer", true)?;
+    let img = crate::util::fit_layer(ctx, b, &lp, false);
+    let (w, h) = (img.width as usize, img.height as usize);
+    let ch = pr.e("imageContour/valueChannel");
+    let mut v = Plane::from_image(&img, |px| {
+        let (c, a) = unpremul(px);
+        let (hh, s, l) = effectcraft_color::rgb_to_hsl(c[0], c[1], c[2]);
+        match ch {
+            0 => c[0] * a,
+            1 => c[1] * a,
+            2 => c[2] * a,
+            3 => a,
+            5 => hh,
+            6 => l * a,
+            7 => s,
+            _ => luminance(c[0], c[1], c[2]) * a,
+        }
+    });
+    let blur = pr.f("imageContour/preBlur").max(0.0) * b.scale;
+    if blur > 0.0 {
+        v = gauss_plane(&v, blur * 0.5, blur * 0.5);
+    }
+    let thr = (pr.f("imageContour/valueThreshold") / 255.0) as f32;
+    let invert = pr.b("imageContour/invertInput");
+    let mut inside: Vec<bool> = v.data.iter().map(|&x| (x >= thr) != invert).collect();
+    // Contour: 0 = every region; n = the n-th largest connected region.
+    let pick = pr.f("imageContour/contour").round() as usize;
+    if pick > 0 {
+        let mut label = vec![0u32; w * h];
+        let mut sizes = vec![0usize];
+        for start in 0..w * h {
+            if !inside[start] || label[start] != 0 {
+                continue;
+            }
+            let id = sizes.len() as u32;
+            let mut stack = vec![start];
+            label[start] = id;
+            let mut n = 0;
+            while let Some(i) = stack.pop() {
+                n += 1;
+                let (x, y) = (i % w, i / w);
+                let mut nb = |j: usize| {
+                    if inside[j] && label[j] == 0 {
+                        label[j] = id;
+                        stack.push(j);
+                    }
+                };
+                if x > 0 {
+                    nb(i - 1);
+                }
+                if x + 1 < w {
+                    nb(i + 1);
+                }
+                if y > 0 {
+                    nb(i - w);
+                }
+                if y + 1 < h {
+                    nb(i + w);
+                }
+            }
+            sizes.push(n);
+        }
+        let mut order: Vec<usize> = (1..sizes.len()).collect();
+        order.sort_by(|a, c| sizes[*c].cmp(&sizes[*a]).then(a.cmp(c)));
+        let keep = order.get(pick - 1).copied().unwrap_or(usize::MAX) as u32;
+        inside.iter_mut().zip(&label).for_each(|(v, l)| *v = *v && *l == keep);
+    }
+    if !inside.iter().any(|v| *v) {
+        return None;
+    }
+    let mut sdf = crate::util::signed_distance(&inside, w, h);
+    // Tolerance smooths the traced outline.
+    let tol = pr.f("imageContour/tolerance").max(0.0) * b.scale;
+    if tol > 0.0 {
+        sdf = gauss_plane(&sdf, tol * 0.5, tol * 0.5);
+    }
+    Some(Contour { sdf, anchor: b.to_px(pr.v2("imageContour/sourceCenter")) })
+}
+
+/// Mask: the chosen mask of this layer.
+fn mask_contour(ctx: &EffectCtx, b: &Buf) -> Option<Contour> {
+    let idx = ctx.params.f("waveMask/mask").round() as usize;
+    let (pts, _, inverted) = crate::generate3::mask_px(ctx, b, idx)?;
+    let (w, h) = (b.img.width as usize, b.img.height as usize);
+    let inside: Vec<bool> = (0..w * h).map(|i| crate::util::point_in_poly(&pts, (i % w) as f64 + 0.5, (i / w) as f64 + 0.5) != inverted).collect();
+    if !inside.iter().any(|v| *v) {
+        return None;
+    }
+    // Mask waves start where the mask is (anchored at the Producer Point: no shift).
+    let anchor = b.to_px(ctx.params.v2("producerPoint"));
+    Some(Contour { sdf: crate::util::signed_distance(&inside, w, h), anchor })
+}
+
+/// One live wave.
+struct Wave {
+    centre: (f64, f64),
+    radius: f64,
+    half_width: f64,
+    rotation: f64,
+    fade: f32,
+    color: [f32; 4],
+    opacity: f32,
+    /// Polygon outline (unit shape rotated and scaled), or None for a circle / contour.
+    outline: Option<Vec<(f64, f64)>>,
+}
+
+/// Radio Waves: waves are born at Frequency per second at the Producer Point and grow at
+/// Expansion px/s for Lifespan seconds, moving at Velocity towards Direction (bouncing off the
+/// layer edges with Reflection) and spinning. Polygon waves are regular polygons or stars;
+/// Image Contours waves ripple outward from the outline of a source layer's thresholded
+/// channel, Mask waves from a mask. With Parameters Are Set At Birth each wave keeps the values
+/// it was born with; Each Frame applies the current values to every wave. Stroke draws each wave
+/// with its Profile across the width.
 fn radio_waves(ctx: &EffectCtx, mut b: Buf) -> Buf {
-    let c = b.to_px(ctx.params.v2("producerPoint"));
-    let sides = ctx.params.f("polygon/sides").round().clamp(3.0, 64.0);
-    let star = ctx.params.b("polygon/star");
-    let depth = ctx.params.f("polygon/starDepth").clamp(-1.0, 1.0);
-    let freq = ctx.params.f("waveMotion/frequency").max(0.01);
-    let expansion = ctx.params.f("waveMotion/expansion") * b.scale;
-    let orient = ctx.params.f("waveMotion/orientation").to_radians();
-    // Direction: 0° = up, clockwise.
-    let dirn = ctx.params.f("waveMotion/direction").to_radians();
-    let vel = ctx.params.f("waveMotion/velocity") * b.scale;
-    let spin = ctx.params.f("waveMotion/spin").to_radians();
-    let life = ctx.params.f("waveMotion/lifespan").max(0.01);
-    let color = ctx.params.color("waveStroke/color");
-    let op = (ctx.params.f("waveStroke/opacity") / 100.0) as f32;
-    let fin = ctx.params.f("waveStroke/fadeInTime").max(0.0);
-    let fout = ctx.params.f("waveStroke/fadeOutTime").max(0.0);
-    let sw = ctx.params.f("waveStroke/startWidth") * b.scale;
-    let ew = ctx.params.f("waveStroke/endWidth") * b.scale;
+    let cur = ctx.params;
     let t = ctx.time.max(0.0);
+    let freq = cur.f("waveMotion/frequency").max(0.01);
+    let life_now = cur.f("waveMotion/lifespan").max(0.01);
+    let birth = cur.e("parametersAreSetAt") == 0;
+    let wave_type = cur.e("waveType");
+    let quality = cur.get("renderQuality").map(Value::as_f64).unwrap_or(4.0).clamp(1.0, 10.0);
+    let aa = 0.5 + 1.5 / quality;
+    let profile = cur.e("waveStroke/profile");
+    let reflection = cur.b("waveMotion/reflection");
+    let (lx, ly, lw, lh) = layer_rect(ctx, &b);
+    let contour = match wave_type {
+        1 => image_contour(ctx, &b),
+        2 => mask_contour(ctx, &b),
+        _ => None,
+    };
+    if wave_type != 0 && contour.is_none() {
+        return b;
+    }
     let k_hi = (t * freq).floor() as i64;
-    let k_lo = (((t - life) * freq).floor() as i64).max(0).max(k_hi - 256);
-    // (centre, radius, half width, rotation, fade) per live wave.
-    let waves: Vec<((f64, f64), f64, f64, f64, f32)> = (k_lo..=k_hi)
+    let k_lo = (((t - life_now) * freq).floor() as i64 - 1).max(0).max(k_hi - 256);
+    let mut cache: std::collections::HashMap<i64, crate::Params> = std::collections::HashMap::new();
+    let waves: Vec<Wave> = (k_lo..=k_hi)
         .filter_map(|k| {
-            let age = t - k as f64 / freq;
+            let born = k as f64 / freq;
+            let age = t - born;
+            // Birth: the values the wave was born with (when the host can tell).
+            let pr: &crate::Params = if birth {
+                if let Some(h) = ctx.env.host
+                    && let std::collections::hash_map::Entry::Vacant(e) = cache.entry(k)
+                    && let Some(p) = h.params_at(born)
+                {
+                    e.insert(p);
+                }
+                cache.get(&k).unwrap_or(cur)
+            } else {
+                cur
+            };
+            let life = pr.f("waveMotion/lifespan").max(0.01);
             if !(0.0..life).contains(&age) {
                 return None;
             }
+            let c = b.to_px(pr.v2("producerPoint"));
+            let fin = pr.f("waveStroke/fadeInTime").max(0.0);
+            let fout = pr.f("waveStroke/fadeOutTime").max(0.0);
             let fi = if fin > 0.0 { (age / fin).min(1.0) } else { 1.0 };
             let fo = if fout > 0.0 { ((life - age) / fout).min(1.0) } else { 1.0 };
-            let centre = (c.0 + dirn.sin() * vel * age, c.1 - dirn.cos() * vel * age);
-            Some((centre, expansion * age, ((sw + (ew - sw) * age / life) * 0.5).max(0.25), orient + spin * age, (fi * fo) as f32))
+            let dirn = pr.f("waveMotion/direction").to_radians();
+            let vel = pr.f("waveMotion/velocity") * b.scale;
+            let mut centre = (c.0 + dirn.sin() * vel * age, c.1 - dirn.cos() * vel * age);
+            if reflection {
+                centre = (reflect(centre.0, lx, lx + lw), reflect(centre.1, ly, ly + lh));
+            }
+            let sw = pr.f("waveStroke/startWidth") * b.scale;
+            let ew = pr.f("waveStroke/endWidth") * b.scale;
+            let radius = pr.f("waveMotion/expansion") * b.scale * age;
+            let rotation = pr.f("waveMotion/orientation").to_radians() + pr.f("waveMotion/spin").to_radians() * age;
+            let outline = (wave_type == 0).then(|| {
+                let sides = pr.f("polygon/sides").round().clamp(3.0, 64.0);
+                let star = pr.b("polygon/star");
+                let depth = pr.f("polygon/starDepth").clamp(-1.0, 1.0);
+                if sides >= 64.0 && !star {
+                    return None;
+                }
+                let n = sides as usize;
+                let unit: Vec<(f64, f64)> = if star {
+                    (0..2 * n).map(|i| (PI * i as f64 / n as f64 - PI / 2.0, if i % 2 == 0 { 1.0 } else { (1.0 + depth).max(0.0) })).collect()
+                } else {
+                    (0..n).map(|i| (2.0 * PI * i as f64 / n as f64 - PI / 2.0, 1.0)).collect()
+                };
+                Some(unit.iter().map(|&(a, k)| ((a + rotation).cos() * radius * k, (a + rotation).sin() * radius * k)).collect())
+            });
+            Some(Wave {
+                centre,
+                radius,
+                half_width: ((sw + (ew - sw) * age / life) * 0.5).max(0.25),
+                rotation,
+                fade: (fi * fo) as f32,
+                color: pr.color("waveStroke/color"),
+                opacity: (pr.f("waveStroke/opacity") / 100.0) as f32,
+                outline: outline.flatten(),
+            })
         })
         .collect();
-    let circle = sides >= 64.0 && !star;
-    // Unit outline (radius 1) of the polygon or star, rotated per wave below.
-    let n = sides as usize;
-    let unit: Vec<(f64, f64)> = if star {
-        (0..2 * n).map(|i| (PI * i as f64 / n as f64 - PI / 2.0, if i % 2 == 0 { 1.0 } else { (1.0 + depth).max(0.0) })).collect()
-    } else {
-        (0..n).map(|i| (2.0 * PI * i as f64 / n as f64 - PI / 2.0, 1.0)).collect()
-    };
-    let outlines: Vec<Vec<(f64, f64)>> =
-        waves.iter().map(|&(_, rad, _, rot, _)| unit.iter().map(|&(a, k)| ((a + rot).cos() * rad * k, (a + rot).sin() * rad * k)).collect()).collect();
     map_xy(&mut b.img, |x, y, px| {
-        let mut a = 0.0f32;
-        for (wi, &(cc, rad, hw, _, fade)) in waves.iter().enumerate() {
-            let (dx, dy) = (x as f64 + 0.5 - cc.0, y as f64 + 0.5 - cc.1);
-            let d = if circle { ((dx * dx + dy * dy).sqrt() - rad).abs() } else { outline_dist(&outlines[wi], dx, dy) };
-            a = a.max((hw - d + 0.5).clamp(0.0, 1.0) as f32 * fade);
+        let mut out = px;
+        // Older waves first, so newer ones sit on top.
+        for wv in &waves {
+            let (dx, dy) = (x as f64 + 0.5 - wv.centre.0, y as f64 + 0.5 - wv.centre.1);
+            // Signed distance from the wave line (negative inside the wave).
+            let d = match (&contour, &wv.outline) {
+                (Some(ct), _) => {
+                    // The contour placed with its anchor on the wave centre, rotated.
+                    let (s, c) = (-(wv.rotation)).sin_cos();
+                    let (rx, ry) = (dx * c - dy * s, dx * s + dy * c);
+                    ct.sdf.sample(ct.anchor.0 + rx, ct.anchor.1 + ry) as f64 - wv.radius
+                }
+                (None, Some(o)) => {
+                    let ud = outline_dist(o, dx, dy);
+                    let poly: Vec<[f64; 2]> = o.iter().map(|p| [p.0, p.1]).collect();
+                    if crate::util::point_in_poly(&poly, dx, dy) { -ud } else { ud }
+                }
+                (None, None) => (dx * dx + dy * dy).sqrt() - wv.radius,
+            };
+            let ad = d.abs();
+            let cov = ((wv.half_width - ad) / aa + 0.5).clamp(0.0, 1.0);
+            if cov <= 0.0 {
+                continue;
+            }
+            let u = (d / wv.half_width).clamp(-1.0, 1.0);
+            let a = (cov * rw_profile(profile, u)) as f32 * wv.fade * wv.opacity * wv.color[3];
+            out = over(out, [wv.color[0] * a, wv.color[1] * a, wv.color[2] * a, a]);
         }
-        let a = a * op * color[3];
-        over(px, [color[0] * a, color[1] * a, color[2] * a, a])
+        out
     });
     b
 }
@@ -776,9 +991,21 @@ pub fn specs() -> Vec<EffectSpec> {
             "Radio Waves",
             vec![
                 p("producerPoint", "Producer Point", pt(0.5, 0.5), ParamUi::Point),
+                p("parametersAreSetAt", "Parameters Are Set At", Value::Enum(1), popup(&["Birth", "Each Frame"])),
+                p("renderQuality", "Render Quality", num(4.0), slider(1.0, 10.0, 1.0, 10.0, 0)),
+                p("waveType", "Wave Type", Value::Enum(0), popup(&RW_TYPES)),
                 p("polygon/sides", "Sides", num(64.0), slider(3.0, 64.0, 3.0, 64.0, 0)),
                 p("polygon/star", "Star", Value::Bool(false), ParamUi::Checkbox),
                 p("polygon/starDepth", "Star Depth", num(-0.3), slider(-1.0, 1.0, -1.0, 1.0, 2)),
+                p("imageContour/sourceLayer", "Source Layer", Value::Layer(None), ParamUi::Layer),
+                p("imageContour/sourceCenter", "Source Center", pt(0.5, 0.5), ParamUi::Point),
+                p("imageContour/valueChannel", "Value Channel", Value::Enum(4), popup(&RW_CHANNELS)),
+                p("imageContour/invertInput", "Invert Input", Value::Bool(false), ParamUi::Checkbox),
+                p("imageContour/valueThreshold", "Value Threshold", num(128.0), slider(0.0, 255.0, 0.0, 255.0, 0)),
+                p("imageContour/preBlur", "Pre-Blur", num(1.0), slider(0.0, 100.0, 0.0, 20.0, 1)),
+                p("imageContour/tolerance", "Tolerance", num(1.0), slider(0.0, 100.0, 0.0, 20.0, 1)),
+                p("imageContour/contour", "Contour", num(0.0), slider(0.0, 100.0, 0.0, 10.0, 0)),
+                p("waveMask/mask", "Mask", num(0.0), ParamUi::Mask),
                 p("waveMotion/frequency", "Frequency", num(1.0), slider(0.01, 100.0, 0.01, 10.0, 2)),
                 p("waveMotion/expansion", "Expansion", num(100.0), slider(0.0, 10000.0, 0.0, 1000.0, 1)),
                 p("waveMotion/orientation", "Orientation", num(0.0), ang()),
@@ -786,6 +1013,8 @@ pub fn specs() -> Vec<EffectSpec> {
                 p("waveMotion/velocity", "Velocity", num(0.0), slider(0.0, 10000.0, 0.0, 1000.0, 1)),
                 p("waveMotion/spin", "Spin", num(0.0), slider(-3600.0, 3600.0, -360.0, 360.0, 1)),
                 p("waveMotion/lifespan", "Lifespan (sec)", num(2.0), slider(0.01, 100.0, 0.01, 10.0, 2)),
+                p("waveMotion/reflection", "Reflection", Value::Bool(false), ParamUi::Checkbox),
+                p("waveStroke/profile", "Profile", Value::Enum(0), popup(&RW_PROFILES)),
                 p("waveStroke/color", "Color", col(1.0, 1.0, 1.0), ParamUi::Color),
                 p("waveStroke/opacity", "Opacity", num(100.0), pct()),
                 p("waveStroke/fadeInTime", "Fade-in Time", num(0.0), slider(0.0, 100.0, 0.0, 5.0, 2)),
@@ -1013,5 +1242,109 @@ mod tests {
         let c = o.img.get(16, 16)[0];
         assert!(c > o.img.get(60, 4)[0]);
         assert!(c > 0.5);
+    }
+
+    fn rw(set: &[(&str, Value)], t: f64, env: crate::EffectEnv) -> Image {
+        let mut v: Vec<(&str, Value)> =
+            vec![("producerPoint", Value::Vec2([32.0, 32.0])), ("waveMotion/frequency", num(0.5)), ("waveMotion/expansion", num(100.0))];
+        v.extend_from_slice(set);
+        crate::run_fx("ec.generate.radiowaves", &v, Image::new(64, 64), t, env).img
+    }
+
+    #[test]
+    fn signed_distance_of_a_square() {
+        let (w, h) = (20, 20);
+        let inside: Vec<bool> = (0..w * h).map(|i| (5..15).contains(&(i % w)) && (5..15).contains(&(i / w))).collect();
+        let d = crate::util::signed_distance(&inside, w, h);
+        assert!((d.get(10, 10) + 4.5).abs() < 1e-4, "{}", d.get(10, 10));
+        assert!((d.get(0, 10) - 4.5).abs() < 1e-4, "{}", d.get(0, 10));
+        assert!((d.get(0, 0) - (50f32.sqrt() - 0.5)).abs() < 1e-4);
+    }
+
+    #[test]
+    fn radio_waves_mask_contours_profile_reflection_and_birth() {
+        // Mask waves: a 10×10 square mask; after 0.1 s (10 px) the wave is 10 px outside it.
+        let sq = crate::MaskShape { name: String::new(), points: vec![[27.0, 27.0], [37.0, 27.0], [37.0, 37.0], [27.0, 37.0]], closed: true, inverted: false };
+        let masks = [sq];
+        let env = crate::EffectEnv { masks: &masks, ..Default::default() };
+        let m = rw(&[("waveType", Value::Enum(2)), ("waveMask/mask", num(1.0))], 0.1, env);
+        assert!(m.get(47, 32)[3] > 0.9, "{:?}", m.get(47, 32));
+        assert!(m.get(32, 32)[3] < 0.01 && m.get(40, 32)[3] < 0.01);
+        // Rounded corner: diagonal distance 10 from (37, 37).
+        assert!(m.get(44, 44)[3] > 0.5, "{:?}", m.get(44, 44));
+        // No mask chosen: nothing drawn.
+        assert!(rw(&[("waveType", Value::Enum(2))], 0.1, env).data.iter().all(|p| p[3] == 0.0));
+        // Image Contours: the bright square of a source layer.
+        struct Src;
+        impl crate::EffectHost for Src {
+            fn layer(&self, _: u64, _: bool) -> Option<crate::LayerPixels> {
+                let mut img = Image::new(64, 64);
+                for y in 27..37 {
+                    for x in 27..37 {
+                        img.set(x, y, [1.0, 1.0, 1.0, 1.0]);
+                    }
+                }
+                Some(crate::LayerPixels { buf: Buf { img, offset: [0.0; 2], scale: 1.0 }, size: [64.0, 64.0] })
+            }
+            fn audio(&self, _: u64, _: f64, _: usize, _: u32) -> Option<Vec<f32>> {
+                None
+            }
+            fn params_at(&self, t: f64) -> Option<Params> {
+                // Colour animates from red (born at 0) to green (born later).
+                let s = crate::find("ec.generate.radiowaves").unwrap();
+                let mut p = Params { values: s.params.iter().map(|p| (p.id.to_string(), p.default.clone())).collect() };
+                p.values.insert("producerPoint".into(), Value::Vec2([32.0, 32.0]));
+                p.values.insert("waveMotion/frequency".into(), num(1.0));
+                p.values.insert("waveMotion/expansion".into(), num(20.0));
+                p.values.insert("waveStroke/color".into(), if t < 0.5 { col(1.0, 0.0, 0.0) } else { col(0.0, 1.0, 0.0) });
+                Some(p)
+            }
+        }
+        let env = crate::EffectEnv { host: Some(&Src), ..Default::default() };
+        let ic = rw(
+            &[
+                ("waveType", Value::Enum(1)),
+                ("imageContour/sourceLayer", Value::Layer(Some(1))),
+                ("imageContour/preBlur", num(0.0)),
+                ("imageContour/tolerance", num(0.0)),
+            ],
+            0.1,
+            env,
+        );
+        assert!(ic.get(47, 32)[3] > 0.9 && ic.get(32, 32)[3] < 0.01, "{:?}", ic.get(47, 32));
+        // Source Center off the square shifts the contour onto the producer point accordingly.
+        let sh = rw(
+            &[
+                ("waveType", Value::Enum(1)),
+                ("imageContour/sourceLayer", Value::Layer(Some(1))),
+                ("imageContour/sourceCenter", Value::Vec2([22.0, 32.0])),
+                ("imageContour/preBlur", num(0.0)),
+                ("imageContour/tolerance", num(0.0)),
+            ],
+            0.1,
+            env,
+        );
+        assert!(sh.get(57, 32)[3] > 0.9, "{:?}", sh.get(57, 32));
+        // Profile: Taper Both thins the stroke edges; Square is solid across.
+        let wide = [("waveStroke/startWidth", num(10.0)), ("waveStroke/endWidth", num(10.0))];
+        let sqr = rw(&wide, 0.2, crate::EffectEnv::default());
+        let mut tap = wide.to_vec();
+        tap.push(("waveStroke/profile", Value::Enum(3)));
+        let tap = rw(&tap, 0.2, crate::EffectEnv::default());
+        assert!(sqr.get(55, 32)[3] > 0.9 && tap.get(55, 32)[3] < 0.6, "{:?} {:?}", sqr.get(55, 32), tap.get(55, 32));
+        assert!(tap.get(52, 32)[3] > 0.8);
+        // Reflection: a fast wave bounces back off the right edge.
+        let fast = [("waveMotion/velocity", num(200.0)), ("waveMotion/expansion", num(10.0))];
+        let gone = rw(&fast, 0.3, crate::EffectEnv::default());
+        let mut rf = fast.to_vec();
+        rf.push(("waveMotion/reflection", Value::Bool(true)));
+        let back = rw(&rf, 0.3, crate::EffectEnv::default());
+        let sum = |i: &Image| i.data.iter().map(|p| p[3]).sum::<f32>();
+        assert!(sum(&back) > sum(&gone) + 5.0, "{} vs {}", sum(&back), sum(&gone));
+        // Parameters Are Set At Birth: the older wave keeps red, the newer one is green.
+        let both = rw(&[("parametersAreSetAt", Value::Enum(0)), ("waveMotion/frequency", num(1.0)), ("waveMotion/expansion", num(20.0))], 1.15, env);
+        let (old, new) = (both.get(55, 32), both.get(35, 32));
+        assert!(old[0] > 0.9 && old[1] < 0.1, "{old:?}");
+        assert!(new[1] > 0.9 && new[0] < 0.1, "{new:?}");
     }
 }

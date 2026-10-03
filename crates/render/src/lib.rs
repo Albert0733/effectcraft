@@ -151,6 +151,13 @@ impl EffectHost for FxHost<'_, '_, '_> {
         }
     }
 
+    fn params_at(&self, layer_time: f64) -> Option<Params> {
+        let i = self.index.load(std::sync::atomic::Ordering::Relaxed);
+        let g = self.layer.effects()?.groups().nth(i)?;
+        let ctx = self.ctx.at(self.layer.comp_time(Tick::from_seconds_f64(layer_time)));
+        Some(effectcraft_effects::flatten_params(g, &mut |pr| ctx.value(self.layer, pr)))
+    }
+
     fn comp_scene(&self) -> Option<effectcraft_effects::CompScene> {
         // The comp camera's view of the layer (as if 3D at its transform), brought back into the
         // layer's own pixel grid through the inverse of how the layer itself composites.
