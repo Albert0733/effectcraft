@@ -34,3 +34,4 @@ effectcraft-media = { workspace = true }
 effectcraft-color = { workspace = true }
 filmcraft-opus = { workspace = true }
 filmcraft-vp9 = { workspace = true }
+effectcraft-keyframe = { workspace = true }

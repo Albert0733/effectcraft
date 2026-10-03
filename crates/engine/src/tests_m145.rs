@@ -476,8 +476,9 @@ fn create_vr_environment_and_extract_cubemap() {
         let c = s.project.comp(ItemId(*f)).unwrap();
         assert_eq!((c.width, c.height), (64, 64));
         assert!(c.layers.iter().any(|l| l.is_camera()));
-        assert!(c.layers.iter().any(|l| l.name == aname && l.is_3d()), "the scene's layers");
-        let _ = main;
+        let nested = c.layers.iter().find(|l| matches!(l.source, effectcraft_project::LayerSource::Comp { item } if item == main)).expect("the scene, nested");
+        assert!(nested.switches.collapse && nested.is_3d(), "collapsed 3D precomp");
+        let _ = &aname;
     }
     let cube = s.project.comp(ItemId(r["cubeMap"].as_u64().unwrap())).unwrap();
     assert_eq!((cube.width, cube.height, cube.layers.len()), (192, 128, 6));

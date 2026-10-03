@@ -204,6 +204,46 @@ pub struct SubPath {
     pub knots: Vec<[[f64; 2]; 3]>,
 }
 
+/// A placed layer (smart object): `SoLd` / `SoLE` (placed layer data) or the older `PlLd`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SmartObject {
+    /// Unique id of the linked file ([`Psd::linked`]) the layer shows.
+    pub uuid: String,
+    /// Where the content's corners sit in document pixels: top-left, top-right, bottom-right,
+    /// bottom-left.
+    pub quad: [[f64; 2]; 4],
+    /// The content's size in pixels (`Sz  `), when recorded.
+    pub size: Option<[f64; 2]>,
+}
+
+impl SmartObject {
+    /// The quad as an affine placement of a `w`×`h` content rectangle: (centre, scale x, scale
+    /// y, rotation in degrees). Perspective and skew are dropped.
+    pub fn placement(&self, w: f64, h: f64) -> ([f64; 2], f64, f64, f64) {
+        let q = self.quad;
+        let centre = [(q[0][0] + q[1][0] + q[2][0] + q[3][0]) / 4.0, (q[0][1] + q[1][1] + q[2][1] + q[3][1]) / 4.0];
+        let top = [q[1][0] - q[0][0], q[1][1] - q[0][1]];
+        let left = [q[3][0] - q[0][0], q[3][1] - q[0][1]];
+        let sx = top[0].hypot(top[1]) / w.max(1e-9);
+        let sy = left[0].hypot(left[1]) / h.max(1e-9);
+        // Mirrored content (left edge turning the other way) keeps a negative y scale.
+        let cross = top[0] * left[1] - top[1] * left[0];
+        (centre, sx, if cross < 0.0 { -sy } else { sy }, top[1].atan2(top[0]).to_degrees())
+    }
+}
+
+/// A file embedded in (or linked from) the document: linked layer data (`lnk2`, `lnkD`,
+/// `lnk3`, `lnkE`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LinkedFile {
+    pub uuid: String,
+    pub name: String,
+    /// File type code (`8BPS`, `PNGf`, `JPEG`…), may be blank.
+    pub file_type: String,
+    /// Embedded data (absent for externally linked files).
+    pub data: Option<std::ops::Range<usize>>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Layer {
     /// Index in [`Psd::layers`] (file order: bottom of the stack first).
@@ -230,6 +270,8 @@ pub struct Layer {
     /// Layer effects (`lfx2` descriptor).
     pub effects: Option<Descriptor>,
     pub vector_mask: Option<VectorMask>,
+    /// Smart object placement.
+    pub smart_object: Option<SmartObject>,
     /// Keys of every additional-information block the layer carries.
     pub keys: Vec<[u8; 4]>,
 }
@@ -277,6 +319,8 @@ pub struct Psd {
     pub merged_alpha: bool,
     /// Indexed colour palette (256 R, then G, then B).
     pub palette: Vec<u8>,
+    /// Files embedded for smart objects.
+    pub linked: Vec<LinkedFile>,
     data: Arc<[u8]>,
     merged_offset: usize,
 }
@@ -314,7 +358,20 @@ impl Psd {
         let n = r.u32()? as usize;
         r.skip(n)?;
         // Layer and mask information.
-        let mut psd = Psd { psb, width, height, channels, depth, mode, layers: vec![], merged_alpha: false, palette, data: data.clone(), merged_offset: 0 };
+        let mut psd = Psd {
+            psb,
+            width,
+            height,
+            channels,
+            depth,
+            mode,
+            layers: vec![],
+            merged_alpha: false,
+            palette,
+            linked: vec![],
+            data: data.clone(),
+            merged_offset: 0,
+        };
         let lm_len = r.length(psb)?;
         let lm_end = r.pos.checked_add(lm_len).filter(|&e| e <= data.len()).ok_or(Error::Truncated)?;
         if lm_len > 0 {
@@ -330,6 +387,9 @@ impl Psd {
             }
             // Global additional layer information (16/32-bit layer info lives here).
             while let Some((key, start, end)) = next_block(&data, &mut r.pos, lm_end, psb) {
+                if matches!(&key, b"lnk2" | b"lnkD" | b"lnk3" | b"lnkE") {
+                    psd.linked_files(&data, start, end);
+                }
                 if matches!(&key, b"Lr16" | b"Lr32" | b"Layr") && psd.layers.is_empty() && end > start {
                     // The block holds the layer info, normally without its length field; accept
                     // both layouts.
@@ -346,6 +406,67 @@ impl Psd {
         }
         psd.merged_offset = lm_end;
         Ok(psd)
+    }
+
+    /// The embedded bytes of linked file `uuid`.
+    pub fn linked_data(&self, uuid: &str) -> Option<&[u8]> {
+        let f = self.linked.iter().find(|f| f.uuid == uuid)?;
+        self.data.get(f.data.clone()?)
+    }
+
+    /// Linked layer data records (spec: "Linked Layer"): length, kind (`liFD` embedded data,
+    /// `liFE` external file, `liFA` alias), version, unique id, original file name, type,
+    /// creator, data length, optional descriptors, then the data. A damaged record ends the list.
+    fn linked_files(&mut self, data: &[u8], start: usize, end: usize) {
+        let mut pos = start;
+        while pos + 8 <= end {
+            let mut r = Reader::at(&data[..end], pos);
+            let Ok(len) = r.u64() else { break };
+            let body = r.pos;
+            let Some(rec_end) = body.checked_add(len as usize).filter(|e| *e <= end) else { break };
+            let mut r = Reader::at(&data[..rec_end], body);
+            let rec = (|| -> Result<LinkedFile> {
+                let kind = r.tag()?;
+                let version = r.u32()?;
+                let n = r.u8()? as usize;
+                let uuid = String::from_utf8_lossy(r.bytes(n)?).into_owned();
+                let name = descriptor::read_unicode(&mut r)?;
+                let file_type = String::from_utf8_lossy(&r.tag()?).trim().to_string();
+                let _creator = r.tag()?;
+                let dlen = r.u64()? as usize;
+                if r.u8()? != 0 {
+                    let _v = r.u32()?;
+                    descriptor::read_descriptor(&mut r)?;
+                }
+                let mut out = LinkedFile { uuid, name, file_type, data: None };
+                match &kind {
+                    b"liFD" => {
+                        let s = r.pos;
+                        r.skip(dlen)?;
+                        out.data = Some(s..s + dlen);
+                    }
+                    b"liFE" => {
+                        let _v = r.u32()?;
+                        descriptor::read_descriptor(&mut r)?;
+                        if version > 3 {
+                            r.skip(4 + 4 + 8)?;
+                        }
+                        let _size = r.u64()?;
+                        if version > 2 && r.remaining() >= dlen && dlen > 0 {
+                            let s = r.pos;
+                            out.data = Some(s..s + dlen);
+                        }
+                    }
+                    _ => {}
+                }
+                Ok(out)
+            })();
+            match rec {
+                Ok(f) => self.linked.push(f),
+                Err(_) => break,
+            }
+            pos = rec_end.div_ceil(4) * 4;
+        }
     }
 
     fn layer_info(&mut self, data: &[u8], start: usize, end: usize) -> Result<()> {
@@ -521,6 +642,46 @@ impl Psd {
                 if l.adjustment.is_none() {
                     l.adjustment = Some(Adjustment::Other(String::from_utf8_lossy(key).into_owned()));
                 }
+            }
+            b"SoLd" | b"SoLE" => {
+                let _id = r.tag()?;
+                let _ver = r.u32()?;
+                let _dver = r.u32()?;
+                let d = descriptor::read_descriptor(&mut r)?;
+                let uuid = d.text("Idnt").unwrap_or_default().to_string();
+                let nums = |k: &str| -> Option<Vec<f64>> {
+                    match d.get(k)? {
+                        DValue::List(l) => Some(
+                            l.iter()
+                                .filter_map(|v| match v {
+                                    DValue::Double(x) | DValue::UnitFloat(_, x) => Some(*x),
+                                    DValue::Integer(i) => Some(*i as f64),
+                                    _ => None,
+                                })
+                                .collect(),
+                        ),
+                        DValue::UnitFloats(_, v) => Some(v.clone()),
+                        _ => None,
+                    }
+                };
+                let t = nums("Trnf").filter(|t| t.len() == 8).unwrap_or_else(|| vec![0.0; 8]);
+                let size = d.obj("Sz  ").and_then(|s| Some([s.num("Wdth")?, s.num("Hght")?]));
+                l.smart_object = Some(SmartObject { uuid, quad: [[t[0], t[1]], [t[2], t[3]], [t[4], t[5]], [t[6], t[7]]], size });
+            }
+            b"PlLd" if l.smart_object.is_none() => {
+                let _id = r.tag()?;
+                let _ver = r.u32()?;
+                let n = r.u8()? as usize;
+                let uuid = String::from_utf8_lossy(r.bytes(n)?).into_owned();
+                let _page = r.u32()?;
+                let _pages = r.u32()?;
+                let _aa = r.u32()?;
+                let _ty = r.u32()?;
+                let mut t = [0.0; 8];
+                for v in &mut t {
+                    *v = r.f64()?;
+                }
+                l.smart_object = Some(SmartObject { uuid, quad: [[t[0], t[1]], [t[2], t[3]], [t[4], t[5]], [t[6], t[7]]], size: None });
             }
             b"vmsk" | b"vsms" => {
                 let _ver = r.u32()?;

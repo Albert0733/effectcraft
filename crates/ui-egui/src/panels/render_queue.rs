@@ -4,12 +4,18 @@
 //! Output Module and Output To rows, and a status footer.
 //!
 //! Every control dispatches an engine `renderQueue.*` command (so agents can do the same) and
-//! registers an automation id: `renderQueue.render`, `renderQueue.stop`,
-//! `renderQueue.item.<n>.{row,twirl,render,renderSettings,outputModule,outputTo,outputPath}`.
+//! registers an automation id: `renderQueue.render`, `renderQueue.stop`, `renderQueue.notify`,
+//! `renderQueue.item.<n>.{row,twirl,render,renderSettings,outputModule,outputTo,outputPath,log}`.
+//!
+//! The Render Settings and Output Module menus list the templates first (Edit ▸ Templates), then
+//! every setting; entries needing numbers (custom time span and frame rate, crop, resize, bitrate,
+//! key frame interval, Make Template) open a form that runs the same command.
 
 use effectcraft_engine::project::render_queue::{
-    AudioOutput, Channels, OpusApplication, OutputFormat, ProResProfile, RenderQuality, RenderQueueItem, RenderStatus, TimeSpan, WebmVideoCodec,
+    AlphaMode, AudioFormat, AudioOutput, Channels, ColorDepth, CurrentOrOff, EffectsMode, FieldRender, OpusApplication, OutputFormat, PostRenderAction,
+    ProResProfile, Pulldown, RESIZE_PRESETS, RenderLog, RenderQuality, RenderQueueItem, RenderStatus, ResizeQuality, SwitchOverride, TimeSpan, WebmVideoCodec,
 };
+use effectcraft_engine::project::render_templates::RenderTemplates;
 use egui::{Align2, Color32, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 use serde_json::{Value, json};
 
@@ -55,42 +61,82 @@ fn status_color(t: &Tokens, s: &RenderStatus) -> Color32 {
     }
 }
 
-/// Render Settings menu: (label, params).
-fn settings_menu(it: &RenderQueueItem) -> Vec<(String, Value)> {
+fn mark(on: bool, l: &str) -> String {
+    if on { format!("✓ {l}") } else { format!("   {l}") }
+}
+
+/// Render Settings menu: (label, params). `{"form": …}` entries open a form.
+fn settings_menu(it: &RenderQueueItem, templates: &RenderTemplates) -> Vec<(String, Value)> {
     let s = &it.settings;
-    let mark = |on: bool, l: &str| if on { format!("✓ {l}") } else { format!("   {l}") };
-    let mut v = vec![
-        (mark(s.quality == RenderQuality::Best, "Best Settings"), json!({"quality": "best"})),
-        (mark(s.quality == RenderQuality::Draft, "Draft Settings"), json!({"quality": "draft"})),
-        ("-".into(), Value::Null),
-    ];
+    let mut v = vec![];
+    for t in templates.render_settings_list() {
+        v.push((mark(s.name == t.name, &t.name), json!({"template": t.name})));
+    }
+    v.push(("   Make Template…".into(), json!({"form": "makeRenderTemplate"})));
+    v.push(("-".into(), Value::Null));
+    v.push((mark(s.quality == RenderQuality::Best, "Quality: Best"), json!({"quality": "best"})));
+    v.push((mark(s.quality == RenderQuality::Draft, "Quality: Draft"), json!({"quality": "draft"})));
     for (l, k) in [("Full", "full"), ("Half", "half"), ("Third", "third"), ("Quarter", "quarter")] {
         v.push((mark(s.resolution_label() == l, &format!("Resolution: {l}")), json!({"resolution": k})));
     }
     v.push(("-".into(), Value::Null));
+    for (u, k) in effectcraft_engine::project::render_queue::ProxyUse::ALL.iter().zip(["current", "all", "comp", "none"]) {
+        v.push((mark(s.proxy_use == *u, &format!("Proxy Use: {}", u.label())), json!({"proxyUse": k})));
+    }
+    for (e, k) in EffectsMode::ALL.iter().zip(["current", "allOn", "allOff"]) {
+        v.push((mark(s.effects == *e, &format!("Effects: {}", e.label())), json!({"effects": k})));
+    }
+    for (e, k) in [(CurrentOrOff::Current, "current"), (CurrentOrOff::AllOff, "allOff")] {
+        v.push((mark(s.solo == e, &format!("Solo Switches: {}", e.label())), json!({"solo": k})));
+    }
+    for (e, k) in [(CurrentOrOff::Current, "current"), (CurrentOrOff::AllOff, "allOff")] {
+        v.push((mark(s.guide_layers == e, &format!("Guide Layers: {}", e.label())), json!({"guideLayers": k})));
+    }
+    for (d, k) in ColorDepth::ALL.iter().zip(["current", "8", "16", "32"]) {
+        v.push((mark(s.color_depth == *d, &format!("Color Depth: {}", d.label())), json!({"colorDepth": k})));
+    }
+    v.push(("-".into(), Value::Null));
+    for (m, k) in SwitchOverride::ALL.iter().zip(["current", "onForChecked", "offForAll"]) {
+        v.push((mark(s.frame_blending == *m, &format!("Frame Blending: {}", m.label())), json!({"frameBlending": k})));
+    }
+    for (m, k) in SwitchOverride::ALL.iter().zip(["current", "onForChecked", "offForAll"]) {
+        v.push((mark(s.motion_blur_override() == *m, &format!("Motion Blur: {}", m.label())), json!({"motionBlur": k})));
+    }
+    for (f, k) in FieldRender::ALL.iter().zip(["off", "upper", "lower"]) {
+        v.push((mark(s.field_render == *f, &format!("Field Render: {}", f.label())), json!({"fieldRender": k})));
+    }
+    if s.field_render != FieldRender::Off {
+        for pd in Pulldown::ALL {
+            v.push((mark(s.pulldown == pd, &format!("3:2 Pulldown: {}", pd.label())), json!({"pulldown": pd.label()})));
+        }
+    }
+    v.push(("-".into(), Value::Null));
     v.push((mark(s.time_span == TimeSpan::WorkArea, "Time Span: Work Area Only"), json!({"timeSpan": "workArea"})));
     v.push((mark(s.time_span == TimeSpan::LengthOfComp, "Time Span: Length of Comp"), json!({"timeSpan": "comp"})));
-    v.push(("-".into(), Value::Null));
+    v.push((mark(matches!(s.time_span, TimeSpan::Custom { .. }), "Time Span: Custom…"), json!({"form": "timeSpan"})));
     v.push((mark(s.frame_rate.is_none(), "Frame Rate: Use comp's frame rate"), json!({"frameRate": null})));
     for fps in [12.0, 15.0, 23.976, 24.0, 25.0, 29.97, 30.0, 50.0, 60.0] {
         let on = s.frame_rate.is_some_and(|r| (r.as_f64() - fps).abs() < 0.01);
         v.push((mark(on, &format!("Frame Rate: {fps}")), json!({"frameRate": fps})));
     }
+    v.push(("   Frame Rate: Custom…".into(), json!({"form": "frameRate"})));
     v.push(("-".into(), Value::Null));
-    v.push((mark(s.motion_blur, "Motion Blur: On for Checked Layers"), json!({"motionBlur": !s.motion_blur})));
     v.push((mark(s.skip_existing, "Skip Existing Files"), json!({"skipExisting": !s.skip_existing})));
-    v.push(("-".into(), Value::Null));
-    for (u, k) in effectcraft_engine::project::render_queue::ProxyUse::ALL.iter().zip(["current", "all", "comp", "none"]) {
-        v.push((mark(s.proxy_use == *u, &format!("Proxy Use: {}", u.label())), json!({"proxyUse": k})));
-    }
+    v.push((mark(s.storage_overflow, "Use Storage Overflow"), json!({"storageOverflow": !s.storage_overflow})));
     v
 }
 
-/// Output Module menu: (label, params).
-fn output_menu(it: &RenderQueueItem, available: &[OutputFormat]) -> Vec<(String, Value)> {
+/// Output Module menu: (label, params). `{"form": …}` entries open a form.
+fn output_menu(it: &RenderQueueItem, available: &[OutputFormat], templates: &RenderTemplates) -> Vec<(String, Value)> {
     let o = &it.output;
-    let mark = |on: bool, l: &str| if on { format!("✓ {l}") } else { format!("   {l}") };
     let mut v = Vec::new();
+    for t in templates.output_module_list() {
+        if available.contains(&t.format) {
+            v.push((mark(o.name == t.name, &t.name), json!({"template": t.name})));
+        }
+    }
+    v.push(("   Make Template…".into(), json!({"form": "makeOutputTemplate"})));
+    v.push(("-".into(), Value::Null));
     for f in OutputFormat::ALL {
         if available.contains(&f) {
             v.push((mark(o.format == f, &format!("Format: {}", f.label())), json!({"format": format!("{f:?}")})));
@@ -101,6 +147,13 @@ fn output_menu(it: &RenderQueueItem, available: &[OutputFormat]) -> Vec<(String,
     if o.supports_alpha() {
         v.push((mark(o.channels == Channels::Rgba, "Channels: RGB + Alpha"), json!({"channels": "rgba"})));
     }
+    if !o.format.is_audio_only() {
+        v.push((mark(o.channels == Channels::Alpha, "Channels: Alpha"), json!({"channels": "alpha"})));
+    }
+    if o.channels == Channels::Rgba {
+        v.push((mark(o.alpha_mode == AlphaMode::Straight, "Color: Straight (Unmatted)"), json!({"color": "straight"})));
+        v.push((mark(o.alpha_mode == AlphaMode::Premultiplied, "Color: Premultiplied (Matted)"), json!({"color": "premultiplied"})));
+    }
     match o.format {
         OutputFormat::ProRes => {
             v.push(("-".into(), Value::Null));
@@ -110,7 +163,7 @@ fn output_menu(it: &RenderQueueItem, available: &[OutputFormat]) -> Vec<(String,
         }
         OutputFormat::H264 => {
             v.push(("-".into(), Value::Null));
-            for kbps in [2_000, 5_000, 10_000, 20_000, 40_000] {
+            for kbps in [2_000, 5_000, 10_000, 15_000, 20_000, 40_000] {
                 v.push((mark(o.bitrate_kbps == kbps, &format!("Bitrate: {} Mbps", kbps / 1000)), json!({"bitrate": kbps})));
             }
         }
@@ -125,8 +178,10 @@ fn output_menu(it: &RenderQueueItem, available: &[OutputFormat]) -> Vec<(String,
             } else {
                 v.push(("-".into(), Value::Null));
                 for q in [60u8, 80, 90, 100] {
-                    v.push((mark(o.quality == q, &format!("Quality: {q}")), json!({"quality": q})));
+                    v.push((mark(o.quality == q && !o.webm_bitrate, &format!("Quality: {q}")), json!({"quality": q, "webmBitrate": false})));
                 }
+                v.push((mark(o.webm_bitrate, &format!("Target Bitrate ({} kbps)…", o.bitrate_kbps)), json!({"form": "bitrate"})));
+                v.push((mark(o.keyframe_interval > 0, "Key Frame Interval…"), json!({"form": "keyframes"})));
             }
             v.push(("-".into(), Value::Null));
             for kbps in [24u32, 32, 64, 96, 128, 192, 256] {
@@ -148,15 +203,54 @@ fn output_menu(it: &RenderQueueItem, available: &[OutputFormat]) -> Vec<(String,
         }
         _ => {}
     }
+    if !o.format.is_audio_only() {
+        v.push(("-".into(), Value::Null));
+        v.push((mark(!o.crop.enabled, "Crop: Off"), json!({"crop": false})));
+        v.push((mark(o.crop.enabled && o.crop.use_roi, "Crop: Use Region of Interest"), json!({"crop": {"useRoi": true}})));
+        v.push((mark(o.crop.enabled && !o.crop.use_roi, "Crop: Edges…"), json!({"form": "crop"})));
+        v.push((mark(!o.resize.enabled, "Resize: Off"), json!({"resize": false})));
+        for (n, w, h) in RESIZE_PRESETS {
+            let on = o.resize.enabled && o.resize.width == w && o.resize.height == h && !o.resize.lock_aspect;
+            v.push((mark(on, &format!("Resize to: {n} ({w}×{h})")), json!({"resize": {"preset": n}})));
+        }
+        v.push((mark(o.resize.enabled, "Resize to: Custom…"), json!({"form": "resize"})));
+        v.push((
+            mark(o.resize.lock_aspect, "Resize: Lock Aspect Ratio"),
+            json!({"resize": {"enabled": o.resize.enabled, "lockAspect": !o.resize.lock_aspect}}),
+        ));
+        for (q, k) in [(ResizeQuality::Low, "low"), (ResizeQuality::High, "high")] {
+            v.push((mark(o.resize.quality == q, &format!("Resize Quality: {q:?}")), json!({"resize": {"enabled": o.resize.enabled, "quality": k}})));
+        }
+    }
+    v.push(("-".into(), Value::Null));
+    for (a, k) in [
+        (PostRenderAction::None, "none"),
+        (PostRenderAction::Import, "import"),
+        (PostRenderAction::ImportAndReplace, "importAndReplace"),
+        (PostRenderAction::SetProxy, "setProxy"),
+    ] {
+        v.push((mark(it.post_render == a, &format!("Post-Render Action: {}", a.label())), json!({"postRenderAction": k})));
+    }
+    v.push((mark(o.include_project_link, "Include Project Link"), json!({"includeProjectLink": !o.include_project_link})));
     if o.format.supports_audio() {
         v.push(("-".into(), Value::Null));
         for (a, l) in [(AudioOutput::Auto, "auto"), (AudioOutput::On, "on"), (AudioOutput::Off, "off")] {
             let label = match a {
                 AudioOutput::Auto => "Audio Output: Auto",
-                AudioOutput::On => "Audio Output: On (48 kHz stereo)",
+                AudioOutput::On => "Audio Output: On",
                 AudioOutput::Off => "Audio Output: Off",
             };
             v.push((mark(o.audio == a, label), json!({"audio": l})));
+        }
+        for sr in [44_100u32, 48_000, 96_000] {
+            v.push((mark(o.audio_sample_rate == sr, &format!("Sample Rate: {:.1} kHz", sr as f64 / 1000.0)), json!({"sampleRate": sr})));
+        }
+        v.push((mark(o.audio_channels == 1, "Audio Channels: Mono"), json!({"audioChannels": "mono"})));
+        v.push((mark(o.audio_channels != 1, "Audio Channels: Stereo"), json!({"audioChannels": "stereo"})));
+        if matches!(o.format, OutputFormat::ProRes | OutputFormat::Wav | OutputFormat::Aiff) {
+            for f in [AudioFormat::S16, AudioFormat::S24, AudioFormat::F32] {
+                v.push((mark(o.audio_format == f, &format!("Sample Format: {}", f.label())), json!({"audioFormat": f.label()})));
+            }
         }
     }
     v
@@ -165,7 +259,6 @@ fn output_menu(it: &RenderQueueItem, available: &[OutputFormat]) -> Vec<(String,
 /// HEVC / AV1 options: profile, level, rate control (bitrate or constant quality), key frames.
 fn codec_menu(o: &effectcraft_engine::project::render_queue::OutputModule, v: &mut Vec<(String, Value)>) {
     use effectcraft_engine::project::render_queue::{CodecProfile, RateControlMode, VideoCodecOptions};
-    let mark = |on: bool, l: &str| if on { format!("✓ {l}") } else { format!("   {l}") };
     let c = &o.codec;
     v.push(("-".into(), Value::Null));
     for p in CodecProfile::ALL {
@@ -188,19 +281,100 @@ fn codec_menu(o: &effectcraft_engine::project::render_queue::OutputModule, v: &m
             let l = if kbps < 2_000 { format!("Bitrate: {kbps} kbps") } else { format!("Bitrate: {} Mbps", kbps / 1000) };
             v.push((mark(o.bitrate_kbps == kbps, &l), json!({"bitrate": kbps})));
         }
+        v.push((mark(false, "Bitrate: Custom…"), json!({"form": "codecBitrate"})));
     } else {
         for q in [40u8, 60, 70, 80, 90, 100] {
             v.push((mark(c.quality == q, &format!("Quality: {q}")), json!({"quality": q})));
         }
     }
     v.push(("-".into(), Value::Null));
-    for k in [0u32, 1, 12, 30, 60, 120, 250] {
+    for k in [0u32, 1, 30, 60, 120, 250] {
         let l = match k {
             0 => "Key Frames: Auto (2 s)".to_string(),
             1 => "Key Frames: Every Frame (all intra)".to_string(),
             k => format!("Key Frames: Every {k} Frames"),
         };
-        v.push((mark(c.keyframe_interval == k, &l), json!({"keyframeInterval": k})));
+        v.push((mark(o.keyframe_interval == k, &l), json!({"keyframeInterval": k})));
+    }
+    v.push((mark(false, "Key Frame Interval…"), json!({"form": "keyframes"})));
+}
+
+/// Open the form behind a `{"form": …}` menu entry.
+fn open_menu_form(app: &mut EffectcraftApp, it: &RenderQueueItem, form: &str) {
+    use crate::panels::forms::{Field, form as open};
+    let id = it.id;
+    let o = &it.output;
+    match form {
+        "makeRenderTemplate" => open(
+            app,
+            "Make Render Settings Template",
+            "renderQueue.saveTemplate",
+            json!({"kind": "renderSettings", "item": id}),
+            vec![Field::text("name", "Template name", "")],
+        ),
+        "makeOutputTemplate" => open(
+            app,
+            "Make Output Module Template",
+            "renderQueue.saveTemplate",
+            json!({"kind": "outputModule", "item": id}),
+            vec![Field::text("name", "Template name", "")],
+        ),
+        "timeSpan" => {
+            let comp = app.session.project.comp(it.comp);
+            let (a, b) = comp.map(|c| it.settings.span(c)).unwrap_or_default();
+            open(
+                app,
+                "Custom Time Span",
+                "renderQueue.setRenderSettings",
+                json!({"item": id, "timeSpan": "custom"}),
+                vec![Field::num("start", "Start (s)", a.seconds()), Field::num("duration", "Duration (s)", (b.seconds() - a.seconds()).max(0.04))],
+            )
+        }
+        "frameRate" => {
+            let r = app.session.project.comp(it.comp).map(|c| it.settings.rate(c).as_f64()).unwrap_or(30.0);
+            open(app, "Use This Frame Rate", "renderQueue.setRenderSettings", json!({"item": id}), vec![Field::num("frameRate", "Frames per second", r)])
+        }
+        "crop" => open(
+            app,
+            "Crop",
+            "renderQueue.setOutputModule",
+            json!({"item": id}),
+            vec![
+                Field::num("cropTop", "Top", o.crop.top as f64),
+                Field::num("cropLeft", "Left", o.crop.left as f64),
+                Field::num("cropBottom", "Bottom", o.crop.bottom as f64),
+                Field::num("cropRight", "Right", o.crop.right as f64),
+            ],
+        ),
+        "resize" => open(
+            app,
+            "Resize to",
+            "renderQueue.setOutputModule",
+            json!({"item": id}),
+            vec![Field::num("resizeWidth", "Width", o.resize.width as f64), Field::num("resizeHeight", "Height", o.resize.height as f64)],
+        ),
+        "bitrate" => open(
+            app,
+            "WebM Target Bitrate",
+            "renderQueue.setOutputModule",
+            json!({"item": id, "webmBitrate": true}),
+            vec![Field::num("bitrate", "Bitrate (kbps)", o.bitrate_kbps as f64)],
+        ),
+        "codecBitrate" => open(
+            app,
+            "Target Bitrate",
+            "renderQueue.setOutputModule",
+            json!({"item": id, "rateControl": "bitrate"}),
+            vec![Field::num("bitrate", "Bitrate (kbps)", o.bitrate_kbps as f64)],
+        ),
+        "keyframes" => open(
+            app,
+            "Key Frame Interval",
+            "renderQueue.setOutputModule",
+            json!({"item": id}),
+            vec![Field::num("keyframeInterval", "Frames between key frames (0 = every 2 s)", o.keyframe_interval as f64)],
+        ),
+        _ => {}
     }
 }
 
@@ -232,6 +406,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let rendering = app.session.is_rendering();
     let available = app.session.exporter.as_ref().map(|e| e.formats()).unwrap_or_default();
     let mut actions: Vec<(&'static str, Value)> = Vec::new();
+    let mut forms: Vec<(RenderQueueItem, String)> = Vec::new();
     let state_id = egui::Id::new("rq-ui");
     let (mut open, mut selected): (Vec<u64>, Option<u64>) = ui.data(|d| d.get_temp(state_id).unwrap_or_default());
 
@@ -260,6 +435,14 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         actions.push(("renderQueue.render", json!({"wait": false})));
     }
     app.auto.add("renderQueue.render", render_b, "Render");
+    // Notify (sound + notification when the queue finishes).
+    let notify = app.session.project.render_prefs.notify;
+    let nb = Rect::from_min_size(pos2(render_b.min.x - 8.0 - 2.0 * bw - 8.0, render_b.min.y + 4.0), vec2(18.0, 18.0));
+    if widgets::checkbox(ui, nb, notify, &t, egui::Id::new("rq-notify")).clicked() {
+        actions.push(("renderQueue.setNotify", json!({"notify": !notify})));
+    }
+    p.text(pos2(nb.max.x + 5.0, nb.center().y), Align2::LEFT_CENTER, "Notify", Tokens::ui(11.5), t.text_dim);
+    app.auto.add("renderQueue.notify", nb, if notify { "Notify: on" } else { "Notify: off" });
     if rendering {
         if widgets::text_button(ui, stop_b, "Stop", false, &t, egui::Id::new("rq-stop")).clicked() {
             actions.push(("renderQueue.stop", json!({})));
@@ -267,8 +450,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         app.auto.add("renderQueue.stop", stop_b, "Stop");
     }
     // Progress bar.
-    let bar =
-        Rect::from_min_max(pos2(x0, render_b.min.y + 4.0), pos2(if rendering { stop_b.min.x - 16.0 } else { render_b.min.x - 16.0 }, render_b.max.y - 4.0));
+    let bar = Rect::from_min_max(pos2(x0, render_b.min.y + 4.0), pos2(nb.min.x - 16.0, render_b.max.y - 4.0));
     p.rect_filled(bar, 3.0, t.field_bg);
     p.rect_stroke(bar, 3.0, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
     let frac = progress.as_ref().filter(|p| p.total > 0).map(|p| (p.done as f32 / p.total as f32).clamp(0.0, 1.0)).unwrap_or(0.0);
@@ -421,22 +603,28 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
             let r = Rect::from_min_size(pos2(list.min.x, y), vec2(list.width(), ROW_H));
             y += ROW_H;
             lp.rect_filled(r, 0.0, t.panel_bg);
+            let templates = &app.session.project.render_templates;
             let (label, summary, key, menu): (&str, String, &str, Vec<(String, Value)>) = if sub == 0 {
-                ("Render Settings:", it.settings.summary(), "renderSettings", settings_menu(it))
+                ("Render Settings:", it.settings.summary(), "renderSettings", settings_menu(it, templates))
             } else {
-                ("Output Module:", it.output.summary(), "outputModule", output_menu(it, &available))
+                ("Output Module:", it.output.summary(), "outputModule", output_menu(it, &available, templates))
             };
             lp.text(pos2(cx_num - 6.0, r.center().y), Align2::LEFT_CENTER, label, Tokens::ui(11.5), t.text_dim);
             let dd = Rect::from_min_size(pos2(ix + 70.0, r.min.y + 3.0), vec2(220.0, ROW_H - 6.0));
             let did = egui::Id::new(("rq-dd", it.id, sub));
-            if widgets::dropdown(ui, dd, &summary, &t, did).clicked() && !rendering {
+            let shown: String = if summary.chars().count() > 31 { summary.chars().take(30).chain(std::iter::once('…')).collect() } else { summary.clone() };
+            if widgets::dropdown(ui, dd, &shown, &t, did).clicked() && !rendering {
                 widgets::open_popup(ui, did);
             }
             let labels: Vec<String> = menu.iter().map(|(l, _)| l.clone()).collect();
             if let Some(i) = widgets::popup_menu(ui, did, dd.left_bottom(), &labels, None) {
                 let mut params = menu[i].1.clone();
-                params["item"] = json!(it.id);
-                actions.push((if sub == 0 { "renderQueue.setRenderSettings" } else { "renderQueue.setOutputModule" }, params));
+                if let Some(f) = params.get("form").and_then(Value::as_str) {
+                    forms.push((it.clone(), f.to_string()));
+                } else {
+                    params["item"] = json!(it.id);
+                    actions.push((if sub == 0 { "renderQueue.setRenderSettings" } else { "renderQueue.setOutputModule" }, params));
+                }
             }
             app.auto.add(&aid(key), dd, &summary);
             if sub == 0 {
@@ -453,6 +641,18 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     );
                     lp.text(pos2(dd.max.x + 14.0, r.center().y), Align2::LEFT_CENTER, info, Tokens::ui(11.0), t.text_faint);
                 }
+                // Log: Errors Only / Plus Settings / Plus Per Frame Info.
+                let ld = Rect::from_min_size(pos2(r.max.x - 190.0, r.min.y + 3.0), vec2(150.0, ROW_H - 6.0));
+                lp.text(pos2(ld.min.x - 6.0, r.center().y), Align2::RIGHT_CENTER, "Log:", Tokens::ui(11.5), t.text_dim);
+                let lid = egui::Id::new(("rq-log", it.id));
+                if widgets::dropdown(ui, ld, it.log.label(), &t, lid).clicked() && !rendering {
+                    widgets::open_popup(ui, lid);
+                }
+                let llabels: Vec<String> = RenderLog::ALL.iter().map(|l| mark(it.log == *l, l.label())).collect();
+                if let Some(i) = widgets::popup_menu(ui, lid, ld.left_bottom(), &llabels, None) {
+                    actions.push(("renderQueue.setLog", json!({"item": it.id, "log": RenderLog::ALL[i].label()})));
+                }
+                app.auto.add(&aid("log"), ld, it.log.label());
                 continue;
             }
             // Output To.
@@ -556,6 +756,9 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     open.retain(|id| queue.iter().any(|i| i.id == *id));
     ui.data_mut(|d| d.insert_temp(state_id, (open, selected)));
     let ctx = ui.ctx().clone();
+    for (it, f) in forms {
+        open_menu_form(app, &it, &f);
+    }
     for (id, params) in actions {
         if let Err(e) = crate::menus::invoke(app, &ctx, id, params) {
             app.ui.status = e;

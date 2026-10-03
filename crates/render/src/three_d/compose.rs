@@ -74,8 +74,10 @@ impl Item<'_> {
 }
 
 /// Build the plane geometry of a layer for a camera.
-fn geo(cam: &CameraState, world: Mat4, b: [f64; 4], comp: (f64, f64), scale: f64, out: (u32, u32)) -> Option<Geo> {
-    let proj = Mat4::scale(vec3(scale, scale, 1.0)) * cam.projection(comp.0, comp.1);
+fn geo(cam: &CameraState, world: Mat4, b: [f64; 4], comp: (f64, f64), scale: f64, out: (u32, u32), off: (f64, f64)) -> Option<Geo> {
+    // The output canvas may start at `off` (scaled comp pixels): region of interest / Extended
+    // Viewer frames.
+    let proj = Mat4::translate(vec3(-off.0, -off.1, 0.0)) * Mat4::scale(vec3(scale, scale, 1.0)) * cam.projection(comp.0, comp.1);
     let full = proj * world;
     let h = full.plane_to_mat3();
     // Edge-on planes project to a line (singular homography): nothing to draw.
@@ -161,6 +163,13 @@ pub(crate) fn camera_for(r: &Renderer, ctx: &EvalCtx) -> CameraState {
     }
 }
 
+/// The size of the comp the camera looks through: a collapsed precomp's layers are projected
+/// into the outermost comp they collapse into (its centre and size), not their own comp's.
+pub(crate) fn view_size(r: &Renderer, ctx: &EvalCtx) -> (f64, f64) {
+    let c = r.collapse3d.map_or(ctx.comp, |c| c.parent.comp);
+    (c.width as f64, c.height as f64)
+}
+
 /// Number of motion-blur sub-samples for a layer.
 fn mb_samples(r: &Renderer, ctx: &EvalCtx, layer: &Layer) -> usize {
     if r.opts.motion_blur && ctx.comp.enable_motion_blur && r.layer_motion_blur(layer) {
@@ -202,7 +211,7 @@ fn prepare_with<'a>(
     if buf.img.is_empty() {
         return None;
     }
-    let comp = (ctx.comp.width as f64, ctx.comp.height as f64);
+    let comp = view_size(r, ctx);
     let s = r.opts.scale;
     let cam = camera_for(r, ctx);
     let outer = r.collapse3d.map_or(Mat4::IDENTITY, |c| c.world);
@@ -215,7 +224,7 @@ fn prepare_with<'a>(
     let bounds = buf_bounds(&buf);
     let n = if in_run { mb_samples(r, ctx, layer) } else { 1 };
     let geos: Vec<Geo> = if n <= 1 {
-        geo(&cam, world, bounds, comp, s, out).into_iter().collect()
+        geo(&cam, world, bounds, comp, s, out, r.out_offset()).into_iter().collect()
     } else {
         let fd = ctx.comp.frame_duration().seconds();
         let angle = ctx.comp.shutter_angle / 360.0;
@@ -225,7 +234,7 @@ fn prepare_with<'a>(
                 let f = phase + angle * i as f64 / (n - 1) as f64;
                 let sub = ctx.at(ctx.time + Tick::from_seconds_f64(f * fd));
                 let c = camera_for(r, &sub);
-                geo(&c, outer * sub.world_matrix(layer) * local, bounds, comp, s, out)
+                geo(&c, outer * sub.world_matrix(layer) * local, bounds, comp, s, out, r.out_offset())
             })
             .collect()
     };
@@ -919,7 +928,7 @@ pub(crate) fn draw_sky(r: &Renderer, ctx: &EvalCtx, layer: &Layer, canvas: &mut 
     let cam = camera_for(r, ctx);
     let (fwd, right, down) = (cam.forward(), cam.right(), cam.down());
     let s = r.opts.scale.max(1e-9);
-    let (cw, ch) = (ctx.comp.width as f64, ctx.comp.height as f64);
+    let (cw, ch) = view_size(r, ctx);
     let (ox, oy) = r.roi_offset().map_or((0.0, 0.0), |(x, y, _, _)| (x, y));
     let rot = environment_rotation(ctx);
     let (iw, ih) = (img.width as f64, img.height as f64);

@@ -13,7 +13,9 @@ pub mod camera_track;
 pub mod commands;
 pub mod config;
 pub mod demo;
+pub mod history;
 pub mod jobs;
+pub mod learn;
 pub mod links;
 pub mod logging;
 pub mod mask_track;
@@ -25,6 +27,7 @@ pub mod prefs;
 pub mod psd_import;
 pub mod render_queue;
 pub mod roto;
+pub mod scriptui;
 mod session_settings;
 pub mod shortcuts;
 pub mod sysinfo;
@@ -54,6 +57,7 @@ pub use effectcraft_render as render;
 pub use effectcraft_text as text;
 pub use effectcraft_time as time;
 pub use effectcraft_track as track;
+pub use history::{Branch, History, HistoryNode};
 pub use render_queue::{ExportJob, ExportResult, Exporter, JobState};
 
 #[derive(Debug, thiserror::Error)]
@@ -95,15 +99,6 @@ impl Services for FsServices {
 pub trait Importer: Send + Sync {
     /// Probe a file and return footage metadata.
     fn probe(&self, path: &str) -> std::result::Result<effectcraft_project::Footage, String>;
-}
-
-/// Undo history of whole-project snapshots.
-#[derive(Clone, Default)]
-pub struct History {
-    pub undo: Vec<(String, Arc<Project>)>,
-    pub redo: Vec<(String, Arc<Project>)>,
-    /// Key of the last merged step: a continuous gesture with the same key folds into one step.
-    pub merge_key: Option<String>,
 }
 
 /// A keyframe reference: layer, property uid, key time (layer time).
@@ -291,6 +286,8 @@ pub struct Session {
     pub importer: Option<Arc<dyn Importer>>,
     /// Render Queue encoder (the export layer); `None` = export unavailable.
     pub exporter: Option<Arc<dyn Exporter>>,
+    /// Free-space hook for Render Settings ▸ Use Storage Overflow (`None`: never full).
+    pub storage_quota: Option<Arc<dyn effectcraft_project::render_queue::StorageQuota>>,
     /// The running (or finished, not yet polled) render.
     pub render_job: Option<render_queue::RenderJob>,
     /// The running (or finished, not yet polled) track analysis.
@@ -336,6 +333,11 @@ pub struct Session {
     /// The JavaScript scripting engine (set by the host that links `effectcraft-script`):
     /// `script.run`, File ▸ Scripts ▸ Run Script File… (`.jsx`/`.js`) and the Script Console.
     pub script: Option<ScriptRunner>,
+    /// Loads WebAssembly effect plug-ins (set by the host that links `effectcraft-plugin` with
+    /// its runtime): `effect.plugins.load`.
+    pub plugin_loader: Option<PluginLoader>,
+    /// ScriptUI windows and panels opened by scripts (see [`scriptui`]).
+    pub script_ui: scriptui::ScriptUi,
     /// The last physical-memory reading (Settings ▸ Memory & CPU budgets); `None` = unknown
     /// (headless sessions don't query it, see [`Session::memory_tick`]).
     pub sys_memory: Option<sysinfo::SysMemory>,
@@ -351,6 +353,8 @@ pub struct Session {
     /// Finished tasks, newest last (Progress panel, `jobs.list`).
     pub job_log: Vec<jobs::JobRecord>,
     pub next_task_id: u64,
+    /// The running Learn tutorial (Home ▸ Learn), see [`learn`].
+    pub learn: Option<learn::Progress>,
 }
 
 /// A script to run (see [`Session::script`]).
@@ -366,6 +370,10 @@ pub struct ScriptRequest<'a> {
 /// Runs a script against the session and reports `{ok, result, output, error: {message, line,
 /// column, file} | null}`.
 pub type ScriptRunner = fn(&mut Session, &ScriptRequest) -> Value;
+
+/// Loads one WebAssembly effect plug-in (`bytes`, `source` path) into the effect registry and
+/// describes it (`{id, name, category, version, api, params}`).
+pub type PluginLoader = fn(&[u8], &str) -> std::result::Result<Value, String>;
 
 impl Default for Session {
     fn default() -> Self {
@@ -383,6 +391,7 @@ impl Default for Session {
             expr_check: None,
             importer: None,
             exporter: None,
+            storage_quota: None,
             render_job: None,
             track_job: None,
             mask_job: None,
@@ -405,6 +414,8 @@ impl Default for Session {
             autosave: autosave::AutoSaveState::default(),
             snapshot: None,
             script: None,
+            plugin_loader: None,
+            script_ui: scriptui::ScriptUi::default(),
             sys_memory: None,
             applied_nested_switches: None,
             offload: None,
@@ -412,6 +423,7 @@ impl Default for Session {
             tasks: vec![],
             job_log: vec![],
             next_task_id: 1,
+            learn: None,
         }
     }
 }
@@ -433,6 +445,7 @@ impl Session {
             }
         }
         let r = (spec.run)(self, &params)?;
+        self.learn_observe(id, &params);
         if spec.journal {
             self.journal.push((id.to_string(), params));
             if self.journal.len() > 10_000 {
@@ -484,15 +497,13 @@ impl Session {
         }
         let same = merge.is_some() && merge.map(str::to_string) == self.history.merge_key;
         if !same {
-            self.history.undo.push((label.to_string(), before));
+            // Undone steps aren't lost: they stay in the History panel as a branch.
             let levels = self.prefs.general.undo_levels.max(1) as usize;
-            if self.history.undo.len() > levels {
-                let extra = self.history.undo.len() - levels;
-                self.history.undo.drain(..extra);
-            }
+            self.history.record(label, before, levels);
+        } else {
+            self.history.abandon_redo(&before);
         }
         self.history.merge_key = merge.map(str::to_string);
-        self.history.redo.clear();
         self.project = Arc::new(p);
         self.state = st;
         self.bump();
@@ -776,6 +787,8 @@ mod tests_effects;
 #[cfg(test)]
 mod tests_essential;
 #[cfg(test)]
+mod tests_face;
+#[cfg(test)]
 mod tests_fidelity;
 #[cfg(test)]
 mod tests_lottie;
@@ -824,6 +837,11 @@ pub fn text_presets() -> Vec<(String, String)> {
 
 pub fn text_families() -> Vec<String> {
     effectcraft_text::families().into_iter().map(|(f, _)| f).collect()
+}
+
+/// The OpenType feature tags (GSUB / GPOS) of the face a family + style resolves to.
+pub fn font_features(family: &str, style: &str) -> Vec<String> {
+    effectcraft_text::fonts::face(effectcraft_text::resolve(family, style).face).features()
 }
 
 /// One row of the Character panel's font menu.
@@ -887,6 +905,8 @@ pub fn font_menu(prefs: &prefs::Prefs) -> Vec<FontRow> {
     out.extend(all.iter().map(|f| row(f, false)));
     out
 }
+#[cfg(test)]
+mod tests_history;
 #[cfg(test)]
 mod tests_paint;
 #[cfg(test)]

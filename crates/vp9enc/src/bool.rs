@@ -64,31 +64,6 @@ impl BoolEncoder {
         }
     }
 
-    /// Write `value` with a tree (leaves stored negated, as in the decoder's tables).
-    pub fn tree(&mut self, tree: &[i8], probs: &[u8], value: u8) {
-        // Find the path to the leaf.
-        fn path(tree: &[i8], node: usize, value: u8, out: &mut Vec<(usize, bool)>) -> bool {
-            for b in 0..2 {
-                let t = tree[node + b];
-                out.push((node >> 1, b == 1));
-                if t <= 0 {
-                    if (-t) as u8 == value {
-                        return true;
-                    }
-                } else if path(tree, t as usize, value, out) {
-                    return true;
-                }
-                out.pop();
-            }
-            false
-        }
-        let mut p = Vec::with_capacity(8);
-        path(tree, 0, value, &mut p);
-        for (i, bit) in p {
-            self.write(bit, probs[i]);
-        }
-    }
-
     /// Flush (RFC 6386 §7.3) and return the bytes.
     pub fn finish(mut self) -> Vec<u8> {
         let mut c = self.bit_count;

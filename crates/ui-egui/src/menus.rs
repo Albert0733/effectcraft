@@ -456,6 +456,12 @@ pub fn frontend(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, p: Valu
             app.dialog = Some(crate::Dialog::About);
             Value::Null
         }
+        // Window ▸ <ScriptUI panel>: dock (or bring forward) the panel the script built.
+        "window.scriptPanel" => {
+            let id = p.get("window").and_then(Value::as_u64).ok_or("no ScriptUI panel window")? as u32;
+            app.show_panel(PanelKind::ScriptPanel(id));
+            json!({"window": id})
+        }
         "layer.style.options" => {
             crate::panels::layer_styles_dialog::open(app, &p)?;
             Value::Null
@@ -506,8 +512,18 @@ pub fn frontend(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, p: Valu
         }
         "app.templates" => {
             let kind = p.get("kind").and_then(Value::as_str).unwrap_or("renderSettings");
-            let title = if kind == "outputModule" { "Output Module Templates" } else { "Render Settings Templates" };
-            crate::panels::dialogs::info(app, title, "Render and output templates are managed from the Render Queue panel (Window ▸ Render Queue).");
+            crate::panels::rq_templates::open(app, ctx, kind);
+            Value::Null
+        }
+        "renderQueue.notify" => {
+            // Render finished with Notify on: a toast, the dock/taskbar attention request, and the
+            // host's system sound (the desktop app handles `renderQueue.notify`).
+            let msg = p.get("message").and_then(Value::as_str).unwrap_or("Render finished").to_string();
+            app.toast = Some((msg, now));
+            ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(egui::UserAttentionType::Informational));
+            if let Some(f) = app.hooks.app_action.as_ref() {
+                f("renderQueue.notify");
+            }
             Value::Null
         }
         "app.find" => {
@@ -822,7 +838,9 @@ fn file_dialog(app: &mut EffectcraftApp, id: &str, params: &Value) -> Option<Res
         "file.exportLottie" => ("path", Ask::Save("Animation.json")),
         "file.importLottie" => ("path", Ask::Open(&["json", "lottie"])),
         "render.saveCurrentPreview" => ("path", Ask::Save("Preview.mp4")),
-        "file.runScript" => ("path", Ask::Open(&["jsx", "js", "jsonl", "json", "txt"])),
+        "file.runScript" if params.get("name").is_none() => ("path", Ask::Open(&["jsx", "js", "jsonl", "json", "txt"])),
+        "file.installScript" | "file.installScriptUIPanel" => ("path", Ask::Open(&["jsx", "js"])),
+        "effect.plugins.load" if params.get("folder").is_none() => ("path", Ask::Open(&["wasm", "wat"])),
         "file.replaceFootage" => ("path", Ask::Import),
         "file.collectFiles" => ("folder", Ask::Save("Collected Files")),
         "file.saveCopyAsXml" => ("path", Ask::Save("Untitled Project.ecprojx")),
@@ -846,7 +864,7 @@ fn file_dialog(app: &mut EffectcraftApp, id: &str, params: &Value) -> Option<Res
             let Some(f) = app.hooks.pick_files.as_ref() else { return Some(Err("no file dialog available (pass `paths`)".into())) };
             let paths = f(&[
                 "mp4", "mov", "m4v", "mkv", "webm", "png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "bmp", "exr", "wav", "aif", "aiff", "mp3", "flac",
-                "ogg", "opus", "svg", "psd", "psb", "gltf", "glb", "obj", "json", "csv", "tsv",
+                "ogg", "opus", "svg", "pdf", "ai", "eps", "psd", "psb", "gltf", "glb", "obj", "json", "csv", "tsv",
             ]);
             match (paths.is_empty(), key) {
                 (true, _) => None,

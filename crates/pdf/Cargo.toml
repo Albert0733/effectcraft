@@ -1,0 +1,15 @@
+[package]
+name = "effectcraft-pdf"
+description = "Vector footage import: PDF and PDF-compatible Illustrator (.ai) pages and EPS (a PostScript subset) parsed into the SVG render tree (paths, fills, strokes, axial / radial shadings, clipping, optional-content layers)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+effectcraft-svg = { workspace = true }
+kurbo = { workspace = true }
+miniz_oxide = "0.8"

@@ -66,6 +66,11 @@ fn main() -> eframe::Result {
             // Settings, shortcut presets and the crash-recovery sentinel live in the platform
             // config directory. Agent-driven runs (`--control`) skip crash recovery.
             if let Some(dir) = config_dir() {
+                // WebAssembly effect plug-ins in <config>/Plug-ins load before the menus are built.
+                let plugins = dir.join("Plug-ins");
+                if plugins.is_dir() {
+                    let _ = session.execute("effect.plugins.load", json!({"folder": plugins.to_string_lossy()}));
+                }
                 session.config = Some(std::sync::Arc::new(effectcraft_engine::config::DirConfig::new(dir)));
             }
             session.load_settings();

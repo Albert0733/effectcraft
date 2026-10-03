@@ -59,8 +59,8 @@ pub fn query(s: &mut Session, kind: &str, a: &J) -> R {
         }
         "labels" => Ok(json!(Label::ALL.iter().map(|l| l.name()).collect::<Vec<_>>())),
         "effects" => Ok(json!(
-            effectcraft_engine::effects::registry()
-                .iter()
+            effectcraft_engine::effects::all()
+                .into_iter()
                 .map(|e| json!({"id": e.id, "name": e.name, "matchName": matchnames::effect(e.id), "category": e.category}))
                 .collect::<Vec<_>>()
         )),

@@ -3,11 +3,11 @@
 <!-- Generated from the effect registry (crates/effects/src/catalog.rs); do not edit by hand.
      Regenerate: UPDATE_DOCS=1 cargo test -p effectcraft-effects --lib effects_doc_is_current -->
 
-EffectCraft ships 304 effects with 2446 parameters in total, grouped into the same categories as the Effects & Presets panel. Every effect is our own implementation, written from public behaviour descriptions and standard image-processing literature. Parameter names, order, popup options, units, defaults and ranges follow the reference application so that projects, expressions and muscle memory carry over.
+EffectCraft ships 306 effects with 2488 parameters in total, grouped into the same categories as the Effects & Presets panel. Every effect is our own implementation, written from public behaviour descriptions and standard image-processing literature. Parameter names, order, popup options, units, defaults and ranges follow the reference application so that projects, expressions and muscle memory carry over.
 
 - **GPU**: 59 effects also run on the GPU compositor with identical results.
-- **32**: 304 effects process 32-bit float (HDR, overbright) pixels without clamping.
-- **Status**: 262 implemented in full, 42 partial (what is missing is listed).
+- **32**: 306 effects process 32-bit float (HDR, overbright) pixels without clamping.
+- **Status**: 264 implemented in full, 42 partial (what is missing is listed).
 
 Effects are addressed by id (`ec.<category>.<name>`) or display name in commands, scripts and the control channel, and every parameter by its id (`effects/#1/blurriness`).
 
@@ -302,7 +302,7 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 
 | Effect | Id | Params | GPU | 32 | Status |
 |---|---|---:|:-:|:-:|---|
-| 3D Camera Tracker | `ec.perspective.cameratracker` | 10 |  | 32 | Implemented |
+| 3D Camera Tracker | `ec.perspective.cameratracker` | 12 |  | 32 | Implemented |
 | 3D Glasses | `ec.perspective.3dglasses` | 8 |  | 32 | Implemented |
 | Bevel Alpha | `ec.perspective.bevelalpha` | 4 |  | 32 | Implemented |
 | Bevel Edges | `ec.perspective.beveledges` | 4 |  | 32 | Implemented |
@@ -416,6 +416,8 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 | CC Overbrights | `ec.utility.ccoverbrights` | 2 |  | 32 | Implemented |
 | Cineon Converter | `ec.utility.cineon` | 7 |  | 32 | Implemented |
 | Color Profile Converter | `ec.utility.colorprofileconverter` | 7 |  | 32 | Implemented |
+| Face Measurements | `ec.utility.facemeasurements` | 14 |  | 32 | Implemented |
+| Face Track Points | `ec.utility.facetrackpoints` | 26 |  | 32 | Implemented |
 | Grow Bounds | `ec.utility.growbounds` | 1 |  | 32 | Implemented |
 | HDR Compander | `ec.utility.hdrcompander` | 3 |  | 32 | Implemented |
 | HDR Highlight Compression | `ec.utility.hdrcompression` | 1 |  | 32 | Implemented |

@@ -12,8 +12,9 @@ use effectcraft_time::{TICKS_PER_SECOND, Tick};
 use rayon::prelude::*;
 
 use crate::encode::VideoEncoder;
+use crate::encode::mix;
 use crate::webm::{CLUSTER, EBML, INFO, OPUS_RATE, SEGMENT, TRACK_ENTRY, TRACKS, el, el_float, el_str, el_uint, id_bytes, opus_encoder, vint};
-use crate::{Job, Report, Result, State, batch_size, io, render_frame, rgba8, wants_audio};
+use crate::{Cx, Report, Result, State, batch_size, io, wants_audio};
 
 struct Block {
     ms: i64,
@@ -40,16 +41,18 @@ fn cluster(blocks: &mut [Block]) -> Vec<u8> {
     out
 }
 
-pub(crate) fn webm_av1(job: &Job, comp: &Comp, w: u32, h: u32, st: &mut State) -> Result<Report> {
+pub(crate) fn webm_av1(job: &Cx, comp: &Comp, w: u32, h: u32, st: &mut State) -> Result<Report> {
     let rate = job.settings.rate(comp);
     let mut venc = crate::hevc_av1::Av1::new(w, h, rate, job.output)?;
     let with_audio = wants_audio(job);
+    let opus_channels = if job.output.audio_channels == 1 { 1usize } else { 2 };
     let mut opus = with_audio.then(|| opus_encoder(job));
     let total = st.total;
     let frame_ms = |k: u64| -> i64 { ((k as i128 * 1000 * rate.den as i128 + rate.num as i128 / 2) / rate.num as i128) as i64 };
     let duration_ms = frame_ms(total) as f64;
 
-    let mut file = crate::out::create(job.sink, job.path)?;
+    let path = job.place(job.path, 1);
+    let mut file = crate::out::create(job.sink, &path)?;
     let mut head = vec![];
     let mut eb = vec![];
     el_uint(&mut eb, 0x4286, 1);
@@ -96,7 +99,7 @@ pub(crate) fn webm_av1(job: &Job, comp: &Comp, w: u32, h: u32, st: &mut State) -
         el_uint(&mut a, 0x56BB, 80_000_000);
         let mut au = vec![];
         el_float(&mut au, 0xB5, OPUS_RATE as f64);
-        el_uint(&mut au, 0x9F, 2);
+        el_uint(&mut au, 0x9F, opus_channels as u64);
         el(&mut a, 0xE1, &au);
         el(&mut tracks, TRACK_ENTRY, &a);
     }
@@ -114,10 +117,10 @@ pub(crate) fn webm_av1(job: &Job, comp: &Comp, w: u32, h: u32, st: &mut State) -
         if end > cursor {
             let n = (end - cursor) as usize;
             let start = Tick(((cursor as i128 * TICKS_PER_SECOND as i128) / OPUS_RATE as i128) as i64);
-            pcm_left.extend(effectcraft_render::audio::mix_comp(job.project, job.footage, job.expr, job.comp, start, n, OPUS_RATE));
+            pcm_left.extend(mix(job, start, n, OPUS_RATE));
             cursor = end;
         }
-        let fs = effectcraft_opusenc::OpusEncoder::FRAME_SIZE * 2;
+        let fs = effectcraft_opusenc::OpusEncoder::FRAME_SIZE * opus_channels;
         if finish && !pcm_left.is_empty() {
             let pad = (fs - pcm_left.len() % fs) % fs + fs;
             pcm_left.extend(std::iter::repeat_n(0.0, pad));
@@ -144,7 +147,9 @@ pub(crate) fn webm_av1(job: &Job, comp: &Comp, w: u32, h: u32, st: &mut State) -
     let mut blocks = vec![];
     while i < total {
         let end = (i + batch).min(total);
-        let frames: Vec<Vec<u8>> = (i..end).into_par_iter().map(|k| rgba8(&render_frame(job, comp, k), comp, Channels::Rgb, w, h)).collect();
+        // RGB, or the alpha matte alone (Channels: Alpha); AV1 in WebM carries no alpha track.
+        let channels = if job.output.channels == Channels::Alpha { Channels::Alpha } else { Channels::Rgb };
+        let frames: Vec<Vec<u8>> = (i..end).into_par_iter().map(|k| job.pixels(&job.frame(comp, k), comp, channels, w, h)).collect();
         for (j, px) in frames.iter().enumerate() {
             let k = i + j as u64;
             for p in venc.encode(px, k)? {
@@ -168,5 +173,5 @@ pub(crate) fn webm_av1(job: &Job, comp: &Comp, w: u32, h: u32, st: &mut State) -
     file.write_all(&size).map_err(io)?;
     file.seek(SeekFrom::End(0)).map_err(io)?;
     let bytes = file.finish()?;
-    Ok(Report { path: job.path.to_string(), frames: 0, width: w, height: h, seconds: 0.0, bytes, audio: with_audio })
+    Ok(Report { path, frames: 0, width: w, height: h, seconds: 0.0, bytes, audio: with_audio, log: None, overflow: vec![] })
 }

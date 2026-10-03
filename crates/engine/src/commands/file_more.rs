@@ -364,6 +364,14 @@ fn collect_files(s: &mut Session, p: &Value) -> Result<Value> {
 /// array or JSON lines of `{"command": id, "params": {…}}` (also accepts the control channel's
 /// `{"method": "engine.execute", "params": {"id", "params"}}`).
 fn run_script(s: &mut Session, p: &Value) -> Result<Value> {
+    // File ▸ Scripts ▸ <installed or sample script>.
+    if let Some(name) = str_p(p, "name")
+        && p.get("path").is_none()
+        && p.get("steps").is_none()
+    {
+        let name = name.to_string();
+        return super::scripts::run_named(s, &name);
+    }
     if let Some(path) = str_p(p, "path")
         && p.get("steps").is_none()
         && is_js_script(path)
@@ -375,13 +383,7 @@ fn run_script(s: &mut Session, p: &Value) -> Result<Value> {
         let code = String::from_utf8_lossy(&bytes).to_string();
         let name = std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| path.to_string());
         let out = run_js(s, &code, path, false)?;
-        if let Some(e) = out.get("error").filter(|e| !e.is_null()) {
-            let line = e.get("line").and_then(Value::as_u64).map(|l| format!(" (line {l})")).unwrap_or_default();
-            let msg = e.get("message").and_then(Value::as_str).unwrap_or("script error");
-            s.events.push(crate::Event::Toast { message: format!("{name}{line}: {msg}"), error: true });
-            return Err(EngineError::Other(format!("{name}{line}: {msg}")));
-        }
-        return Ok(out);
+        return report_js(s, &name, out);
     }
     let steps: Vec<Value> = match (p.get("steps"), str_p(p, "path")) {
         (Some(Value::Array(a)), _) => a.clone(),
@@ -424,6 +426,23 @@ fn run_script(s: &mut Session, p: &Value) -> Result<Value> {
 fn is_js_script(path: &str) -> bool {
     let l = path.to_ascii_lowercase();
     l.ends_with(".jsx") || l.ends_with(".js") || l.ends_with(".jsxbin")
+}
+
+/// A script error becomes a toast and a command error.
+fn report_js(s: &mut Session, name: &str, out: Value) -> Result<Value> {
+    if let Some(e) = out.get("error").filter(|e| !e.is_null()) {
+        let line = e.get("line").and_then(Value::as_u64).map(|l| format!(" (line {l})")).unwrap_or_default();
+        let msg = e.get("message").and_then(Value::as_str).unwrap_or("script error");
+        s.events.push(crate::Event::Toast { message: format!("{name}{line}: {msg}"), error: true });
+        return Err(EngineError::Other(format!("{name}{line}: {msg}")));
+    }
+    Ok(out)
+}
+
+/// Run a script's code under its file name (installed / sample scripts, ScriptUI panels).
+pub(crate) fn run_js_named(s: &mut Session, code: &str, name: &str) -> Result<Value> {
+    let out = run_js(s, code, name, false)?;
+    report_js(s, name, out)
 }
 
 /// Run JavaScript through the session's scripting engine.
@@ -809,7 +828,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Run Script File...",
             ["File", "Scripts"],
             None,
-            "{path (.jsx/.js JavaScript, or a .jsonl/.json command script) | steps: [{command, params}]}",
+            "{path (.jsx/.js JavaScript, or a .jsonl/.json command script) | name (an installed or sample script, see file.scripts.list) | steps: [{command, params}]}",
             always,
             run_script
         ),

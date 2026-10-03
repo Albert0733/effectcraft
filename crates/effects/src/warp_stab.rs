@@ -17,8 +17,11 @@
 //!   Edge Cropping ignores bad edge pixels of the input frames;
 //! - **Show Track Points** draws the analysed background features.
 //!
-//! *Subspace Warp* is approximated by a per-frame perspective warp (no content-preserving
-//! mesh warp yet), and *Rolling Shutter Ripple* is stored but has no effect.
+//! *Subspace Warp* warps each frame with a content-preserving mesh fitted to the analysis'
+//! subspace-smoothed feature trajectories ([`effectcraft_track::subspace`]); analyses made
+//! before trajectories were stored fall back to a perspective warp. *Rolling Shutter Ripple*
+//! picks the mesh: Automatic Reduction (12 × 8, stiffer) or Enhanced Reduction (twice the rows,
+//! softer), which follows the row-wise wobble of rolling-shutter shake more closely.
 //!
 //! Without an analysis (or with one made for another layer size) the input passes through.
 
@@ -30,7 +33,7 @@ use effectcraft_keyframe::Value;
 use effectcraft_project::ParamUi;
 use effectcraft_raster::{Image, Px};
 use effectcraft_track::Homography;
-use effectcraft_track::stabilize::{Framing, Method, Plan, StabResult, StabSettings, WarpAnalysis, plan};
+use effectcraft_track::stabilize::{Framing, Method, Plan, Ripple, StabResult, StabSettings, WarpAnalysis, plan};
 use rayon::prelude::*;
 
 use crate::{Buf, EffectCtx, EffectSpec, Params, num, p, popup, slider};
@@ -145,6 +148,7 @@ pub fn settings(params: &Params, fps: f64) -> StabSettings {
         // AE's 0…100 slider (50 = balanced) onto the planner's −100…100.
         crop_less_smooth_more: (f(params, "advanced/cropLessSmoothMore") - 50.0) * 2.0,
         fps,
+        ripple: if e(params, "advanced/rollingShutterRipple") == 1 { Ripple::Enhanced } else { Ripple::Automatic },
     }
 }
 
@@ -175,7 +179,7 @@ fn settings_key(s: &StabSettings) -> u64 {
     for v in [s.smoothness, s.max_scale, s.action_safe, s.additional_scale, s.crop_less_smooth_more, s.fps] {
         h.write_u64(v.to_bits());
     }
-    h.write(format!("{:?}{:?}{:?}{:?}", s.result, s.method, s.preserve_scale, s.framing).as_bytes());
+    h.write(format!("{:?}{:?}{:?}{:?}{:?}", s.result, s.method, s.preserve_scale, s.framing, s.ripple).as_bytes());
     h.finish()
 }
 
@@ -275,6 +279,13 @@ fn render(ctx: &EffectCtx, buf: Buf) -> Buf {
     }
     let sc = if buf.scale > 0.0 { buf.scale } else { 1.0 };
     let Some(inv) = pl.warps[k].inverse() else { return buf };
+    // Output point → source point of this frame (a mesh lookup for Subspace Warp).
+    let mesh = pl.meshes.get(k);
+    let finv = pl.framing.inverse().unwrap_or(Homography::IDENTITY);
+    let src_of = |p: [f64; 2]| match mesh {
+        Some(m) => m.sample(finv.apply(p)),
+        None => inv.apply(p),
+    };
     let (ow, oh) = (((size[0] * sc).ceil() as u32).max(1), ((size[1] * sc).ceil() as u32).max(1));
     let synth = matches!(settings(ctx.params, 30.0).framing, Framing::SynthesizeEdges);
     let crop = [
@@ -306,7 +317,7 @@ fn render(ctx: &EffectCtx, buf: Buf) -> Buf {
             {
                 continue;
             }
-            let q = inv.apply(p);
+            let q = src_of(p);
             if !synth {
                 *px = sample(src, q);
                 continue;
@@ -337,12 +348,12 @@ fn render(ctx: &EffectCtx, buf: Buf) -> Buf {
     });
     let need = need_m.into_inner().unwrap_or_else(|e| e.into_inner());
     if synth && need.iter().any(|w| *w > 0.0) {
-        synthesize(ctx, &a, k, &inv, &crop, sc, &mut out, &need);
+        synthesize(ctx, &a, k, &src_of, &crop, sc, &mut out, &need);
     }
     if b(ctx.params, "advanced/showTrackPoints") {
         let r = (2.5 * f(ctx.params, "advanced/trackPointSize") / 100.0 * sc).max(0.5);
         for q in &a.frames[k].points {
-            let o = pl.warps[k].apply([q[0] as f64, q[1] as f64]);
+            let Some(o) = pl.output_of(k, [q[0] as f64, q[1] as f64]) else { continue };
             dot(&mut out, [o[0] * sc, o[1] * sc], r, [0.25, 0.75, 1.0, 1.0]);
         }
     }
@@ -352,7 +363,16 @@ fn render(ctx: &EffectCtx, buf: Buf) -> Buf {
 /// Fill the pixels flagged in `need` (weight = how much synthesized content they take) from
 /// neighbouring frames, nearest first.
 #[allow(clippy::too_many_arguments)]
-fn synthesize(ctx: &EffectCtx, a: &WarpAnalysis, k: usize, inv: &Homography, crop: &[f64; 4], sc: f64, out: &mut Image, need: &[f32]) {
+fn synthesize(
+    ctx: &EffectCtx,
+    a: &WarpAnalysis,
+    k: usize,
+    src_of: &(dyn Fn([f64; 2]) -> [f64; 2] + Sync),
+    crop: &[f64; 4],
+    sc: f64,
+    out: &mut Image,
+    need: &[f32],
+) {
     let Some(host) = ctx.env.host else { return };
     let n = a.frames.len();
     let range = ((f(ctx.params, "advanced/synthesizeInputRange").max(0.0) / a.frame_duration.max(1e-6)).round() as usize).min(60);
@@ -376,7 +396,7 @@ fn synthesize(ctx: &EffectCtx, a: &WarpAnalysis, k: usize, inv: &Homography, cro
                 .filter(|i| !filled[**i])
                 .filter_map(|i| {
                     let (x, y) = (i % ow, i / ow);
-                    let q = inv.apply([(x as f64 + 0.5) / sc, (y as f64 + 0.5) / sc]);
+                    let q = src_of([(x as f64 + 0.5) / sc, (y as f64 + 0.5) / sc]);
                     let qj = m.apply(q);
                     inside(crop, qj).then(|| (*i, nb.img.sample_bilinear_clamped(qj[0] * nb.scale + nb.offset[0], qj[1] * nb.scale + nb.offset[1])))
                 })
@@ -412,7 +432,7 @@ mod tests {
     use effectcraft_track::stabilize::FrameMotion;
 
     fn analysis_json(n: usize, w: f64, h: f64, shift: impl Fn(usize) -> [f64; 2]) -> String {
-        let mut a = WarpAnalysis { version: 1, start: 0.0, frame_duration: 1.0 / 25.0, size: [w, h], detailed: false, frames: vec![] };
+        let mut a = WarpAnalysis { version: 1, start: 0.0, frame_duration: 1.0 / 25.0, size: [w, h], detailed: false, frames: vec![], tracks: vec![] };
         for k in 0..n {
             let mut fm = FrameMotion::default();
             if k > 0 {

@@ -4,6 +4,7 @@
 //! item's switch).
 
 use effectcraft_project::render_queue::{Channels, OutputFormat, OutputModule, PostRenderAction, ProResProfile, RenderQuality, RenderQueueItem, TimeSpan};
+use effectcraft_project::render_templates::TemplateSlot;
 use effectcraft_project::{Footage, ItemId, ItemKind, Proxy};
 use effectcraft_time::Tick;
 use serde_json::{Value, json};
@@ -159,18 +160,28 @@ fn create_proxy(s: &mut Session, p: &Value) -> Result<Value> {
         k => return Err(bad(C, format!("kind: still|movie, not `{k}`"))),
     };
     let mut it = RenderQueueItem::new(0, cid);
+    // The Movie / Still Proxy Default templates, at draft quality and the proxy resolution.
+    let templates = &s.project.render_templates;
+    let slot = if still { TemplateSlot::StillProxy } else { TemplateSlot::MovieProxy };
+    it.settings = templates.default_render_settings(slot);
     it.settings.quality = RenderQuality::Draft;
     it.settings.resolution = p.get("resolution").and_then(Value::as_f64).unwrap_or(0.5).clamp(0.05, 1.0);
     if still {
         // One frame at the current time (the comp's poster frame when not the active comp).
         let t = if s.active_comp_id() == Some(cid) { s.time() } else { comp.poster_time };
         it.settings.time_span = TimeSpan::Custom { start: t, end: t + comp.frame_duration() };
-        it.output = OutputModule::for_format(OutputFormat::PngSequence);
-        it.output.output = "[compName]_proxy_[#####].png".into();
+        it.output = templates.default_output_module(slot);
+        if !it.output.format.is_sequence() {
+            it.output = OutputModule::for_format(OutputFormat::PngSequence);
+        }
+        it.output.output = "[compName]_proxy_[#####].[fileExtension]".into();
     } else {
         it.settings.time_span = TimeSpan::LengthOfComp;
-        it.output = OutputModule::for_format(OutputFormat::ProRes);
-        it.output.prores_profile = ProResProfile::P4444;
+        it.output = templates.default_output_module(slot);
+        if !it.output.format.is_movie() {
+            it.output = OutputModule::for_format(OutputFormat::ProRes);
+            it.output.prores_profile = ProResProfile::P4444;
+        }
         it.output.output = "[compName]_proxy.[fileExtension]".into();
     }
     it.output.channels = Channels::Rgba;

@@ -50,7 +50,19 @@ fn project(audio: Option<&Path>) -> (Project, ItemId) {
 fn run(p: &Project, cid: ItemId, footage: &dyn FootageSource, om: &OutputModule, path: &Path) -> effectcraft_export::Report {
     let s = RenderSettings { time_span: TimeSpan::LengthOfComp, ..Default::default() };
     let path = path.to_string_lossy().to_string();
-    let job = Job { project: p, footage, expr: None, accel: None, comp: cid, settings: &s, output: om, path: &path, sink: None, nested_switches: true };
+    let job = Job {
+        project: p,
+        footage,
+        expr: None,
+        accel: None,
+        comp: cid,
+        settings: &s,
+        output: om,
+        path: &path,
+        sink: None,
+        nested_switches: true,
+        options: Default::default(),
+    };
     let mut last = Progress::default();
     let r = export(&job, &mut |pr| {
         last = *pr;
@@ -135,7 +147,7 @@ fn ffmpeg_check(path: &Path, decoder: Option<&str>, tol: f32) {
 
 fn module(format: OutputFormat, keyint: u32) -> OutputModule {
     let mut om = OutputModule::for_format(format);
-    om.codec.keyframe_interval = keyint;
+    om.keyframe_interval = keyint;
     om.codec.rate_control = RateControlMode::Quality;
     om.codec.quality = 80;
     om.audio = AudioOutput::Off;

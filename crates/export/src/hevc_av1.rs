@@ -76,7 +76,7 @@ pub(crate) fn hevc_config(w: u32, h: u32, rate: FrameRate, om: &OutputModule) ->
         RateControlMode::Bitrate => he::RateControl::Bitrate { kbps: om.bitrate_kbps.max(50) },
         RateControlMode::Quality => he::RateControl::ConstantQp(o.hevc_qp()),
     };
-    cfg.keyint = o.keyint(rate.as_f64());
+    cfg.keyint = om.keyint(rate.as_f64());
     cfg
 }
 
@@ -128,7 +128,7 @@ pub(crate) fn av1_config(w: u32, h: u32, rate: FrameRate, om: &OutputModule) -> 
         RateControlMode::Bitrate => ae::RateControl::Bitrate { kbps: om.bitrate_kbps.max(50) },
         RateControlMode::Quality => ae::RateControl::ConstantQ(o.av1_qindex()),
     };
-    cfg.keyint = o.keyint(rate.as_f64());
+    cfg.keyint = om.keyint(rate.as_f64());
     cfg
 }
 
@@ -185,7 +185,7 @@ mod tests {
         om.codec.level = Some(41);
         om.codec.rate_control = RateControlMode::Quality;
         om.codec.quality = 100;
-        om.codec.keyframe_interval = 12;
+        om.keyframe_interval = 12;
         let rate = FrameRate::new(30, 1);
         let h = hevc_config(64, 32, rate, &om);
         assert_eq!(h.profile, effectcraft_hevcenc::Profile::Main10);
@@ -195,7 +195,7 @@ mod tests {
         let a = av1_config(64, 32, rate, &om);
         assert_eq!((a.bit_depth, a.level_idx, a.keyint), (10, Some(9), 12));
         om.codec.rate_control = RateControlMode::Bitrate;
-        om.codec.keyframe_interval = 0;
+        om.keyframe_interval = 0;
         om.bitrate_kbps = 3000;
         let a = av1_config(64, 32, rate, &om);
         assert_eq!((a.rate, a.keyint), (effectcraft_av1enc::RateControl::Bitrate { kbps: 3000 }, 60));

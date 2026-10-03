@@ -200,3 +200,37 @@ fn wireframe_quality_draws_the_layer_bounds() {
     let img = render_frame(&p, cid, Tick::ZERO, 1.0);
     assert!(img.data.iter().all(|q| q[3] == 0.0 || q[3] == 1.0));
 }
+
+#[test]
+fn collapsed_precomp_of_another_size_renders_through_the_parent_camera() {
+    // A 1000×600 scene comp with a blue 3D solid at its centre, collapsed into a 300×200 comp
+    // whose camera looks at the precomp layer (at the parent's centre). The nested layers must
+    // be projected with the parent comp's view (its centre and size), not the scene comp's.
+    let run = |three_d_precomp: bool, camera: bool| {
+        let mut p = project();
+        let outer = Comp::new(300, 200, FrameRate::FPS_30, Tick::from_seconds_f64(2.0));
+        let inner = Comp::new(1000, 600, FrameRate::FPS_30, Tick::from_seconds_f64(2.0));
+        let mut blue = solid(&mut p, &inner, [0.0, 0.0, 1.0], (40, 40), [500.0, 300.0, 0.0]);
+        blue.switches.three_d = true;
+        let mut inner = inner;
+        inner.layers = vec![blue];
+        let iid = p.add_item("Scene", Label::Sandstone, None, ItemKind::Comp(inner.into()));
+        let mut pre = build::layer(&mut p, &outer, "Scene", LayerSource::Comp { item: iid }, (1000, 600), None);
+        pre.switches.three_d = three_d_precomp;
+        pre.switches.collapse = true;
+        let mut c = outer.clone();
+        c.layers = vec![pre];
+        if camera {
+            let cam = build::layer(&mut p, &outer, "Camera", LayerSource::Camera, (300, 200), None);
+            c.layers.insert(0, cam);
+        }
+        let cid = p.add_item("Face", Label::Sandstone, None, ItemKind::Comp(c.into()));
+        render_frame(&p, cid, Tick::ZERO, 1.0)
+    };
+    for (three_d, camera) in [(true, true), (true, false), (false, true)] {
+        let img = run(three_d, camera);
+        let c = img.get(150, 100);
+        assert!(c[2] > 0.99 && c[3] > 0.99, "3D precomp {three_d}, camera {camera}: centre {c:?}");
+        assert!(img.get(100, 100)[3] < 0.01, "only the 40 px solid is drawn");
+    }
+}

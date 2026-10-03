@@ -8,6 +8,7 @@ pub mod build;
 pub mod essential;
 pub mod props;
 pub mod render_queue;
+pub mod render_templates;
 pub mod styles;
 pub mod tracking;
 
@@ -830,9 +831,9 @@ pub struct Proxy {
     pub enabled: bool,
 }
 
-/// A layer of a layered still (a Photoshop document) used as footage
-/// (File ▸ Import ▸ Composition / Composition – Retain Layer Sizes, or Choose Layer).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// A layer of a layered still (a Photoshop document, or a PDF / Illustrator / EPS file) used as
+/// footage (File ▸ Import ▸ Composition / Composition – Retain Layer Sizes, or Choose Layer).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceLayer {
     /// Layer record index in the file (bottom of the stack = 0).
     pub index: u32,
@@ -840,6 +841,10 @@ pub struct SourceLayer {
     /// The footage is the layer's own bounds (Retain Layer Sizes) rather than the document size.
     #[serde(default)]
     pub layer_size: bool,
+    /// A Photoshop smart object: the unique id of its embedded file (linked layer data), which
+    /// is the footage instead of the layer's pixels.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embedded: Option<String>,
 }
 
 fn one() -> u32 {
@@ -856,6 +861,7 @@ pub struct Solid {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type")]
+#[allow(clippy::large_enum_variant)]
 pub enum ItemKind {
     Folder,
     Comp(Arc<Comp>),
@@ -935,11 +941,25 @@ pub struct Project {
     /// The Render Queue (Composition ▸ Add to Render Queue).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub render_queue: Vec<render_queue::RenderQueueItem>,
+    /// Render Settings / Output Module templates and their defaults.
+    #[serde(default, skip_serializing_if = "render_templates::RenderTemplates::is_default")]
+    pub render_templates: render_templates::RenderTemplates,
+    /// Render Queue preferences (Notify, storage overflow folders).
+    #[serde(default, skip_serializing_if = "render_queue::RenderQueuePrefs::is_default")]
+    pub render_prefs: render_queue::RenderQueuePrefs,
 }
 
 impl Default for Project {
     fn default() -> Self {
-        Project { schema: SCHEMA_VERSION, settings: ProjectSettings::default(), items: BTreeMap::new(), next_id: 1, render_queue: Vec::new() }
+        Project {
+            schema: SCHEMA_VERSION,
+            settings: ProjectSettings::default(),
+            items: BTreeMap::new(),
+            next_id: 1,
+            render_queue: Vec::new(),
+            render_templates: Default::default(),
+            render_prefs: Default::default(),
+        }
     }
 }
 

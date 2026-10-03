@@ -121,6 +121,17 @@ enum Gesture {
         pin: u64,
         inv: Mat3,
     },
+    /// Puppet tool Record mode (⌘/Ctrl-drag a pin): the drag is sampled in real time (seconds
+    /// since it began, layer space) and becomes keyframes on release (`puppet.recordPin`); the
+    /// current time runs along while recording.
+    PuppetRecord {
+        layer: LayerId,
+        pin: u64,
+        inv: Mat3,
+        began: f64,
+        cti: Tick,
+        samples: Vec<(f64, [f64; 2])>,
+    },
     /// Pen tool: pulling the tangents of the vertex just placed.
     Pen {
         layer: LayerId,
@@ -404,11 +415,14 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let p = ui.painter().clone();
     VIEW_CAM.with(|c| c.set(app.session.view_camera(cid)));
 
-    // Navigator bar (open comps as breadcrumbs).
-    let nav = Rect::from_min_size(rect.min, vec2(rect.width(), 24.0));
+    // Navigator bar (open comps as breadcrumbs). After Effects shows a single breadcrumb row:
+    // when the Composition Navigator (nested comp flow) is above the viewer, this row is left
+    // out.
+    let nav_h = if super::precomp::has_flow(app) { 0.0 } else { 24.0 };
+    let nav = Rect::from_min_size(rect.min, vec2(rect.width(), nav_h));
     p.rect_filled(nav, 0.0, t.panel_bg);
     let mut x = nav.min.x + 10.0;
-    let open = app.session.state.open_comps.clone();
+    let open = if nav_h > 0.0 { app.session.state.open_comps.clone() } else { vec![] };
     for oc in open {
         let name = app.session.project.item(oc).map(|i| i.name.clone()).unwrap_or_default();
         let g = p.layout_no_wrap(name.clone(), Tokens::ui(11.5), t.text);
@@ -461,6 +475,9 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     ctx.data_mut(|d| d.insert_temp(map_id(), map));
     let comp_rect = Rect::from_min_size(origin, vec2(cw * zoom, ch * zoom));
     let painter = p.with_clip_rect(area);
+    // Settings ▸ 3D ▸ Extended Viewer: custom 3D views (and Draft 3D) render the visible
+    // pasteboard too, so 3D layers reaching past the comp frame stay visible there.
+    app.ui.viewer.extended = extended_region(app, &comp, cid, map);
 
     // Frame.
     let ppp = ctx.pixels_per_point();
@@ -491,7 +508,13 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let ectx = EvalCtx { project: &snap_project, comp_id: cid, comp: &comp, time, expr: snap_expr.as_deref(), footage: None };
     // The frame (or snapshot) through Show Channel and exposure; ROI frames cover the region.
     vt::draw_frame(app, &ctx, &painter, comp_rect, cid, &ectx);
-    painter.rect_stroke(comp_rect, 0.0, Stroke::new(1.0, Color32::from_black_alpha(160)), StrokeKind::Outside);
+    if app.ui.viewer.extended.is_some() {
+        // The comp frame outlined over the extended render.
+        painter.rect_stroke(comp_rect, 0.0, Stroke::new(1.0, Color32::from_gray(150)), StrokeKind::Outside);
+        app.auto.add("viewer.extendedArea", rect_of(&map, app.ui.viewer.extended), "Extended Viewer area");
+    } else {
+        painter.rect_stroke(comp_rect, 0.0, Stroke::new(1.0, Color32::from_black_alpha(160)), StrokeKind::Outside);
+    }
     app.auto.add("viewer.comp", comp_rect, &comp_name);
     app.auto.add("viewer.area", area, "Composition viewer");
 
@@ -922,7 +945,13 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
             t if t.is_shape() => Some(Gesture::Create { tool: t, start: cpt }),
             t if t.puppet_kind().is_some() => pin_hits.iter().rev().find(|h| h.pos.distance(press) < 8.0).and_then(|h| {
                 let l = comp.layer(h.layer)?;
-                Some(Gesture::PuppetPin { layer: h.layer, pin: h.pin, inv: l2c(&ectx, l).0.inverse()? })
+                let inv = l2c(&ectx, l).0.inverse()?;
+                if mods.command {
+                    let lp = inv.apply(gv2(cpt[0], cpt[1]));
+                    let began = ui.input(|i| i.time);
+                    return Some(Gesture::PuppetRecord { layer: h.layer, pin: h.pin, inv, began, cti: time, samples: vec![(0.0, [lp.x, lp.y])] });
+                }
+                Some(Gesture::PuppetPin { layer: h.layer, pin: h.pin, inv })
             }),
             Tool::Orbit | Tool::PanCamera | Tool::Dolly => Some(Gesture::Camera { tool }),
             Tool::Selection if super::tracker::hit_at(&track_hits, press).is_some() => {
@@ -1158,6 +1187,20 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 }
                 let _ = app.session.execute("mask.setVertex", params);
             }
+            Gesture::PuppetRecord { layer, pin, inv, began, cti, mut samples } => {
+                let lp = inv.apply(gv2(cpt[0], cpt[1]));
+                let now = ui.input(|i| i.time) - began;
+                if samples.last().is_none_or(|s| now > s.0) {
+                    samples.push((now, [lp.x, lp.y]));
+                }
+                // The current time runs with the recording (Record Options ▸ Speed).
+                let speed = app.session.state.puppet.record_speed.max(1.0) / 100.0;
+                app.session.set_time(cti + Tick::from_seconds_f64(now / speed));
+                painter.circle_filled(pos, 6.0, Color32::from_rgb(0xe0, 0x30, 0x30));
+                painter.text(pos + vec2(10.0, -10.0), Align2::LEFT_BOTTOM, "Recording", Tokens::ui(11.0), Color32::from_rgb(0xff, 0x60, 0x60));
+                ui.data_mut(|dd| dd.insert_temp(gid, Gesture::PuppetRecord { layer, pin, inv, began, cti, samples }));
+                ui.ctx().request_repaint();
+            }
             Gesture::PuppetPin { layer, pin, inv } => {
                 let lp = inv.apply(gv2(cpt[0], cpt[1]));
                 if let Err(e) = app.session.execute("puppet.movePin", json!({"layer": layer.0, "pin": pin, "position": [lp.x, lp.y], "merge": merge})) {
@@ -1190,6 +1233,12 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     if resp.drag_stopped() {
         if let (Some(g), Some(pos)) = (gesture, resp.interact_pointer_pos()) {
             match g {
+                Gesture::PuppetRecord { layer, pin, cti, samples, .. } => {
+                    let pts: Vec<serde_json::Value> = samples.iter().map(|(t, p)| json!([t, p[0], p[1]])).collect();
+                    if let Err(e) = app.session.execute("puppet.recordPin", json!({"layer": layer.0, "pin": pin, "samples": pts, "start": cti.seconds()})) {
+                        app.ui.status = e.to_string();
+                    }
+                }
                 Gesture::Create { tool, start } => {
                     let end = map.to_comp(pos);
                     create_shape(app, tool, start, end, mods.shift);
@@ -1654,6 +1703,34 @@ pub(crate) fn hex_rgb(s: &str) -> Option<[u8; 3]> {
     Some([p(0)?, p(2)?, p(4)?])
 }
 
+/// The Extended Viewer's render region for this frame (see [`ViewerState::extended`]):
+/// Settings ▸ 3D ▸ Extended Viewer on, the comp has 3D layers and the view is a custom 3D view
+/// (or Draft 3D is on), and part of the visible viewer lies outside the comp frame.
+///
+/// [`ViewerState::extended`]: crate::state::ViewerState::extended
+pub(crate) fn extended_region(
+    app: &EffectcraftApp,
+    comp: &effectcraft_engine::project::Comp,
+    cid: effectcraft_engine::project::ItemId,
+    map: ViewerMap,
+) -> Option<[f64; 4]> {
+    if !app.session.prefs.three_d.extended_viewer || !comp.has_3d() || app.session.state.region_of_interest.is_some() {
+        return None;
+    }
+    let view = app.session.state.views3d.get(&cid).map(|v| v.current).unwrap_or_default();
+    if view == View3D::ActiveCamera && !comp.draft_3d {
+        return None;
+    }
+    let a = map.to_comp(map.area.min);
+    let b = map.to_comp(map.area.max);
+    effectcraft_engine::render::extended_region(comp.width, comp.height, [a[0], a[1], b[0], b[1]], 1.0)
+}
+
+fn rect_of(map: &ViewerMap, r: Option<[f64; 4]>) -> Rect {
+    let [x, y, w, h] = r.unwrap_or_default();
+    Rect::from_min_max(map.to_screen([x, y]), map.to_screen([x + w, y + h]))
+}
+
 /// Put a rendered frame on screen: CPU pixels go into an egui texture; GPU frames are drawn
 /// straight from their wgpu texture (registered with egui-wgpu, no readback).
 fn show_frame(app: &mut EffectcraftApp, ctx: &egui::Context, key: crate::frames::FrameKey, img: crate::frames::FrameImage) {
@@ -1672,7 +1749,7 @@ fn show_frame(app: &mut EffectcraftApp, ctx: &egui::Context, key: crate::frames:
             }
             app.viewer_shown = app.viewer_tex.as_ref().map(|(t, k)| (t.id(), *k));
             app.viewer_image = Some(img);
-            vt::set_texture_roi(ctx, app.session.state.region_of_interest);
+            vt::set_texture_roi(ctx, app.session.state.region_of_interest.or(app.ui.viewer.extended));
         }
         FrameImage::Gpu(f) => {
             let Some(rs) = &app.wgpu else { return };
