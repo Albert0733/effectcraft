@@ -35,12 +35,14 @@ fn project_panel_scrolls_and_reveals_the_selection() {
     h.run_steps(3);
     // Far more rows than fit: a scroll bar, and the bottom rows aren't drawn yet.
     assert!(h.state().auto.find("project.vscroll").is_some());
-    let last = h.state().session.project.items.values().filter(|i| i.parent.is_some()).map(|i| i.id.0).max().unwrap();
-    let drawn = |h: &Harness<'_, EffectcraftApp>| h.state().auto.previous.iter().filter(|e| e.id.starts_with("project.item.") && e.id.matches('.').count() == 2).count();
+    let drawn = |h: &Harness<'_, EffectcraftApp>| {
+        h.state().auto.previous.iter().filter(|e| e.id.starts_with("project.item.") && e.id.matches('.').count() == 2).count()
+    };
     let rows = drawn(&h);
     assert!(rows > 5 && rows < 80, "only the rows in view are drawn: {rows}");
     // Selecting an item (a command, an agent) scrolls it into view.
-    let footage = h.state().session.project.items.values().filter(|i| matches!(i.kind, effectcraft_engine::project::ItemKind::Footage(_))).map(|i| i.id.0).max().unwrap();
+    let footage =
+        h.state().session.project.items.values().filter(|i| matches!(i.kind, effectcraft_engine::project::ItemKind::Footage(_))).map(|i| i.id.0).max().unwrap();
     h.state_mut().session.execute("project.select", json!({"items": [footage]})).unwrap();
     h.run_steps(3);
     assert!(h.state().auto.find(&format!("project.item.{footage}")).is_some(), "selected item scrolled into view");
@@ -50,7 +52,6 @@ fn project_panel_scrolls_and_reveals_the_selection() {
     h.run_steps(2);
     let shown: Vec<String> = h.state().auto.previous.iter().filter(|e| e.id.starts_with("project.item.")).map(|e| e.id.clone()).collect();
     assert!(!shown.is_empty() && drawn(&h) < 80, "{shown:?}");
-    let _ = last;
 }
 
 #[test]
@@ -63,7 +64,9 @@ fn comp_thumbnail_renders_off_the_ui_thread() {
     let mut landed = false;
     for _ in 0..400 {
         h.step();
-        if h.state().auto.find("project.thumbnail").is_some() && h.ctx.data(|d| d.get_temp::<(u64, egui::TextureHandle)>(egui::Id::new(("proj-thumb", main.0)))).is_some() {
+        if h.state().auto.find("project.thumbnail").is_some()
+            && h.ctx.data(|d| d.get_temp::<(u64, egui::TextureHandle)>(egui::Id::new(("proj-thumb", main.0)))).is_some()
+        {
             landed = true;
             break;
         }
@@ -109,7 +112,8 @@ fn lazy_open_lists_the_footage_check_in_the_progress_panel() {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     assert!(h.state().session.tasks.is_empty());
-    let missing = h.state().session.project.items.values().filter(|i| matches!(&i.kind, effectcraft_engine::project::ItemKind::Footage(f) if f.missing)).count();
+    let missing =
+        h.state().session.project.items.values().filter(|i| matches!(&i.kind, effectcraft_engine::project::ItemKind::Footage(f) if f.missing)).count();
     assert_eq!(missing, spec().footage);
     assert!(!h.state().session.is_dirty(), "the check doesn't modify the project");
     let _ = std::fs::remove_file(path);
