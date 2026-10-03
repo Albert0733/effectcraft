@@ -43,6 +43,7 @@ mod transition2;
 pub mod util;
 mod utility;
 mod utility2;
+mod vr;
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -354,6 +355,7 @@ pub fn registry() -> &'static [EffectSpec] {
         v.extend(color3::specs());
         v.extend(obsolete::specs());
         v.extend(ocio::specs());
+        v.extend(vr::specs());
         v.extend(time_fx::specs());
         v.extend(audio_fx::specs());
         v.extend(paint::specs());
@@ -469,6 +471,7 @@ pub const TIME_DEPENDENT: &[&str] = &[
     "ec.time.ccforcemotionblur",
     "ec.time.ccwidetime",
     "ec.time.pixelmotionblur",
+    "ec.vr.digitalglitch",
 ];
 
 /// See [`TIME_DEPENDENT`].
