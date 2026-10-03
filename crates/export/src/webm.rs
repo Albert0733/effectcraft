@@ -15,11 +15,12 @@
 use std::io::{Seek, SeekFrom, Write};
 
 use effectcraft_project::Comp;
-use effectcraft_project::render_queue::Channels;
+use effectcraft_project::render_queue::{AudioFormat, Channels};
 use effectcraft_time::{TICKS_PER_SECOND, Tick};
 use rayon::prelude::*;
 
-use crate::{Job, Report, Result, State, batch_size, io, render_frame, rgba8, wants_audio};
+use crate::encode::{mix, pcm_bytes};
+use crate::{Cx, Report, Result, State, batch_size, io, wants_audio};
 
 const OPUS_RATE: u32 = 48_000;
 const OPUS_BITRATE: u32 = 192_000;
@@ -124,9 +125,10 @@ fn cluster(frames: &mut [Frame]) -> Vec<u8> {
     out
 }
 
-pub(crate) fn webm(job: &Job, comp: &Comp, w: u32, h: u32, st: &mut State) -> Result<Report> {
+pub(crate) fn webm(job: &Cx, comp: &Comp, w: u32, h: u32, st: &mut State) -> Result<Report> {
     let rate = job.settings.rate(comp);
     let alpha = job.output.channels == Channels::Rgba;
+    let colour_channels = if job.output.channels == Channels::Alpha { Channels::Alpha } else { Channels::Rgb };
     let quality = job.output.quality.clamp(1, 100);
     let fps = rate.as_f64().max(1.0);
     let cfg = effectcraft_vp9enc::EncoderConfig {
@@ -134,20 +136,22 @@ pub(crate) fn webm(job: &Job, comp: &Comp, w: u32, h: u32, st: &mut State) -> Re
         height: h,
         quality,
         full_range: false,
-        keyframe_interval: (fps * 2.0).round().max(1.0) as u32,
-        target_kbps: None,
+        keyframe_interval: if job.output.keyframe_interval > 0 { job.output.keyframe_interval } else { (fps * 2.0).round().max(1.0) as u32 },
+        target_kbps: job.output.webm_bitrate.then_some(job.output.bitrate_kbps.max(50)),
         frame_rate: fps,
         loop_filter: true,
     };
     let mut color_enc = effectcraft_vp9enc::Vp9Encoder::new(cfg.clone());
     let mut alpha_enc = alpha.then(|| effectcraft_vp9enc::Vp9Encoder::new(cfg.clone()));
     let with_audio = wants_audio(job);
-    let mut opus = with_audio.then(|| effectcraft_opusenc::OpusEncoder::new(2, OPUS_BITRATE));
+    let opus_channels = if job.output.audio_channels == 1 { 1usize } else { 2 };
+    let mut opus = with_audio.then(|| effectcraft_opusenc::OpusEncoder::new(opus_channels as _, OPUS_BITRATE));
     let total = st.total;
     let frame_ms = |k: u64| -> i64 { ((k as i128 * 1000 * rate.den as i128 + rate.num as i128 / 2) / rate.num as i128) as i64 };
     let duration_ms = frame_ms(total) as f64;
 
-    let mut file = crate::out::create(job.sink, job.path)?;
+    let path = job.place(job.path, 1);
+    let mut file = crate::out::create(job.sink, &path)?;
     // EBML header.
     let mut head = vec![];
     let mut eb = vec![];
@@ -201,7 +205,7 @@ pub(crate) fn webm(job: &Job, comp: &Comp, w: u32, h: u32, st: &mut State) -> Re
         el_uint(&mut a, 0x56BB, 80_000_000);
         let mut au = vec![];
         el_float(&mut au, 0xB5, OPUS_RATE as f64);
-        el_uint(&mut au, 0x9F, 2);
+        el_uint(&mut au, 0x9F, opus_channels as u64);
         el(&mut a, 0xE1, &au);
         el(&mut tracks, TRACK_ENTRY, &a);
     }
@@ -220,10 +224,10 @@ pub(crate) fn webm(job: &Job, comp: &Comp, w: u32, h: u32, st: &mut State) -> Re
         if end > cursor {
             let n = (end - cursor) as usize;
             let start = Tick(((cursor as i128 * TICKS_PER_SECOND as i128) / OPUS_RATE as i128) as i64);
-            pcm_left.extend(effectcraft_render::audio::mix_comp(job.project, job.footage, job.expr, job.comp, start, n, OPUS_RATE));
+            pcm_left.extend(mix(job, start, n, OPUS_RATE));
             cursor = end;
         }
-        let fs = effectcraft_opusenc::OpusEncoder::FRAME_SIZE * 2;
+        let fs = effectcraft_opusenc::OpusEncoder::FRAME_SIZE * opus_channels;
         if finish && !pcm_left.is_empty() {
             // Pad the last packet (pre-skip + padding cover the encoder delay).
             let pad = (fs - pcm_left.len() % fs) % fs + fs;
@@ -244,7 +248,7 @@ pub(crate) fn webm(job: &Job, comp: &Comp, w: u32, h: u32, st: &mut State) -> Re
         // Frames render in parallel; the VP9 streams (inter-coded) encode in order, colour and
         // alpha side by side.
         let pixels: Vec<Vec<u8>> =
-            (i..end).into_par_iter().map(|k| rgba8(&render_frame(job, comp, k), comp, if alpha { Channels::Rgba } else { Channels::Rgb }, w, h)).collect();
+            (i..end).into_par_iter().map(|k| job.pixels(&job.frame(comp, k), comp, if alpha { Channels::Rgba } else { colour_channels }, w, h)).collect();
         let mut frames: Vec<Frame> = Vec::with_capacity(pixels.len());
         for (j, px) in pixels.iter().enumerate() {
             let (color, a) = rayon::join(
@@ -288,7 +292,7 @@ pub(crate) fn webm(job: &Job, comp: &Comp, w: u32, h: u32, st: &mut State) -> Re
     file.write_all(&size).map_err(io)?;
     file.seek(SeekFrom::End(0)).map_err(io)?;
     let bytes = file.finish()?;
-    Ok(Report { path: job.path.to_string(), frames: 0, width: w, height: h, seconds: 0.0, bytes, audio: with_audio })
+    Ok(Report { path, frames: 0, width: w, height: h, seconds: 0.0, bytes, audio: with_audio, log: None, overflow: vec![] })
 }
 
 // ---------------------------------------------------------------- audio-only outputs
@@ -306,14 +310,25 @@ fn ieee_extended(v: f64) -> [u8; 10] {
     out
 }
 
-/// WAV or AIFF: the comp's audio over the render span, 16-bit stereo.
-pub(crate) fn audio_file(job: &Job, comp: &Comp, aiff: bool, st: &mut State) -> Result<Report> {
+/// WAV or AIFF: the comp's audio over the render span (Audio Output: sample rate, mono/stereo,
+/// 16/24-bit integer or 32-bit float; AIFF has no float in plain AIFF, so it writes 24-bit).
+pub(crate) fn audio_file(job: &Cx, comp: &Comp, aiff: bool, st: &mut State) -> Result<Report> {
     let sr = job.output.audio_sample_rate.clamp(8_000, 192_000);
+    let channels = if job.output.audio_channels == 1 { 1u16 } else { 2 };
+    let fmt = match job.output.audio_format {
+        AudioFormat::F32 if aiff => AudioFormat::S24,
+        f => f,
+    };
+    let bytes_per_sample: u16 = match fmt {
+        AudioFormat::S16 => 2,
+        AudioFormat::S24 => 3,
+        AudioFormat::F32 => 4,
+    };
     let (span_start, span_end) = job.settings.span(comp);
     let start = span_start.to_units_floor(sr as i64);
     let end = span_end.to_units_floor(sr as i64);
     let n = (end - start).max(0) as usize;
-    let mut pcm = Vec::with_capacity(n * 4);
+    let mut pcm = Vec::with_capacity(n * (channels * bytes_per_sample) as usize);
     // Mix in one-second blocks, reporting progress in frames.
     let block = sr as usize;
     let mut done = 0usize;
@@ -322,10 +337,7 @@ pub(crate) fn audio_file(job: &Job, comp: &Comp, aiff: bool, st: &mut State) -> 
     while done < n {
         let k = block.min(n - done);
         let t = Tick((((start + done as i64) as i128 * TICKS_PER_SECOND as i128) / sr as i128) as i64);
-        for s in effectcraft_render::audio::mix_comp(job.project, job.footage, job.expr, job.comp, t, k, sr) {
-            let v = (s.clamp(-1.0, 1.0) * 32767.0).round() as i16;
-            pcm.extend_from_slice(&if aiff { v.to_be_bytes() } else { v.to_le_bytes() });
-        }
+        pcm.extend(pcm_bytes(&mix(job, t, k, sr), fmt, aiff));
         done += k;
         let now = (done as u64 * total_frames / n.max(1) as u64).min(total_frames);
         if now > reported && st.total > 0 {
@@ -336,13 +348,14 @@ pub(crate) fn audio_file(job: &Job, comp: &Comp, aiff: bool, st: &mut State) -> 
     if reported < st.total {
         st.advance(st.total - reported)?;
     }
+    let block_align = channels * bytes_per_sample;
+    let frames = (pcm.len() / block_align as usize) as u32;
     let mut out = vec![];
-    let frames = (pcm.len() / 4) as u32;
     if aiff {
         let mut comm = vec![];
-        comm.extend_from_slice(&2u16.to_be_bytes());
+        comm.extend_from_slice(&channels.to_be_bytes());
         comm.extend_from_slice(&frames.to_be_bytes());
-        comm.extend_from_slice(&16u16.to_be_bytes());
+        comm.extend_from_slice(&(bytes_per_sample * 8).to_be_bytes());
         comm.extend_from_slice(&ieee_extended(sr as f64));
         let ssnd_len = 8 + pcm.len();
         out.extend_from_slice(b"FORM");
@@ -359,24 +372,30 @@ pub(crate) fn audio_file(job: &Job, comp: &Comp, aiff: bool, st: &mut State) -> 
             out.push(0);
         }
     } else {
+        // WAVE_FORMAT_PCM (1) or WAVE_FORMAT_IEEE_FLOAT (3).
+        let tag: u16 = if fmt == AudioFormat::F32 { 3 } else { 1 };
         out.extend_from_slice(b"RIFF");
-        out.extend_from_slice(&((36 + pcm.len()) as u32).to_le_bytes());
+        out.extend_from_slice(&((36 + pcm.len() + pcm.len() % 2) as u32).to_le_bytes());
         out.extend_from_slice(b"WAVEfmt ");
         out.extend_from_slice(&16u32.to_le_bytes());
-        out.extend_from_slice(&1u16.to_le_bytes());
-        out.extend_from_slice(&2u16.to_le_bytes());
+        out.extend_from_slice(&tag.to_le_bytes());
+        out.extend_from_slice(&channels.to_le_bytes());
         out.extend_from_slice(&sr.to_le_bytes());
-        out.extend_from_slice(&(sr * 4).to_le_bytes());
-        out.extend_from_slice(&4u16.to_le_bytes());
-        out.extend_from_slice(&16u16.to_le_bytes());
+        out.extend_from_slice(&(sr * block_align as u32).to_le_bytes());
+        out.extend_from_slice(&block_align.to_le_bytes());
+        out.extend_from_slice(&(bytes_per_sample * 8).to_le_bytes());
         out.extend_from_slice(b"data");
         out.extend_from_slice(&(pcm.len() as u32).to_le_bytes());
         out.extend_from_slice(&pcm);
+        if pcm.len() % 2 == 1 {
+            out.push(0);
+        }
     }
-    let mut file = crate::out::create(job.sink, job.path)?;
+    let path = job.place(job.path, out.len() as u64);
+    let mut file = crate::out::create(job.sink, &path)?;
     file.write_all(&out).map_err(io)?;
     let bytes = file.finish()?;
-    Ok(Report { path: job.path.to_string(), frames: 0, width: 0, height: 0, seconds: 0.0, bytes, audio: true })
+    Ok(Report { path, frames: 0, width: 0, height: 0, seconds: 0.0, bytes, audio: true, log: None, overflow: vec![] })
 }
 
 #[cfg(test)]

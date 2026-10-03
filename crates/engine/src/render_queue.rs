@@ -27,6 +27,10 @@ pub struct ExportJob<'a> {
     pub accel: Option<&'a dyn effectcraft_render::Accelerator>,
     /// Resolved output path (templates expanded except the `#` frame-number run).
     pub path: &'a str,
+    /// Free-space hook (Use Storage Overflow).
+    pub storage: Option<&'a dyn effectcraft_project::render_queue::StorageQuota>,
+    /// "#n Comp Name", for the render log.
+    pub label: String,
 }
 
 /// What an export wrote.
@@ -39,6 +43,12 @@ pub struct ExportResult {
     pub bytes: u64,
     pub seconds: f64,
     pub audio: bool,
+    /// The render log written next to the output, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub log: Option<String>,
+    /// Files that went to storage overflow folders.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub overflow: Vec<String>,
 }
 
 /// Encodes render queue items (implemented by the export layer).
@@ -127,6 +137,7 @@ struct Work {
     expr: Option<Arc<dyn ExprHost>>,
     accel: Option<Arc<dyn effectcraft_render::Accelerator>>,
     exporter: Arc<dyn Exporter>,
+    storage: Option<Arc<dyn effectcraft_project::render_queue::StorageQuota>>,
     /// Per queue item: one (item with that output module, resolved path) per output module.
     items: Vec<Vec<(RenderQueueItem, String)>>,
 }
@@ -143,7 +154,15 @@ pub(crate) fn run_items(
     shared: &JobShared,
     notify: &mut dyn FnMut(&JobShared),
 ) {
-    let work = Work { project: s.project.clone(), footage: s.footage.clone(), expr: s.expr.clone(), accel: s.accel.clone(), exporter, items };
+    let work = Work {
+        project: s.project.clone(),
+        footage: s.footage.clone(),
+        expr: s.expr.clone(),
+        accel: s.accel.clone(),
+        exporter,
+        storage: s.storage_quota.clone(),
+        items,
+    };
     run_work(work, shared, notify);
 }
 
@@ -174,7 +193,18 @@ fn run_work(w: Work, shared: &JobShared, notify: &mut dyn FnMut(&JobShared)) {
         // first module's file is the item's output.
         let mut r: Result<ExportResult, String> = Err("no output module".into());
         for (mi, (mitem, path)) in modules.iter().enumerate() {
-            let job = ExportJob { project: &w.project, footage: w.footage.as_ref(), expr: w.expr.as_deref(), accel: w.accel.as_deref(), item: mitem, path };
+            let name = w.project.item(mitem.comp).map(|i| i.name.clone()).unwrap_or_default();
+            let index = w.project.render_queue.iter().position(|i| i.id == mitem.id).map_or(0, |i| i + 1);
+            let job = ExportJob {
+                project: &w.project,
+                footage: w.footage.as_ref(),
+                expr: w.expr.as_deref(),
+                accel: w.accel.as_deref(),
+                item: mitem,
+                path,
+                storage: w.storage.as_deref(),
+                label: format!("#{index} {name} (output module {})", mi + 1),
+            };
             let rr = w.exporter.export(&job, &mut |done, total| {
                 {
                     let mut s = lock(&shared.state);
@@ -235,8 +265,7 @@ impl Session {
         if tpl.is_empty() {
             return None;
         }
-        let (w, h) = item.settings.output_size(comp);
-        let (w, h) = item.output.format.coded_size(w, h);
+        let (w, h) = item.output.output_size(comp, &item.settings);
         let rate = item.settings.rate(comp);
         let n = item.settings.frame_count(comp) as i64;
         let f0 = item.settings.first_frame(comp);
@@ -329,7 +358,15 @@ impl Session {
             self.poll_render();
             return Ok(ids);
         }
-        let work = Work { project: self.project.clone(), footage: self.footage.clone(), expr: self.expr.clone(), accel: self.accel.clone(), exporter, items };
+        let work = Work {
+            project: self.project.clone(),
+            footage: self.footage.clone(),
+            expr: self.expr.clone(),
+            accel: self.accel.clone(),
+            exporter,
+            storage: self.storage_quota.clone(),
+            items,
+        };
         let shared = Arc::new(JobShared::default());
         if wait {
             run_work(work, &shared, &mut |_| {});
@@ -426,6 +463,10 @@ impl Session {
             } else {
                 format!("Rendered {} item(s) in {:.1} s", st.items_total, st.elapsed)
             };
+            if self.project.render_prefs.notify {
+                // Notify: the frontend plays a sound and shows a system notification.
+                self.events.push(Event::Frontend { command: "renderQueue.notify".into(), params: serde_json::json!({"message": msg, "error": failed > 0}) });
+            }
             self.events.push(Event::Toast { message: msg, error: failed > 0 });
         }
         for (id, path) in post {

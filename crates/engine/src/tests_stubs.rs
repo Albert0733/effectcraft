@@ -313,6 +313,123 @@ fn pre_render_imports_and_replaces() {
 }
 
 #[test]
+fn post_render_actions_import_and_set_proxy() {
+    let (mut s, _) = rq();
+    let cid = s.active_comp_id().unwrap();
+    let items_before = s.project.items.len();
+    // Import: the rendered file becomes a footage item.
+    let a = s.execute("renderQueue.add", json!({"output": "/tmp/post/a.mov"})).unwrap();
+    s.execute("renderQueue.setOutputModule", json!({"item": a["item"], "postRenderAction": "import"})).unwrap();
+    assert_eq!(s.project.render_queue[0].post_render, PostRenderAction::Import);
+    s.execute("renderQueue.render", json!({})).unwrap();
+    assert_eq!(s.project.items.len(), items_before + 1);
+    assert!(s.project.items.values().any(|i| matches!(&i.kind, effectcraft_project::ItemKind::Footage(f) if f.path == "/tmp/post/a.mov")));
+    // Set Proxy: the comp gets the render as its proxy.
+    let b = s.execute("renderQueue.add", json!({"output": "/tmp/post/b.mov"})).unwrap();
+    s.execute("renderQueue.setOutputModule", json!({"item": b["item"], "postRenderAction": "Set Proxy"})).unwrap();
+    s.execute("renderQueue.render", json!({})).unwrap();
+    let px = s.project.item(cid).unwrap().proxy.clone().expect("proxy set");
+    assert_eq!(px.footage.path, "/tmp/post/b.mov");
+    // None: nothing happens.
+    let n = s.project.items.len();
+    let c = s.execute("renderQueue.add", json!({"output": "/tmp/post/c.mov"})).unwrap();
+    s.execute("renderQueue.setOutputModule", json!({"item": c["item"], "postRenderAction": "none"})).unwrap();
+    s.execute("renderQueue.render", json!({})).unwrap();
+    assert_eq!(s.project.items.len(), n);
+    assert!(s.execute("renderQueue.setOutputModule", json!({"item": c["item"], "postRenderAction": "explode"})).is_err());
+}
+
+#[test]
+fn templates_save_apply_default_and_persist() {
+    let (mut s, _) = rq();
+    let t = s.execute("renderQueue.templates", json!({})).unwrap();
+    let names: Vec<&str> = t["renderSettings"].as_array().unwrap().iter().map(|r| r["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["Best Settings", "Draft Settings", "DV Settings", "Multi-Machine Settings", "Current Settings"]);
+    assert!(t["outputModules"].as_array().unwrap().iter().any(|m| m["name"] == "High Quality with Alpha"));
+    assert_eq!(t["defaults"]["renderSettings"]["Movie"], "Best Settings");
+    // A new item starts from the Movie defaults.
+    let a = s.execute("renderQueue.add", json!({"output": "/tmp/t/a.mp4"})).unwrap();
+    assert_eq!(a["renderSettingsSummary"], "Best Settings");
+    assert_eq!(a["outputModuleSummary"], "H.264 - Match Render Settings - 15 Mbps");
+    // Edit it: Custom; save templates from it; make them the defaults.
+    let r = s
+        .execute(
+            "renderQueue.setRenderSettings",
+            json!({"item": a["item"], "fieldRender": "upper", "pulldown": "WSSWW", "colorDepth": 16, "effects": "allOff", "solo": "allOff", "guideLayers": "current", "frameBlending": "offForAll", "motionBlur": "onForChecked", "duration": 0.5, "storageOverflow": false}),
+        )
+        .unwrap();
+    assert_eq!(r["renderSettingsSummary"], "Custom");
+    assert_eq!(r["settings"]["field_render"], "UpperFirst");
+    s.execute(
+        "renderQueue.setOutputModule",
+        json!({"item": a["item"], "format": "png", "channels": "rgba", "color": "premultiplied", "crop": {"top": 2, "bottom": 2}, "resize": {"width": 320, "height": 200, "lockAspect": false, "quality": "low"}}),
+    )
+    .unwrap();
+    s.execute("renderQueue.saveTemplate", json!({"kind": "renderSettings", "name": "Interlaced 16", "item": a["item"]})).unwrap();
+    s.execute("renderQueue.saveTemplate", json!({"kind": "outputModule", "name": "Small PNG", "item": a["item"], "params": {"quality": 50}})).unwrap();
+    s.execute("renderQueue.setTemplateDefault", json!({"kind": "renderSettings", "slot": "movie", "name": "Interlaced 16"})).unwrap();
+    s.execute("renderQueue.setTemplateDefault", json!({"kind": "outputModule", "slot": "movie", "name": "Small PNG"})).unwrap();
+    assert!(s.execute("renderQueue.setTemplateDefault", json!({"kind": "outputModule", "slot": "movie", "name": "Nope"})).is_err());
+    let b = s.execute("renderQueue.add", json!({"output": "/tmp/t/b_[####].png"})).unwrap();
+    assert_eq!(b["renderSettingsSummary"], "Interlaced 16");
+    assert_eq!(b["outputModuleSummary"], "Small PNG");
+    let it = s.project.render_queue.last().unwrap().clone();
+    assert_eq!(it.output.resize.width, 320);
+    assert_eq!(it.output.output, "/tmp/t/b_[####].png");
+    assert_eq!((b["width"].as_u64(), b["height"].as_u64()), (Some(320), Some(200)));
+    // Apply built-ins to an item; the output path keeps its name with the new extension.
+    let r = s.execute("renderQueue.applyTemplate", json!({"item": a["item"], "renderSettings": "DV Settings", "outputModule": "High Quality"})).unwrap();
+    assert_eq!(r["renderSettingsSummary"], "DV Settings");
+    assert_eq!(r["outputModuleSummary"], "High Quality");
+    assert!(r["outputPath"].as_str().unwrap().ends_with("a.mov"), "{r}");
+    // Persisted with the project.
+    let p = effectcraft_project::Project::from_json(&s.project.to_json()).unwrap();
+    assert_eq!(p.render_templates, s.project.render_templates);
+    assert_eq!(p.render_queue, s.project.render_queue);
+    // Delete: saved ones go; built-ins stay. Undo restores.
+    s.execute("renderQueue.deleteTemplate", json!({"kind": "outputModule", "name": "Small PNG"})).unwrap();
+    assert!(s.project.render_templates.output_module("Small PNG").is_none());
+    assert!(s.execute("renderQueue.deleteTemplate", json!({"kind": "renderSettings", "name": "Best Settings"})).is_err());
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(s.project.render_templates.output_module("Small PNG").is_some());
+}
+
+#[test]
+fn save_frame_as_queues_with_the_frame_defaults() {
+    let (mut s, _) = rq();
+    s.execute("renderQueue.setTemplateDefault", json!({"kind": "outputModule", "slot": "still", "name": "TIFF Sequence with Alpha"})).unwrap();
+    let r = s.execute("comp.saveFrameAs", json!({"queue": true, "time": 1.0})).unwrap();
+    assert_eq!(r["queued"], true);
+    let it = s.project.render_queue.last().unwrap();
+    assert_eq!(it.output.format, OutputFormat::TiffSequence);
+    assert_eq!(it.settings.name, "Current Settings");
+    let comp = s.project.comp(it.comp).unwrap();
+    assert_eq!(it.settings.frame_count(comp), 1);
+    assert_eq!(it.settings.frame_time(comp, 0), Tick::from_seconds_f64(1.0));
+}
+
+#[test]
+fn log_notify_and_overflow_settings() {
+    let (mut s, _) = rq();
+    let a = s.execute("renderQueue.add", json!({"output": "/tmp/n/a.mp4", "log": "plusPerFrameInfo"})).unwrap();
+    assert_eq!(a["logLabel"], "Plus Per Frame Info");
+    assert_eq!(a["logPath"], "/tmp/n/a_RenderLog.txt");
+    s.execute("renderQueue.setLog", json!({"item": a["item"], "log": "plusSettings"})).unwrap();
+    assert_eq!(s.project.render_queue[0].log, effectcraft_project::render_queue::RenderLog::PlusSettings);
+    s.execute("renderQueue.setOverflowFolders", json!({"folders": ["/tmp/o1", " ", "/tmp/o2"]})).unwrap();
+    assert_eq!(s.project.render_prefs.overflow_folders, ["/tmp/o1", "/tmp/o2"]);
+    assert_eq!(s.execute("renderQueue.setNotify", json!({})).unwrap()["notify"], true);
+    s.drain_events();
+    s.execute("renderQueue.render", json!({})).unwrap();
+    let ev = s.drain_events();
+    assert!(ev.iter().any(|e| matches!(e, Event::Frontend { command, .. } if command == "renderQueue.notify")), "{ev:?}");
+    s.execute("renderQueue.setNotify", json!({"notify": false})).unwrap();
+    s.execute("renderQueue.setRender", json!({"index": 1, "render": true})).unwrap();
+    s.execute("renderQueue.render", json!({})).unwrap();
+    assert!(!s.drain_events().iter().any(|e| matches!(e, Event::Frontend { command, .. } if command == "renderQueue.notify")));
+}
+
+#[test]
 fn save_current_preview_writes_a_movie() {
     let (mut s, ex) = rq();
     let r = s.execute("render.saveCurrentPreview", json!({"path": "/tmp/prev/clip.mov"})).unwrap();
