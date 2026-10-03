@@ -161,6 +161,7 @@ pub fn text_style(s: &CharStyle) -> TextStyle {
             BaselineOption::Subscript => Script::Sub,
         },
         leading: s.leading.map(|l| l as f32),
+        opentype: s.opentype,
     }
 }
 

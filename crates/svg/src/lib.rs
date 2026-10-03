@@ -170,6 +170,9 @@ pub struct Group {
     pub transform: Affine,
     pub opacity: f64,
     pub children: Vec<Node>,
+    /// Clipping paths in the group's space (after `transform`); the children show only where
+    /// every one of them covers (PDF / EPS clipping; SVG `clipPath` is not read yet).
+    pub clip: Vec<(BezPath, FillRule)>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -666,7 +669,7 @@ impl<'a, 'i> Parser<'a, 'i> {
                 for c in n.children() {
                     self.node(c, &st, &mut children, depth + 1);
                 }
-                out.push(Node::Group(Group { name: Self::element_name(n), transform, opacity, children }));
+                out.push(Node::Group(Group { name: Self::element_name(n), transform, opacity, children, clip: vec![] }));
             }
             "svg" => {
                 // Nested viewport.
@@ -685,7 +688,7 @@ impl<'a, 'i> Parser<'a, 'i> {
                     self.node(c, &st, &mut children, depth + 1);
                 }
                 (self.vw, self.vh) = saved;
-                out.push(Node::Group(Group { name: Self::element_name(n), transform: Affine::translate((x, y)) * vb, opacity, children }));
+                out.push(Node::Group(Group { name: Self::element_name(n), transform: Affine::translate((x, y)) * vb, opacity, children, clip: vec![] }));
             }
             "use" => {
                 let Some(target) = self.href(n) else { return };
@@ -706,11 +709,11 @@ impl<'a, 'i> Parser<'a, 'i> {
                     for c in target.children() {
                         self.node(c, &sst, &mut inner, depth + 1);
                     }
-                    children.push(Node::Group(Group { name: Self::element_name(target), transform: vb, opacity: o, children: inner }));
+                    children.push(Node::Group(Group { name: Self::element_name(target), transform: vb, opacity: o, children: inner, clip: vec![] }));
                 } else {
                     self.node(target, &st, &mut children, depth + 1);
                 }
-                out.push(Node::Group(Group { name: Self::element_name(n), transform, opacity, children }));
+                out.push(Node::Group(Group { name: Self::element_name(n), transform, opacity, children, clip: vec![] }));
             }
             "path" | "rect" | "circle" | "ellipse" | "line" | "polyline" | "polygon" => {
                 if !st.visible {
@@ -750,7 +753,7 @@ impl<'a, 'i> Parser<'a, 'i> {
                         self.node(c, &st, &mut children, depth + 1);
                     }
                     if !children.is_empty() {
-                        out.push(Node::Group(Group { name: Self::element_name(n), transform, opacity, children }));
+                        out.push(Node::Group(Group { name: Self::element_name(n), transform, opacity, children, clip: vec![] }));
                     }
                 }
             }
@@ -942,7 +945,7 @@ pub fn parse(bytes: &[u8]) -> Result<Doc, Error> {
         p.node(c, &rst, &mut children, 1);
     }
     let transform = viewbox_transform(root, dw, dh);
-    Ok(Doc { width: dw, height: dh, root: Group { name: "svg".into(), transform, opacity, children }, skipped: std::mem::take(&mut p.skipped) })
+    Ok(Doc { width: dw, height: dh, root: Group { name: "svg".into(), transform, opacity, children, clip: vec![] }, skipped: std::mem::take(&mut p.skipped) })
 }
 
 #[cfg(test)]

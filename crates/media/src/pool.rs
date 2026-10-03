@@ -488,9 +488,10 @@ impl Inner {
                 let i = Self::frame_index(footage.frame_rate, t, footage.sequence.len() as i64, footage.loop_count);
                 Loc { key: key(&footage.sequence[i as usize], 0), media_t: None }
             }
-            // A layer of a layered still is keyed by its layer index and size mode.
+            // A layer of a layered still is keyed by its layer index and size mode (smart objects
+            // by their embedded file).
             FootageKind::Still if footage.layer.is_some() => {
-                let l = footage.layer.as_ref().map_or(0, |l| 1 + l.index as i64 * 2 + l.layer_size as i64);
+                let l = footage.layer.as_ref().map_or(0, |l| 1 + l.index as i64 * 2 + l.layer_size as i64 + if l.embedded.is_some() { 1 << 40 } else { 0 });
                 Loc { key: key(&footage.path, l), media_t: None }
             }
             FootageKind::Still | FootageKind::Sequence | FootageKind::Model | FootageKind::Data => Loc { key: key(&footage.path, 0), media_t: None },
@@ -621,7 +622,7 @@ impl FootageSource for MediaPool {
             return None;
         }
         let bytes = self.inner.read(&footage.path).ok()?;
-        crate::layered::rasterize_svg(&bytes, scale).map(Arc::new)
+        crate::layered::rasterize_vector(&footage.path, &bytes, footage.layer.as_ref(), scale).map(Arc::new)
     }
 
     fn aux(&self, _item: ItemId, footage: &Footage, t: Tick) -> Option<Arc<effectcraft_raster::AuxChannels>> {

@@ -827,6 +827,11 @@ pub fn text_families() -> Vec<String> {
     effectcraft_text::families().into_iter().map(|(f, _)| f).collect()
 }
 
+/// The OpenType feature tags (GSUB / GPOS) of the face a family + style resolves to.
+pub fn font_features(family: &str, style: &str) -> Vec<String> {
+    effectcraft_text::fonts::face(effectcraft_text::resolve(family, style).face).features()
+}
+
 /// One row of the Character panel's font menu.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FontRow {

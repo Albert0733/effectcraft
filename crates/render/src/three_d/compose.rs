@@ -161,6 +161,13 @@ pub(crate) fn camera_for(r: &Renderer, ctx: &EvalCtx) -> CameraState {
     }
 }
 
+/// The size of the comp the camera looks through: a collapsed precomp's layers are projected
+/// into the outermost comp they collapse into (its centre and size), not their own comp's.
+pub(crate) fn view_size(r: &Renderer, ctx: &EvalCtx) -> (f64, f64) {
+    let c = r.collapse3d.map_or(ctx.comp, |c| c.parent.comp);
+    (c.width as f64, c.height as f64)
+}
+
 /// Number of motion-blur sub-samples for a layer.
 fn mb_samples(r: &Renderer, ctx: &EvalCtx, layer: &Layer) -> usize {
     if r.opts.motion_blur && ctx.comp.enable_motion_blur && r.layer_motion_blur(layer) {
@@ -202,7 +209,7 @@ fn prepare_with<'a>(
     if buf.img.is_empty() {
         return None;
     }
-    let comp = (ctx.comp.width as f64, ctx.comp.height as f64);
+    let comp = view_size(r, ctx);
     let s = r.opts.scale;
     let cam = camera_for(r, ctx);
     let outer = r.collapse3d.map_or(Mat4::IDENTITY, |c| c.world);
@@ -919,7 +926,7 @@ pub(crate) fn draw_sky(r: &Renderer, ctx: &EvalCtx, layer: &Layer, canvas: &mut 
     let cam = camera_for(r, ctx);
     let (fwd, right, down) = (cam.forward(), cam.right(), cam.down());
     let s = r.opts.scale.max(1e-9);
-    let (cw, ch) = (ctx.comp.width as f64, ctx.comp.height as f64);
+    let (cw, ch) = view_size(r, ctx);
     let (ox, oy) = r.roi_offset().map_or((0.0, 0.0), |(x, y, _, _)| (x, y));
     let rot = environment_rotation(ctx);
     let (iw, ih) = (img.width as f64, img.height as f64);

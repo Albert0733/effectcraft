@@ -2,7 +2,7 @@
 //! Character and Paragraph panels show and change the selected text (creating style runs);
 //! otherwise they apply to the whole selected text layer.
 
-use effectcraft_engine::keyframe::{BaselineOption, Composer, Direction, Justify, Kerning, TextDoc};
+use effectcraft_engine::keyframe::{BaselineOption, Composer, Direction, FigureStyle, FigureWidth, Justify, Kerning, TextDoc};
 use effectcraft_engine::render::EvalCtx;
 use egui::{Align2, Rect, Sense, pos2, vec2};
 use serde_json::json;
@@ -102,7 +102,7 @@ pub fn character(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         actions.push(json!({"font": f}));
     }
     y += 28.0;
-    let sr = Rect::from_min_size(pos2(x0, y), vec2(w, 22.0));
+    let sr = Rect::from_min_size(pos2(x0, y), vec2(w - 84.0, 22.0));
     let spop = egui::Id::new("char-style-pop");
     if widgets::dropdown(ui, sr, &doc.style, &t, egui::Id::new("char-style")).clicked() && enabled {
         widgets::open_popup(ui, spop);
@@ -231,6 +231,16 @@ pub fn character(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     }
     app.auto.add("character.ligatures", lr, "Ligatures");
     p.text(pos2(x0 + 20.0, y + 7.0), Align2::LEFT_CENTER, "Ligatures", Tokens::ui(11.5), t.text_dim);
+    // OpenType: a popup with the font's layout features (like the Character panel's OpenType menu).
+    let or = Rect::from_min_size(pos2(sr.max.x + 6.0, sr.min.y), vec2(78.0, 22.0));
+    let opop = egui::Id::new("char-opentype-pop");
+    let n_on = doc.opentype.feature_settings().len();
+    let olabel = if n_on > 0 { format!("OT ({n_on})") } else { "OpenType".to_string() };
+    if widgets::dropdown(ui, or, &olabel, &t, egui::Id::new("char-opentype")).clicked() && enabled {
+        widgets::open_popup(ui, opop);
+    }
+    app.auto.add("character.opentype", or, "OpenType");
+    opentype_popup(app, ui, opop, pos2((or.max.x - 300.0).max(rect.min.x), or.max.y), &doc, &mut actions);
     // Vertical type: Tate-Chu-Yoko and Standard Vertical Roman Alignment (Character panel menu).
     if doc.vertical {
         y += 22.0;
@@ -263,6 +273,100 @@ pub fn character(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         if let Err(e) = crate::menus::invoke(app, &ctx, "layer.setText", tt.params(a)) {
             app.ui.status = e;
         }
+    }
+}
+
+/// The Character panel's OpenType popup: feature toggles (dimmed when the font lacks them),
+/// figure styles and the twenty stylistic sets. Every row is an automation target
+/// (`character.opentype.<key>`), and every change is a `layer.setText` attribute.
+fn opentype_popup(app: &mut EffectcraftApp, ui: &mut egui::Ui, id: egui::Id, pos: egui::Pos2, doc: &TextDoc, actions: &mut Vec<serde_json::Value>) {
+    let open_id = id.with("open");
+    if !ui.data(|d| d.get_temp::<bool>(open_id).unwrap_or(false)) {
+        return;
+    }
+    let t = app.tokens;
+    let feats = effectcraft_engine::font_features(&doc.font, &doc.style);
+    let has = |tag: &str| feats.iter().any(|f| f == tag);
+    let o = doc.opentype;
+    let mut rects: Vec<(String, Rect, String)> = vec![];
+    let area = egui::Area::new(id.with("area")).order(egui::Order::Foreground).fixed_pos(pos).show(ui.ctx(), |ui| {
+        egui::Frame::popup(ui.style()).show(ui, |ui| {
+            ui.set_min_width(230.0);
+            ui.label(egui::RichText::new(format!("{} {}", doc.font, doc.style)).small().color(t.text_dim));
+            let toggles: [(&str, &str, bool, &[&str]); 12] = [
+                ("ligatures", "Standard Ligatures", doc.ligatures, &["liga", "clig"]),
+                ("discretionaryLigatures", "Discretionary Ligatures", o.discretionary_ligatures, &["dlig"]),
+                ("contextualAlternates", "Contextual Alternates", o.contextual_alternates, &["calt"]),
+                ("stylisticAlternates", "Stylistic Alternates", o.stylistic_alternates, &["salt"]),
+                ("swash", "Swash", o.swash, &["swsh"]),
+                ("titling", "Titling Alternates", o.titling, &["titl"]),
+                ("ordinals", "Ordinals", o.ordinals, &["ordn"]),
+                ("fractions", "Fractions", o.fractions, &["frac"]),
+                ("smallCaps", "Small Caps", doc.small_caps, &["smcp"]),
+                ("allSmallCaps", "All Small Caps", o.all_small_caps, &["c2sc"]),
+                ("superscript", "Superscript / Superior", doc.baseline == BaselineOption::Superscript, &["sups"]),
+                ("subscript", "Subscript / Inferior", doc.baseline == BaselineOption::Subscript, &["subs"]),
+            ];
+            for (key, label, on, tags) in toggles {
+                let avail = tags.iter().any(|g| has(g));
+                // Unavailable features stay clickable: small caps and scripts are synthesized.
+                let synth = matches!(key, "smallCaps" | "allSmallCaps" | "superscript" | "subscript");
+                let text = match (avail, synth) {
+                    (true, _) => label.to_string(),
+                    (false, true) => format!("{label}  (synthesized)"),
+                    (false, false) => format!("{label}  (not in font)"),
+                };
+                let r = ui.selectable_label(on, egui::RichText::new(text).color(if avail { t.text } else { t.text_faint }));
+                rects.push((format!("character.opentype.{key}"), r.rect, label.to_string()));
+                if r.clicked() {
+                    actions.push(json!({key: !on}));
+                }
+            }
+            ui.separator();
+            ui.label(egui::RichText::new("Figures").small().color(t.text_dim));
+            let figs = [
+                ("default", "Default Figure Style", FigureStyle::Default, FigureWidth::Default),
+                ("tabularLining", "Tabular Lining", FigureStyle::Lining, FigureWidth::Tabular),
+                ("proportionalOldstyle", "Proportional Oldstyle", FigureStyle::OldStyle, FigureWidth::Proportional),
+                ("proportionalLining", "Proportional Lining", FigureStyle::Lining, FigureWidth::Proportional),
+                ("tabularOldstyle", "Tabular Oldstyle", FigureStyle::OldStyle, FigureWidth::Tabular),
+            ];
+            for (key, label, st, fw) in figs {
+                let on = o.figure_style == st && o.figure_width == fw;
+                let r = ui.selectable_label(on, label);
+                rects.push((format!("character.opentype.figures.{key}"), r.rect, label.to_string()));
+                if r.clicked() {
+                    actions.push(json!({"figures": key}));
+                }
+            }
+            ui.separator();
+            ui.label(egui::RichText::new("Stylistic Sets").small().color(t.text_dim));
+            egui::Grid::new(id.with("sets")).spacing(vec2(3.0, 3.0)).show(ui, |ui| {
+                for n in 1..=20u32 {
+                    let key = format!("ss{n:02}");
+                    let on = o.stylistic_set(n);
+                    let avail = has(&key);
+                    let r = ui.add_sized(
+                        vec2(38.0, 20.0),
+                        egui::Button::selectable(on, egui::RichText::new(format!("{n}")).color(if avail || on { t.text } else { t.text_faint })),
+                    );
+                    rects.push((format!("character.opentype.{key}"), r.rect, format!("Stylistic Set {n}")));
+                    if r.clicked() {
+                        actions.push(json!({key: !on}));
+                    }
+                    if n % 5 == 0 {
+                        ui.end_row();
+                    }
+                }
+            });
+        });
+    });
+    for (aid, r, label) in rects {
+        app.auto.add(&aid, r, &label);
+    }
+    let outside = ui.input(|i| i.pointer.any_pressed()) && !area.response.contains_pointer() && !area.response.hovered();
+    if outside || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        ui.data_mut(|d| d.insert_temp(open_id, false));
     }
 }
 

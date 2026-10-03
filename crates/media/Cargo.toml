@@ -16,6 +16,7 @@ effectcraft-raster = { workspace = true }
 effectcraft-render = { workspace = true }
 effectcraft-psd = { workspace = true }
 effectcraft-svg = { workspace = true }
+effectcraft-pdf = { workspace = true }
 effectcraft-model = { workspace = true }
 filmcraft-codecs = { workspace = true }
 filmcraft-media = { workspace = true }
