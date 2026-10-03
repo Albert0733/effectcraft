@@ -107,6 +107,7 @@ fn placeholder_footage(p: &Value) -> Footage {
         missing: true,
         sequence: vec![],
         color_profile: None,
+        layer: None,
     }
 }
 

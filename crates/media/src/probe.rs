@@ -33,6 +33,9 @@ pub fn probe_single(path: impl AsRef<Path>) -> Result<Footage> {
 
 /// Probe in-memory file contents; `path` names the footage (and is stored as `Footage::path`).
 pub fn probe_bytes(path: &str, bytes: Arc<[u8]>) -> Result<Footage> {
+    if let Some(f) = crate::layered::probe(path, &bytes)? {
+        return Ok(f);
+    }
     if let Ok(fmt) = image::guess_format(&bytes) {
         return probe_still_bytes(path, &bytes, fmt);
     }
@@ -72,6 +75,7 @@ pub(crate) fn footage_from_info(path: &str, info: &filmcraft_media::MediaInfo) -
         missing: false,
         sequence: Vec::new(),
         color_profile: v.and_then(|v| profile_of(&v.color)),
+        layer: None,
     }
 }
 
@@ -88,7 +92,7 @@ fn profile_of(c: &filmcraft_color::ColorInfo) -> Option<effectcraft_project::Col
     }
 }
 
-fn still_footage(path: &str, w: u32, h: u32, fmt: image::ImageFormat, has_alpha: bool) -> Footage {
+pub(crate) fn still_footage(path: &str, w: u32, h: u32, fmt: image::ImageFormat, has_alpha: bool) -> Footage {
     let codec = fmt.extensions_str().first().map_or("image", |s| s).to_ascii_uppercase();
     // OpenEXR stores premultiplied colour by convention; other formats straight alpha.
     let alpha = match (has_alpha, fmt) {
@@ -114,6 +118,7 @@ fn still_footage(path: &str, w: u32, h: u32, fmt: image::ImageFormat, has_alpha:
         missing: false,
         sequence: Vec::new(),
         color_profile: None,
+        layer: None,
     }
 }
 

@@ -1198,12 +1198,15 @@ dependencies = [
  "effectcraft-lottie",
  "effectcraft-path",
  "effectcraft-project",
+ "effectcraft-psd",
  "effectcraft-raster",
  "effectcraft-render",
+ "effectcraft-svg",
  "effectcraft-text",
  "effectcraft-time",
  "effectcraft-track",
  "image",
+ "kurbo",
  "log",
  "rayon",
  "serde",
@@ -1287,6 +1290,10 @@ dependencies = [
  "effectcraft-expr",
  "effectcraft-media",
  "effectcraft-project",
+ "effectcraft-psd",
+ "effectcraft-raster",
+ "effectcraft-svg",
+ "effectcraft-time",
  "serde_json",
 ]
 
@@ -1324,8 +1331,10 @@ name = "effectcraft-media"
 version = "0.1.0"
 dependencies = [
  "effectcraft-project",
+ "effectcraft-psd",
  "effectcraft-raster",
  "effectcraft-render",
+ "effectcraft-svg",
  "effectcraft-time",
  "filmcraft-codecs",
  "filmcraft-color",
@@ -1364,6 +1373,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "effectcraft-psd"
+version = "0.1.0"
+dependencies = [
+ "miniz_oxide 0.8.9",
+]
+
+[[package]]
 name = "effectcraft-raster"
 version = "0.1.0"
 dependencies = [
@@ -1387,9 +1403,22 @@ dependencies = [
  "effectcraft-time",
  "kurbo",
  "log",
+ "lz4_flex",
  "rayon",
  "serde",
  "web-time",
+]
+
+[[package]]
+name = "effectcraft-svg"
+version = "0.1.0"
+dependencies = [
+ "effectcraft-geom",
+ "effectcraft-path",
+ "effectcraft-raster",
+ "kurbo",
+ "rayon",
+ "roxmltree",
 ]
 
 [[package]]
@@ -2750,6 +2779,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 
 [[package]]
+name = "lz4_flex"
+version = "0.11.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "373f5eceeeab7925e0c1098212f2fbc4d416adec9d35051a6ab251e824c1854a"
+
+[[package]]
 name = "mach2"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3968,6 +4003,15 @@ dependencies = [
  "wayland-protocols",
  "web-sys",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "roxmltree"
+version = "0.21.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f1964b10c76125c36f8afe190065a4bf9a87bf324842c05701330bba9f1cacbb"
+dependencies = [
+ "memchr",
 ]
 
 [[package]]

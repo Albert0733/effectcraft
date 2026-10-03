@@ -359,6 +359,11 @@ impl Inner {
                 let i = Self::frame_index(footage.frame_rate, t, footage.sequence.len() as i64, footage.loop_count);
                 Loc { key: key(&footage.sequence[i as usize], 0), media_t: None }
             }
+            // A layer of a layered still is keyed by its layer index and size mode.
+            FootageKind::Still if footage.layer.is_some() => {
+                let l = footage.layer.as_ref().map_or(0, |l| 1 + l.index as i64 * 2 + l.layer_size as i64);
+                Loc { key: key(&footage.path, l), media_t: None }
+            }
             FootageKind::Still | FootageKind::Sequence => Loc { key: key(&footage.path, 0), media_t: None },
             FootageKind::Video | FootageKind::Audio => {
                 let rate = footage.frame_rate;
@@ -437,6 +442,9 @@ impl Inner {
         match loc.media_t {
             None => {
                 let bytes = self.read(path)?;
+                if let Some(img) = crate::layered::decode(path, &bytes, footage, op)? {
+                    return Ok(img);
+                }
                 let img = image::load_from_memory(&bytes).map_err(|e| MediaError::Decode(format!("{path}: {e}")))?;
                 Ok(dynamic_to_image(&img, op))
             }
@@ -468,6 +476,14 @@ impl FootageSource for MediaPool {
                 None
             }
         }
+    }
+
+    fn vector_frame(&self, _item: ItemId, footage: &Footage, scale: f64) -> Option<Arc<Image>> {
+        if footage.missing || !effectcraft_render::is_vector_footage(footage) {
+            return None;
+        }
+        let bytes = self.inner.read(&footage.path).ok()?;
+        crate::layered::rasterize_svg(&bytes, scale).map(Arc::new)
     }
 
     fn audio(&self, _item: ItemId, footage: &Footage, t: Tick, frames: usize, rate: u32) -> Option<Vec<f32>> {
