@@ -121,6 +121,9 @@ fn apply(e: &mut Enc, id: &str, ctx: &EffectCtx, b: GBuf) -> Option<GBuf> {
         _ if crate::fx_color::IDS.contains(&id) => crate::fx_color::apply(e, id, ctx, b),
         _ if crate::fx_distort::IDS.contains(&id) => crate::fx_distort::apply(e, id, ctx, b),
         _ if crate::fx_generate::IDS.contains(&id) => crate::fx_generate::apply(e, id, ctx, b),
+        _ if crate::fx_key::IDS.contains(&id) => crate::fx_key::apply(e, id, ctx, b),
+        _ if crate::fx_stylize::IDS.contains(&id) => crate::fx_stylize::apply(e, id, ctx, b),
+        _ if crate::fx_noise::IDS.contains(&id) => crate::fx_noise::apply(e, id, ctx, b),
         _ => pointwise(e, id, ctx, b),
     }
 }

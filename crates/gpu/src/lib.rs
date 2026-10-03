@@ -34,6 +34,9 @@ mod effects;
 mod fx_color;
 mod fx_distort;
 mod fx_generate;
+mod fx_key;
+mod fx_noise;
+mod fx_stylize;
 mod ops;
 mod particles;
 mod walk;
@@ -172,5 +175,11 @@ mod tests_fx_color;
 mod tests_fx_distort;
 #[cfg(test)]
 mod tests_fx_generate;
+#[cfg(test)]
+mod tests_fx_key;
+#[cfg(test)]
+mod tests_fx_noise;
+#[cfg(test)]
+mod tests_fx_stylize;
 #[cfg(test)]
 mod tests_particles;

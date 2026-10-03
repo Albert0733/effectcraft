@@ -806,6 +806,12 @@ pub const GPU_EFFECTS: &[&str] = &[
     "ec.color.selectivecolor",
     "ec.key.linearcolor",
     "ec.keying.keylight",
+    // effectcraft-gpu fx_key (keying, matte, channel)
+    //
+    // effectcraft-gpu fx_stylize (stylize, distort)
+    //
+    // effectcraft-gpu fx_noise (noise, blur, time)
+    //
 ];
 
 /// Effects whose output depends on [`EffectCtx::time`] directly (not only through animated
