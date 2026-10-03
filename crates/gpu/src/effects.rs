@@ -179,20 +179,21 @@ fn glow(e: &mut Enc, ctx: &EffectCtx, mut b: GBuf) -> Option<GBuf> {
     let use_colors = ctx.params.e("colors") == 1;
     let ca = ctx.params.color("colorA");
     let cb = ctx.params.color("colorB");
+    let (kx, ky) = dims_xy(ctx.params.e("glowDimensions"));
     if !ctx.adjustment {
         b.pad(e, (radius * 1.5).ceil() as u32 + 2)?;
     }
     let mut p = Params::default();
-    p.u[0][0] = use_colors as u32;
-    p.f[0][0] = thr;
+    p.u[0] = [use_colors as u32, (ctx.params.e("based") == 0) as u32, ctx.params.e("colorLooping"), 0];
+    p.f[0] = [thr, ctx.params.f("colorLoops") as f32, (ctx.params.f("colorPhase") / 360.0) as f32, ctx.params.f("abMidpoint") as f32 / 100.0];
     p.f[1] = ca;
     p.f[2] = cb;
     let bright = e.image(b.img.width, b.img.height);
     e.pixels("glow_bright", &p, &b.img, None, &bright, None);
     let s = (radius / 2.0).max(0.5);
-    let blurred = gaussian_blur(e, &bright, s, s, false);
+    let blurred = gaussian_blur(e, &bright, s * kx, s * ky, false);
     let mut p = Params::default();
-    p.u[0][0] = (ctx.params.e("operation") == 1) as u32;
+    p.u[0][0] = ctx.params.e("operation").min(2);
     p.f[0][0] = intensity;
     let out = e.image(b.img.width, b.img.height);
     e.pixels("glow_combine", &p, &b.img, Some(&blurred), &out, None);
@@ -240,8 +241,9 @@ fn transform(e: &mut Enc, ctx: &EffectCtx, mut b: GBuf) -> Option<GBuf> {
         * Mat3::skew_deg(ctx.params.f("skew"), ctx.params.f("skewAxis"))
         * Mat3::scale(vec2(sw / 100.0, sh / 100.0))
         * Mat3::translate(vec2(-anchor.0, -anchor.1));
+    let sampling = if ctx.params.e("sampling") == 1 { Sampling::Bicubic } else { Sampling::Bilinear };
     let empty = e.image(b.img.width, b.img.height);
-    b.img = ops::warp(e, &empty, &b.img, &m, Sampling::Bilinear, effectcraft_color::BlendMode::Normal, opacity, 0, None);
+    b.img = ops::warp(e, &empty, &b.img, &m, sampling, effectcraft_color::BlendMode::Normal, opacity, 0, None);
     Some(b)
 }
 
@@ -292,8 +294,17 @@ fn pointwise(e: &mut Enc, id: &str, ctx: &EffectCtx, b: GBuf) -> Option<GBuf> {
             let br = f("brightness") as f32 / 100.0;
             let ct = f("contrast") as f32 / 100.0;
             let k = if ct >= 0.0 { 1.0 / (1.0 - ct * 0.99) } else { 1.0 + ct };
-            p.u[0][0] = 2;
-            p.f[0] = [br, k, 0.0, 0.0];
+            let legacy = ctx.params.b("useLegacy");
+            // Mode: 0 = identity, 1 = legacy linear, 2 = tone curves (see `bc_modern`).
+            let mode = if br == 0.0 && ct == 0.0 {
+                0
+            } else if legacy {
+                1
+            } else {
+                2
+            };
+            p.u[0] = [2, mode, 0, 0];
+            p.f[0] = [br, k, ct, 0.0];
         }
         "ec.color.huesaturation" => {
             p.u[0] = [3, ctx.params.b("colorize") as u32, 0, 0];
@@ -301,16 +312,28 @@ fn pointwise(e: &mut Enc, id: &str, ctx: &EffectCtx, b: GBuf) -> Option<GBuf> {
             p.f[1] = [f("colorizeHue") as f32 / 360.0, f("colorizeSaturation") as f32 / 100.0, f("colorizeLightness") as f32 / 100.0, 0.0];
         }
         "ec.color.levels" => {
-            p.u[0] = [4, !ctx.params.b("noClip") as u32, 0, 0];
+            let (clip_b, clip_w) = effectcraft_effects::levels_clip(ctx);
+            p.u[0] = [4, clip_b as u32, clip_w as u32, 0];
             p.f[0] = [f("inBlack") as f32, f("inWhite") as f32, f("gamma").max(0.01) as f32, f("outBlack") as f32];
             p.f[1][0] = f("outWhite") as f32;
         }
         "ec.color.exposure" => {
-            p.u[0][0] = 5;
-            p.f[0] = [2f32.powf(f("exposure") as f32), f("offset") as f32, f("gamma").max(0.01) as f32, 0.0];
+            let s = effectcraft_effects::exposure_settings(ctx);
+            p.u[0] = [5, ctx.params.b("bypassLinearLight") as u32, 0, 0];
+            for i in 0..3 {
+                p.f[0][i] = s[i].0;
+                p.f[1][i] = s[i].1;
+                p.f[2][i] = s[i].2;
+            }
         }
         "ec.channel.invert" => {
-            p.u[0] = [6, ctx.params.e("channel"), 0, 0];
+            // The shader does the RGB channels and Alpha; HLS / YIQ inversions run on the CPU.
+            let ch = match ctx.params.e("channel") {
+                c @ 0..=3 => c,
+                effectcraft_effects::INVERT_ALPHA => 4,
+                _ => return None,
+            };
+            p.u[0] = [6, ch, 0, 0];
             p.f[0][0] = 1.0 - f("blend") as f32 / 100.0;
         }
         "ec.generate.fill" => {
@@ -330,14 +353,35 @@ fn pointwise(e: &mut Enc, id: &str, ctx: &EffectCtx, b: GBuf) -> Option<GBuf> {
             p.f[3] = [len2 as f32, f("scatter") as f32 / 512.0, f("blend") as f32 / 100.0, 0.0];
         }
         "ec.noise.fractal" => {
+            // The shader covers Soft Linear noise, the Basic / Turbulent Smooth / Turbulent Basic
+            // types, all Overflow modes, independent width / height scaling, Sub Influence and Sub
+            // Scaling, and the None / Normal blending modes; anything else renders on the CPU.
+            let pr = ctx.params;
+            let kind = pr.e("fractalType");
+            let mode = pr.e("blendingMode");
+            let sub_offset = pr.v2("subSettings/subOffset");
+            if pr.e("noiseType") != 2
+                || kind > 2
+                || mode > 1
+                || pr.b("evolutionOptions/cycleEvolution")
+                || pr.b("transform/perspectiveOffset")
+                || f("subSettings/subRotation") != 0.0
+                || (!pr.b("subSettings/centerSubscale") && sub_offset != [0.0, 0.0])
+            {
+                return None;
+            }
             let octaves = f("complexity").clamp(1.0, 20.0);
-            let (sr, cr) = (f("rotation") as f32).to_radians().sin_cos();
-            let (ox, oy) = b.to_px(ctx.params.v2("offset"));
-            p.u[0] = [10, ctx.params.e("fractalType"), octaves.ceil() as u32, f("seed") as u32 ^ 0x51ed];
-            p.u[1][0] = ctx.params.b("invert") as u32;
-            p.f[0] = [f("contrast") as f32 / 100.0, f("brightness") as f32 / 100.0, (f("scale") * b.scale).max(1.0) as f32, (octaves - octaves.floor()) as f32];
+            let (sr, cr) = (f("transform/rotation") as f32).to_radians().sin_cos();
+            let (ox, oy) = b.to_px(pr.v2("transform/offset"));
+            let s = f("transform/scale");
+            let (sw, sh) = if pr.b("transform/uniformScaling") { (s, s) } else { (f("transform/scaleWidth"), f("transform/scaleHeight")) };
+            let sub = (f("subSettings/subScaling") / 100.0).clamp(0.1, 1.0);
+            p.u[0] = [10, kind, octaves.ceil() as u32, f("evolutionOptions/seed") as u32 ^ 0x51ed];
+            p.u[1] = [pr.b("invert") as u32, pr.e("overflow"), mode, 0];
+            p.f[0] = [f("contrast") as f32 / 100.0, f("brightness") as f32 / 100.0, (sw * b.scale).max(1.0) as f32, (octaves - octaves.floor()) as f32];
             p.f[1] = [ox as f32, oy as f32, sr, cr];
-            p.f[2] = [f("evolution") as f32 / 360.0, f("blend") as f32 / 100.0, f("opacity") as f32 / 100.0, 0.0];
+            p.f[2] = [f("evolution") as f32 / 360.0, f("blend") as f32 / 100.0, (f("opacity") as f32 / 100.0).clamp(0.0, 1.0), (sh * b.scale).max(1.0) as f32];
+            p.f[3] = [(f("subSettings/subInfluence") as f32 / 100.0).clamp(0.0, 1.0), 1.0 / sub as f32, 0.0, 0.0];
         }
         _ => return None,
     }

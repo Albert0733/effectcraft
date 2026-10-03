@@ -160,12 +160,14 @@ fn curves(ctx: &EffectCtx, mut b: Buf) -> Buf {
 // ---------------------------------------------------------------------------------------------
 // Levels (Individual Controls)
 
+/// Levels (Individual Controls) parameter ids: each channel's controls sit in its own
+/// twirl-down group (RGB, Red, Green, Blue, Alpha).
 const LV_IDS: [[&str; 5]; 5] = [
-    ["rgbInBlack", "rgbInWhite", "rgbGamma", "rgbOutBlack", "rgbOutWhite"],
-    ["redInBlack", "redInWhite", "redGamma", "redOutBlack", "redOutWhite"],
-    ["greenInBlack", "greenInWhite", "greenGamma", "greenOutBlack", "greenOutWhite"],
-    ["blueInBlack", "blueInWhite", "blueGamma", "blueOutBlack", "blueOutWhite"],
-    ["alphaInBlack", "alphaInWhite", "alphaGamma", "alphaOutBlack", "alphaOutWhite"],
+    ["rgb/rgbInBlack", "rgb/rgbInWhite", "rgb/rgbGamma", "rgb/rgbOutBlack", "rgb/rgbOutWhite"],
+    ["red/redInBlack", "red/redInWhite", "red/redGamma", "red/redOutBlack", "red/redOutWhite"],
+    ["green/greenInBlack", "green/greenInWhite", "green/greenGamma", "green/greenOutBlack", "green/greenOutWhite"],
+    ["blue/blueInBlack", "blue/blueInWhite", "blue/blueGamma", "blue/blueOutBlack", "blue/blueOutWhite"],
+    ["alpha/alphaInBlack", "alpha/alphaInWhite", "alpha/alphaGamma", "alpha/alphaOutBlack", "alpha/alphaOutWhite"],
 ];
 const LV_NAMES: [[&str; 5]; 5] = [
     ["Input Black", "Input White", "Gamma", "Output Black", "Output White"],
@@ -188,12 +190,18 @@ impl Lv {
     fn identity(&self) -> bool {
         self.ib == 0.0 && self.iw == 1.0 && self.g == 1.0 && self.ob == 0.0 && self.ow == 1.0
     }
-    fn apply(&self, v: f32) -> f32 {
+    fn apply(&self, v: f32, (clip_b, clip_w): (bool, bool)) -> f32 {
         if self.identity() {
             return v;
         }
-        let t = ((v - self.ib) / (self.iw - self.ib).max(1e-6)).clamp(0.0, 1.0);
-        self.ob + (self.ow - self.ob) * t.powf(1.0 / self.g.max(0.01))
+        let mut t = (v - self.ib) / (self.iw - self.ib).max(1e-6);
+        if clip_b {
+            t = t.max(0.0);
+        }
+        if clip_w {
+            t = t.min(1.0);
+        }
+        self.ob + (self.ow - self.ob) * t.max(0.0).powf(1.0 / self.g.max(0.01))
     }
 }
 
@@ -208,7 +216,8 @@ fn levels_ic(ctx: &EffectCtx, mut b: Buf) -> Buf {
     if lv.iter().all(Lv::identity) {
         return b;
     }
-    map_ca(&mut b.img, |c, a| ([0, 1, 2].map(|i| lv[i + 1].apply(lv[0].apply(c[i]))), lv[4].apply(a)));
+    let clip = crate::color_fx::levels_clip(ctx);
+    map_ca(&mut b.img, |c, a| ([0, 1, 2].map(|i| lv[i + 1].apply(lv[0].apply(c[i], clip), clip)), lv[4].apply(a, clip).clamp(0.0, 1.0)));
     b
 }
 
@@ -277,6 +286,44 @@ fn clip_points(h: &[f64], black: f64, white: f64) -> (f32, f32) {
     if hi - lo < 1e-3 { (0.0, 1.0) } else { (lo, hi) }
 }
 
+/// Alpha-weighted mean (0..1) of a histogram.
+fn hist_mean(h: &[f64]) -> f64 {
+    let (mut s, mut w) = (0.0, 0.0);
+    for (i, v) in h.iter().enumerate() {
+        s += v * i as f64;
+        w += v;
+    }
+    if w > 0.0 { s / w / (BINS - 1) as f64 } else { 0.5 }
+}
+
+/// The histograms the automatic corrections analyse: the current frame's, or with Temporal
+/// Smoothing (seconds) the sum over the frames within that range on either side. Scene Detect
+/// stops at a frame whose brightness jumps (a cut).
+fn smoothed_histograms(ctx: &EffectCtx, img: &Image) -> [Vec<f64>; 4] {
+    let mut h = histograms(img);
+    let secs = ctx.params.f("temporalSmoothing");
+    let Some(host) = ctx.env.host.filter(|_| secs > 0.0) else { return h };
+    let fps = ctx.fps();
+    let n = (secs * fps).round().clamp(0.0, 240.0) as i64;
+    let scene = ctx.params.b("sceneDetect");
+    let m0 = hist_mean(&h[3]);
+    for dir in [-1i64, 1] {
+        for k in 1..=n {
+            let Some(nb) = host.self_at(ctx.time + (dir * k) as f64 / fps, ctx.env.effect_index) else { break };
+            let hn = histograms(&nb.img);
+            if scene && (hist_mean(&hn[3]) - m0).abs() > 0.15 {
+                break;
+            }
+            for c in 0..4 {
+                for i in 0..BINS {
+                    h[c][i] += hn[c][i];
+                }
+            }
+        }
+    }
+    h
+}
+
 fn stretch(v: f32, lo: f32, hi: f32) -> f32 {
     ((v - lo) / (hi - lo)).clamp(0.0, 1.0)
 }
@@ -286,7 +333,7 @@ fn auto_correct(ctx: &EffectCtx, mut b: Buf, kind: u32) -> Buf {
     let black = ctx.params.f("blackClip").clamp(0.0, 49.0) / 100.0;
     let white = ctx.params.f("whiteClip").clamp(0.0, 49.0) / 100.0;
     let blend = (ctx.params.f("blend") / 100.0).clamp(0.0, 1.0) as f32;
-    let h = histograms(&b.img);
+    let h = smoothed_histograms(ctx, &b.img);
     let ranges: [(f32, f32); 3] = if kind == 1 {
         let mut combined = vec![0.0; BINS];
         for k in 0..3 {
@@ -392,22 +439,20 @@ fn equalize(ctx: &EffectCtx, mut b: Buf) -> Buf {
 fn shadow_highlight(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let (mut s_amt, mut h_amt) = (ctx.params.f("shadowAmount") as f32 / 100.0, ctx.params.f("highlightAmount") as f32 / 100.0);
     let luma = Plane::luma(&b.img);
+    let src_hist = histograms(&b.img);
     if ctx.params.b("autoAmounts") {
-        let (mut sum, mut wsum) = (0.0f64, 0.0f64);
-        for (px, l) in b.img.data.iter().zip(&luma.data) {
-            sum += (*l * px[3]) as f64;
-            wsum += px[3] as f64;
-        }
-        let mean = if wsum > 0.0 { (sum / wsum) as f32 } else { 0.5 };
+        // Temporal Smoothing / Scene Detect average the analysis over neighbouring frames.
+        let mean =
+            if ctx.params.f("temporalSmoothing") > 0.0 { hist_mean(&smoothed_histograms(ctx, &b.img)[3]) as f32 } else { hist_mean(&src_hist[3]) as f32 };
         s_amt = ((0.6 - mean) * 1.5).clamp(0.0, 1.0) * 0.8 + 0.1;
         h_amt = ((mean - 0.6) * 1.5).clamp(0.0, 1.0) * 0.8;
     }
-    let s_tw = (ctx.params.f("shadowTonalWidth") as f32 / 100.0).max(0.01);
-    let h_tw = (ctx.params.f("highlightTonalWidth") as f32 / 100.0).max(0.01);
-    let s_r = ctx.params.f("shadowRadius").max(0.0) * b.scale / 2.0;
-    let h_r = ctx.params.f("highlightRadius").max(0.0) * b.scale / 2.0;
-    let cc = ctx.params.f("colorCorrection") as f32 / 100.0;
-    let mc = ctx.params.f("midtoneContrast") as f32 / 100.0;
+    let s_tw = (ctx.params.f("moreOptions/shadowTonalWidth") as f32 / 100.0).max(0.01);
+    let h_tw = (ctx.params.f("moreOptions/highlightTonalWidth") as f32 / 100.0).max(0.01);
+    let s_r = ctx.params.f("moreOptions/shadowRadius").max(0.0) * b.scale / 2.0;
+    let h_r = ctx.params.f("moreOptions/highlightRadius").max(0.0) * b.scale / 2.0;
+    let cc = ctx.params.f("moreOptions/colorCorrection") as f32 / 100.0;
+    let mc = ctx.params.f("moreOptions/midtoneContrast") as f32 / 100.0;
     let blend = (ctx.params.f("blend") / 100.0).clamp(0.0, 1.0) as f32;
     let base_s = gauss_plane(&luma, s_r, s_r);
     let base_h = if (h_r - s_r).abs() < 1e-9 { base_s.clone() } else { gauss_plane(&luma, h_r, h_r) };
@@ -430,6 +475,18 @@ fn shadow_highlight(ctx: &EffectCtx, mut b: Buf) -> Buf {
         let o = lerp3(o.map(|v| v.max(0.0)), c, blend);
         *px = premul(o, a);
     });
+    // Black / White Clip: the adjusted image's extremes (ignoring those fractions of pixels)
+    // are mapped back onto the original's, so lifting shadows or recovering highlights doesn't
+    // flatten the ends of the tonal range.
+    let (bc, wc) = (ctx.params.f("moreOptions/blackClip").clamp(0.0, 49.0) / 100.0, ctx.params.f("moreOptions/whiteClip").clamp(0.0, 49.0) / 100.0);
+    if bc > 0.0 || wc > 0.0 {
+        let (lo0, hi0) = clip_points(&src_hist[3], bc, wc);
+        let (lo1, hi1) = clip_points(&histograms(&b.img)[3], bc, wc);
+        if (lo0, hi0) != (lo1, hi1) && hi1 - lo1 > 1e-3 {
+            let k = (hi0 - lo0) / (hi1 - lo1);
+            map_ca(&mut b.img, |c, a| (c.map(|v| (lo0 + (v - lo1) * k).max(0.0)), a));
+        }
+    }
     b
 }
 
@@ -538,48 +595,112 @@ const LINK_MODES: [(&str, BlendMode); 13] = [
     ("Luminosity", BlendMode::Luminosity),
 ];
 
-/// Representative colour of an image: 0 average, 1 brightest, 2 darkest, 3 max RGB, 4 min RGB.
-fn sample_color(img: &Image, how: u32) -> [f32; 3] {
-    let mut sum = [0.0f64; 4];
-    let mut best: Option<([f32; 3], f32)> = None;
-    let mut mx = [0.0f32; 3];
-    let mut mn = [f32::INFINITY; 3];
+/// Color Link's Sample options.
+pub const LINK_SAMPLES: [&str; 10] =
+    ["Average", "Median", "Brightest", "Darkest", "Max RGB", "Min RGB", "Average Alpha", "Median Alpha", "Max Alpha", "Min Alpha"];
+
+/// Element of sorted `v` at fraction `q`.
+fn quantile(v: &[f32], q: f64) -> f32 {
+    if v.is_empty() {
+        return 0.0;
+    }
+    v[((q * (v.len() - 1) as f64).round() as usize).min(v.len() - 1)]
+}
+
+/// Mean of `v` without the fraction `clip` at each end.
+fn trimmed_mean(v: &mut [f32], clip: f64) -> f32 {
+    if v.is_empty() {
+        return 0.0;
+    }
+    v.sort_by(f32::total_cmp);
+    let cut = (v.len() as f64 * clip) as usize;
+    let s = &v[cut..v.len() - cut];
+    if s.is_empty() { quantile(v, 0.5) } else { (s.iter().map(|x| *x as f64).sum::<f64>() / s.len() as f64) as f32 }
+}
+
+/// Representative colour (RGB) and alpha of an image for a Sample option (see [`LINK_SAMPLES`]),
+/// ignoring the fraction `clip` of pixels at each extreme. Fully transparent pixels are skipped
+/// for the colour samples.
+fn sample_color(img: &Image, how: u32, clip: f64) -> ([f32; 3], f32) {
+    let clip = clip.clamp(0.0, 0.49);
+    let alpha_mode = how >= 6;
+    let mut ch: [Vec<f32>; 3] = Default::default();
+    let mut lum: Vec<(f32, [f32; 3])> = vec![];
+    let mut alphas: Vec<f32> = Vec::with_capacity(img.data.len());
+    let mut wsum = [0.0f64; 4];
     for px in &img.data {
         let (c, a) = unpremul(*px);
-        if a <= 1e-3 {
+        alphas.push(a);
+        if alpha_mode || a <= 1e-3 {
             continue;
         }
         for k in 0..3 {
-            sum[k] += (c[k] * a) as f64;
-            mx[k] = mx[k].max(c[k]);
-            mn[k] = mn[k].min(c[k]);
+            ch[k].push(c[k]);
         }
-        sum[3] += a as f64;
-        let l = luminance(c[0], c[1], c[2]);
-        let better = match best {
-            None => true,
-            Some((_, bl)) => (how == 1 && l > bl) || (how == 2 && l < bl),
+        lum.push((luminance(c[0], c[1], c[2]), c));
+        for k in 0..3 {
+            wsum[k] += (c[k] * a) as f64;
+        }
+        wsum[3] += a as f64;
+    }
+    if alpha_mode {
+        alphas.sort_by(f32::total_cmp);
+        let a = match how {
+            7 => quantile(&alphas, 0.5),
+            8 => quantile(&alphas, 1.0 - clip),
+            9 => quantile(&alphas, clip),
+            _ => trimmed_mean(&mut alphas, clip),
         };
-        if better {
-            best = Some((c, l));
+        return ([0.0; 3], a);
+    }
+    if lum.is_empty() {
+        return ([0.0; 3], 1.0);
+    }
+    let c = match how {
+        1 => ch.each_mut().map(|v| {
+            v.sort_by(f32::total_cmp);
+            quantile(v, 0.5)
+        }),
+        2 | 3 => {
+            lum.sort_by(|a, b| a.0.total_cmp(&b.0));
+            let q = if how == 2 { 1.0 - clip } else { clip };
+            lum[((q * (lum.len() - 1) as f64).round() as usize).min(lum.len() - 1)].1
         }
-    }
-    if sum[3] <= 0.0 {
-        return [0.0; 3];
-    }
-    match how {
-        1 | 2 => best.map(|b| b.0).unwrap_or([0.0; 3]),
-        3 => mx,
-        4 => mn,
-        _ => [0, 1, 2].map(|k| (sum[k] / sum[3]) as f32),
-    }
+        4 | 5 => ch.each_mut().map(|v| {
+            v.sort_by(f32::total_cmp);
+            quantile(v, if how == 4 { 1.0 - clip } else { clip })
+        }),
+        // Plain Average is alpha-weighted.
+        0 if clip <= 0.0 => [0, 1, 2].map(|k| (wsum[k] / wsum[3]) as f32),
+        _ => ch.each_mut().map(|v| trimmed_mean(v, clip)),
+    };
+    (c, 1.0)
 }
 
+/// Color Link: colours the layer with a colour sampled from the Source Layer (its source, no
+/// masks or effects) or, with no source layer, from the layer itself.
 fn color_link(ctx: &EffectCtx, mut b: Buf) -> Buf {
-    let c = sample_color(&b.img, ctx.params.e("sampleSource"));
+    let how = ctx.params.e("sampleSource");
+    let clip = ctx.params.f("clip") / 100.0;
+    let (c, sa) = match ctx.layer_param("sourceLayer", false) {
+        Some(lp) => sample_color(&lp.buf.img, how, clip),
+        None => sample_color(&b.img, how, clip),
+    };
     let op = (ctx.params.f("opacity") / 100.0).clamp(0.0, 1.0) as f32;
-    let mode = LINK_MODES[(ctx.params.e("blendingMode") as usize).min(LINK_MODES.len() - 1)].1;
     let stencil = ctx.params.b("stencilOriginalAlpha");
+    if how >= 6 {
+        // Alpha samples set the layer's alpha (blending modes don't apply).
+        b.img.data.par_iter_mut().for_each(|px| {
+            let (c0, a0) = unpremul(*px);
+            let mut na = a0 + (sa - a0) * op;
+            if stencil {
+                na = na.min(a0);
+            }
+            *px = premul(c0, na.clamp(0.0, 1.0));
+        });
+        return b;
+    }
+    let mode = LINK_MODES[(ctx.params.e("blendingMode") as usize).min(LINK_MODES.len() - 1)].1;
     let src = [c[0] * op, c[1] * op, c[2] * op, op];
     b.img.data.par_iter_mut().for_each(|px| {
         let a0 = px[3];
@@ -759,6 +880,8 @@ pub fn specs() -> Vec<EffectSpec> {
         lv_params.push(p(ids[3], names[3], num(0.0), slider(-1.0, 2.0, 0.0, 1.0, 3)));
         lv_params.push(p(ids[4], names[4], num(1.0), slider(-1.0, 2.0, 0.0, 1.0, 3)));
     }
+    lv_params.push(p("clipToOutputBlack", "Clip To Output Black", Value::Enum(2), popup(&crate::color_fx::LEVELS_CLIP)));
+    lv_params.push(p("clipToOutputWhite", "Clip To Output White", Value::Enum(2), popup(&crate::color_fx::LEVELS_CLIP)));
     let mut sc_params = vec![p("method", "Method", Value::Enum(0), popup(&["Relative", "Absolute"]))];
     for (ids, names) in SC_IDS.iter().zip(SC_NAMES.iter()) {
         for k in 0..4 {
@@ -767,12 +890,14 @@ pub fn specs() -> Vec<EffectSpec> {
     }
     let clip_params = |extra: bool| {
         let mut v = vec![
+            p("temporalSmoothing", "Temporal Smoothing (seconds)", num(0.0), slider(0.0, 4.0, 0.0, 4.0, 2)),
+            p("sceneDetect", "Scene Detect", Value::Bool(false), ParamUi::Checkbox),
             p("blackClip", "Black Clip", num(0.1), slider(0.0, 49.0, 0.0, 10.0, 2)),
             p("whiteClip", "White Clip", num(0.1), slider(0.0, 49.0, 0.0, 10.0, 2)),
             p("blend", "Blend With Original", num(0.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
         ];
         if extra {
-            v.insert(0, p("snapNeutralMidtones", "Snap Neutral Midtones", Value::Bool(true), ParamUi::Checkbox));
+            v.insert(4, p("snapNeutralMidtones", "Snap Neutral Midtones", Value::Bool(true), ParamUi::Checkbox));
         }
         v
     };
@@ -809,12 +934,16 @@ pub fn specs() -> Vec<EffectSpec> {
                 p("autoAmounts", "Auto Amounts", Value::Bool(true), ParamUi::Checkbox),
                 p("shadowAmount", "Shadow Amount", num(50.0), slider(0.0, 100.0, 0.0, 100.0, 0)),
                 p("highlightAmount", "Highlight Amount", num(0.0), slider(0.0, 100.0, 0.0, 100.0, 0)),
-                p("shadowTonalWidth", "Shadow Tonal Width", num(50.0), slider(0.0, 100.0, 0.0, 100.0, 0)),
-                p("shadowRadius", "Shadow Radius", num(30.0), slider(0.0, 2500.0, 0.0, 100.0, 0)),
-                p("highlightTonalWidth", "Highlight Tonal Width", num(50.0), slider(0.0, 100.0, 0.0, 100.0, 0)),
-                p("highlightRadius", "Highlight Radius", num(30.0), slider(0.0, 2500.0, 0.0, 100.0, 0)),
-                p("colorCorrection", "Color Correction", num(20.0), slider(-100.0, 100.0, -100.0, 100.0, 0)),
-                p("midtoneContrast", "Midtone Contrast", num(0.0), pct()),
+                p("temporalSmoothing", "Temporal Smoothing (seconds)", num(0.0), slider(0.0, 4.0, 0.0, 4.0, 2)),
+                p("sceneDetect", "Scene Detect", Value::Bool(false), ParamUi::Checkbox),
+                p("moreOptions/shadowTonalWidth", "Shadow Tonal Width", num(50.0), slider(0.0, 100.0, 0.0, 100.0, 0)),
+                p("moreOptions/shadowRadius", "Shadow Radius", num(30.0), slider(0.0, 2500.0, 0.0, 100.0, 0)),
+                p("moreOptions/highlightTonalWidth", "Highlight Tonal Width", num(50.0), slider(0.0, 100.0, 0.0, 100.0, 0)),
+                p("moreOptions/highlightRadius", "Highlight Radius", num(30.0), slider(0.0, 2500.0, 0.0, 100.0, 0)),
+                p("moreOptions/colorCorrection", "Color Correction", num(20.0), slider(-100.0, 100.0, -100.0, 100.0, 0)),
+                p("moreOptions/midtoneContrast", "Midtone Contrast", num(0.0), pct()),
+                p("moreOptions/blackClip", "Black Clip", num(0.01), slider(0.0, 49.0, 0.0, 10.0, 2)),
+                p("moreOptions/whiteClip", "White Clip", num(0.01), slider(0.0, 49.0, 0.0, 10.0, 2)),
                 p("blend", "Blend With Original", num(0.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
             ],
             shadow_highlight,
@@ -830,7 +959,11 @@ pub fn specs() -> Vec<EffectSpec> {
             "ec.color.colorlink",
             "Color Link",
             vec![
-                p("sampleSource", "Sample", Value::Enum(0), popup(&["Average", "Brightest", "Darkest", "Max RGB", "Min RGB"])),
+                p("sourceLayer", "Source Layer", Value::Layer(None), ParamUi::Layer),
+                // A chosen source layer is sampled without its masks and effects.
+                p("sourceLayerSource", "Source Layer Source", Value::Enum(0), ParamUi::Hidden),
+                p("sampleSource", "Sample", Value::Enum(0), popup(&LINK_SAMPLES)),
+                p("clip", "Clip", num(0.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
                 p("stencilOriginalAlpha", "Stencil Original Alpha", Value::Bool(true), ParamUi::Checkbox),
                 p("opacity", "Opacity", num(100.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
                 p("blendingMode", "Blending Mode", Value::Enum(0), popup(&LINK_MODES.map(|m| m.0))),
@@ -844,7 +977,7 @@ pub fn specs() -> Vec<EffectSpec> {
                 p("locale", "Broadcast Locale", Value::Enum(0), popup(&["NTSC", "PAL"])),
                 p(
                     "howToMakeSafe",
-                    "How to Make Color Safe",
+                    "How To Make Color Safe",
                     Value::Enum(0),
                     popup(&["Reduce Luminance", "Reduce Saturation", "Key Out Unsafe", "Key Out Safe"]),
                 ),
@@ -950,7 +1083,7 @@ mod tests {
     fn levels_ic_identity_and_red_only() {
         let img = ramp();
         assert_eq!(run("ec.color.levelsic", &img, &[]), img);
-        let out = run("ec.color.levelsic", &img, &[("redOutWhite", num(0.5))]);
+        let out = run("ec.color.levelsic", &img, &[("red/redOutWhite", num(0.5))]);
         let p = out.get(15, 3);
         assert!((p[0] - 0.5).abs() < 1e-4 && (p[1] - 0.0).abs() < 1e-4);
     }
@@ -1065,5 +1198,84 @@ mod tests {
         let img = Image::filled(8, 8, [0.1, 0.1, 0.1, 1.0]);
         let out = run("ec.color.shadowhighlight", &img, &[("autoAmounts", Value::Bool(false))]);
         assert!(out.data[0][0] > 0.15);
+    }
+
+    #[test]
+    fn levels_ic_clip_popups() {
+        let img = Image::filled(2, 2, [0.9, 0.9, 0.9, 1.0]);
+        let lv = [("rgb/rgbInWhite", num(0.5))];
+        assert!((run("ec.color.levelsic", &img, &lv).data[0][0] - 1.0).abs() < 1e-6);
+        let off = [("rgb/rgbInWhite", num(0.5)), ("clipToOutputWhite", Value::Enum(0))];
+        assert!(run("ec.color.levelsic", &img, &off).data[0][0] > 1.5);
+    }
+
+    /// A host whose other layers and other frames are a fixed image.
+    struct ImgHost(Image);
+    impl crate::EffectHost for ImgHost {
+        fn layer(&self, _: u64, _: bool) -> Option<crate::LayerPixels> {
+            Some(crate::LayerPixels { buf: Buf { img: self.0.clone(), offset: [0.0; 2], scale: 1.0 }, size: [2.0, 2.0] })
+        }
+        fn audio(&self, _: u64, _: f64, _: usize, _: u32) -> Option<Vec<f32>> {
+            None
+        }
+        fn self_at(&self, _: f64, _: usize) -> Option<Buf> {
+            Some(Buf { img: self.0.clone(), offset: [0.0; 2], scale: 1.0 })
+        }
+    }
+
+    fn run_host(id: &str, img: &Image, over: &[(&str, Value)], host: &ImgHost) -> Image {
+        let env = crate::EffectEnv { host: Some(host), frame_rate: 10.0, ..Default::default() };
+        crate::run_fx(id, over, img.clone(), 1.0, env).img
+    }
+
+    #[test]
+    fn color_link_samples_clip_and_source_layer() {
+        let mut img = Image::new(5, 1);
+        for (x, v) in [0.0f32, 0.1, 0.2, 0.3, 1.0].iter().enumerate() {
+            img.set(x as u32, 0, [*v, *v, *v, 1.0]);
+        }
+        // Median ignores the outlier the average follows.
+        let med = run("ec.color.colorlink", &img, &[("sampleSource", Value::Enum(1))]);
+        assert!((med.data[0][0] - 0.2).abs() < 1e-5);
+        // Brightest with 20 % clip skips the brightest pixel.
+        let br = run("ec.color.colorlink", &img, &[("sampleSource", Value::Enum(2)), ("clip", num(20.0))]);
+        assert!((br.data[0][0] - 0.3).abs() < 1e-5);
+        // Min Alpha of a half-transparent source layer sets the alpha.
+        let host = ImgHost(Image::filled(2, 2, [0.25, 0.25, 0.25, 0.5]));
+        let out = run_host("ec.color.colorlink", &img, &[("sourceLayer", Value::Layer(Some(9))), ("sampleSource", Value::Enum(9))], &host);
+        assert!((out.data[4][3] - 0.5).abs() < 1e-5);
+        // Average of the source layer (not the effect's own pixels).
+        let out = run_host("ec.color.colorlink", &img, &[("sourceLayer", Value::Layer(Some(9)))], &host);
+        assert!((out.data[4][0] - 0.5).abs() < 1e-5);
+    }
+
+    #[test]
+    fn auto_levels_temporal_smoothing_reads_neighbour_frames() {
+        let mut img = Image::new(4, 1);
+        for x in 0..4 {
+            let v = 0.3 + 0.1 * x as f32;
+            img.set(x, 0, [v, v, v, 1.0]);
+        }
+        let wide = ImgHost(ramp());
+        let p0 = [("blackClip", num(0.0)), ("whiteClip", num(0.0))];
+        let alone = run_host("ec.color.autolevels", &img, &p0, &wide);
+        let smooth = run_host("ec.color.autolevels", &img, &[p0[0].clone(), p0[1].clone(), ("temporalSmoothing", num(0.2))], &wide);
+        // Alone the frame is stretched to full range; with full-range neighbours much less.
+        assert!(alone.data[0][0] < 0.01);
+        assert!(smooth.data[0][0] > 0.1, "{:?}", smooth.data[0]);
+    }
+
+    #[test]
+    fn shadow_highlight_clip_keeps_the_tonal_range() {
+        let img = ramp();
+        let lift = [("autoAmounts", Value::Bool(false)), ("shadowAmount", num(80.0))];
+        let unclipped = run(
+            "ec.color.shadowhighlight",
+            &img,
+            &[lift[0].clone(), lift[1].clone(), ("moreOptions/blackClip", num(0.0)), ("moreOptions/whiteClip", num(0.0))],
+        );
+        let clipped = run("ec.color.shadowhighlight", &img, &[lift[0].clone(), lift[1].clone(), ("moreOptions/blackClip", num(1.0))]);
+        let min = |im: &Image| im.data.iter().filter(|p| p[3] > 0.99).map(|p| luminance(p[0], p[1], p[2])).fold(f32::MAX, f32::min);
+        assert!(min(&clipped) < min(&unclipped));
     }
 }

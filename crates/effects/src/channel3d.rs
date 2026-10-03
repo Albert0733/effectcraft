@@ -62,8 +62,12 @@ fn channel_extract(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let Some(a) = aux(ctx) else { return b };
     let idx = index_map(&b, &a);
     let (bp, wp) = (ctx.params.f("blackPoint") as f32, ctx.params.f("whitePoint") as f32);
-    let lv = |v: f32| ((v - bp) / (wp - bp).abs().max(1e-9) * (wp - bp).signum()).clamp(0.0, 1.0);
-    let lv = |v: f32| if wp >= bp { lv(v) } else { 1.0 - ((v - wp) / (bp - wp).max(1e-9)).clamp(0.0, 1.0) };
+    // Clamp Output limits the mapped values to 0..1; Invert Depth Map flips them.
+    let (clamp, invert) = (ctx.params.b("clampOutput"), ctx.params.b("invertDepthMap"));
+    let cl = move |v: f32| if clamp { v.clamp(0.0, 1.0) } else { v };
+    let lv = |v: f32| cl((v - bp) / (wp - bp).abs().max(1e-9) * (wp - bp).signum());
+    let lv = |v: f32| if wp >= bp { lv(v) } else { 1.0 - cl((v - wp) / (bp - wp).max(1e-9)) };
+    let lv = |v: f32| if invert { 1.0 - lv(v) } else { lv(v) };
     let get3 = |names: [&[&str]; 3]| -> Option<[&[f32]; 3]> { Some([a.find(names[0])?, a.find(names[1])?, a.find(names[2])?]) };
     let img: Option<Image> = match ctx.params.e("channel") {
         0 => a.depth().map(|z| map_grey(&b, &idx, |i| lv(z[i]))),
@@ -437,6 +441,8 @@ pub fn specs() -> Vec<EffectSpec> {
                 p("channel", "3D Channel", Value::Enum(0), popup(&EXTRACT_CHANNELS)),
                 p("blackPoint", "Black Point", num(0.0), slider(-1.0e6, 1.0e6, -10000.0, 10000.0, 2)),
                 p("whitePoint", "White Point", num(10000.0), slider(-1.0e6, 1.0e6, -10000.0, 10000.0, 2)),
+                p("clampOutput", "Clamp Output", Value::Bool(true), ParamUi::Checkbox),
+                p("invertDepthMap", "Invert Depth Map", Value::Bool(false), ParamUi::Checkbox),
             ],
             channel_extract,
         ),
@@ -614,6 +620,11 @@ mod tests {
         assert_eq!(o.get(17, 1)[0], 1.0);
         let ids = run("ec.3d.channelextract", &[("channel", Value::Enum(1)), ("whitePoint", num(2.0))], &h);
         assert_eq!(ids.get(2, 5)[0], 0.5);
+        // Invert Depth Map flips the ramp; without Clamp Output values run past 1.
+        let inv = run("ec.3d.channelextract", &[("blackPoint", num(0.0)), ("whitePoint", num(1000.0)), ("invertDepthMap", Value::Bool(true))], &h);
+        assert!((inv.get(2, 5)[0] - 0.9).abs() < 1e-6);
+        let raw = run("ec.3d.channelextract", &[("blackPoint", num(0.0)), ("whitePoint", num(100.0)), ("clampOutput", Value::Bool(false))], &h);
+        assert!(raw.get(12, 5)[0] > 1.5);
     }
 
     #[test]

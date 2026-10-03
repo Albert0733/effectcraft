@@ -1,4 +1,4 @@
-//! Obsolete ▸ mocha shape: renders planar-tracked roto shapes as a matte.
+//! Matte ▸ Mocha shape: renders planar-tracked roto shapes as a matte.
 //!
 //! Mocha's own clipboard / export formats are not publicly specified, so the effect reads shape
 //! data in a small documented JSON format of ours (in the hidden `shapeData` parameter, either the
@@ -184,8 +184,8 @@ fn mocha_shape(ctx: &EffectCtx, mut b: Buf) -> Buf {
 pub fn specs() -> Vec<EffectSpec> {
     vec![EffectSpec {
         id: "ec.obsolete.mochashape",
-        name: "mocha shape",
-        category: "Obsolete",
+        name: "Mocha shape",
+        category: "Matte",
         params: vec![
             p("blendMode", "Blend mode", Value::Enum(0), popup(&["Add", "Subtract", "Intersect", "Difference"])),
             p("invert", "Invert", Value::Bool(false), ParamUi::Checkbox),

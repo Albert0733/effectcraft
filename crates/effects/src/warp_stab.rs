@@ -12,8 +12,8 @@
 //!   valid on every frame, **Stabilize, Crop, Auto-scale** scales that region back up to the
 //!   frame (up to Maximum Scale, minus the Action-safe Margin), Additional Scale scales on top;
 //! - **Stabilize, Synthesize Edges** fills the uncovered borders from neighbouring frames
-//!   (within Synthesize Input Range), mapped through the analysed frame-to-frame motion and read
-//!   with [`crate::EffectHost::self_at`]; Synthesize Edge Feather blends the seam and Synthesize
+//!   (within Synthesis Input Range), mapped through the analysed frame-to-frame motion and read
+//!   with [`crate::EffectHost::self_at`]; Synthesis Edge Feather blends the seam and Synthesis
 //!   Edge Cropping ignores bad edge pixels of the input frames;
 //! - **Show Track Points** draws the analysed background features.
 //!
@@ -48,7 +48,7 @@ pub const GROUPS: &[(&str, &str)] = &[
     ("borders", "Borders"),
     ("autoScale", "Auto-scale"),
     ("advanced", "Advanced"),
-    ("edgeCropping", "Synthesize Edge Cropping"),
+    ("edgeCropping", "Synthesis Edge Cropping"),
 ];
 
 pub const RESULTS: [&str; 2] = ["Smooth Motion", "No Motion"];
@@ -72,8 +72,8 @@ pub fn specs() -> Vec<EffectSpec> {
             p("advanced/detailedAnalysis", "Detailed Analysis", Value::Bool(false), ParamUi::Checkbox),
             p("advanced/rollingShutterRipple", "Rolling Shutter Ripple", Value::Enum(0), popup(&["Automatic Reduction", "Enhanced Reduction"])),
             p("advanced/cropLessSmoothMore", "Crop Less <-> Smooth More", num(50.0), slider(0.0, 100.0, 0.0, 100.0, 0)),
-            p("advanced/synthesizeInputRange", "Synthesize Input Range (seconds)", num(1.0), slider(0.0, 10.0, 0.0, 5.0, 2)),
-            p("advanced/synthesizeEdgeFeather", "Synthesize Edge Feather", num(0.0), slider(0.0, 100.0, 0.0, 100.0, 0)),
+            p("advanced/synthesizeInputRange", "Synthesis Input Range (seconds)", num(1.0), slider(0.0, 10.0, 0.0, 5.0, 2)),
+            p("advanced/synthesizeEdgeFeather", "Synthesis Edge Feather", num(0.0), slider(0.0, 100.0, 0.0, 100.0, 0)),
             p("advanced/edgeCropping/left", "Left", num(0.0), slider(0.0, 1000.0, 0.0, 50.0, 0)),
             p("advanced/edgeCropping/top", "Top", num(0.0), slider(0.0, 1000.0, 0.0, 50.0, 0)),
             p("advanced/edgeCropping/right", "Right", num(0.0), slider(0.0, 1000.0, 0.0, 50.0, 0)),
