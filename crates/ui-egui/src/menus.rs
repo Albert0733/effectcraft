@@ -697,7 +697,7 @@ fn file_dialog(app: &mut EffectcraftApp, id: &str, params: &Value) -> Option<Res
         "file.exportLottie" => ("path", Ask::Save("Animation.json")),
         "file.importLottie" => ("path", Ask::Open(&["json", "lottie"])),
         "render.saveCurrentPreview" => ("path", Ask::Save("Preview.mp4")),
-        "file.runScript" => ("path", Ask::Open(&["jsonl", "json", "txt"])),
+        "file.runScript" => ("path", Ask::Open(&["jsx", "js", "jsonl", "json", "txt"])),
         "file.replaceFootage" => ("path", Ask::Import),
         "file.collectFiles" => ("folder", Ask::Save("Collected Files")),
         _ => return None,
@@ -716,7 +716,7 @@ fn file_dialog(app: &mut EffectcraftApp, id: &str, params: &Value) -> Option<Res
             let Some(f) = app.hooks.pick_files.as_ref() else { return Some(Err("no file dialog available (pass `paths`)".into())) };
             let paths = f(&[
                 "mp4", "mov", "m4v", "mkv", "webm", "png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "bmp", "exr", "wav", "aif", "aiff", "mp3", "flac",
-                "ogg", "opus", "svg", "psd", "psb",
+                "ogg", "opus", "svg", "psd", "psb", "gltf", "glb", "obj",
             ]);
             match (paths.is_empty(), key) {
                 (true, _) => None,

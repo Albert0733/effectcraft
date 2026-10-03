@@ -310,6 +310,36 @@ impl LightKind {
     }
 }
 
+/// A parametric 3D primitive (Layer ▸ New ▸ Cube/Sphere/Plane/Torus/Cone/Cylinder).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum PrimitiveKind {
+    #[default]
+    Cube,
+    Sphere,
+    Plane,
+    Torus,
+    Cone,
+    Cylinder,
+}
+
+impl PrimitiveKind {
+    pub const ALL: [PrimitiveKind; 6] =
+        [PrimitiveKind::Cube, PrimitiveKind::Sphere, PrimitiveKind::Plane, PrimitiveKind::Torus, PrimitiveKind::Cone, PrimitiveKind::Cylinder];
+    pub fn label(self) -> &'static str {
+        match self {
+            PrimitiveKind::Cube => "Cube",
+            PrimitiveKind::Sphere => "Sphere",
+            PrimitiveKind::Plane => "Plane",
+            PrimitiveKind::Torus => "Torus",
+            PrimitiveKind::Cone => "Cone",
+            PrimitiveKind::Cylinder => "Cylinder",
+        }
+    }
+    pub fn parse(s: &str) -> Option<PrimitiveKind> {
+        PrimitiveKind::ALL.into_iter().find(|k| k.label().eq_ignore_ascii_case(s.trim()))
+    }
+}
+
 /// What a layer shows.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -333,12 +363,20 @@ pub enum LayerSource {
     Light {
         kind: LightKind,
     },
+    /// An imported 3D model (a footage item of kind [`FootageKind::Model`]; Advanced 3D).
+    Model {
+        item: ItemId,
+    },
+    /// A parametric 3D primitive (Advanced 3D).
+    Primitive {
+        kind: PrimitiveKind,
+    },
 }
 
 impl LayerSource {
     pub fn item(&self) -> Option<ItemId> {
         match self {
-            LayerSource::Footage { item } | LayerSource::Comp { item } | LayerSource::Solid { item } => Some(*item),
+            LayerSource::Footage { item } | LayerSource::Comp { item } | LayerSource::Solid { item } | LayerSource::Model { item } => Some(*item),
             _ => None,
         }
     }
@@ -352,11 +390,17 @@ impl LayerSource {
             LayerSource::Null => "Null",
             LayerSource::Camera => "Camera",
             LayerSource::Light { .. } => "Light",
+            LayerSource::Model { .. } => "3D Model",
+            LayerSource::Primitive { .. } => "3D Primitive",
         }
     }
     /// Layers with pixels (cameras, lights and nulls have none).
     pub fn is_av(&self) -> bool {
         !matches!(self, LayerSource::Camera | LayerSource::Light { .. } | LayerSource::Null)
+    }
+    /// A 3D model or primitive layer (meshes; drawn by the Advanced 3D renderer).
+    pub fn is_model(&self) -> bool {
+        matches!(self, LayerSource::Model { .. } | LayerSource::Primitive { .. })
     }
 }
 
@@ -489,6 +533,10 @@ pub struct Layer {
     pub markers_locked: bool,
     #[serde(default)]
     pub auto_orient: AutoOrient,
+    /// Layer ▸ Environment Layer: the layer is the environment (image-based light and
+    /// reflections) of Advanced 3D comps instead of being drawn.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub environment: bool,
     /// The property tree (Masks, Effects, Transform, Text, Contents, Camera/Light options…).
     pub props: PropGroup,
 }
@@ -540,6 +588,8 @@ pub enum FootageKind {
     Still,
     Sequence,
     Audio,
+    /// A 3D model (glTF 2.0 / OBJ), placed as a model layer.
+    Model,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -640,6 +690,7 @@ impl Item {
                 FootageKind::Still => "Image",
                 FootageKind::Sequence => "Image Sequence",
                 FootageKind::Audio => "Audio",
+                FootageKind::Model => "3D Model",
             },
             ItemKind::Solid(_) => "Solid",
         }

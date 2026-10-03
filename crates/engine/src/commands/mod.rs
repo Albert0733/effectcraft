@@ -18,14 +18,17 @@ mod layer;
 mod layer_menu;
 mod layer_time;
 mod link;
+mod liquify;
 mod lottie;
 mod markers;
 mod mask;
 pub mod mask_interp;
+pub(crate) mod model3d;
 pub mod paint;
 mod paths;
 mod project_items;
 mod prop;
+mod prop_groups;
 pub mod puppet;
 mod query;
 mod render_queue;
@@ -102,10 +105,12 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(layer::specs());
         v.extend(styles::specs());
         v.extend(three_d::specs());
+        v.extend(model3d::specs());
         v.extend(text_anim::specs());
         v.extend(text_edit::specs());
         v.extend(layer_time::specs());
         v.extend(prop::specs());
+        v.extend(prop_groups::specs());
         v.extend(project_items::specs());
         v.extend(anim::specs());
         v.extend(anim_tools::specs());
@@ -133,6 +138,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(warp_cmds::specs());
         v.extend(paint::specs());
         v.extend(puppet::specs());
+        v.extend(liquify::specs());
         v.extend(settings::specs());
         v.extend(stubs::specs());
         v

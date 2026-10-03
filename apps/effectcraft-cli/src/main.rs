@@ -15,6 +15,7 @@
 //! effectcraft-cli render F.ecproj --queue                    render the project's Render Queue
 //! effectcraft-cli bench [--comp C] [--time S] [--scale K] [--n N] [--play N] [--gpu]   render timings
 //!     (--gpu: CPU vs GPU ms/frame for every comp at Full and Half)
+//! effectcraft-cli script FILE.jsx [F.ecproj] | --eval CODE    run an After Effects-style script
 //! effectcraft-cli mcp [--bridge PORT]                         MCP server on stdio
 //!
 //! Project:  --project F.ecproj (or a positional *.ecproj) | --demo | --empty   (default: demo; mcp: empty)
@@ -32,7 +33,7 @@ use effectcraft_automation::tools::{self, Reply};
 use effectcraft_automation::{Backend, McpServer};
 use serde_json::{Value, json};
 
-const USAGE: &str = "usage: effectcraft-cli <info|commands|exec|run|props|get|set|render-frame|render|mcp> [args] [--json]
+const USAGE: &str = "usage: effectcraft-cli <info|commands|exec|run|props|get|set|render-frame|render|script|mcp> [args] [--json]
   info                                     project + engine summary
   commands [--filter TEXT] [--enabled]     list engine commands
   exec <command-id> [--params JSON]        run one engine command
@@ -47,6 +48,9 @@ const USAGE: &str = "usage: effectcraft-cli <info|commands|exec|run|props|get|se
   bench [--comp C] [--time S] [--scale K] [--n N] [--play N] [--gpu]   per-layer/effect render timings;
                                            --play N renders N consecutive frames with/without the layer cache;
                                            --gpu compares CPU and GPU ms/frame for every comp at Full and Half
+  script FILE.jsx [F.ecproj] | --eval CODE run JavaScript with the After Effects-style object model
+                                           (app.project, comps, layers, properties…); prints writeLn
+                                           output and the result; errors exit 1 with file:line:col
   mcp [--bridge PORT]                      MCP server (JSON-RPC over stdio)
 options: --project F.ecproj | --demo | --empty   --save | --save-as F   --bridge PORT   --json   --gpu
 <comp>: id or name, '-' = active comp; <layer>: id, '#n' or name; <value>: JSON or bare string";
@@ -68,6 +72,7 @@ const VALUED: &[&str] = &[
     "--out",
     "--expression",
     "--depth",
+    "--eval",
     // render
     "--format",
     "--start",
@@ -243,6 +248,49 @@ fn tool(b: &mut Backend, name: &str, a: Value) -> Result<Value, Failure> {
     }
 }
 
+/// `script FILE.jsx [project]` / `script --eval CODE`: run JavaScript against a headless session
+/// (an empty project unless one is given, or `--demo`) or the running app (`--bridge`).
+fn script_cmd(args: &Args, json_out: bool) -> Result<(), Failure> {
+    let (code, name) = match (args.opt("--eval"), args.pos.first()) {
+        (Some(c), _) => (c.to_string(), "eval".to_string()),
+        (None, Some(f)) => (std::fs::read_to_string(f).map_err(|e| Failure::Error(format!("cannot read {f}: {e}")))?, f.clone()),
+        (None, None) => return usage_err("script needs a .jsx/.js file or --eval CODE"),
+    };
+    let mut b = backend(args, false)?;
+    let r = b.exec("script.run", json!({"code": code, "name": name}))?;
+    let saved = maybe_save(&mut b, args)?;
+    if json_out {
+        let mut o = r.clone();
+        if let Some(p) = &saved {
+            o["saved"] = json!(p);
+        }
+        emit(&o, true);
+    } else {
+        if let Some(out) = r["output"].as_str().filter(|o| !o.is_empty()) {
+            println!("{out}");
+        }
+        if !r["result"].is_null() && r["error"].is_null() {
+            println!("{}", r["result"]);
+        }
+        if let Some(p) = saved {
+            eprintln!("saved {p}");
+        }
+    }
+    if let Some(e) = r.get("error").filter(|e| !e.is_null()) {
+        let pos = match (e["line"].as_u64(), e["column"].as_u64()) {
+            (Some(l), Some(c)) => format!(":{l}:{c}"),
+            (Some(l), None) => format!(":{l}"),
+            _ => String::new(),
+        };
+        let msg = format!("{}{pos}: {}", e["file"].as_str().unwrap_or(&name), e["message"].as_str().unwrap_or("script error"));
+        if json_out {
+            std::process::exit(1);
+        }
+        return Err(Failure::Error(msg));
+    }
+    Ok(())
+}
+
 /// Print a result: compact JSON with `--json`, else pretty JSON.
 fn emit(v: &Value, json_out: bool) {
     if json_out {
@@ -315,6 +363,7 @@ fn run(cmd: &str, args: &Args, json_out: bool) -> Result<(), Failure> {
                 }
             }
         }
+        "script" => script_cmd(args, json_out)?,
         "exec" => {
             let Some(id) = args.pos.first().cloned() else { return usage_err("exec needs a command id") };
             let params = match (args.opt("--params"), args.pos.get(1).map(String::as_str)) {

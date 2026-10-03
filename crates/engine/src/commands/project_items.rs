@@ -140,6 +140,92 @@ fn set_comment(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(Value::Null)
 }
 
+/// Delete project items (folders with their contents). Layers that use a deleted item and Render
+/// Queue items of deleted comps go too, like After Effects' Edit ▸ Clear in the Project panel.
+fn delete(s: &mut Session, p: &Value) -> Result<Value> {
+    let c = "project.delete";
+    let ids = items_p(s, p, c)?;
+    let mut doomed: Vec<ItemId> = vec![];
+    for id in s.project.items.keys() {
+        if ids.iter().any(|d| is_within(&s.project, *id, *d)) {
+            doomed.push(*id);
+        }
+    }
+    let n = doomed.len();
+    s.edit("Delete Items", None, |proj, st| {
+        for id in &doomed {
+            proj.items.remove(id);
+        }
+        let comp_ids: Vec<ItemId> = proj.comps().map(|(id, _)| *id).collect();
+        for cid in comp_ids {
+            let uses = proj.comp(cid).is_some_and(|c| c.layers.iter().any(|l| l.source.item().is_some_and(|i| doomed.contains(&i))));
+            if !uses {
+                continue;
+            }
+            if let Some(comp) = proj.comp_mut(cid) {
+                let gone: Vec<effectcraft_project::LayerId> =
+                    comp.layers.iter().filter(|l| l.source.item().is_some_and(|i| doomed.contains(&i))).map(|l| l.id).collect();
+                comp.layers.retain(|l| !gone.contains(&l.id));
+                for l in &mut comp.layers {
+                    if l.parent.is_some_and(|x| gone.contains(&x)) {
+                        l.parent = None;
+                    }
+                    if l.track_matte.is_some_and(|m| gone.contains(&m.layer)) {
+                        l.track_matte = None;
+                    }
+                }
+            }
+        }
+        proj.render_queue.retain(|r| !doomed.contains(&r.comp));
+        st.project_selection.retain(|i| !doomed.contains(i));
+        Ok(())
+    })?;
+    s.sanitize_state();
+    Ok(json!(n))
+}
+
+/// Duplicate project items (Edit ▸ Duplicate in the Project panel): comps get fresh layer ids and
+/// a numbered name; the copies are selected.
+fn duplicate(s: &mut Session, p: &Value) -> Result<Value> {
+    let c = "project.duplicate";
+    let ids = items_p(s, p, c)?;
+    let mut created = vec![];
+    s.edit("Duplicate", None, |proj, st| {
+        for id in &ids {
+            let it = proj.item(*id).ok_or(EngineError::Other("item vanished".into()))?.clone();
+            if it.is_folder() {
+                return Err(bad(c, "folders can't be duplicated"));
+            }
+            let base = it.name.trim_end_matches(|ch: char| ch.is_ascii_digit()).trim_end().to_string();
+            let name = (2..).map(|i| format!("{base} {i}")).find(|n| proj.find_by_name(n).is_none()).unwrap_or_default();
+            let mut kind = it.kind.clone();
+            if let effectcraft_project::ItemKind::Comp(comp) = &mut kind {
+                let comp = std::sync::Arc::make_mut(comp);
+                let mut map = std::collections::HashMap::new();
+                for l in &mut comp.layers {
+                    let new = effectcraft_project::LayerId(proj.alloc());
+                    map.insert(l.id, new);
+                    l.id = new;
+                    let mut next = proj.next_id;
+                    l.props.reassign_uids(&mut next);
+                    proj.next_id = next + 1;
+                }
+                for l in &mut comp.layers {
+                    l.parent = l.parent.and_then(|p| map.get(&p).copied());
+                    if let Some(m) = &mut l.track_matte {
+                        m.layer = map.get(&m.layer).copied().unwrap_or(m.layer);
+                    }
+                }
+            }
+            let nid = proj.add_item(&name, it.label, it.parent, kind);
+            created.push(nid);
+        }
+        st.project_selection = created.clone();
+        Ok(())
+    })?;
+    Ok(json!({"items": created.iter().map(|i| i.0).collect::<Vec<_>>()}))
+}
+
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!("project.select", "Select Project Items", [], None, "{items: [id|name], add?}", always, select),
@@ -147,5 +233,15 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!("project.move", "Move to Folder", [], None, "{items?: [id|name] (default: selected), folder: id|name|null (root)}", always, move_items),
         cmd!("project.setLabel", "Item Label", [], None, "{items?, label: name|index}", always, set_label),
         cmd!("project.setComment", "Item Comment", [], None, "{items?, comment}", always, set_comment),
+        cmd!(
+            "project.delete",
+            "Delete Project Items",
+            [],
+            None,
+            "{items?: [id|name] (default: selected)} (folders with their contents; layers using the items go too)",
+            always,
+            delete
+        ),
+        cmd!("project.duplicate", "Duplicate Project Items", [], None, "{items?: [id|name] (default: selected)} → {items}", always, duplicate),
     ]
 }

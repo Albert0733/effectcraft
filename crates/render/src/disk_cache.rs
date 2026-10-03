@@ -30,6 +30,7 @@ use effectcraft_raster::Image;
 const VERSION: &str = "v1";
 const MAGIC: &[u8; 4] = b"ECDC";
 /// Pending writes before new ones are dropped.
+#[cfg(not(target_arch = "wasm32"))]
 const QUEUE_LIMIT: usize = 64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -86,6 +87,7 @@ struct Index {
     clock: u64,
 }
 
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 enum Job {
     Write(Kind, u128, Vec<u8>),
 }

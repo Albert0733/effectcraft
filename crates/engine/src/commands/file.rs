@@ -164,7 +164,7 @@ fn import(s: &mut Session, p: &Value) -> Result<Value> {
             let label = match f.kind {
                 FootageKind::Still | FootageKind::Sequence => Label::Lavender,
                 FootageKind::Audio => Label::SeaFoam,
-                FootageKind::Video => Label::Aqua,
+                FootageKind::Video | FootageKind::Model => Label::Aqua,
             };
             let id = proj.add_item(&name, label, None, ItemKind::Footage(f));
             ids.push(id.0);
