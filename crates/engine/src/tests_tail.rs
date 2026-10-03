@@ -261,6 +261,28 @@ fn keyframe_label_groups() {
 }
 
 #[test]
+fn tate_chu_yoko_via_set_text_with_undo_and_serde() {
+    let mut s = comp(400, 400);
+    let t = s.execute("layer.newText", json!({"text": "A12B", "size": 40})).unwrap()["layer"].as_u64().unwrap();
+    s.execute("layer.setText", json!({"layer": t, "vertical": true})).unwrap();
+    s.execute("layer.setText", json!({"layer": t, "range": [1, 3], "tateChuYoko": true})).unwrap();
+    let doc = crate::commands::text_edit::layer_doc(&s, LayerId(t)).unwrap();
+    assert!(doc.style_at(1).tate_chu_yoko && doc.style_at(2).tate_chu_yoko && !doc.style_at(0).tate_chu_yoko);
+    let lay = effectcraft_text::layout_doc(&doc);
+    assert!((lay.glyphs[1].origin.y - lay.glyphs[2].origin.y).abs() < 1e-6, "the digits share a row");
+    let back = roundtrip(&s);
+    let effectcraft_keyframe::Value::Text(d) = &back.comp(s.active_comp_id().unwrap()).unwrap().layer(LayerId(t)).unwrap().props.prop("text/sourceText").unwrap().value
+    else {
+        panic!()
+    };
+    assert!(d.style_at(1).tate_chu_yoko);
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(!crate::commands::text_edit::layer_doc(&s, LayerId(t)).unwrap().style_at(1).tate_chu_yoko);
+    s.execute("layer.setText", json!({"layer": t, "verticalRomanUpright": true})).unwrap();
+    assert!(crate::commands::text_edit::layer_doc(&s, LayerId(t)).unwrap().vertical_roman_upright);
+}
+
+#[test]
 fn camera_focus_commands_undo_and_serde() {
     let mut s = comp(400, 300);
     let t = s.execute("layer.newSolid", json!({"color": "#ffffff", "width": 50, "height": 50})).unwrap()["layer"].as_u64().unwrap();

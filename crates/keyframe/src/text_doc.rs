@@ -172,6 +172,11 @@ pub struct CharStyle {
     pub baseline: BaselineOption,
     pub kerning: Kerning,
     pub ligatures: bool,
+    /// Vertical type: set these characters horizontally within the column (Tate-Chu-Yoko).
+    pub tate_chu_yoko: bool,
+    /// Vertical type: keep Roman (half-width) characters upright instead of turning them on
+    /// their side (Character panel menu ▸ Standard Vertical Roman Alignment).
+    pub vertical_roman_upright: bool,
 }
 
 impl Default for CharStyle {
@@ -250,6 +255,9 @@ pub struct TextDoc {
     pub kerning: Kerning,
     #[serde(default = "yes")]
     pub ligatures: bool,
+    /// Base Tate-Chu-Yoko and Standard Vertical Roman Alignment (see [`CharStyle`]).
+    pub tate_chu_yoko: bool,
+    pub vertical_roman_upright: bool,
     pub indent_left: f64,
     pub indent_right: f64,
     pub indent_first: f64,
@@ -299,6 +307,8 @@ impl Default for TextDoc {
             baseline: BaselineOption::Normal,
             kerning: Kerning::Metrics,
             ligatures: true,
+            tate_chu_yoko: false,
+            vertical_roman_upright: false,
             indent_left: 0.0,
             indent_right: 0.0,
             indent_first: 0.0,
@@ -383,6 +393,8 @@ impl TextDoc {
             baseline: self.baseline,
             kerning: self.kerning,
             ligatures: self.ligatures,
+            tate_chu_yoko: self.tate_chu_yoko,
+            vertical_roman_upright: self.vertical_roman_upright,
         }
     }
 
@@ -408,6 +420,8 @@ impl TextDoc {
         self.baseline = s.baseline;
         self.kerning = s.kerning;
         self.ligatures = s.ligatures;
+        self.tate_chu_yoko = s.tate_chu_yoko;
+        self.vertical_roman_upright = s.vertical_roman_upright;
     }
 
     /// The base (first paragraph's) settings.
@@ -792,6 +806,8 @@ pub const CHAR_ATTRS: &[&str] = &[
     "subscript",
     "kerning",
     "ligatures",
+    "tateChuYoko",
+    "verticalRomanUpright",
 ];
 
 /// Paragraph attribute keys of `layer.setText`.
@@ -851,6 +867,8 @@ pub fn apply_char_attr(s: &mut CharStyle, key: &str, v: &J) -> Result<bool, Stri
         }
         "kerning" => s.kerning = Kerning::parse(v).ok_or("kerning: expected metrics|optical|number")?,
         "ligatures" => s.ligatures = flag(key, v)?,
+        "tateChuYoko" => s.tate_chu_yoko = flag(key, v)?,
+        "verticalRomanUpright" => s.vertical_roman_upright = flag(key, v)?,
         _ => return Ok(false),
     }
     Ok(true)
@@ -896,7 +914,7 @@ pub fn char_style_json(s: &CharStyle) -> J {
         "tracking": s.tracking, "leading": s.leading.map_or(J::from("auto"), J::from), "baselineShift": s.baseline_shift,
         "hScale": s.h_scale, "vScale": s.v_scale, "tsume": s.tsume, "fauxBold": s.faux_bold, "fauxItalic": s.faux_italic,
         "allCaps": s.all_caps, "smallCaps": s.small_caps, "baseline": s.baseline.key(), "kerning": s.kerning.to_json(),
-        "ligatures": s.ligatures,
+        "ligatures": s.ligatures, "tateChuYoko": s.tate_chu_yoko, "verticalRomanUpright": s.vertical_roman_upright,
     })
 }
 
