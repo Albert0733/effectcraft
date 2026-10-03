@@ -164,6 +164,10 @@ pub struct EffectcraftApp {
     /// Docked groups laid out last frame: (active panel, group rect) — `~` maximizes the one
     /// under the pointer.
     pub(crate) dock_rects: Vec<(PanelKind, egui::Rect)>,
+    /// Home screen: recent-project thumbnail textures by path (None = no thumbnail).
+    pub(crate) home_thumbs: std::collections::HashMap<String, Option<egui::TextureHandle>>,
+    /// The (project path, saved revision) whose thumbnail was stored last.
+    pub(crate) home_thumb_saved: Option<(String, u64)>,
 }
 
 impl EffectcraftApp {
@@ -208,6 +212,8 @@ impl EffectcraftApp {
             applied_prefs: None,
             recovery: None,
             dock_rects: vec![],
+            home_thumbs: Default::default(),
+            home_thumb_saved: None,
         }
         .with_ui_commands()
     }
@@ -762,6 +768,7 @@ impl EffectcraftApp {
         let body = egui::Rect::from_min_max(egui::pos2(full.min.x + 4.0, header.max.y + 2.0), egui::pos2(full.max.x - 4.0, full.max.y - 4.0));
         self.dock_area(ui, body);
         panels::precomp::mini_flowchart(self, &ctx);
+        panels::home::capture_thumbnail(self);
         panels::dialogs::show(self, &ctx);
         self.draw_toast(ui, full);
     }

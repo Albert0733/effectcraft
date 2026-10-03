@@ -10,6 +10,7 @@ pub mod forms;
 pub mod fx_widgets;
 pub mod graph;
 pub mod graph_tools;
+pub mod home;
 pub mod info;
 pub mod key_dialogs;
 pub mod layer_panel;
@@ -63,7 +64,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: PanelKind, rect: Rec
     match p {
         PanelKind::Composition => {
             if app.ui.start_screen {
-                misc::start_screen(app, ui, rect);
+                home::show(app, ui, rect);
             } else {
                 viewer::show(app, ui, rect)
             }
