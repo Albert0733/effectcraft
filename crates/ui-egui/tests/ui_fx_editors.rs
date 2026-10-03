@@ -180,7 +180,7 @@ fn colorama_output_cycle_wheel() {
     // Clicking the ring adds a stop: the palette becomes Custom with seven stops.
     let w = rect(&h, &format!("{pre}.wheel"));
     let mid = w.width() / 2.0 - 20.0 - 9.0;
-    let ring = pos2(w.center().x + mid * 0.7071, w.center().y + mid * 0.7071);
+    let ring = pos2(w.center().x + mid * std::f32::consts::FRAC_1_SQRT_2, w.center().y + mid * std::f32::consts::FRAC_1_SQRT_2);
     click_n(&mut h, ring, 1);
     assert_eq!(value(&h, l, fx, "outputCycle/usePresetPalette"), KV::Enum(8));
     let pal = s(value(&h, l, fx, "outputCycle/palette"));
