@@ -1,5 +1,7 @@
 //! Layered and vector stills: Photoshop documents (`effectcraft-psd`: the merged image, or one
-//! layer for footage imported as a composition) and SVG (`effectcraft-svg`, rasterised).
+//! layer for footage imported as a composition) and vector files rasterised at any scale: SVG
+//! (`effectcraft-svg`), PDF / Illustrator / EPS (`effectcraft-pdf`; one layer of the file for
+//! footage imported as a composition).
 
 use effectcraft_project::{AlphaMode, Footage};
 use effectcraft_raster::Image;
@@ -11,7 +13,29 @@ fn is_svg(path: &str, bytes: &[u8]) -> bool {
     path.to_ascii_lowercase().ends_with(".svg") || effectcraft_svg::looks_like_svg(bytes)
 }
 
-/// Footage for a Photoshop or SVG file (`None` for other formats).
+/// The vector document of an SVG / PDF / AI / EPS file (`None` for other formats), restricted
+/// to the footage's layer when it names one.
+pub fn vector_doc(path: &str, bytes: &[u8], layer: Option<&effectcraft_project::SourceLayer>) -> Option<std::result::Result<effectcraft_svg::Doc, String>> {
+    if is_svg(path, bytes) {
+        return Some(effectcraft_svg::parse(bytes).map_err(|e| format!("{path}: {e}")));
+    }
+    effectcraft_pdf::sniff(bytes)?;
+    Some(
+        effectcraft_pdf::parse(bytes)
+            .map(|d| match layer {
+                Some(l) => effectcraft_pdf::layer_doc(&d, l.index as usize),
+                None => d,
+            })
+            .map_err(|e| format!("{path}: {e}")),
+    )
+}
+
+fn is_pdf_like(path: &str, bytes: &[u8]) -> bool {
+    let ext = std::path::Path::new(path).extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+    effectcraft_pdf::sniff(bytes).is_some() && (effectcraft_pdf::EXTENSIONS.contains(&ext.as_str()) || bytes.starts_with(b"%PDF"))
+}
+
+/// Footage for a Photoshop or vector file (`None` for other formats).
 pub(crate) fn probe(path: &str, bytes: &[u8]) -> Result<Option<Footage>> {
     if effectcraft_psd::is_psd(bytes) {
         let psd = effectcraft_psd::Psd::parse(bytes.to_vec()).map_err(|e| MediaError::Decode(format!("{path}: {e}")))?;
@@ -25,6 +49,14 @@ pub(crate) fn probe(path: &str, bytes: &[u8]) -> Result<Option<Footage>> {
         let (w, h) = doc.pixel_size();
         let mut f = crate::probe::still_footage(path, w, h, image::ImageFormat::Png, true);
         f.codec = "SVG".into();
+        f.alpha = AlphaMode::Straight;
+        return Ok(Some(f));
+    }
+    if is_pdf_like(path, bytes) {
+        let doc = effectcraft_pdf::parse(bytes).map_err(|e| MediaError::Decode(format!("{path}: {e}")))?;
+        let (w, h) = doc.pixel_size();
+        let mut f = crate::probe::still_footage(path, w, h, image::ImageFormat::Png, true);
+        f.codec = effectcraft_pdf::codec(path, bytes).unwrap_or("PDF").into();
         f.alpha = AlphaMode::Straight;
         return Ok(Some(f));
     }
@@ -42,8 +74,8 @@ pub(crate) fn decode(path: &str, bytes: &[u8], footage: &Footage, op: AlphaOp) -
         .map_err(|e| MediaError::Decode(format!("{path}: {e}")))?;
         return Ok(Some(straight_to_image(px.width, px.height, &px.data, op)));
     }
-    if is_svg(path, bytes) {
-        let doc = effectcraft_svg::parse(bytes).map_err(|e| MediaError::Decode(format!("{path}: {e}")))?;
+    if is_svg(path, bytes) || is_pdf_like(path, bytes) {
+        let doc = vector_doc(path, bytes, footage.layer.as_ref()).unwrap_or(Err(String::new())).map_err(MediaError::Decode)?;
         let (w, h) = doc.pixel_size();
         let img = effectcraft_svg::rasterize(&doc, w, h, 1.0);
         // The rasteriser produces premultiplied pixels already.
@@ -53,9 +85,9 @@ pub(crate) fn decode(path: &str, bytes: &[u8], footage: &Footage, op: AlphaOp) -
     Ok(None)
 }
 
-/// An SVG rasterised at `scale` × its pixel size (Continuously Rasterize).
-pub(crate) fn rasterize_svg(bytes: &[u8], scale: f64) -> Option<Image> {
-    let doc = effectcraft_svg::parse(bytes).ok()?;
+/// A vector file rasterised at `scale` × its pixel size (Continuously Rasterize).
+pub(crate) fn rasterize_vector(path: &str, bytes: &[u8], layer: Option<&effectcraft_project::SourceLayer>, scale: f64) -> Option<Image> {
+    let doc = vector_doc(path, bytes, layer)?.ok()?;
     let (w, h) = doc.pixel_size();
     let (sw, sh) = (((w as f64 * scale).ceil() as u32).clamp(1, 16384), ((h as f64 * scale).ceil() as u32).clamp(1, 16384));
     Some(effectcraft_svg::rasterize(&doc, sw, sh, scale))

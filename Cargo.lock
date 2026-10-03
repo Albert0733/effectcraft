@@ -1213,6 +1213,7 @@ dependencies = [
  "effectcraft-lottie",
  "effectcraft-model",
  "effectcraft-path",
+ "effectcraft-pdf",
  "effectcraft-project",
  "effectcraft-psd",
  "effectcraft-raster",
@@ -1309,6 +1310,7 @@ dependencies = [
  "effectcraft-export",
  "effectcraft-expr",
  "effectcraft-media",
+ "effectcraft-pdf",
  "effectcraft-project",
  "effectcraft-psd",
  "effectcraft-raster",
@@ -1352,6 +1354,7 @@ name = "effectcraft-media"
 version = "0.1.0"
 dependencies = [
  "effectcraft-model",
+ "effectcraft-pdf",
  "effectcraft-project",
  "effectcraft-psd",
  "effectcraft-raster",
@@ -1396,6 +1399,15 @@ dependencies = [
  "kurbo",
  "linesweeper",
  "tiny-skia",
+]
+
+[[package]]
+name = "effectcraft-pdf"
+version = "0.1.0"
+dependencies = [
+ "effectcraft-svg",
+ "kurbo",
+ "miniz_oxide 0.8.9",
 ]
 
 [[package]]

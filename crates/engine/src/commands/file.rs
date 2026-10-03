@@ -101,6 +101,17 @@ fn import(s: &mut Session, p: &Value) -> Result<Value> {
         for path in paths {
             let bytes = match s.services.read_file(&path) {
                 Ok(b) if effectcraft_psd::is_psd(&b) => b,
+                Ok(b) if effectcraft_pdf::sniff(&b).is_some() && !path.to_ascii_lowercase().ends_with(".svg") => {
+                    // PDF / Illustrator / EPS: one layer per file layer.
+                    match import_vector_comp(s, &path, &b) {
+                        Ok((comp, items)) => {
+                            out_comps.push(comp);
+                            ids.extend(items);
+                        }
+                        Err(e) => errors.push(e.to_string()),
+                    }
+                    continue;
+                }
                 _ => {
                     rest.push(path);
                     continue;
@@ -153,7 +164,9 @@ fn import(s: &mut Session, p: &Value) -> Result<Value> {
                     && f.codec == "PSD"
                 {
                     match s.services.read_file(path).ok().and_then(|b| effectcraft_psd::Psd::parse(b).ok()).and_then(|d| find_psd_layer(&d, sel)) {
-                        Some((index, name)) => f.layer = Some(effectcraft_project::SourceLayer { index: index as u32, name, layer_size: false }),
+                        Some((index, name)) => {
+                            f.layer = Some(effectcraft_project::SourceLayer { index: index as u32, name, layer_size: false, embedded: None })
+                        }
                         None => {
                             errors.push(format!("{path}: no layer {sel}"));
                             continue;
@@ -215,6 +228,22 @@ fn import_psd_comp(s: &mut Session, path: &str, bytes: Vec<u8>, retain: bool) ->
     let mut items = vec![r.folder.0];
     items.extend(r.items.iter().map(|i| i.0));
     Ok((r.comp.0, items, r.warnings))
+}
+
+/// Import a PDF / Illustrator / EPS file as a composition (one undo step). Returns (comp, items).
+fn import_vector_comp(s: &mut Session, path: &str, bytes: &[u8]) -> Result<(u64, Vec<u64>)> {
+    let name = std::path::Path::new(path).file_stem().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "Vector".into());
+    let rate = effectcraft_time::FrameRate::FPS_29_97;
+    let secs = if s.prefs.import.still_footage == "seconds" { s.prefs.import.still_seconds } else { 10.0 };
+    let duration = rate.snap_nearest(effectcraft_time::Tick::from_seconds_f64(secs));
+    let (comp, folder, items) = s.edit("Import", None, |proj, st| {
+        let r = crate::vector::import_vector_comp(proj, path, bytes, &name, rate, duration).map_err(EngineError::Other)?;
+        st.project_selection = vec![r.0];
+        Ok(r)
+    })?;
+    let mut out = vec![folder.0];
+    out.extend(items.iter().map(|i| i.0));
+    Ok((comp.0, out))
 }
 
 /// Extensions imported as data footage.
@@ -381,7 +410,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "File...",
             ["File", "Import"],
             Some("Cmd+I"),
-            "{paths: [string], importAs?: footage|composition|compositionLayerSizes (Photoshop files), layer?: name|index (footage of one Photoshop layer)}",
+            "{paths: [string], importAs?: footage|composition|compositionLayerSizes (Photoshop, PDF, Illustrator and EPS files), layer?: name|index (footage of one Photoshop layer)}",
             always,
             import
         ),

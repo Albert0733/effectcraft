@@ -66,7 +66,7 @@ pub trait FootageSource: Send + Sync {
 
 /// Footage that can be rasterised at any scale (SVG).
 pub fn is_vector_footage(f: &Footage) -> bool {
-    f.codec == "SVG"
+    matches!(f.codec.as_str(), "SVG" | "PDF" | "AI" | "EPS")
 }
 
 /// Layer parameters and audio for effects (see [`effectcraft_effects::EffectHost`]).

@@ -31,6 +31,27 @@ fn draw_group(g: &Group, m: Affine, opacity: f64, dst: &mut Image) {
     if o <= 0.0 {
         return;
     }
+    if !g.clip.is_empty() {
+        // Draw the children on their own, keep what every clip path covers, composite.
+        let mut tmp = Image::new(dst.width, dst.height);
+        for c in &g.children {
+            draw_node(c, m, 1.0, &mut tmp);
+        }
+        for (path, rule) in &g.clip {
+            let rule = match rule {
+                FillRule::NonZero => effectcraft_path::FillRule::NonZero,
+                FillRule::EvenOdd => effectcraft_path::FillRule::EvenOdd,
+            };
+            let cov = effectcraft_path::fill_coverage(std::slice::from_ref(path), &mat3(m), dst.width, dst.height, rule);
+            tmp.data.par_iter_mut().zip(cov.data.par_iter()).for_each(|(p, c)| {
+                for v in p.iter_mut() {
+                    *v *= c;
+                }
+            });
+        }
+        over(dst, &tmp, o as f32);
+        return;
+    }
     if g.opacity < 1.0 && g.children.len() > 1 {
         let mut tmp = Image::new(dst.width, dst.height);
         for c in &g.children {

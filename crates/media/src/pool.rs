@@ -516,7 +516,7 @@ impl FootageSource for MediaPool {
             return None;
         }
         let bytes = self.inner.read(&footage.path).ok()?;
-        crate::layered::rasterize_svg(&bytes, scale).map(Arc::new)
+        crate::layered::rasterize_vector(&footage.path, &bytes, footage.layer.as_ref(), scale).map(Arc::new)
     }
 
     fn aux(&self, _item: ItemId, footage: &Footage, t: Tick) -> Option<Arc<effectcraft_raster::AuxChannels>> {
