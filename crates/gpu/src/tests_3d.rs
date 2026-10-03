@@ -281,6 +281,10 @@ fn two_d_layer_with_a_three_d_track_matte() {
                 ml.switches.video = false;
             }
             check(&format!("3d matte {kind:?} {depth:?}"), compare_at(&s, opts(), Tick::ZERO), 0.005);
+            // The same with the Advanced 3D renderer (its CPU path draws 3D mattes through the
+            // camera with composite_iso_with).
+            s.p.comp_mut(s.cid).unwrap().renderer = effectcraft_project::Renderer::Advanced3D;
+            check(&format!("3d matte {kind:?} {depth:?} (Advanced 3D)"), compare_at(&s, opts(), Tick::ZERO), 0.005);
         }
     }
 }

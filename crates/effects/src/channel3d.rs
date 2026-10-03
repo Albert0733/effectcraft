@@ -31,12 +31,17 @@ fn aux(ctx: &EffectCtx) -> Option<Arc<AuxChannels>> {
 
 /// Aux index for each buffer pixel (None outside the aux image).
 fn index_map(b: &Buf, a: &AuxChannels) -> Vec<Option<usize>> {
+    index_map_at(b, a, [0.5, 0.5])
+}
+
+/// [`index_map`] sampling each pixel at sub-pixel position `at` (0..1).
+fn index_map_at(b: &Buf, a: &AuxChannels, at: [f64; 2]) -> Vec<Option<usize>> {
     let (w, h) = (b.img.width as usize, b.img.height as usize);
     let inv = 1.0 / b.scale.max(1e-9);
     (0..w * h)
         .into_par_iter()
         .map(|i| {
-            let (x, y) = ((i % w) as f64 + 0.5, (i / w) as f64 + 0.5);
+            let (x, y) = ((i % w) as f64 + at[0], (i / w) as f64 + at[1]);
             a.index_at((x - b.offset[0]) * inv, (y - b.offset[1]) * inv)
         })
         .collect()
@@ -60,7 +65,28 @@ pub const EXTRACT_CHANNELS: [&str; 8] = ["Z-Depth", "Object ID", "Texture UV", "
 
 fn channel_extract(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let Some(a) = aux(ctx) else { return b };
+    if ctx.params.b("antialias") {
+        // Anti-alias: average four sub-pixel samples of the channel.
+        let subs = [[0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]];
+        let imgs: Vec<Image> = subs.iter().map(|s| channel_extract_at(ctx, &b, &a, &index_map_at(&b, &a, *s))).collect::<Option<Vec<_>>>().unwrap_or_default();
+        if imgs.len() == 4 {
+            let mut out = imgs[0].clone();
+            out.data.par_iter_mut().enumerate().for_each(|(i, p)| {
+                *p = std::array::from_fn(|c| imgs.iter().map(|m| m.data[i][c]).sum::<f32>() * 0.25);
+            });
+            b.img = out;
+        }
+        return b;
+    }
     let idx = index_map(&b, &a);
+    if let Some(i) = channel_extract_at(ctx, &b, &a, &idx) {
+        b.img = i;
+    }
+    b
+}
+
+/// 3D Channel Extract through one index map (None when the channel is missing).
+fn channel_extract_at(ctx: &EffectCtx, b: &Buf, a: &AuxChannels, idx: &[Option<usize>]) -> Option<Image> {
     let (bp, wp) = (ctx.params.f("blackPoint") as f32, ctx.params.f("whitePoint") as f32);
     // Clamp Output limits the mapped values to 0..1; Invert Depth Map flips them.
     let (clamp, invert) = (ctx.params.b("clampOutput"), ctx.params.b("invertDepthMap"));
@@ -69,24 +95,20 @@ fn channel_extract(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let lv = |v: f32| if wp >= bp { lv(v) } else { 1.0 - cl((v - wp) / (bp - wp).max(1e-9)) };
     let lv = |v: f32| if invert { 1.0 - lv(v) } else { lv(v) };
     let get3 = |names: [&[&str]; 3]| -> Option<[&[f32]; 3]> { Some([a.find(names[0])?, a.find(names[1])?, a.find(names[2])?]) };
-    let img: Option<Image> = match ctx.params.e("channel") {
-        0 => a.depth().map(|z| map_grey(&b, &idx, |i| lv(z[i]))),
-        1 => a.object_id().map(|c| map_grey(&b, &idx, |i| lv(c[i]))),
-        7 => a.material_id().map(|c| map_grey(&b, &idx, |i| lv(c[i]))),
-        4 => a.coverage().map(|c| map_grey(&b, &idx, |i| lv(c[i]))),
+    match ctx.params.e("channel") {
+        0 => a.depth().map(|z| map_grey(b, idx, |i| lv(z[i]))),
+        1 => a.object_id().map(|c| map_grey(b, idx, |i| lv(c[i]))),
+        7 => a.material_id().map(|c| map_grey(b, idx, |i| lv(c[i]))),
+        4 => a.coverage().map(|c| map_grey(b, idx, |i| lv(c[i]))),
         2 => get3([&["UV.U", "U", "uv.x"], &["UV.V", "V", "uv.y"], &["UV.W", "W", "uv.z"]])
             .or_else(|| Some([a.find(&["UV.U", "U", "uv.x"])?, a.find(&["UV.V", "V", "uv.y"])?, a.find(&["UV.V", "V", "uv.y"])?]))
-            .map(|c| map_rgb(&b, &idx, |i| [lv(c[0][i]), lv(c[1][i]), 0.0])),
+            .map(|c| map_rgb(b, idx, |i| [lv(c[0][i]), lv(c[1][i]), 0.0])),
         3 => get3([&["N.X", "Normal.X", "normals.x"], &["N.Y", "Normal.Y", "normals.y"], &["N.Z", "Normal.Z", "normals.z"]])
-            .map(|c| map_rgb(&b, &idx, |i| [lv(c[0][i] * 0.5 + 0.5), lv(c[1][i] * 0.5 + 0.5), lv(c[2][i] * 0.5 + 0.5)])),
+            .map(|c| map_rgb(b, idx, |i| [lv(c[0][i] * 0.5 + 0.5), lv(c[1][i] * 0.5 + 0.5), lv(c[2][i] * 0.5 + 0.5)])),
         5 => get3([&["BG.R", "Background.R"], &["BG.G", "Background.G"], &["BG.B", "Background.B"]])
-            .map(|c| map_rgb(&b, &idx, |i| [lv(c[0][i]), lv(c[1][i]), lv(c[2][i])])),
-        _ => get3([&["R"], &["G"], &["B"]]).map(|c| map_rgb(&b, &idx, |i| [c[0][i], c[1][i], c[2][i]])),
-    };
-    if let Some(i) = img {
-        b.img = i;
+            .map(|c| map_rgb(b, idx, |i| [lv(c[0][i]), lv(c[1][i]), lv(c[2][i])])),
+        _ => get3([&["R"], &["G"], &["B"]]).map(|c| map_rgb(b, idx, |i| [c[0][i], c[1][i], c[2][i]])),
     }
-    b
 }
 
 fn map_grey(b: &Buf, idx: &[Option<usize>], f: impl Fn(usize) -> f32 + Sync) -> Image {
@@ -443,6 +465,7 @@ pub fn specs() -> Vec<EffectSpec> {
                 p("whitePoint", "White Point", num(10000.0), slider(-1.0e6, 1.0e6, -10000.0, 10000.0, 2)),
                 p("clampOutput", "Clamp Output", Value::Bool(true), ParamUi::Checkbox),
                 p("invertDepthMap", "Invert Depth Map", Value::Bool(false), ParamUi::Checkbox),
+                p("antialias", "Anti-alias", Value::Bool(false), ParamUi::Checkbox),
             ],
             channel_extract,
         ),
@@ -688,5 +711,19 @@ mod tests {
         // Without aux: the layer's own channels can be swapped.
         let s = run_fx("ec.3d.extractor", &[("red", Value::Str("A".into()))], Image::filled(2, 2, [0.2, 0.3, 0.4, 1.0]), 0.0, EffectEnv::default());
         assert_eq!(s.img.get(0, 0), [1.0, 0.3, 0.4, 1.0]);
+    }
+
+    #[test]
+    fn channel_extract_antialias_averages_sub_pixels() {
+        // Depth at twice the layer resolution, alternating 0 / 1000 per aux column.
+        let mut a = AuxChannels::new(40, 20, 2.0);
+        a.channels = vec![("Z".into(), (0..800).map(|i| if i % 2 == 0 { 0.0 } else { 1000.0 }).collect())];
+        let host = AuxHost(Arc::new(a));
+        let vals = [("blackPoint", num(0.0)), ("whitePoint", num(1000.0))];
+        let hard = run("ec.3d.channelextract", &vals, &host);
+        let v = hard.get(5, 5)[0];
+        assert!(v == 0.0 || v == 1.0, "{v}");
+        let soft = run("ec.3d.channelextract", &[vals.as_slice(), &[("antialias", Value::Bool(true))]].concat(), &host);
+        assert!((soft.get(5, 5)[0] - 0.5).abs() < 1e-5, "{:?}", soft.get(5, 5));
     }
 }

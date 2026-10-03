@@ -4,12 +4,12 @@
 use std::io::Write;
 
 use effectcraft_project::Comp;
-use effectcraft_project::render_queue::{Channels, OutputFormat, ProResProfile};
+use effectcraft_project::render_queue::{AudioFormat, Channels, OutputFormat, ProResProfile};
 use effectcraft_time::{FrameRate, TICKS_PER_SECOND, Tick};
 use filmcraft_isobmff::{Brand, FourCc, Mp4Writer, PcmConfig, SampleEntry, TrackConfig, WriteSample, WriterOptions};
 use rayon::prelude::*;
 
-use crate::{ExportError, Job, Report, Result, State, batch_size, render_frame, rgba8, wants_audio};
+use crate::{Cx, ExportError, Report, Result, State, batch_size, wants_audio};
 
 fn enc(e: impl std::fmt::Display) -> ExportError {
     ExportError::Encode(e.to_string())
@@ -208,29 +208,60 @@ enum Audio {
     Pcm,
 }
 
-const AUDIO_CHANNELS: u32 = 2;
+fn deinterleave(buf: &[f32], channels: usize) -> Vec<Vec<f32>> {
+    (0..channels).map(|c| buf.chunks_exact(channels).map(|p| p[c]).collect()).collect()
+}
 
-fn deinterleave(buf: &[f32]) -> [Vec<f32>; 2] {
-    let l = buf.chunks_exact(2).map(|p| p[0]).collect();
-    let r = buf.chunks_exact(2).map(|p| p[1]).collect();
-    [l, r]
+/// The comp's audio over `n` samples from `start`, interleaved with the module's channel count
+/// (mono = the average of left and right).
+pub(crate) fn mix(cx: &Cx, start: effectcraft_time::Tick, n: usize, sr: u32) -> Vec<f32> {
+    let st = effectcraft_render::audio::mix_comp(&cx.project, cx.footage, cx.expr, cx.comp, start, n, sr);
+    if cx.output.audio_channels == 1 { st.chunks_exact(2).map(|p| (p[0] + p[1]) * 0.5).collect() } else { st }
+}
+
+/// PCM bytes of samples in `fmt` (little or big endian).
+pub(crate) fn pcm_bytes(buf: &[f32], fmt: AudioFormat, big_endian: bool) -> Vec<u8> {
+    let mut out = Vec::with_capacity(buf.len() * 4);
+    for &s in buf {
+        let s = s.clamp(-1.0, 1.0);
+        match fmt {
+            AudioFormat::S16 => {
+                let v = (s * 32767.0).round() as i16;
+                out.extend_from_slice(&if big_endian { v.to_be_bytes() } else { v.to_le_bytes() });
+            }
+            AudioFormat::S24 => {
+                let v = (s * 8_388_607.0).round() as i32;
+                let b = v.to_le_bytes();
+                if big_endian {
+                    out.extend_from_slice(&[b[2], b[1], b[0]]);
+                } else {
+                    out.extend_from_slice(&b[..3]);
+                }
+            }
+            AudioFormat::F32 => out.extend_from_slice(&if big_endian { s.to_be_bytes() } else { s.to_le_bytes() }),
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------- the movie
 
 type Writer<'f, 's> = Mp4Writer<&'f mut crate::out::Out<'s>>;
 
-pub(crate) fn movie(job: &Job, comp: &Comp, w: u32, h: u32, st: &mut State) -> Result<Report> {
+pub(crate) fn movie(job: &Cx, comp: &Comp, w: u32, h: u32, st: &mut State) -> Result<Report> {
     let rate = job.settings.rate(comp);
     let fmt = job.output.format;
-    let channels = if fmt == OutputFormat::ProRes { job.output.channels } else { Channels::Rgb };
+    let channels = match job.output.channels {
+        Channels::Rgba if fmt != OutputFormat::ProRes => Channels::Rgb,
+        c => c,
+    };
     let mut venc: Box<dyn VideoEncoder> = match fmt {
         OutputFormat::H264 => Box::new(H264::new(w, h, rate, job.output.bitrate_kbps)?),
-        _ => Box::new(ProRes::new(w, h, job.output.prores_profile, channels)),
+        _ => Box::new(ProRes::new(w, h, job.output.prores_profile, if channels == Channels::Alpha { Channels::Rgb } else { channels })),
     };
     let brand = if fmt == OutputFormat::H264 { Brand::Mp4 } else { Brand::Mov };
     let batch = batch_size();
-    let render = |k: u64| -> Vec<u8> { rgba8(&render_frame(job, comp, k), comp, channels, w, h) };
+    let render = |k: u64| -> Vec<u8> { job.pixels(&job.frame(comp, k), comp, channels, w, h) };
 
     // Encode the first batch before creating tracks: encoders finalise their config on frame 1.
     let first_end = batch.min(st.total);
@@ -242,7 +273,8 @@ pub(crate) fn movie(job: &Job, comp: &Comp, w: u32, h: u32, st: &mut State) -> R
     drop(first);
     st.advance(first_end)?;
 
-    let mut file = crate::out::create(job.sink, job.path)?;
+    let path = job.place(job.path, 1);
+    let mut file = crate::out::create(job.sink, &path)?;
     let opts = WriterOptions::new(brand);
     let movie_ts = opts.movie_timescale.max(1) as i128;
     let mut mux: Writer = Mp4Writer::new(&mut file, opts).map_err(mux_err)?;
@@ -257,15 +289,22 @@ pub(crate) fn movie(job: &Job, comp: &Comp, w: u32, h: u32, st: &mut State) -> R
     let vt = mux.add_track(vcfg).map_err(mux_err)?;
     let sr = job.output.audio_sample_rate.clamp(8_000, 192_000);
     let with_audio = wants_audio(job);
+    let chans = if job.output.audio_channels == 1 { 1u32 } else { 2 };
+    let afmt = job.output.audio_format;
     let mut audio = None;
     if with_audio {
         let (a, entry, start) = if brand == Brand::Mp4 {
-            let e = filmcraft_aac::Encoder::new(filmcraft_aac::EncoderConfig::cbr(sr, AUDIO_CHANNELS as usize, 320_000)).map_err(enc)?;
-            let entry = SampleEntry::aac(e.audio_specific_config(), AUDIO_CHANNELS, sr);
+            let e = filmcraft_aac::Encoder::new(filmcraft_aac::EncoderConfig::cbr(sr, chans as usize, 160_000 * chans)).map_err(enc)?;
+            let entry = SampleEntry::aac(e.audio_specific_config(), chans, sr);
             let priming = e.priming_samples() as i64;
             (Audio::Aac(Box::new(e)), entry, Some(priming))
         } else {
-            let pcm = PcmConfig { bits: 16, float: false, big_endian: false, signed: true, channels: AUDIO_CHANNELS, sample_rate: sr as f64 };
+            let (bits, float) = match afmt {
+                AudioFormat::S16 => (16, false),
+                AudioFormat::S24 => (24, false),
+                AudioFormat::F32 => (32, true),
+            };
+            let pcm = PcmConfig { bits, float, big_endian: false, signed: true, channels: chans, sample_rate: sr as f64 };
             (Audio::Pcm, SampleEntry::pcm(pcm), None)
         };
         let mut c = TrackConfig::new(entry, sr);
@@ -290,21 +329,18 @@ pub(crate) fn movie(job: &Job, comp: &Comp, w: u32, h: u32, st: &mut State) -> R
         }
         let n = (end - *cursor) as usize;
         let start = Tick(((*cursor as i128 * TICKS_PER_SECOND as i128) / sr as i128) as i64);
-        let buf = effectcraft_render::audio::mix_comp(job.project, job.footage, job.expr, job.comp, start, n, sr);
+        let buf = mix(job, start, n, sr);
         *cursor = end;
         match a {
             Audio::Aac(e) => {
-                let planar = deinterleave(&buf);
+                let planar = deinterleave(&buf, chans as usize);
                 let refs: Vec<&[f32]> = planar.iter().map(Vec::as_slice).collect();
                 for au in e.encode(&refs) {
                     mux.write_sample(*at, WriteSample { data: &au, duration: 1024, composition_offset: 0, is_sync: true }).map_err(mux_err)?;
                 }
             }
             Audio::Pcm => {
-                let mut pcm = Vec::with_capacity(n * 4);
-                for s in buf {
-                    pcm.extend_from_slice(&((s.clamp(-1.0, 1.0) * 32767.0).round() as i16).to_le_bytes());
-                }
+                let pcm = pcm_bytes(&buf, afmt, false);
                 mux.write_sample(*at, WriteSample { data: &pcm, duration: n as u32, composition_offset: 0, is_sync: true }).map_err(mux_err)?;
             }
         }
@@ -336,7 +372,7 @@ pub(crate) fn movie(job: &Job, comp: &Comp, w: u32, h: u32, st: &mut State) -> R
     let out = mux.finish().map_err(mux_err)?;
     out.flush().map_err(mux_err)?;
     let bytes = file.finish()?;
-    Ok(Report { path: job.path.to_string(), frames: 0, width: w, height: h, seconds: 0.0, bytes, audio: with_audio })
+    Ok(Report { path, frames: 0, width: w, height: h, seconds: 0.0, bytes, audio: with_audio, log: None, overflow: vec![] })
 }
 
 #[cfg(test)]

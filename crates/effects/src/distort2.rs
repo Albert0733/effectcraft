@@ -62,7 +62,26 @@ const TURBULENT_KINDS: [&str; 9] = [
     "Horizontal Displacement",
     "Cross Displacement",
 ];
-const TURBULENT_PINNING: [&str; 8] = ["None", "Pin All", "Pin Horizontal", "Pin Vertical", "Pin Left", "Pin Top", "Pin Right", "Pin Bottom"];
+/// Turbulent Displace's Pinning options. The Locked variants also keep every displaced
+/// sample inside the layer (no edge pixels pulled in from outside) and ease the pinning over a
+/// wider band, so the pinned edges and their neighbourhood stay put.
+const TURBULENT_PINNING: [&str; 15] = [
+    "None",
+    "Pin All",
+    "Pin Horizontal",
+    "Pin Vertical",
+    "Pin Left",
+    "Pin Top",
+    "Pin Right",
+    "Pin Bottom",
+    "Pin All Locked",
+    "Pin Horizontal Locked",
+    "Pin Vertical Locked",
+    "Pin Left Locked",
+    "Pin Top Locked",
+    "Pin Right Locked",
+    "Pin Bottom Locked",
+];
 
 fn turbulent_displace(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let amount = ctx.params.f("amount") * b.scale;
@@ -80,10 +99,12 @@ fn turbulent_displace(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let evo = ctx.params.f("evolution") / 360.0;
     // Evolution Options: Cycle Evolution loops the noise every `cycle` revolutions.
     let cycle = (ctx.params.b("evolutionOptions/cycleEvolution")).then(|| ctx.params.f("evolutionOptions/cycle").round().max(1.0));
-    let pin = ctx.params.e("pinning");
+    let pin_raw = ctx.params.e("pinning");
+    let locked = pin_raw >= 8;
+    let pin = if locked { pin_raw - 7 } else { pin_raw };
     let falloff = if (3..=5).contains(&kind) { 0.3 } else { 0.5 };
     let (lx, ly, lw, lh) = layer_rect(ctx, &b);
-    let edge = (lw.min(lh) * 0.1).max(1.0);
+    let edge = (lw.min(lh) * if locked { 0.25 } else { 0.1 }).max(1.0);
     let seed = (ctx.seed ^ 0x7d15).wrapping_add((ctx.params.f("evolutionOptions/randomSeed") as i64 as u32).wrapping_mul(0x9e37_79b9));
     let n = |u: f64, v: f64, s: u32| {
         let s = seed.wrapping_add(s);
@@ -128,7 +149,11 @@ fn turbulent_displace(ctx: &EffectCtx, mut b: Buf) -> Buf {
             7 => bt,
             _ => 1.0,
         };
-        Some((x + dx * k, y + dy * k))
+        let (sx, sy) = (x + dx * k, y + dy * k);
+        if locked {
+            return Some((sx.clamp(lx + 0.5, lx + lw - 0.5), sy.clamp(ly + 0.5, ly + lh - 0.5)));
+        }
+        Some((sx, sy))
     });
     b
 }
@@ -223,7 +248,10 @@ fn optics_compensation(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let f = r_ref / half.tan();
     // Resize (with Reverse Lens Distortion): grow the layer so the stretched corners stay
     // visible, up to 2× / 4× the layer size (Unlimited is capped at 8×).
-    let resize = ctx.params.e("resize");
+    // Optimal Pixels (invalidates Resize): scale the result so the whole corrected picture
+    // fits the layer (Reverse) or fills it with no empty corners (forward).
+    let optimal = ctx.params.b("optimalPixels");
+    let resize = if optimal { 0 } else { ctx.params.e("resize") };
     if reverse && resize > 0 && !ctx.adjustment {
         let c = b.to_px(ctx.params.v2("viewCenter"));
         let rc =
@@ -234,9 +262,21 @@ fn optics_compensation(ctx: &EffectCtx, mut b: Buf) -> Buf {
         b.pad(grow.min(cap).min(4096.0).ceil() as u32);
     }
     let c = b.to_px(ctx.params.v2("viewCenter"));
+    let fit = if optimal {
+        let rc =
+            [(lx, ly), (lx + lw, ly), (lx, ly + lh), (lx + lw, ly + lh)].iter().map(|p| ((p.0 - c.0).powi(2) + (p.1 - c.1).powi(2)).sqrt()).fold(1.0, f64::max);
+        if reverse {
+            let th = (rc / r_ref * half).min(FRAC_PI_2 - 1e-3);
+            (f * th.tan() / rc).max(1.0)
+        } else {
+            ((rc / f).atan() / half * r_ref / rc).min(1.0)
+        }
+    } else {
+        1.0
+    };
     b.img = remap(&b.img, false, |x, y| {
         let (dx, dy) = (x - c.0, y - c.1);
-        let r = (dx * dx + dy * dy).sqrt();
+        let r = (dx * dx + dy * dy).sqrt() * fit;
         if r < 1e-9 {
             return Some((x, y));
         }
@@ -249,7 +289,7 @@ fn optics_compensation(ctx: &EffectCtx, mut b: Buf) -> Buf {
             }
             f * th.tan()
         };
-        let k = rs / r;
+        let k = rs / r * fit;
         Some((c.0 + dx * k, c.1 + dy * k))
     });
     b
@@ -718,6 +758,7 @@ pub fn specs() -> Vec<EffectSpec> {
                 p("reverseLensDistortion", "Reverse Lens Distortion", Value::Bool(false), ParamUi::Checkbox),
                 p("fovOrientation", "FOV Orientation", Value::Enum(0), popup(&["Horizontal", "Vertical", "Diagonal"])),
                 p("viewCenter", "View Center", pt(0.5, 0.5), ParamUi::Point),
+                p("optimalPixels", "Optimal Pixels (Invalidates Resize)", Value::Bool(false), ParamUi::Checkbox),
                 p("resize", "Resize", Value::Enum(0), popup(&["Off", "Max 2X", "Max 4X", "Unlimited"])),
             ],
             optics_compensation,
@@ -1052,6 +1093,15 @@ mod tests {
         // Random Seed changes the pattern.
         let seeded = run("ec.distort.turbulentdisplace", &[("size", num(10.0)), ("evolutionOptions/randomSeed", num(5.0))], img);
         assert!(max_diff(&seeded.img, &pinned.img) > 1e-3);
+        // Locked pinning: no sample comes from outside the layer (no transparent pixels pulled
+        // in) and the border still holds.
+        let opaque = Image::filled(40, 40, [0.5, 0.5, 0.5, 1.0]);
+        let strong = [("size", num(10.0)), ("amount", num(80.0))];
+        let left = run("ec.distort.turbulentdisplace", &[strong.as_slice(), &[("pinning", Value::Enum(4))]].concat(), opaque.clone());
+        let locked = run("ec.distort.turbulentdisplace", &[strong.as_slice(), &[("pinning", Value::Enum(11))]].concat(), opaque.clone());
+        assert!(left.img.data.iter().any(|p| p[3] < 0.99), "plain pin lets edges pull in");
+        assert!(locked.img.data.iter().all(|p| p[3] > 0.999), "locked keeps everything inside");
+        assert_eq!(TURBULENT_PINNING[11], "Pin Left Locked");
     }
 
     #[test]
@@ -1077,5 +1127,21 @@ mod tests {
         assert!(max2.img.width > 32 && max2.img.width <= 32 + 2 * 16 + 2, "{}", max2.img.width);
         let max4 = run("ec.distort.opticscompensation", &set(2), img);
         assert!(max4.img.width >= max2.img.width);
+    }
+
+    #[test]
+    fn optics_optimal_pixels_fills_or_fits_the_layer() {
+        let img = Image::filled(32, 24, [0.5, 0.5, 0.5, 1.0]);
+        // Forward: without Optimal Pixels the corners sample outside the layer.
+        let plain = run("ec.distort.opticscompensation", &[("fieldOfView", num(120.0))], img.clone());
+        assert!(plain.img.get(0, 0)[3] < 0.5);
+        let opt = run("ec.distort.opticscompensation", &[("fieldOfView", num(120.0)), ("optimalPixels", Value::Bool(true))], img.clone());
+        assert!(opt.img.get(0, 0)[3] > 0.9 && opt.img.get(31, 23)[3] > 0.9);
+        // Reverse: everything fits; Resize is ignored.
+        let rev = [("fieldOfView", num(120.0)), ("reverseLensDistortion", Value::Bool(true)), ("optimalPixels", Value::Bool(true)), ("resize", Value::Enum(2))];
+        let r = run("ec.distort.opticscompensation", &rev, img.clone());
+        assert_eq!(r.img.width, 32);
+        // The edges of the source now sit inside the layer: empty space around them.
+        assert!(r.img.get(0, 0)[3] < 0.5 && r.img.get(16, 12)[3] > 0.9);
     }
 }

@@ -36,10 +36,8 @@ impl Session {
         }
         // Fewer undo levels apply right away.
         let levels = self.prefs.general.undo_levels.max(1) as usize;
-        if self.history.undo.len() > levels {
-            let extra = self.history.undo.len() - levels;
-            self.history.undo.drain(..extra);
-        }
+        let current = self.project.clone();
+        self.history.trim(levels, &current);
         self.prefs_revision += 1;
     }
 

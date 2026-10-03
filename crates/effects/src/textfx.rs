@@ -94,6 +94,11 @@ fn glyph_src(c: char) -> &'static str {
     }
 }
 
+/// A glyph's strokes on the 4 × 6 grid (Particle Playground's text particles).
+pub(crate) fn glyph_strokes(c: char) -> Vec<Vec<[f64; 2]>> {
+    parse_glyph(c)
+}
+
 fn parse_glyph(c: char) -> Vec<Vec<[f64; 2]>> {
     glyph_src(c)
         .split(';')
@@ -503,49 +508,112 @@ fn path_text(ctx: &EffectCtx, mut b: Buf) -> Buf {
         closed = false;
     }
     let len = poly_length(&path, closed);
-    let text: String = pr.s("text").chars().take(g("advanced", "visibleCharacters").as_f64().max(0.0) as usize).collect();
+    let visible = g("advanced", "visibleCharacters").as_f64().max(0.0);
+    let all: Vec<char> = pr.s("text").chars().collect();
+    let n_all = all.len();
     let size = (g("character", "size").as_f64() * b.scale).max(0.5);
     let u = unit(size);
     let tracking = g("character", "tracking").as_f64() * b.scale;
     let lm = g("paragraph", "leftMargin").as_f64() * b.scale;
     let rm = g("paragraph", "rightMargin").as_f64() * b.scale;
     let shift = g("paragraph", "baselineShift").as_f64() * b.scale;
+    let line_spacing = pr.get("paragraph/lineSpacing").map(Value::as_f64).unwrap_or(size / b.scale * 1.2) * b.scale;
     let rot = g("character/orientation", "characterRotation").as_f64().to_radians();
-    let n = text.chars().count();
-    let advs: Vec<f64> = text.chars().map(|c| advance(c, true) * u).collect();
-    let natural: f64 = advs.iter().sum::<f64>() + tracking * (n.max(1) as f64 - 1.0);
-    let avail = (len - lm - rm).max(0.0);
-    let (mut cursor, extra) = match g("paragraph", "alignment").as_enum() {
-        1 => (len - rm - natural, 0.0),
-        2 => (lm + (avail - natural) * 0.5, 0.0),
-        3 => (lm, if n > 1 { (avail - natural) / (n as f64 - 1.0) } else { 0.0 }),
-        _ => (lm, 0.0),
+    let shear = pr.f("character/orientation/characterShear").to_radians().tan();
+    let hshear = pr.f("character/horizontalShear").to_radians().tan();
+    let sx = pr.get("character/horizontalScale").map(Value::as_f64).unwrap_or(100.0) / 100.0;
+    let sy = pr.get("character/verticalScale").map(Value::as_f64).unwrap_or(100.0) / 100.0;
+    // Kerning: "index:value …" — the gap after character `index` (0-based) in 1/1000 em.
+    let kerning: Vec<(usize, f64)> = pr
+        .s("character/kerning")
+        .split_whitespace()
+        .filter_map(|t| {
+            let (i, v) = t.split_once(':')?;
+            Some((i.trim().parse().ok()?, v.trim().parse().ok()?))
+        })
+        .collect();
+    let kern = |i: usize| kerning.iter().filter(|(k, _)| *k == i).map(|(_, v)| v / 1000.0 * size).sum::<f64>();
+    // Jitter: per character, re-randomised every frame.
+    let jit = |id: &str| pr.f(&format!("advanced/jitterSettings/{id}"));
+    let (j_base, j_kern, j_rot, j_scale) =
+        (jit("baselineJitterMax") * b.scale, jit("kerningJitterMax") * b.scale, jit("rotationJitterMax").to_radians(), jit("scaleJitterMax") / 100.0);
+    let frame = (ctx.time * ctx.fps()).floor() as i64 as u32;
+    let rnd = |i: usize, k: u32| hash1(i as u32, k.wrapping_add(frame.wrapping_mul(7919)), 0x7e17) as f64 * 2.0 - 1.0;
+    // Fade Time: characters fade in over this share of the visible characters.
+    let fade = pr.f("advanced/fadeTime").clamp(0.0, 100.0) / 100.0 * n_all.max(1) as f64;
+    let char_alpha = |i: usize| -> f32 {
+        if fade <= 0.0 { if (i as f64) < visible.floor() { 1.0 } else { 0.0 } } else { ((visible - i as f64) / fade).clamp(0.0, 1.0) as f32 }
     };
-    let mut polys = Vec::new();
-    for (c, adv) in text.chars().zip(advs) {
-        let mid = cursor + adv * 0.5;
-        cursor += adv + tracking + extra;
-        if !closed && (mid < 0.0 || mid > len) {
-            continue;
-        }
-        let (q, d) = poly_point_at(&path, closed, if closed { mid.rem_euclid(len.max(1e-9)) } else { mid });
-        let ang = d[1].atan2(d[0]) + rot;
-        let (s, co) = ang.sin_cos();
-        let left = ink_left(c, true);
-        for st in parse_glyph(c) {
-            polys.push(
-                st.iter()
-                    .map(|g| {
-                        let lx = (g[0] - left - 0.8) * u - adv * 0.5 + 0.8 * u;
-                        let ly = (g[1] - 6.0) * u - shift;
-                        [q[0] + lx * co - ly * s, q[1] + lx * s + ly * co]
-                    })
-                    .collect(),
-            );
+    // Lines (separated by line breaks) stack along the path's normal by Line Spacing.
+    let mut polys_by_alpha: Vec<(f32, Vec<Vec<[f64; 2]>>)> = Vec::new();
+    let mut gi = 0usize;
+    for (li, line) in all.split(|c| *c == '\n' || *c == '\r').enumerate() {
+        let idx0 = gi;
+        gi += line.len() + 1;
+        let n = line.len();
+        let advs: Vec<f64> = line.iter().map(|&c| advance(c, true) * u * sx).collect();
+        let kerns: Vec<f64> = (0..n).map(|k| kern(idx0 + k) + if j_kern != 0.0 { rnd(idx0 + k, 2) * j_kern } else { 0.0 }).collect();
+        let natural: f64 = advs.iter().sum::<f64>() + tracking * (n.max(1) as f64 - 1.0) + kerns.iter().take(n.saturating_sub(1)).sum::<f64>();
+        let avail = (len - lm - rm).max(0.0);
+        let (mut cursor, extra) = match g("paragraph", "alignment").as_enum() {
+            1 => (len - rm - natural, 0.0),
+            2 => (lm + (avail - natural) * 0.5, 0.0),
+            3 => (lm, if n > 1 { (avail - natural) / (n as f64 - 1.0) } else { 0.0 }),
+            _ => (lm, 0.0),
+        };
+        let line_off = li as f64 * line_spacing;
+        for (k, (&c, adv)) in line.iter().zip(advs).enumerate() {
+            let i = idx0 + k;
+            let mid = cursor + adv * 0.5;
+            cursor += adv + tracking + extra + kerns[k];
+            let alpha = char_alpha(i);
+            if alpha <= 0.0 || (!closed && (mid < 0.0 || mid > len)) {
+                continue;
+            }
+            let (q, d) = poly_point_at(&path, closed, if closed { mid.rem_euclid(len.max(1e-9)) } else { mid });
+            let ang = d[1].atan2(d[0]) + rot + if j_rot != 0.0 { rnd(i, 3) * j_rot } else { 0.0 };
+            let (s, co) = ang.sin_cos();
+            let js = if j_scale != 0.0 { (1.0 + rnd(i, 4) * j_scale).max(0.05) } else { 1.0 };
+            let jb = if j_base != 0.0 { rnd(i, 1) * j_base } else { 0.0 };
+            let left = ink_left(c, true);
+            let set = match polys_by_alpha.iter_mut().find(|(a, _)| (*a - alpha).abs() < 1e-4) {
+                Some((_, v)) => v,
+                None => {
+                    polys_by_alpha.push((alpha, Vec::new()));
+                    &mut polys_by_alpha.last_mut().expect("pushed").1
+                }
+            };
+            for st in parse_glyph(c) {
+                set.push(
+                    st.iter()
+                        .map(|gl| {
+                            // Glyph space (baseline at 0, y down), then scale, shear and lift.
+                            let gx = ((gl[0] - left - 0.8) * u + 0.8 * u) * sx * js - adv * 0.5;
+                            let gy = (gl[1] - 6.0) * u * sy * js;
+                            let gx = gx - gy * (shear + hshear);
+                            let gy = gy - shift - jb + line_off;
+                            [q[0] + gx * co - gy * s, q[1] + gx * s + gy * co]
+                        })
+                        .collect(),
+                );
+            }
         }
     }
-    let look = look_from(ctx, &b, "compositeOnOriginal");
-    draw_text(&mut b, &polys, weight(size), &look);
+    let mut look = look_from(ctx, &b, "compositeOnOriginal");
+    let base_op = look.opacity;
+    let mut first = true;
+    for (alpha, polys) in &polys_by_alpha {
+        look.opacity = base_op * alpha;
+        draw_text(&mut b, polys, weight(size), &look);
+        if first {
+            // Later passes go over the first one.
+            look.on_original = true;
+            first = false;
+        }
+    }
+    if polys_by_alpha.is_empty() {
+        draw_text(&mut b, &[], weight(size), &look);
+    }
     b
 }
 
@@ -806,12 +874,24 @@ pub fn specs() -> Vec<EffectSpec> {
                 p("fillAndStroke/strokeWidth", "Stroke Width", num(2.0), slider(0.0, 50.0, 0.0, 50.0, 1)),
                 p("character/size", "Size", num(36.0), size()),
                 p("character/tracking", "Tracking", num(0.0), slider(-100.0, 100.0, -20.0, 50.0, 1)),
+                // Kerning: "index:value" pairs, the gap after character `index` in 1/1000 em.
+                p("character/kerning", "Kerning", Value::Str(String::new()), ParamUi::Text),
                 p("character/orientation/characterRotation", "Character Rotation", num(0.0), ang()),
+                p("character/orientation/characterShear", "Character Shear", num(0.0), slider(-70.0, 70.0, -70.0, 70.0, 1)),
+                p("character/horizontalShear", "Horizontal Shear", num(0.0), slider(-70.0, 70.0, -70.0, 70.0, 1)),
+                p("character/horizontalScale", "Horizontal Scale", num(100.0), slider(1.0, 1000.0, 10.0, 400.0, 1)),
+                p("character/verticalScale", "Vertical Scale", num(100.0), slider(1.0, 1000.0, 10.0, 400.0, 1)),
                 p("paragraph/alignment", "Alignment", Value::Enum(0), popup(&["Left", "Right", "Center", "Force"])),
                 p("paragraph/leftMargin", "Left Margin", num(0.0), slider(-10000.0, 10000.0, -500.0, 500.0, 1)),
                 p("paragraph/rightMargin", "Right Margin", num(0.0), slider(-10000.0, 10000.0, -500.0, 500.0, 1)),
+                p("paragraph/lineSpacing", "Line Spacing", num(43.0), slider(-1000.0, 1000.0, 0.0, 200.0, 1)),
                 p("paragraph/baselineShift", "Baseline Shift", num(0.0), slider(-1000.0, 1000.0, -100.0, 100.0, 1)),
                 p("advanced/visibleCharacters", "Visible Characters", num(1024.0), slider(0.0, 1024.0, 0.0, 1024.0, 0)),
+                p("advanced/fadeTime", "Fade Time", num(0.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
+                p("advanced/jitterSettings/baselineJitterMax", "Baseline Jitter Max", num(0.0), slider(0.0, 1000.0, 0.0, 100.0, 1)),
+                p("advanced/jitterSettings/kerningJitterMax", "Kerning Jitter Max", num(0.0), slider(0.0, 1000.0, 0.0, 100.0, 1)),
+                p("advanced/jitterSettings/rotationJitterMax", "Rotation Jitter Max", num(0.0), slider(0.0, 360.0, 0.0, 360.0, 1)),
+                p("advanced/jitterSettings/scaleJitterMax", "Scale Jitter Max", num(0.0), slider(0.0, 1000.0, 0.0, 100.0, 1)),
                 check("compositeOnOriginal", "Composite On Original", true),
             ],
             path_text,
@@ -993,6 +1073,39 @@ mod tests {
         assert!(near > 10.0 && (ink(&m.img) - near).abs() < 1.0);
         let circle = run("ec.obsolete.pathtext", &[("pathOptions/shapeType", Value::Enum(1)), ("text", Value::Str("CIRCLE TEXT".into()))], img, 0.0);
         assert!(ink(&circle.img) > 10.0);
+    }
+
+    #[test]
+    fn path_text_kerning_scale_lines_fade_and_jitter() {
+        let img = Image::new(160, 100);
+        let line = [
+            ("pathOptions/shapeType", Value::Enum(3)),
+            ("pathOptions/controlPoints/vertex1", Value::Vec2([5.0, 40.0])),
+            ("pathOptions/controlPoints/vertex2", Value::Vec2([155.0, 40.0])),
+            ("character/size", num(20.0)),
+            ("text", Value::Str("AB".into())),
+        ];
+        let with = |extra: &[(&str, Value)], t: f64| run("ec.obsolete.pathtext", &[line.as_slice(), extra].concat(), img.clone(), t).img;
+        let right_edge = |i: &Image| (0..160).rev().find(|&x| (0..100).any(|y| i.get(x, y)[3] > 0.3)).unwrap_or(0);
+        let base = with(&[], 0.0);
+        // Kerning after the first character pushes the second one along.
+        assert!(right_edge(&with(&[("character/kerning", Value::Str("0:500".into()))], 0.0)) >= right_edge(&base) + 8);
+        // Horizontal Scale widens, shear changes the shapes.
+        assert!(right_edge(&with(&[("character/horizontalScale", num(200.0))], 0.0)) > right_edge(&base) + 5);
+        assert_ne!(with(&[("character/horizontalShear", num(30.0))], 0.0), base);
+        // A second line sits Line Spacing below the first.
+        let two = with(&[("text", Value::Str("AB\rCD".into())), ("paragraph/lineSpacing", num(30.0))], 0.0);
+        let ink_rows = |i: &Image, y0: i64, y1: i64| (y0..y1).flat_map(|y| (0..160).map(move |x| (x, y))).map(|(x, y)| i.get(x, y)[3]).sum::<f32>();
+        assert!(ink_rows(&two, 52, 72) > 5.0 && ink_rows(&base, 52, 72) < 0.5);
+        // Fade Time: the character being revealed is partly transparent.
+        let fading = with(&[("advanced/visibleCharacters", num(1.5)), ("advanced/fadeTime", num(50.0))], 0.0);
+        let total = |i: &Image| i.data.iter().map(|p| p[3]).sum::<f32>();
+        let (one, both) = (with(&[("advanced/visibleCharacters", num(1.0))], 0.0), with(&[("advanced/visibleCharacters", num(2.0))], 0.0));
+        assert!(total(&fading) > total(&one) + 1.0 && total(&fading) < total(&both) - 1.0, "{} {} {}", total(&one), total(&fading), total(&both));
+        // Jitter differs between frames but is repeatable.
+        let j = [("advanced/jitterSettings/baselineJitterMax", num(10.0))];
+        assert_ne!(with(&j, 0.0), with(&j, 0.5));
+        assert_eq!(with(&j, 0.5), with(&j, 0.5));
     }
 
     #[test]

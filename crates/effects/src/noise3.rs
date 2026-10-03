@@ -431,7 +431,7 @@ mod tests {
     fn noise_types_differ_and_block_is_piecewise_constant() {
         let a = run("ec.noise.fractal", &[("noiseType", Value::Enum(0)), ("complexity", num(1.0)), ("transform/scale", num(10.0))]);
         // Block noise: neighbours inside one 10 px cell share a value.
-        assert_eq!(a.get(1, 1), a.get(2, 2));
+        assert_eq!(a.get(4, 4), a.get(5, 5));
         let others: Vec<Image> = (1..4).map(|t| run("ec.noise.fractal", &[("noiseType", Value::Enum(t)), ("transform/scale", num(10.0))])).collect();
         assert_ne!(others[0], others[1]);
         assert_ne!(others[1], others[2]);

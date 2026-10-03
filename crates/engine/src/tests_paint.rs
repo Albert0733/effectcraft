@@ -250,3 +250,56 @@ fn liquify_stroke_adds_the_effect_and_warps() {
     assert!(layer(&s, id).effects().unwrap().groups().next().is_none());
     assert!(px(&s, 0.0, 55, 50)[3] > 0.99);
 }
+
+fn pin_keys(s: &Session, id: u64, pin: u64) -> Vec<(f64, [f64; 2])> {
+    let l = layer(s, id);
+    let pos = l.props.find_group(pin).unwrap().get("position").unwrap().clone();
+    pos.keys.iter().map(|k| (k.time.seconds(), k.value.as_vec2())).collect()
+}
+
+#[test]
+fn puppet_pin_recording_makes_keys_at_the_frame_rate() {
+    let (mut s, id) = setup();
+    let a = s.execute("puppet.addPin", json!({"layer": id, "position": [10, 30]})).unwrap();
+    s.execute("puppet.addPin", json!({"layer": id, "position": [90, 30]})).unwrap();
+    let pin = a["pin"].as_u64().unwrap();
+    s.set_time(Tick::from_seconds_f64(0.5));
+    // A 0.5 s drag sampled at irregular wall-clock times: right 30 px, linear in time.
+    let samples: Vec<Value> = [0.0, 0.07, 0.2, 0.33, 0.41, 0.5].iter().map(|t| json!([t, 10.0 + 60.0 * t, 30.0])).collect();
+    let r = s.execute("puppet.recordPin", json!({"layer": id, "pin": pin, "samples": samples, "smoothing": 0})).unwrap();
+    // 0.5 s at 30 fps from 0.5 s: frames 15..=30, one key per frame.
+    assert_eq!(r["frames"], 16, "{r}");
+    let keys = pin_keys(&s, id, pin);
+    let rec: Vec<&(f64, [f64; 2])> = keys.iter().filter(|k| k.0 >= 0.5 - 1e-9).collect();
+    assert_eq!(rec.len(), 16, "{keys:?}");
+    for (i, (t, v)) in rec.iter().enumerate() {
+        assert!((t - (0.5 + i as f64 / 30.0)).abs() < 1e-6, "{t}");
+        assert!((v[0] - (10.0 + 60.0 * i as f64 / 30.0)).abs() < 1e-6, "{v:?}");
+    }
+    assert_eq!(keys.len(), 17, "the pin's first key (0 s) is kept");
+    assert_eq!(s.time().seconds(), 0.5, "the current time returns to where recording began");
+    // The recording deforms the layer: by 1 s the left edge has followed the pin 30 px right.
+    assert!(px(&s, 0.0, 55, 50)[3] > 0.99);
+    assert!(px(&s, 1.0, 55, 50)[3] < 0.5);
+    // Speed 200 %: the same drag plays back over twice the frames; recording again replaces
+    // the keys in the span.
+    let r = s.execute("puppet.recordPin", json!({"layer": id, "pin": pin, "samples": samples, "speed": 200, "smoothing": 0})).unwrap();
+    assert_eq!(r["frames"], 31);
+    let keys = pin_keys(&s, id, pin);
+    assert_eq!(keys.len(), 32);
+    let k = keys.iter().find(|k| (k.0 - (0.5 + 10.0 / 30.0)).abs() < 1e-6).unwrap();
+    assert!((k.1[0] - (10.0 + 60.0 * 5.0 / 30.0)).abs() < 1e-6, "{k:?}");
+    // Smoothing removes the extraneous keys of a straight-line drag.
+    let r = s.execute("puppet.recordPin", json!({"layer": id, "pin": pin, "samples": samples})).unwrap();
+    assert!(r["keys"].as_u64().unwrap() < 6, "{r}");
+    // One undo step per recording.
+    s.undo();
+    assert_eq!(pin_keys(&s, id, pin).len(), 32);
+    // Record Options are tool state (serde for agents).
+    let o = s.execute("puppet.recordOptions", json!({"speed": 50, "smoothing": 0, "useDraftDeformation": true, "showMesh": true})).unwrap();
+    assert_eq!(o["speed"], 50.0);
+    assert!(s.state.puppet.record_draft && s.state.puppet.record_show_mesh);
+    let r = s.execute("puppet.recordPin", json!({"layer": id, "pin": pin, "samples": samples})).unwrap();
+    assert_eq!(r["frames"], 9, "50 %: half the frames");
+    assert!(s.execute("puppet.recordPin", json!({"layer": id, "pin": pin, "samples": []})).is_err());
+}

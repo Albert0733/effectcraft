@@ -136,8 +136,11 @@ tools, and Front, Top, Left and Custom views.
 ## Export
 
 A Render Queue like After Effects', with Render Settings and Output Modules: **H.264** MP4 and
-**ProRes** MOV (Proxy to 4444 XQ with alpha) with audio, PNG, JPEG, TIFF and 32-bit EXR
-sequences, and animated GIF. The same queue runs from the command line. Every encoder is
+**ProRes** MOV (Proxy to 4444 XQ with alpha) with audio, **WebM** (VP9 with inter frames and
+alpha, Opus), PNG, JPEG, TIFF and 32-bit EXR sequences, animated GIF and WAV/AIFF. Field
+rendering with 3:2 pulldown, effect/solo/guide/depth overrides, crop, region of interest and
+resize, Render Settings and Output Module templates with defaults, post-render actions, storage
+overflow and render logs. The same queue runs from the command line. Every encoder is
 FilmCraft's pure-Rust code; there is no FFmpeg inside.
 
 **Lottie** goes both ways: File ▸ Export ▸ Lottie JSON… writes a composition (precomps, shape,

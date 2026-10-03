@@ -48,6 +48,7 @@ mod render_queue;
 pub(crate) mod rig3d;
 pub mod roto_cmds;
 mod scene_detect;
+pub mod scripts;
 mod settings;
 mod shape_stroke;
 mod stubs;
@@ -175,6 +176,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(essential::specs());
         v.extend(expr_tools::specs());
         v.extend(proxy::specs());
+        v.extend(scripts::specs());
         v.extend(panels_cmds::specs());
         v.extend(footage_panel::specs());
         v.extend(autotrace::specs());
@@ -182,6 +184,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(align_data::specs());
         v.extend(content_fill::specs());
         v.extend(stubs::specs());
+        v.extend(crate::learn::specs());
         v
     })
 }

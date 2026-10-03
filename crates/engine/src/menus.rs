@@ -71,7 +71,7 @@ fn holder_of(s: &Session, keys: &str) -> Option<String> {
 /// The entries of a `@dynamic:<name>` node, and the disabled placeholder shown when there are
 /// none: `recentProjects`, `recentFootage`, `recentPresets`, `history` (undo steps, newest
 /// first), `view3dShortcuts`, `workspaceShortcuts` and `openViewers` (open compositions other
-/// than the active one).
+/// than the active one), `scripts` (File ▸ Scripts) and `scriptPanels` (ScriptUI panels).
 pub fn dynamic(s: &Session, name: &str, cx: &DynCtx) -> (Vec<MenuEntry>, Option<&'static str>) {
     use serde_json::json;
     let indexed = |list: &[String], cmd: &str, stem: bool| -> Vec<MenuEntry> {
@@ -131,6 +131,19 @@ pub fn dynamic(s: &Session, name: &str, cx: &DynCtx) -> (Vec<MenuEntry>, Option<
                 .collect(),
             None,
         ),
+        // File ▸ Scripts: installed and sample scripts; the Window menu's ScriptUI panels.
+        "scripts" | "scriptPanels" => {
+            let panels = name == "scriptPanels";
+            let cmd = if panels { "window.scriptPanel" } else { "file.runScript" };
+            (
+                crate::commands::scripts::scripts(s)
+                    .into_iter()
+                    .filter(|e| e.panel == panels)
+                    .map(|e| dyn_entry(e.name.clone(), cmd, json!({"name": e.name})))
+                    .collect(),
+                None,
+            )
+        }
         _ => (vec![], None),
     }
 }
@@ -301,6 +314,7 @@ pub fn checked(s: &Session, command: &str, params: &Value) -> Option<bool> {
         "layer.mask.hideLocked" => Some(s.state.hide_locked_masks),
         "view.layout" => Some(params.get("views").and_then(Value::as_u64) == Some(s.state.view_layout.max(1) as u64)),
         "view.shareViewOptions" => Some(s.state.share_view_options),
+        "view.extendedViewer" => Some(s.prefs.three_d.extended_viewer),
         "view.snapping" => Some(s.state.snapping),
         "view.displayColorManagement" => Some(s.state.viewer.display_color_management),
         "view.simulateOutput" => {
@@ -418,7 +432,7 @@ pub fn parse(text: &str, mac: bool) -> Result<Vec<MenuNode>, String> {
 /// Effect ▸ category submenus from the effect registry.
 fn effect_categories() -> Vec<MenuNode> {
     let mut cats: Vec<(&str, Vec<MenuNode>)> = vec![];
-    for e in crate::effects::registry() {
+    for e in crate::effects::all() {
         let entry =
             MenuNode::Item(MenuEntry { label: e.name.into(), command: "effect.apply".into(), params: serde_json::json!({"effect": e.id}), shortcut: None });
         match cats.iter_mut().find(|(c, _)| *c == e.category) {
@@ -516,6 +530,10 @@ File
     Find Missing Footage | file.findMissing {"what":"footage"}
   ---
   Scripts
+    @dynamic:scripts
+    ---
+    Install Script File... | file.installScript
+    Install ScriptUI Panel... | file.installScriptUIPanel
     Run Script File... | file.runScript
   ---
   Create Proxy
@@ -907,6 +925,7 @@ Effect
   Remove All | effect.removeAll
   ---
   Manage Effects... | effect.manage
+  Load Effect Plug-in... | effect.plugins.load
   ---
   @effects
 Animation
@@ -1145,6 +1164,8 @@ Window
   Render Queue | window.panel {"panel":"renderQueue"} | Cmd+Alt+0
   Timeline | window.panel {"panel":"timeline"}
   @dynamic:openViewers
+  ---
+  @dynamic:scriptPanels
 Help
   EffectCraft Help... | help.docs {"page":"help"} | F1
   Scripting Help... | help.docs {"page":"scripting"}

@@ -7,50 +7,104 @@ use crate::{CATEGORIES, registry};
 /// Effects whose implementation is known to fall short of the reference behaviour:
 /// `(effect id, what is missing)`. Everything else in the registry is implemented in full as far
 /// as the public behaviour documentation describes it.
-pub const PARTIAL: &[(&str, &str)] = &[
-    ("ec.blur.cameralens", "no Diffraction Fringe or Blur Map layer"),
-    ("ec.channel.minimax", "no Don't Shrink Edges option"),
-    ("ec.channel.combiner", "no Saturation Multiplied target"),
-    ("ec.3d.channelextract", "no anti-alias option"),
-    ("ec.color.huesaturation", "no per-range Channel Control"),
-    ("ec.color.levels", "master channel only (no Channel popup)"),
-    ("ec.color.curves", "no Channel popup"),
-    ("ec.color.colorama", "no Add Phase, editable Output Cycle, Modify, Pixel Selection or Masking"),
-    ("ec.color.lumetri", "no HSL Secondary, hue/saturation curves, HDR mode or look files"),
-    ("ec.color.selectivecolor", "simplified Colors / Details layout"),
-    ("ec.distort.turbulentdisplace", "no locked pinning variants"),
-    ("ec.distort.opticscompensation", "no Optimal Pixels"),
-    ("ec.distort.transform", "no shutter-angle motion blur"),
-    ("ec.distort.reshape", "no correspondence points"),
-    ("ec.distort.rollingshutterrepair", "Pixel Motion Detail has no effect"),
-    ("ec.generate.fill", "no Fill Mask / All Masks / feather"),
-    ("ec.generate.advancedlightning", "no Alpha Obstacle; most Expert Settings missing"),
-    ("ec.generate.radiowaves", "no Image Contours or Mask wave types, Parameters Are Set At, reflection or stroke profile"),
-    ("ec.generate.scribble", "no caps, joins or Start/End Apply To"),
-    ("ec.generate.cellpattern", "HQ variants render like the standard ones"),
-    ("ec.key.innerouter", "one additional mask per side; no cleanup strokes"),
-    ("ec.key.advancedspill", "no Tolerance, Desaturate or Spill Color Correction"),
-    ("ec.keying.keylight", "no Source Crops X/Y Method or Edge Colour; no colour suppression / balancing"),
-    ("ec.matte.refinesoft", "no Reduce Chatter or motion blur"),
-    ("ec.matte.refinehard", "no Reduce Chatter or motion blur"),
-    ("ec.obsolete.pathtext", "no kerning, shear/scale, line spacing, fade time or jitter"),
-    ("ec.noise.addgrain", "no preview region, presets, channel balance or temporal controls"),
-    ("ec.noise.matchgrain", "no preview region, presets, sampling or temporal controls"),
-    ("ec.noise.removegrain", "no preview region, sampling or temporal filtering"),
-    ("ec.vr.digitalglitch", "reduced control set"),
-    ("ec.vr.converter", "common layouts only"),
-    ("ec.time.timewarp", "Pixel Motion blends frames (no optical flow); no matte, warp or crop controls"),
-    ("ec.sim.carddance", "no camera system, corner pins or lighting/material controls"),
-    ("ec.sim.shatter", "no custom shatter map, gradient, textures or extrusion rendering"),
-    ("ec.sim.caustics", "no Sky group or light type"),
-    ("ec.sim.foam", "no wobble, pop velocity, custom bubble texture, environment map or flow map"),
-    ("ec.sim.particleplayground", "no Particle Exploder, Ephemeral Property Mapper, Affects groups or text particles"),
-    ("ec.sim.waveworld", "no wireframe controls, dry-area rendering or ground group"),
-    ("ec.stylize.glow", "no Glow Operation or arbitrary colour map"),
-    ("ec.stylize.cartoon", "no Edge Enhancement"),
-    ("ec.transition.cardwipe", "2D flip only; no back layer picker, camera, lighting or jitter"),
-    ("ec.transition.blockdissolve", "no Soft Edges option"),
+pub const PARTIAL: &[(&str, &str)] = &[];
+
+/// Whether Effect Controls shows parameter (or twirl-down group) `param` (spec id path,
+/// `group/param`) of an instance of effect `effect`, given the instance's current values
+/// (`value(spec id)`). After Effects shows only the controls a popup selects: Levels' channel,
+/// Hue/Saturation's Channel Control, the camera system of the card effects, and so on. Every
+/// parameter stays animatable and addressable; this is presentation only.
+pub fn param_shown(effect: &str, param: &str, value: &dyn Fn(&str) -> Option<effectcraft_keyframe::Value>) -> bool {
+    let e = |id: &str| value(id).map(|v| v.as_enum()).unwrap_or(0);
+    let b = |id: &str| value(id).is_some_and(|v| v.as_bool());
+    match effect {
+        "ec.color.levels" => {
+            let ch = e("channel") as usize;
+            for (i, pre) in crate::color_fx::LEVELS_CHANNEL_PREFIX.iter().enumerate() {
+                if param.starts_with(pre) {
+                    return ch == i + 1;
+                }
+            }
+            let master = ["inBlack", "inWhite", "gamma", "outBlack", "outWhite", "clipToOutputBlack", "clipToOutputWhite"];
+            !master.contains(&param) || ch == 0
+        }
+        "ec.color.huesaturation" => {
+            let ch = e("channelControl") as usize;
+            for (i, (pre, _, _)) in crate::color_fx::HUESAT_RANGES.iter().enumerate() {
+                if param.starts_with(pre) {
+                    return ch == i + 1;
+                }
+            }
+            match param {
+                "hue" | "saturation" | "lightness" => ch == 0,
+                "colorizeSaturation" | "colorizeLightness" => b("colorize"),
+                _ => true,
+            }
+        }
+        "ec.color.selectivecolor" => match param.strip_prefix("details/") {
+            Some(rest) => {
+                let g = rest.split('/').next().unwrap_or("");
+                crate::color2::SC_GROUPS.iter().position(|x| *x == g).is_none_or(|i| i == e("colors") as usize)
+            }
+            None => true,
+        },
+        "ec.sim.carddance" | "ec.transition.cardwipe" => crate::card3d::shown(param, &e).unwrap_or(true),
+        "ec.sim.shatter" => match param {
+            "shape/customShatterMap" | "shape/whiteTilesFixed" => e("shape/pattern") == 5,
+            _ => crate::card3d::shown(param, &e).unwrap_or(true),
+        },
+        _ => {
+            let _ = b("");
+            true
+        }
+    }
+}
+
+/// Controls of GPU-accelerated effects that only the CPU implements: while any of them is away
+/// from its default the effect renders on the CPU. (Prefixes ending in `/` cover a whole group.)
+const CPU_ONLY_CONTROLS: &[(&str, &[&str])] = &[
+    (
+        "ec.color.lumetri",
+        &["highDynamicRange", "basicCorrection/inputLut", "creative/look", "curves/rgbCurves/", "curves/hueSaturationCurves/", "hslSecondary/"],
+    ),
+    (
+        "ec.color.colorama",
+        &["inputPhase/addPhase", "outputCycle/usePresetPalette", "modify/", "pixelSelection/matchingMode", "masking/maskingMode", "masking/compositeOverLayer"],
+    ),
+    (
+        "ec.keying.keylight",
+        &[
+            "foregroundColourCorrection/colourSuppression",
+            "foregroundColourCorrection/suppressionAmount",
+            "foregroundColourCorrection/colourBalanceSaturation",
+            "edgeColourCorrection/edgeColourSuppression",
+            "edgeColourCorrection/edgeSuppressionAmount",
+            "edgeColourCorrection/edgeColourBalanceSaturation",
+            "sourceCrops/xMethod",
+            "sourceCrops/yMethod",
+            "sourceCrops/edgeColourAlpha",
+        ],
+    ),
+    ("ec.noise.addgrain", &["viewingMode", "preset", "color/redBalance", "color/greenBalance", "color/blueBalance", "previewRegion/"]),
+    ("ec.blur.cameralens", &["irisProperties/diffractionFringe", "blurMap/blurMapLayer"]),
 ];
+
+/// Whether the GPU kernel of effect `id` covers the instance's current settings (see
+/// [`CPU_ONLY_CONTROLS`]; plus Cell Pattern's HQ variants and Turbulent Displace's locked
+/// pinning).
+pub fn gpu_supported(id: &str, ctx: &crate::EffectCtx) -> bool {
+    match id {
+        "ec.generate.cellpattern" if (6..=10).contains(&ctx.params.e("cellPattern")) => return false,
+        "ec.distort.turbulentdisplace" if ctx.params.e("pinning") >= 8 => return false,
+        _ => {}
+    }
+    let Some((_, controls)) = CPU_ONLY_CONTROLS.iter().find(|(e, _)| *e == id) else { return true };
+    let Some(spec) = crate::find(id) else { return true };
+    spec.params
+        .iter()
+        .filter(|ps| controls.iter().any(|c| if c.ends_with('/') { ps.id.starts_with(c) } else { ps.id == *c }))
+        .all(|ps| ctx.params.get(ps.id).is_none_or(|v| *v == crate::default_value(ps, ctx.layer_size)))
+}
 
 /// Implementation status of effect `id` (`Implemented` or `Partial: …`).
 pub fn status(id: &str) -> String {
@@ -120,6 +174,60 @@ mod tests {
         }
         let have = std::fs::read_to_string(path).unwrap_or_default();
         assert!(have == want, "docs/effects.md is stale: UPDATE_DOCS=1 cargo test -p effectcraft-effects --lib effects_doc_is_current");
+    }
+
+    #[test]
+    fn cpu_only_controls_keep_effects_off_the_gpu() {
+        use effectcraft_keyframe::Value;
+        let ctx_with = |id: &str, set: &[(&str, Value)]| {
+            let s = crate::find(id).unwrap();
+            let mut values: std::collections::HashMap<String, Value> =
+                s.params.iter().map(|p| (p.id.to_string(), crate::default_value(p, [64.0, 64.0]))).collect();
+            for (k, v) in set {
+                values.insert(k.to_string(), v.clone());
+            }
+            crate::Params { values }
+        };
+        let ok = |id: &str, set: &[(&str, Value)]| {
+            let params = ctx_with(id, set);
+            let ctx = crate::EffectCtx { params: &params, time: 0.0, layer_size: [64.0, 64.0], seed: 0, adjustment: false, env: Default::default() };
+            super::gpu_supported(id, &ctx)
+        };
+        assert!(ok("ec.color.lumetri", &[]));
+        assert!(!ok("ec.color.lumetri", &[("hslSecondary/correction/saturation", Value::Scalar(50.0))]));
+        assert!(!ok("ec.noise.addgrain", &[("preset", Value::Enum(2))]));
+        assert!(ok("ec.generate.cellpattern", &[("cellPattern", Value::Enum(3))]));
+        assert!(!ok("ec.generate.cellpattern", &[("cellPattern", Value::Enum(9))]));
+        assert!(!ok("ec.distort.turbulentdisplace", &[("pinning", Value::Enum(9))]));
+        assert!(ok("ec.blur.gaussian", &[]));
+    }
+
+    #[test]
+    fn popups_choose_the_shown_controls() {
+        use effectcraft_keyframe::Value;
+        let with = |pairs: &'static [(&'static str, u32)]| move |id: &str| pairs.iter().find(|(k, _)| *k == id).map(|(_, v)| Value::Enum(*v));
+        let shown = |e: &str, p: &str, pairs: &'static [(&'static str, u32)]| super::param_shown(e, p, &with(pairs));
+        // Levels: RGB shows the master controls only; Red shows the red ones.
+        assert!(shown("ec.color.levels", "inBlack", &[]));
+        assert!(!shown("ec.color.levels", "redInBlack", &[]));
+        assert!(shown("ec.color.levels", "redInBlack", &[("channel", 1)]));
+        assert!(!shown("ec.color.levels", "inBlack", &[("channel", 1)]));
+        assert!(shown("ec.color.levels", "channel", &[("channel", 1)]));
+        // Hue/Saturation: Master or one colour range.
+        assert!(shown("ec.color.huesaturation", "hue", &[]));
+        assert!(shown("ec.color.huesaturation", "bluesHue", &[("channelControl", 5)]));
+        assert!(!shown("ec.color.huesaturation", "redsHue", &[("channelControl", 5)]));
+        // Card effects: the camera system's group.
+        assert!(shown("ec.sim.carddance", "cameraPosition", &[]));
+        assert!(!shown("ec.sim.carddance", "cornerPins", &[]));
+        assert!(shown("ec.transition.cardwipe", "cornerPins/upperLeftCorner", &[("cameraSystem", 1)]));
+        assert!(!shown("ec.sim.shatter", "shape/customShatterMap", &[]));
+        // Selective Color: the chosen range's Details group.
+        assert!(shown("ec.color.selectivecolor", "details/reds", &[]));
+        assert!(!shown("ec.color.selectivecolor", "details/blues/bluesCyan", &[]));
+        assert!(shown("ec.color.selectivecolor", "details", &[]));
+        // Everything else is always shown.
+        assert!(shown("ec.blur.gaussian", "blurriness", &[]));
     }
 
     #[test]

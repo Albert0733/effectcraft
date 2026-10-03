@@ -18,6 +18,12 @@ impl EffectcraftApp {
     /// "Effect Controls Title", "Properties: Title", and the Timeline tab named after its comp.
     fn tab_titles(&self) -> Vec<(PanelKind, String)> {
         let mut out = Vec::new();
+        // ScriptUI panels are named after their script.
+        for w in self.session.script_ui.windows.iter().filter(|w| w.kind == effectcraft_engine::scriptui::WindowKind::Panel) {
+            if let Some(t) = panels::scriptui_view::panel_title(self, w.id) {
+                out.push((PanelKind::ScriptPanel(w.id), t));
+            }
+        }
         let Some(comp) = self.session.active_comp() else { return out };
         let cname = self.session.active_comp_id().and_then(|id| self.session.project.item(id)).map(|i| i.name.clone()).unwrap_or_default();
         out.push((PanelKind::Composition, format!("Composition {cname}")));
@@ -69,6 +75,13 @@ impl EffectcraftApp {
 
     /// Close a panel wherever it is (docked or floating).
     pub fn close_panel(&mut self, p: PanelKind) {
+        // Closing a ScriptUI panel closes its script window (its script's onClose runs).
+        if let PanelKind::ScriptPanel(id) = p
+            && self.session.script_ui.window(id).is_some()
+            && let Err(e) = self.session.execute("scriptui.close", serde_json::json!({"window": id}))
+        {
+            self.ui.status = e.to_string();
+        }
         self.ui.dock.close(p);
         self.edit_layout(|l| l.unfloat(p));
         if self.ui.maximized == Some(p) {

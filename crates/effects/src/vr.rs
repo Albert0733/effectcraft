@@ -154,7 +154,20 @@ fn mtv(m: &[[f64; 3]; 3], v: V3) -> V3 {
 
 // ---------------------------------------------------------------- projections (VR Converter)
 
-pub const PROJECTIONS: [&str; 6] = ["Equirectangular 2:1", "Cube-map 4:3", "Cube-map Pano2VR 3:2", "Cube-map GearVR 6:1", "Sphere-map", "2D Source"];
+/// VR Converter's projections / layouts. Cube-map Facebook 3:2 and Cube-map EAC 3:2 put
+/// left, front, right over bottom, back, top (EAC with equi-angular faces); Fisheye
+/// (FullDome) is an angular fisheye looking up at the zenith with the front at the bottom.
+pub const PROJECTIONS: [&str; 9] = [
+    "Equirectangular 2:1",
+    "Cube-map 4:3",
+    "Cube-map Pano2VR 3:2",
+    "Cube-map GearVR 6:1",
+    "Sphere-map",
+    "2D Source",
+    "Cube-map Facebook 3:2",
+    "Cube-map EAC 3:2",
+    "Fisheye (FullDome)",
+];
 
 /// Cube faces: (forward, right, up).
 const FACES: [(V3, V3, V3); 6] = [
@@ -173,6 +186,8 @@ fn cube_grid(kind: u32) -> ((u32, u32), [(u32, u32); 6]) {
         1 => ((4, 3), [(2, 1), (0, 1), (1, 0), (1, 2), (1, 1), (3, 1)]),
         // 3 × 2: right, left, top / bottom, front, back.
         2 => ((3, 2), [(0, 0), (1, 0), (2, 0), (0, 1), (1, 1), (2, 1)]),
+        // 3 × 2: left, front, right / bottom, back, top (Facebook, EAC).
+        6 | 7 => ((3, 2), [(2, 0), (0, 0), (2, 1), (0, 1), (1, 0), (1, 1)]),
         // 6 × 1 strip in face order.
         _ => ((6, 1), [(0, 0), (1, 0), (2, 0), (3, 0), (4, 0), (5, 0)]),
     }
@@ -191,15 +206,33 @@ impl Proj {
     pub fn dir(&self, x: f64, y: f64, w: f64, h: f64) -> Option<V3> {
         match self.kind {
             0 => Some(equi_dir(x, y, w, h)),
-            1..=3 => {
+            1..=3 | 6 | 7 => {
                 let ((gw, gh), cells) = cube_grid(self.kind);
                 let (cw, ch) = (w / gw as f64, h / gh as f64);
                 let (cx, cy) = ((x / cw).floor(), (y / ch).floor());
                 let f = cells.iter().position(|&(c, r)| c as f64 == cx && r as f64 == cy)?;
-                let a = (x - cx * cw) / cw * 2.0 - 1.0;
-                let b = (y - cy * ch) / ch * 2.0 - 1.0;
+                let mut a = (x - cx * cw) / cw * 2.0 - 1.0;
+                let mut b = (y - cy * ch) / ch * 2.0 - 1.0;
+                if self.kind == 7 {
+                    // Equi-angular faces: positions are linear in angle.
+                    a = (a * std::f64::consts::FRAC_PI_4).tan();
+                    b = (b * std::f64::consts::FRAC_PI_4).tan();
+                }
                 let (fw, r, u) = FACES[f];
                 Some(norm([fw[0] + a * r[0] - b * u[0], fw[1] + a * r[1] - b * u[1], fw[2] + a * r[2] - b * u[2]]))
+            }
+            8 => {
+                // FullDome: 180° angular fisheye centred on the zenith (+Y), front at the bottom.
+                let s = w.min(h) / 2.0;
+                let (u, v) = ((x - w / 2.0) / s, (y - h / 2.0) / s);
+                let r = (u * u + v * v).sqrt();
+                if r > 1.0 {
+                    return None;
+                }
+                let th = r * std::f64::consts::FRAC_PI_2;
+                let (cu, cv) = if r > 1e-12 { (u / r, v / r) } else { (0.0, 0.0) };
+                // Local: forward = +Y, image right = +X, image down = +Z.
+                Some([th.sin() * cu, th.cos(), th.sin() * cv])
             }
             4 => {
                 // Angular fisheye centred on +Z; radius ∝ angle, `fov` across the image width.
@@ -231,16 +264,31 @@ impl Proj {
                 let (x, y) = equi_px(d, w, h);
                 Some((x, y, None))
             }
-            1..=3 => {
+            1..=3 | 6 | 7 => {
                 let f = (0..6).max_by(|&i, &j| dot(d, FACES[i].0).total_cmp(&dot(d, FACES[j].0)))?;
                 let (fw, r, u) = FACES[f];
                 let k = dot(d, fw);
-                let (a, b) = (dot(d, r) / k, -dot(d, u) / k);
+                let (mut a, mut b) = (dot(d, r) / k, -dot(d, u) / k);
+                if self.kind == 7 {
+                    a = a.atan() / std::f64::consts::FRAC_PI_4;
+                    b = b.atan() / std::f64::consts::FRAC_PI_4;
+                }
                 let ((gw, gh), cells) = cube_grid(self.kind);
                 let (cw, ch) = (w / gw as f64, h / gh as f64);
                 let (c, rr) = cells[f];
                 let (x0, y0) = (c as f64 * cw, rr as f64 * ch);
                 Some((x0 + (a + 1.0) * 0.5 * cw, y0 + (b + 1.0) * 0.5 * ch, Some([x0, y0, x0 + cw, y0 + ch])))
+            }
+            8 => {
+                let th = d[1].clamp(-1.0, 1.0).acos();
+                if th > std::f64::consts::FRAC_PI_2 + 1e-9 {
+                    return None;
+                }
+                let s = w.min(h) / 2.0;
+                let r = th / std::f64::consts::FRAC_PI_2;
+                let l = (d[0] * d[0] + d[2] * d[2]).sqrt();
+                let (cu, cv) = if l > 1e-12 { (d[0] / l, d[2] / l) } else { (0.0, 0.0) };
+                Some((w / 2.0 + cu * r * s, h / 2.0 + cv * r * s, None))
             }
             4 => {
                 let half = (self.fov.clamp(1.0, 360.0) / 2.0).to_radians();
@@ -578,7 +626,7 @@ fn vr_converter(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let from = Proj { kind: ctx.params.e("sourceProjection"), fov: ctx.params.f("sourceHorizontalFov") };
     let to = Proj { kind: ctx.params.e("targetProjection"), fov: ctx.params.f("targetHorizontalFov") };
     let (t, pn, r) = (ctx.params.f("tilt"), ctx.params.f("pan"), ctx.params.f("roll"));
-    if from.kind == to.kind && (from.kind <= 3 || from.fov == to.fov) && t == 0.0 && pn == 0.0 && r == 0.0 {
+    if from.kind == to.kind && (!matches!(from.kind, 4 | 5) || from.fov == to.fov) && t == 0.0 && pn == 0.0 && r == 0.0 {
         return b;
     }
     let m = rot_params(ctx);
@@ -825,39 +873,86 @@ fn vr_fractal(ctx: &EffectCtx, mut b: Buf) -> Buf {
     b
 }
 
+/// VR Digital Glitch: horizontal bands of the panorama jump sideways (Geometric Distortion,
+/// split into Horizontal / Vertical displacement), their colour channels split apart (Color
+/// Distortion with per-channel offsets) and scan lines darken alternate rows (Scanline
+/// Spacing apart). The pattern re-randomises Distortion Rate times a second, and Distortion
+/// Evolution (optionally cycling) moves it smoothly in between. Target Point limits the glitch
+/// to a region of the sphere (Radius, Feather; radius 0 = everywhere).
 fn vr_glitch(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let pr = ctx.params;
     let amp = (pr.f("masterAmplitude") / 100.0).max(0.0);
     if amp <= 0.0 {
         return b;
     }
+    let g = |id: &str, d: f64| pr.get(id).map(Value::as_f64).unwrap_or(d);
     let rate = pr.f("distortionRate").max(0.0);
     let geo = pr.f("geometricDistortion") / 100.0 * amp;
+    let (hdisp, vdisp) = (g("geometric/horizontalDisplacement", 100.0) / 100.0, g("geometric/verticalDisplacement", 0.0) / 100.0);
     let complexity = pr.f("distortionComplexity").clamp(1.0, 100.0);
     let rgb = pr.f("colorDistortion") / 100.0 * amp;
+    let offs = [g("color/redOffset", -1.0), g("color/greenOffset", 0.0), g("color/blueOffset", 1.0)];
     let scan = (pr.f("scanlines") / 100.0 * amp) as f32;
+    let spacing = g("scanlineSpacing", 2.0).round().max(2.0) as usize;
     let seed = (pr.f("randomSeed") as u32) ^ ctx.seed;
-    // The glitch pattern changes `rate` times a second (held between changes).
-    let slot = if rate > 0.0 { (ctx.time * rate).floor() as i64 } else { 0 } as u32;
+    // Evolution: a fraction of a slot that blends towards the next pattern.
+    let mut evo = g("distortionEvolution", 0.0) / 360.0;
+    if pr.b("evolutionOptions/cycleEvolution") {
+        evo = evo.rem_euclid(g("evolutionOptions/cycle", 1.0).round().max(1.0));
+    }
+    let base = if rate > 0.0 { ctx.time * rate } else { 0.0 } + evo;
+    let slot = base.floor() as i64 as u32;
+    let frac = base - base.floor();
+    // Target Point.
+    let target = mv(&rotation(g("target/tilt", 0.0), g("target/pan", 0.0), 0.0), [0.0, 0.0, 1.0]);
+    let radius = g("target/radius", 0.0).to_radians();
+    let feather = g("target/feather", 0.0).to_radians();
     b.img = per_eye(&b.img, layout(ctx), |e, eye| {
         let (w, h) = (e.width as f64, e.height as f64);
         let bands = complexity.round() as u32;
         let mut o = Image::new(e.width, e.height);
         o.rows_mut().for_each(|(y, row)| {
             let band = ((y as f64 / h) * bands as f64) as u32;
-            let r0 = hash1(band, slot, seed ^ (eye as u32 * 977));
-            let on = r0 < 0.35;
-            let shift = if on { (hash1(band, slot + 1, seed) as f64 * 2.0 - 1.0) * geo * w * 0.15 } else { 0.0 };
-            let split = if on { rgb * w * 0.01 * (1.0 + hash1(band, slot + 2, seed) as f64) } else { 0.0 };
-            let dark = if y % 2 == 0 { 1.0 - scan * 0.5 } else { 1.0 };
+            let at = |s: u32| {
+                let r0 = hash1(band, s, seed ^ (eye as u32 * 977));
+                let on = r0 < 0.35;
+                let shift = if on { (hash1(band, s + 1, seed) as f64 * 2.0 - 1.0) * geo } else { 0.0 };
+                let split = if on { rgb * w * 0.01 * (1.0 + hash1(band, s + 2, seed) as f64) } else { 0.0 };
+                (shift, split)
+            };
+            let (s0, p0) = at(slot);
+            let (shift, split) = if frac > 0.0 {
+                let (s1, p1) = at(slot + 1);
+                (s0 + (s1 - s0) * frac, p0 + (p1 - p0) * frac)
+            } else {
+                (s0, p0)
+            };
+            let (dx, dy) = (shift * w * 0.15 * hdisp, shift * h * 0.15 * vdisp);
+            let dark = if y % spacing == 0 { 1.0 - scan * 0.5 } else { 1.0 };
             for (x, px) in row.iter_mut().enumerate() {
-                let sx = x as f64 + 0.5 - shift;
-                let sy = y as f64 + 0.5;
+                let (fx, fy) = (x as f64 + 0.5, y as f64 + 0.5);
+                let k = if radius > 0.0 {
+                    let a = angle(equi_dir(fx, fy, w, h), target);
+                    if a <= radius {
+                        1.0
+                    } else if feather > 0.0 {
+                        (1.0 - (a - radius) / feather).clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    }
+                } else {
+                    1.0
+                };
+                let orig = e.data[y * e.width as usize + x];
+                if k <= 0.0 {
+                    *px = orig;
+                    continue;
+                }
+                let (sx, sy) = (fx - dx * k, (fy - dy * k).clamp(0.5, h - 0.5));
                 // Horizontal shifts wrap around the seam (the frame is a full turn).
-                let g = sample_equi(e, sx, sy);
-                let r = sample_equi(e, sx - split, sy);
-                let bb = sample_equi(e, sx + split, sy);
-                *px = [r[0] * dark, g[1] * dark, bb[2] * dark, g[3].max(r[3]).max(bb[3])];
+                let c: [Px; 3] = std::array::from_fn(|i| sample_equi(e, sx + offs[i] * split * k, sy));
+                let d = 1.0 - (1.0 - dark) * k as f32;
+                *px = [c[0][0] * d, c[1][1] * d, c[2][2] * d, c[0][3].max(c[1][3]).max(c[2][3])];
             }
         });
         o
@@ -947,9 +1042,22 @@ pub fn specs() -> Vec<EffectSpec> {
                 p("masterAmplitude", "Master Amplitude", num(100.0), slider(0.0, 500.0, 0.0, 200.0, 1)),
                 p("distortionRate", "Distortion Rate", num(5.0), slider(0.0, 60.0, 0.0, 30.0, 2)),
                 p("distortionComplexity", "Distortion Complexity", num(16.0), slider(1.0, 100.0, 1.0, 64.0, 0)),
+                ang("distortionEvolution", "Distortion Evolution"),
+                p("evolutionOptions/cycleEvolution", "Cycle Evolution", Value::Bool(false), ParamUi::Checkbox),
+                p("evolutionOptions/cycle", "Cycle (in Revolutions)", num(1.0), slider(1.0, 1000.0, 1.0, 20.0, 0)),
                 p("geometricDistortion", "Geometric Distortion", num(50.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
+                p("geometric/horizontalDisplacement", "Horizontal Displacement", num(100.0), slider(0.0, 400.0, 0.0, 200.0, 1)),
+                p("geometric/verticalDisplacement", "Vertical Displacement", num(0.0), slider(0.0, 400.0, 0.0, 200.0, 1)),
                 p("colorDistortion", "Color Distortion", num(50.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
+                p("color/redOffset", "Red Offset", num(-1.0), slider(-10.0, 10.0, -2.0, 2.0, 2)),
+                p("color/greenOffset", "Green Offset", num(0.0), slider(-10.0, 10.0, -2.0, 2.0, 2)),
+                p("color/blueOffset", "Blue Offset", num(1.0), slider(-10.0, 10.0, -2.0, 2.0, 2)),
                 p("scanlines", "Scanlines", num(20.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
+                p("scanlineSpacing", "Scanline Spacing", num(2.0), slider(2.0, 100.0, 2.0, 20.0, 0)),
+                ang("target/tilt", "Target Tilt"),
+                ang("target/pan", "Target Pan"),
+                p("target/radius", "Target Radius", num(0.0), slider(0.0, 180.0, 0.0, 180.0, 1)),
+                p("target/feather", "Target Feather", num(0.0), slider(0.0, 180.0, 0.0, 90.0, 1)),
                 p("randomSeed", "Random Seed", num(0.0), slider(0.0, 10000.0, 0.0, 1000.0, 0)),
             ],
             vr_glitch,
@@ -1056,7 +1164,7 @@ mod tests {
 
     #[test]
     fn projections_are_inverse() {
-        for kind in 0..6u32 {
+        for kind in 0..9u32 {
             let pr = Proj { kind, fov: if kind == 4 { 360.0 } else { 100.0 } };
             let (w, h) = (240.0, 120.0);
             for (x, y) in [(10.5, 20.5), (100.5, 60.5), (230.5, 110.5), (130.5, 33.5)] {
@@ -1070,7 +1178,7 @@ mod tests {
     #[test]
     fn converter_round_trips_equirect_through_cube_maps() {
         let img = sphere_img(128, 64);
-        for target in [1u32, 2, 3] {
+        for target in [1u32, 2, 3, 6, 7] {
             let cube = run_fx("ec.vr.converter", &[("targetProjection", Value::Enum(target))], img.clone(), 0.0, EffectEnv::default());
             let back = run_fx(
                 "ec.vr.converter",
@@ -1096,6 +1204,41 @@ mod tests {
             let px = cube.img.sample_bilinear_clamped(x, y);
             assert!((px[2] - 0.9).abs() < 0.02, "{px:?}");
         }
+    }
+
+    #[test]
+    fn digital_glitch_full_controls() {
+        let img = sphere_img(128, 64);
+        let run = |vals: &[(&str, Value)], t: f64| run_fx("ec.vr.digitalglitch", vals, img.clone(), t, EffectEnv::default()).img;
+        let base = run(&[], 0.0);
+        for (id, v) in
+            [("distortionEvolution", num(90.0)), ("geometric/verticalDisplacement", num(100.0)), ("color/redOffset", num(3.0)), ("scanlineSpacing", num(5.0))]
+        {
+            assert_ne!(run(&[(id, v.clone())], 0.0), base, "{id}");
+        }
+        // Cycle Evolution: one full cycle is the start again.
+        let cyc =
+            |e: f64| run(&[("distortionEvolution", num(e)), ("evolutionOptions/cycleEvolution", Value::Bool(true)), ("evolutionOptions/cycle", num(1.0))], 0.0);
+        assert_eq!(cyc(0.0), cyc(360.0));
+        // Target Point: a small region around the front; the back stays untouched.
+        let t = run(&[("target/radius", num(30.0))], 0.0);
+        assert_eq!(t.get(0, 32), img.get(0, 32), "behind the viewer");
+    }
+
+    #[test]
+    fn converter_fulldome_and_eac() {
+        let img = sphere_img(128, 64);
+        let dome = run_fx("ec.vr.converter", &[("targetProjection", Value::Enum(8))], img.clone(), 0.0, EffectEnv::default()).img;
+        // The centre looks at the zenith (+Y); the bottom edge at the front (+Z).
+        let c = dome.get(64, 32);
+        assert!((c[1] - 0.9).abs() < 0.03, "{c:?}");
+        let f = dome.get(64, 62);
+        assert!(f[2] > 0.8, "{f:?}");
+        // EAC faces are equi-angular: a quarter of the front face sits at 22.5 degrees.
+        let eac = Proj { kind: 7, fov: 90.0 };
+        let cw = 128.0 / 3.0;
+        let d = eac.dir(cw + 0.25 * cw, 16.0, 128.0, 64.0).unwrap();
+        assert!((d[0].atan2(d[2]).to_degrees() + 22.5).abs() < 0.5, "{d:?}");
     }
 
     #[test]

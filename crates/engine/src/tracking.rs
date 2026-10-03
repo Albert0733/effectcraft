@@ -358,9 +358,8 @@ impl Session {
             return self.offload_analysis(crate::offload::WorkerJob::Track { comp, layer, tracker, direction, settings, points, times });
         }
         let wait = wait || cfg!(target_arch = "wasm32");
-        self.history.undo.push(("Analyze Track".into(), self.project.clone()));
-        self.history.redo.clear();
-        self.history.merge_key = None;
+        let levels = self.prefs.general.undo_levels as usize;
+        self.history.record("Analyze Track", self.project.clone(), levels);
         let shared = Arc::new(TrackShared::default());
         let (comp, layer) = (work.comp, work.layer);
         let thread = if wait {

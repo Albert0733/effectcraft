@@ -87,7 +87,15 @@ pub fn swatch(ui: &mut Ui, rect: Rect, c: [f32; 4], id: egui::Id, t: &Tokens) ->
 pub fn twirl(ui: &mut Ui, rect: Rect, open: bool, id: egui::Id, t: &Tokens) -> Response {
     let resp = ui.interact(rect, id, Sense::click());
     let col = if resp.hovered() { t.tab_text_active } else { t.text_dim };
-    icons::paint(ui.painter(), rect.shrink(rect.width() * 0.22), if open { Icon::ChevronDown } else { Icon::ChevronRight }, col);
+    // An open chevron (> / v), as After Effects draws its twirl-downs.
+    let c = rect.center();
+    let k = rect.width().min(rect.height()) * 0.2;
+    let pts = if open {
+        vec![c + vec2(-1.6 * k, -0.8 * k), c + vec2(0.0, 0.8 * k), c + vec2(1.6 * k, -0.8 * k)]
+    } else {
+        vec![c + vec2(-0.8 * k, -1.6 * k), c + vec2(0.8 * k, 0.0), c + vec2(-0.8 * k, 1.6 * k)]
+    };
+    ui.painter().add(egui::Shape::line(pts, Stroke::new(1.4, col)));
     resp
 }
 

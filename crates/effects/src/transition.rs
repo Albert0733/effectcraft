@@ -1,5 +1,5 @@
 //! Transition effects (batch 2): Block Dissolve, Gradient Wipe (gradient layer or self), Iris Wipe, Card
-//! Wipe (2D cards), CC Grid Wipe, CC Radial ScaleWipe, CC Scale Wipe and CC Light Wipe.
+//! Wipe (3D cards with camera, lighting and jitter), CC Grid Wipe, CC Radial ScaleWipe, CC Scale Wipe and CC Light Wipe.
 //!
 //! Every transition is the identity at 0 % completion. Angles are clockwise from "up".
 
@@ -9,6 +9,7 @@ use effectcraft_project::ParamUi;
 use effectcraft_raster::Px;
 use rayon::prelude::*;
 
+use crate::sim2::{Piece, draw_pieces, rot_axis, sort_far_first};
 use crate::util::{Plane, gauss_plane, hash1, layer_rect, remap, unpremul};
 use crate::{Buf, EffectCtx, EffectSpec, ParamSpec, col, num, p, popup, slider};
 
@@ -61,14 +62,21 @@ fn block_dissolve(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let feather = ctx.params.f("feather") * b.scale;
     let (ox, oy) = (b.offset[0], b.offset[1]);
     let seed = ctx.seed ^ 0xb10c;
+    // Soft Edges (Best Quality): block edges falling between pixels are anti-aliased (4×4
+    // sub-pixel samples); off, each pixel takes its centre's block.
+    let soft = ctx.params.b("softEdges");
+    let subs: Vec<f64> = if soft { (0..4).map(|k| (k as f64 + 0.5) / 4.0).collect() } else { vec![0.5] };
+    let kept = |x: f64, y: f64| {
+        let (bx, by) = (((x - ox) / bw).floor() as i64, ((y - oy) / bh).floor() as i64);
+        hash1(bx as u32, by as u32, seed) >= done
+    };
     let mut mask = Plane::new(b.img.width as usize, b.img.height as usize);
     let w = mask.w;
+    let n = (subs.len() * subs.len()) as f32;
     mask.data.par_chunks_mut(w.max(1)).enumerate().for_each(|(y, row)| {
-        let by = ((y as f64 + 0.5 - oy) / bh).floor() as i64;
         for (x, m) in row.iter_mut().enumerate() {
-            let bx = ((x as f64 + 0.5 - ox) / bw).floor() as i64;
-            let r = hash1(bx as u32, by as u32, seed);
-            *m = if r >= done { 1.0 } else { 0.0 };
+            let hits = subs.iter().flat_map(|sy| subs.iter().map(move |sx| (*sx, *sy))).filter(|(sx, sy)| kept(x as f64 + sx, y as f64 + sy)).count();
+            *m = hits as f32 / n;
         }
     });
     if feather > 0.0 {
@@ -163,21 +171,47 @@ fn iris_wipe(ctx: &EffectCtx, mut b: Buf) -> Buf {
     b
 }
 
+/// Card Wipe: the layer is cut into Rows × Columns cards that flip over in Flip Order, each
+/// through a 180° turn about Flip Axis, as textured planes in 3D seen through the Camera
+/// System and lit by Lighting / Material. The flipped side shows Back Layer (none: the cards
+/// vanish as they turn away). Position / Rotation Jitter wobble the cards over time.
 fn card_wipe(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let done = completion(ctx);
-    if done <= 0.0 {
-        return b;
+    let pr = ctx.params;
+    let f = |id: &str| pr.get(id).map(Value::as_f64).unwrap_or(0.0);
+    let jitter_on = [
+        "positionJitter/xJitterAmount",
+        "positionJitter/yJitterAmount",
+        "positionJitter/zJitterAmount",
+        "rotationJitter/xRotJitterAmount",
+        "rotationJitter/yRotJitterAmount",
+        "rotationJitter/zRotJitterAmount",
+    ]
+    .iter()
+    .any(|id| f(id) != 0.0);
+    if done <= 0.0
+        && !jitter_on
+        && pr.e("cameraSystem") == 0
+        && f("cameraPosition/xRotation") == 0.0
+        && f("cameraPosition/yRotation") == 0.0
+        && f("cameraPosition/zRotation") == 0.0
+    {
+        // Nothing has moved: the layer as is (exactly).
+        let xy = pr.get("cameraPosition/xyPosition").map(|v| v.as_vec2());
+        if xy.is_none_or(|p| (p[0] - ctx.layer_size[0] * 0.5).abs() < 1e-9 && (p[1] - ctx.layer_size[1] * 0.5).abs() < 1e-9) {
+            return b;
+        }
     }
-    let tw = (ctx.params.f("transitionWidth") / 100.0).clamp(0.01, 1.0);
-    let rows = ctx.params.f("rows").round().clamp(1.0, 1000.0) as i64;
+    let tw = (pr.f("transitionWidth") / 100.0).clamp(0.01, 1.0);
+    let rows = pr.f("rows").round().clamp(1.0, 1000.0) as i64;
     // Rows & Columns: Independent, or Columns Follows Rows.
-    let cols = if ctx.params.e("rowsAndColumns") == 1 { rows } else { ctx.params.f("columns").round().clamp(1.0, 1000.0) as i64 };
-    let card_scale = ctx.params.f("cardScale").max(0.01);
-    let axis = ctx.params.e("flipAxis");
-    let order = ctx.params.e("flipOrder");
-    let back_self = ctx.params.e("backLayer") == 1;
-    let jitter = ctx.params.f("timingRandomness").clamp(0.0, 1.0);
-    let seed = ctx.params.f("randomSeed") as u32 ^ 0xca7d;
+    let cols = if pr.e("rowsAndColumns") == 1 { rows } else { pr.f("columns").round().clamp(1.0, 1000.0) as i64 };
+    let card_scale = pr.f("cardScale").max(0.01);
+    let axis = pr.e("flipAxis");
+    let direction = pr.e("flipDirection");
+    let order = pr.e("flipOrder");
+    let jitter = pr.f("timingRandomness").clamp(0.0, 1.0);
+    let seed = pr.f("randomSeed") as u32 ^ 0xca7d;
     let (x0, y0, w, h) = layer_rect(ctx, &b);
     let (cw, ch) = (w / cols as f64, h / rows as f64);
     let nx = |i: i64| if cols > 1 { i as f64 / (cols - 1) as f64 } else { 0.0 };
@@ -187,64 +221,91 @@ fn card_wipe(ctx: &EffectCtx, mut b: Buf) -> Buf {
         Some(o) => place_layer(ctx, &b, &o, 2),
         None => b.img.clone(),
     });
-    let src = b.img.clone();
-    b.img = remap(&src, false, |x, y| {
-        let (lx, ly) = (x - x0, y - y0);
-        if lx < 0.0 || ly < 0.0 || lx >= w || ly >= h {
-            return Some((x, y));
-        }
-        let i = ((lx / cw).floor() as i64).min(cols - 1);
-        let j = ((ly / ch).floor() as i64).min(rows - 1);
-        let (ccx, ccy) = (x0 + (i as f64 + 0.5) * cw, y0 + (j as f64 + 0.5) * ch);
-        let mut o = match order {
-            1 => 1.0 - nx(i),
-            2 => ny(j),
-            3 => 1.0 - ny(j),
-            4 => (nx(i) + ny(j)) * 0.5,
-            5 => (1.0 - nx(i) + ny(j)) * 0.5,
-            6 => (nx(i) + 1.0 - ny(j)) * 0.5,
-            7 => 1.0 - (nx(i) + ny(j)) * 0.5,
-            8 => {
-                let g = grad.as_ref().map(|g| g.get_clamped(ccx as i64, ccy as i64)).unwrap_or([0.0; 4]);
-                let (c, _) = unpremul(g);
-                luminance(c[0], c[1], c[2]).clamp(0.0, 1.0) as f64
+    // Back Layer: a chosen layer (stretched to fit), or this layer for projects saved with the
+    // old "Self" choice; none hides the cards' backs.
+    let back = match ctx.layer_param("backLayer", true) {
+        Some(o) => Some(crate::util::fit_layer(ctx, &b, &o, true)),
+        None if pr.b("backSelf") => Some(b.img.clone()),
+        None => None,
+    };
+    let cam = crate::card3d::projection(ctx, &b);
+    let eye = cam.eye();
+    let light = crate::card3d::Lighting::from(ctx, &b);
+    let t = ctx.time;
+    let jit = |i: i64, j: i64, k: u32, speed: f64| -> f64 {
+        let ph = hash1(i as u32, j as u32, seed ^ k) as f64 * std::f64::consts::TAU;
+        let rate = 0.5 + hash1(i as u32, j as u32, seed ^ (k + 101)) as f64;
+        (t * speed * rate * std::f64::consts::TAU + ph).sin()
+    };
+    let (jx, jy, jz, js) =
+        (f("positionJitter/xJitterAmount"), f("positionJitter/yJitterAmount"), f("positionJitter/zJitterAmount"), f("positionJitter/jitterSpeed"));
+    let (rjx, rjy, rjz, rjs) =
+        (f("rotationJitter/xRotJitterAmount"), f("rotationJitter/yRotJitterAmount"), f("rotationJitter/zRotJitterAmount"), f("rotationJitter/rotJitterSpeed"));
+    let mut pieces: Vec<Piece> = (0..rows * cols)
+        .into_par_iter()
+        .filter_map(|k| {
+            let (i, j) = (k % cols, k / cols);
+            let (ccx, ccy) = (x0 + (i as f64 + 0.5) * cw, y0 + (j as f64 + 0.5) * ch);
+            let mut o = match order {
+                1 => 1.0 - nx(i),
+                2 => ny(j),
+                3 => 1.0 - ny(j),
+                4 => (nx(i) + ny(j)) * 0.5,
+                5 => (1.0 - nx(i) + ny(j)) * 0.5,
+                6 => (nx(i) + 1.0 - ny(j)) * 0.5,
+                7 => 1.0 - (nx(i) + ny(j)) * 0.5,
+                8 => {
+                    let g = grad.as_ref().map(|g| g.get_clamped(ccx as i64, ccy as i64)).unwrap_or([0.0; 4]);
+                    let (c, _) = unpremul(g);
+                    luminance(c[0], c[1], c[2]).clamp(0.0, 1.0) as f64
+                }
+                _ => nx(i),
+            };
+            if jitter > 0.0 {
+                o += (hash1(i as u32, j as u32, seed ^ 0x7177) as f64 - o) * jitter;
             }
-            _ => nx(i),
-        };
-        if jitter > 0.0 {
-            o += (hash1(i as u32, j as u32, seed ^ 0x7177) as f64 - o) * jitter;
-        }
-        let p = ((done - o * (1.0 - tw)) / tw).clamp(0.0, 1.0);
-        // Card Scale: each card is scaled about its centre (gaps below 1, cropped above 1).
-        let (mut dx, mut dy) = ((x - ccx) / card_scale, (y - ccy) / card_scale);
-        if dx.abs() > cw * 0.5 + 1e-9 || dy.abs() > ch * 0.5 + 1e-9 {
-            return None;
-        }
-        if p <= 0.0 {
-            return Some((ccx + dx, ccy + dy));
-        }
-        let cos = (p * std::f64::consts::PI).cos();
-        if cos.abs() < 1e-4 || (cos < 0.0 && !back_self) {
-            return None;
-        }
-        let around_x = match axis {
-            1 => false,
-            2 => hash1(i as u32, j as u32, seed ^ 0x55) < 0.5,
-            _ => true,
-        };
-        if around_x {
-            dy /= cos;
-            if dy.abs() > ch * 0.5 {
+            let p = ((done - o * (1.0 - tw)) / tw).clamp(0.0, 1.0);
+            let around_x = match axis {
+                1 => false,
+                2 => hash1(i as u32, j as u32, seed ^ 0x55) < 0.5,
+                _ => true,
+            };
+            let sign = match direction {
+                1 => -1.0,
+                2 if hash1(i as u32, j as u32, seed ^ 0x99) < 0.5 => -1.0,
+                _ => 1.0,
+            };
+            let a = p * std::f64::consts::PI * sign;
+            let flip = if around_x { rot_axis([1.0, 0.0, 0.0], a) } else { rot_axis([0.0, 1.0, 0.0], a) };
+            let jr = crate::card3d::rot_ordered(
+                (rjx * jit(i, j, 11, rjs)).to_radians(),
+                (rjy * jit(i, j, 12, rjs)).to_radians(),
+                (rjz * jit(i, j, 13, rjs)).to_radians(),
+                0,
+            );
+            let r = crate::card3d::mat_mul(&jr, &flip);
+            let pos = [ccx + jx * jit(i, j, 21, js) * cw, ccy + jy * jit(i, j, 22, js) * ch, jz * jit(i, j, 23, js) * cw.max(ch)];
+            // Card Scale: each card is scaled about its centre (gaps below 1, cropped above 1).
+            let (sw, sh) = ((cw * 0.5 * card_scale.min(1.0)) as f32, (ch * 0.5 * card_scale.min(1.0)) as f32);
+            let (cx, cy) = (ccx as f32, ccy as f32);
+            let poly = [[cx - sw, cy - sh], [cx + sw, cy - sh], [cx + sw, cy + sh], [cx - sw, cy + sh]];
+            // Above 1 the card's picture is magnified (cropped to the card).
+            let k = card_scale.max(1.0);
+            let rs: crate::card3d::M3 = std::array::from_fn(|q| [r[q][0] * k, r[q][1] * k, r[q][2]]);
+            let poly = poly.map(|v| [cx + (v[0] - cx) / k as f32, cy + (v[1] - cy) / k as f32]);
+            let mut pc = Piece::new(&poly, [cx, cy], &rs, pos, cam)?;
+            if pc.back && back.is_none() {
                 return None;
             }
-        } else {
-            dx /= cos;
-            if dx.abs() > cw * 0.5 {
-                return None;
-            }
-        }
-        Some((ccx + dx, ccy + dy))
-    });
+            pc.back_mirror = if around_x { 1 } else { 2 };
+            pc.light(&light, &r, pos, eye);
+            Some(pc)
+        })
+        .collect();
+    sort_far_first(&mut pieces);
+    let mut out = effectcraft_raster::Image::new(b.img.width, b.img.height);
+    draw_pieces(&mut out, &pieces, &b.img, back.as_ref());
+    b.img = out;
     b
 }
 
@@ -412,6 +473,7 @@ pub fn specs() -> Vec<EffectSpec> {
                 p("blockWidth", "Block Width", num(1.0), slider(1.0, 4000.0, 1.0, 100.0, 1)),
                 p("blockHeight", "Block Height", num(1.0), slider(1.0, 4000.0, 1.0, 100.0, 1)),
                 p("feather", "Feather", num(0.0), slider(0.0, 400.0, 0.0, 50.0, 1)),
+                p("softEdges", "Soft Edges (Best Quality)", Value::Bool(true), ParamUi::Checkbox),
             ],
             block_dissolve,
         ),
@@ -447,12 +509,15 @@ pub fn specs() -> Vec<EffectSpec> {
             vec![
                 done(),
                 p("transitionWidth", "Transition Width", num(50.0), slider(1.0, 100.0, 1.0, 100.0, 0)),
-                p("backLayer", "Back Layer", Value::Enum(0), popup(&["None", "Self"])),
+                p("backLayer", "Back Layer", Value::Layer(None), ParamUi::Layer),
+                // Projects saved when Back Layer was a None / Self popup: Self.
+                p("backSelf", "Back Layer Is Self", Value::Bool(false), ParamUi::Hidden),
                 p("rowsAndColumns", "Rows & Columns", Value::Enum(0), popup(&["Independent", "Columns Follows Rows"])),
                 p("rows", "Rows", num(8.0), slider(1.0, 1000.0, 1.0, 100.0, 0)),
                 p("columns", "Columns", num(8.0), slider(1.0, 1000.0, 1.0, 100.0, 0)),
                 p("cardScale", "Card Scale", num(1.0), slider(0.01, 10.0, 0.01, 2.0, 2)),
                 p("flipAxis", "Flip Axis", Value::Enum(0), popup(&["X", "Y", "Random"])),
+                p("flipDirection", "Flip Direction", Value::Enum(0), popup(&["Positive", "Negative", "Random"])),
                 p(
                     "flipOrder",
                     "Flip Order",
@@ -472,7 +537,22 @@ pub fn specs() -> Vec<EffectSpec> {
                 p("gradientLayer", "Gradient Layer", Value::Layer(None), ParamUi::Layer),
                 p("timingRandomness", "Timing Randomness", num(0.0), slider(0.0, 1.0, 0.0, 1.0, 2)),
                 p("randomSeed", "Random Seed", num(1.0), slider(0.0, 10000.0, 0.0, 100.0, 0)),
-            ],
+            ]
+            .into_iter()
+            .chain(crate::card3d::camera_params(2.0))
+            .chain(crate::card3d::lighting_params(1.0, 0.25))
+            .chain(crate::card3d::material_params(0.75))
+            .chain([
+                p("positionJitter/xJitterAmount", "X Jitter Amount", num(0.0), slider(0.0, 100.0, 0.0, 5.0, 2)),
+                p("positionJitter/jitterSpeed", "Jitter Speed", num(1.0), slider(0.0, 100.0, 0.0, 10.0, 2)),
+                p("positionJitter/yJitterAmount", "Y Jitter Amount", num(0.0), slider(0.0, 100.0, 0.0, 5.0, 2)),
+                p("positionJitter/zJitterAmount", "Z Jitter Amount", num(0.0), slider(0.0, 100.0, 0.0, 5.0, 2)),
+                p("rotationJitter/xRotJitterAmount", "X Rot Jitter Amount", num(0.0), slider(0.0, 360.0, 0.0, 90.0, 1)),
+                p("rotationJitter/rotJitterSpeed", "Rot Jitter Speed", num(1.0), slider(0.0, 100.0, 0.0, 10.0, 2)),
+                p("rotationJitter/yRotJitterAmount", "Y Rot Jitter Amount", num(0.0), slider(0.0, 360.0, 0.0, 90.0, 1)),
+                p("rotationJitter/zRotJitterAmount", "Z Rot Jitter Amount", num(0.0), slider(0.0, 360.0, 0.0, 90.0, 1)),
+            ])
+            .collect(),
             card_wipe,
         ),
         spec(
@@ -635,7 +715,7 @@ mod tests {
         let back = run(
             "ec.transition.cardwipe",
             &img,
-            &[("completion", num(50.0)), ("rows", num(1.0)), ("columns", num(8.0)), ("transitionWidth", num(10.0)), ("backLayer", Value::Enum(1))],
+            &[("completion", num(50.0)), ("rows", num(1.0)), ("columns", num(8.0)), ("transitionWidth", num(10.0)), ("backSelf", Value::Bool(true))],
         );
         assert_eq!(back.get(2, 20)[3], 1.0);
     }
@@ -745,5 +825,64 @@ mod tests {
         let out = run("ec.transition.ccgridwipe", &img, &[("completion", num(30.0))]);
         assert_eq!(out.get(50, 50)[3], 0.0, "centre tiles are gone first");
         assert_eq!(out.get(1, 1)[3], 1.0, "corners last");
+    }
+
+    fn run_t(img: &Image, set: &[(&str, Value)], time: f64, host: Option<&dyn crate::EffectHost>) -> Image {
+        let s = find("ec.transition.cardwipe").unwrap();
+        let size = [img.width as f64, img.height as f64];
+        let mut params = Params { values: s.params.iter().map(|p| (p.id.to_string(), crate::default_value(p, size))).collect() };
+        for (k, v) in set {
+            params.values.insert(k.to_string(), v.clone());
+        }
+        let env = crate::EffectEnv { host, ..Default::default() };
+        let ctx = EffectCtx { params: &params, time, layer_size: size, seed: 7, adjustment: false, env };
+        (s.render)(&ctx, Buf { img: img.clone(), offset: [0.0, 0.0], scale: 1.0 }).img
+    }
+
+    #[test]
+    fn card_wipe_back_layer_direction_jitter_and_camera() {
+        struct Green;
+        impl crate::EffectHost for Green {
+            fn layer(&self, _: u64, _: bool) -> Option<crate::LayerPixels> {
+                Some(crate::LayerPixels { buf: Buf { img: Image::filled(80, 40, [0.0, 1.0, 0.0, 1.0]), offset: [0.0; 2], scale: 1.0 }, size: [80.0, 40.0] })
+            }
+            fn audio(&self, _: u64, _: f64, _: usize, _: u32) -> Option<Vec<f32>> {
+                None
+            }
+        }
+        let img = Image::filled(80, 40, [1.0, 0.0, 0.0, 1.0]);
+        let v = [("completion", num(100.0)), ("rows", num(1.0)), ("columns", num(8.0))];
+        // Fully flipped cards show the Back Layer.
+        let mut b: Vec<(&str, Value)> = v.to_vec();
+        b.push(("backLayer", Value::Layer(Some(3))));
+        let out = run_t(&img, &b, 0.0, Some(&Green));
+        let p = out.get(45, 20);
+        assert!(p[1] > 0.95 && p[0] < 0.05, "{p:?}");
+        // Half way, Flip Direction decides which way the cards turn (the views differ).
+        let half = [("completion", num(30.0)), ("rows", num(1.0)), ("columns", num(1.0)), ("transitionWidth", num(100.0)), ("flipAxis", Value::Enum(1))];
+        let pos = run_t(&img, &[half.as_slice(), &[("cameraPosition/xRotation", num(20.0))]].concat(), 0.0, None);
+        let neg = run_t(&img, &[half.as_slice(), &[("cameraPosition/xRotation", num(20.0)), ("flipDirection", Value::Enum(1))]].concat(), 0.0, None);
+        assert_ne!(pos, neg);
+        // Position Jitter moves the cards over time (and only then).
+        let j = [("completion", num(0.0)), ("positionJitter/xJitterAmount", num(0.3))];
+        let a = run_t(&img, &j, 0.0, None);
+        let c = run_t(&img, &j, 0.37, None);
+        assert_ne!(a, c);
+        assert_eq!(c, run_t(&img, &j, 0.37, None), "deterministic");
+        assert_eq!(run_t(&img, &[("completion", num(0.0))], 0.37, None), img, "no jitter, no change");
+        // Camera Position rotation tilts the whole wipe in perspective.
+        let tilt = run_t(&img, &[("completion", num(0.0)), ("cameraPosition/yRotation", num(40.0))], 0.0, None);
+        assert_eq!(tilt.get(0, 0)[3], 0.0);
+    }
+
+    #[test]
+    fn block_dissolve_soft_edges_antialias_blocks() {
+        let img = Image::filled(40, 4, [1.0, 1.0, 1.0, 1.0]);
+        let v = [("completion", num(50.0)), ("blockWidth", num(2.5)), ("blockHeight", num(4.0))];
+        let frac = |o: &Image| o.data.iter().filter(|p| p[3] > 0.01 && p[3] < 0.99).count();
+        let hard = run("ec.transition.blockdissolve", &img, &[v.as_slice(), &[("softEdges", Value::Bool(false))]].concat());
+        let soft = run("ec.transition.blockdissolve", &img, &v);
+        assert_eq!(frac(&hard), 0);
+        assert!(frac(&soft) > 0);
     }
 }
