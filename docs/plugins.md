@@ -12,7 +12,7 @@ There are two ways to write one:
 |---|---|---|
 | What | a `.wasm` (or `.wat`) module | a type implementing `effectcraft_effects::plugin::EffectPlugin` |
 | Loaded by | Effect ▸ Load Effect Plug-in…, `effect.plugins.load {path \| folder}`, or the `Plug-ins` folder next to the settings at start-up | `register_plugin(Arc::new(MyEffect))` in an app that links EffectCraft's crates |
-| Sandbox | yes: no imports (no files, clock or network), fuel-limited, deterministic floats | none (it is your code) |
+| Sandbox | yes: no imports (no files, clock or network), fuel-limited, at most 1 GiB of memory, deterministic floats | none (it is your code) |
 | Platforms | desktop and CLI (the wasmi interpreter, crate feature `effectcraft-plugin/wasm`); not the web build | everywhere |
 
 `effect.plugins.list` lists what is loaded: `{api, wasm, plugins: [{id, name, category, version,
@@ -60,7 +60,9 @@ Every plug-in describes itself with a JSON manifest:
 * Parameter types: `slider` (`default`, `min`, `max`, optional `sliderMin`, `sliderMax`,
   `decimals`), `angle` (`default` degrees), `checkbox` (`default` bool), `popup` (`options`,
   `default` index), `point` (`default` as fractions of the layer size, `[0.5, 0.5]` = centre),
-  `color` (`default` RGBA 0–1). Parameter ids are letters, digits and `_`.
+  `color` (`default` RGBA 0–1). Parameter ids are letters, digits and `_`, unique; at most 256
+  parameters; a slider needs `min ≤ default ≤ max` (and `sliderMin ≤ sliderMax`); the manifest
+  is at most 1 MiB.
 
 ## WebAssembly ABI (v1)
 

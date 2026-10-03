@@ -1555,6 +1555,11 @@ impl Interp {
     /// The drawable font of a font dictionary (its base program and encoding) and the matrix
     /// from text space (font size 1) to user space.
     fn font_of(&mut self, d: &DictRef) -> Option<(Rc<Font>, Affine)> {
+        if matches!(d.borrow().get("FontType"), Some(V::Num(t)) if *t == 3.0) {
+            // Type 3 fonts (glyph procedures) are not run.
+            self.b.skip("EPS Type 3 font");
+            return None;
+        }
         let (base, names) = {
             let m = d.borrow();
             let base = m.get("__base").or_else(|| m.get("FontName")).map(V::key)?;

@@ -35,8 +35,8 @@ Tracking 96%, Effects 85%, Web 65%.
 
 What is left, in priority order: the web app's depth (threads, storage, audio, non-blocking
 renders); stroke taper/wave and multi-segment dashes; variable mask feather points; camera iris/bokeh and focus-link commands; 
-approximated effects (Key Cleaner) and Liquify's viewer brush; mesh shadings and JPX images in
-imported PDF/AI files and Illustrator procset EPS; and more codecs. Face tracking and a true Subspace Warp
+approximated effects (Key Cleaner) and Liquify's viewer brush; JPX / JBIG2 images in
+imported PDF/AI files (mesh shadings and CCITT landed in M13.12) and Illustrator procset EPS; and more codecs. Face tracking and a true Subspace Warp
 landed in M13.3. ScriptUI (dialogs that block `show()`, palettes, dockable ScriptUI panels, File ▸ Scripts install
 and sample scripts), puppet pin recording and the remaining "better than After Effects" items — a
 versioned effect plug-in API with sandboxed WebAssembly plug-ins ([plugins.md](plugins.md)),
@@ -128,12 +128,12 @@ the disk cache in the formats wave; the 3D Camera Tracker in M12.6.)
 | Layers | 88% | 4.8 | frame blending, collapse transformations, slip edit |
 | Output | 97% | 0.8 | Render Settings complete (field render + 3:2 pulldown, effects/solo/guide/depth/blending/blur overrides, time sampling, storage overflow), Output Module crop/ROI/resize, alpha modes, post-render actions, PCM formats, templates with defaults, render logs, Notify (M10.2); WebM VP9 key + inter frames with motion search, loop filter and rate control. Left: Opus is CELT-only, Photoshop sequence output, overflow for movies only checks at file creation |
 | Audio | 85% | 0.5 | audio to keyframes |
-| Import | 96% | 0.6 | mesh shadings (types 4–7), JPX / CCITT / JBIG2 images and non-Identity CJK CMaps inside PDF/AI files, Illustrator EPS relying on Adobe procsets, PSD 3D layers (M13.6: PDF/AI text with embedded TrueType / CFF / Type 1 / Type 3 fonts and standard-14 fallback to the bundled fonts, Flate / DCT / inline / stencil images with soft masks, Indexed and ICC alternates, luminosity / alpha soft masks, the 16 blend modes, tiling patterns, calculator functions, any page via `file.import page` and the Import dialog, clip groups kept by Create Shapes from Vector Layer as layer masks / Merge Paths; PSD smart-object perspective quads and placed-layer warps — named styles and custom quilt meshes — baked as placed; PDF / PDF-compatible AI / EPS vector footage with Continuously Rasterize, layered composition import and Create Shapes from Vector Layer, and PSD smart objects with embedded files landed in M13.2; PSD as footage/composition/retain layer sizes, SVG footage earlier) |
+| Import | 97% | 0.5 | JPX / JBIG2 images and predefined non-Identity CJK CMaps inside PDF/AI files, Illustrator EPS relying on Adobe procsets, PSD 3D layers (M13.12: mesh shadings — free-form / lattice Gouraud triangles, Coons and tensor patches — and function-based shadings, CCITT G3 / G4 images, knockout / isolated transparency groups with group alpha and soft masks on the group's result, `/W2` vertical metrics, EPS text with embedded Type 1 / CFF or bundled fonts, and Create Shapes from Vector Layer keeping images as parented footage layers in paint order; M13.6: PDF/AI text with embedded TrueType / CFF / Type 1 / Type 3 fonts and standard-14 fallback to the bundled fonts, Flate / DCT / inline / stencil images with soft masks, Indexed and ICC alternates, luminosity / alpha soft masks, the 16 blend modes, tiling patterns, calculator functions, any page via `file.import page` and the Import dialog, clip groups kept by Create Shapes from Vector Layer as layer masks / Merge Paths; PSD smart-object perspective quads and placed-layer warps — named styles and custom quilt meshes — baked as placed; PDF / PDF-compatible AI / EPS vector footage with Continuously Rasterize, layered composition import and Create Shapes from Vector Layer, and PSD smart objects with embedded files landed in M13.2; PSD as footage/composition/retain layer sizes, SVG footage earlier) |
 | Automation | ≈ 99% | 0.1 | `.jsxbin` (AUT-2: ScriptUI resource strings, `onDraw`/ScriptUIGraphics, live `onChanging`, `Socket`, Essential Graphics hooks — `addToMotionGraphicsTemplate(As)`, `canAddToMotionGraphicsTemplate`, `exportAsMotionGraphicsTemplate`, `motionGraphicsTemplateName`, controller count/names — and Watch Folder landed in M13.7; the core object model landed in M14.4; ScriptUI windows/dialogs/dockable panels with `scriptui.*` agent commands, File ▸ Scripts install + sample scripts, and the effect plug-in API (EFF-6, WebAssembly) landed in M13.1) |
 | Shapes | ≈ 80% | 1.5 | Lottie can't carry stroke taper/wave (stroke Taper and Wave, Dash 2/Gap 2/Dash 3/Gap 3 and radial-gradient Highlight Length/Angle landed in M13.5; pen tool for shape paths and vertex editing in M6.5) |
 | Compositions | ≈ 80% | 3.5 | Mocha-style planar tracks for templates, Essential Graphics' mirrored properties (CMP-7: Font and uniform Scale controls, Composition ▸ Open in Essential Graphics, Save Frame As ▸ Photoshop Layers / ProEXR and the VR Comp Editor landed in M13.7; the marker dialog, Composition Flowchart, Essential Graphics with master properties, `.ectemplate` templates and Responsive Design — Time landed: CMP-6, CMP-7) |
 | Animation | 70% | 9.0 | puppet depth beyond pins and recording (puppet pin recording with Record Options landed in M13.1), Wiggler/Smoother/Motion Sketch (motion-path handles and the graph editor transform box landed in M5.8; keyframe colour labels and Select Keyframe Label Group, Graph Editor snapping to markers / layer ends in M13.5) |
-| Text | ≈ 95% | 0.4 | no extruded strokes, the Variable Font Axes animator changes outlines but not advances (M13.6: variable font axes in the character style — `layer.setText variations`, the Character panel's Variable Font Axes fields — shape with HVAR / gvar advances and draw at that design-space position; OpenType features — stylistic sets, discretionary ligatures, contextual / stylistic alternates, swash, titling, ordinals, fractions, figure styles, true small caps / all small caps and superior / inferior glyphs with faux fallback — per character with the Character panel's OpenType popup and `text.fontFeatures` landed in M13.2; vertical Roman / Tate-Chu-Yoko, forced LTR paragraphs, caret on animated and path text, Variable Font Axes and Lottie style runs landed in M13.5; extruded, bevelled text in M7.6; per-character styles, paragraph settings, on-canvas editing and the `sourceText` style API in M9.9–M9.10) |
+| Text | ≈ 96% | 0.3 | no extruded strokes (M13.12: the Variable Font Axes animator re-spaces the text — advances follow the animated axes; M13.6: variable font axes in the character style — `layer.setText variations`, the Character panel's Variable Font Axes fields — shape with HVAR / gvar advances and draw at that design-space position; OpenType features — stylistic sets, discretionary ligatures, contextual / stylistic alternates, swash, titling, ordinals, fractions, figure styles, true small caps / all small caps and superior / inferior glyphs with faux fallback — per character with the Character panel's OpenType popup and `text.fontFeatures` landed in M13.2; vertical Roman / Tate-Chu-Yoko, forced LTR paragraphs, caret on animated and path text, Variable Font Axes and Lottie style runs landed in M13.5; extruded, bevelled text in M7.6; per-character styles, paragraph settings, on-canvas editing and the `sourceText` style API in M9.9–M9.10) |
 | Web | 85% | 1.0 | viewer frames and Roto Brush propagation still on the page's thread; GPU effects in the browser (browser storage, Web Audio, Web Worker renders/analyses, WebGPU viewer and offline install landed in M15.2) |
 | 3D | 88% | 5.5 | multi-view layouts, the Extended Viewer for Advanced 3D comps (Classic 3D Extended Viewer landed in M13.5 UI completion); collapsed precomps of another size seen through the parent's camera render (fixed in M13.2); stereo rigs, orbit nulls, lights controlled by the camera, cameras/lights from glTF models, environment backgrounds, Advanced 3D motion blur, blend modes and track mattes landed in M7.7; Classic 3D iris-shaped bokeh with highlights, progressive depth of field on tilted layers and the focus-link commands landed in M13.5; Advanced 3D depth of field with the iris and highlight options, collapsed precomps as real Advanced 3D geometry and extruded text/shape strokes landed in M13.8; Advanced 3D (glTF/OBJ models, primitives, extruded text and shapes, PBR, image-based light, shadow maps, GPU rasteriser) in M7.4–M7.6 |
 | Effects | ≈ 80% | 4.0 | GPU versions of the remaining effects (58 run on the GPU since M12.7) and the missing controls listed as partial in [effects.md](effects.md) (every After Effects effect exists since M9.11, M12.5 and M12.6; parameter names, order, twirl-downs, popups, units and defaults were aligned in M9.12) |
@@ -180,8 +180,8 @@ Tate-Chu-Yoko, forced LTR paragraphs, the editing caret on animated / path text 
 style runs; the Layer Style dialog (LYR-9); Graph Editor snapping to markers and layer ends
 (ANM-4; the reference graph existed); viewer ROI resize handles, Pan Behind snapping and 3D
 Reference Axes; Animate Text ▸ Variable Font Axes. Remaining in these rows: Lottie can't carry
-taper/wave and the Variable Font Axes animator doesn't change advances (the Character panel's
-axes do since M13.6; Advanced 3D's DOF has iris shapes since M13.8).
+taper/wave (the Variable Font Axes animator changes advances since M13.12, the Character panel's
+axes since M13.6; Advanced 3D's DOF has iris shapes since M13.8).
 
 ## Update: M13.8 Preview panel, Align panel, Advanced 3D completion
 
@@ -240,6 +240,32 @@ or a new layer) and **Align Video to Data** (JSON / CSV / TSV time keys) replace
 menu entries. Not yet: creating a reference frame by editing a still (After Effects hands it to
 Photoshop), Content-Aware Fill's learned model (ours is PatchMatch + flow propagation), and Media
 Browser in the web app.
+
+## Update: M13.12 import and text leftovers, test hardening
+
+- **PDF / AI**: mesh shadings — free-form and lattice-form Gouraud triangle meshes (types 4, 5),
+  Coons and tensor-product patch meshes (6, 7, tessellated to triangles) — and function-based
+  shadings (type 1, with multi-input sampled functions), for `sh` and shading-pattern fills,
+  rasterised into image nodes; CCITT Group 3 (1-D and 2-D) and Group 4 images from ITU-T T.4 /
+  T.6 (checked against an independent encoder's output); knockout and isolated transparency
+  groups, the current alpha / blend mode / soft mask applied to a transparency group XObject's
+  combined result, and blend modes inside clipping groups reaching the backdrop; `/W2` / `/DW2`
+  vertical metrics and CMap `WMode`. Not done: JBIG2 images (deferred) and predefined CJK CMaps (no permissively licensed
+  pure-Rust source of the CMap data; Adobe's CMap resources are Adobe assets).
+- **EPS**: text through the PostScript interpreter — `findfont` / `scalefont` / `makefont` /
+  `selectfont` / `setfont`, `show`, `ashow`, `widthshow`, `awidthshow`, `xshow` / `yshow` /
+  `xyshow`, `kshow`, `glyphshow`, `charpath`, `stringwidth`, re-encoded fonts (`definefont`
+  copies with a new `/Encoding`) — with embedded Type 1 and CFF programs or the bundled fonts.
+- **Create Shapes from Vector Layer**: images become PNG footage layers parented to the shape
+  layer, and the shapes between images are split into layers of their own so the stack keeps
+  the document's paint order; soft masks and clipped images are reported.
+- **Text**: the Variable Font Axes animator re-spaces the text (advances at the animated
+  design-space position), not only the outlines.
+- **Hardening**: PDF / EPS parsers survive truncated and corrupted files (fixed an
+  out-of-range stream slice and unbounded PostScript recursion); WebAssembly plug-ins get a
+  memory cap, a manifest length limit and slider schema checks, with tests for missing exports,
+  wrong signatures and versions, fuel exhaustion, traps and bit-identical output; script
+  `Socket` validates ports, and ScriptUI resource strings accept trailing array commas.
 
 ## Highest-value gaps, in order
 
