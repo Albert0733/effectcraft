@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use effectcraft_engine::Session;
 
-use crate::{api, audio, files, persist, worker};
+use crate::{api, audio, browse, files, frames, persist, worker};
 use effectcraft_ui_egui::EffectcraftApp;
 use serde_json::json;
 use wasm_bindgen::prelude::*;
@@ -103,6 +103,7 @@ impl eframe::App for WebApp {
             persist::snapshot(&self.app.session, ctx.input(|i| i.time), 1.0);
         }
         api::set_info("gpu", json!({"compositor": self.app.gpu_adapter(), "viewerOnGpu": self.app.viewer_on_gpu()}));
+        api::set_info("frameWorkers", frames::stats());
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
@@ -137,6 +138,7 @@ pub fn session() -> Session {
         exporter: Some(Arc::new(effectcraft_host::FileExporter { sink: Some(files::export_sink()) })),
         config: Some(Arc::new(persist::config())),
         offload: (!query_flag("noworkers")).then(|| Arc::new(worker::WorkerOffload) as Arc<dyn effectcraft_engine::offload::Offload>),
+        browser: Some(Arc::new(browse::WebBrowser)),
         ..Default::default()
     }
 }
@@ -183,6 +185,7 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
     };
     api::set_info("storage", json!({"backend": persist::backend(), "entries": stored, "loadMs": js_sys::Date::now() - t0}));
     audio::install_unlock();
+    browse::restore();
     let runner = eframe::WebRunner::new();
     runner
         .start(
@@ -206,6 +209,12 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
                     app.offer_recovery(r);
                 }
                 install_hooks(&mut app);
+                // Viewer frames render in frame workers (`?frameworkers=N`, 0 or `?noworkers`:
+                // on the page's thread).
+                let n = if query_flag("noworkers") { 0 } else { query_value("frameworkers").and_then(|v| v.parse().ok()).unwrap_or(2usize).min(8) };
+                if n > 0 {
+                    app.frames.set_remote(Some(Arc::new(frames::WebFrames::start(n))));
+                }
                 let (tx, rx) = std::sync::mpsc::channel();
                 api::set_sender(tx);
                 app = app.with_control(rx);

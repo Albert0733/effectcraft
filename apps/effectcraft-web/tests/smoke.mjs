@@ -167,14 +167,48 @@ try {
   const f = await js("effectcraft.renderFrame({max_side: 480}).then(r => ({w: r.width, h: r.height, pngBytes: atob(r.png).length}))");
   report.steps.renderFrame = f;
 
-  // Render Queue: a short, small GIF → download.
+  // Viewer frames render in frame workers (project replicas fed by diffs): with the CPU
+  // renderer, scrubbing (and an edit, which travels as a diff) keeps the page's event loop free.
+  await js(`effectcraft.execute("render.backend", {backend: "cpu"})`);
+  report.steps.frameWorkers = await js(`(async () => {
+    const before = effectcraft.info().frameWorkers;
+    let maxGapMs = 0, last = performance.now();
+    const timer = setInterval(() => { const now = performance.now(); maxGapMs = Math.max(maxGapMs, now - last); last = now; }, 10);
+    await effectcraft.execute("layer.newSolid", {name: "Frame Worker Solid", color: "#3366cc", width: 120, height: 80});
+    for (let k = 0; k < 12; k++) {
+      await effectcraft.execute("time.set", {time: k / 4});
+      await new Promise((r) => setTimeout(r, 150));
+    }
+    const t0 = performance.now();
+    while (effectcraft.info().frameWorkers.rendered < before.rendered + 3 && performance.now() - t0 < 120000) await new Promise((r) => setTimeout(r, 100));
+    clearInterval(timer);
+    await effectcraft.execute("edit.undo", {});
+    return {before, after: effectcraft.info().frameWorkers, maxGapMs};
+  })()`);
+  const fwk = report.steps.frameWorkers;
+  await js(`effectcraft.execute("render.backend", {backend: "gpu"})`);
+  check(fwk.after.alive > 0, `frame workers alive: ${JSON.stringify(fwk.after)}`);
+  check(fwk.after.rendered >= fwk.before.rendered + 3, `frames rendered in workers: ${JSON.stringify(fwk)}`);
+  check(fwk.after.syncs >= 2, `project synced as diffs: ${JSON.stringify(fwk.after)}`);
+  check(fwk.maxGapMs < 400, `event loop blocked ${fwk.maxGapMs} ms while scrubbing`);
+
+  // Render Queue: a short, small GIF → download. `renderQueue.render` waits by default; the
+  // render still runs in a worker and the reply comes when it ends (the page keeps running).
   const rqT = Date.now();
   // (`ui.menu.invoke`: `engine.execute`'s strict parameter check does not know the spread
   // Render Settings / Output Module keys)
   await js(`effectcraft.request("ui.menu.invoke", {id: "renderQueue.add", params: {format: "gif", output: "smoke_[compName].gif", resolution: 0.25, timeSpan: "custom", start: 0, end: 1}})`);
-  await js(`effectcraft.execute("renderQueue.render", {})`);
+  const waited = await js(`(async () => {
+    let maxGapMs = 0, last = performance.now();
+    const timer = setInterval(() => { const now = performance.now(); maxGapMs = Math.max(maxGapMs, now - last); last = now; }, 10);
+    const r = await effectcraft.execute("renderQueue.render", {});
+    clearInterval(timer);
+    return {rendering: r.rendering, status: r.items.map((i) => i.status), maxGapMs};
+  })()`);
   const gif = await waitDownload((n) => n.endsWith(".gif"));
-  report.steps.gifExport = { ...gif, ms: Date.now() - rqT };
+  report.steps.gifExport = { ...gif, ms: Date.now() - rqT, waited };
+  check(!waited.rendering && waited.status.every((s) => s === "Done"), `wait:true replies when done: ${JSON.stringify(waited)}`);
+  check(waited.maxGapMs < 400, `event loop blocked ${waited.maxGapMs} ms during a waiting render`);
   await idle();
 
   // An image sequence arrives as one .zip.
@@ -231,6 +265,13 @@ try {
     return effectcraft.addFile(new File([b], "tone.wav"));
   })()`);
   await until(`effectcraft.execute("layer.addItem", {item: "tone.wav", time: 0}).then(() => true, () => false)`, 20000, 300);
+  // Media Browser: browser storage (where tone.wav now is) and its actions.
+  const mb = await js(`effectcraft.execute("mediaBrowser.go", {})`);
+  report.steps.mediaBrowser = { path: mb.path, entries: mb.entries.map((e) => e.name), places: mb.places, actions: mb.actions.map((a) => a.id) };
+  check(mb.path === "/Browser Storage" && mb.entries.some((e) => e.name === "tone.wav" && e.kind === "audio"), `Media Browser: ${JSON.stringify(report.steps.mediaBrowser)}`);
+  check(mb.actions.some((a) => a.id === "addFiles"), "Media Browser: Add Files…");
+  const mbImport = await js(`effectcraft.execute("mediaBrowser.import", {paths: [${JSON.stringify(mb.entries.find((e) => e.name === "tone.wav")?.path ?? "/tone.wav")}]})`);
+  check(!mbImport.pending && mbImport.items && mbImport.items.length === 1, `Media Browser import: ${JSON.stringify(mbImport)}`);
   await js(`effectcraft.request("ui.playback", {action: "stop"})`);
   await js(`effectcraft.execute("time.set", {time: 0})`);
   await js(`effectcraft.request("ui.playback", {action: "play"})`);

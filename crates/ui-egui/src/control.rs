@@ -55,6 +55,87 @@ pub enum Outcome {
         path: Option<String>,
         crop: Option<[f32; 4]>,
     },
+    /// Reply once background jobs end (a `wait: true` command whose job runs in a worker).
+    AwaitJobs(JobWaiter),
+}
+
+/// A `wait: true` engine command whose job was sent to the session's offload (the browser's
+/// Web Workers) instead of blocking the UI thread: the reply goes out when the job ends.
+pub struct JobWaiter {
+    pub command: String,
+    pub params: Value,
+    /// The command's own result (with `wait: false`).
+    pub result: Value,
+    /// Ids of the jobs it started (`jobs.list` ids: `render`, `track`, `roto`…).
+    pub jobs: Vec<String>,
+    /// Length of [`effectcraft_engine::Session::offload_log`] when it started.
+    pub log_len: usize,
+}
+
+/// Commands that block with `wait` (and its default).
+fn waits(command: &str, params: &Value) -> bool {
+    let default = command == "renderQueue.render";
+    params.get("wait").and_then(Value::as_bool).unwrap_or(default)
+}
+
+/// Run an engine command. A waiting command (`wait: true`) whose job the session offloads
+/// runs with `wait: false` instead, and the reply waits for the job ([`Outcome::AwaitJobs`]),
+/// so the browser's UI keeps drawing while it runs.
+fn execute_engine(app: &mut EffectcraftApp, id: &str, params: Value) -> Result<Outcome, String> {
+    if !app.session.offloads() || !waits(id, &params) {
+        return app.session.execute_checked(id, params).map(ok).map_err(|e| e.to_string());
+    }
+    let before: Vec<String> = app.session.jobs().into_iter().map(|j| j.id).collect();
+    let log_len = app.session.offload_log.len();
+    let mut p = params.clone();
+    p["wait"] = json!(false);
+    let result = app.session.execute_checked(id, p).map_err(|e| e.to_string())?;
+    let jobs: Vec<String> = app.session.jobs().into_iter().map(|j| j.id).filter(|j| !before.contains(j)).collect();
+    if jobs.is_empty() {
+        return Ok(ok(result));
+    }
+    Ok(Outcome::AwaitJobs(JobWaiter { command: id.to_string(), params, result, jobs, log_len }))
+}
+
+impl JobWaiter {
+    /// Whether its jobs are still running.
+    pub fn pending(&self, app: &EffectcraftApp) -> bool {
+        app.session.jobs().iter().any(|j| self.jobs.contains(&j.id))
+    }
+
+    /// The reply: what the blocking command would have returned (`running: false`, the final
+    /// progress, render items and analysis status), or the job's error.
+    pub fn finish(self, app: &mut EffectcraftApp) -> Value {
+        let s = &mut app.session;
+        s.poll_render();
+        let errors: Vec<String> = s.offload_log.iter().skip(self.log_len).filter_map(|(_, e)| e.clone()).collect();
+        if let Some(e) = errors.first() {
+            return json!({"ok": false, "error": e});
+        }
+        let mut r = self.result;
+        if r.get("running").is_some() {
+            r["running"] = json!(false);
+        }
+        if self.command == "renderQueue.render" {
+            let ids: Vec<Value> = r["items"].as_array().map(|a| a.iter().map(|i| i["id"].clone()).collect()).unwrap_or_default();
+            if let Ok(list) = s.execute("renderQueue.list", json!({})) {
+                r["items"] =
+                    json!(list["items"].as_array().map(|a| a.iter().filter(|i| ids.contains(&i["id"])).cloned().collect::<Vec<_>>()).unwrap_or_default());
+            }
+            r["rendering"] = json!(s.is_rendering());
+        }
+        let prefix = self.command.split('.').next().unwrap_or("");
+        if matches!(prefix, "warp" | "camera" | "roto")
+            && r.get("layer").is_some()
+            && let Ok(st) = s.execute(&format!("{prefix}.status"), json!({"layer": r["layer"], "effect": r["effect"]}))
+        {
+            r["status"] = st;
+        }
+        if r.get("progress").is_some() {
+            r["progress"] = Value::Null;
+        }
+        json!({"ok": true, "result": r})
+    }
 }
 
 fn ok(v: Value) -> Outcome {
@@ -94,12 +175,12 @@ pub fn handle(app: &mut EffectcraftApp, ctx: &egui::Context, req: &ControlReques
             // `comp.new {}` creates a default comp); UI-only ids (`tool.*`, `view.*`, `window.*`,
             // `playback.*` …) and `ui.menu.invoke` go through the menu dispatcher like a click.
             let r = if req.method == "engine.execute" && effectcraft_engine::find_command(id).is_some() {
-                app.session.execute_checked(id, params).map_err(|e| e.to_string())
+                execute_engine(app, id, params)
             } else {
-                crate::menus::invoke(app, ctx, id, params)
+                crate::menus::invoke(app, ctx, id, params).map(ok)
             };
             match r {
-                Ok(v) => ok(v),
+                Ok(o) => o,
                 Err(e) => {
                     app.ui.status = e.clone();
                     err(e)

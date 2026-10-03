@@ -12,7 +12,8 @@
 //! - layer parameters have a layer popup and a Source / Masks / Effects & Masks popup; mask
 //!   ("Path") parameters list the layer's masks;
 //! - Curves has its graph editor, Levels its histogram with input/output triangles, Auto
-//!   Levels a histogram.
+//!   Levels a histogram; Lumetri's curves, Colorama's output cycle, Glow's colour map and
+//!   Reshape's correspondence points have visual editors ([`super::fx_editors`]).
 
 use effectcraft_engine::geom::Mat3;
 use effectcraft_engine::keyframe::Value;
@@ -40,7 +41,7 @@ fn selected_layer(app: &EffectcraftApp) -> Option<Layer> {
 
 /// An undo-merge key for one gesture on `id`: a new key each time a drag starts, so separate
 /// drags are separate undo steps while one drag is one step.
-fn gesture_key(ui: &egui::Ui, id: egui::Id, started: bool) -> String {
+pub(super) fn gesture_key(ui: &egui::Ui, id: egui::Id, started: bool) -> String {
     let kid = id.with("gesture");
     let n: u64 = if started {
         let n = ui.data(|d| d.get_temp::<u64>(kid)).unwrap_or(0) + 1;
@@ -536,6 +537,15 @@ fn group_rows(
                 }
                 if open {
                     let sub = fx.sub(&sg.match_id);
+                    // A visual editor for the group's hidden parameters (Lumetri curves, …).
+                    let eh = super::fx_editors::inline_height(fx.effect, &sub.path, rect.width());
+                    if eh > 0.0 {
+                        let er = Rect::from_min_size(pos2(rect.min.x, *y), vec2(rect.width(), eh));
+                        *y += eh;
+                        if er.max.y >= rect.min.y && er.min.y <= rect.max.y {
+                            super::fx_editors::inline_editor(app, ui, p, layer, fx.root, sg, fx.effect, &sub.path, ectx, er, actions);
+                        }
+                    }
                     group_rows(app, ui, p, layer, sg, ectx, rect, y, depth + 1, &sub, actions);
                 }
             }
@@ -603,8 +613,9 @@ fn roto_editor(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: &egui::Painter, l
 // Curves / Levels editors
 
 /// Height of the custom editor shown under an effect's header (0 when none).
-fn editor_height(effect: &str, width: f32) -> f32 {
+fn editor_height(effect: &str, g: &PropGroup, width: f32) -> f32 {
     match effect {
+        super::fx_editors::GLOW | super::fx_editors::RESHAPE => super::fx_editors::header_height(effect, g, width),
         "ec.color.curves" => 34.0 + curves_size(width) + 26.0,
         effectcraft_engine::effects::warp_stab::ID => 50.0,
         effectcraft_engine::effects::camera_tracker::ID => super::camera_tracker_ui::EDITOR_HEIGHT,
@@ -995,7 +1006,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
             item(ui, "Move Down", fi + 1 < fx.len(), "effect.reorder", json!({"layer": lid, "effect": g.uid, "index": fi + 2}));
         });
         if open {
-            let eh = editor_height(effect, body.width());
+            let eh = editor_height(effect, g, body.width());
             if eh > 0.0 {
                 let er = Rect::from_min_size(pos2(body.min.x, y), vec2(body.width(), eh));
                 y += eh;
@@ -1006,6 +1017,9 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                         effectcraft_engine::effects::camera_tracker::ID => super::camera_tracker_ui::editor(app, ui, &bp, &layer, g, er, &mut actions),
                         effectcraft_engine::effects::roto::ID => roto_editor(app, ui, &bp, &layer, g, er, &mut actions),
                         "ec.color.levels" | "ec.color.levelsic" => levels_editor(app, ui, &bp, &layer, g, effect, &ectx, er, &mut actions),
+                        super::fx_editors::GLOW | super::fx_editors::RESHAPE => {
+                            super::fx_editors::header_editor(app, ui, &bp, &layer, g, effect, &ectx, er, &mut actions)
+                        }
                         _ => histogram_only(app, ui, &bp, g, er),
                     }
                 }
@@ -1130,10 +1144,14 @@ pub fn viewer_hook(
     } else if app.ui.viewer.show_layer_controls {
         // ⊕ controls for the point parameters of the selected effects.
         let sel = app.session.state.selected_props.clone();
-        for layer in ectx.comp.layers.iter().filter(|l| app.session.state.selected_layers.contains(&l.id) && l.is_active_at(ectx.time)) {
+        let selected = app.session.state.selected_layers.clone();
+        for layer in ectx.comp.layers.iter().filter(|l| selected.contains(&l.id) && l.is_active_at(ectx.time)) {
             let Some(fx) = layer.effects() else { continue };
             let m = l2c(ectx, layer);
             for g in fx.groups().filter(|g| g.enabled && sel.iter().any(|(l, u)| *l == layer.id && *u == g.uid)) {
+                if matches!(&g.kind, GroupKind::Effect { effect } if effect == super::fx_editors::RESHAPE) {
+                    super::fx_editors::reshape_overlay(app, ui, painter, map, ectx, layer, g, &m, &mut actions);
+                }
                 let pts: Vec<&Property> = g.props().filter(|p| matches!(p.ui, ParamUi::Point)).collect();
                 let screen: Vec<egui::Pos2> = pts
                     .iter()
