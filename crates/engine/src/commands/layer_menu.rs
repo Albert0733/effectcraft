@@ -652,33 +652,38 @@ fn reveal_comp(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"item": cid.0}))
 }
 
-fn reveal_expression_errors(s: &mut Session, p: &Value) -> Result<Value> {
-    let cid = comp_id(s, p)?;
-    let t = s.time();
-    let comp = s.project.comp(cid).ok_or(EngineError::NoComp)?;
-    let mut errors = vec![];
-    for l in &comp.layers {
-        let mut has = vec![];
-        l.props.walk("", &mut |_, pr| {
-            if pr.has_expression() {
-                has.push(pr);
-            }
-        });
-        for pr in has {
-            let text = pr.expr.as_ref().map(|e| e.text.clone()).unwrap_or_default();
-            let err = match &s.expr {
-                Some(host) => {
-                    let mut ctx = effectcraft_render::EvalCtx::new(&s.project, cid, comp, t);
-                    ctx.expr = Some(host.as_ref());
-                    host.eval(&ctx, l, pr, &pr.value_at(l.layer_time(t))).err()
+impl Session {
+    /// Expressions of comp `cid` that fail at its current time: `{layer, prop, name, expression,
+    /// error}` (Reveal Expression Errors, the viewer's expression error banner).
+    pub fn expression_errors(&self, cid: effectcraft_project::ItemId) -> Vec<Value> {
+        let t = self.time_of(cid);
+        let Some(comp) = self.project.comp(cid) else { return vec![] };
+        let Some(host) = &self.expr else { return vec![] };
+        let mut errors = vec![];
+        for l in &comp.layers {
+            let mut has = vec![];
+            l.props.walk("", &mut |_, pr| {
+                if pr.has_expression() {
+                    has.push(pr);
                 }
-                None => None,
-            };
-            if let Some(e) = err {
-                errors.push(json!({"layer": l.id.0, "prop": pr.uid, "name": pr.name, "expression": text, "error": e}));
+            });
+            for pr in has {
+                let text = pr.expr.as_ref().map(|e| e.text.clone()).unwrap_or_default();
+                let mut ctx = effectcraft_render::EvalCtx::new(&self.project, cid, comp, t);
+                ctx.expr = Some(host.as_ref());
+                if let Err(e) = host.eval(&ctx, l, pr, &pr.value_at(l.layer_time(t))) {
+                    errors.push(json!({"layer": l.id.0, "prop": pr.uid, "name": pr.name, "expression": text, "error": e}));
+                }
             }
         }
+        errors
     }
+}
+
+fn reveal_expression_errors(s: &mut Session, p: &Value) -> Result<Value> {
+    let cid = comp_id(s, p)?;
+    s.project.comp(cid).ok_or(EngineError::NoComp)?;
+    let errors = s.expression_errors(cid);
     let props: Vec<Value> = errors.iter().map(|e| json!({"layer": e["layer"], "prop": e["prop"]})).collect();
     frontend(s, "timeline.revealProps", &json!({"props": props}))?;
     if errors.is_empty() {

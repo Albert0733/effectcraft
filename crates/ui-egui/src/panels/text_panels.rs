@@ -98,9 +98,8 @@ pub fn character(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         widgets::open_popup(ui, pop);
     }
     app.auto.add("character.font", fr, "Font family");
-    let fams: Vec<String> = effectcraft_engine::text_families();
-    if let Some(i) = widgets::popup_menu(ui, pop, fr.left_bottom(), &fams, fams.iter().position(|f| *f == doc.font)) {
-        actions.push(json!({"font": fams[i]}));
+    if let Some(f) = font_popup(app, ui, pop, fr.left_bottom(), &doc.font) {
+        actions.push(json!({"font": f}));
     }
     y += 28.0;
     let sr = Rect::from_min_size(pos2(x0, y), vec2(w - 84.0, 22.0));
@@ -469,20 +468,29 @@ pub fn paragraph(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         }
     }
     y += 3.0 * 28.0 + 6.0;
-    // Direction and composer popups.
-    let dr = Rect::from_min_size(pos2(x0, y), vec2(w / 2.0 - 4.0, 22.0));
-    let dirs = vec!["Left-to-Right Text".to_string(), "Right-to-Left Text".to_string()];
-    let dpop = egui::Id::new("para-direction-pop");
+    // Direction and composer popups. Settings ▸ Type ▸ Text Engine: the South Asian and Middle
+    // Eastern engine offers the paragraph direction and the World-Ready composers (the Latin
+    // engine shows the direction only for right-to-left text already set).
+    let world_ready = app.session.prefs.type_.text_engine == "southAsian";
     let rtl = doc.direction == Direction::Rtl;
-    if widgets::dropdown(ui, dr, &dirs[rtl as usize], &t, egui::Id::new("para-direction")).clicked() && enabled {
-        widgets::open_popup(ui, dpop);
-    }
-    app.auto.add("paragraph.direction", dr, "Text direction");
-    if let Some(i) = widgets::popup_menu(ui, dpop, dr.left_bottom(), &dirs, Some(rtl as usize)) {
-        actions.push(json!({"direction": if i == 1 { "rtl" } else { "ltr" }}));
+    if world_ready || rtl {
+        let dr = Rect::from_min_size(pos2(x0, y), vec2(w / 2.0 - 4.0, 22.0));
+        let dirs = vec!["Left-to-Right Text".to_string(), "Right-to-Left Text".to_string()];
+        let dpop = egui::Id::new("para-direction-pop");
+        if widgets::dropdown(ui, dr, &dirs[rtl as usize], &t, egui::Id::new("para-direction")).clicked() && enabled {
+            widgets::open_popup(ui, dpop);
+        }
+        app.auto.add("paragraph.direction", dr, "Text direction");
+        if let Some(i) = widgets::popup_menu(ui, dpop, dr.left_bottom(), &dirs, Some(rtl as usize)) {
+            actions.push(json!({"direction": if i == 1 { "rtl" } else { "ltr" }}));
+        }
     }
     let cr = Rect::from_min_size(pos2(x0 + w / 2.0, y), vec2(w / 2.0, 22.0));
-    let comps = vec!["Every-line Composer".to_string(), "Single-line Composer".to_string()];
+    let comps = if world_ready {
+        vec!["World-Ready Every-line Composer".to_string(), "World-Ready Single-line Composer".to_string()]
+    } else {
+        vec!["Every-line Composer".to_string(), "Single-line Composer".to_string()]
+    };
     let cpop = egui::Id::new("para-composer-pop");
     let single = doc.composer == Composer::SingleLine;
     if widgets::dropdown(ui, cr, &comps[single as usize], &t, egui::Id::new("para-composer")).clicked() && enabled {
@@ -508,6 +516,56 @@ pub fn paragraph(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
             app.ui.status = e;
         }
     }
+}
+
+/// The font menu: recent fonts first, names in English or the fonts' own language, and a
+/// "Sample" preview in each font (Settings ▸ Type).
+fn font_popup(app: &EffectcraftApp, ui: &mut egui::Ui, id: egui::Id, pos: egui::Pos2, current: &str) -> Option<String> {
+    if !ui.data(|d| d.get_temp::<bool>(id.with("open")).unwrap_or(false)) {
+        return None;
+    }
+    let rows = effectcraft_engine::font_menu(&app.session.prefs);
+    let preview = app.session.prefs.type_.font_preview;
+    let t = app.tokens;
+    let mut chosen = None;
+    let area = egui::Area::new(id.with("area")).order(egui::Order::Foreground).fixed_pos(pos).show(ui.ctx(), |ui| {
+        egui::Frame::popup(ui.style()).show(ui, |ui| {
+            ui.set_min_width(if preview { 300.0 } else { 180.0 });
+            egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
+                for r in &rows {
+                    if r.family.is_empty() {
+                        ui.separator();
+                        continue;
+                    }
+                    let resp = ui.selectable_label(r.family == current, &r.display);
+                    if preview && ui.is_rect_visible(resp.rect) {
+                        let key = egui::Id::new(("font-preview", &r.family));
+                        let lines: std::sync::Arc<Vec<Vec<[f32; 2]>>> = match ui.data(|d| d.get_temp(key)) {
+                            Some(l) => l,
+                            None => {
+                                let l = std::sync::Arc::new(effectcraft_engine::font_preview(&r.family, 14.0));
+                                ui.data_mut(|d| d.insert_temp(key, l.clone()));
+                                l
+                            }
+                        };
+                        let o = pos2(resp.rect.max.x - 120.0, resp.rect.center().y + 5.0);
+                        for poly in lines.iter() {
+                            let pts: Vec<egui::Pos2> = poly.iter().map(|p| o + vec2(p[0], p[1])).collect();
+                            ui.painter().add(egui::Shape::line(pts, egui::Stroke::new(1.0, t.text_dim)));
+                        }
+                    }
+                    if resp.clicked() {
+                        chosen = Some(r.family.clone());
+                    }
+                }
+            });
+        });
+    });
+    let outside = ui.input(|i| i.pointer.any_pressed()) && !area.response.contains_pointer() && !area.response.hovered();
+    if chosen.is_some() || outside || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        ui.data_mut(|d| d.insert_temp(id.with("open"), false));
+    }
+    chosen
 }
 
 /// Align panel: align selected layers to the composition (or to the selection).

@@ -481,6 +481,11 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 ItemKind::Folder if !app.ui.project_open_folders.remove(&id.0) => {
                     app.ui.project_open_folders.insert(id.0);
                 }
+                // Footage (not data) and solids open in the Footage panel.
+                ItemKind::Footage(f) if f.kind != effectcraft_engine::project::FootageKind::Data => {
+                    actions.push(("footage.open".into(), json!({"item": id.0})))
+                }
+                ItemKind::Solid(_) => actions.push(("footage.open".into(), json!({"item": id.0}))),
                 _ => {}
             }
         }
@@ -536,6 +541,16 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     app.ui.project_open_folders.insert(f.0);
                 }
             }
+            egui::DragAndDrop::clear_payload(&ctx);
+        }
+    }
+    // Files dragged from the Media Browser: import.
+    if let Some(DragPayload::Files(paths)) = egui::DragAndDrop::payload::<DragPayload>(&ctx).as_deref()
+        && hover_y.is_some()
+    {
+        lp.rect_stroke(list.shrink(1.0), 0.0, Stroke::new(1.0, t.accent.gamma_multiply(0.6)), egui::StrokeKind::Inside);
+        if ctx.input(|i| i.pointer.any_released()) {
+            actions.push(("mediaBrowser.import".into(), json!({"paths": paths})));
             egui::DragAndDrop::clear_payload(&ctx);
         }
     }

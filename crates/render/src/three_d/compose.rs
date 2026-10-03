@@ -170,7 +170,7 @@ pub(crate) fn view_size(r: &Renderer, ctx: &EvalCtx) -> (f64, f64) {
 
 /// Number of motion-blur sub-samples for a layer.
 fn mb_samples(r: &Renderer, ctx: &EvalCtx, layer: &Layer) -> usize {
-    if r.opts.motion_blur && ctx.comp.enable_motion_blur && layer.switches.motion_blur {
+    if r.opts.motion_blur && ctx.comp.enable_motion_blur && r.layer_motion_blur(layer) {
         if r.opts.draft { 4 } else { ctx.comp.motion_blur_samples.clamp(2, 64) as usize }
     } else {
         1
@@ -373,9 +373,9 @@ pub(crate) fn draw_run(r: &Renderer, ctx: &EvalCtx, run: &[&Layer], canvas: &mut
     }
     let out = (canvas.width, canvas.height);
     let g = gather(r, ctx, run, out);
-    let casters: Vec<&Item> = g.items.iter().chain(g.extra.iter()).filter(|i| i.mat.casts_shadows != 0 && !i.geos.is_empty()).collect();
+    let casters: Vec<&Item> = g.items.iter().chain(g.extra.iter()).filter(|i| r.opts.shadows() && i.mat.casts_shadows != 0 && !i.geos.is_empty()).collect();
     composite(canvas, &g.items, &g.lights, &casters, run[0].id.0 as u32);
-    for l in run.iter().filter(|l| l.switches.quality == effectcraft_project::Quality::Wireframe) {
+    for l in run.iter().filter(|l| r.quality(l) == effectcraft_project::Quality::Wireframe) {
         r.draw_layer(ctx, l, canvas, false);
     }
 }
@@ -394,7 +394,7 @@ fn gather<'a>(r: &Renderer<'a>, ctx: &EvalCtx<'a>, run: &[&'a Layer], out: (u32,
     let mut items: Vec<Item> = run
         .par_iter()
         .enumerate()
-        .filter(|(_, l)| ctx.opacity(l) > 0.0 && l.switches.quality != effectcraft_project::Quality::Wireframe)
+        .filter(|(_, l)| ctx.opacity(l) > 0.0 && r.quality(l) != effectcraft_project::Quality::Wireframe)
         .flat_map_iter(|(i, l)| {
             // Stack order with room for a collapsed precomp's layers in between.
             let i = i * 1024;
@@ -689,8 +689,7 @@ pub struct Plane3d {
 /// Prepare a run of 3D layers for an accelerator. `None` when the run must be drawn on the CPU
 /// (adjustment, wireframe or environment background layers, Advanced 3D).
 pub(crate) fn gpu_run(r: &Renderer, ctx: &EvalCtx, run: &[&Layer], out: (u32, u32)) -> Option<Run3d> {
-    if run.is_empty() || run.iter().any(|l| l.switches.adjustment || l.environment_background || l.switches.quality == effectcraft_project::Quality::Wireframe)
-    {
+    if run.is_empty() || run.iter().any(|l| l.switches.adjustment || l.environment_background || r.quality(l) == effectcraft_project::Quality::Wireframe) {
         return None;
     }
     if ctx.comp.renderer == effectcraft_project::Renderer::Advanced3D && r.collapse3d.is_none() {
@@ -718,7 +717,7 @@ pub(crate) fn gpu_run(r: &Renderer, ctx: &EvalCtx, run: &[&Layer], out: (u32, u3
             order: it.order,
         })
         .collect();
-    let casters = planes.iter().enumerate().filter(|(_, p)| p.mat.casts_shadows != 0 && !p.geos.is_empty()).map(|(i, _)| i).collect();
+    let casters = planes.iter().enumerate().filter(|(_, p)| r.opts.shadows() && p.mat.casts_shadows != 0 && !p.geos.is_empty()).map(|(i, _)| i).collect();
     Some(Run3d { planes, casters, lights: g.lights, seed: run[0].id.0 as u32 })
 }
 

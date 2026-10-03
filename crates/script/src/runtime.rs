@@ -294,6 +294,11 @@ fn native_file(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsV
     let path = arg_string(args, 1, ctx)?;
     let data = if args.len() > 2 { arg_string(args, 2, ctx)? } else { String::new() };
     let r: Result<J, String> = with_active(|a| {
+        // File.execute(): opened with its default application through `file.executeFile`
+        // (Allow Scripts to Write Files gate, Warn User When Executing Files confirmation).
+        if op == "execute" {
+            return exec(&mut a.session, "file.executeFile", json!({"path": path})).map(|v| json!(v.get("opened").is_some()));
+        }
         let s = &a.session;
         match op.as_str() {
             "access" => Ok(json!(check_access(s, &path, false)?.exists())),

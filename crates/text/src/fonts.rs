@@ -48,6 +48,8 @@ pub struct FaceInfo {
     pub data: FaceData,
     /// "bundled", "system", …
     pub origin: &'static str,
+    /// The family name in the font's own (non-English) language, when it has one.
+    pub native_family: Option<String>,
 }
 
 /// Something that can list fonts (system folders, a web font picker, a project's font folder…).
@@ -121,7 +123,7 @@ impl FontSource for DirectorySource {
 }
 
 fn info_from(n: FaceNames, data: FaceData, origin: &'static str) -> FaceInfo {
-    FaceInfo { family: n.family, style: n.style, weight: n.weight, italic: n.italic, index: n.index, data, origin }
+    FaceInfo { family: n.family, style: n.style, weight: n.weight, italic: n.italic, index: n.index, data, origin, native_family: n.native_family }
 }
 
 /// A loaded (or loadable) face.
@@ -313,6 +315,12 @@ pub fn face(id: FaceId) -> Arc<Face> {
 /// All faces (bundled first).
 pub fn all_faces() -> Vec<Arc<Face>> {
     db().read().unwrap_or_else(|e| e.into_inner()).faces.clone()
+}
+
+/// Family names in the fonts' own languages: English family → native family (only families
+/// that have one).
+pub fn native_families() -> std::collections::BTreeMap<String, String> {
+    all_faces().into_iter().filter_map(|f| Some((f.info.family.clone(), f.info.native_family.clone()?))).collect()
 }
 
 /// Families with their style names, sorted by family; styles in weight order.

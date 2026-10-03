@@ -397,6 +397,60 @@ pub fn open_form(app: &mut EffectcraftApp, id: &str, p: &Value) -> bool {
                 ],
             )
         }
+        "layer.autoTrace" if !has(p, &["channel", "timeSpan", "threshold"]) => (
+            "Auto-trace".into(),
+            vec![
+                Field::choice("timeSpan", "Time Span", &[("Current Frame", json!("currentFrame")), ("Work Area", json!("workArea"))], 0),
+                Field::choice(
+                    "channel",
+                    "Channel",
+                    &[("Alpha", json!("alpha")), ("Red", json!("red")), ("Green", json!("green")), ("Blue", json!("blue")), ("Luminance", json!("luminance"))],
+                    0,
+                ),
+                Field::bool("invert", "Invert", false),
+                Field::num("blur", "Blur (pixels before auto-trace)", 1.0),
+                Field::num("tolerance", "Tolerance (pixels)", 1.0),
+                Field::num("threshold", "Threshold (%)", 50.0),
+                Field::num("minimumArea", "Minimum Area (pixels)", 10.0),
+                Field::num("cornerRoundness", "Corner Roundness (%)", 50.0),
+                Field::bool("applyToNewLayer", "Apply To New Layer", false),
+            ],
+        ),
+        "layer.sceneEditDetection" if !has(p, &["mode"]) => (
+            "Scene Edit Detection".into(),
+            vec![
+                Field::choice(
+                    "mode",
+                    "Action",
+                    &[("Create Markers", json!("markers")), ("Split Layers", json!("split")), ("Split and Precompose", json!("splitPrecompose"))],
+                    0,
+                ),
+                Field::num("threshold", "Sensitivity threshold (0–1, lower finds more)", 0.25),
+            ],
+        ),
+        "layer.alignVideoToData" if !has(p, &["data", "videoStart"]) => {
+            let data: Vec<(String, Value)> = s
+                .project
+                .items
+                .values()
+                .filter(|i| matches!(&i.kind, effectcraft_engine::project::ItemKind::Footage(f) if f.kind == effectcraft_engine::project::FootageKind::Data))
+                .map(|i| (i.name.clone(), json!(i.id.0)))
+                .collect();
+            if data.is_empty() {
+                info(app, "Align Video to Data", "Import a data file (JSON, CSV or TSV with a time column) first: File ▸ Import.");
+                return true;
+            }
+            let opts: Vec<(&str, Value)> = data.iter().map(|(n, v)| (n.as_str(), v.clone())).collect();
+            (
+                "Align Video to Data".into(),
+                vec![
+                    Field::choice("data", "Data", &opts, 0),
+                    Field::text("key", "Time field (empty: automatic)", ""),
+                    Field::text("videoStart", "Video start (ISO date-time, hh:mm:ss, timecode; empty: file date)", ""),
+                    Field::num("dataStart", "First sample at (comp seconds)", 0.0),
+                ],
+            )
+        }
         "file.importPlaceholder" | "file.replaceWithPlaceholder" if p.as_object().is_none_or(|m| m.is_empty()) => (
             "New Placeholder".into(),
             vec![

@@ -13,6 +13,7 @@
 use std::collections::BTreeMap;
 
 use effectcraft_color::Label;
+use effectcraft_time::Tick;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
@@ -273,6 +274,13 @@ pub struct Prefs {
     pub scripting: Scripting,
     /// File ▸ Open Recent, newest first.
     pub recent_projects: Vec<String>,
+    /// File ▸ Import Recent Footage, newest first.
+    pub recent_footage: Vec<String>,
+    /// Animation ▸ Recent Animation Presets (`.ecpreset` paths or built-in preset ids), newest
+    /// first.
+    pub recent_presets: Vec<String>,
+    /// Character panel: recently used font families, newest first.
+    pub recent_fonts: Vec<String>,
     /// Top-level keys this version doesn't know (kept for newer versions).
     #[serde(flatten)]
     pub extra: Extra,
@@ -301,6 +309,9 @@ impl Default for Prefs {
             three_d: ThreeD::default(),
             scripting: Scripting::default(),
             recent_projects: vec![],
+            recent_footage: vec![],
+            recent_presets: vec![],
+            recent_fonts: vec![],
             extra: Extra::new(),
         }
     }
@@ -430,7 +441,13 @@ impl Prefs {
     pub fn reset(&mut self, page: Option<&str>) -> Result<(), String> {
         let d = Prefs::default();
         let Some(page) = page else {
-            *self = Prefs { recent_projects: std::mem::take(&mut self.recent_projects), ..d };
+            *self = Prefs {
+                recent_projects: std::mem::take(&mut self.recent_projects),
+                recent_footage: std::mem::take(&mut self.recent_footage),
+                recent_presets: std::mem::take(&mut self.recent_presets),
+                recent_fonts: std::mem::take(&mut self.recent_fonts),
+                ..d
+            };
             return Ok(());
         };
         let keys: Vec<&str> = match page {
@@ -490,6 +507,174 @@ impl Prefs {
             _ => 0.125,
         }
     }
+
+    /// The Memory & CPU cache budgets in effect: the configured layer / footage / preview
+    /// budgets, scaled down so together they leave **RAM Reserved for Other Applications** free,
+    /// and halved while the system is low on memory when **Reduce Cache Size When System Is Low
+    /// on Memory** is on. `mem` = the system's memory (`None` = unknown: configured budgets).
+    pub fn cache_budgets(&self, mem: Option<crate::sysinfo::SysMemory>) -> CacheBudgets {
+        let (mut l, mut m, mut p) = (self.layer_cache_bytes() as u64, self.media_cache_bytes() as u64, self.preview_cache_bytes() as u64);
+        let floor = 64u64 << 20;
+        let mut capped = false;
+        let mut reduced = false;
+        if let Some(mem) = mem.filter(|m| m.total > 0) {
+            let reserved = (self.memory.ram_reserved_gb as u64) << 30;
+            let cap = mem.total.saturating_sub(reserved).max(3 * floor);
+            let sum = l + m + p;
+            if sum > cap {
+                let k = cap as f64 / sum as f64;
+                (l, m, p) = ((l as f64 * k) as u64, (m as f64 * k) as u64, (p as f64 * k) as u64);
+                capped = true;
+            }
+            if self.memory.reduce_cache_when_low && mem.is_low() {
+                (l, m, p) = (l / 2, m / 2, p / 2);
+                reduced = true;
+            }
+        }
+        CacheBudgets { layer: l.max(floor) as usize, media: m.max(floor) as usize, preview: p.max(floor) as usize, capped, reduced }
+    }
+
+    /// Composition ▸ Motion Path: the layer-time span of a motion path to draw around `now`
+    /// (layer time), for keyframes at `keys` (sorted). `None` = No Motion Path.
+    pub fn motion_path_span(&self, keys: &[Tick], now: Tick) -> Option<(Tick, Tick)> {
+        let (first, last) = (*keys.first()?, *keys.last()?);
+        let c = &self.composition;
+        match c.motion_path.as_str() {
+            "none" => None,
+            "seconds" => {
+                let half = Tick::from_seconds_f64(c.motion_path_seconds.max(0.0) / 2.0);
+                let (a, b) = ((now - half).max(first), (now + half).min(last));
+                (a < b).then_some((a, b))
+            }
+            "keyframes" => {
+                let n = (c.motion_path_keyframes.max(1) as usize).min(keys.len());
+                if n < 2 {
+                    return None;
+                }
+                // The n keyframes centred on the current time.
+                let at = keys.partition_point(|k| *k < now);
+                let start = at.saturating_sub(n / 2).min(keys.len() - n);
+                Some((keys[start], keys[start + n - 1]))
+            }
+            _ => Some((first, last)),
+        }
+    }
+
+    /// Previews ▸ Viewer Zoom Quality: smooth (bilinear) scaling of the viewer image, or nearest
+    /// neighbour ("Faster").
+    pub fn viewer_zoom_smooth(&self) -> bool {
+        self.previews.zoom_quality != "faster"
+    }
+
+    /// Import ▸ Interpret Unlabeled Alpha As, for footage whose file has an alpha channel that
+    /// doesn't state how it is stored. `None` = Ask User (keep straight and open Interpret
+    /// Footage); `guess` takes premultiplied for movies (codecs with alpha are usually written
+    /// premultiplied) and straight for stills.
+    pub fn unlabeled_alpha(&self, movie: bool) -> Option<effectcraft_project::AlphaMode> {
+        use effectcraft_project::AlphaMode::*;
+        Some(match self.import.unlabeled_alpha.as_str() {
+            "ignore" => Ignore,
+            "straight" => Straight,
+            "premultiplied" => Premultiplied,
+            "guess" if movie => Premultiplied,
+            "guess" => Straight,
+            _ => return None,
+        })
+    }
+
+    /// Import ▸ Default Drag Import As, as `file.import`'s `importAs`.
+    pub fn drag_import_as(&self) -> &'static str {
+        match self.import.drag_import_as.as_str() {
+            "comp" => "composition",
+            "compLayerSizes" => "compositionLayerSizes",
+            _ => "footage",
+        }
+    }
+
+    /// Export ▸ Append Bit Depth to File Name: `Comp 1.png` → `Comp 1_16bpc.png` (sequence frame
+    /// runs and folders are kept).
+    pub fn output_name(&self, path: &str, bits: u32) -> String {
+        if !self.export.append_bits_to_name {
+            return path.to_string();
+        }
+        let p = std::path::Path::new(path);
+        let (Some(stem), dir) = (p.file_stem().map(|s| s.to_string_lossy().to_string()), p.parent()) else { return path.to_string() };
+        let tag = format!("_{bits}bpc");
+        if stem.ends_with(&tag) {
+            return path.to_string();
+        }
+        let name = match p.extension() {
+            Some(e) => format!("{stem}{tag}.{}", e.to_string_lossy()),
+            None => format!("{stem}{tag}"),
+        };
+        match dir.filter(|d| !d.as_os_str().is_empty()) {
+            Some(d) => d.join(name).to_string_lossy().to_string(),
+            None => name,
+        }
+    }
+
+    /// Export ▸ Segment Sequences / Segment Movie Files: how many frames go in each segment of an
+    /// output of `frames` frames (`None` = one file / folder). Sequences split every Files per
+    /// Segment frames; movies every Segment Size MB at the output's data rate
+    /// (`bytes_per_frame`, estimated from the format's bitrate).
+    pub fn segment_frames(&self, frames: u64, sequence: bool, bytes_per_frame: f64) -> Option<u64> {
+        let e = &self.export;
+        let per = if sequence {
+            e.segment_sequences.then_some(e.segment_sequence_files.max(1) as u64)?
+        } else {
+            if !e.segment_movies || bytes_per_frame <= 0.0 {
+                return None;
+            }
+            (((e.segment_movie_mb.max(1) as f64) * 1_048_576.0 / bytes_per_frame).floor() as u64).max(1)
+        };
+        (per < frames).then_some(per)
+    }
+
+    /// Remember a font in the Character panel's recent fonts (Type ▸ Number of Recent Fonts).
+    pub fn push_recent_font(&mut self, family: &str) {
+        push_mru(&mut self.recent_fonts, family, 30);
+    }
+
+    /// The recent fonts the Character panel shows (at most Number of Recent Fonts to Display).
+    pub fn recent_fonts_shown(&self) -> &[String] {
+        let n = (self.type_.recent_fonts as usize).min(self.recent_fonts.len());
+        &self.recent_fonts[..n]
+    }
+
+    /// Remember imported footage for File ▸ Import Recent Footage.
+    pub fn push_recent_footage(&mut self, path: &str) {
+        push_mru(&mut self.recent_footage, path, self.general.recent_items as usize);
+    }
+
+    /// Remember an applied animation preset for Animation ▸ Recent Animation Presets.
+    pub fn push_recent_preset(&mut self, path: &str) {
+        push_mru(&mut self.recent_presets, path, self.general.recent_items as usize);
+    }
+}
+
+fn push_mru(list: &mut Vec<String>, v: &str, max: usize) {
+    list.retain(|x| x != v);
+    list.insert(0, v.to_string());
+    list.truncate(max.max(1));
+}
+
+/// Effective cache budgets in bytes (see [`Prefs::cache_budgets`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct CacheBudgets {
+    pub layer: usize,
+    pub media: usize,
+    pub preview: usize,
+    /// Scaled down to leave the reserved RAM free.
+    pub capped: bool,
+    /// Halved because the system is low on memory.
+    pub reduced: bool,
+}
+
+/// Colour of the `k`-th mask of a layer: Appearance ▸ Cycle Mask Colors cycles through the mask
+/// colours, otherwise every new mask takes the first one.
+pub fn mask_color(cycle: bool, k: usize) -> [u8; 3] {
+    use effectcraft_project::build::MASK_COLORS;
+    if cycle { MASK_COLORS[k % MASK_COLORS.len()] } else { MASK_COLORS[0] }
 }
 
 fn label_index(l: Label) -> Option<usize> {
@@ -659,13 +844,14 @@ pub fn pages() -> Vec<Page> {
                 Section("Options"),
                 s("general.showToolTips", "Show Tool Tips", B, true),
                 s("general.createLayersAtCompStart", "Create Layers at Composition Start Time", B, true),
-                s("general.switchesAffectNestedComps", "Switches Affect Nested Comps", B, false),
+                s("general.switchesAffectNestedComps", "Switches Affect Nested Comps", B, true),
                 s("general.defaultSpatialLinear", "Default Spatial Interpolation to Linear", B, true),
-                s("general.preserveConstantVertexCount", "Preserve Constant Vertex and Feather Point Count when Editing Masks", B, false),
-                s("general.syncTimeRelatedItems", "Synchronize Time of All Related Items", B, false),
-                s("general.expressionPickWhipCompact", "Expression Pick Whip Writes Compact English", B, false),
-                s("general.createSplitLayersAbove", "Create Split Layers Above Original Layer", B, false),
+                s("general.preserveConstantVertexCount", "Preserve Constant Vertex and Feather Point Count when Editing Masks", B, true),
+                s("general.syncTimeRelatedItems", "Synchronize Time of All Related Items", B, true),
+                s("general.expressionPickWhipCompact", "Expression Pick Whip Writes Compact English", B, true),
+                s("general.createSplitLayersAbove", "Create Split Layers Above Original Layer", B, true),
                 s("general.useSystemColorPicker", "Use System Color Picker", B, false),
+                Note("EffectCraft always uses its own colour picker (the same on every platform and the web)."),
             ],
         },
         Page {
@@ -673,7 +859,7 @@ pub fn pages() -> Vec<Page> {
             title: "Startup & Repair",
             items: vec![
                 s("startup.showHomeOnLaunch", "Show Home Screen When Launching", B, true),
-                s("startup.showHomeOnOpenProject", "Show Home Screen When Opening a Project", B, false),
+                s("startup.showHomeOnOpenProject", "Show Home Screen When Opening a Project", B, true),
                 s("startup.offerCrashRecovery", "Offer to Open the Latest Auto-Save After a Crash", B, true),
                 Section("Repair"),
                 Button { label: "Reset Settings", command: "prefs.reset", params: "{}" },
@@ -712,13 +898,14 @@ pub fn pages() -> Vec<Page> {
                         ("No More Than (Seconds)", "seconds"),
                         ("No More Than (Keyframes)", "keyframes"),
                     ]),
-                    false,
+                    true,
                 ),
-                s("composition.motionPathSeconds", "Seconds", Kind::Float(0.0, 3600.0, "s"), false),
-                s("composition.motionPathKeyframes", "Keyframes", Kind::Int(1, 10_000, ""), false),
+                s("composition.motionPathSeconds", "Seconds", Kind::Float(0.0, 3600.0, "s"), true),
+                s("composition.motionPathKeyframes", "Keyframes", Kind::Int(1, 10_000, ""), true),
                 Section("Display"),
                 s("composition.showRenderingProgress", "Show Rendering Progress in Info Panel and Flowchart", B, true),
                 s("composition.hardwareAcceleratePanels", "Hardware Accelerate Composition, Layer and Footage Panels", B, false),
+                Note("Panels are always drawn by the GPU (wgpu)."),
             ],
         },
         Page {
@@ -726,10 +913,10 @@ pub fn pages() -> Vec<Page> {
             title: "Previews",
             items: vec![
                 s("previews.adaptiveResolutionLimit", "Adaptive Resolution Limit", Kind::Choice(ON_OFF_RES), true),
-                s("previews.showInternalWireframes", "Show Internal Wireframes", B, false),
+                s("previews.showInternalWireframes", "Show Internal Wireframes", B, true),
                 s("previews.cacheFramesWhenIdle", "Cache Frames When Idle", B, true),
                 s("previews.fastPreviews", "Fast Previews (Draft 3D, Faster Effects)", B, true),
-                s("previews.zoomQuality", "Viewer Zoom Quality", Kind::Choice(&[("Faster", "faster"), ("More Accurate", "moreAccurate")]), false),
+                s("previews.zoomQuality", "Viewer Zoom Quality", Kind::Choice(&[("Faster", "faster"), ("More Accurate", "moreAccurate")]), true),
                 s("previews.displayProfile", "Display Color Space", Kind::Choice(&[("sRGB", "srgb"), ("Display P3", "p3")]), true),
                 Button { label: "GPU Information...", command: "app.gpuInfo", params: "{}" },
             ],
@@ -742,9 +929,9 @@ pub fn pages() -> Vec<Page> {
                 s("appearance.brightness", "Brightness", Kind::Slider(-1.0, 1.0), true),
                 Section("Labels and Colors"),
                 s("appearance.useLabelColorForHandles", "Use Label Color for Layer Handles and Paths", B, true),
-                s("appearance.useLabelColorForTabs", "Use Label Color for Related Tabs", B, false),
-                s("appearance.cycleMaskColors", "Cycle Mask Colors", B, false),
-                s("appearance.useGradients", "Use Gradients", B, false),
+                s("appearance.useLabelColorForTabs", "Use Label Color for Related Tabs", B, true),
+                s("appearance.cycleMaskColors", "Cycle Mask Colors", B, true),
+                s("appearance.useGradients", "Use Gradients", B, true),
                 Section("Menu Bar"),
                 s("appearance.inWindowMenuBarMac", "Use In-Window Menu Bar on macOS", B, true),
             ],
@@ -757,13 +944,13 @@ pub fn pages() -> Vec<Page> {
                 s("grids.gridColor", "Color", Kind::Color, true),
                 s("grids.gridSpacing", "Gridline Every", Kind::Float(1.0, 10_000.0, "px"), true),
                 s("grids.gridSubdivisions", "Subdivisions", Kind::Int(1, 100, ""), true),
-                s("grids.gridStyle", "Style", Kind::Choice(STYLES), false),
+                s("grids.gridStyle", "Style", Kind::Choice(STYLES), true),
                 Section("Proportional Grid"),
-                s("grids.proportionalHorizontal", "Horizontal", Kind::Int(1, 100, ""), false),
-                s("grids.proportionalVertical", "Vertical", Kind::Int(1, 100, ""), false),
+                s("grids.proportionalHorizontal", "Horizontal", Kind::Int(1, 100, ""), true),
+                s("grids.proportionalVertical", "Vertical", Kind::Int(1, 100, ""), true),
                 Section("Guides"),
                 s("grids.guideColor", "Color", Kind::Color, true),
-                s("grids.guideStyle", "Style", Kind::Choice(STYLES), false),
+                s("grids.guideStyle", "Style", Kind::Choice(STYLES), true),
                 Section("Safe Margins"),
                 s("grids.actionSafe", "Action-safe", Kind::Float(0.0, 50.0, "%"), true),
                 s("grids.titleSafe", "Title-safe", Kind::Float(0.0, 50.0, "%"), true),
@@ -774,10 +961,10 @@ pub fn pages() -> Vec<Page> {
             id: "type",
             title: "Type",
             items: vec![
-                s("type.textEngine", "Text Engine", Kind::Choice(&[("Latin", "latin"), ("South Asian and Middle Eastern", "southAsian")]), false),
-                s("type.fontPreview", "Show Font Preview", B, false),
-                s("type.recentFonts", "Number of Recent Fonts to Display", Kind::Int(0, 30, ""), false),
-                s("type.fontNamesInEnglish", "Show Font Names in English", B, false),
+                s("type.textEngine", "Text Engine", Kind::Choice(&[("Latin", "latin"), ("South Asian and Middle Eastern", "southAsian")]), true),
+                s("type.fontPreview", "Show Font Preview", B, true),
+                s("type.recentFonts", "Number of Recent Fonts to Display", Kind::Int(0, 30, ""), true),
+                s("type.fontNamesInEnglish", "Show Font Names in English", B, true),
             ],
         },
         Page {
@@ -787,7 +974,7 @@ pub fn pages() -> Vec<Page> {
                 s("import.stillFootage", "Still Footage", Kind::Choice(&[("Length of Composition", "compLength"), ("Duration (Seconds)", "seconds")]), true),
                 s("import.stillSeconds", "Still Duration", Kind::Float(0.04, 86_400.0, "s"), true),
                 s("import.sequenceFps", "Sequence Footage", Kind::Float(1.0, 999.0, "frames per second"), true),
-                s("import.reportMissingFrames", "Report Missing Frames", B, false),
+                s("import.reportMissingFrames", "Report Missing Frames", B, true),
                 s(
                     "import.unlabeledAlpha",
                     "Interpret Unlabeled Alpha As",
@@ -798,13 +985,13 @@ pub fn pages() -> Vec<Page> {
                         ("Straight", "straight"),
                         ("Premultiplied", "premultiplied"),
                     ]),
-                    false,
+                    true,
                 ),
                 s(
                     "import.dragImportAs",
                     "Default Drag Import As",
                     Kind::Choice(&[("Footage", "footage"), ("Composition", "comp"), ("Composition - Retain Layer Sizes", "compLayerSizes")]),
-                    false,
+                    true,
                 ),
             ],
         },
@@ -812,12 +999,12 @@ pub fn pages() -> Vec<Page> {
             id: "export",
             title: "Export",
             items: vec![
-                s("export.defaultOutputFolder", "Default Output Folder", Kind::Path, false),
-                s("export.segmentSequences", "Segment Sequences", B, false),
-                s("export.segmentSequenceFiles", "Files per Segment", Kind::Int(1, 100_000, "files"), false),
-                s("export.segmentMovies", "Segment Movie Files", B, false),
-                s("export.segmentMovieMb", "Segment Size", Kind::Int(1, 1_000_000, "MB"), false),
-                s("export.appendBitsToName", "Append Bit Depth to File Name", B, false),
+                s("export.defaultOutputFolder", "Default Output Folder", Kind::Path, true),
+                s("export.segmentSequences", "Segment Sequences", B, true),
+                s("export.segmentSequenceFiles", "Files per Segment", Kind::Int(1, 100_000, "files"), true),
+                s("export.segmentMovies", "Segment Movie Files", B, true),
+                s("export.segmentMovieMb", "Segment Size", Kind::Int(1, 1_000_000, "MB"), true),
+                s("export.appendBitsToName", "Append Bit Depth to File Name", B, true),
             ],
         },
         Page {
@@ -826,7 +1013,7 @@ pub fn pages() -> Vec<Page> {
             items: vec![
                 Section("Audio Hardware"),
                 AudioDevices { key: "audio.outputDevice" },
-                s("audio.previewSampleRate", "Preview Sample Rate", Kind::Int(8_000, 192_000, "Hz"), false),
+                s("audio.previewSampleRate", "Preview Sample Rate", Kind::Int(8_000, 192_000, "Hz"), true),
                 Section("Audio Output Mapping"),
                 s("audio.outputLeft", "Left", Kind::Int(1, 64, "channel"), true),
                 s("audio.outputRight", "Right", Kind::Int(1, 64, "channel"), true),
@@ -837,36 +1024,36 @@ pub fn pages() -> Vec<Page> {
             title: "Disk",
             items: vec![
                 Section("Disk Cache"),
-                s("disk.diskCacheEnabled", "Enable Disk Cache", B, false),
-                s("disk.diskCacheMaxGb", "Maximum Disk Cache Size", Kind::Int(1, 100_000, "GB"), false),
-                s("disk.diskCacheFolder", "Disk Cache Folder", Kind::Path, false),
+                s("disk.diskCacheEnabled", "Enable Disk Cache", B, true),
+                s("disk.diskCacheMaxGb", "Maximum Disk Cache Size", Kind::Int(1, 100_000, "GB"), true),
+                s("disk.diskCacheFolder", "Disk Cache Folder", Kind::Path, true),
                 Button { label: "Empty Disk Cache", command: "edit.purge", params: r#"{"what":"disk"}"# },
                 Section("Media Cache"),
-                s("disk.mediaCacheFolder", "Database and Cache Folder", Kind::Path, false),
-                s("disk.conformedMediaFolder", "Conformed Audio Folder", Kind::Path, false),
+                s("disk.mediaCacheFolder", "Database and Cache Folder", Kind::Path, true),
+                s("disk.conformedMediaFolder", "Conformed Audio Folder", Kind::Path, true),
             ],
         },
         Page {
             id: "memory",
             title: "Memory & CPU",
             items: vec![
-                s("memory.ramReservedGb", "RAM Reserved for Other Applications", Kind::Int(0, 1024, "GB"), false),
+                s("memory.ramReservedGb", "RAM Reserved for Other Applications", Kind::Int(0, 1024, "GB"), true),
                 Section("Cache Budgets"),
                 s("memory.layerCacheMb", "Layer Cache", Kind::Int(64, 1 << 20, "MB"), true),
                 s("memory.mediaCacheMb", "Footage Frame Cache", Kind::Int(64, 1 << 20, "MB"), true),
                 s("memory.previewCacheMb", "Preview (RAM) Cache", Kind::Int(64, 1 << 20, "MB"), true),
-                s("memory.reduceCacheWhenLow", "Reduce Cache Size When System Is Low on Memory", B, false),
+                s("memory.reduceCacheWhenLow", "Reduce Cache Size When System Is Low on Memory", B, true),
             ],
         },
         Page {
             id: "video",
             title: "Video",
             items: vec![
-                s("video.enableOutput", "Enable Video Preview Output", B, false),
-                s("video.device", "Video Device", Kind::Text, false),
-                s("video.outputDuringPlayback", "Video Output During Playback", B, false),
-                s("video.mirrorOnMonitor", "Mirror on Computer Monitor", B, false),
-                s("video.disableWhenBackground", "Disable Video Output When in Background", B, false),
+                s("video.enableOutput", "Enable Video Preview Output", B, true),
+                s("video.device", "Video Device", Kind::Choice(&[("Floating Window", ""), ("Full Screen", "fullscreen")]), true),
+                s("video.outputDuringPlayback", "Video Output During Playback", B, true),
+                s("video.mirrorOnMonitor", "Mirror on Computer Monitor", B, true),
+                s("video.disableWhenBackground", "Disable Video Output When in Background", B, true),
             ],
         },
         Page {
@@ -874,9 +1061,9 @@ pub fn pages() -> Vec<Page> {
             title: "3D",
             items: vec![
                 s("threeD.defaultRenderer", "Default 3D Renderer", Kind::Choice(&[("Classic 3D", "classic"), ("Advanced 3D", "advanced")]), true),
-                s("threeD.showReferenceAxes", "Show 3D Reference Axes", B, false),
-                s("threeD.extendedViewer", "Extended Viewer", B, false),
-                s("threeD.realtimeShadows", "Realtime Shadows in Draft", B, false),
+                s("threeD.showReferenceAxes", "Show 3D Reference Axes", B, true),
+                s("threeD.extendedViewer", "Extended Viewer", B, true),
+                s("threeD.realtimeShadows", "Realtime Shadows in Draft", B, true),
             ],
         },
         Page {
@@ -884,18 +1071,18 @@ pub fn pages() -> Vec<Page> {
             title: "Scripting & Expressions",
             items: vec![
                 Section("Application Scripting"),
-                s("scripting.allowScriptsWriteFiles", "Allow Scripts to Write Files and Access Network", B, false),
-                s("scripting.warnExecutingFiles", "Warn User When Executing Files", B, false),
+                s("scripting.allowScriptsWriteFiles", "Allow Scripts to Write Files and Access Network", B, true),
+                s("scripting.warnExecutingFiles", "Warn User When Executing Files", B, true),
                 s("scripting.enableJsDebugger", "Enable JavaScript Debugger", B, false),
                 Section("Expressions Editor"),
-                s("scripting.editorFontSize", "Font Size", Kind::Int(8, 40, "pt"), false),
-                s("scripting.syntaxHighlighting", "Syntax Highlighting", B, false),
-                s("scripting.lineNumbers", "Line Numbers", B, false),
-                s("scripting.autoComplete", "Auto-complete", B, false),
-                s("scripting.bracketMatching", "Bracket Matching", B, false),
-                s("scripting.wordWrap", "Word Wrap", B, false),
-                s("scripting.errorBanner", "Show Expression Error Banner", B, false),
-                Note("Expressions use the JavaScript engine."),
+                s("scripting.editorFontSize", "Font Size", Kind::Int(8, 40, "pt"), true),
+                s("scripting.syntaxHighlighting", "Syntax Highlighting", B, true),
+                s("scripting.lineNumbers", "Line Numbers", B, true),
+                s("scripting.autoComplete", "Auto-complete", B, true),
+                s("scripting.bracketMatching", "Bracket Matching", B, true),
+                s("scripting.wordWrap", "Word Wrap", B, true),
+                s("scripting.errorBanner", "Show Expression Error Banner", B, true),
+                Note("Expressions use the JavaScript engine. Script errors report their file and line in the Script Console; there is no step debugger."),
             ],
         },
     ]
