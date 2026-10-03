@@ -261,6 +261,14 @@ that closes the dialog). File ▸ Scripts: `file.scripts.list`, `file.runScript 
 * `puppet.recordPin {"layer": "#1", "pin": "Puppet Pin 1", "samples": [[t, x, y]…]}` records a
   drag (t = seconds since it began, layer space) into Position keys at the comp frame rate from the
   current time; `puppet.recordOptions {speed, smoothing, useDraftDeformation, showMesh}`.
+* `puppet.selectPins {"layer": "#1", "pins": ["Puppet Pin 1"], "add"?, "toggle"?}` selects pins
+  like the viewer's click / Shift-click (`pins: []` deselects); Edit ▸ Clear (Delete) then removes
+  the selected pins, not their layer (`puppet.removePin {pins?}`). Advanced and Bend pins turn by
+  their ring and scale by its square in the viewer (Shift: 15° / 5 % steps; automation ids
+  `viewer.puppetPin.<uid>.rotate` / `.scale`), or `puppet.setPin {rotation, scale}`. A drag
+  outside the art (or Alt-drag) marquee-selects pins; Edit ▸ Select All with a pin selected selects
+  every pin of that kind; `puppet.recordPin {..., "pins": [...]}` records several pins moving
+  together (⌘/Ctrl-drag one of several selected pins).
 * `effect.plugins.load {"path": "x.wasm"}` / `effect.plugins.list`: WebAssembly effect plug-ins
   ([plugins.md](plugins.md)), then `effect.apply` by id like a built-in.
 

@@ -34,7 +34,12 @@ pub enum Icon {
     Eraser,
     RotoBrush,
     RefineEdge,
+    /// Puppet Position Pin: a pushpin. The other pin tools add a badge at the lower right.
     Puppet,
+    PuppetAdvanced,
+    PuppetBend,
+    PuppetStarch,
+    PuppetOverlap,
     // switches & timeline
     Eye,
     Speaker,
@@ -162,6 +167,12 @@ impl Pen16<'_> {
             })
             .collect();
         self.line(&pts);
+    }
+    /// An upright pushpin centred on `cx`: a cap, a body flaring to its base and a needle.
+    fn pushpin(&self, cx: f32) {
+        self.fill(&[(cx - 3.0, 1.5), (cx + 3.0, 1.5), (cx + 2.0, 3.0), (cx - 2.0, 3.0)]);
+        self.closed(&[(cx - 2.0, 3.0), (cx + 2.0, 3.0), (cx + 2.4, 7.0), (cx + 4.0, 8.8), (cx - 4.0, 8.8), (cx - 2.4, 7.0)]);
+        self.line(&[(cx, 8.8), (cx, 14.8)]);
     }
     fn ellipse(&self, cx: f32, cy: f32, rx: f32, ry: f32) {
         let n = 32;
@@ -294,11 +305,31 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             pen.line(&[(8.0, 14.0), (9.5, 12.5)]);
             pen.line(&[(11.0, 14.0), (12.5, 12.5)]);
         }
-        Puppet => {
-            pen.circle(8.0, 3.6, 1.6);
-            pen.line(&[(8.0, 5.2), (8.0, 10.0)]);
-            pen.line(&[(3.5, 7.0), (8.0, 6.5), (12.5, 7.0)]);
-            pen.line(&[(5.5, 14.0), (8.0, 10.0), (10.5, 14.0)]);
+        Puppet => pen.pushpin(8.0),
+        PuppetAdvanced => {
+            // Rotation ring with its square scale handle.
+            pen.pushpin(6.5);
+            pen.circle(12.0, 12.0, 2.4);
+            pen.rect_fill(13.6, 11.2, 15.2, 12.8);
+        }
+        PuppetBend => {
+            // A curved arrow.
+            pen.pushpin(6.5);
+            pen.arc(11.8, 13.2, 3.0, 200.0, 340.0);
+            pen.fill(&[(14.9, 11.0), (15.4, 13.8), (12.9, 12.6)]);
+        }
+        PuppetStarch => {
+            // Stiff bars.
+            pen.pushpin(6.5);
+            for y in [10.5, 12.75, 15.0] {
+                pen.line(&[(10.5, y), (15.0, y)]);
+            }
+        }
+        PuppetOverlap => {
+            // Two overlapping sheets.
+            pen.pushpin(6.5);
+            pen.rect(10.0, 9.8, 13.4, 13.2);
+            pen.rect_fill(11.8, 11.6, 15.2, 15.0);
         }
         Eye => {
             pen.line(&[(1.5, 8.0), (4.0, 5.0), (8.0, 3.8), (12.0, 5.0), (14.5, 8.0), (12.0, 11.0), (8.0, 12.2), (4.0, 11.0), (1.5, 8.0)]);

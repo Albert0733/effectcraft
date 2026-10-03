@@ -217,6 +217,59 @@ fn puppet_pin_kinds_and_mesh_options() {
 }
 
 #[test]
+fn puppet_pins_select_and_delete_without_touching_the_layer() {
+    let (mut s, id) = setup();
+    let a = s.execute("puppet.addPin", json!({"layer": id, "position": [10, 30]})).unwrap()["pin"].clone();
+    let b = s.execute("puppet.addPin", json!({"layer": id, "position": [90, 30]})).unwrap()["pin"].clone();
+    s.execute("puppet.addPin", json!({"layer": id, "position": [50, 30]})).unwrap();
+    // A new pin is selected: Delete removes it, and the layer stays.
+    assert_eq!(s.execute("edit.clear", json!({})).unwrap(), json!({"removed": 1}));
+    assert_eq!(pin_count(&s, id), 2);
+    assert!(s.active_comp().unwrap().layer(effectcraft_project::LayerId(id)).is_some());
+    // Click, Shift-click (toggle) and add by name.
+    let sel = |s: &mut Session, q: Value| s.execute("puppet.selectPins", q).unwrap()["pins"].clone();
+    assert_eq!(sel(&mut s, json!({"layer": id, "pins": [a, b]})), json!([a, b]));
+    assert_eq!(sel(&mut s, json!({"layer": id, "pins": [b], "toggle": true})), json!([a]));
+    assert_eq!(sel(&mut s, json!({"layer": id, "pins": ["Puppet Pin 2"], "add": true})), json!([a, b]));
+    assert!(s.execute("puppet.selectPins", json!({"layer": id, "pins": ["Puppet Pin 9"]})).is_err());
+    // Deleting both is one undo step.
+    assert_eq!(s.execute("edit.clear", json!({})).unwrap(), json!({"removed": 2}));
+    assert_eq!(pin_count(&s, id), 0);
+    s.undo();
+    assert_eq!(pin_count(&s, id), 2);
+    // Nothing selected: removing needs a pin.
+    assert_eq!(sel(&mut s, json!({"layer": id, "pins": []})), json!([]));
+    assert!(s.execute("puppet.removePin", json!({"layer": id})).is_err());
+}
+
+#[test]
+fn puppet_select_all_takes_the_pin_kind_and_several_pins_record_together() {
+    let (mut s, id) = setup();
+    let a = s.execute("puppet.addPin", json!({"layer": id, "position": [10, 30]})).unwrap()["pin"].clone();
+    let b = s.execute("puppet.addPin", json!({"layer": id, "position": [90, 30]})).unwrap()["pin"].clone();
+    let st = s.execute("puppet.addPin", json!({"layer": id, "kind": "starch", "position": [50, 30]})).unwrap()["pin"].clone();
+    // Ctrl+A with a Position pin selected: every Position pin, not the Starch pin.
+    s.execute("puppet.selectPins", json!({"layer": id, "pins": [a]})).unwrap();
+    assert_eq!(s.execute("edit.selectAll", json!({})).unwrap()["pins"], json!([a, b]));
+    s.execute("puppet.selectPins", json!({"layer": id, "pins": [st]})).unwrap();
+    assert_eq!(s.execute("edit.selectAll", json!({})).unwrap()["pins"], json!([st]));
+    // Without pins selected, Select All selects layers as before.
+    s.execute("puppet.selectPins", json!({"layer": id, "pins": []})).unwrap();
+    assert_eq!(s.execute("edit.selectAll", json!({})).unwrap(), json!(1));
+    // Recording a drag of pin A with B selected too: B moves by the same displacement.
+    let steps = s.history.undo.len();
+    let samples: Vec<Value> = [0.0, 0.25, 0.5].iter().map(|t| json!([t, 10.0, 30.0 + 40.0 * t])).collect();
+    let r = s.execute("puppet.recordPin", json!({"layer": id, "pin": a, "pins": [b], "samples": samples, "smoothing": 0})).unwrap();
+    assert_eq!(r["pins"], json!([a, b]));
+    assert_eq!(s.history.undo.len(), steps + 1, "one undo step");
+    let last = |s: &Session, pin: &Value| pin_keys(s, id, pin.as_u64().unwrap()).last().unwrap().1;
+    assert_eq!(last(&s, &a), [10.0, 50.0]);
+    assert_eq!(last(&s, &b), [90.0, 50.0]);
+    // Starch pins don't record.
+    assert!(s.execute("puppet.recordPin", json!({"layer": id, "pin": a, "pins": [st], "samples": samples})).is_err());
+}
+
+#[test]
 fn project_with_paint_and_puppet_round_trips() {
     let (mut s, id) = setup();
     s.execute("paint.stroke", json!({"layer": id, "points": [[10, 30, 0.5], [90, 30, 1.0]], "durationMode": "writeOn"})).unwrap();

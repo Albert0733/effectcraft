@@ -400,3 +400,105 @@ fn reference_axes_toggle_from_the_grid_menu() {
     assert!(!h.state().session.prefs.three_d.show_reference_axes);
     assert!(h.state().auto.find("viewer.referenceAxes").is_none());
 }
+
+/// A Box layer pinned with two Position pins and a Bend pin in the middle (Bend tool active).
+fn puppet_harness() -> (Harness<'static, EffectcraftApp>, u64, u64) {
+    let mut h = harness();
+    let s = &mut h.state_mut().session;
+    // No full-frame Plate behind the Box: the comp around the Box is empty, like the canvas
+    // around a character.
+    s.execute("edit.clear", json!({"layers": ["Plate"]})).unwrap();
+    s.execute("layer.select", json!({"layers": ["Box"]})).unwrap();
+    let id = s.state.selected_layers[0].0;
+    s.execute("puppet.addPin", json!({"layer": id, "position": [10, 40]})).unwrap();
+    s.execute("puppet.addPin", json!({"layer": id, "position": [70, 40]})).unwrap();
+    let bend = s.execute("puppet.addPin", json!({"layer": id, "kind": "bend", "position": [40, 40]})).unwrap()["pin"].as_u64().unwrap();
+    h.state_mut().ui.tool = Tool::PuppetBend;
+    h.run_steps(3);
+    (h, id, bend)
+}
+
+fn pin_value(h: &Harness<'_, EffectcraftApp>, layer: u64, pin: u64, prop: &str) -> f64 {
+    let l = h.state().session.active_comp().unwrap().layer(LayerId(layer)).unwrap().clone();
+    l.props.find_group(pin).unwrap().get(prop).unwrap().value.as_f64()
+}
+
+#[test]
+fn puppet_bend_pin_rotates_by_its_ring_and_scales_by_its_square() {
+    let (mut h, id, bend) = puppet_harness();
+    let center = rect(&h, &format!("viewer.puppetPin.{bend}")).center();
+    let ring = rect(&h, &format!("viewer.puppetPin.{bend}.rotate")).center();
+    let square = rect(&h, &format!("viewer.puppetPin.{bend}.scale")).center();
+    // At 0° the square is on the right of the ring, the rotate target opposite it.
+    assert!(square.x > center.x + 7.0 && (square.y - center.y).abs() < 0.5, "{square:?} {center:?}");
+    // Drag the ring a quarter turn clockwise (left → top): +90°, one undo step.
+    let undo_before = h.state().session.history.undo.len();
+    drag(&mut h, ring, center + vec2(0.0, -(center.x - ring.x)));
+    let r = pin_value(&h, id, bend, "rotation");
+    assert!((r - 90.0).abs() < 1.0, "rotation {r}");
+    assert_eq!(h.state().session.history.undo.len(), undo_before + 1);
+    // The square follows the rotation (now below the pin; the bend carries the pin itself a
+    // little); dragging it twice as far from the pin scales 200 %.
+    let center = rect(&h, &format!("viewer.puppetPin.{bend}")).center();
+    let square = rect(&h, &format!("viewer.puppetPin.{bend}.scale")).center();
+    assert!(square.y > center.y + 7.0, "{square:?}");
+    drag(&mut h, square, center + (square - center) * 2.0);
+    let sc = pin_value(&h, id, bend, "scale");
+    assert!((sc - 200.0).abs() < 2.0, "scale {sc}");
+}
+
+#[test]
+fn puppet_pin_click_selects_and_delete_removes_only_the_pins() {
+    let (mut h, id, bend) = puppet_harness();
+    let pin = |h: &Harness<'_, EffectcraftApp>| h.state().session.state.selected_props.iter().map(|(_, u)| *u).collect::<Vec<_>>();
+    // Clicking a pin selects it (instead of adding a pin on top of it).
+    let at = rect(&h, &format!("viewer.puppetPin.{bend}")).center();
+    click(&mut h, at);
+    assert_eq!(pin(&h), vec![bend]);
+    let info = h.state_mut().session.execute("puppet.info", json!({"layer": id})).unwrap();
+    assert_eq!(info["meshes"][0]["pins"].as_array().unwrap().len(), 3, "no pin added");
+    // Delete removes the pin; the layer stays.
+    h.input_mut().events.push(Event::Key { key: egui::Key::Delete, physical_key: None, pressed: true, repeat: false, modifiers: Default::default() });
+    h.run_steps(2);
+    let info = h.state_mut().session.execute("puppet.info", json!({"layer": id})).unwrap();
+    assert_eq!(info["meshes"][0]["pins"].as_array().unwrap().len(), 2);
+    assert!(h.state().session.active_comp().unwrap().layer(LayerId(id)).is_some());
+}
+
+#[test]
+fn puppet_marquee_selects_pins_and_alt_drag_works_over_the_art() {
+    let (mut h, _id, bend) = puppet_harness();
+    let p1 = rect(&h, &format!("viewer.puppetPin.{bend}")).center();
+    let pins: Vec<u64> = h.state().auto.previous.iter().filter_map(|e| e.id.strip_prefix("viewer.puppetPin.").and_then(|r| r.parse().ok())).collect();
+    assert_eq!(pins.len(), 3, "{pins:?}");
+    // A box around every pin, started on empty canvas (outside all art).
+    let comp = rect(&h, "viewer.comp");
+    drag(&mut h, comp.min + vec2(4.0, 4.0), comp.max - vec2(4.0, 4.0));
+    let mut sel: Vec<u64> = h.state().session.state.selected_props.iter().map(|(_, u)| *u).collect();
+    sel.sort();
+    let mut want = pins.clone();
+    want.sort();
+    assert_eq!(sel, want);
+    // Alt-drag a small box over the art (around the Bend pin only).
+    h.input_mut().events.push(Event::PointerMoved(p1 - vec2(6.0, 6.0)));
+    h.input_mut().events.push(Event::PointerButton {
+        pos: p1 - vec2(6.0, 6.0),
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::ALT,
+    });
+    h.step();
+    for i in 1..=6 {
+        h.input_mut().events.push(Event::PointerMoved(p1 - vec2(6.0, 6.0) + vec2(12.0, 12.0) * (i as f32 / 6.0)));
+        h.step();
+    }
+    h.input_mut().events.push(Event::PointerButton {
+        pos: p1 + vec2(6.0, 6.0),
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::ALT,
+    });
+    h.run_steps(2);
+    let sel: Vec<u64> = h.state().session.state.selected_props.iter().map(|(_, u)| *u).collect();
+    assert_eq!(sel, vec![bend]);
+}

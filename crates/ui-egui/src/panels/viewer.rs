@@ -4,6 +4,7 @@
 //! 3D views (Active Camera / Front / … / Custom View 3), camera tools (orbit, pan, dolly) and
 //! camera/light wireframes.
 
+use effectcraft_engine::effects::puppet::PinKind;
 use effectcraft_engine::geom::{Mat3, vec2 as gv2};
 use effectcraft_engine::project::{Layer, LayerId};
 use effectcraft_engine::render::EvalCtx;
@@ -121,12 +122,36 @@ enum Gesture {
         pin: u64,
         inv: Mat3,
     },
+    /// Rotating an Advanced / Bend pin by its ring: the pin's screen centre, the pointer's last
+    /// angle (radians) and the rotation so far (°, accumulated so it can pass a full turn).
+    PuppetRotate {
+        layer: LayerId,
+        pin: u64,
+        center: Pos2,
+        last: f32,
+        rotation: f64,
+    },
+    /// Scaling an Advanced / Bend pin by its square: the pin's screen centre, the press distance
+    /// from it and the scale at the press (1 = 100 %).
+    PuppetScale {
+        layer: LayerId,
+        pin: u64,
+        center: Pos2,
+        start: f32,
+        scale: f64,
+    },
+    /// Puppet tools: a marquee selecting pins (dragged outside the layer's art, or Alt-dragged).
+    PinMarquee {
+        start: Pos2,
+    },
     /// Puppet tool Record mode (⌘/Ctrl-drag a pin): the drag is sampled in real time (seconds
     /// since it began, layer space) and becomes keyframes on release (`puppet.recordPin`); the
     /// current time runs along while recording.
     PuppetRecord {
         layer: LayerId,
         pin: u64,
+        /// Other selected pins of the layer, moving with the dragged one.
+        others: Vec<u64>,
         inv: Mat3,
         began: f64,
         cti: Tick,
@@ -801,11 +826,17 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
             if let Some(l) = comp.layer(*lid)
                 && let Some(ov) = super::puppet_tool::overlay(app, &ctx, cid, l, time)
             {
-                pin_hits.extend(super::puppet_tool::draw(&painter, &map, &ectx, l, &ov, app.session.state.puppet.show_mesh, &sel_props));
+                let hover = ui.input(|i| i.pointer.hover_pos());
+                pin_hits.extend(super::puppet_tool::draw(&painter, &map, &ectx, l, &ov, app.session.state.puppet.show_mesh, &sel_props, hover));
             }
         }
         for h in &pin_hits {
             app.auto.add(&format!("viewer.puppetPin.{}", h.pin), Rect::from_center_size(h.pos, vec2(10.0, 10.0)), "Puppet pin");
+            if let Some(hp) = h.handle {
+                let ring = h.pos + (h.pos - hp);
+                app.auto.add(&format!("viewer.puppetPin.{}.rotate", h.pin), Rect::from_center_size(ring, vec2(6.0, 6.0)), "Rotate puppet pin");
+                app.auto.add(&format!("viewer.puppetPin.{}.scale", h.pin), Rect::from_center_size(hp, vec2(6.0, 6.0)), "Scale puppet pin");
+            }
         }
     }
 
@@ -826,13 +857,13 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
             Tool::Dolly => egui::CursorIcon::ResizeVertical,
             t if t.is_shape() || t.is_pen() => egui::CursorIcon::Crosshair,
             _ if app.ui.viewer.roi_draw => egui::CursorIcon::Crosshair,
-            t if t.puppet_kind().is_some() => {
-                if pin_hits.iter().any(|h| h.pos.distance(hp) < 8.0) {
-                    egui::CursorIcon::Move
-                } else {
-                    egui::CursorIcon::Crosshair
-                }
-            }
+            t if t.puppet_kind().is_some() => match super::puppet_tool::hit(&pin_hits, hp) {
+                Some((_, super::puppet_tool::PinPart::Ring)) => egui::CursorIcon::Alias,
+                Some((_, super::puppet_tool::PinPart::Scale)) => egui::CursorIcon::ResizeNwSe,
+                Some((h, _)) if h.kind == PinKind::Bend => egui::CursorIcon::PointingHand,
+                Some(_) => egui::CursorIcon::Move,
+                None => egui::CursorIcon::Crosshair,
+            },
             _ => {
                 if super::tracker::hit_at(&track_hits, hp).is_some() || key_hits.iter().any(|h| h.pos.distance(hp) < 6.0) {
                     egui::CursorIcon::Move
@@ -944,13 +975,36 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 })
             }),
             t if t.is_shape() => Some(Gesture::Create { tool: t, start: cpt }),
-            t if t.puppet_kind().is_some() => pin_hits.iter().rev().find(|h| h.pos.distance(press) < 8.0).and_then(|h| {
+            t if t.puppet_kind().is_some() && super::puppet_tool::hit(&pin_hits, press).is_none() => {
+                // Off the pins: Alt or a press outside the art drags a marquee that selects pins.
+                (mods.alt || pick(app, &ectx, cpt, false).is_none()).then_some(Gesture::PinMarquee { start: press })
+            }
+            t if t.puppet_kind().is_some() => super::puppet_tool::hit(&pin_hits, press).and_then(|(h, part)| {
+                use super::puppet_tool::PinPart;
+                let angle = (press - h.pos).angle();
+                match part {
+                    PinPart::Ring => return Some(Gesture::PuppetRotate { layer: h.layer, pin: h.pin, center: h.pos, last: angle, rotation: h.rotation }),
+                    PinPart::Scale => {
+                        let start = h.pos.distance(press).max(1.0);
+                        return Some(Gesture::PuppetScale { layer: h.layer, pin: h.pin, center: h.pos, start, scale: h.scale });
+                    }
+                    // A Bend pin has no position: it turns and scales by its ring only.
+                    PinPart::Center if h.kind == PinKind::Bend => return None,
+                    PinPart::Center => {}
+                }
                 let l = comp.layer(h.layer)?;
                 let inv = l2c(&ectx, l).0.inverse()?;
                 if mods.command {
                     let lp = inv.apply(gv2(cpt[0], cpt[1]));
                     let began = ui.input(|i| i.time);
-                    return Some(Gesture::PuppetRecord { layer: h.layer, pin: h.pin, inv, began, cti: time, samples: vec![(0.0, [lp.x, lp.y])] });
+                    // Dragging one of several selected pins records them all.
+                    let sel = &app.session.state.selected_props;
+                    let others: Vec<u64> = if sel.contains(&(h.layer, h.pin)) {
+                        pin_hits.iter().filter(|o| o.layer == h.layer && o.pin != h.pin && sel.contains(&(o.layer, o.pin))).map(|o| o.pin).collect()
+                    } else {
+                        vec![]
+                    };
+                    return Some(Gesture::PuppetRecord { layer: h.layer, pin: h.pin, others, inv, began, cti: time, samples: vec![(0.0, [lp.x, lp.y])] });
                 }
                 Some(Gesture::PuppetPin { layer: h.layer, pin: h.pin, inv })
             }),
@@ -1188,7 +1242,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 }
                 let _ = app.session.execute("mask.setVertex", params);
             }
-            Gesture::PuppetRecord { layer, pin, inv, began, cti, mut samples } => {
+            Gesture::PuppetRecord { layer, pin, others, inv, began, cti, mut samples } => {
                 let lp = inv.apply(gv2(cpt[0], cpt[1]));
                 let now = ui.input(|i| i.time) - began;
                 if samples.last().is_none_or(|s| now > s.0) {
@@ -1199,8 +1253,29 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 app.session.set_time(cti + Tick::from_seconds_f64(now / speed));
                 painter.circle_filled(pos, 6.0, Color32::from_rgb(0xe0, 0x30, 0x30));
                 painter.text(pos + vec2(10.0, -10.0), Align2::LEFT_BOTTOM, "Recording", Tokens::ui(11.0), Color32::from_rgb(0xff, 0x60, 0x60));
-                ui.data_mut(|dd| dd.insert_temp(gid, Gesture::PuppetRecord { layer, pin, inv, began, cti, samples }));
+                ui.data_mut(|dd| dd.insert_temp(gid, Gesture::PuppetRecord { layer, pin, others, inv, began, cti, samples }));
                 ui.ctx().request_repaint();
+            }
+            Gesture::PuppetRotate { layer, pin, center, last, rotation } => {
+                // Accumulate the turn since the last frame (wrapped to ±180°) so a drag can go
+                // past a full revolution; Shift snaps to 15°.
+                let a = (pos - center).angle();
+                let mut d = (a - last) as f64;
+                d = (d + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU) - std::f64::consts::PI;
+                let rotation = rotation + d.to_degrees();
+                let deg = if mods.shift { (rotation / 15.0).round() * 15.0 } else { rotation };
+                ui.data_mut(|dd| dd.insert_temp(gid, Gesture::PuppetRotate { layer, pin, center, last: a, rotation }));
+                if let Err(e) = app.session.execute("puppet.setPin", json!({"layer": layer.0, "pin": pin, "rotation": deg, "merge": merge})) {
+                    app.ui.status = e.to_string();
+                }
+            }
+            Gesture::PuppetScale { layer, pin, center, start, scale } => {
+                // Shift snaps the scale to 5 % steps.
+                let pct = scale * (pos.distance(center) / start) as f64 * 100.0;
+                let pct = if mods.shift { (pct / 5.0).round() * 5.0 } else { pct }.max(1.0);
+                if let Err(e) = app.session.execute("puppet.setPin", json!({"layer": layer.0, "pin": pin, "scale": pct, "merge": merge})) {
+                    app.ui.status = e.to_string();
+                }
             }
             Gesture::PuppetPin { layer, pin, inv } => {
                 let lp = inv.apply(gv2(cpt[0], cpt[1]));
@@ -1224,7 +1299,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 q["merge"] = json!(merge);
                 let _ = app.session.execute("track.setPoint", q);
             }
-            Gesture::Marquee { start } => {
+            Gesture::Marquee { start } | Gesture::PinMarquee { start } => {
                 let r = Rect::from_two_pos(start, pos);
                 painter.rect_filled(r, 0.0, t.accent.gamma_multiply(0.12));
                 painter.rect_stroke(r, 0.0, Stroke::new(1.0, t.accent), StrokeKind::Middle);
@@ -1234,9 +1309,27 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     if resp.drag_stopped() {
         if let (Some(g), Some(pos)) = (gesture, resp.interact_pointer_pos()) {
             match g {
-                Gesture::PuppetRecord { layer, pin, cti, samples, .. } => {
+                Gesture::PinMarquee { start } => {
+                    // Pins inside the box, per layer; Shift adds to the selection.
+                    let r = Rect::from_two_pos(start, pos);
+                    let mut first = !mods.shift;
+                    let mut layers: Vec<LayerId> = pin_hits.iter().map(|h| h.layer).collect();
+                    layers.dedup();
+                    if first && pin_hits.iter().all(|h| !r.contains(h.pos)) {
+                        let _ = app.session.execute("puppet.selectPins", json!({"pins": []}));
+                    }
+                    for l in layers {
+                        let pins: Vec<u64> = pin_hits.iter().filter(|h| h.layer == l && r.contains(h.pos)).map(|h| h.pin).collect();
+                        if !pins.is_empty() {
+                            let _ = app.session.execute("puppet.selectPins", json!({"layer": l.0, "pins": pins, "add": !first}));
+                            first = false;
+                        }
+                    }
+                }
+                Gesture::PuppetRecord { layer, pin, others, cti, samples, .. } => {
                     let pts: Vec<serde_json::Value> = samples.iter().map(|(t, p)| json!([t, p[0], p[1]])).collect();
-                    if let Err(e) = app.session.execute("puppet.recordPin", json!({"layer": layer.0, "pin": pin, "samples": pts, "start": cti.seconds()})) {
+                    let q = json!({"layer": layer.0, "pin": pin, "pins": others, "samples": pts, "start": cti.seconds()});
+                    if let Err(e) = app.session.execute("puppet.recordPin", q) {
                         app.ui.status = e.to_string();
                     }
                 }
@@ -1333,8 +1426,10 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 ov::end_free_transform(&ctx);
             }
             t if t.puppet_kind().is_some() => {
-                if pin_hits.iter().all(|h| h.pos.distance(pos) >= 8.0)
-                    && let Some(l) = pick(app, &ectx, cpt, false).and_then(|l| comp.layer(l))
+                if let Some((h, _)) = super::puppet_tool::hit(&pin_hits, pos) {
+                    // Click selects the pin; Shift-click adds or removes it.
+                    let _ = app.session.execute("puppet.selectPins", json!({"layer": h.layer.0, "pins": [h.pin], "toggle": mods.shift}));
+                } else if let Some(l) = pick(app, &ectx, cpt, false).and_then(|l| comp.layer(l))
                     && let Some(inv) = l2c(&ectx, l).0.inverse()
                 {
                     let lp = inv.apply(gv2(cpt[0], cpt[1]));
