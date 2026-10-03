@@ -317,6 +317,7 @@ pub fn checked(s: &Session, command: &str, params: &Value) -> Option<bool> {
         "view.extendedViewer" => Some(s.prefs.three_d.extended_viewer),
         "view.snapping" => Some(s.state.snapping),
         "view.displayColorManagement" => Some(s.state.viewer.display_color_management),
+        "view.customRgb" => Some(s.state.viewer.simulation.profile == crate::viewer::SimProfile::MyCustom),
         "view.simulateOutput" => {
             let want = pstr("profile")?;
             let sim = s.state.viewer.simulation;
@@ -482,6 +483,7 @@ pub const TREE: &str = r#"
 File
   New
     New Project | file.newProject
+    New Project from Template... | file.newFromTemplate
     New Folder | project.newFolder
   Open Project... | file.open
   Open Recent
@@ -496,6 +498,7 @@ File
     Save As... | file.saveAs
     Save a Copy... | file.saveCopy
     Save a Copy As XML... | file.saveCopyAsXml
+  Save as Template... | templates.saveAs
   Increment and Save | file.incrementAndSave
   Revert | file.revert
   ---
@@ -1049,6 +1052,8 @@ View
     UHDTV (Rec. 2020) | view.simulateOutput {"profile":"rec2020"}
     Display P3 | view.simulateOutput {"profile":"p3"}
     Linear (1.0 Gamma) | view.simulateOutput {"profile":"linear"}
+    ---
+    My Custom RGB... | view.customRgb
     Custom... | view.simulateOutput {"profile":"custom"}
   ---
   Show Rulers | view.rulers

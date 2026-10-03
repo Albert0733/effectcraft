@@ -6,6 +6,7 @@
 //! colour and composited with Porter-Duff source-over on premultiplied pixels.
 
 pub mod blend;
+pub mod icc;
 pub mod space;
 
 pub use blend::{BlendMode, blend_pixel};

@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::{CommandSpec, always, b_p, bad, comp_id, f_p, has_comp, merge_p, str_p};
-use crate::viewer::{Channel, SimProfile, Simulation, Snapshot};
+use crate::viewer::{Channel, CustomRgb, SimProfile, Simulation, Snapshot};
 use crate::{EngineError, Result, Session, VertexRef, cmd, query};
 
 /// Composition ▸ Preview ▸ Fast Previews modes.
@@ -345,6 +345,81 @@ fn simulate_output(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"profile": sim.profile.id(), "label": sim.profile.label(), "preserveRgb": sim.preserve_rgb}))
 }
 
+fn custom_rgb_json(c: &CustomRgb) -> Value {
+    serde_json::to_value(c).unwrap_or_default()
+}
+
+/// View ▸ Simulate Output ▸ My Custom RGB…: define the custom output device (kept in Settings)
+/// and, unless `apply` is false, simulate it. An `icc` path that differs from the one the
+/// definition came from is read (its primaries, white and curve replace the numbers); `from`
+/// starts from a built-in profile; `reset` goes back to the default.
+fn custom_rgb(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "view.customRgb";
+    let mut c = if b_p(p, "reset") == Some(true) { CustomRgb::default() } else { s.prefs.custom_rgb.clone() };
+    if let Some(from) = str_p(p, "from") {
+        let prof = SimProfile::parse(from).ok_or_else(|| bad(cmd, format!("from: unknown profile `{from}`")))?;
+        if let Some((prims, curve)) = prof.space() {
+            [c.red, c.green, c.blue] = prims;
+            c.white = [0.3127, 0.3290];
+            (c.gamma, c.srgb_curve) = match curve {
+                crate::viewer::Curve::Srgb => (2.2, true),
+                crate::viewer::Curve::Gamma(g) => ((g as f64 * 1000.0).round() / 1000.0, false),
+                _ => (1.0, false),
+            };
+            c.icc.clear();
+            c.name = format!("Custom ({})", prof.label());
+        }
+    }
+    let pt = |k: &str| -> Result<Option<[f64; 2]>> {
+        match p.get(k) {
+            None | Some(Value::Null) => Ok(None),
+            Some(v) => {
+                let a = v.as_array().filter(|a| a.len() == 2).ok_or_else(|| bad(cmd, format!("{k}: [x, y]")))?;
+                let g = |i: usize| a[i].as_f64().ok_or_else(|| bad(cmd, format!("{k}: [x, y] numbers")));
+                Ok(Some([g(0)?, g(1)?]))
+            }
+        }
+    };
+    for (k, slot) in [("red", &mut c.red), ("green", &mut c.green), ("blue", &mut c.blue), ("white", &mut c.white)] {
+        if let Some(v) = pt(k)? {
+            *slot = v;
+        }
+    }
+    if let Some(g) = f_p(p, "gamma") {
+        c.gamma = g;
+    }
+    if let Some(b) = b_p(p, "srgbCurve") {
+        c.srgb_curve = b;
+    }
+    if let Some(n) = str_p(p, "name").map(str::trim).filter(|n| !n.is_empty()) {
+        c.name = n.to_string();
+    }
+    match str_p(p, "icc").map(str::trim) {
+        Some("") => c.icc.clear(),
+        Some(path) if path != c.icc || b_p(p, "reload") == Some(true) => {
+            let bytes = s.services.read_file(path).map_err(|e| EngineError::Other(format!("cannot read {path}: {e}")))?;
+            let mut from = CustomRgb::from_icc(&bytes, path).map_err(|e| bad(cmd, format!("{path}: {e}")))?;
+            if let Some(n) = str_p(p, "name").map(str::trim).filter(|n| !n.is_empty() && *n != s.prefs.custom_rgb.name) {
+                from.name = n.to_string();
+            }
+            c = from;
+        }
+        _ => {}
+    }
+    c.validate().map_err(|e| bad(cmd, e))?;
+    s.prefs.custom_rgb = c.clone();
+    s.prefs_revision += 1;
+    s.save_prefs();
+    if b_p(p, "apply") != Some(false) {
+        let preserve = b_p(p, "preserveRgb").unwrap_or(false);
+        s.state.viewer.simulation = Simulation { profile: SimProfile::MyCustom, preserve_rgb: preserve };
+    }
+    s.events.push(crate::Event::ProjectChanged { revision: s.revision });
+    let mut out = custom_rgb_json(&c);
+    out["active"] = json!(s.state.viewer.simulation.profile == SimProfile::MyCustom);
+    Ok(out)
+}
+
 /// View ▸ Split with New Locked Viewer: lock a second viewer to the comp (default the active
 /// one) and its current 3D view (or `view`).
 fn split_locked(s: &mut Session, p: &Value) -> Result<Value> {
@@ -374,6 +449,7 @@ fn display_color_state(s: &mut Session, _: &Value) -> Result<Value> {
     Ok(json!({
         "displayColorManagement": v.display_color_management,
         "simulation": {"profile": v.simulation.profile.id(), "preserveRgb": v.simulation.preserve_rgb},
+        "customRgb": custom_rgb_json(&s.prefs.custom_rgb),
         "display": s.prefs.previews.display_profile,
         "workingSpace": s.project.settings.working_space.map(|w| w.id()),
         "active": crate::viewer::DisplayColor::of(s).is_some(),
@@ -390,9 +466,18 @@ pub fn specs() -> Vec<CommandSpec> {
             "Simulate Output",
             [],
             None,
-            "{profile: none|rec709|ntsc|pal|mac18|srgb|rec2020|p3|linear|custom, preserveRgb?, space? (custom)}",
+            "{profile: none|rec709|ntsc|pal|mac18|srgb|rec2020|p3|linear|myCustom|custom, preserveRgb?, space? (custom)}",
             always,
             simulate_output
+        ),
+        cmd!(
+            "view.customRgb",
+            "My Custom RGB...",
+            [],
+            None,
+            "{name?, red?/green?/blue?/white?: [x, y] (CIE xy), gamma?, srgbCurve?: bool, icc?: path (RGB ICC profile; read when it changes, \"\" clears), reload?, from?: a Simulate Output profile to start from, reset?, preserveRgb?, apply?: bool (default true: simulate it)} → the definition (kept in Settings)",
+            always,
+            custom_rgb
         ),
         cmd!("view.splitLockedViewer", "Split with New Locked Viewer", ["View"], None, "{comp?, view?: 3D view id}", has_comp, split_locked),
         cmd!("view.closeLockedViewer", "Close Locked Viewer", [], None, "{}", has_locked, close_locked),
