@@ -100,7 +100,7 @@ fn samples(file: &File, d: &Dict, raw: &[u8]) -> Result<(Vec<u8>, Option<usize>)
             let jpeg = decode_stream(file, &d2, raw).ok_or("image (filters)")?;
             jpeg_decode(&jpeg).map(|(b, n)| (b, Some(n)))
         }
-        Some(f @ ("JPXDecode" | "CCITTFaxDecode" | "JBIG2Decode" | "CCF")) => Err(format!("image ({f})")),
+        Some(f @ ("JPXDecode" | "JBIG2Decode")) => Err(format!("image ({f})")),
         _ => decode_stream(file, d, raw).map(|b| (b, None)).ok_or_else(|| "image (filters)".to_string()),
     }
 }

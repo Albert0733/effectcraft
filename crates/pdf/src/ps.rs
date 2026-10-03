@@ -309,6 +309,8 @@ pub(crate) struct Interp {
     gs: GState,
     saved: Vec<GState>,
     budget: usize,
+    /// Nested procedure calls (recursion is cut off at [`MAX_CALL_DEPTH`]).
+    calls: usize,
     page: [f64; 4],
     pub unknown: Vec<String>,
 }
@@ -329,6 +331,9 @@ fn matrix_of(v: &V) -> Option<Affine> {
 fn matrix_val(m: Affine) -> V {
     array(m.as_coeffs().iter().map(|c| V::Num(*c)).collect())
 }
+
+/// The deepest procedure nesting run (deeper recursion stops the program).
+const MAX_CALL_DEPTH: usize = 256;
 
 impl Interp {
     pub fn new(page: [f64; 4]) -> Interp {
@@ -351,6 +356,7 @@ impl Interp {
             },
             saved: vec![],
             budget: 8_000_000,
+            calls: 0,
             page,
             unknown: vec![],
         }
@@ -396,13 +402,25 @@ impl Interp {
     fn exec_obj(&mut self, v: V, src: &mut Src) -> Result<(), Flow> {
         match v {
             V::Proc(p) => {
+                if self.calls >= MAX_CALL_DEPTH {
+                    self.b.skip("PostScript (recursion limit)");
+                    return Err(Flow::Quit);
+                }
+                self.calls += 1;
+                let mut r = Ok(());
                 for x in p.iter() {
                     match x {
-                        V::Name(n) => self.exec_name(n, src)?,
+                        V::Name(n) => {
+                            r = self.exec_name(n, src);
+                            if r.is_err() {
+                                break;
+                            }
+                        }
                         other => self.push(other.clone()),
                     }
                 }
-                Ok(())
+                self.calls -= 1;
+                r
             }
             V::Name(n) => self.exec_name(&n, src),
             other => {
