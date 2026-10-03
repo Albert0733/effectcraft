@@ -38,6 +38,7 @@ mod perspective2;
 pub mod puppet;
 mod sim;
 mod sim2;
+mod sim3;
 mod stylize2;
 mod stylize3;
 mod textfx;
@@ -364,6 +365,7 @@ pub fn registry() -> &'static [EffectSpec] {
         v.extend(distort4::specs());
         v.extend(keylight::specs());
         v.extend(mocha_shape::specs());
+        v.extend(sim3::specs());
         v.extend(time_fx::specs());
         v.extend(audio_fx::specs());
         v.extend(paint::specs());
