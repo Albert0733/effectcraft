@@ -219,3 +219,33 @@ fn adaptive_sample_limit_drives_layer_samples() {
     assert!(!json.contains("motion_blur_adaptive_limit"));
     assert_eq!(Project::from_json(&json).unwrap().comp(s.active_comp_id().unwrap()).unwrap().motion_blur_adaptive_limit, 128);
 }
+
+#[test]
+fn camera_focus_commands_undo_and_serde() {
+    let mut s = comp(400, 300);
+    let t = s.execute("layer.newSolid", json!({"color": "#ffffff", "width": 50, "height": 50})).unwrap()["layer"].as_u64().unwrap();
+    s.execute("layer.setSwitch", json!({"layers": [t], "switch": "threeD", "value": true})).unwrap();
+    s.execute("layer.setTransform", json!({"layer": t, "prop": "position", "value": [200, 150, 500]})).unwrap();
+    let cam = s.execute("layer.newCamera", json!({})).unwrap()["layer"].as_u64().unwrap();
+    s.execute("layer.select", json!({"layers": [cam, t]})).unwrap();
+    assert!(s.is_enabled("camera.setFocusToLayer"));
+    let before = s.execute("prop.get", json!({"layer": cam, "path": "cameraOptions/focusDistance"})).unwrap()["value"].as_f64().unwrap();
+    let d = s.execute("camera.setFocusToLayer", json!({})).unwrap()["focusDistance"].as_f64().unwrap();
+    assert!((d - before - 500.0).abs() < 1e-6, "the default camera focuses on z = 0: {before} → {d}");
+    s.execute("camera.linkFocusToLayer", json!({})).unwrap();
+    let e = s.execute("prop.get", json!({"layer": cam, "path": "cameraOptions/focusDistance"})).unwrap();
+    assert!(e["expression"].as_str().unwrap().contains("thisComp.layer("), "{e}");
+    let back = roundtrip(&s);
+    assert!(back.comp(s.active_comp_id().unwrap()).unwrap().layer(LayerId(cam)).unwrap().props.prop("cameraOptions/focusDistance").unwrap().expr.is_some());
+    s.execute("edit.undo", json!({})).unwrap();
+    let e = s.execute("prop.get", json!({"layer": cam, "path": "cameraOptions/focusDistance"})).unwrap();
+    assert!(e["expression"].is_null());
+    s.execute("edit.undo", json!({})).unwrap();
+    let v = s.execute("prop.get", json!({"layer": cam, "path": "cameraOptions/focusDistance"})).unwrap()["value"].as_f64().unwrap();
+    assert!((v - before).abs() < 1e-9);
+    s.execute("edit.redo", json!({})).unwrap();
+    // A camera alone can't link to a layer, but can link to its point of interest.
+    s.execute("layer.select", json!({"layers": [cam]})).unwrap();
+    assert!(s.execute("camera.linkFocusToLayer", json!({})).is_err());
+    assert!(s.execute("camera.linkFocusToPoi", json!({})).is_ok());
+}

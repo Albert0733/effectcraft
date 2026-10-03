@@ -10,6 +10,7 @@ mod edit;
 mod effect;
 mod file;
 mod file_more;
+mod focus;
 mod frontend;
 mod help;
 mod key_transform;
@@ -129,6 +130,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(view::specs());
         v.extend(viewer_cmds::specs());
         v.extend(shape_stroke::specs());
+        v.extend(focus::specs());
         v.extend(key_transform::specs());
         v.extend(file_more::specs());
         v.extend(lottie::specs());
