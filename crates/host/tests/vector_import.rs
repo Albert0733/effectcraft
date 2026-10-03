@@ -282,6 +282,43 @@ fn pdf_and_ai_footage_layers_and_shapes_from_vector_layer() {
 }
 
 #[test]
+fn psd_smart_object_imports_its_embedded_document() {
+    // The embedded document: red left half, green right half (20×10).
+    let mut inner = WDoc::new(20, 10);
+    inner.layers =
+        vec![WLayer::solid("Red", Rect::new(0, 0, 10, 10), [1.0, 0.0, 0.0, 1.0]), WLayer::solid("Green", Rect::new(10, 0, 10, 10), [0.0, 1.0, 0.0, 1.0])];
+    let inner_bytes = write(&inner);
+    let mut d = WDoc::new(64, 48);
+    // Placed at 2× and turned a quarter clockwise: the content's top-left corner at (40, 4).
+    let quad = [[40.0, 4.0], [40.0, 44.0], [20.0, 44.0], [20.0, 4.0]];
+    d.layers = vec![
+        WLayer::solid("Back", Rect::new(0, 0, 64, 48), [0.0, 0.0, 0.0, 1.0]),
+        // Placeholder pixels (grey) that the embedded file replaces.
+        WLayer::solid("Placed", Rect::new(20, 4, 20, 40), [0.5, 0.5, 0.5, 1.0]).with_block(smart_object_block("so-1", quad, [20.0, 10.0])),
+    ];
+    d.linked = vec![("so-1".into(), "inner.psd".into(), *b"8BPS", inner_bytes)];
+    let path = tmp("smart.psd");
+    std::fs::write(&path, write(&d)).unwrap();
+    let mut s = effectcraft_host::session();
+    let r = s.execute_checked("file.import", json!({"paths": [path], "importAs": "composition"})).unwrap();
+    assert_eq!(r["errors"], json!([]), "{r}");
+    let cid = ItemId(r["comps"][0].as_u64().unwrap());
+    let comp = s.project.comp(cid).unwrap();
+    let placed = comp.layers.iter().find(|l| l.name == "Placed").unwrap();
+    let effectcraft_project::LayerSource::Footage { item } = placed.source else { panic!("footage layer") };
+    let effectcraft_project::ItemKind::Footage(f) = &s.project.item(item).unwrap().kind else { panic!() };
+    assert_eq!((f.width, f.height), (20, 10));
+    assert_eq!(f.layer.as_ref().unwrap().embedded.as_deref(), Some("so-1"));
+    assert!(s.project.item(item).unwrap().name.contains("inner.psd"));
+    let img = s.render(cid, effectcraft_time::Tick::ZERO, RenderOpts::default());
+    // Rotated a quarter clockwise: the red half is on top (rows 4–24), green below.
+    let (red, green) = (img.get(30, 14), img.get(30, 34));
+    assert!(red[0] > 0.95 && red[1] < 0.05, "{red:?}");
+    assert!(green[1] > 0.95 && green[0] < 0.05, "{green:?}");
+    assert!(img.get(10, 24)[0] < 0.01 && img.get(10, 24)[3] > 0.99, "background outside");
+}
+
+#[test]
 fn eps_footage_imports() {
     let eps =
         b"%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 40 20\n1 0 0 setrgbcolor 0 0 20 20 rectfill 0 0 1 setrgbcolor newpath 30 10 8 0 360 arc fill\n%%EOF\n";

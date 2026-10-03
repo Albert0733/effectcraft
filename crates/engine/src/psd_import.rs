@@ -6,7 +6,9 @@
 //! so their blend modes act on the layers below, like Photoshop); type layers become editable
 //! text layers; layer masks are baked into the layer's alpha and vector masks become masks;
 //! layer effects map to Layer Styles; adjustment layers become adjustment layers with the
-//! matching effect (best effort); clipped layers preserve the transparency underneath.
+//! matching effect (best effort); clipped layers preserve the transparency underneath. Smart
+//! objects whose file is embedded become footage of that file (an embedded Photoshop document's
+//! merged image, or the embedded image) placed with the smart object's transform.
 
 use std::sync::Arc;
 
@@ -164,6 +166,60 @@ fn footage_item(proj: &mut Project, cx: &mut Ctx, index: usize, name: &str) -> (
     (id, (w, h))
 }
 
+/// Size of an embedded file's image: the smart object's recorded size, else the embedded
+/// document's header (Photoshop, PNG).
+fn embedded_size(so: &effectcraft_psd::SmartObject, data: &[u8]) -> Option<(u32, u32)> {
+    if let Some([w, h]) = so.size.filter(|s| s[0] >= 1.0 && s[1] >= 1.0) {
+        return Some((w.round() as u32, h.round() as u32));
+    }
+    if effectcraft_psd::is_psd(data) && data.len() >= 22 {
+        let h = u32::from_be_bytes([data[14], data[15], data[16], data[17]]);
+        let w = u32::from_be_bytes([data[18], data[19], data[20], data[21]]);
+        return Some((w, h));
+    }
+    if data.starts_with(b"\x89PNG") && data.len() >= 24 {
+        let w = u32::from_be_bytes([data[16], data[17], data[18], data[19]]);
+        let h = u32::from_be_bytes([data[20], data[21], data[22], data[23]]);
+        return Some((w, h));
+    }
+    None
+}
+
+/// A smart object layer as footage of its embedded file, placed by the smart object's
+/// transform. `None` when the file is not embedded (linked externally) or unreadable.
+fn smart_object_layer(proj: &mut Project, cx: &mut Ctx, comp: &Comp, index: usize, name: &str) -> Option<Layer> {
+    let pl = &cx.psd.layers[index];
+    let so = pl.smart_object.clone()?;
+    let data = cx.psd.linked_data(&so.uuid)?;
+    let (w, h) = embedded_size(&so, data).filter(|s| s.0 > 0 && s.1 > 0)?;
+    let file = cx.psd.linked.iter().find(|f| f.uuid == so.uuid).map(|f| f.name.clone()).unwrap_or_default();
+    let f = Footage {
+        path: cx.path.to_string(),
+        kind: FootageKind::Still,
+        width: w,
+        height: h,
+        pixel_aspect: 1.0,
+        frame_rate: cx.rate,
+        has_video: true,
+        alpha: AlphaMode::Straight,
+        loop_count: 1,
+        codec: if effectcraft_psd::is_psd(data) { "PSD".into() } else { "PSD (embedded image)".into() },
+        layer: Some(SourceLayer { index: index as u32, name: name.to_string(), layer_size: true, embedded: Some(so.uuid.clone()) }),
+        ..Default::default()
+    };
+    let label = if file.is_empty() { name.to_string() } else { file };
+    let id = proj.add_item(&format!("{label} (Smart Object)"), Label::Lavender, Some(cx.folder), ItemKind::Footage(f));
+    cx.items.push(id);
+    let mut l = build::layer(proj, comp, name, LayerSource::Footage { item: id }, (w, h), None);
+    let (c, sx, sy, rot) = so.placement(w as f64, h as f64);
+    set_vec2(&mut l, "transform/position", c);
+    set_vec2(&mut l, "transform/scale", [sx * 100.0, sy * 100.0]);
+    if rot.abs() > 1e-9 {
+        set_scalar(&mut l, "transform/rotation", rot);
+    }
+    Some(l)
+}
+
 fn build_layer(proj: &mut Project, cx: &mut Ctx, comp: &Comp, n: &Node) -> Option<Layer> {
     let (index, children) = match n {
         Node::Layer(i) => (*i, None),
@@ -182,6 +238,8 @@ fn build_layer(proj: &mut Project, cx: &mut Ctx, comp: &Comp, n: &Node) -> Optio
     } else if let Some(adj) = &pl.adjustment {
         let mut l = adjustment_layer(proj, comp, &name);
         add_adjustment_effect(proj, &mut l, adj, comp, &mut cx.warnings, &name);
+        l
+    } else if let Some(l) = pl.smart_object.as_ref().and_then(|_| smart_object_layer(proj, cx, comp, index, &name)) {
         l
     } else if pl.has_pixels() || pl.fill.is_some() {
         let (item, size) = footage_item(proj, cx, index, &name);

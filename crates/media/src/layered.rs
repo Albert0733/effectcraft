@@ -67,6 +67,17 @@ pub(crate) fn probe(path: &str, bytes: &[u8]) -> Result<Option<Footage>> {
 pub(crate) fn decode(path: &str, bytes: &[u8], footage: &Footage, op: AlphaOp) -> Result<Option<Image>> {
     if effectcraft_psd::is_psd(bytes) {
         let psd = effectcraft_psd::Psd::parse(bytes.to_vec()).map_err(|e| MediaError::Decode(format!("{path}: {e}")))?;
+        // A smart object's embedded file: an embedded document's merged image, or an image.
+        if let Some(uuid) = footage.layer.as_ref().and_then(|l| l.embedded.as_deref()) {
+            let data = psd.linked_data(uuid).ok_or_else(|| MediaError::Decode(format!("{path}: no embedded file {uuid}")))?;
+            if effectcraft_psd::is_psd(data) {
+                let inner = effectcraft_psd::Psd::parse(data.to_vec()).map_err(|e| MediaError::Decode(format!("{path} (smart object): {e}")))?;
+                let px = inner.composite().map_err(|e| MediaError::Decode(format!("{path} (smart object): {e}")))?;
+                return Ok(Some(straight_to_image(px.width, px.height, &px.data, op)));
+            }
+            let img = image::load_from_memory(data).map_err(|e| MediaError::Decode(format!("{path} (smart object): {e}")))?;
+            return Ok(Some(crate::convert::dynamic_to_image(&img, op)));
+        }
         let px = match &footage.layer {
             Some(l) => psd.layer_pixels(l.index as usize, !l.layer_size),
             None => psd.composite(),
