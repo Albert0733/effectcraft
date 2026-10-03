@@ -65,7 +65,8 @@ fn set_primary(s: &mut Session, p: &Value) -> Result<Value> {
 fn set_name(s: &mut Session, p: &Value) -> Result<Value> {
     let cid = eg_comp(s, p)?;
     let name = str_p(p, "name").ok_or_else(|| bad("essential.setName", "missing `name`"))?.to_string();
-    s.edit("Essential Graphics Name", None, |proj, _| {
+    s.edit("Essential Graphics Name", None, |proj, st| {
+        st.essential_primary.get_or_insert(cid);
         eg_of(proj, cid)?.name = name.clone();
         Ok(())
     })?;
@@ -99,7 +100,10 @@ fn add_property(s: &mut Session, p: &Value) -> Result<Value> {
         }
         added.push((*cid, *lid, *uid, rename.clone().unwrap_or_else(|| pr.name.clone())));
     }
-    let ids = s.edit("Add Property to Essential Graphics", None, |proj, _| {
+    let ids = s.edit("Add Property to Essential Graphics", None, |proj, st| {
+        if let Some((cid, ..)) = added.first() {
+            st.essential_primary.get_or_insert(*cid);
+        }
         let mut ids = vec![];
         for (k, (cid, lid, uid, name)) in added.iter().enumerate() {
             let id = proj.alloc();
@@ -126,7 +130,8 @@ fn add_media(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let name = str_p(p, "name").map(str::to_string).unwrap_or_else(|| format!("{} (Media)", l.name));
     let group = p.get("group").and_then(Value::as_u64);
-    let id = s.edit("Add Media Replacement", None, |proj, _| {
+    let id = s.edit("Add Media Replacement", None, |proj, st| {
+        st.essential_primary.get_or_insert(cid);
         let id = proj.alloc();
         let eg = eg_of(proj, cid)?;
         if eg.flat().iter().any(|c| matches!(c.kind, EgKind::Media { layer } if layer == lid)) {
@@ -142,7 +147,8 @@ fn add_group(s: &mut Session, p: &Value) -> Result<Value> {
     let cid = eg_comp(s, p)?;
     let name = str_p(p, "name").unwrap_or("Group").to_string();
     let index = p.get("index").and_then(Value::as_u64).map(|i| i as usize);
-    let id = s.edit("Add Essential Graphics Group", None, |proj, _| {
+    let id = s.edit("Add Essential Graphics Group", None, |proj, st| {
+        st.essential_primary.get_or_insert(cid);
         let id = proj.alloc();
         insert(eg_of(proj, cid)?, EgControl { id, name, kind: EgKind::Group { children: vec![] } }, None, index, "essential.addGroup")?;
         Ok(id)
@@ -154,7 +160,8 @@ fn add_comment(s: &mut Session, p: &Value) -> Result<Value> {
     let cid = eg_comp(s, p)?;
     let text = str_p(p, "text").unwrap_or("Comment").to_string();
     let group = p.get("group").and_then(Value::as_u64);
-    let id = s.edit("Add Essential Graphics Comment", None, |proj, _| {
+    let id = s.edit("Add Essential Graphics Comment", None, |proj, st| {
+        st.essential_primary.get_or_insert(cid);
         let id = proj.alloc();
         insert(eg_of(proj, cid)?, EgControl { id, name: "Comment".into(), kind: EgKind::Comment { text } }, group, None, "essential.addComment")?;
         Ok(id)

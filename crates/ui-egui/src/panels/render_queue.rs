@@ -77,6 +77,10 @@ fn settings_menu(it: &RenderQueueItem) -> Vec<(String, Value)> {
     v.push(("-".into(), Value::Null));
     v.push((mark(s.motion_blur, "Motion Blur: On for Checked Layers"), json!({"motionBlur": !s.motion_blur})));
     v.push((mark(s.skip_existing, "Skip Existing Files"), json!({"skipExisting": !s.skip_existing})));
+    v.push(("-".into(), Value::Null));
+    for (u, k) in effectcraft_engine::project::render_queue::ProxyUse::ALL.iter().zip(["current", "all", "comp", "none"]) {
+        v.push((mark(s.proxy_use == *u, &format!("Proxy Use: {}", u.label())), json!({"proxyUse": k})));
+    }
     v
 }
 

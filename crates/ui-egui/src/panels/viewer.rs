@@ -347,7 +347,10 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     // Bottom control bar.
     let bar_h = 30.0;
     let bar = Rect::from_min_max(pos2(rect.min.x, rect.max.y - bar_h), rect.max);
-    let full = Rect::from_min_max(pos2(rect.min.x, nav.max.y), pos2(rect.max.x, bar.min.y));
+    // The expression error bar sits above the control bar while expressions fail.
+    let err_h = super::expr_bar::height(app, &ctx, cid);
+    let err_bar = Rect::from_min_max(pos2(rect.min.x, bar.min.y - err_h), pos2(rect.max.x, bar.min.y));
+    let full = Rect::from_min_max(pos2(rect.min.x, nav.max.y), pos2(rect.max.x, err_bar.min.y));
     let pasteboard = app.ui.viewer.pasteboard.map(|[r, g, b]| Color32::from_rgb(r, g, b)).unwrap_or(t.pasteboard);
     // View ▸ Switch View Layout: extra views (Top / Front / Right) beside the main view, which
     // keeps the overlays and the interaction.
@@ -1158,6 +1161,9 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     vt::draw_snap(&ctx, &painter, &map, &ectx);
     vt::rulers(app, ui, &map, outer, area);
     vt::bottom_bar(app, ui, bar, zoom, fit, time, &comp);
+    if err_h > 0.0 {
+        super::expr_bar::draw(app, ui, err_bar, cid);
+    }
 }
 
 /// Parent-space position change per comp pixel of drag (x and y) for a layer: 2D layers map

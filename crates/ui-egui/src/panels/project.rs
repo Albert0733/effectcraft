@@ -322,6 +322,24 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
             app.auto.add(&format!("project.item.{}.twirl", id.0), tw, &it.name);
         }
         icons::paint(&lp, Rect::from_center_size(pos2(x0 + 18.0, r.center().y), vec2(14.0, 14.0)), item_icon(&it), t.text_dim);
+        // Proxy indicator: filled = the proxy is used, hollow = set but off. Click to switch.
+        if let Some(px) = it.proxy.as_ref() {
+            let pr = Rect::from_center_size(pos2(x0 + 4.0, r.center().y), vec2(9.0, 9.0));
+            if px.enabled {
+                lp.rect_filled(pr, 1.0, t.text);
+            } else {
+                lp.rect_stroke(pr, 1.0, Stroke::new(1.0, t.text), egui::StrokeKind::Inside);
+            }
+            let presp = ui.interact(pr.expand(2.0).intersect(list), egui::Id::new(("pproxy", id.0)), Sense::click()).on_hover_text(format!(
+                "Proxy: {} ({})",
+                px.footage.path,
+                if px.enabled { "in use" } else { "off" }
+            ));
+            app.auto.add(&format!("project.item.{}.proxy", id.0), pr, if px.enabled { "Proxy in use" } else { "Proxy off" });
+            if presp.clicked() {
+                actions.push(("file.useProxy".into(), json!({"item": id.0})));
+            }
+        }
         let name_clip = Rect::from_min_max(pos2(x0 + 30.0, r.min.y), pos2(r.min.x + name_w + 4.0, r.max.y)).intersect(list);
         let name_rect = Rect::from_min_max(pos2(x0 + 28.0, r.min.y + 2.0), pos2(r.min.x + name_w + 2.0, r.max.y - 2.0));
         // Inline edits (rename / comment).

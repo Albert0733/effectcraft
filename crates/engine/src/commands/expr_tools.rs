@@ -212,7 +212,7 @@ pub fn language_menu() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)>
             ],
         ),
         (
-            "Layer ▸ Sub-objects",
+            "Layer > Sub-objects",
             vec![
                 ("source", "source"),
                 ("effect(name)", "effect(\"name\")"),
@@ -222,7 +222,7 @@ pub fn language_menu() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)>
             ],
         ),
         (
-            "Layer ▸ General",
+            "Layer > General",
             vec![
                 ("width", "width"),
                 ("height", "height"),
@@ -238,7 +238,7 @@ pub fn language_menu() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)>
             ],
         ),
         (
-            "Layer ▸ Properties",
+            "Layer > Properties",
             vec![
                 ("anchorPoint", "anchorPoint"),
                 ("position", "position"),
@@ -250,7 +250,7 @@ pub fn language_menu() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)>
             ],
         ),
         (
-            "Layer ▸ Space Transforms",
+            "Layer > Space Transforms",
             vec![
                 ("toComp(point, t = time)", "toComp(point, t = time)"),
                 ("fromComp(point, t = time)", "fromComp(point, t = time)"),
@@ -263,7 +263,7 @@ pub fn language_menu() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)>
             ],
         ),
         (
-            "Layer ▸ Other",
+            "Layer > Other",
             vec![
                 ("sourceRectAtTime(t = time, includeExtents = false)", "sourceRectAtTime(t = time, includeExtents = false)"),
                 ("sampleImage(point, radius = [.5, .5], postEffect = true, t = time)", "sampleImage(point, radius = [.5, .5], postEffect = true, t = time)"),
@@ -307,7 +307,7 @@ pub fn language_menu() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)>
             ],
         ),
         (
-            "Text ▸ Style",
+            "Text > Style",
             vec![
                 ("text.sourceText.style", "text.sourceText.style"),
                 ("getStyleAt(charIndex, t = time)", "getStyleAt(charIndex, t = time)"),
@@ -317,7 +317,7 @@ pub fn language_menu() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)>
                 ("setText(value)", "setText(value)"),
             ],
         ),
-        ("Text ▸ Expression Selector", vec![("textIndex", "textIndex"), ("textTotal", "textTotal"), ("selectorValue", "selectorValue")]),
+        ("Text > Expression Selector", vec![("textIndex", "textIndex"), ("textTotal", "textTotal"), ("selectorValue", "selectorValue")]),
         ("Key", vec![("value", "value"), ("time", "time"), ("index", "index")]),
         (
             "Marker Key",
