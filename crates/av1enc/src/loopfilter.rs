@@ -18,9 +18,9 @@ pub(crate) struct LfInfo<'a> {
     pub tx: [&'a [u8]; 3],
 }
 
-/// Applies the loop filter with `loop_filter_level[ 0..4 ]` to `planes` (only plane 0 when
-/// `luma_only`).
-pub(crate) fn loop_filter(planes: &mut [Plane; 3], info: &LfInfo, level: [u32; 4], bit_depth: u32, luma_only: bool) {
+/// Applies the loop filter with `loop_filter_level[ 0..4 ]` to `planes`. For level search
+/// (`luma_only`), only plane 0 and only every `sb_row_step`-th superblock row are filtered.
+pub(crate) fn loop_filter(planes: &mut [Plane; 3], info: &LfInfo, level: [u32; 4], bit_depth: u32, luma_only: bool, sb_row_step: usize) {
     if level[0] == 0 && level[1] == 0 {
         return;
     }
@@ -33,6 +33,10 @@ pub(crate) fn loop_filter(planes: &mut [Plane; 3], info: &LfInfo, level: [u32; 4
             let step = if plane == 0 { 1 } else { 2 };
             let mut row = 0;
             while row < info.mi_rows {
+                if !(row >> 4).is_multiple_of(sb_row_step) {
+                    row += step;
+                    continue;
+                }
                 let mut col = 0;
                 while col < info.mi_cols {
                     edge(pl, info, level, bit_depth, plane, pass, row, col);

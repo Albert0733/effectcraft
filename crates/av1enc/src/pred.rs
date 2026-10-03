@@ -224,19 +224,61 @@ pub(crate) fn predict_inter(
     let filt_v = if h <= 4 { 4 } else { EIGHTTAP };
     let kh = &SUBPEL_FILTERS[filt_h][fx];
     let kv = &SUBPEL_FILTERS[filt_v][fy];
+    let bx = ix - 3;
+    let x_inside = bx >= 0 && bx + w as i32 + 7 <= last_x + 1;
+    // horizontal pass of one reference row into `out` (Round2( sum, InterRound0 = 3 ))
+    let hfilter = |ry: usize, out: &mut [i32]| {
+        let row = refp.row(ry);
+        if x_inside {
+            let seg = &row[bx as usize..bx as usize + w + 7];
+            for (c, o) in out.iter_mut().enumerate() {
+                let mut s = 0i32;
+                for t in 0..8 {
+                    s += kh[t] as i32 * seg[c + t] as i32;
+                }
+                *o = round2(s, 3);
+            }
+        } else {
+            for (c, o) in out.iter_mut().enumerate() {
+                let mut s = 0i32;
+                for t in 0..8 {
+                    s += kh[t] as i32 * row[(bx + c as i32 + t as i32).clamp(0, last_x) as usize] as i32;
+                }
+                *o = round2(s, 3);
+            }
+        }
+    };
+    let mut inter = [0i32; (64 + 7) * 64];
+    if fy == 0 {
+        // the vertical kernel is 128 at the centre: Round2( 128 * v, 11 ) = Round2( v, 4 )
+        for r in 0..h {
+            let ry = (iy + r as i32).clamp(0, last_y) as usize;
+            hfilter(ry, &mut inter[..w]);
+            for (p, &v) in pred[r * w..r * w + w].iter_mut().zip(&inter[..w]) {
+                *p = round2(v, 4).clamp(0, max) as u16;
+            }
+        }
+        return;
+    }
+    if fx == 0 {
+        // the horizontal pass is exactly 16 * sample: Round2( 16 * sum, 11 ) = Round2( sum, 7 )
+        for r in 0..h {
+            let rows: [&[u16]; 8] = std::array::from_fn(|t| refp.row((iy + r as i32 + t as i32 - 3).clamp(0, last_y) as usize));
+            for c in 0..w {
+                let xx = if x_inside { (ix + c as i32) as usize } else { (ix + c as i32).clamp(0, last_x) as usize };
+                let mut s = 0i32;
+                for t in 0..8 {
+                    s += kv[t] as i32 * rows[t][xx] as i32;
+                }
+                pred[r * w + c] = round2(s, 7).clamp(0, max) as u16;
+            }
+        }
+        return;
+    }
     let inter_h = h + 7;
-    let mut inter = vec![0i32; inter_h * w];
     for r in 0..inter_h {
         let ry = (iy + r as i32 - 3).clamp(0, last_y) as usize;
-        let row = refp.row(ry);
-        for c in 0..w {
-            let bx = ix + c as i32 - 3;
-            let mut s = 0i32;
-            for t in 0..8 {
-                s += kh[t] as i32 * row[(bx + t as i32).clamp(0, last_x) as usize] as i32;
-            }
-            inter[r * w + c] = round2(s, 3);
-        }
+        hfilter(ry, &mut inter[r * w..r * w + w]);
     }
     for r in 0..h {
         for c in 0..w {

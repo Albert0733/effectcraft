@@ -344,6 +344,20 @@ pub(crate) fn inverse_2d(dequant: &[i32], residual: &mut [i32], tx_sz: usize, tx
 struct Bases {
     dct: [Vec<f32>; 4],
     adst: [Vec<f32>; 3],
+    /// The same matrices transposed (`[i][k]`).
+    dct_t: [Vec<f32>; 4],
+    adst_t: [Vec<f32>; 3],
+}
+
+fn transpose(m: &[f32]) -> Vec<f32> {
+    let n = (m.len() as f64).sqrt() as usize;
+    let mut t = vec![0f32; n * n];
+    for k in 0..n {
+        for i in 0..n {
+            t[i * n + k] = m[k * n + i];
+        }
+    }
+    t
 }
 
 fn bases() -> &'static Bases {
@@ -376,8 +390,18 @@ fn bases() -> &'static Bases {
             }
             m
         });
-        Bases { dct, adst }
+        let dct_t = std::array::from_fn(|l| transpose(&dct[l]));
+        let adst_t = std::array::from_fn(|l| transpose(&adst[l]));
+        Bases { dct, adst, dct_t, adst_t }
     })
+}
+
+fn basis_t(kind: Kind, n: usize) -> &'static [f32] {
+    let l = n.trailing_zeros() as usize - 2;
+    match kind {
+        Kind::Dct => &bases().dct_t[l],
+        Kind::Adst => &bases().adst_t[l],
+    }
 }
 
 fn basis(kind: Kind, n: usize) -> &'static [f32] {
@@ -393,29 +417,32 @@ fn basis(kind: Kind, n: usize) -> &'static [f32] {
 pub(crate) fn forward_2d(residual: &[i32], out: &mut [f32], n: usize, tx_type: usize) {
     let (ck, rk) = kinds(tx_type);
     let bc = basis(ck, n);
-    let br = basis(rk, n);
-    // tmp[i][k] = sum_j residual[i][j] * br[k][j]  (horizontal)
-    let mut tmp = vec![0f32; n * n];
+    let brt = basis_t(rk, n);
+    // tmp[i][k] = sum_j residual[i][j] * br[k][j]  (horizontal; written as row updates so that
+    // the inner loops vectorise)
+    let mut tmp = [0f32; 32 * 32];
     for i in 0..n {
-        let row = &residual[i * n..i * n + n];
-        for k in 0..n {
-            let b = &br[k * n..k * n + n];
-            let mut s = 0f32;
-            for j in 0..n {
-                s += row[j] as f32 * b[j];
+        let t = &mut tmp[i * n..i * n + n];
+        for j in 0..n {
+            let r = residual[i * n + j];
+            if r == 0 {
+                continue;
             }
-            tmp[i * n + k] = s;
+            let r = r as f32;
+            for (o, &b) in t.iter_mut().zip(&brt[j * n..j * n + n]) {
+                *o += r * b;
+            }
         }
     }
     // out[k][j] = 8 * sum_i bc[k][i] * tmp[i][j]  (vertical)
+    out[..n * n].iter_mut().for_each(|v| *v = 0.0);
     for k in 0..n {
-        let b = &bc[k * n..k * n + n];
-        for j in 0..n {
-            let mut s = 0f32;
-            for i in 0..n {
-                s += b[i] * tmp[i * n + j];
+        let o = &mut out[k * n..k * n + n];
+        for i in 0..n {
+            let b = 8.0 * bc[k * n + i];
+            for (v, &t) in o.iter_mut().zip(&tmp[i * n..i * n + n]) {
+                *v += b * t;
             }
-            out[k * n + j] = 8.0 * s;
         }
     }
 }

@@ -514,7 +514,13 @@ impl<'a> Decider<'a> {
                 best = (m, cst);
             }
         }
-        let mut step = 16 * 8;
+        let mut step = 8 * if n >= 32 {
+            16
+        } else if n == 16 {
+            8
+        } else {
+            4
+        };
         while step >= 8 {
             let mut moved = true;
             let mut iters = 0;
@@ -659,7 +665,7 @@ impl<'a> Decider<'a> {
             let rr = refp.row((ry + i as i32).clamp(0, ly) as usize);
             if inside {
                 let rrow = &rr[rx as usize..rx as usize + w];
-                sad += s.iter().zip(rrow).map(|(&a, &b)| (a as i32 - b as i32).unsigned_abs() as u64).sum::<u64>();
+                sad += s.iter().zip(rrow).map(|(&a, &b)| (a as i32 - b as i32).unsigned_abs()).sum::<u32>() as u64;
             } else {
                 for j in 0..w {
                     let b = rr[(rx + j as i32).clamp(0, lx) as usize];
@@ -679,7 +685,7 @@ impl<'a> Decider<'a> {
         let mut s = 0u64;
         for i in 0..h {
             let row = &src.row(y + i)[x..x + w];
-            s += row.iter().zip(&pred[i * n..i * n + w]).map(|(&a, &b)| (a as i32 - b as i32).unsigned_abs() as u64).sum::<u64>();
+            s += row.iter().zip(&pred[i * n..i * n + w]).map(|(&a, &b)| (a as i32 - b as i32).unsigned_abs()).sum::<u32>() as u64;
         }
         s
     }

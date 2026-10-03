@@ -11,7 +11,7 @@ use effectcraft_av1enc::{Encoder, EncoderConfig, RateControl};
 
 /// Raw 8-bit 4:2:0 frames of an ffmpeg lavfi source, or None without ffmpeg.
 fn lavfi(src: &str, w: usize, h: usize, frames: usize) -> Option<Vec<Pic>> {
-    let out = std::env::temp_dir().join(format!("effectcraft-av1enc-bench-{}-{}.yuv", std::process::id(), src.split('=').next().unwrap_or("src")));
+    let out = std::env::temp_dir().join(format!("effectcraft-av1enc-bench-{}-{src}-{w}x{h}.yuv", std::process::id()));
     let st = Command::new("ffmpeg")
         .args(["-v", "error", "-y", "-f", "lavfi", "-i"])
         .arg(format!("{src}=size={w}x{h}:rate=30"))
@@ -91,5 +91,33 @@ fn bench_lavfi() {
             run("mandelbrot", &pics, RateControl::ConstantQ(q), 30);
         }
         run("mandelbrot", &pics, RateControl::Bitrate { kbps: 1000 }, 30);
+    }
+}
+
+#[test]
+#[ignore]
+fn bench_1080p_loop() {
+    let Some(pics) = lavfi("mandelbrot", 1920, 1080, 4) else {
+        return;
+    };
+    run("mandelbrot", &pics, RateControl::ConstantQ(120), 30);
+    run("mandelbrot", &pics, RateControl::ConstantQ(120), 30);
+}
+
+#[test]
+#[ignore]
+fn bench_rate_control() {
+    let Some(pics) = lavfi("mandelbrot", 480, 272, 60) else {
+        eprintln!("ffmpeg not available");
+        return;
+    };
+    for kbps in [200, 600, 2000] {
+        run("mandelbrot", &pics, RateControl::Bitrate { kbps }, 30);
+    }
+    let Some(pics) = lavfi("testsrc2", 480, 272, 60) else {
+        return;
+    };
+    for kbps in [300, 3000] {
+        run("testsrc2", &pics, RateControl::Bitrate { kbps }, 60);
     }
 }

@@ -373,7 +373,7 @@ impl Encoder {
             }
         }
         let lf_level = self.pick_filter_level(&dec.rec, &tw.lf_info(), src, qidx);
-        loop_filter(&mut dec.rec, &tw.lf_info(), [lf_level; 4], self.cfg.bit_depth as u32, false);
+        loop_filter(&mut dec.rec, &tw.lf_info(), [lf_level; 4], self.cfg.bit_depth as u32, false, 1);
         let (tile, cdfs) = tw.finish();
         let mut w = BitWriter::new();
         self.frame_header(&mut w, key, qidx, lf_level);
@@ -388,12 +388,16 @@ impl Encoder {
     }
 
     /// The loop filter level minimising the luma error (searched around a guess from the
-    /// quantizer; luma only).
+    /// quantizer, on the luma of a subset of the superblock rows).
     fn pick_filter_level(&self, rec: &[Plane; 3], info: &LfInfo, src: &[Plane; 3], qidx: u8) -> u32 {
         let (w, h) = (self.geom.width, self.geom.height);
+        let sb_row_step = if self.geom.sb_rows >= 9 { 3 } else { 1 };
         let sse = |pl: &Plane| -> u64 {
             let mut s = 0u64;
             for y in 0..h {
+                if !(y >> 6).is_multiple_of(sb_row_step) {
+                    continue;
+                }
                 for (a, b) in pl.row(y)[..w].iter().zip(&src[0].row(y)[..w]) {
                     let d = *a as i64 - *b as i64;
                     s += (d * d) as u64;
@@ -408,7 +412,7 @@ impl Encoder {
                 return e;
             }
             let mut planes = [rec[0].clone(), Plane::new(0, 0), Plane::new(0, 0)];
-            loop_filter(&mut planes, info, [lvl; 4], bd, true);
+            loop_filter(&mut planes, info, [lvl; 4], bd, true, sb_row_step);
             let e = sse(&planes[0]);
             cache.push((lvl, e));
             e
@@ -421,7 +425,7 @@ impl Encoder {
         if e < best.1 {
             best = (center, e);
         }
-        while step >= 1 {
+        while step >= 2 {
             for lvl in [center.saturating_sub(step), (center + step).min(63)] {
                 let e = eval(lvl);
                 if e < best.1 {
