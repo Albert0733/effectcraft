@@ -212,7 +212,9 @@ pub fn shadow_factor(m: &ShadowMap, texels: &[f32], p: [f32; 3], n_l: f32) -> f3
     let Some((u, v, z)) = shadow_coord(m, p) else { return 1.0 };
     let size = m.size as i64;
     // Slope-scaled bias (world units are pixels).
-    let bias = m.bias * (1.0 + 2.0 * (1.0 - n_l.clamp(0.0, 1.0))) + z.abs() * 0.0015;
+    // Texel footprint (world units) × PCF reach, steeper for grazing light.
+    let texel = if m.ortho { 1.0 / m.focal } else { z.abs() / m.focal };
+    let bias = m.bias * texel * (1.0 + m.radius) * (1.0 + 3.0 * (1.0 - n_l.clamp(0.0, 1.0)));
     let step = m.radius / 2.0;
     let mut lit = 0.0;
     for j in -2..=2 {

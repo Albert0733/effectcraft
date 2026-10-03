@@ -460,12 +460,12 @@ pub(crate) fn shadow_maps(s: &mut Scene, draft: bool) {
             0 => {
                 let eye = [centre[0] - dir[0] * radius * 2.0, centre[1] - dir[1] * radius * 2.0, centre[2] - dir[2] * radius * 2.0];
                 let focal = (size as f64 * 0.5 / radius) as f32;
-                maps.push(ShadowMap { view: basis(eye, dir, hint), focal, ortho: true, size, offset: 0, bias: 1.5 / focal, radius: soft });
+                maps.push(ShadowMap { view: basis(eye, dir, hint), focal, ortho: true, size, offset: 0, bias: 1.5, radius: soft });
             }
             1 => {
                 let half = (l.cos_outer.clamp(-1.0, 1.0).acos() as f64 + 0.05).min(1.45);
                 let focal = (size as f64 * 0.5 / half.tan()) as f32;
-                maps.push(ShadowMap { view: basis(pos, dir, hint), focal, ortho: false, size, offset: 0, bias: 1.0, radius: soft });
+                maps.push(ShadowMap { view: basis(pos, dir, hint), focal, ortho: false, size, offset: 0, bias: 1.5, radius: soft });
             }
             _ => {
                 let fs = size / 2;
@@ -477,7 +477,7 @@ pub(crate) fn shadow_maps(s: &mut Scene, draft: bool) {
                     ([0.0, 0.0, 1.0], [0.0, 1.0, 0.0]),
                     ([0.0, 0.0, -1.0], [0.0, 1.0, 0.0]),
                 ] {
-                    maps.push(ShadowMap { view: basis(pos, f, d), focal: fs as f32 * 0.5, ortho: false, size: fs, offset: 0, bias: 1.0, radius: soft });
+                    maps.push(ShadowMap { view: basis(pos, f, d), focal: fs as f32 * 0.5, ortho: false, size: fs, offset: 0, bias: 1.5, radius: soft });
                 }
             }
         }

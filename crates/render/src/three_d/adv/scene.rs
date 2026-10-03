@@ -152,7 +152,7 @@ pub struct ShadowMap {
     pub ortho: bool,
     pub size: u32,
     pub offset: u32,
-    /// Depth bias (world units).
+    /// Depth bias in texels (scaled by the texel footprint at the receiver).
     pub bias: f32,
     /// PCF spread (texels).
     pub radius: f32,
@@ -531,33 +531,35 @@ pub fn extrusion_params(ctx: &EvalCtx, layer: &Layer) -> Option<model::extrude::
     })
 }
 
-/// Extruded meshes of a text or shape layer: (mesh in layer space, straight colour).
-pub fn extruded_meshes(ctx: &EvalCtx, layer: &Layer, p: &model::extrude::ExtrudeParams) -> Vec<(Primitive, [f32; 4])> {
-    let mut groups: Vec<(Vec<kurbo::BezPath>, [f32; 4])> = vec![];
+/// Extruded meshes of a text or shape layer: (mesh, straight colour, mesh space → layer
+/// space). Text extrudes each character in its own space, so per-character 3D animation
+/// (position, rotation, scale in Z) carries over.
+pub fn extruded_meshes(ctx: &EvalCtx, layer: &Layer, p: &model::extrude::ExtrudeParams) -> Vec<(Primitive, [f32; 4], Mat4)> {
+    let mut groups: Vec<(Vec<kurbo::BezPath>, [f32; 4], Mat4)> = vec![];
     match layer.source {
         LayerSource::Text => {
             if let Some(tg) = crate::text::text_geom(ctx, layer) {
                 for g in tg.glyphs.iter().filter(|g| g.apply_fill && g.fill[3] > 0.0) {
-                    groups.push((vec![g.path()], g.fill));
+                    groups.push((vec![g.local.clone()], g.fill, g.m));
                 }
             }
         }
         LayerSource::Shape => {
             if let Some(c) = layer.props.sub("contents") {
-                groups = crate::shapes::fill_outlines(ctx, layer, c);
+                groups = crate::shapes::fill_outlines(ctx, layer, c).into_iter().map(|(ps, c)| (ps, c, Mat4::IDENTITY)).collect();
             }
         }
         _ => {}
     }
     groups
         .into_iter()
-        .filter_map(|(paths, color)| {
+        .filter_map(|(paths, color, m)| {
             let cs: Vec<Vec<[f64; 2]>> = paths.iter().flat_map(|bp| contours(bp, 0.25)).collect();
             let outlines = model::extrude::group_contours(cs);
             if outlines.is_empty() {
                 return None;
             }
-            Some((model::extrude::extrude(&outlines, p), color))
+            Some((model::extrude::extrude(&outlines, p), color, m))
         })
         .collect()
 }
@@ -567,7 +569,7 @@ fn extruded_layer(r: &Renderer, ctx: &EvalCtx, layer: &Layer, p: &model::extrude
     let opacity = (ctx.opacity(layer) as f32 * r.opacity_mul()).clamp(0.0, 1.0);
     let world = ctx.world_matrix(layer);
     let lin = b.s.linear_io;
-    for (mesh, c) in extruded_meshes(ctx, layer, p) {
+    for (mesh, c, local) in extruded_meshes(ctx, layer, p) {
         let l = |v: f32| if lin { v } else { srgb_to_linear(v) };
         let m = b.material(Material {
             base: [l(c[0]), l(c[1]), l(c[2]), c[3]],
@@ -576,7 +578,8 @@ fn extruded_layer(r: &Renderer, ctx: &EvalCtx, layer: &Layer, p: &model::extrude
             double_sided: false,
             ..base
         });
-        b.emit(&mesh, m, &|_| world);
+        let xf = world * local;
+        b.emit(&mesh, m, &|_| xf);
     }
 }
 

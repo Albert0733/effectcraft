@@ -197,7 +197,8 @@ fn shadow_factor(m: u32, p: vec3<f32>, n_l: f32) -> f32 {
         v = q.y * focal / q.z + c;
     }
     let z = q.z;
-    let bias = extra.x * (1.0 + 2.0 * (1.0 - clamp(n_l, 0.0, 1.0))) + abs(z) * 0.0015;
+    let texel = select(abs(z) / focal, 1.0 / focal, ortho);
+    let bias = extra.x * texel * (1.0 + extra.y) * (1.0 + 3.0 * (1.0 - clamp(n_l, 0.0, 1.0)));
     let step = extra.y / 2.0;
     let sz = i32(size);
     var lit = 0.0;

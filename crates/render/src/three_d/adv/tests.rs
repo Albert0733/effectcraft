@@ -308,7 +308,7 @@ fn extruded_text_renders_as_a_mesh() {
     let params = scene::extrusion_params(&ctx, l).unwrap();
     let meshes = scene::extruded_meshes(&ctx, l, &params);
     assert!(!meshes.is_empty());
-    assert!(meshes.iter().all(|(m, _)| m.positions.iter().any(|q| (q[2] - 30.0).abs() < 1e-3)));
+    assert!(meshes.iter().all(|(m, _, _)| m.positions.iter().any(|q| (q[2] - 30.0).abs() < 1e-3)));
     let img = render(&p, cid);
     assert!(img.data.iter().filter(|q| q[3] > 0.5).count() > 200);
 }
