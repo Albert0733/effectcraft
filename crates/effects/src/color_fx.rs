@@ -634,28 +634,204 @@ fn colorama_phase(c: [f32; 3], a: f32, mode: u32) -> f32 {
     v.clamp(0.0, 1.0)
 }
 
-/// Colorama with the built-in hue-cycle output palette: the chosen input attribute, shifted by
-/// Phase Shift and repeated Cycle Repetitions times, picks a colour on the cycle (Interpolate
-/// Palette off posterizes to the palette's six colours).
+/// Colorama's Output Cycle presets (our own palettes; Custom uses the Palette parameter).
+pub const COLORAMA_PRESETS: [&str; 9] = ["Hue Cycle", "Ramp Grayscale", "Fire", "Ice", "Ramp Red", "Ramp Green", "Ramp Blue", "Pastel Cycle", "Custom"];
+/// Colorama's Modify options: which channels of the pixel take the palette colour.
+const COLORAMA_MODIFY: [&str; 12] =
+    ["All", "Red", "Green", "Blue", "Hue", "Lightness", "Saturation", "Value", "Red & Green", "Green & Blue", "Blue & Red", "None"];
+
+/// An output cycle: colour stops around the wheel (position 0..1, straight RGBA), cyclic.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ColoramaPalette {
+    pub stops: Vec<(f32, [f32; 4])>,
+}
+
+impl ColoramaPalette {
+    /// Built-in palette `i` of [`COLORAMA_PRESETS`].
+    pub fn preset(i: u32) -> ColoramaPalette {
+        let s = |v: &[(f32, [f32; 3])]| ColoramaPalette { stops: v.iter().map(|(p, c)| (*p, [c[0], c[1], c[2], 1.0])).collect() };
+        match i {
+            1 => s(&[(0.0, [0.0; 3]), (0.999, [1.0; 3])]),
+            2 => s(&[(0.0, [0.0, 0.0, 0.0]), (0.3, [0.7, 0.05, 0.0]), (0.6, [1.0, 0.55, 0.0]), (0.85, [1.0, 0.95, 0.4]), (0.999, [1.0, 1.0, 1.0])]),
+            3 => s(&[(0.0, [0.0, 0.0, 0.1]), (0.4, [0.1, 0.3, 0.8]), (0.75, [0.5, 0.85, 1.0]), (0.999, [1.0, 1.0, 1.0])]),
+            4 => s(&[(0.0, [0.0; 3]), (0.999, [1.0, 0.0, 0.0])]),
+            5 => s(&[(0.0, [0.0; 3]), (0.999, [0.0, 1.0, 0.0])]),
+            6 => s(&[(0.0, [0.0; 3]), (0.999, [0.0, 0.0, 1.0])]),
+            7 => s(&[(0.0, [1.0, 0.7, 0.7]), (1.0 / 3.0, [0.7, 1.0, 0.7]), (2.0 / 3.0, [0.7, 0.7, 1.0])]),
+            _ => s(&[
+                (0.0, [1.0, 0.0, 0.0]),
+                (1.0 / 6.0, [1.0, 1.0, 0.0]),
+                (2.0 / 6.0, [0.0, 1.0, 0.0]),
+                (3.0 / 6.0, [0.0, 1.0, 1.0]),
+                (4.0 / 6.0, [0.0, 0.0, 1.0]),
+                (5.0 / 6.0, [1.0, 0.0, 1.0]),
+            ]),
+        }
+    }
+
+    /// Parse "pos:r,g,b[,a] pos:r,g,b …" (positions 0..1, channels 0..1). `None` without stops.
+    pub fn parse(s: &str) -> Option<ColoramaPalette> {
+        let mut stops: Vec<(f32, [f32; 4])> = s
+            .split_whitespace()
+            .filter_map(|t| {
+                let (pos, c) = t.split_once(':')?;
+                let v: Vec<f32> = c.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                (v.len() >= 3).then(|| (pos.trim().parse::<f32>().ok().map(|p| p.rem_euclid(1.0)), [v[0], v[1], v[2], v.get(3).copied().unwrap_or(1.0)]))
+            })
+            .filter_map(|(p, c)| p.map(|p| (p, c)))
+            .collect();
+        stops.sort_by(|a, b| a.0.total_cmp(&b.0));
+        (!stops.is_empty()).then_some(ColoramaPalette { stops })
+    }
+
+    /// The colour at phase `ph` (0..1). Interpolate Palette blends between neighbouring stops
+    /// (around the wheel); off, each phase takes the stop at or before it.
+    pub fn eval(&self, ph: f32, interpolate: bool) -> [f32; 4] {
+        let n = self.stops.len();
+        let ph = ph.rem_euclid(1.0);
+        let k = self.stops.iter().rposition(|s| s.0 <= ph).unwrap_or(n - 1);
+        let (p0, c0) = self.stops[k];
+        if !interpolate || n == 1 {
+            return c0;
+        }
+        let (p1, c1) = self.stops[(k + 1) % n];
+        let span = (p1 - p0).rem_euclid(1.0).max(1e-6);
+        let t = ((ph - p0).rem_euclid(1.0) / span).clamp(0.0, 1.0);
+        std::array::from_fn(|i| c0[i] + (c1[i] - c0[i]) * t)
+    }
+}
+
+/// How well colour `c` matches `key` (1 = matches) for Pixel Selection's Matching Mode
+/// (1 RGB, 2 Hue, 3 Chroma), with Matching Tolerance / Softness (0..1).
+fn colorama_match(c: [f32; 3], key: [f32; 3], mode: u32, tol: f32, soft: f32) -> f32 {
+    let d = match mode {
+        2 => {
+            let (h1, s1, _) = rgb_to_hsl(c[0], c[1], c[2]);
+            let (h2, _, _) = rgb_to_hsl(key[0], key[1], key[2]);
+            let dh = (h1 - h2).abs();
+            dh.min(1.0 - dh) * 2.0 + (1.0 - s1.min(1.0)) * 0.5
+        }
+        3 => {
+            // Chroma: the colour without its brightness.
+            let n = |c: [f32; 3]| {
+                let s = c[0] + c[1] + c[2];
+                if s > 1e-5 { [c[0] / s, c[1] / s, c[2] / s] } else { [1.0 / 3.0; 3] }
+            };
+            let (a, b) = (n(c), n(key));
+            ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt() * 1.5
+        }
+        _ => ((c[0] - key[0]).powi(2) + (c[1] - key[1]).powi(2) + (c[2] - key[2]).powi(2)).sqrt() / 3f32.sqrt(),
+    };
+    if d <= tol {
+        1.0
+    } else if soft > 0.0 {
+        (1.0 - (d - tol) / soft).clamp(0.0, 1.0)
+    } else {
+        0.0
+    }
+}
+
+/// Colorama: a phase taken from the pixel (Get Phase From, optionally combined with an Add
+/// Phase layer), shifted and repeated around the Output Cycle, picks a palette colour, which
+/// replaces the channels Modify names. Pixel Selection limits it to colours near Matching
+/// Color; Masking to where a mask layer allows; Blend With Original mixes the result back.
 fn colorama(ctx: &EffectCtx, mut b: Buf) -> Buf {
-    let shift = ctx.params.f("inputPhase/phaseShift") as f32 / 360.0;
-    let mode = ctx.params.e("inputPhase/mode");
-    let cycles = ctx.params.f("outputCycle/cycles").max(0.0) as f32;
-    let smooth = ctx.params.get("outputCycle/interpolatePalette").is_none_or(|v| v.as_bool());
-    let blend = 1.0 - ctx.params.f("blend") as f32 / 100.0;
-    b.img.data.iter_mut().for_each(|px| {
+    let pr = ctx.params;
+    let shift = pr.f("inputPhase/phaseShift") as f32 / 360.0;
+    let mode = pr.e("inputPhase/mode");
+    let cycles = pr.f("outputCycle/cycles").max(0.0) as f32;
+    let smooth = pr.get("outputCycle/interpolatePalette").is_none_or(|v| v.as_bool());
+    let preset = pr.e("outputCycle/usePresetPalette");
+    let palette = if preset as usize == COLORAMA_PRESETS.len() - 1 { ColoramaPalette::parse(pr.s("outputCycle/palette")) } else { None }
+        .unwrap_or_else(|| ColoramaPalette::preset(preset));
+    let blend = 1.0 - pr.f("blend") as f32 / 100.0;
+    // Add Phase.
+    let add = ctx.layer_param("inputPhase/addPhase", true).map(|o| crate::util::fit_layer(ctx, &b, &o, true));
+    let add_from = pr.e("inputPhase/addPhaseFrom");
+    let add_mode = pr.e("inputPhase/addMode");
+    // Modify.
+    let modify = pr.e("modify/modify");
+    let modify_alpha = pr.b("modify/modifyAlpha");
+    let change_empty = pr.b("modify/changeEmptyPixels");
+    // Pixel Selection.
+    let match_mode = pr.e("pixelSelection/matchingMode");
+    let key = pr.color("pixelSelection/matchingColor");
+    let tol = (pr.f("pixelSelection/matchingTolerance") / 100.0) as f32;
+    let soft = (pr.f("pixelSelection/matchingSoftness") / 100.0) as f32;
+    // Masking.
+    let mask_mode = pr.e("masking/maskingMode");
+    let mask = (mask_mode != 0).then(|| ctx.layer_param("masking/maskLayer", true).map(|o| crate::util::fit_layer(ctx, &b, &o, true))).flatten();
+    let composite = pr.get("masking/compositeOverLayer").is_none_or(|v| v.as_bool());
+    use rayon::prelude::*;
+    b.img.data.par_iter_mut().enumerate().for_each(|(i, px)| {
         let a = px[3];
-        if a <= 0.0 {
+        if a <= 0.0 && !change_empty {
             return;
         }
-        let c = [px[0] / a, px[1] / a, px[2] / a];
-        let mut ph = (colorama_phase(c, a, mode) * cycles + shift).rem_euclid(1.0);
-        if !smooth {
-            ph = (ph * 6.0).floor() / 6.0;
+        let c = if a > 0.0 { [px[0] / a, px[1] / a, px[2] / a] } else { [0.0; 3] };
+        let mut p = colorama_phase(c, a, mode);
+        if let Some(img) = &add {
+            let (ac, aa) = crate::util::unpremul(img.data[i]);
+            let q = colorama_phase(ac, aa, add_from);
+            p = match add_mode {
+                1 => (p + q).min(1.0),
+                2 => (p + q) * 0.5,
+                3 => p + q - p * q,
+                _ => (p + q).rem_euclid(1.0),
+            };
         }
-        let (r, g, bl) = effectcraft_color::hsv_to_rgb(ph, 1.0, 1.0);
-        let o = mix(c, [r, g, bl], blend);
-        *px = [o[0] * a, o[1] * a, o[2] * a, a];
+        let ph = (p * cycles + shift).rem_euclid(1.0);
+        let pc = palette.eval(ph, smooth);
+        let (h, s, l) = rgb_to_hsl(c[0], c[1], c[2]);
+        let (ph_, ps, pl) = rgb_to_hsl(pc[0], pc[1], pc[2]);
+        let hl = |h: f32, s: f32, l: f32| {
+            let (r, g, bb) = hsl_to_rgb(h, s, l);
+            [r, g, bb]
+        };
+        let new: [f32; 3] = match modify {
+            1 => [pc[0], c[1], c[2]],
+            2 => [c[0], pc[1], c[2]],
+            3 => [c[0], c[1], pc[2]],
+            4 => hl(ph_, s, l),
+            5 => hl(h, s, pl),
+            6 => hl(h, ps, l),
+            7 => {
+                // Value: scale the colour to the palette colour's maximum.
+                let (m, pm) = (c[0].max(c[1]).max(c[2]), pc[0].max(pc[1]).max(pc[2]));
+                if m > 1e-6 { c.map(|v| v * pm / m) } else { [pm; 3] }
+            }
+            8 => [pc[0], pc[1], c[2]],
+            9 => [c[0], pc[1], pc[2]],
+            10 => [pc[0], c[1], pc[2]],
+            11 => c,
+            _ => [pc[0], pc[1], pc[2]],
+        };
+        let new_a = if modify_alpha {
+            pc[3]
+        } else if a > 0.0 {
+            a
+        } else {
+            1.0
+        };
+        // Where the effect applies: Pixel Selection × Masking.
+        let mut w = if match_mode == 0 { 1.0 } else { colorama_match(c, [key[0], key[1], key[2]], match_mode, tol, soft) };
+        if let Some(m) = &mask {
+            let (mc, ma) = crate::util::unpremul(m.data[i]);
+            let lum = luminance(mc[0], mc[1], mc[2]) * ma;
+            w *= match mask_mode {
+                1 => lum,
+                2 => 1.0 - lum,
+                3 => ma,
+                _ => 1.0 - ma,
+            }
+            .clamp(0.0, 1.0);
+        }
+        let k = w * blend;
+        let o = mix(c, new, k);
+        let oa = a + (new_a - a) * k;
+        // Composite Over Layer off: only the affected pixels remain.
+        let oa = if composite { oa } else { oa * w };
+        *px = [o[0] * oa, o[1] * oa, o[2] * oa, oa.clamp(0.0, 1.0)];
     });
     b
 }
@@ -919,9 +1095,30 @@ pub fn specs() -> Vec<EffectSpec> {
             "Colorama",
             vec![
                 p("inputPhase/mode", "Get Phase From", Value::Enum(0), popup(&COLORAMA_PHASE)),
+                p("inputPhase/addPhase", "Add Phase", Value::Layer(None), ParamUi::Layer),
+                p("inputPhase/addPhaseFrom", "Add Phase From", Value::Enum(0), popup(&COLORAMA_PHASE)),
+                p("inputPhase/addMode", "Add Mode", Value::Enum(0), popup(&["Wrap", "Clamp", "Average", "Screen"])),
                 p("inputPhase/phaseShift", "Phase Shift", num(0.0), ParamUi::Angle),
+                p("outputCycle/usePresetPalette", "Use Preset Palette", Value::Enum(0), popup(&COLORAMA_PRESETS)),
+                // Use Preset Palette = Custom: "position:r,g,b[,a] …" around the wheel.
+                p(
+                    "outputCycle/palette",
+                    "Output Cycle",
+                    Value::Str("0:1,0,0 0.1667:1,1,0 0.3333:0,1,0 0.5:0,1,1 0.6667:0,0,1 0.8333:1,0,1".into()),
+                    ParamUi::Text,
+                ),
                 p("outputCycle/cycles", "Cycle Repetitions", num(1.0), slider(0.0, 100.0, 0.0, 10.0, 1)),
                 p("outputCycle/interpolatePalette", "Interpolate Palette", Value::Bool(true), ParamUi::Checkbox),
+                p("modify/modify", "Modify", Value::Enum(0), popup(&COLORAMA_MODIFY)),
+                p("modify/modifyAlpha", "Modify Alpha", Value::Bool(false), ParamUi::Checkbox),
+                p("modify/changeEmptyPixels", "Change Empty Pixels", Value::Bool(false), ParamUi::Checkbox),
+                p("pixelSelection/matchingColor", "Matching Color", col(1.0, 1.0, 1.0), ParamUi::Color),
+                p("pixelSelection/matchingTolerance", "Matching Tolerance", num(0.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
+                p("pixelSelection/matchingSoftness", "Matching Softness", num(0.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
+                p("pixelSelection/matchingMode", "Matching Mode", Value::Enum(0), popup(&["Off", "RGB", "Hue", "Chroma"])),
+                p("masking/maskLayer", "Mask Layer", Value::Layer(None), ParamUi::Layer),
+                p("masking/maskingMode", "Masking Mode", Value::Enum(0), popup(&["Off", "Luminance", "Inverted Luminance", "Alpha", "Inverted Alpha"])),
+                p("masking/compositeOverLayer", "Composite Over Layer", Value::Bool(true), ParamUi::Checkbox),
                 p("blend", "Blend With Original", num(0.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
             ],
             colorama,
@@ -1157,5 +1354,45 @@ mod tests {
         // Without masks, Fill fills the layer as before.
         let plain = run_fx("ec.generate.fill", &[("fillMask", num(1.0))], grey.clone(), 0.0, EffectEnv::default()).img;
         assert_eq!(plain.get(10, 5), [1.0, 0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn colorama_palettes_modify_selection_masking_and_add_phase() {
+        let grey = [0.5, 0.5, 0.5, 1.0];
+        let red = [1.0, 0.0, 0.0, 1.0];
+        // Ramp Grayscale: intensity 0.5 maps to mid grey.
+        let g = px("ec.color.colorama", &[("outputCycle/usePresetPalette", Value::Enum(1))], grey);
+        assert!((g[0] - 0.5).abs() < 0.01 && (g[0] - g[2]).abs() < 1e-5, "{g:?}");
+        // Custom palette: two stops, black at 0 and blue at 0.5.
+        let custom = [("outputCycle/usePresetPalette", Value::Enum(8)), ("outputCycle/palette", Value::Str("0:0,0,0 0.5:0,0,1".into()))];
+        let c = px("ec.color.colorama", &custom, grey);
+        assert!(c[2] > 0.99 && c[0] < 0.01, "{c:?}");
+        // Modify Lightness keeps the hue of the pixel (red stays red).
+        let l = px("ec.color.colorama", &[("modify/modify", Value::Enum(5)), ("outputCycle/usePresetPalette", Value::Enum(1))], red);
+        assert!(l[0] > l[1] + 0.2 && l[1] < 0.01 + l[2] + 1e-4, "{l:?}");
+        // Pixel Selection: only colours near Matching Color change.
+        let sel = [
+            ("pixelSelection/matchingMode", Value::Enum(1)),
+            ("pixelSelection/matchingColor", col(1.0, 0.0, 0.0)),
+            ("pixelSelection/matchingTolerance", num(10.0)),
+        ];
+        assert!(close(px("ec.color.colorama", &sel, grey), grey, 1e-6));
+        assert!(!close(px("ec.color.colorama", &sel, red), red, 1e-3));
+        // Composite Over Layer off: unselected pixels vanish.
+        let mut off = sel.to_vec();
+        off.push(("masking/compositeOverLayer", Value::Bool(false)));
+        assert_eq!(px("ec.color.colorama", &off, grey)[3], 0.0);
+        // Modify Alpha takes the palette alpha.
+        let alpha = [
+            ("outputCycle/usePresetPalette", Value::Enum(8)),
+            ("outputCycle/palette", Value::Str("0:1,1,1,0.25".into())),
+            ("modify/modifyAlpha", Value::Bool(true)),
+        ];
+        assert!((px("ec.color.colorama", &alpha, grey)[3] - 0.25).abs() < 1e-5);
+        // Palette parsing and evaluation.
+        let p = ColoramaPalette::parse("0.5:0,0,1 0:1,0,0").unwrap();
+        assert_eq!(p.eval(0.25, true), [0.5, 0.0, 0.5, 1.0]);
+        assert_eq!(p.eval(0.75, true), [0.5, 0.0, 0.5, 1.0], "wraps around");
+        assert_eq!(p.eval(0.25, false), [1.0, 0.0, 0.0, 1.0]);
     }
 }

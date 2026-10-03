@@ -8,9 +8,6 @@ use crate::{CATEGORIES, registry};
 /// `(effect id, what is missing)`. Everything else in the registry is implemented in full as far
 /// as the public behaviour documentation describes it.
 pub const PARTIAL: &[(&str, &str)] = &[
-    ("ec.blur.cameralens", "no Diffraction Fringe or Blur Map layer"),
-    ("ec.color.colorama", "no Add Phase, editable Output Cycle, Modify, Pixel Selection or Masking"),
-    ("ec.color.selectivecolor", "simplified Colors / Details layout"),
     ("ec.distort.reshape", "no correspondence points"),
     ("ec.distort.rollingshutterrepair", "Pixel Motion Detail has no effect"),
     ("ec.generate.advancedlightning", "no Alpha Obstacle; most Expert Settings missing"),
@@ -61,6 +58,13 @@ pub fn param_shown(effect: &str, param: &str, value: &dyn Fn(&str) -> Option<eff
                 _ => true,
             }
         }
+        "ec.color.selectivecolor" => match param.strip_prefix("details/") {
+            Some(rest) => {
+                let g = rest.split('/').next().unwrap_or("");
+                crate::color2::SC_GROUPS.iter().position(|x| *x == g).is_none_or(|i| i == e("colors") as usize)
+            }
+            None => true,
+        },
         "ec.sim.carddance" | "ec.transition.cardwipe" => crate::card3d::shown(param, &e).unwrap_or(true),
         "ec.sim.shatter" => match param {
             "shape/customShatterMap" | "shape/whiteTilesFixed" => e("shape/pattern") == 5,
@@ -141,6 +145,34 @@ mod tests {
         }
         let have = std::fs::read_to_string(path).unwrap_or_default();
         assert!(have == want, "docs/effects.md is stale: UPDATE_DOCS=1 cargo test -p effectcraft-effects --lib effects_doc_is_current");
+    }
+
+    #[test]
+    fn popups_choose_the_shown_controls() {
+        use effectcraft_keyframe::Value;
+        let with = |pairs: &'static [(&'static str, u32)]| move |id: &str| pairs.iter().find(|(k, _)| *k == id).map(|(_, v)| Value::Enum(*v));
+        let shown = |e: &str, p: &str, pairs: &'static [(&'static str, u32)]| super::param_shown(e, p, &with(pairs));
+        // Levels: RGB shows the master controls only; Red shows the red ones.
+        assert!(shown("ec.color.levels", "inBlack", &[]));
+        assert!(!shown("ec.color.levels", "redInBlack", &[]));
+        assert!(shown("ec.color.levels", "redInBlack", &[("channel", 1)]));
+        assert!(!shown("ec.color.levels", "inBlack", &[("channel", 1)]));
+        assert!(shown("ec.color.levels", "channel", &[("channel", 1)]));
+        // Hue/Saturation: Master or one colour range.
+        assert!(shown("ec.color.huesaturation", "hue", &[]));
+        assert!(shown("ec.color.huesaturation", "bluesHue", &[("channelControl", 5)]));
+        assert!(!shown("ec.color.huesaturation", "redsHue", &[("channelControl", 5)]));
+        // Card effects: the camera system's group.
+        assert!(shown("ec.sim.carddance", "cameraPosition", &[]));
+        assert!(!shown("ec.sim.carddance", "cornerPins", &[]));
+        assert!(shown("ec.transition.cardwipe", "cornerPins/upperLeftCorner", &[("cameraSystem", 1)]));
+        assert!(!shown("ec.sim.shatter", "shape/customShatterMap", &[]));
+        // Selective Color: the chosen range's Details group.
+        assert!(shown("ec.color.selectivecolor", "details/reds", &[]));
+        assert!(!shown("ec.color.selectivecolor", "details/blues/bluesCyan", &[]));
+        assert!(shown("ec.color.selectivecolor", "details", &[]));
+        // Everything else is always shown.
+        assert!(shown("ec.blur.gaussian", "blurriness", &[]));
     }
 
     #[test]

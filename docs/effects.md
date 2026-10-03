@@ -3,11 +3,11 @@
 <!-- Generated from the effect registry (crates/effects/src/catalog.rs); do not edit by hand.
      Regenerate: UPDATE_DOCS=1 cargo test -p effectcraft-effects --lib effects_doc_is_current -->
 
-EffectCraft ships 303 effects with 2751 parameters in total, grouped into the same categories as the Effects & Presets panel. Every effect is our own implementation, written from public behaviour descriptions and standard image-processing literature. Parameter names, order, popup options, units, defaults and ranges follow the reference application so that projects, expressions and muscle memory carry over.
+EffectCraft ships 303 effects with 2773 parameters in total, grouped into the same categories as the Effects & Presets panel. Every effect is our own implementation, written from public behaviour descriptions and standard image-processing literature. Parameter names, order, popup options, units, defaults and ranges follow the reference application so that projects, expressions and muscle memory carry over.
 
 - **GPU**: 24 effects also run on the GPU compositor with identical results.
 - **32**: 303 effects process 32-bit float (HDR, overbright) pixels without clamping.
-- **Status**: 284 implemented in full, 19 partial (what is missing is listed).
+- **Status**: 287 implemented in full, 16 partial (what is missing is listed).
 
 Effects are addressed by id (`ec.<category>.<name>`) or display name in commands, scripts and the control channel, and every parameter by its id (`effects/#1/blurriness`).
 
@@ -51,7 +51,7 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 | CC Radial Blur | `ec.blur.ccradial` | 4 |  | 32 | Implemented |
 | CC Radial Fast Blur | `ec.blur.ccradialfast` | 3 |  | 32 | Implemented |
 | CC Vector Blur | `ec.blur.ccvector` | 4 |  | 32 | Implemented |
-| Camera Lens Blur | `ec.blur.cameralens` | 10 |  | 32 | Partial: no Diffraction Fringe or Blur Map layer |
+| Camera Lens Blur | `ec.blur.cameralens` | 16 |  | 32 | Implemented |
 | Camera-Shake Deblur | `ec.blur.camerashakedeblur` | 8 |  | 32 | Implemented |
 | Channel Blur | `ec.blur.channel` | 6 |  | 32 | Implemented |
 | Compound Blur | `ec.blur.compound` | 4 |  | 32 | Implemented |
@@ -102,7 +102,7 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 | Color Balance (HLS) | `ec.color.colorbalancehls` | 3 |  | 32 | Implemented |
 | Color Link | `ec.color.colorlink` | 6 |  | 32 | Implemented |
 | Color Stabilizer | `ec.color.colorstabilizer` | 6 |  | 32 | Implemented |
-| Colorama | `ec.color.colorama` | 5 |  | 32 | Partial: no Add Phase, editable Output Cycle, Modify, Pixel Selection or Masking |
+| Colorama | `ec.color.colorama` | 20 |  | 32 | Implemented |
 | Curves | `ec.color.curves` | 0 | GPU | 32 | Implemented |
 | Equalize | `ec.color.equalize` | 2 |  | 32 | Implemented |
 | Exposure | `ec.color.exposure` | 14 | GPU | 32 | Implemented |
@@ -119,7 +119,7 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 | OCIO Look Transform | `ec.color.ociolook` | 6 |  | 32 | Implemented |
 | PS Arbitrary Map | `ec.color.psarbitrarymap` | 2 |  | 32 | Implemented |
 | Photo Filter | `ec.color.photofilter` | 4 |  | 32 | Implemented |
-| Selective Color | `ec.color.selectivecolor` | 37 |  | 32 | Partial: simplified Colors / Details layout |
+| Selective Color | `ec.color.selectivecolor` | 38 |  | 32 | Implemented |
 | Shadow/Highlight | `ec.color.shadowhighlight` | 14 |  | 32 | Implemented |
 | Tint | `ec.color.tint` | 3 | GPU | 32 | Implemented |
 | Tritone | `ec.color.tritone` | 4 |  | 32 | Implemented |

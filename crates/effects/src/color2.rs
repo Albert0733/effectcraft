@@ -504,6 +504,16 @@ const SC_IDS: [[&str; 4]; 9] = [
     ["neutralsCyan", "neutralsMagenta", "neutralsYellow", "neutralsBlack"],
     ["blacksCyan", "blacksMagenta", "blacksYellow", "blacksBlack"],
 ];
+/// Selective Color's Colors popup (the range whose controls Effect Controls shows) and the
+/// Details twirl-down group of each range.
+pub const SC_COLORS: [&str; 9] = ["Reds", "Yellows", "Greens", "Cyans", "Blues", "Magentas", "Whites", "Neutrals", "Blacks"];
+pub const SC_GROUPS: [&str; 9] = ["reds", "yellows", "greens", "cyans", "blues", "magentas", "whites", "neutrals", "blacks"];
+
+/// Spec id of range `r`'s control `leaf` (`details/reds/redsCyan`).
+fn sc_param_id(r: usize, leaf: &str) -> String {
+    format!("details/{}/{leaf}", SC_GROUPS[r])
+}
+
 const SC_NAMES: [[&str; 4]; 9] = [
     ["Reds Cyan", "Reds Magenta", "Reds Yellow", "Reds Black"],
     ["Yellows Cyan", "Yellows Magenta", "Yellows Yellow", "Yellows Black"],
@@ -534,7 +544,7 @@ fn sc_weights(c: [f32; 3]) -> [f32; 9] {
 }
 
 fn selective_color(ctx: &EffectCtx, mut b: Buf) -> Buf {
-    let adj = SC_IDS.map(|ids| ids.map(|id| ctx.params.f(id) as f32 / 100.0));
+    let adj: [[f32; 4]; 9] = std::array::from_fn(|r| SC_IDS[r].map(|id| ctx.params.f(&sc_param_id(r, id)) as f32 / 100.0));
     if adj.iter().all(|r| r.iter().all(|v| *v == 0.0)) {
         return b;
     }
@@ -882,10 +892,12 @@ pub fn specs() -> Vec<EffectSpec> {
     }
     lv_params.push(p("clipToOutputBlack", "Clip To Output Black", Value::Enum(2), popup(&crate::color_fx::LEVELS_CLIP)));
     lv_params.push(p("clipToOutputWhite", "Clip To Output White", Value::Enum(2), popup(&crate::color_fx::LEVELS_CLIP)));
-    let mut sc_params = vec![p("method", "Method", Value::Enum(0), popup(&["Relative", "Absolute"]))];
-    for (ids, names) in SC_IDS.iter().zip(SC_NAMES.iter()) {
+    let mut sc_params = vec![p("method", "Method", Value::Enum(0), popup(&["Relative", "Absolute"])), p("colors", "Colors", Value::Enum(0), popup(&SC_COLORS))];
+    // Details: every range's Cyan / Magenta / Yellow / Black in its own twirl-down.
+    let leak = |s: String| -> &'static str { Box::leak(s.into_boxed_str()) };
+    for (r, (ids, names)) in SC_IDS.iter().zip(SC_NAMES.iter()).enumerate() {
         for k in 0..4 {
-            sc_params.push(p(ids[k], names[k], num(0.0), pct()));
+            sc_params.push(p(leak(sc_param_id(r, ids[k])), names[k], num(0.0), pct()));
         }
     }
     let clip_params = |extra: bool| {
@@ -1146,10 +1158,10 @@ mod tests {
         let img = ramp();
         assert_eq!(run("ec.color.selectivecolor", &img, &[]), img);
         let red = Image::filled(2, 2, [1.0, 0.1, 0.1, 1.0]);
-        let out = run("ec.color.selectivecolor", &red, &[("redsCyan", num(100.0)), ("method", Value::Enum(1))]);
+        let out = run("ec.color.selectivecolor", &red, &[("details/reds/redsCyan", num(100.0)), ("method", Value::Enum(1))]);
         assert!(out.data[0][0] < 0.3, "{:?}", out.data[0]);
         let blue = Image::filled(2, 2, [0.1, 0.1, 1.0, 1.0]);
-        assert_eq!(run("ec.color.selectivecolor", &blue, &[("redsCyan", num(100.0))]), blue);
+        assert_eq!(run("ec.color.selectivecolor", &blue, &[("details/reds/redsCyan", num(100.0))]), blue);
     }
 
     #[test]

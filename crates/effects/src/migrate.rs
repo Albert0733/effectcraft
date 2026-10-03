@@ -421,4 +421,18 @@ mod tests {
         assert!(upgrade_instance(spec, &mut g, &mut Ids(&mut next), [100.0, 50.0]));
         assert_eq!(prop_at(&mut g, "persistentPropertyMapper/mapRedTo").unwrap().value, Value::Enum(15), "X Speed");
     }
+
+    #[test]
+    fn selective_color_ranges_move_into_details() {
+        let spec = find("ec.color.selectivecolor").unwrap();
+        let mut next = 1;
+        let mut g = instantiate(spec, &mut Ids(&mut next), "Selective Color", [100.0, 50.0]);
+        let mut pr = take_at(&mut g, "details/reds/redsCyan").unwrap();
+        pr.value = Value::Scalar(40.0);
+        g.children.push(pr.into());
+        assert!(upgrade_instance(spec, &mut g, &mut Ids(&mut next), [100.0, 50.0]));
+        assert!(g.get("redsCyan").is_none());
+        assert_eq!(prop_at(&mut g, "details/reds/redsCyan").unwrap().value, Value::Scalar(40.0));
+        assert_eq!(g.sub("details").unwrap().sub("reds").unwrap().name, "Reds");
+    }
 }
