@@ -155,7 +155,7 @@ fn color_engine_aces_working_spaces_and_hdr() {
     s.execute("layer.newSolid", json!({"color": "#ffffff", "width": 64, "height": 48})).unwrap();
     let lid = s.active_comp().unwrap().layers[0].id.0;
     s.execute("effect.apply", json!({"layers": [lid], "effect": "Exposure"})).unwrap();
-    s.execute("prop.set", json!({"layer": lid, "path": "effects/#1/exposure", "value": 2.0})).unwrap();
+    s.execute("prop.set", json!({"layer": lid, "path": "effects/#1/master/exposure", "value": 2.0})).unwrap();
     let mapped = s.render(cid, Tick::ZERO, RenderOpts::default()).data[0];
     assert!(mapped[0] > 0.5 && mapped[0] < 0.99, "tone mapped: {mapped:?}");
     s.execute("file.projectSettings", json!({"hdr": "clip"})).unwrap();
