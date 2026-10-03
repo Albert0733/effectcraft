@@ -2,7 +2,90 @@
 //! corrupt inputs (generated fixtures).
 
 use super::*;
-use crate::tests::{page_pdf, render};
+use crate::tests::{coverage, page_pdf, render, shape_names};
+
+fn eps(body: &[u8]) -> Doc {
+    let mut b = b"%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 200 100\n".to_vec();
+    b.extend_from_slice(body);
+    let doc = parse(&b).unwrap();
+    assert!(doc.skipped.is_empty(), "{:?}", doc.skipped);
+    doc
+}
+
+/// The ink columns `(x0, x1)` of a render (alpha > 0.5).
+fn ink_x(img: &effectcraft_raster::Image) -> (i64, i64) {
+    let (mut x0, mut x1) = (i64::MAX, i64::MIN);
+    for y in 0..img.height as i64 {
+        for x in 0..img.width as i64 {
+            if img.get(x, y)[3] > 0.5 {
+                (x0, x1) = (x0.min(x), x1.max(x));
+            }
+        }
+    }
+    (x0, x1)
+}
+
+#[test]
+fn eps_text_with_bundled_fonts_and_show_variants() {
+    // Not embedded: drawn with the bundled stand-in, like the same text in a PDF.
+    let doc = eps(b"/Helvetica findfont 40 scalefont setfont 10 30 moveto (Hi) show\n");
+    assert_eq!(shape_names(&doc), vec!["Text: Hi"]);
+    let pdf = parse(&page_pdf("BT /F1 40 Tf 10 30 Td (Hi) Tj ET", "/Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >>", vec![])).unwrap();
+    let (a, b) = (render(&doc), render(&pdf));
+    let (ia, ib) = (coverage(&a, 0, 0, 200, 100), coverage(&b, 0, 0, 200, 100));
+    assert!(ia > 100.0 && (ia - ib).abs() < 1.0, "eps {ia} vs pdf {ib}");
+    assert_eq!(ink_x(&a), ink_x(&b));
+    // ashow spreads the letters; widthshow widens spaces only; selectfont; stringwidth centres.
+    let plain = ink_x(&render(&eps(b"/Helvetica 30 selectfont 10 30 moveto (HHH) show\n")));
+    let spread = ink_x(&render(&eps(b"/Helvetica 30 selectfont 10 30 moveto 10 0 (HHH) ashow\n")));
+    assert_eq!(spread.0, plain.0);
+    assert!(((spread.1 - plain.1) - 20).abs() <= 1, "{plain:?} {spread:?}");
+    let ws = ink_x(&render(&eps(b"/Helvetica 30 selectfont 10 30 moveto 15 0 72 (HHH) widthshow\n")));
+    assert!(((ws.1 - plain.1) - 30).abs() <= 1, "{plain:?} {ws:?}");
+    let centred = ink_x(&render(&eps(b"/Helvetica 30 selectfont 100 (HHH) stringwidth pop 2 div sub 30 moveto (HHH) show\n")));
+    let mid = (centred.0 + centred.1) as f64 / 2.0;
+    assert!((mid - 100.0).abs() < 3.0, "{centred:?}");
+    // xshow: explicit advances.
+    let xs = ink_x(&render(&eps(b"/Helvetica 30 selectfont 10 30 moveto (HH) [50 0] xshow\n")));
+    let one = ink_x(&render(&eps(b"/Helvetica 30 selectfont 10 30 moveto (H) show\n")));
+    assert!(((xs.1 - one.1) - 50).abs() <= 1, "{one:?} {xs:?}");
+    // makefont mirrors; charpath clips; colour applies.
+    let doc = eps(b"1 0 0 setrgbcolor /Helvetica findfont [40 0 0 40 0 0] makefont setfont 10 30 moveto (I) false charpath clip 0 0 200 100 rectfill\n");
+    let img = render(&doc);
+    assert!(coverage(&img, 0, 0, 200, 100) > 50.0);
+    assert!(coverage(&img, 60, 0, 200, 100) < 1.0, "only the glyph is painted");
+}
+
+#[test]
+fn eps_text_with_an_embedded_type1_font_and_reencoding() {
+    // hsbw 50 600; 0 0 rmoveto; 500 hlineto 500 vlineto -500 hlineto closepath endchar
+    let cs = vec![50 + 139, 248, 236, 13, 139, 139, 21, 248, 136, 6, 248, 136, 7, 252, 136, 6, 9, 14];
+    let raw = crate::type1::write_test_type1(&[(".notdef", vec![139, 139, 13, 14]), ("box", cs)], &[(66, "box")]);
+    // Give the program a name.
+    let mut font = vec![];
+    let nl = raw.iter().position(|c| *c == b'\n').unwrap() + 1;
+    font.extend_from_slice(&raw[..nl]);
+    font.extend_from_slice(b"12 dict begin /FontName /BoxFont def /FontType 1 def\n");
+    font.extend_from_slice(&raw[nl..]);
+    let mut body = font.clone();
+    body.extend_from_slice(b"\n/BoxFont findfont 100 scalefont setfont 0 0 moveto (BB) show\n");
+    let doc = eps(&body);
+    let img = render(&doc);
+    // Boxes 50..550 / 650..1150 font units at size 100: x 5..55 and 65..115, y 0..50.
+    for (x, on) in [(30, true), (60, false), (90, true), (120, false)] {
+        assert_eq!(img.get(x, 75)[3] > 0.99, on, "x = {x}");
+    }
+    // Re-encoded copy (`forall` / `definefont`): code 65 → box.
+    let mut body = font;
+    body.extend_from_slice(
+        b"\n/BoxFont findfont dup length dict begin { 1 index /FID ne { def } { pop pop } ifelse } forall \
+/Encoding 256 array def 0 1 255 { Encoding exch /.notdef put } for Encoding 65 /box put currentdict end \
+/BoxA exch definefont pop /BoxA findfont 100 scalefont setfont 0 0 moveto (AB) show\n",
+    );
+    let img = render(&eps(&body));
+    assert!(img.get(30, 75)[3] > 0.99, "A is the box now");
+    assert!(img.get(90, 75)[3] < 0.01, "B is unencoded");
+}
 
 /// An image XObject of `img` (black = true) CCITT-encoded with `k`, drawn over the page.
 fn ccitt_page(img: &[Vec<bool>], k: i64, mask: bool) -> Doc {

@@ -119,7 +119,8 @@ showpage\n%%EOF\n";
 fn eps_postscript_subset() {
     let doc = parse(EPS.as_bytes()).unwrap();
     assert_eq!((doc.width, doc.height), (100.0, 100.0));
-    assert!(doc.skipped.contains(&"text".to_string()));
+    assert!(doc.skipped.is_empty(), "{:?}", doc.skipped);
+    assert!(shape_names(&doc).contains(&"Text: text".to_string()), "EPS text is drawn: {:?}", shape_names(&doc));
     let at = |x, y| px(&doc, x, y);
     assert!(at(25, 75)[0] > 0.99 && at(25, 75)[3] > 0.99, "red box {:?}", at(25, 75));
     assert!(at(70, 50)[2] > 0.99, "blue disc {:?}", at(70, 50));
