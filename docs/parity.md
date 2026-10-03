@@ -2,30 +2,49 @@
 
 How close EffectCraft is to After Effects 2026, feature by feature, and how much work is left.
 
-## Current status (audit at commit `978e8d7`, 3 October 2026)
+## Current status (audit at commit `58163a2`, 3 October 2026, evening)
 
 | Measure | Value |
 |---|---|
-| **Feature parity, weighted by tier** (P0 ×3, P1 ×2, P2 ×1) | **≈ 94%** counting every partial feature as half done; ≈ 98% using per-feature fractions |
-| Unweighted | ≈ 94% (half-credit) / 98% (fractions) |
-| P0 / P1 / P2 | ≈ 96% / 92% / 85% (half-credit); 99% / 97% / 96% (fractions) |
-| Features done / partial / missing | 80 / 12 / 0 of 92 |
-| **Effects** | **298 of 298** After Effects 2026 effects exist, all implemented in full ([effects.md](effects.md)); 166 run on the GPU |
-| Disabled menu entries left | 0 (the stub list is empty) |
-| Remaining work | ≈ 19–22 agent-hours at the pace measured so far (≈ 58 on the conservative audit scale) |
-| **Wall-clock estimate** | **≈ 4–5 hours** with five agents in parallel; ≈ 3 hours for 100% of P0 + P1 |
+| **Feature parity, weighted by tier** (P0 ×3, P1 ×2, P2 ×1) | **≈ 98%** counting every partial feature as half done; ≈ 99.6% using per-feature fractions |
+| Unweighted | ≈ 97% (half-credit) / 99% (fractions) |
+| P0 / P1 / P2 | ≈ 99% / 96% / 90% (half-credit); 99.8% / 99.2% / 97.5% (fractions) |
+| Features done / partial / missing | 87 / 5 / 0 of 92 |
+| **Effects** | **306** effects (all After Effects 2026 effects), every one implemented in full ([effects.md](effects.md)); 166 run on the GPU |
+| Disabled menu entries left | 1, on purpose: Import ▸ Vanishing Point (.vpe), whose format has no public specification |
+| Remaining work | ≈ 9–11 agent-hours at the pace measured so far (≈ 29 on the conservative audit scale); ≈ 6–7 without the learned-model items |
+| **Wall-clock estimate** | **≈ 2–2.5 hours** with five agents in parallel; ≈ 1.5 hours for 100% of P0 + P1 |
 
-Partial features: GPU coverage (Advanced 3D, more GPU effects), the web app (GPU effects and
-the disk cache in the browser; M13.10 moved viewer frames and Roto Brush off the page's thread), Essential Graphics mirrored properties, and the learned-model quality
-of Roto Brush and face tracking (both are classical). Since this audit, M9.13 completed all 42
-simplified effects, M13.5 added the Learn panel, and M13.8 the Preview panel settings, Align to
-Selection / Distribute and Advanced 3D iris DOF, collapsed precomps and extruded strokes. M13.7 added ScriptUI resource strings,
-`onDraw` (ScriptUIGraphics draw lists), live `onChanging`, `Socket`, the Essential Graphics
-scripting hooks and Font / uniform Scale controls, and the last missing menu items: Save Frame As ▸
-Photoshop Layers / ProEXR, Composition ▸ Open in Essential Graphics, File ▸ Watch Folder,
-Window ▸ Create Nulls From Paths / VR Comp Editor (built-in panels) and Help ▸ In-App / Online
-Tutorials. File ▸ Import ▸ Vanishing Point (.vpe) is present but permanently disabled: the format
-has no public specification, so a clean-room implementation is not possible (its tooltip says so).
+Partial features:
+
+| id | Tier | Done | What is missing |
+|---|---|---|---|
+| EFF-5 GPU effects | P1 | 0.85 | GPU kernels for the CC light / transition families, Numbers and Timecode, 3D Channel, the VR family, OCIO / LUT, Time effects and the simulations; Advanced 3D runs with blend modes, track mattes or environment backgrounds composite on the CPU |
+| WEB-1 Web app | P0 | 0.9 | GPU effects in the browser (needs WebGPU in the render workers or async readback), a disk cache in browser storage (OPFS), a storage manager, threads inside one engine instance |
+| UI-7 Home screen | P1 | 0.95 | A "start from a template" gallery |
+| MSK-4 Roto Brush | P2 | 0.85 | Segmentation is classical (graph cut + optical flow), not a learned model |
+| TRK-3 Face tracking | P2 | 0.9 | Classical fitter: weak on profile and occluded faces; Rolling Shutter Ripple is approximated |
+
+Since the previous audit, M9.13 completed all 42 simplified effects; M13.4 added HEVC and AV1
+export and Opus SILK / hybrid; M13.5 the Learn tab and Extended Viewer; M13.6 and M13.12 text,
+images, shadings and transparency groups in PDF/AI/EPS import, variable fonts and PSD warps;
+M13.7 ScriptUI resource strings, `onDraw` and `Socket`, Essential Graphics scripting hooks and
+the last menu items; M13.8 the Preview panel, Align to Selection / Distribute and Advanced 3D
+iris depth of field, collapsed precomps and extruded strokes; M13.9 and M13.13 107 more GPU
+effects, a texture pool and per-comp CPU/GPU choice; M13.10 render workers in the browser and
+visual editors for curves and palettes; M13.11 Advanced 3D on the GPU and Essential Graphics
+mirrors; M13.14–M13.20 puppet pin editing and rigging; M13.15 end-to-end tests through MCP and
+the CLI; M13.21 lazy project open, virtualised panels, background auto-save and an audit that
+every command is reachable over MCP, the control channel and the CLI.
+
+Out of clean-room scope (no public specification or no permissively licensed data): `.jsxbin`,
+Vanishing Point `.vpe`, the predefined CJK CMaps in PDF import, Kodak film emulations. Adobe
+service integrations (Team Projects, Libraries, Media Encoder, Dynamic Link, Frame.io, Exchange)
+and third-party plug-ins (Cinema 4D, Mocha) are intentionally absent.
+
+### Previous audit (commit `978e8d7`, 3 October 2026): ≈ 94%
+
+80 done / 12 partial / 0 missing.
 
 ### Previous audit (commit `fa26ad9`, 2 October 2026, late): ≈ 93%
 
