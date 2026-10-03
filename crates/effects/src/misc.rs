@@ -120,12 +120,48 @@ pub(crate) fn glow_ab_t(l: f32, looping: u32, loops: f32, phase: f32, mid: f32) 
     t.max(0.0).powf(0.5f32.ln() / m.ln())
 }
 
+/// Glow Operation options (blend modes the glow is applied with).
+pub const GLOW_OPERATIONS: [&str; 17] = [
+    "Normal",
+    "Add",
+    "Multiply",
+    "Screen",
+    "Overlay",
+    "Soft Light",
+    "Hard Light",
+    "Color Dodge",
+    "Color Burn",
+    "Darken",
+    "Lighten",
+    "Difference",
+    "Exclusion",
+    "Hue",
+    "Saturation",
+    "Color",
+    "Luminosity",
+];
+
+/// Glow's Glow Operation as a blend mode (Add for projects saved before it existed).
+pub fn glow_operation(ctx: &EffectCtx) -> effectcraft_color::BlendMode {
+    let name = GLOW_OPERATIONS.get(ctx.params.get("glowOperation").map(|v| v.as_enum()).unwrap_or(1) as usize).copied().unwrap_or("Add");
+    effectcraft_color::BlendMode::ALL.iter().copied().find(|m| m.label() == name).unwrap_or(effectcraft_color::BlendMode::Add)
+}
+
+/// Glow's Arbitrary Map: red, green and blue curves of the glow brightness, as Curves point
+/// lists `x,y …` separated by `|` (an empty or missing curve is the identity).
+fn glow_map(s: &str) -> Vec<Option<crate::Curve>> {
+    let mut parts = s.split('|');
+    (0..3).map(|_| parts.next().and_then(crate::Curve::parse)).collect()
+}
+
 fn glow(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let thr = ctx.params.f("threshold") as f32 / 100.0;
     let radius = ctx.params.f("radius") * b.scale;
     let intensity = ctx.params.f("intensity") as f32;
     let alpha_based = ctx.params.e("based") == 0;
     let use_colors = ctx.params.e("colors") == 1;
+    let arbitrary = (ctx.params.e("colors") == 2).then(|| glow_map(ctx.params.s("arbitraryMap")));
+    let glow_op = glow_operation(ctx);
     let looping = ctx.params.e("colorLooping");
     let loops = ctx.params.f("colorLoops") as f32;
     let phase = (ctx.params.f("colorPhase") / 360.0) as f32;
@@ -147,7 +183,11 @@ fn glow(ctx: &EffectCtx, mut b: Buf) -> Buf {
         // Glow Based On: brightness from the colours, or from the alpha channel.
         let l = if alpha_based { a } else { luminance(px[0] / a, px[1] / a, px[2] / a) };
         let k = ((l - thr) / (1.0 - thr).max(1e-3)).clamp(0.0, 1.0);
-        if use_colors {
+        if let Some(map) = &arbitrary {
+            let t = glow_ab_t(l, looping, loops, phase, mid);
+            let c = map.iter().map(|cv| cv.as_ref().map_or(t, |cv| cv.eval(t))).collect::<Vec<f32>>();
+            *px = [c[0] * k * a, c[1] * k * a, c[2] * k * a, k * a];
+        } else if use_colors {
             let t = glow_ab_t(l, looping, loops, phase, mid);
             let c = [ca[0] + (cb[0] - ca[0]) * t, ca[1] + (cb[1] - ca[1]) * t, ca[2] + (cb[2] - ca[2]) * t];
             *px = [c[0] * k * a, c[1] * k * a, c[2] * k * a, k * a];
@@ -170,6 +210,8 @@ fn glow(ctx: &EffectCtx, mut b: Buf) -> Buf {
             }
             // None: the glow alone.
             2 => *o = [g[0], g[1], g[2], g[3]],
+            // On Top with another Glow Operation: that blend mode.
+            _ if glow_op != effectcraft_color::BlendMode::Add => *o = effectcraft_color::blend_pixel(glow_op, *o, g, 0.0),
             // On Top: add (screen-like add on premultiplied colour; alpha grows by the glow's alpha).
             _ => {
                 for c in 0..3 {
@@ -571,7 +613,10 @@ pub fn specs() -> Vec<EffectSpec> {
                 p("radius", "Glow Radius", num(10.0), slider(0.0, 1000.0, 0.0, 100.0, 1)),
                 p("intensity", "Glow Intensity", num(1.0), slider(0.0, 255.0, 0.0, 4.0, 1)),
                 p("operation", "Composite Original", Value::Enum(0), popup(&["On Top", "Behind", "None"])),
-                p("colors", "Glow Colors", Value::Enum(0), popup(&["Original Colors", "A & B Colors"])),
+                p("glowOperation", "Glow Operation", Value::Enum(1), popup(&GLOW_OPERATIONS)),
+                p("colors", "Glow Colors", Value::Enum(0), popup(&["Original Colors", "A & B Colors", "Arbitrary Map"])),
+                // Arbitrary Map: "red points | green points | blue points" (Curves format).
+                p("arbitraryMap", "Arbitrary Map", Value::Str(String::new()), ParamUi::Hidden),
                 p("colorLooping", "Color Looping", Value::Enum(2), popup(&["Sawtooth A>B", "Sawtooth B>A", "Triangle A>B>A", "Triangle B>A>B"])),
                 p("colorLoops", "Color Loops", num(1.0), slider(1.0, 127.0, 1.0, 10.0, 1)),
                 p("colorPhase", "Color Phase", num(0.0), ParamUi::Angle),
@@ -686,4 +731,53 @@ pub fn specs() -> Vec<EffectSpec> {
             venetian,
         ),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{EffectEnv, run_fx};
+
+    /// A bright square on mid grey.
+    fn scene() -> effectcraft_raster::Image {
+        let mut img = effectcraft_raster::Image::filled(24, 24, [0.3, 0.3, 0.3, 1.0]);
+        for y in 8..16 {
+            for x in 8..16 {
+                img.set(x, y, [1.0, 1.0, 1.0, 1.0]);
+            }
+        }
+        img
+    }
+
+    #[test]
+    fn glow_operation_and_arbitrary_map() {
+        // Pixels addressed in layer space (Glow pads its buffer).
+        struct Out(Buf);
+        impl Out {
+            fn get(&self, x: i64, y: i64) -> [f32; 4] {
+                self.0.img.get(x + self.0.offset[0] as i64, y + self.0.offset[1] as i64)
+            }
+        }
+        let run = |vals: &[(&str, Value)]| Out(run_fx("ec.stylize.glow", vals, scene(), 0.0, EffectEnv::default()));
+        let add = run(&[]);
+        assert_eq!(GLOW_OPERATIONS[1], "Add");
+        // Multiply darkens around the square where Add brightens.
+        let mul = run(&[("glowOperation", Value::Enum(2))]);
+        assert!(add.get(6, 12)[0] > 0.31 && mul.get(6, 12)[0] <= 0.3 + 1e-4, "{:?} {:?}", add.get(6, 12), mul.get(6, 12));
+        assert_eq!(
+            glow_operation(&EffectCtx {
+                params: &crate::Params::default(),
+                time: 0.0,
+                layer_size: [1.0; 2],
+                seed: 0,
+                adjustment: false,
+                env: Default::default()
+            }),
+            effectcraft_color::BlendMode::Add
+        );
+        // Arbitrary Map: the glow takes the mapped colour (here pure red for every brightness).
+        let red = run(&[("colors", Value::Enum(2)), ("arbitraryMap", Value::Str("0,1 1,1|0,0 1,0|0,0 1,0".into())), ("operation", Value::Enum(2))]);
+        let p = red.get(6, 12);
+        assert!(p[0] > 0.05 && p[1] < 1e-4 && p[2] < 1e-4, "{p:?}");
+    }
 }

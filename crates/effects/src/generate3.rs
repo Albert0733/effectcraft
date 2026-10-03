@@ -466,6 +466,141 @@ fn scan_runs(polys: &[(Vec<[f64; 2]>, bool, bool)], fill: u32, ew: f64, d: [f64;
     *out = merged;
 }
 
+/// End Cap and Join options (Scribble's Edge Options).
+const END_CAPS: [&str; 3] = ["Round", "Butt", "Projecting"];
+const JOINS: [&str; 3] = ["Round", "Miter", "Bevel"];
+
+/// Convex polygons whose union is the stroke of the polylines `lines` with half width `r`:
+/// one quad per segment, plus the joins (Round discs, Miter wedges up to `miter_limit` × the
+/// half width, Bevel triangles) and the caps (Round discs, Butt none, Projecting square ends).
+pub(crate) fn stroke_outline(lines: &[Vec<[f64; 2]>], r: f64, cap: u32, join: u32, miter_limit: f64) -> Vec<Vec<[f64; 2]>> {
+    let disc = |c: [f64; 2]| -> Vec<[f64; 2]> {
+        (0..16).map(|k| (k as f64 / 16.0 * std::f64::consts::TAU).sin_cos()).map(|(s, co)| [c[0] + co * r, c[1] + s * r]).collect()
+    };
+    let mut out = Vec::new();
+    for l in lines {
+        let pts: Vec<[f64; 2]> = l.iter().copied().fold(Vec::new(), |mut v, p| {
+            if v.last().is_none_or(|q: &[f64; 2]| (q[0] - p[0]).hypot(q[1] - p[1]) > 1e-9) {
+                v.push(p);
+            }
+            v
+        });
+        if pts.len() < 2 {
+            if let (Some(p), 0) = (pts.first(), cap) {
+                out.push(disc(*p));
+            }
+            continue;
+        }
+        let dir = |a: [f64; 2], b: [f64; 2]| {
+            let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+            let l = dx.hypot(dy).max(1e-12);
+            [dx / l, dy / l]
+        };
+        let n = pts.len();
+        for k in 0..n - 1 {
+            let (mut a, mut b) = (pts[k], pts[k + 1]);
+            let d = dir(a, b);
+            // Projecting caps extend the end segments by the half width.
+            if cap == 2 && k == 0 {
+                a = [a[0] - d[0] * r, a[1] - d[1] * r];
+            }
+            if cap == 2 && k == n - 2 {
+                b = [b[0] + d[0] * r, b[1] + d[1] * r];
+            }
+            let nn = [-d[1] * r, d[0] * r];
+            out.push(vec![[a[0] + nn[0], a[1] + nn[1]], [b[0] + nn[0], b[1] + nn[1]], [b[0] - nn[0], b[1] - nn[1]], [a[0] - nn[0], a[1] - nn[1]]]);
+        }
+        // Joins.
+        for k in 1..n - 1 {
+            let (p, d0, d1) = (pts[k], dir(pts[k - 1], pts[k]), dir(pts[k], pts[k + 1]));
+            let cross = d0[0] * d1[1] - d0[1] * d1[0];
+            if cross.abs() < 1e-9 && d0[0] * d1[0] + d0[1] * d1[1] > 0.0 {
+                continue;
+            }
+            if join == 0 {
+                out.push(disc(p));
+                continue;
+            }
+            // The outer side of the turn.
+            let s = if cross > 0.0 { -1.0 } else { 1.0 };
+            let o0 = [p[0] - d0[1] * r * s, p[1] + d0[0] * r * s];
+            let o1 = [p[0] - d1[1] * r * s, p[1] + d1[0] * r * s];
+            let bevel = vec![p, o0, o1];
+            if join == 1 {
+                // Miter point: where the two offset edges meet.
+                let bis = [d0[0] - d1[0], d0[1] - d1[1]];
+                let bl = bis[0].hypot(bis[1]);
+                let cos_half = ((1.0 + d0[0] * d1[0] + d0[1] * d1[1]) * 0.5).max(0.0).sqrt();
+                let len = if cos_half > 1e-6 { r / cos_half } else { f64::INFINITY };
+                if bl > 1e-9 && len <= miter_limit * r {
+                    let m = [p[0] + (o0[0] + o1[0] - 2.0 * p[0]) * 0.5, p[1] + (o0[1] + o1[1] - 2.0 * p[1]) * 0.5];
+                    let ml = (m[0] - p[0]).hypot(m[1] - p[1]).max(1e-12);
+                    let tip = [p[0] + (m[0] - p[0]) / ml * len, p[1] + (m[1] - p[1]) / ml * len];
+                    out.push(vec![p, o0, tip, o1]);
+                    continue;
+                }
+            }
+            out.push(bevel);
+        }
+        if cap == 0 {
+            out.push(disc(pts[0]));
+            out.push(disc(pts[n - 1]));
+        }
+    }
+    out
+}
+
+/// Coverage (union, 4×4 samples per pixel) of convex polygons on a `w`×`h` grid.
+pub(crate) fn raster_convex(w: usize, h: usize, polys: &[Vec<[f64; 2]>]) -> Plane {
+    let mut out = Plane::new(w, h);
+    let inside = |poly: &[[f64; 2]], x: f64, y: f64| {
+        let n = poly.len();
+        let mut sign = 0.0;
+        for i in 0..n {
+            let (a, b) = (poly[i], poly[(i + 1) % n]);
+            let c = (b[0] - a[0]) * (y - a[1]) - (b[1] - a[1]) * (x - a[0]);
+            if c.abs() < 1e-12 {
+                continue;
+            }
+            if sign == 0.0 {
+                sign = c.signum();
+            } else if c.signum() != sign {
+                return false;
+            }
+        }
+        true
+    };
+    for poly in polys {
+        if poly.len() < 3 {
+            continue;
+        }
+        let (mut x0, mut y0, mut x1, mut y1) = (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+        for p in poly {
+            x0 = x0.min(p[0]);
+            y0 = y0.min(p[1]);
+            x1 = x1.max(p[0]);
+            y1 = y1.max(p[1]);
+        }
+        let (xa, xb) = (x0.floor().max(0.0) as usize, (x1.ceil().max(0.0) as usize).min(w));
+        let (ya, yb) = (y0.floor().max(0.0) as usize, (y1.ceil().max(0.0) as usize).min(h));
+        for y in ya..yb {
+            for x in xa..xb {
+                let mut hit = 0;
+                for sy in 0..4 {
+                    for sx in 0..4 {
+                        if inside(poly, x as f64 + (sx as f64 + 0.5) / 4.0, y as f64 + (sy as f64 + 0.5) / 4.0) {
+                            hit += 1;
+                        }
+                    }
+                }
+                let v = &mut out.data[y * w + x];
+                *v = v.max(hit as f32 / 16.0);
+            }
+        }
+    }
+    out
+}
+
 fn scribble(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let pr = ctx.params;
     let which = pr.e("scribble");
@@ -585,19 +720,33 @@ fn scribble(ctx: &EffectCtx, mut b: Buf) -> Buf {
         lines.push(chains.into_iter().map(|(z, _)| if curv > 0.0 { chaikin(&z, 2) } else { z }).collect());
     }
     let r = width * 0.5;
-    let mut segs = Vec::new();
+    // Start / End Apply To: all of a mask's strokes as one path, or each stroke on its own.
+    let each = pr.e("startEndApplyTo") == 1;
+    let mut parts: Vec<Vec<[f64; 2]>> = Vec::new();
     for group in &lines {
         let lens: Vec<f64> = group.iter().map(|l| poly_length(l, false)).collect();
         let total: f64 = lens.iter().sum();
         let (g0, g1) = (total * start, total * end);
         let mut acc = 0.0;
         for (l, len) in group.iter().zip(lens) {
-            let part = trim_poly(l, false, (g0 - acc).clamp(0.0, len), (g1 - acc).clamp(0.0, len));
+            let part =
+                if each { trim_poly(l, false, len * start, len * end) } else { trim_poly(l, false, (g0 - acc).clamp(0.0, len), (g1 - acc).clamp(0.0, len)) };
             acc += len;
-            poly_segs(&part, false, r, 1.0, &mut segs);
+            parts.push(part);
         }
     }
-    let cov = raster_segs(w, h, &segs, 0.9);
+    let cap = pr.e("edgeOptions/endCap");
+    let join = pr.e("edgeOptions/join");
+    let cov = if cap == 0 && join == 0 {
+        let mut segs = Vec::new();
+        for part in &parts {
+            poly_segs(part, false, r, 1.0, &mut segs);
+        }
+        raster_segs(w, h, &segs, 0.9)
+    } else {
+        let polys = stroke_outline(&parts, r, cap, join, pr.f("edgeOptions/miterLimit").max(1.0));
+        raster_convex(w, h, &polys)
+    };
     let color = pr.color("color");
     paint(&mut b.img, &cov, color, (pr.f("opacity") / 100.0) as f32, style);
     b
@@ -1467,6 +1616,9 @@ pub fn specs() -> Vec<EffectSpec> {
                 mask_idx("mask", "Mask", 1.0),
                 p("fillType", "Fill Type", Value::Enum(0), popup(&["Inside", "Centered Edge", "Inside Edge", "Outside Edge", "Left Edge", "Right Edge"])),
                 p("edgeOptions/edgeWidth", "Edge Width", num(10.0), slider(0.0, 1000.0, 0.0, 100.0, 1)),
+                p("edgeOptions/endCap", "End Cap", Value::Enum(0), popup(&END_CAPS)),
+                p("edgeOptions/join", "Join", Value::Enum(0), popup(&JOINS)),
+                p("edgeOptions/miterLimit", "Miter Limit", num(4.0), slider(1.0, 100.0, 1.0, 20.0, 1)),
                 p("color", "Color", col(1.0, 0.0, 0.0), ParamUi::Color),
                 p("opacity", "Opacity", num(100.0), pct()),
                 p("angle", "Angle", num(45.0), ang()),
@@ -1479,6 +1631,7 @@ pub fn specs() -> Vec<EffectSpec> {
                 p("strokeOptions/pathOverlapVariation", "Path Overlap Variation", num(50.0), pct()),
                 p("start", "Start", num(0.0), pct()),
                 p("end", "End", num(100.0), pct()),
+                p("startEndApplyTo", "Start/End Apply To", Value::Enum(0), popup(&["All Strokes", "Each Stroke"])),
                 check("fillPathsSequentially", "Fill Paths Sequentially", true),
                 p("wiggleType", "Wiggle Type", Value::Enum(1), popup(&["Static", "Jumpy", "Smooth"])),
                 p("wigglesPerSecond", "Wiggles/Second", num(5.0), slider(0.0, 100.0, 0.0, 30.0, 2)),
@@ -1935,5 +2088,50 @@ mod tests {
         let mags: Vec<f64> = (0..n / 2).map(|k| (re[k] * re[k] + im[k] * im[k]).sqrt()).collect();
         let peak = mags.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1)).unwrap().0;
         assert_eq!(peak, 8);
+    }
+
+    #[test]
+    fn stroke_outline_caps_and_joins() {
+        let line = vec![vec![[10.0, 10.0], [30.0, 10.0]]];
+        let cov = |cap: u32| raster_convex(40, 20, &stroke_outline(&line, 3.0, cap, 0, 4.0));
+        // Round caps reach 3 px past the ends (on the axis), Butt stops there, Projecting is square.
+        let (round, butt, proj) = (cov(0), cov(1), cov(2));
+        assert!(round.get(8, 10) > 0.9 && butt.get(8, 10) < 0.1 && proj.get(8, 10) > 0.9);
+        assert!(proj.get(7, 7) > 0.9 && round.get(7, 7) < 0.5, "square corner");
+        // A right-angle turn: Miter fills the outer corner, Bevel cuts it.
+        let corner = vec![vec![[5.0, 30.0], [30.0, 30.0], [30.0, 5.0]]];
+        let j = |join: u32| raster_convex(40, 40, &stroke_outline(&corner, 3.0, 1, join, 4.0));
+        let (miter, bevel) = (j(1), j(2));
+        assert!(miter.get(32, 32) > 0.9 && bevel.get(32, 32) < 0.1, "{} {}", miter.get(32, 32), bevel.get(32, 32));
+        // A tight miter limit falls back to a bevel.
+        let limited = raster_convex(40, 40, &stroke_outline(&corner, 3.0, 1, 1, 1.0));
+        assert!(limited.get(32, 32) < 0.1);
+    }
+
+    #[test]
+    fn scribble_caps_and_start_end_apply_to() {
+        let masks = square_mask();
+        let env = EffectEnv { masks: &masks, ..Default::default() };
+        let img = Image::new(64, 64);
+        let base = [("wiggleType", Value::Enum(0)), ("strokeWidth", num(3.0))];
+        let round = run_env("ec.generate.scribble", &base, img.clone(), 0.0, env);
+        let butt = run_env(
+            "ec.generate.scribble",
+            &[base.as_slice(), &[("edgeOptions/endCap", Value::Enum(1)), ("edgeOptions/join", Value::Enum(2))]].concat(),
+            img.clone(),
+            0.0,
+            env,
+        );
+        assert_ne!(round.img.data, butt.img.data);
+        // Each Stroke: every stroke is trimmed on its own, so the half-way image has ink all over.
+        let two = vec![
+            crate::MaskShape { name: String::new(), points: vec![[4.0, 4.0], [28.0, 4.0], [28.0, 60.0], [4.0, 60.0]], closed: true, inverted: false },
+            crate::MaskShape { name: String::new(), points: vec![[36.0, 4.0], [60.0, 4.0], [60.0, 60.0], [36.0, 60.0]], closed: true, inverted: false },
+        ];
+        let env2 = EffectEnv { masks: &two, ..Default::default() };
+        let seq = [("scribble", Value::Enum(1)), ("end", num(50.0))];
+        let all = run_env("ec.generate.scribble", &[base.as_slice(), &seq].concat(), img.clone(), 0.0, env2);
+        let each = run_env("ec.generate.scribble", &[base.as_slice(), &seq, &[("startEndApplyTo", Value::Enum(1))]].concat(), img, 0.0, env2);
+        assert_ne!(all.img.data, each.img.data);
     }
 }

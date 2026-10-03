@@ -102,8 +102,11 @@ fn mask_sdf(ctx: &EffectCtx, b: &Buf, idx: &[u32]) -> Option<Plane> {
 }
 
 fn inner_outer_key(ctx: &EffectCtx, mut b: Buf) -> Buf {
-    let fg_idx = [ctx.params.e("foreground"), ctx.params.e("additionalForeground")];
-    let bg_idx = [ctx.params.e("background"), ctx.params.e("additionalBackground")];
+    // Foreground (Inside) plus Additional Foreground 1–10; likewise for the background.
+    let fg_idx: Vec<u32> =
+        std::iter::once(ctx.params.e("foreground")).chain((1..=10).map(|k| ctx.params.e(&format!("additionalForeground/foreground{k}")))).collect();
+    let bg_idx: Vec<u32> =
+        std::iter::once(ctx.params.e("background")).chain((1..=10).map(|k| ctx.params.e(&format!("additionalBackground/background{k}")))).collect();
     let radius = (ctx.params.f("singleMaskHighlightRadius") * b.scale) as f32;
     let thin = ctx.params.f("edgeThin") * b.scale;
     let feather = ctx.params.f("edgeFeather") * b.scale;
@@ -186,6 +189,26 @@ fn inner_outer_key(ctx: &EffectCtx, mut b: Buf) -> Buf {
                 })
                 .collect(),
         );
+    }
+    // Cleanup Foreground / Background: brush strokes along mask paths that paint the matte
+    // towards opaque / transparent (Brush Radius, Brush Pressure).
+    for (side, target) in [("Foreground", 1.0f32), ("Background", 0.0)] {
+        for k in 1..=10 {
+            let g = format!("cleanup{side}/cleanup{side}{k}");
+            let idx = ctx.params.e(&format!("{g}/path"));
+            let Some(m) = (idx > 0).then(|| ctx.env.masks.get(idx as usize - 1)).flatten() else { continue };
+            let rad = (ctx.params.f(&format!("{g}/brushRadius")) * b.scale).max(0.5);
+            let pressure = (ctx.params.f(&format!("{g}/brushPressure")) / 100.0).clamp(0.0, 1.0) as f32;
+            let pts: Vec<[f64; 2]> = m.points.iter().map(|q| [q[0] * b.scale + b.offset[0], q[1] * b.scale + b.offset[1]]).collect();
+            alpha.data.par_iter_mut().enumerate().for_each(|(i, a)| {
+                let (x, y) = ((i % w) as f64 + 0.5, (i / w) as f64 + 0.5);
+                let d = dist_to_poly(&pts, m.closed, x, y);
+                if d < rad + 1.0 {
+                    let cov = ((rad - d) / rad.max(1.0) * 2.0).clamp(0.0, 1.0) as f32 * pressure;
+                    *a += (target - *a) * cov;
+                }
+            });
+        }
     }
     if thin.abs() > 0.01 {
         alpha = morph_frac(&alpha, thin.abs(), thin < 0.0);
@@ -332,18 +355,34 @@ pub fn specs() -> Vec<EffectSpec> {
         spec(
             "ec.key.innerouter",
             "Inner/Outer Key",
-            vec![
-                p("foreground", "Foreground (Inside)", Value::Enum(0), mask_options()),
-                p("additionalForeground", "Additional Foreground", Value::Enum(0), mask_options()),
-                p("background", "Background (Outside)", Value::Enum(0), mask_options()),
-                p("additionalBackground", "Additional Background", Value::Enum(0), mask_options()),
-                p("singleMaskHighlightRadius", "Single Mask Highlight Radius", num(0.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
-                p("edgeThin", "Edge Thin", num(0.0), slider(-10.0, 10.0, -10.0, 10.0, 1)),
-                p("edgeFeather", "Edge Feather", num(0.0), slider(0.0, 100.0, 0.0, 50.0, 1)),
-                p("edgeThreshold", "Edge Threshold", num(0.0), pct()),
-                p("invertExtraction", "Invert Extraction", Value::Bool(false), ParamUi::Checkbox),
-                p("blendWithOriginal", "Blend with Original", num(0.0), pct()),
-            ],
+            {
+                let leak = |s: String| -> &'static str { Box::leak(s.into_boxed_str()) };
+                let mut v = vec![p("foreground", "Foreground (Inside)", Value::Enum(0), mask_options())];
+                for k in 1..=10 {
+                    v.push(p(leak(format!("additionalForeground/foreground{k}")), leak(format!("Foreground {k}")), Value::Enum(0), mask_options()));
+                }
+                v.push(p("background", "Background (Outside)", Value::Enum(0), mask_options()));
+                for k in 1..=10 {
+                    v.push(p(leak(format!("additionalBackground/background{k}")), leak(format!("Background {k}")), Value::Enum(0), mask_options()));
+                }
+                for side in ["Foreground", "Background"] {
+                    for k in 1..=10 {
+                        let g = format!("cleanup{side}/cleanup{side}{k}");
+                        v.push(p(leak(format!("{g}/path")), "Path", Value::Enum(0), mask_options()));
+                        v.push(p(leak(format!("{g}/brushRadius")), "Brush Radius", num(10.0), slider(0.0, 1000.0, 0.0, 100.0, 1)));
+                        v.push(p(leak(format!("{g}/brushPressure")), "Brush Pressure", num(80.0), pct()));
+                    }
+                }
+                v.extend([
+                    p("singleMaskHighlightRadius", "Single Mask Highlight Radius", num(0.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
+                    p("edgeThin", "Edge Thin", num(0.0), slider(-10.0, 10.0, -10.0, 10.0, 1)),
+                    p("edgeFeather", "Edge Feather", num(0.0), slider(0.0, 100.0, 0.0, 50.0, 1)),
+                    p("edgeThreshold", "Edge Threshold", num(0.0), pct()),
+                    p("invertExtraction", "Invert Extraction", Value::Bool(false), ParamUi::Checkbox),
+                    p("blendWithOriginal", "Blend with Original", num(0.0), pct()),
+                ]);
+                v
+            },
             inner_outer_key,
         ),
         spec(
@@ -477,5 +516,48 @@ mod tests {
             assert!((out.img.get(10, 10)[0] - 0.5).abs() < 0.05, "style {style}: {:?}", out.img.get(10, 10));
             assert_eq!(out.img.get(2, 10), img.get(2, 10));
         }
+    }
+
+    #[test]
+    fn inner_outer_key_more_masks_and_cleanup_strokes() {
+        let sq = |x0: f64, x1: f64| MaskShape { name: String::new(), points: vec![[x0, 2.0], [x1, 2.0], [x1, 8.0], [x0, 8.0]], closed: true, inverted: false };
+        // Masks 1..4: foreground squares; mask 5: a horizontal cleanup stroke across the middle.
+        let masks = vec![
+            sq(1.0, 5.0),
+            sq(7.0, 11.0),
+            sq(13.0, 17.0),
+            sq(19.0, 23.0),
+            MaskShape { name: String::new(), points: vec![[0.0, 5.0], [30.0, 5.0]], closed: false, inverted: false },
+        ];
+        let env = EffectEnv { masks: &masks, ..Default::default() };
+        let img = Image::filled(30, 10, [0.5, 0.5, 0.5, 1.0]);
+        let vals = [
+            ("foreground", Value::Enum(1)),
+            ("additionalForeground/foreground1", Value::Enum(2)),
+            ("additionalForeground/foreground2", Value::Enum(3)),
+            ("additionalForeground/foreground5", Value::Enum(4)),
+        ];
+        let out = run_fx("ec.key.innerouter", &vals, img.clone(), 0.0, env).img;
+        for x in [3, 9, 15, 21] {
+            assert_eq!(out.get(x, 3)[3], 1.0, "foreground square at {x}");
+        }
+        assert_eq!(out.get(27, 3)[3], 0.0);
+        // Cleanup Background along mask 5 erases a band; Cleanup Foreground restores outside.
+        let mut bg = vals.to_vec();
+        bg.extend([
+            ("cleanupBackground/cleanupBackground1/path", Value::Enum(5)),
+            ("cleanupBackground/cleanupBackground1/brushRadius", num(1.5)),
+            ("cleanupBackground/cleanupBackground1/brushPressure", num(100.0)),
+        ]);
+        let erased = run_fx("ec.key.innerouter", &bg, img.clone(), 0.0, env).img;
+        assert!(erased.get(3, 5)[3] < 0.1 && erased.get(3, 2)[3] > 0.9);
+        let mut fg = vals.to_vec();
+        fg.extend([
+            ("cleanupForeground/cleanupForeground3/path", Value::Enum(5)),
+            ("cleanupForeground/cleanupForeground3/brushRadius", num(1.5)),
+            ("cleanupForeground/cleanupForeground3/brushPressure", num(100.0)),
+        ]);
+        let painted = run_fx("ec.key.innerouter", &fg, img, 0.0, env).img;
+        assert!(painted.get(27, 5)[3] > 0.9 && painted.get(27, 2)[3] < 0.1);
     }
 }

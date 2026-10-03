@@ -563,6 +563,78 @@ impl<S: Clone> SimCache<S> {
     }
 }
 
+/// 1D squared-distance transform of sampled function `f` (Felzenszwalb & Huttenlocher 2012;
+/// `f` is 0 at sites and +∞ elsewhere).
+fn sq_dt_1d(f: &[f64], out: &mut [f64]) {
+    let n = f.len();
+    let sites: Vec<usize> = (0..n).filter(|&i| f[i].is_finite()).collect();
+    if sites.is_empty() {
+        out.iter_mut().for_each(|o| *o = f64::INFINITY);
+        return;
+    }
+    let mut v = vec![0usize; sites.len()];
+    let mut z = vec![0f64; sites.len() + 1];
+    let mut k = 0usize;
+    v[0] = sites[0];
+    z[0] = f64::NEG_INFINITY;
+    z[1] = f64::INFINITY;
+    let s_of = |q: usize, p: usize| ((f[q] + (q * q) as f64) - (f[p] + (p * p) as f64)) / (2.0 * q as f64 - 2.0 * p as f64);
+    for &q in &sites[1..] {
+        let mut s = s_of(q, v[k]);
+        while s <= z[k] {
+            k -= 1;
+            s = s_of(q, v[k]);
+        }
+        k += 1;
+        v[k] = q;
+        z[k] = s;
+        z[k + 1] = f64::INFINITY;
+    }
+    k = 0;
+    for (q, o) in out.iter_mut().enumerate() {
+        while z[k + 1] < q as f64 {
+            k += 1;
+        }
+        let d = q as f64 - v[k] as f64;
+        *o = d * d + f[v[k]];
+    }
+}
+
+/// Euclidean distance from every pixel to the nearest `true` pixel of `mask` (`w`×`h`),
+/// infinite when there is none.
+pub fn distance_transform(mask: &[bool], w: usize, h: usize) -> Vec<f32> {
+    let mut g: Vec<f64> = mask.iter().map(|&m| if m { 0.0 } else { f64::INFINITY }).collect();
+    // Columns, then rows.
+    let cols: Vec<Vec<f64>> = (0..w)
+        .into_par_iter()
+        .map(|x| {
+            let f: Vec<f64> = (0..h).map(|y| g[y * w + x]).collect();
+            let mut o = vec![0.0; h];
+            sq_dt_1d(&f, &mut o);
+            o
+        })
+        .collect();
+    for (x, col) in cols.iter().enumerate() {
+        for y in 0..h {
+            g[y * w + x] = col[y];
+        }
+    }
+    g.par_chunks_mut(w.max(1)).for_each(|row| {
+        let f = row.to_vec();
+        sq_dt_1d(&f, row);
+    });
+    g.iter().map(|&d| d.sqrt() as f32).collect()
+}
+
+/// Signed distance to the boundary of the `inside` region: negative inside, positive outside
+/// (pixel centres; ±0.5 at the boundary).
+pub fn signed_distance(inside: &[bool], w: usize, h: usize) -> Plane {
+    let outside: Vec<bool> = inside.iter().map(|v| !v).collect();
+    let to_in = distance_transform(inside, w, h);
+    let to_out = distance_transform(&outside, w, h);
+    Plane { w, h, data: to_in.iter().zip(&to_out).map(|(a, b)| if *a > 0.0 { a - 0.5 } else { -(b - 0.5) }).collect() }
+}
+
 /// Point-in-polygon (even-odd) for a closed polyline.
 pub fn point_in_poly(pts: &[[f64; 2]], x: f64, y: f64) -> bool {
     let n = pts.len();

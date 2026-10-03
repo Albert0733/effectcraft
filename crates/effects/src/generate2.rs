@@ -43,8 +43,9 @@ fn add_light(px: Px, l: [f32; 3], la: f32) -> Px {
 
 // ---------------------------------------------------------------- Cell Pattern
 
-/// Cell Pattern options. The HQ variants share the shaping of their standard counterparts
-/// (we always render at full precision).
+/// Cell Pattern options. The HQ variants share the shaping of their standard counterparts but
+/// search a wider neighbourhood of cells (no artefacts at high Disperse) and anti-alias the
+/// cell edges (4×4 samples per pixel).
 const CELL_PATTERNS: [&str; 12] = [
     "Bubbles",
     "Crystals",
@@ -75,13 +76,13 @@ pub fn pattern_kind(i: u32) -> u32 {
 
 /// Worley distances for point (u, v) in cell units: (F1, F2, hash of the nearest cell).
 /// `tile` repeats the cell layout every (columns, rows) cells.
-fn worley(u: f64, v: f64, disperse: f64, evo: f64, seed: u32, tile: Option<(i64, i64)>) -> (f64, f64, f32) {
+fn worley_r(u: f64, v: f64, disperse: f64, evo: f64, seed: u32, tile: Option<(i64, i64)>, reach: i64) -> (f64, f64, f32) {
     let (cx, cy) = (u.floor() as i64, v.floor() as i64);
     let mut f1 = f64::INFINITY;
     let mut f2 = f64::INFINITY;
     let mut id = 0.0f32;
-    for j in -1..=1 {
-        for i in -1..=1 {
+    for j in -reach..=reach {
+        for i in -reach..=reach {
             let (gx, gy) = (cx + i, cy + j);
             let (tx, ty) = match tile {
                 Some((nx, ny)) => (gx.rem_euclid(nx), gy.rem_euclid(ny)),
@@ -135,6 +136,7 @@ fn overflow(v: f32, mode: u32) -> f32 {
 
 fn cell_pattern(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let pattern = pattern_kind(ctx.params.e("cellPattern"));
+    let hq = (6..=10).contains(&ctx.params.e("cellPattern"));
     let invert = ctx.params.b("invert");
     let contrast = ctx.params.f("contrast") as f32 / 100.0;
     let ov = ctx.params.e("overflow");
@@ -152,11 +154,19 @@ fn cell_pattern(ctx: &EffectCtx, mut b: Buf) -> Buf {
         .params
         .b("tilingOptions/enableTiling")
         .then(|| (ctx.params.f("tilingOptions/cellsHorizontal").round().max(1.0) as i64, ctx.params.f("tilingOptions/cellsVertical").round().max(1.0) as i64));
+    let subs: Vec<f64> = if hq { (0..4).map(|k| (k as f64 + 0.5) / 4.0).collect() } else { vec![0.5] };
+    let reach = if hq { 2 } else { 1 };
     map_xy(&mut b.img, |x, y, _| {
-        let u = (x as f64 + 0.5 - off.0) / size;
-        let v = (y as f64 + 0.5 - off.1) / size;
-        let (f1, f2, id) = worley(u, v, disperse, evo, seed, tile);
-        let mut val = cell_value(pattern, f1, f2, id);
+        let mut val = 0.0;
+        for sy in &subs {
+            for sx in &subs {
+                let u = (x as f64 + sx - off.0) / size;
+                let v = (y as f64 + sy - off.1) / size;
+                let (f1, f2, id) = worley_r(u, v, disperse, evo, seed, tile, reach);
+                val += cell_value(pattern, f1, f2, id);
+            }
+        }
+        let mut val = val / (subs.len() * subs.len()) as f32;
         val = overflow((val - 0.5) * contrast + 0.5, ov);
         if invert {
             val = 1.0 - val;
@@ -349,60 +359,275 @@ fn outline_dist(pts: &[(f64, f64)], dx: f64, dy: f64) -> f64 {
     best
 }
 
+/// Radio Waves' Wave Type options.
+const RW_TYPES: [&str; 3] = ["Polygon", "Image Contours", "Mask"];
+/// Radio Waves' Stroke Profile options.
+const RW_PROFILES: [&str; 7] = ["Square", "Taper Front", "Taper Back", "Taper Both", "Sine", "Sawtooth Out", "Sawtooth In"];
+/// Image Contour's Value Channel options.
+const RW_CHANNELS: [&str; 8] = ["Red", "Green", "Blue", "Alpha", "Luminance", "Hue", "Lightness", "Saturation"];
+
+/// Stroke Profile weight across the stroke: `u` from −1 (inner edge) to 1 (outer edge).
+fn rw_profile(kind: u32, u: f64) -> f64 {
+    let u = u.clamp(-1.0, 1.0);
+    match kind {
+        1 => (1.0 - u) * 0.5,
+        2 => (1.0 + u) * 0.5,
+        3 => 1.0 - u.abs(),
+        4 => (u * PI * 0.5).cos(),
+        5 if u < 0.0 => 1.0 + u,
+        6 if u > 0.0 => 1.0 - u,
+        _ => 1.0,
+    }
+}
+
+/// Fold a coordinate into `[lo, hi]` by bouncing off the ends (Reflection).
+fn reflect(v: f64, lo: f64, hi: f64) -> f64 {
+    let span = hi - lo;
+    if span <= 0.0 {
+        return lo;
+    }
+    let t = (v - lo).rem_euclid(2.0 * span);
+    lo + if t > span { 2.0 * span - t } else { t }
+}
+
+/// The source shape of a contour wave: signed distance (buffer px, negative inside) on the
+/// buffer grid, and the point of the shape that sits on the Producer Point.
+struct Contour {
+    sdf: Plane,
+    anchor: (f64, f64),
+}
+
+/// Image Contours: the region of the source layer whose Value Channel passes Value Threshold.
+fn image_contour(ctx: &EffectCtx, b: &Buf) -> Option<Contour> {
+    let pr = ctx.params;
+    let lp = ctx.layer_param("imageContour/sourceLayer", true)?;
+    let img = crate::util::fit_layer(ctx, b, &lp, false);
+    let (w, h) = (img.width as usize, img.height as usize);
+    let ch = pr.e("imageContour/valueChannel");
+    let mut v = Plane::from_image(&img, |px| {
+        let (c, a) = unpremul(px);
+        let (hh, s, l) = effectcraft_color::rgb_to_hsl(c[0], c[1], c[2]);
+        match ch {
+            0 => c[0] * a,
+            1 => c[1] * a,
+            2 => c[2] * a,
+            3 => a,
+            5 => hh,
+            6 => l * a,
+            7 => s,
+            _ => luminance(c[0], c[1], c[2]) * a,
+        }
+    });
+    let blur = pr.f("imageContour/preBlur").max(0.0) * b.scale;
+    if blur > 0.0 {
+        v = gauss_plane(&v, blur * 0.5, blur * 0.5);
+    }
+    let thr = (pr.f("imageContour/valueThreshold") / 255.0) as f32;
+    let invert = pr.b("imageContour/invertInput");
+    let mut inside: Vec<bool> = v.data.iter().map(|&x| (x >= thr) != invert).collect();
+    // Contour: 0 = every region; n = the n-th largest connected region.
+    let pick = pr.f("imageContour/contour").round() as usize;
+    if pick > 0 {
+        let mut label = vec![0u32; w * h];
+        let mut sizes = vec![0usize];
+        for start in 0..w * h {
+            if !inside[start] || label[start] != 0 {
+                continue;
+            }
+            let id = sizes.len() as u32;
+            let mut stack = vec![start];
+            label[start] = id;
+            let mut n = 0;
+            while let Some(i) = stack.pop() {
+                n += 1;
+                let (x, y) = (i % w, i / w);
+                let mut nb = |j: usize| {
+                    if inside[j] && label[j] == 0 {
+                        label[j] = id;
+                        stack.push(j);
+                    }
+                };
+                if x > 0 {
+                    nb(i - 1);
+                }
+                if x + 1 < w {
+                    nb(i + 1);
+                }
+                if y > 0 {
+                    nb(i - w);
+                }
+                if y + 1 < h {
+                    nb(i + w);
+                }
+            }
+            sizes.push(n);
+        }
+        let mut order: Vec<usize> = (1..sizes.len()).collect();
+        order.sort_by(|a, c| sizes[*c].cmp(&sizes[*a]).then(a.cmp(c)));
+        let keep = order.get(pick - 1).copied().unwrap_or(usize::MAX) as u32;
+        inside.iter_mut().zip(&label).for_each(|(v, l)| *v = *v && *l == keep);
+    }
+    if !inside.iter().any(|v| *v) {
+        return None;
+    }
+    let mut sdf = crate::util::signed_distance(&inside, w, h);
+    // Tolerance smooths the traced outline.
+    let tol = pr.f("imageContour/tolerance").max(0.0) * b.scale;
+    if tol > 0.0 {
+        sdf = gauss_plane(&sdf, tol * 0.5, tol * 0.5);
+    }
+    Some(Contour { sdf, anchor: b.to_px(pr.v2("imageContour/sourceCenter")) })
+}
+
+/// Mask: the chosen mask of this layer.
+fn mask_contour(ctx: &EffectCtx, b: &Buf) -> Option<Contour> {
+    let idx = ctx.params.f("waveMask/mask").round() as usize;
+    let (pts, _, inverted) = crate::generate3::mask_px(ctx, b, idx)?;
+    let (w, h) = (b.img.width as usize, b.img.height as usize);
+    let inside: Vec<bool> = (0..w * h).map(|i| crate::util::point_in_poly(&pts, (i % w) as f64 + 0.5, (i / w) as f64 + 0.5) != inverted).collect();
+    if !inside.iter().any(|v| *v) {
+        return None;
+    }
+    // Mask waves start where the mask is (anchored at the Producer Point: no shift).
+    let anchor = b.to_px(ctx.params.v2("producerPoint"));
+    Some(Contour { sdf: crate::util::signed_distance(&inside, w, h), anchor })
+}
+
+/// One live wave.
+struct Wave {
+    centre: (f64, f64),
+    radius: f64,
+    half_width: f64,
+    rotation: f64,
+    fade: f32,
+    color: [f32; 4],
+    opacity: f32,
+    /// Polygon outline (unit shape rotated and scaled), or None for a circle / contour.
+    outline: Option<Vec<(f64, f64)>>,
+}
+
+/// Radio Waves: waves are born at Frequency per second at the Producer Point and grow at
+/// Expansion px/s for Lifespan seconds, moving at Velocity towards Direction (bouncing off the
+/// layer edges with Reflection) and spinning. Polygon waves are regular polygons or stars;
+/// Image Contours waves ripple outward from the outline of a source layer's thresholded
+/// channel, Mask waves from a mask. With Parameters Are Set At Birth each wave keeps the values
+/// it was born with; Each Frame applies the current values to every wave. Stroke draws each wave
+/// with its Profile across the width.
 fn radio_waves(ctx: &EffectCtx, mut b: Buf) -> Buf {
-    let c = b.to_px(ctx.params.v2("producerPoint"));
-    let sides = ctx.params.f("polygon/sides").round().clamp(3.0, 64.0);
-    let star = ctx.params.b("polygon/star");
-    let depth = ctx.params.f("polygon/starDepth").clamp(-1.0, 1.0);
-    let freq = ctx.params.f("waveMotion/frequency").max(0.01);
-    let expansion = ctx.params.f("waveMotion/expansion") * b.scale;
-    let orient = ctx.params.f("waveMotion/orientation").to_radians();
-    // Direction: 0° = up, clockwise.
-    let dirn = ctx.params.f("waveMotion/direction").to_radians();
-    let vel = ctx.params.f("waveMotion/velocity") * b.scale;
-    let spin = ctx.params.f("waveMotion/spin").to_radians();
-    let life = ctx.params.f("waveMotion/lifespan").max(0.01);
-    let color = ctx.params.color("waveStroke/color");
-    let op = (ctx.params.f("waveStroke/opacity") / 100.0) as f32;
-    let fin = ctx.params.f("waveStroke/fadeInTime").max(0.0);
-    let fout = ctx.params.f("waveStroke/fadeOutTime").max(0.0);
-    let sw = ctx.params.f("waveStroke/startWidth") * b.scale;
-    let ew = ctx.params.f("waveStroke/endWidth") * b.scale;
+    let cur = ctx.params;
     let t = ctx.time.max(0.0);
+    let freq = cur.f("waveMotion/frequency").max(0.01);
+    let life_now = cur.f("waveMotion/lifespan").max(0.01);
+    let birth = cur.e("parametersAreSetAt") == 0;
+    let wave_type = cur.e("waveType");
+    let quality = cur.get("renderQuality").map(Value::as_f64).unwrap_or(4.0).clamp(1.0, 10.0);
+    let aa = 0.5 + 1.5 / quality;
+    let profile = cur.e("waveStroke/profile");
+    let reflection = cur.b("waveMotion/reflection");
+    let (lx, ly, lw, lh) = layer_rect(ctx, &b);
+    let contour = match wave_type {
+        1 => image_contour(ctx, &b),
+        2 => mask_contour(ctx, &b),
+        _ => None,
+    };
+    if wave_type != 0 && contour.is_none() {
+        return b;
+    }
     let k_hi = (t * freq).floor() as i64;
-    let k_lo = (((t - life) * freq).floor() as i64).max(0).max(k_hi - 256);
-    // (centre, radius, half width, rotation, fade) per live wave.
-    let waves: Vec<((f64, f64), f64, f64, f64, f32)> = (k_lo..=k_hi)
+    let k_lo = (((t - life_now) * freq).floor() as i64 - 1).max(0).max(k_hi - 256);
+    let mut cache: std::collections::HashMap<i64, crate::Params> = std::collections::HashMap::new();
+    let waves: Vec<Wave> = (k_lo..=k_hi)
         .filter_map(|k| {
-            let age = t - k as f64 / freq;
+            let born = k as f64 / freq;
+            let age = t - born;
+            // Birth: the values the wave was born with (when the host can tell).
+            let pr: &crate::Params = if birth {
+                if let Some(h) = ctx.env.host
+                    && let std::collections::hash_map::Entry::Vacant(e) = cache.entry(k)
+                    && let Some(p) = h.params_at(born)
+                {
+                    e.insert(p);
+                }
+                cache.get(&k).unwrap_or(cur)
+            } else {
+                cur
+            };
+            let life = pr.f("waveMotion/lifespan").max(0.01);
             if !(0.0..life).contains(&age) {
                 return None;
             }
+            let c = b.to_px(pr.v2("producerPoint"));
+            let fin = pr.f("waveStroke/fadeInTime").max(0.0);
+            let fout = pr.f("waveStroke/fadeOutTime").max(0.0);
             let fi = if fin > 0.0 { (age / fin).min(1.0) } else { 1.0 };
             let fo = if fout > 0.0 { ((life - age) / fout).min(1.0) } else { 1.0 };
-            let centre = (c.0 + dirn.sin() * vel * age, c.1 - dirn.cos() * vel * age);
-            Some((centre, expansion * age, ((sw + (ew - sw) * age / life) * 0.5).max(0.25), orient + spin * age, (fi * fo) as f32))
+            let dirn = pr.f("waveMotion/direction").to_radians();
+            let vel = pr.f("waveMotion/velocity") * b.scale;
+            let mut centre = (c.0 + dirn.sin() * vel * age, c.1 - dirn.cos() * vel * age);
+            if reflection {
+                centre = (reflect(centre.0, lx, lx + lw), reflect(centre.1, ly, ly + lh));
+            }
+            let sw = pr.f("waveStroke/startWidth") * b.scale;
+            let ew = pr.f("waveStroke/endWidth") * b.scale;
+            let radius = pr.f("waveMotion/expansion") * b.scale * age;
+            let rotation = pr.f("waveMotion/orientation").to_radians() + pr.f("waveMotion/spin").to_radians() * age;
+            let outline = (wave_type == 0).then(|| {
+                let sides = pr.f("polygon/sides").round().clamp(3.0, 64.0);
+                let star = pr.b("polygon/star");
+                let depth = pr.f("polygon/starDepth").clamp(-1.0, 1.0);
+                if sides >= 64.0 && !star {
+                    return None;
+                }
+                let n = sides as usize;
+                let unit: Vec<(f64, f64)> = if star {
+                    (0..2 * n).map(|i| (PI * i as f64 / n as f64 - PI / 2.0, if i % 2 == 0 { 1.0 } else { (1.0 + depth).max(0.0) })).collect()
+                } else {
+                    (0..n).map(|i| (2.0 * PI * i as f64 / n as f64 - PI / 2.0, 1.0)).collect()
+                };
+                Some(unit.iter().map(|&(a, k)| ((a + rotation).cos() * radius * k, (a + rotation).sin() * radius * k)).collect())
+            });
+            Some(Wave {
+                centre,
+                radius,
+                half_width: ((sw + (ew - sw) * age / life) * 0.5).max(0.25),
+                rotation,
+                fade: (fi * fo) as f32,
+                color: pr.color("waveStroke/color"),
+                opacity: (pr.f("waveStroke/opacity") / 100.0) as f32,
+                outline: outline.flatten(),
+            })
         })
         .collect();
-    let circle = sides >= 64.0 && !star;
-    // Unit outline (radius 1) of the polygon or star, rotated per wave below.
-    let n = sides as usize;
-    let unit: Vec<(f64, f64)> = if star {
-        (0..2 * n).map(|i| (PI * i as f64 / n as f64 - PI / 2.0, if i % 2 == 0 { 1.0 } else { (1.0 + depth).max(0.0) })).collect()
-    } else {
-        (0..n).map(|i| (2.0 * PI * i as f64 / n as f64 - PI / 2.0, 1.0)).collect()
-    };
-    let outlines: Vec<Vec<(f64, f64)>> =
-        waves.iter().map(|&(_, rad, _, rot, _)| unit.iter().map(|&(a, k)| ((a + rot).cos() * rad * k, (a + rot).sin() * rad * k)).collect()).collect();
     map_xy(&mut b.img, |x, y, px| {
-        let mut a = 0.0f32;
-        for (wi, &(cc, rad, hw, _, fade)) in waves.iter().enumerate() {
-            let (dx, dy) = (x as f64 + 0.5 - cc.0, y as f64 + 0.5 - cc.1);
-            let d = if circle { ((dx * dx + dy * dy).sqrt() - rad).abs() } else { outline_dist(&outlines[wi], dx, dy) };
-            a = a.max((hw - d + 0.5).clamp(0.0, 1.0) as f32 * fade);
+        let mut out = px;
+        // Older waves first, so newer ones sit on top.
+        for wv in &waves {
+            let (dx, dy) = (x as f64 + 0.5 - wv.centre.0, y as f64 + 0.5 - wv.centre.1);
+            // Signed distance from the wave line (negative inside the wave).
+            let d = match (&contour, &wv.outline) {
+                (Some(ct), _) => {
+                    // The contour placed with its anchor on the wave centre, rotated.
+                    let (s, c) = (-(wv.rotation)).sin_cos();
+                    let (rx, ry) = (dx * c - dy * s, dx * s + dy * c);
+                    ct.sdf.sample(ct.anchor.0 + rx, ct.anchor.1 + ry) as f64 - wv.radius
+                }
+                (None, Some(o)) => {
+                    let ud = outline_dist(o, dx, dy);
+                    let poly: Vec<[f64; 2]> = o.iter().map(|p| [p.0, p.1]).collect();
+                    if crate::util::point_in_poly(&poly, dx, dy) { -ud } else { ud }
+                }
+                (None, None) => (dx * dx + dy * dy).sqrt() - wv.radius,
+            };
+            let ad = d.abs();
+            let cov = ((wv.half_width - ad) / aa + 0.5).clamp(0.0, 1.0);
+            if cov <= 0.0 {
+                continue;
+            }
+            let u = (d / wv.half_width).clamp(-1.0, 1.0);
+            let a = (cov * rw_profile(profile, u)) as f32 * wv.fade * wv.opacity * wv.color[3];
+            out = over(out, [wv.color[0] * a, wv.color[1] * a, wv.color[2] * a, a]);
         }
-        let a = a * op * color[3];
-        over(px, [color[0] * a, color[1] * a, color[2] * a, a])
+        out
     });
     b
 }
@@ -414,7 +639,40 @@ type Seg = ((f64, f64), (f64, f64), f32);
 /// Advanced Lightning's Lightning Type options.
 const LIGHTNING_TYPES: [&str; 8] = ["Direction", "Strike", "Breaking", "Bouncy", "Omni", "Anywhere", "Vertical", "Two-Way Strike"];
 
-fn bolt(a: (f64, f64), z: (f64, f64), depth: u32, inten: f32, turb: f64, fork: f64, decay: f32, rng: &mut Rng, out: &mut Vec<Seg>) {
+/// Advanced Lightning's Fractal Type options.
+const FRACTAL_TYPES: [&str; 3] = ["Linear", "Semi-Linear", "Spline"];
+
+/// How bolts grow: the general and Expert Settings.
+struct BoltCfg<'a> {
+    turb: f64,
+    fork: f64,
+    decay: f32,
+    /// The layer's alpha (buffer grid) and Alpha Obstacle (−10..10; positive avoids opaque
+    /// areas, negative is drawn to them).
+    alpha: Option<&'a Plane>,
+    obstacle: f64,
+    main_only: bool,
+    /// Min Fork Distance (px): shorter stretches do not fork.
+    min_fork: f64,
+    /// Termination Threshold: branches fainter than this stop.
+    term: f32,
+    /// Zig-zag scale from Fractal Type (Linear 1, Semi-Linear 0.7, Spline 0.45 with an extra
+    /// subdivision level).
+    shape: f64,
+    fork_strength: f32,
+    fork_var: f32,
+}
+
+impl BoltCfg<'_> {
+    fn alpha_at(&self, p: (f64, f64)) -> f32 {
+        self.alpha.map_or(0.0, |a| a.sample(p.0, p.1))
+    }
+}
+
+/// Grow a bolt from `a` to `z` by midpoint displacement (`depth` levels), forking at random.
+/// Segments go to `out` with their intensity; `mains` marks the main core's segments.
+#[allow(clippy::too_many_arguments)]
+fn bolt(cfg: &BoltCfg, a: (f64, f64), z: (f64, f64), depth: u32, inten: f32, main: bool, rng: &mut Rng, out: &mut Vec<Seg>, mains: &mut Vec<bool>) {
     if out.len() > 20_000 {
         return;
     }
@@ -422,19 +680,38 @@ fn bolt(a: (f64, f64), z: (f64, f64), depth: u32, inten: f32, turb: f64, fork: f
     let len = (dx * dx + dy * dy).sqrt();
     if depth == 0 || len < 1.0 {
         out.push((a, z, inten));
+        mains.push(main);
         return;
     }
     let (nx, ny) = (-dy / len.max(1e-9), dx / len.max(1e-9));
-    let off = rng.s() * len * 0.22 * turb;
+    let mut off = rng.s() * len * 0.22 * cfg.turb * cfg.shape;
+    // Alpha Obstacle: of the two mirror positions for the midpoint, prefer the one with less
+    // (positive) or more (negative) alpha, the more strongly the larger the setting.
+    if cfg.obstacle != 0.0 && cfg.alpha.is_some() && (main || !cfg.main_only) {
+        let mid = ((a.0 + z.0) * 0.5, (a.1 + z.1) * 0.5);
+        let p1 = (mid.0 + nx * off, mid.1 + ny * off);
+        let p2 = (mid.0 - nx * off, mid.1 - ny * off);
+        let (a1, a2) = (cfg.alpha_at(p1), cfg.alpha_at(p2));
+        let worse = if cfg.obstacle > 0.0 { a1 > a2 } else { a1 < a2 };
+        if worse && rng.f() < cfg.obstacle.abs() / 10.0 {
+            off = -off;
+        }
+    }
     let m = ((a.0 + z.0) * 0.5 + nx * off, (a.1 + z.1) * 0.5 + ny * off);
-    bolt(a, m, depth - 1, inten, turb, fork, decay, rng, out);
-    bolt(m, z, depth - 1, inten, turb, fork, decay, rng, out);
-    if rng.f() < fork && inten > 0.05 {
+    // Positive obstacles stop branches that run into opaque areas.
+    if cfg.obstacle > 0.0 && !main && cfg.alpha_at(m) > 0.5 && rng.f() < cfg.obstacle / 10.0 {
+        return;
+    }
+    bolt(cfg, a, m, depth - 1, inten, main, rng, out, mains);
+    bolt(cfg, m, z, depth - 1, inten, main, rng, out, mains);
+    if rng.f() < cfg.fork && inten > cfg.term && len >= cfg.min_fork {
         let ang = rng.s() * 0.7;
         let (s, c) = ang.sin_cos();
         let (fx, fy) = ((m.0 - a.0) * c - (m.1 - a.1) * s, (m.0 - a.0) * s + (m.1 - a.1) * c);
         let k = 1.2;
-        bolt(m, (m.0 + fx * k, m.1 + fy * k), depth.saturating_sub(1), inten * (1.0 - decay), turb, fork, decay, rng, out);
+        // Fork Strength 50 % keeps the decayed intensity; Fork Variation randomises it.
+        let fi = inten * (1.0 - cfg.decay) * cfg.fork_strength * 2.0 * if cfg.fork_var > 0.0 { 1.0 - cfg.fork_var * rng.f() as f32 } else { 1.0 };
+        bolt(cfg, m, (m.0 + fx * k, m.1 + fy * k), depth.saturating_sub(1), fi.min(1.0), false, rng, out, mains);
     }
 }
 
@@ -446,26 +723,49 @@ fn lightning_segments(ctx: &EffectCtx, b: &Buf) -> Vec<Seg> {
     let turb = ctx.params.f("turbulence").max(0.0);
     let fork = (ctx.params.f("forking") / 100.0).clamp(0.0, 1.0);
     let decay = ctx.params.f("decay").clamp(0.0, 1.0) as f32;
-    let depth = ctx.params.f("expertSettings/complexity").round().clamp(1.0, 12.0) as u32;
+    let fractal = ctx.params.e("expertSettings/fractalType");
+    let depth = ctx.params.f("expertSettings/complexity").round().clamp(1.0, 12.0) as u32 + u32::from(fractal == 2);
     let state = ctx.params.f("conductivityState").floor() as i64 as u64;
     let mut rng = Rng::new(state ^ ((ctx.seed as u64) << 32));
+    let obstacle = ctx.params.f("alphaObstacle").clamp(-10.0, 10.0);
+    let alpha_plane = (obstacle != 0.0).then(|| Plane::alpha(&b.img));
+    let g = |id: &str, dflt: f64| ctx.params.get(id).map(Value::as_f64).unwrap_or(dflt);
+    let cfg = BoltCfg {
+        turb,
+        fork,
+        decay,
+        alpha: alpha_plane.as_ref(),
+        obstacle,
+        main_only: ctx.params.b("expertSettings/mainCoreCollisionOnly"),
+        min_fork: g("expertSettings/minForkDistance", 0.0).max(0.0) * b.scale,
+        term: (g("expertSettings/terminationThreshold", 5.0) / 100.0).clamp(0.0, 1.0) as f32,
+        shape: match fractal {
+            1 => 0.7,
+            2 => 0.45,
+            _ => 1.0,
+        },
+        fork_strength: (g("expertSettings/forkStrength", 50.0) / 100.0).clamp(0.0, 1.0) as f32,
+        fork_var: (g("expertSettings/forkVariation", 0.0) / 100.0).clamp(0.0, 1.0) as f32,
+    };
     let mut segs = Vec::new();
+    let mut mains = Vec::new();
     let (h, w) = (b.img.height as f64, b.img.width as f64);
+    let mut go = |a, z, depth, cfg: &BoltCfg, rng: &mut Rng| bolt(cfg, a, z, depth, 1.0, true, rng, &mut segs, &mut mains);
     // LIGHTNING_TYPES order.
     match kind {
         // Direction: travels toward the Direction point and beyond.
         0 => {
             let z = (o.0 + (d.0 - o.0) * 3.0, o.1 + (d.1 - o.1) * 3.0);
-            bolt(o, z, depth, 1.0, turb, fork, decay, &mut rng, &mut segs);
+            go(o, z, depth, &cfg, &mut rng);
         }
         // Breaking: more branching as the points move apart.
         2 => {
             let dist = ((d.0 - o.0).powi(2) + (d.1 - o.1).powi(2)).sqrt();
             let f = (fork * (0.5 + dist / w.max(h).max(1.0))).min(1.0);
-            bolt(o, d, depth, 1.0, turb, f, decay, &mut rng, &mut segs);
+            go(o, d, depth, &BoltCfg { fork: f, ..cfg }, &mut rng);
         }
         // Bouncy: a strike with a stronger zig-zag.
-        3 => bolt(o, d, depth, 1.0, turb * 1.6, fork, decay, &mut rng, &mut segs),
+        3 => go(o, d, depth, &BoltCfg { turb: turb * 1.6, ..cfg }, &mut rng),
         // Omni / Anywhere: bolts in all directions out to the Outer Radius.
         4 | 5 => {
             let len = ((d.0 - o.0).powi(2) + (d.1 - o.1).powi(2)).sqrt().max(w.min(h) * 0.25);
@@ -473,25 +773,35 @@ fn lightning_segments(ctx: &EffectCtx, b: &Buf) -> Vec<Seg> {
                 let a = rng.f() * 2.0 * PI;
                 let l = if kind == 5 { len * (0.3 + 0.7 * rng.f()) } else { len };
                 let z = (o.0 + a.cos() * l, o.1 + a.sin() * l);
-                bolt(o, z, depth, 1.0, turb, fork, decay, &mut rng, &mut segs);
+                go(o, z, depth, &cfg, &mut rng);
             }
         }
-        6 => bolt(o, (o.0, h), depth, 1.0, turb, fork, decay, &mut rng, &mut segs),
+        6 => go(o, (o.0, h), depth, &cfg, &mut rng),
         // Two-Way Strike: from both ends toward the middle.
         7 => {
             let m = ((o.0 + d.0) * 0.5, (o.1 + d.1) * 0.5);
-            bolt(o, m, depth.saturating_sub(1).max(1), 1.0, turb, fork, decay, &mut rng, &mut segs);
-            bolt(d, m, depth.saturating_sub(1).max(1), 1.0, turb, fork, decay, &mut rng, &mut segs);
+            go(o, m, depth.saturating_sub(1).max(1), &cfg, &mut rng);
+            go(d, m, depth.saturating_sub(1).max(1), &cfg, &mut rng);
         }
         // Strike.
-        _ => bolt(o, d, depth, 1.0, turb, fork, decay, &mut rng, &mut segs),
+        _ => go(o, d, depth, &cfg, &mut rng),
     }
+    let dist = |p: (f64, f64)| ((p.0 - o.0).powi(2) + (p.1 - o.1).powi(2)).sqrt();
+    let far = segs.iter().map(|(_, z, _)| dist(*z)).fold(1e-9, f64::max);
     // Decay Main Core: the whole bolt fades with distance from the origin.
     if decay_main {
-        let far = segs.iter().map(|(_, z, _)| ((z.0 - o.0).powi(2) + (z.1 - o.1).powi(2)).sqrt()).fold(1e-9, f64::max);
         for (a, _, i) in &mut segs {
-            let t = (((a.0 - o.0).powi(2) + (a.1 - o.1).powi(2)).sqrt() / far) as f32;
+            let t = (dist(*a) / far) as f32;
             *i *= (1.0 - decay * t).max(0.0);
+        }
+    }
+    // Core Drain: the main core loses intensity along its length.
+    let drain = (g("expertSettings/coreDrain", 0.0) / 100.0).clamp(0.0, 1.0) as f32;
+    if drain > 0.0 {
+        for ((a, _, i), m) in segs.iter_mut().zip(&mains) {
+            if *m {
+                *i *= (1.0 - drain * (dist(*a) / far) as f32).max(0.0);
+            }
         }
     }
     segs
@@ -776,9 +1086,21 @@ pub fn specs() -> Vec<EffectSpec> {
             "Radio Waves",
             vec![
                 p("producerPoint", "Producer Point", pt(0.5, 0.5), ParamUi::Point),
+                p("parametersAreSetAt", "Parameters Are Set At", Value::Enum(1), popup(&["Birth", "Each Frame"])),
+                p("renderQuality", "Render Quality", num(4.0), slider(1.0, 10.0, 1.0, 10.0, 0)),
+                p("waveType", "Wave Type", Value::Enum(0), popup(&RW_TYPES)),
                 p("polygon/sides", "Sides", num(64.0), slider(3.0, 64.0, 3.0, 64.0, 0)),
                 p("polygon/star", "Star", Value::Bool(false), ParamUi::Checkbox),
                 p("polygon/starDepth", "Star Depth", num(-0.3), slider(-1.0, 1.0, -1.0, 1.0, 2)),
+                p("imageContour/sourceLayer", "Source Layer", Value::Layer(None), ParamUi::Layer),
+                p("imageContour/sourceCenter", "Source Center", pt(0.5, 0.5), ParamUi::Point),
+                p("imageContour/valueChannel", "Value Channel", Value::Enum(4), popup(&RW_CHANNELS)),
+                p("imageContour/invertInput", "Invert Input", Value::Bool(false), ParamUi::Checkbox),
+                p("imageContour/valueThreshold", "Value Threshold", num(128.0), slider(0.0, 255.0, 0.0, 255.0, 0)),
+                p("imageContour/preBlur", "Pre-Blur", num(1.0), slider(0.0, 100.0, 0.0, 20.0, 1)),
+                p("imageContour/tolerance", "Tolerance", num(1.0), slider(0.0, 100.0, 0.0, 20.0, 1)),
+                p("imageContour/contour", "Contour", num(0.0), slider(0.0, 100.0, 0.0, 10.0, 0)),
+                p("waveMask/mask", "Mask", num(0.0), ParamUi::Mask),
                 p("waveMotion/frequency", "Frequency", num(1.0), slider(0.01, 100.0, 0.01, 10.0, 2)),
                 p("waveMotion/expansion", "Expansion", num(100.0), slider(0.0, 10000.0, 0.0, 1000.0, 1)),
                 p("waveMotion/orientation", "Orientation", num(0.0), ang()),
@@ -786,6 +1108,8 @@ pub fn specs() -> Vec<EffectSpec> {
                 p("waveMotion/velocity", "Velocity", num(0.0), slider(0.0, 10000.0, 0.0, 1000.0, 1)),
                 p("waveMotion/spin", "Spin", num(0.0), slider(-3600.0, 3600.0, -360.0, 360.0, 1)),
                 p("waveMotion/lifespan", "Lifespan (sec)", num(2.0), slider(0.01, 100.0, 0.01, 10.0, 2)),
+                p("waveMotion/reflection", "Reflection", Value::Bool(false), ParamUi::Checkbox),
+                p("waveStroke/profile", "Profile", Value::Enum(0), popup(&RW_PROFILES)),
                 p("waveStroke/color", "Color", col(1.0, 1.0, 1.0), ParamUi::Color),
                 p("waveStroke/opacity", "Opacity", num(100.0), pct()),
                 p("waveStroke/fadeInTime", "Fade-in Time", num(0.0), slider(0.0, 100.0, 0.0, 5.0, 2)),
@@ -813,8 +1137,16 @@ pub fn specs() -> Vec<EffectSpec> {
                 p("forking", "Forking", num(25.0), pct()),
                 p("decay", "Decay", num(0.3), slider(0.0, 1.0, 0.0, 1.0, 2)),
                 p("decayMainCore", "Decay Main Core", Value::Bool(false), ParamUi::Checkbox),
+                p("alphaObstacle", "Alpha Obstacle", num(0.0), slider(-10.0, 10.0, -10.0, 10.0, 2)),
                 p("compositeOnOriginal", "Composite On Original", Value::Bool(true), ParamUi::Checkbox),
                 p("expertSettings/complexity", "Complexity", num(6.0), slider(1.0, 12.0, 1.0, 12.0, 0)),
+                p("expertSettings/minForkDistance", "Min Fork Distance", num(0.0), slider(0.0, 1000.0, 0.0, 100.0, 1)),
+                p("expertSettings/terminationThreshold", "Termination Threshold", num(5.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
+                p("expertSettings/mainCoreCollisionOnly", "Main Core Collision Only", Value::Bool(false), ParamUi::Checkbox),
+                p("expertSettings/fractalType", "Fractal Type", Value::Enum(0), popup(&FRACTAL_TYPES)),
+                p("expertSettings/coreDrain", "Core Drain", num(0.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
+                p("expertSettings/forkStrength", "Fork Strength", num(50.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
+                p("expertSettings/forkVariation", "Fork Variation", num(0.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
             ],
             advanced_lightning,
         ),
@@ -973,6 +1305,43 @@ mod tests {
     }
 
     #[test]
+    fn lightning_alpha_obstacle_and_expert_settings() {
+        let sum = |i: &Image| i.data.iter().map(|p| p[3]).sum::<f32>();
+        let alpha_in = |img: &Image, src: &Image| img.data.iter().zip(&src.data).filter(|(_, s)| s[3] > 0.5).map(|(p, _)| p[3]).sum::<f32>();
+        // A wall of opaque pixels across the middle of the bolt's path.
+        let mut wall = Image::new(64, 48);
+        for y in 0..48 {
+            for x in 0..64 {
+                if (18..30).contains(&y) && x < 50 {
+                    wall.set(x, y, [0.0, 0.0, 0.0, 1.0]);
+                }
+            }
+        }
+        let opts = |o: f64| {
+            vec![("alphaObstacle", num(o)), ("compositeOnOriginal", Value::Bool(false)), ("glowSettings/glowRadius", num(0.0)), ("forking", num(60.0))]
+        };
+        let free = run("ec.generate.advancedlightning", &opts(0.0), wall.clone());
+        let avoid = run("ec.generate.advancedlightning", &opts(10.0), wall.clone());
+        assert!(alpha_in(&avoid.img, &wall) < alpha_in(&free.img, &wall), "{} vs {}", alpha_in(&avoid.img, &wall), alpha_in(&free.img, &wall));
+        // Fractal Type, Core Drain, Fork Strength, Termination Threshold, Min Fork Distance.
+        let base = run("ec.generate.advancedlightning", &[], Image::new(64, 48));
+        for (id, v) in [
+            ("expertSettings/fractalType", Value::Enum(2)),
+            ("expertSettings/coreDrain", num(100.0)),
+            ("expertSettings/forkStrength", num(100.0)),
+            ("expertSettings/forkVariation", num(100.0)),
+        ] {
+            assert_ne!(run("ec.generate.advancedlightning", &[(id, v)], Image::new(64, 48)).img, base.img, "{id}");
+        }
+        let drained = run("ec.generate.advancedlightning", &[("expertSettings/coreDrain", num(100.0))], Image::new(64, 48));
+        assert!(sum(&drained.img) < sum(&base.img));
+        let no_forks = run("ec.generate.advancedlightning", &[("expertSettings/minForkDistance", num(1000.0))], Image::new(64, 48));
+        let term = run("ec.generate.advancedlightning", &[("expertSettings/terminationThreshold", num(100.0))], Image::new(64, 48));
+        assert_eq!(no_forks.img, term.img, "no forks either way");
+        assert!(sum(&no_forks.img) < sum(&base.img));
+    }
+
+    #[test]
     fn lightning_types_and_decay_main_core() {
         let a = run("ec.generate.advancedlightning", &[], Image::new(64, 48));
         let strike = run("ec.generate.advancedlightning", &[("lightningType", Value::Enum(1))], Image::new(64, 48));
@@ -1013,5 +1382,131 @@ mod tests {
         let c = o.img.get(16, 16)[0];
         assert!(c > o.img.get(60, 4)[0]);
         assert!(c > 0.5);
+    }
+
+    fn rw(set: &[(&str, Value)], t: f64, env: crate::EffectEnv) -> Image {
+        let mut v: Vec<(&str, Value)> =
+            vec![("producerPoint", Value::Vec2([32.0, 32.0])), ("waveMotion/frequency", num(0.5)), ("waveMotion/expansion", num(100.0))];
+        v.extend_from_slice(set);
+        crate::run_fx("ec.generate.radiowaves", &v, Image::new(64, 64), t, env).img
+    }
+
+    #[test]
+    fn signed_distance_of_a_square() {
+        let (w, h) = (20, 20);
+        let inside: Vec<bool> = (0..w * h).map(|i| (5..15).contains(&(i % w)) && (5..15).contains(&(i / w))).collect();
+        let d = crate::util::signed_distance(&inside, w, h);
+        assert!((d.get(10, 10) + 4.5).abs() < 1e-4, "{}", d.get(10, 10));
+        assert!((d.get(0, 10) - 4.5).abs() < 1e-4, "{}", d.get(0, 10));
+        assert!((d.get(0, 0) - (50f32.sqrt() - 0.5)).abs() < 1e-4);
+    }
+
+    #[test]
+    fn radio_waves_mask_contours_profile_reflection_and_birth() {
+        // Mask waves: a 10×10 square mask; after 0.1 s (10 px) the wave is 10 px outside it.
+        let sq = crate::MaskShape { name: String::new(), points: vec![[27.0, 27.0], [37.0, 27.0], [37.0, 37.0], [27.0, 37.0]], closed: true, inverted: false };
+        let masks = [sq];
+        let env = crate::EffectEnv { masks: &masks, ..Default::default() };
+        let m = rw(&[("waveType", Value::Enum(2)), ("waveMask/mask", num(1.0))], 0.1, env);
+        assert!(m.get(47, 32)[3] > 0.9, "{:?}", m.get(47, 32));
+        assert!(m.get(32, 32)[3] < 0.01 && m.get(40, 32)[3] < 0.01);
+        // Rounded corner: diagonal distance 10 from (37, 37).
+        assert!(m.get(44, 44)[3] > 0.5, "{:?}", m.get(44, 44));
+        // No mask chosen: nothing drawn.
+        assert!(rw(&[("waveType", Value::Enum(2))], 0.1, env).data.iter().all(|p| p[3] == 0.0));
+        // Image Contours: the bright square of a source layer.
+        struct Src;
+        impl crate::EffectHost for Src {
+            fn layer(&self, _: u64, _: bool) -> Option<crate::LayerPixels> {
+                let mut img = Image::new(64, 64);
+                for y in 27..37 {
+                    for x in 27..37 {
+                        img.set(x, y, [1.0, 1.0, 1.0, 1.0]);
+                    }
+                }
+                Some(crate::LayerPixels { buf: Buf { img, offset: [0.0; 2], scale: 1.0 }, size: [64.0, 64.0] })
+            }
+            fn audio(&self, _: u64, _: f64, _: usize, _: u32) -> Option<Vec<f32>> {
+                None
+            }
+            fn params_at(&self, t: f64) -> Option<Params> {
+                // Colour animates from red (born at 0) to green (born later).
+                let s = crate::find("ec.generate.radiowaves").unwrap();
+                let mut p = Params { values: s.params.iter().map(|p| (p.id.to_string(), p.default.clone())).collect() };
+                p.values.insert("producerPoint".into(), Value::Vec2([32.0, 32.0]));
+                p.values.insert("waveMotion/frequency".into(), num(1.0));
+                p.values.insert("waveMotion/expansion".into(), num(20.0));
+                p.values.insert("waveStroke/color".into(), if t < 0.5 { col(1.0, 0.0, 0.0) } else { col(0.0, 1.0, 0.0) });
+                Some(p)
+            }
+        }
+        let env = crate::EffectEnv { host: Some(&Src), ..Default::default() };
+        let ic = rw(
+            &[
+                ("waveType", Value::Enum(1)),
+                ("imageContour/sourceLayer", Value::Layer(Some(1))),
+                ("imageContour/preBlur", num(0.0)),
+                ("imageContour/tolerance", num(0.0)),
+            ],
+            0.1,
+            env,
+        );
+        assert!(ic.get(47, 32)[3] > 0.9 && ic.get(32, 32)[3] < 0.01, "{:?}", ic.get(47, 32));
+        // Source Center off the square shifts the contour onto the producer point accordingly.
+        let sh = rw(
+            &[
+                ("waveType", Value::Enum(1)),
+                ("imageContour/sourceLayer", Value::Layer(Some(1))),
+                ("imageContour/sourceCenter", Value::Vec2([22.0, 32.0])),
+                ("imageContour/preBlur", num(0.0)),
+                ("imageContour/tolerance", num(0.0)),
+            ],
+            0.1,
+            env,
+        );
+        assert!(sh.get(57, 32)[3] > 0.9, "{:?}", sh.get(57, 32));
+        // Profile: Taper Both thins the stroke edges; Square is solid across.
+        let wide = [("waveStroke/startWidth", num(10.0)), ("waveStroke/endWidth", num(10.0))];
+        let sqr = rw(&wide, 0.2, crate::EffectEnv::default());
+        let mut tap = wide.to_vec();
+        tap.push(("waveStroke/profile", Value::Enum(3)));
+        let tap = rw(&tap, 0.2, crate::EffectEnv::default());
+        assert!(sqr.get(55, 32)[3] > 0.9 && tap.get(55, 32)[3] < 0.6, "{:?} {:?}", sqr.get(55, 32), tap.get(55, 32));
+        assert!(tap.get(52, 32)[3] > 0.8);
+        // Reflection: a fast wave bounces back off the right edge.
+        let fast = [("waveMotion/velocity", num(200.0)), ("waveMotion/expansion", num(10.0))];
+        let gone = rw(&fast, 0.3, crate::EffectEnv::default());
+        let mut rf = fast.to_vec();
+        rf.push(("waveMotion/reflection", Value::Bool(true)));
+        let back = rw(&rf, 0.3, crate::EffectEnv::default());
+        let sum = |i: &Image| i.data.iter().map(|p| p[3]).sum::<f32>();
+        assert!(sum(&back) > sum(&gone) + 5.0, "{} vs {}", sum(&back), sum(&gone));
+        // Parameters Are Set At Birth: the older wave keeps red, the newer one is green.
+        let both = rw(&[("parametersAreSetAt", Value::Enum(0)), ("waveMotion/frequency", num(1.0)), ("waveMotion/expansion", num(20.0))], 1.15, env);
+        let (old, new) = (both.get(55, 32), both.get(35, 32));
+        assert!(old[0] > 0.9 && old[1] < 0.1, "{old:?}");
+        assert!(new[1] > 0.9 && new[0] < 0.1, "{new:?}");
+    }
+
+    #[test]
+    fn cell_pattern_hq_variants_antialias() {
+        let s = crate::find("ec.generate.cellpattern").unwrap();
+        let r = |pat: u32| {
+            let mut params = Params { values: s.params.iter().map(|p| (p.id.to_string(), p.default.clone())).collect() };
+            params.values.insert("cellPattern".into(), Value::Enum(pat));
+            params.values.insert("size".into(), num(12.0));
+            let ctx = EffectCtx { params: &params, time: 0.0, layer_size: [48.0, 48.0], seed: 1, adjustment: false, env: Default::default() };
+            crate::apply(s, &ctx, Buf { img: Image::new(48, 48), offset: [0.0; 2], scale: 1.0 }).img
+        };
+        let distinct = |img: &Image| {
+            let mut v: Vec<u32> = img.data.iter().map(|p| (p[0] * 10000.0) as u32).collect();
+            v.sort_unstable();
+            v.dedup();
+            v.len()
+        };
+        let (std, hq) = (r(4), r(9));
+        assert_eq!(CELL_PATTERNS[9], "Crystallize HQ");
+        assert_ne!(std, hq);
+        assert!(distinct(&hq) > distinct(&std) * 2, "{} vs {}", distinct(&hq), distinct(&std));
     }
 }

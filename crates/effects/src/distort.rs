@@ -257,6 +257,32 @@ fn polar(ctx: &EffectCtx, mut b: Buf) -> Buf {
     b
 }
 
+/// Transform's shutter: (angle, phase) in degrees and the number of samples, or None when it
+/// renders without motion blur. Use Composition's Shutter Angle takes the comp's shutter
+/// (only when the comp and layer motion-blur switches are on); otherwise Shutter Angle, centred
+/// on the frame.
+pub fn transform_shutter(ctx: &EffectCtx) -> Option<(f64, f64, u32)> {
+    let (angle, phase, n) = if ctx.params.b("useCompositionShutterAngle") {
+        ctx.env.shutter?
+    } else {
+        let a = ctx.params.f("shutterAngle").clamp(0.0, 720.0);
+        (a, -a * 0.5, 16)
+    };
+    (angle > 0.0).then_some((angle, phase, n.clamp(2, 64)))
+}
+
+fn transform_matrix(pr: &crate::Params, b: &Buf) -> Mat3 {
+    let anchor = b.to_px(pr.v2("anchor"));
+    let pos = b.to_px(pr.v2("position"));
+    let sh = pr.f("scaleHeight");
+    let sw = if pr.b("uniform") { sh } else { pr.f("scaleWidth") };
+    Mat3::translate(vec2(pos.0, pos.1))
+        * Mat3::rotate_deg(pr.f("rotation"))
+        * Mat3::skew_deg(pr.f("skew"), pr.f("skewAxis"))
+        * Mat3::scale(vec2(sw / 100.0, sh / 100.0))
+        * Mat3::translate(vec2(-anchor.0, -anchor.1))
+}
+
 fn transform(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let anchor = b.to_px(ctx.params.v2("anchor"));
     let pos = b.to_px(ctx.params.v2("position"));
@@ -268,6 +294,34 @@ fn transform(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let rot = ctx.params.f("rotation");
     let opacity = ctx.params.f("opacity") as f32 / 100.0;
     let sampling = if ctx.params.e("sampling") == 1 { effectcraft_raster::Sampling::Bicubic } else { effectcraft_raster::Sampling::Bilinear };
+    // Motion blur: the transform at Samples instants across the shutter, averaged (the
+    // transform at other times comes from the host; without one the frame renders sharp).
+    if let Some((angle, phase, n)) = transform_shutter(ctx)
+        && let Some(host) = ctx.env.host
+    {
+        let fd = 1.0 / ctx.fps();
+        let mut acc = Image::new(b.img.width, b.img.height);
+        let mut count = 0.0f32;
+        for k in 0..n {
+            let t = ctx.time + (phase + angle * k as f64 / (n - 1) as f64) / 360.0 * fd;
+            let Some(pr) = host.params_at(t) else { continue };
+            let mut one = Image::new(b.img.width, b.img.height);
+            let op = pr.f("opacity") as f32 / 100.0;
+            effectcraft_raster::composite_warp(
+                &mut one,
+                &b.img,
+                &transform_matrix(&pr, &b),
+                &effectcraft_raster::WarpOpts { opacity: op, sampling, ..Default::default() },
+            );
+            acc.data.iter_mut().zip(&one.data).for_each(|(a, o)| (0..4).for_each(|c| a[c] += o[c]));
+            count += 1.0;
+        }
+        if count > 0.0 {
+            acc.data.iter_mut().for_each(|p| p.iter_mut().for_each(|v| *v /= count));
+            b.img = acc;
+            return b;
+        }
+    }
     let m = Mat3::translate(vec2(pos.0, pos.1))
         * Mat3::rotate_deg(rot)
         * Mat3::skew_deg(skew, skew_axis)
@@ -397,6 +451,8 @@ pub fn specs() -> Vec<EffectSpec> {
                 p("skewAxis", "Skew Axis", num(0.0), ParamUi::Angle),
                 p("rotation", "Rotation", num(0.0), ParamUi::Angle),
                 p("opacity", "Opacity", num(100.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
+                p("useCompositionShutterAngle", "Use Composition's Shutter Angle", Value::Bool(true), ParamUi::Checkbox),
+                p("shutterAngle", "Shutter Angle", num(0.0), slider(0.0, 720.0, 0.0, 360.0, 1)),
                 p("sampling", "Sampling", Value::Enum(0), popup(&["Bilinear", "Bicubic"])),
             ],
             transform,
@@ -509,5 +565,45 @@ mod tests {
         let a = run("ec.distort.transform", &[("rotation", num(17.0))], im.clone());
         let b = run("ec.distort.transform", &[("rotation", num(17.0)), ("sampling", Value::Enum(1))], im);
         assert!(a.img.data.iter().zip(&b.img.data).any(|(p, q)| differs(*p, *q)));
+    }
+
+    #[test]
+    fn transform_shutter_angle_motion_blur() {
+        /// Position moves right 200 px per second.
+        struct Moving;
+        impl crate::EffectHost for Moving {
+            fn layer(&self, _: u64, _: bool) -> Option<crate::LayerPixels> {
+                None
+            }
+            fn audio(&self, _: u64, _: f64, _: usize, _: u32) -> Option<Vec<f32>> {
+                None
+            }
+            fn params_at(&self, t: f64) -> Option<Params> {
+                let s = crate::find("ec.distort.transform").unwrap();
+                let mut p = Params { values: s.params.iter().map(|p| (p.id.to_string(), crate::default_value(p, [40.0, 20.0]))).collect() };
+                p.values.insert("position".into(), Value::Vec2([20.0 + 200.0 * t, 10.0]));
+                Some(p)
+            }
+        }
+        let mut sq = Image::new(40, 20);
+        for y in 5..15 {
+            for x in 15..25 {
+                sq.set(x, y, [1.0, 1.0, 1.0, 1.0]);
+            }
+        }
+        let render = |vals: &[(&str, Value)], shutter: Option<(f64, f64, u32)>| {
+            let env = crate::EffectEnv { host: Some(&Moving), frame_rate: 10.0, shutter, ..Default::default() };
+            crate::run_fx("ec.distort.transform", vals, sq.clone(), 0.0, env).img
+        };
+        let partial = |i: &Image| i.data.iter().filter(|p| p[3] > 0.02 && p[3] < 0.98).count();
+        // Use Composition Shutter Angle with the comp / layer motion blur off: sharp.
+        assert_eq!(partial(&render(&[], None)), 0);
+        // With the comp shutter (180°): smeared along x over 10 px.
+        let comp = render(&[], Some((180.0, -90.0, 16)));
+        assert!(partial(&comp) > 50, "{}", partial(&comp));
+        // Own Shutter Angle.
+        let own = render(&[("useCompositionShutterAngle", Value::Bool(false)), ("shutterAngle", num(360.0))], None);
+        assert!(partial(&own) > partial(&comp));
+        assert_eq!(partial(&render(&[("useCompositionShutterAngle", Value::Bool(false))], None)), 0, "0 deg: sharp");
     }
 }

@@ -32,10 +32,24 @@ fn black_white_colorama_selective_color() {
     effect_case("ec.color.colorama", &[]);
     effect_case("ec.color.colorama", &[("inputPhase/mode", e(4)), ("inputPhase/phaseShift", n(75.0)), ("outputCycle/cycles", n(2.5)), ("blend", n(40.0))]);
     effect_case("ec.color.colorama", &[("inputPhase/mode", e(8)), ("outputCycle/cycles", n(1.3))]);
-    effect_case("ec.color.selectivecolor", &[("redsCyan", n(60.0)), ("bluesYellow", n(-40.0)), ("neutralsBlack", n(20.0)), ("whitesMagenta", n(30.0))]);
     effect_case(
         "ec.color.selectivecolor",
-        &[("method", e(1)), ("greensMagenta", n(50.0)), ("yellowsCyan", n(-30.0)), ("blacksYellow", n(40.0)), ("magentasBlack", n(25.0))],
+        &[
+            ("details/reds/redsCyan", n(60.0)),
+            ("details/blues/bluesYellow", n(-40.0)),
+            ("details/neutrals/neutralsBlack", n(20.0)),
+            ("details/whites/whitesMagenta", n(30.0)),
+        ],
+    );
+    effect_case(
+        "ec.color.selectivecolor",
+        &[
+            ("method", e(1)),
+            ("details/greens/greensMagenta", n(50.0)),
+            ("details/yellows/yellowsCyan", n(-30.0)),
+            ("details/blacks/blacksYellow", n(40.0)),
+            ("details/magentas/magentasBlack", n(25.0)),
+        ],
     );
 }
 
