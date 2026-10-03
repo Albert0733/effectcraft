@@ -111,6 +111,7 @@ fn import(s: &mut Session, p: &Value) -> Result<Value> {
                 FootageKind::Still | FootageKind::Sequence => Label::Lavender,
                 FootageKind::Audio => Label::SeaFoam,
                 FootageKind::Video | FootageKind::Model => Label::Aqua,
+                FootageKind::Data => Label::Sandstone,
             };
             let id = proj.add_item(&name, label, None, ItemKind::Footage(f));
             ids.push(id.0);

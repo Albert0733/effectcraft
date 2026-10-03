@@ -51,6 +51,7 @@ fn audio_footage() -> Footage {
         missing: false,
         sequence: vec![],
         color_profile: None,
+        ..Default::default()
     }
 }
 

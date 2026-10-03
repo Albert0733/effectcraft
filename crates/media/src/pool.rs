@@ -386,7 +386,7 @@ impl Inner {
                 let i = Self::frame_index(footage.frame_rate, t, footage.sequence.len() as i64, footage.loop_count);
                 Loc { key: key(&footage.sequence[i as usize], 0), media_t: None }
             }
-            FootageKind::Still | FootageKind::Sequence | FootageKind::Model => Loc { key: key(&footage.path, 0), media_t: None },
+            FootageKind::Still | FootageKind::Sequence | FootageKind::Model | FootageKind::Data => Loc { key: key(&footage.path, 0), media_t: None },
             FootageKind::Video | FootageKind::Audio => {
                 let rate = footage.frame_rate;
                 let n = Self::frame_count(rate, footage.duration);

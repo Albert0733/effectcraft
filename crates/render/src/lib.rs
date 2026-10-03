@@ -154,6 +154,22 @@ impl EffectHost for FxHost<'_, '_, '_> {
     }
 }
 
+/// The Essential Properties overrides of a precomp layer, evaluated at the context time.
+pub fn essential_overrides(ctx: &EvalCtx, layer: &Layer) -> Vec<effectcraft_project::essential::Override> {
+    use effectcraft_project::essential;
+    let over = essential::overridden(layer);
+    let Some(g) = essential::group(layer).filter(|_| !over.is_empty()) else { return vec![] };
+    let mut out = vec![];
+    g.walk("", &mut |_, p| {
+        if over.contains(&p.uid)
+            && let Some(control) = essential::control_of(&p.match_id)
+        {
+            out.push(essential::Override { control, value: ctx.value(layer, p) });
+        }
+    });
+    out
+}
+
 /// No footage available (renders footage layers as transparent).
 pub struct NoFootage;
 impl FootageSource for NoFootage {
@@ -330,6 +346,10 @@ impl<'a> Renderer<'a> {
             return None;
         }
         if styles::active(ctx, layer) {
+            return None;
+        }
+        // Instance overrides (Essential Properties) need the nested comp rendered on its own.
+        if !effectcraft_project::essential::overridden(layer).is_empty() {
             return None;
         }
         Some(*item)
@@ -655,7 +675,15 @@ impl<'a> Renderer<'a> {
                 if self.project.comp_contains(*item, ctx.comp_id) {
                     return None;
                 }
-                let sub = self.nested();
+                // Essential Properties overrides render the nested comp with this instance's
+                // values.
+                let ov = essential_overrides(ctx, layer);
+                let tmp = if ov.is_empty() { None } else { effectcraft_project::essential::with_overrides(self.project, *item, &ov) };
+                let base = self.nested();
+                let sub = match &tmp {
+                    Some(p) => Renderer { project: p, ..base },
+                    None => base,
+                };
                 let lt = ctx.source_time(layer);
                 // Frame blending between the nested comp's frames (time-stretched/remapped).
                 let mode = frame_blend_mode(ctx, layer);

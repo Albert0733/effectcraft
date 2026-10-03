@@ -24,7 +24,7 @@ mod export;
 mod import;
 mod shapes;
 mod text;
-mod zip;
+pub mod zip;
 
 use effectcraft_color::BlendMode;
 use effectcraft_time::{FrameRate, TICKS_PER_SECOND, Tick};

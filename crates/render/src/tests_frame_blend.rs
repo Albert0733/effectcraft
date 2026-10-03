@@ -80,6 +80,7 @@ fn setup(mode: FrameBlend, size: (u32, u32)) -> (Project, ItemId) {
         missing: false,
         sequence: vec![],
         color_profile: None,
+        ..Default::default()
     };
     let fid = p.add_item("clip", Label::Aqua, None, ItemKind::Footage(f));
     let mut l = build::layer(&mut p, &comp, "clip", LayerSource::Footage { item: fid }, size, None);

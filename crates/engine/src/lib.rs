@@ -197,6 +197,13 @@ pub struct EditorState {
     /// Composition viewer display options (Show Channel, exposure, snapshot, Fast Previews).
     #[serde(default)]
     pub viewer: commands::viewer_cmds::ViewOptions,
+    /// Essential Graphics panel ▸ Primary composition (`None` = the active comp).
+    #[serde(default)]
+    pub essential_primary: Option<ItemId>,
+    /// Essential Graphics panel ▸ Solo Supported Properties (the timeline shows only properties
+    /// Essential Graphics can expose).
+    #[serde(default)]
+    pub essential_solo: bool,
 }
 
 fn one_view() -> u8 {
@@ -368,6 +375,8 @@ impl Session {
         let r = f(&mut p, &mut st)?;
         // Layer styles: one Global Light per comp, whichever layer edited it.
         effectcraft_project::styles::sync_global_light(&before, &mut p);
+        // Essential Properties of precomp layers follow their comps' Essential Graphics.
+        effectcraft_project::essential::sync_project(&before, &mut p);
         // Warp Stabilizer analyses made from other frames are cleared (and queued again).
         for w in warp::invalidate(&before, &mut p) {
             if !self.warp_pending.contains(&w) {
@@ -575,6 +584,8 @@ mod tests_3d;
 mod tests_anim_tools;
 #[cfg(test)]
 mod tests_effects;
+#[cfg(test)]
+mod tests_essential;
 #[cfg(test)]
 mod tests_fidelity;
 #[cfg(test)]

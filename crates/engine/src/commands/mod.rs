@@ -8,6 +8,7 @@ mod comp;
 mod comp_more;
 mod edit;
 mod effect;
+pub mod essential;
 mod file;
 mod file_more;
 mod frontend;
@@ -136,6 +137,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(puppet::specs());
         v.extend(liquify::specs());
         v.extend(settings::specs());
+        v.extend(essential::specs());
         v.extend(stubs::specs());
         v
     })

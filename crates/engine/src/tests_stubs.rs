@@ -257,6 +257,7 @@ impl Importer for MockImporter {
             missing: false,
             sequence: vec![],
             color_profile: None,
+            ..Default::default()
         })
     }
 }

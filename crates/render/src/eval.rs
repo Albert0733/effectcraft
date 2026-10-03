@@ -100,6 +100,15 @@ impl<'a> EvalCtx<'a> {
         if let Some(tr) = layer.props.get("timeRemap") {
             return Tick::from_seconds_f64(self.value(layer, tr).as_f64());
         }
+        // Responsive Design — Time: a time-stretched precomp keeps its protected regions at
+        // their original speed.
+        if let LayerSource::Comp { item } = layer.source
+            && (layer.stretch - 100.0).abs() > 1e-9
+            && let Some(nc) = self.project.comp(item)
+            && let Some(t) = responsive_source_time(nc, layer.stretch / 100.0, (self.time - layer.start_time).seconds())
+        {
+            return t;
+        }
         layer.layer_time(self.time)
     }
     pub fn layer(&self, id: LayerId) -> Option<&'a Layer> {
@@ -183,6 +192,73 @@ impl<'a> EvalCtx<'a> {
             (Mat3([[m[0][0], m[0][1], m[0][3]], [m[1][0], m[1][1], m[1][3]], [0.0, 0.0, 1.0]]), 0.0)
         }
     }
+}
+
+/// The protected regions of a comp (Responsive Design — Time markers), merged, sorted and
+/// clamped to the comp, in seconds.
+pub fn protected_regions(comp: &Comp) -> Vec<(f64, f64)> {
+    let d = comp.duration.seconds();
+    let mut v: Vec<(f64, f64)> = comp
+        .markers
+        .iter()
+        .filter(|m| m.protected && m.duration > Tick::ZERO)
+        .map(|m| (m.time.seconds().clamp(0.0, d), (m.time + m.duration).seconds().clamp(0.0, d)))
+        .filter(|(a, b)| b > a)
+        .collect();
+    v.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut out: Vec<(f64, f64)> = vec![];
+    for (a, b) in v {
+        match out.last_mut() {
+            Some(last) if a <= last.1 => last.1 = last.1.max(b),
+            _ => out.push((a, b)),
+        }
+    }
+    out
+}
+
+/// Source time of a precomp time-stretched by `stretch` (1 = 100%), `elapsed` comp seconds
+/// after the layer's start, with Responsive Design — Time: protected regions play at their
+/// original speed and the unprotected parts absorb the whole stretch. `None` when the comp has
+/// no protected regions or the stretch can't be absorbed (reversed, or shorter than the
+/// protected regions), so the plain stretch applies.
+pub fn responsive_source_time(comp: &Comp, stretch: f64, elapsed: f64) -> Option<Tick> {
+    let regions = protected_regions(comp);
+    if regions.is_empty() || stretch <= 0.0 {
+        return None;
+    }
+    let d = comp.duration.seconds();
+    let lp: f64 = regions.iter().map(|(a, b)| b - a).sum();
+    let lu = d - lp;
+    let k = if lu > 1e-9 { (d * stretch - lp) / lu } else { 1.0 };
+    if k <= 1e-9 {
+        return None;
+    }
+    if elapsed < 0.0 {
+        return Some(Tick::from_seconds_f64(elapsed / k));
+    }
+    // Segments in source order: (start, end, protected).
+    let mut segs = vec![];
+    let mut at = 0.0;
+    for (a, b) in &regions {
+        if *a > at {
+            segs.push((at, *a, false));
+        }
+        segs.push((*a, *b, true));
+        at = *b;
+    }
+    if d > at {
+        segs.push((at, d, false));
+    }
+    let mut pos = 0.0;
+    for (a, b, prot) in segs {
+        let speed = if prot { 1.0 } else { k };
+        let len = (b - a) * speed;
+        if elapsed < pos + len {
+            return Some(Tick::from_seconds_f64(a + (elapsed - pos) / speed));
+        }
+        pos += len;
+    }
+    Some(Tick::from_seconds_f64(d + (elapsed - pos) / k))
 }
 
 /// Size of a layer's source in layer pixels.
