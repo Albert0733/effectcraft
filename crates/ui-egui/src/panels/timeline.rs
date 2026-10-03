@@ -363,11 +363,23 @@ pub fn locate(app: &EffectcraftApp, layer: u64, time: Option<f64>) -> Option<(f3
     }
 }
 
-/// Start renaming the first selected layer.
+/// Start renaming the first selected layer (Enter in the Timeline).
 pub fn begin_rename(app: &mut EffectcraftApp, ctx: &egui::Context) {
     if let Some(l) = app.session.state.selected_layers.first().and_then(|id| app.session.active_comp().and_then(|c| c.layer(*id))) {
-        ctx.data_mut(|d| d.insert_temp(egui::Id::new("tl-rename"), (l.id.0, l.name.clone())));
+        start_rename(ctx, l.id.0, &l.name);
     }
+}
+
+/// Open the rename field on layer `id`; it takes the keyboard focus on its first frame only.
+fn start_rename(ctx: &egui::Context, id: u64, name: &str) {
+    ctx.data_mut(|d| {
+        d.insert_temp(egui::Id::new("tl-rename"), (id, name.to_string()));
+        d.insert_temp(rename_focus_id(), true);
+    });
+}
+
+fn rename_focus_id() -> egui::Id {
+    egui::Id::new("tl-rename-focus")
 }
 
 fn group_visible(g: &PropGroup, layer: &Layer) -> bool {
@@ -411,6 +423,7 @@ fn prop_visible(p: &Property, layer: &Layer) -> bool {
 fn reveal_matches(p: &Property, path_matches: &[&str], kind: &str) -> bool {
     match kind {
         "animated" => p.is_animated() || p.has_expression(),
+        "expressions" => p.has_expression(),
         _ => path_matches.contains(&p.match_id.as_str()),
     }
 }
@@ -485,8 +498,11 @@ fn reveal_targets(kind: &str) -> Option<(&'static str, &'static [&'static str])>
         "opacity" => ("transform", &["opacity"]),
         "anchor" => ("transform", &["anchor"]),
         "feather" => ("masks", &["feather"]),
+        "maskPath" => ("masks", &["path"]),
+        "maskOpacity" => ("masks", &["opacity"]),
         "levels" => ("audio", &["levels"]),
-        "animated" => ("", &[]),
+        "timeRemap" => ("", &["timeRemap"]),
+        "animated" | "expressions" => ("", &[]),
         _ => return None,
     })
 }
@@ -608,6 +624,28 @@ fn reveal_rows(app: &EffectcraftApp, l: &Layer, rows: &mut Vec<Row>) {
     {
         group_rows(rows, fx, true);
     }
+    // PP: paint, Roto Brush and Puppet effects; FF: effects whose plug-in is missing.
+    for (k, keep) in [
+        ("paint", &(|id: &str| matches!(id, "ec.paint.paint" | "ec.matte.rotobrush" | "ec.distort.puppet")) as &dyn Fn(&str) -> bool),
+        ("missingEffects", &|id: &str| effectcraft_engine::effects::find(id).is_none()),
+    ] {
+        if has(k)
+            && let Some(fx) = l.effects()
+        {
+            let mut only = fx.clone();
+            only.children.retain(|c| matches!(c, Node::Group(g) if matches!(&g.kind, GroupKind::Effect { effect } if keep(effect))));
+            group_rows(rows, &only, true);
+        }
+    }
+    // AA: Material Options (3D layers).
+    if has("material")
+        && let Some(m) = l.props.sub("materialOptions")
+        && l.is_3d()
+    {
+        let mut only = PropGroup::new(0, "", "");
+        only.children.push(Node::Group(m.clone()));
+        group_rows(rows, &only, false);
+    }
     // P/S/R/T/A/F/L/animated: matching properties, in tree order, each once.
     let mut wanted = std::collections::BTreeSet::new();
     for kind in &tl.reveal {
@@ -628,7 +666,12 @@ fn reveal_rows(app: &EffectcraftApp, l: &Layer, rows: &mut Vec<Row>) {
         collect_props(&l.props, &mut found, &|p| wanted.contains(&p.uid));
         rows.extend(found.into_iter().map(|uid| Row { layer: l.id, depth: 1, kind: RowKind::Prop { uid } }));
     }
-    if has("props") {
+    // SS: the selected properties and groups (as Animation ▸ Reveal Properties shows them).
+    let selected: std::collections::BTreeSet<u64> = app.session.state.selected_props.iter().filter(|(lid, _)| *lid == l.id).map(|(_, u)| *u).collect();
+    if has("props") || has("selected") {
+        let picked: std::collections::BTreeSet<u64> =
+            if has("props") { tl.reveal_props.iter().copied().chain(selected.iter().copied().filter(|_| has("selected"))).collect() } else { selected };
+        let reveal_props = &picked;
         // Animation ▸ Reveal Properties…: the engine picked the uids.
         fn groups_in<'a>(g: &'a PropGroup, set: &std::collections::BTreeSet<u64>, out: &mut Vec<&'a PropGroup>) {
             for sg in g.groups() {
@@ -640,7 +683,7 @@ fn reveal_rows(app: &EffectcraftApp, l: &Layer, rows: &mut Vec<Row>) {
             }
         }
         let mut groups = vec![];
-        groups_in(&l.props, &tl.reveal_props, &mut groups);
+        groups_in(&l.props, reveal_props, &mut groups);
         for g in groups {
             let open = tl.open_groups.contains(&g.uid);
             rows.push(Row {
@@ -653,7 +696,7 @@ fn reveal_rows(app: &EffectcraftApp, l: &Layer, rows: &mut Vec<Row>) {
             }
         }
         let mut found = vec![];
-        collect_props(&l.props, &mut found, &|p| prop_visible(p, l) && tl.reveal_props.contains(&p.uid) && !wanted.contains(&p.uid));
+        collect_props(&l.props, &mut found, &|p| prop_visible(p, l) && reveal_props.contains(&p.uid) && !wanted.contains(&p.uid));
         rows.extend(found.into_iter().map(|uid| Row { layer: l.id, depth: 1, kind: RowKind::Prop { uid } }));
     }
     if has("waveform")
@@ -1182,11 +1225,19 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     lp.text(pos2(cw.num + 13.0, cy), Align2::CENTER_CENTER, format!("{}", idx_of(layer.id)), Tokens::ui(11.5), t.text_dim);
                 }
                 layer_cells(app, ui, &lp, &cw, &comp, layer, r, cy, &mut actions);
+                // Row click → select; double-click → rename; drag → reorder. Registered before the
+                // twirl and the name field so those sit on top and get their clicks.
+                let row_x0 = if vis.num { cw.num } else { cw.name + 16.0 };
+                let row_resp = ui.interact(
+                    Rect::from_min_max(pos2(row_x0, r.min.y), pos2(cw.name_end, r.max.y)),
+                    egui::Id::new(("row", layer.id.0)),
+                    Sense::click_and_drag(),
+                );
                 // Twirl + icon + name.
                 let tw = Rect::from_center_size(pos2(cw.name + 8.0, cy), vec2(14.0, 14.0));
                 let open = app.ui.timeline.open_layers.contains(&layer.id.0);
                 if widgets::twirl(ui, tw, open, egui::Id::new(("twirl", layer.id.0)), &t).clicked() {
-                    ui_actions.push(UiAct::ToggleLayer(layer.id.0, ui.input(|i| i.modifiers.alt)));
+                    ui_actions.push(UiAct::ToggleLayer(layer.id.0, ui.input(|i| i.modifiers.alt || i.modifiers.command)));
                 }
                 app.auto.add(&format!("timeline.layer.{}.twirl", layer.id.0), tw, "twirl");
                 icons::paint(&lp, Rect::from_center_size(pos2(cw.name + 24.0, cy), vec2(13.0, 13.0)), layer_icon(layer, &app.session.project), t.text_dim);
@@ -1195,8 +1246,16 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 let renaming: Option<(u64, String)> = ctx.data(|d| d.get_temp(rename_id));
                 if let Some((rl, mut buf)) = renaming.filter(|(rl, _)| *rl == layer.id.0) {
                     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(name_rect.shrink2(vec2(0.0, 2.0))));
-                    let er = child.add(egui::TextEdit::singleline(&mut buf).font(Tokens::ui(12.0)).desired_width(name_rect.width()));
-                    er.request_focus();
+                    let out = egui::TextEdit::singleline(&mut buf).font(Tokens::ui(12.0)).desired_width(name_rect.width()).show(&mut child);
+                    let er = out.response;
+                    if ctx.data_mut(|d| d.remove_temp::<bool>(rename_focus_id())).unwrap_or(false) {
+                        // Just started: focus the field with the whole name selected.
+                        er.request_focus();
+                        let mut state = out.state;
+                        let all = egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(buf.chars().count()));
+                        state.cursor.set_char_range(Some(all));
+                        state.store(&ctx, er.id);
+                    }
                     if er.lost_focus() {
                         if !ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                             actions.push(("layer.rename".into(), json!({"layer": rl, "name": buf})));
@@ -1219,13 +1278,6 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     let lpn = lp.with_clip_rect(name_rect.intersect(lp.clip_rect()));
                     lpn.text(pos2(name_rect.min.x, cy), Align2::LEFT_CENTER, display_name(app, layer), Tokens::ui(12.0), name_col);
                 }
-                // Row click → select; double-click → rename; drag → reorder.
-                let row_x0 = if vis.num { cw.num } else { cw.name + 16.0 };
-                let row_resp = ui.interact(
-                    Rect::from_min_max(pos2(row_x0, r.min.y), pos2(cw.name_end, r.max.y)),
-                    egui::Id::new(("row", layer.id.0)),
-                    Sense::click_and_drag(),
-                );
                 if row_resp.drag_started() {
                     // The selected layers move together; an unselected row moves alone.
                     let moving: Vec<u64> =
@@ -1247,9 +1299,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                         LayerSource::Footage { .. } | LayerSource::Solid { .. } => {
                             actions.push(("layer.openLayer".into(), json!({"layer": layer.id.0})));
                         }
-                        _ => {
-                            ctx.data_mut(|d| d.insert_temp(rename_id, (layer.id.0, layer.name.clone())));
-                        }
+                        _ => start_rename(&ctx, layer.id.0, &layer.name),
                     }
                 }
                 layer_context_menu(&row_resp, layer, &mut actions);

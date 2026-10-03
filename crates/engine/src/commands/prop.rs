@@ -5,7 +5,7 @@ use effectcraft_project::{ItemId, LayerId, Property, Uid};
 use effectcraft_time::Tick;
 use serde_json::{Value, json};
 
-use super::{CommandSpec, b_p, bad, f_p, has_comp, has_keys, has_layers, layer_mut, layer_p, merge_p, str_p};
+use super::{CommandSpec, b_p, bad, f_p, has_comp, has_keys, has_layers, layer_mut, layer_p, layers_p, merge_p, str_p};
 use crate::{EngineError, KeyRef, Result, Session, cmd, query};
 
 /// Resolve `{layer, path}` (or `{layer, prop: uid}`) to (comp, layer, prop uid).
@@ -170,22 +170,61 @@ fn add_key(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn toggle_key(s: &mut Session, p: &Value) -> Result<Value> {
     let (cid, lid, uid) = prop_ref(s, p, "prop.toggleKey")?;
-    with_prop(s, "Add/Remove Keyframe", None, cid, lid, uid, |pr, lt| {
-        if let Some(i) = key_at(&pr.keys, lt) {
-            if pr.keys.len() == 1 {
-                pr.value = pr.keys[0].value.clone();
-            }
-            pr.keys.remove(i);
-            Ok(json!(false))
-        } else {
-            let mut k = Keyframe::new(lt, pr.value_at(lt));
-            if pr.hold_only {
-                k = k.hold();
-            }
-            set_key(&mut pr.keys, k);
-            Ok(json!(true))
+    with_prop(s, "Add/Remove Keyframe", None, cid, lid, uid, |pr, lt| Ok(json!(toggle_key_at(pr, lt))))
+}
+
+/// Add a keyframe at layer time `lt` (true), or remove the one there (false).
+fn toggle_key_at(pr: &mut Property, lt: Tick) -> bool {
+    if let Some(i) = key_at(&pr.keys, lt) {
+        if pr.keys.len() == 1 {
+            pr.value = pr.keys[0].value.clone();
         }
-    })
+        pr.keys.remove(i);
+        false
+    } else {
+        let mut k = Keyframe::new(lt, pr.value_at(lt));
+        if pr.hold_only {
+            k = k.hold();
+        }
+        set_key(&mut pr.keys, k);
+        true
+    }
+}
+
+/// Alt+Shift+A / P / S / R / T: add or remove a keyframe at the current time on that Transform
+/// property of every selected layer, in one undo step. Position covers separated X / Y / Z;
+/// Rotation on a 3D layer covers Orientation and X / Y / Z Rotation.
+fn toggle_transform_key(s: &mut Session, p: &Value) -> Result<Value> {
+    const C: &str = "keys.toggleTransform";
+    let which = str_p(p, "prop").ok_or_else(|| bad(C, "missing `prop` (anchor | position | scale | rotation | opacity)"))?.to_string();
+    let (cid, layers) = layers_p(s, p)?;
+    let t = s.time_of(cid);
+    let mut added = vec![];
+    s.edit("Add/Remove Keyframe", None, |proj, _| {
+        for lid in &layers {
+            let l = layer_mut(proj, cid, *lid)?;
+            let lt = l.layer_time(t);
+            let three = l.is_3d();
+            let Some(tr) = l.props.sub_mut("transform") else { continue };
+            let ids: Vec<&str> = match which.as_str() {
+                "anchor" => vec!["anchor"],
+                "position" if tr.get("positionX").is_some() => vec!["positionX", "positionY", "positionZ"],
+                "position" => vec!["position"],
+                "scale" => vec!["scale"],
+                "rotation" if three => vec!["orientation", "rotationX", "rotationY", "rotation"],
+                "rotation" => vec!["rotation"],
+                "opacity" => vec!["opacity"],
+                other => return Err(bad(C, format!("unknown prop `{other}` (anchor | position | scale | rotation | opacity)"))),
+            };
+            for id in ids.into_iter().filter(|id| three || *id != "positionZ") {
+                if let Some(pr) = tr.get_mut(id) {
+                    added.push(json!({"layer": lid.0, "prop": id, "key": toggle_key_at(pr, lt)}));
+                }
+            }
+        }
+        Ok(())
+    })?;
+    Ok(Value::Array(added))
 }
 
 fn set_expr(s: &mut Session, p: &Value) -> Result<Value> {
@@ -607,6 +646,15 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!("prop.toggleAnimation", "Toggle Stopwatch", [], None, "{layer?, path|prop, value?}", has_layers, toggle_anim),
         cmd!("prop.addKey", "Add Keyframe", [], None, "{layer?, path|prop, time?, value?}", has_layers, add_key),
         cmd!("prop.toggleKey", "Add or Remove Keyframe at Current Time", [], None, "{layer?, path|prop}", has_layers, toggle_key),
+        cmd!(
+            "keys.toggleTransform",
+            "Add or Remove Transform Keyframe",
+            [],
+            None,
+            "{layers?, prop: anchor|position|scale|rotation|opacity} (Alt+Shift+A/P/S/R/T)",
+            has_layers,
+            toggle_transform_key
+        ),
         cmd!("prop.setExpression", "Add Expression", ["Animation"], Some("Alt+Shift+="), "{layer?, path|prop, expression?, enabled?}", has_layers, set_expr),
         cmd!("prop.reset", "Reset Property", [], None, "{layer?, path|prop, default?}", has_layers, reset),
         cmd!("prop.select", "Select Property", [], None, "{layer?, path|prop, add?, selectKeys?}", has_layers, select_prop),
