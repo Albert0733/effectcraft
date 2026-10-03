@@ -25,7 +25,7 @@ fn hevc_and_av1_output_module_options() {
     assert_eq!(om.format, OutputFormat::Hevc);
     assert_eq!(om.codec, VideoCodecOptions { profile: CodecProfile::Main10, level: Some(41), rate_control: RateControlMode::Quality, quality: 85 });
     assert_eq!(om.keyframe_interval, 30);
-    assert!(a["outputModuleSummary"].as_str().unwrap_or_default().contains("Main 10"), "{a}");
+    assert_eq!(a["output"]["codec"]["profile"], "Main10", "{a}");
     let id = a["item"].clone();
     s.execute("renderQueue.setOutputModule", json!({"item": id, "format": "av1", "level": null, "rateControl": "bitrate", "bitrate": 3000})).unwrap();
     let om = &s.project.render_queue[0].output;
