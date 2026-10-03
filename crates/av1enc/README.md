@@ -33,7 +33,7 @@ reconstruction, so prediction never drifts.
 - **Partitions**: 64x64 superblocks, `PARTITION_NONE` / `PARTITION_SPLIT` down to 8x8 chosen by
   a rate-distortion cost (SSE + λ·estimated bits); blocks crossing the frame edge are split as
   the syntax requires. 64x64 blocks are only used as inter skip blocks.
-- **Intra**: DC, V, H, Paeth, smooth, smooth-V, smooth-H for luma and chroma (chosen by SAD),
+- **Intra**: DC, V, H, Paeth, smooth, smooth-V, smooth-H for luma and chroma,
   ranked by SATD with a rate-distortion choice among the best three; the spec's edge preparation
   and above-right / below-left availability.
 - **Inter**: single reference (`LAST_FRAME`), `NEWMV` / `NEARESTMV` / `NEARMV` / `GLOBALMV`
