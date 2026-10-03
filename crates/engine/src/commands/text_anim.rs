@@ -372,6 +372,60 @@ fn list_presets(_: &mut Session, _: &Value) -> Result<Value> {
     Ok(Value::Array(presets().iter().map(|p| json!({"id": p.get("id"), "name": p.get("name"), "description": p.get("description")})).collect()))
 }
 
+/// Animation ▸ Animate Text ▸ Variable Font Axes: the axes of the layer's font, or (with `axis`)
+/// a new animator — or a property on `animator` — that offsets that axis (user units, weighted
+/// by the selectors, added to the axis default).
+fn font_axes(s: &mut Session, p: &Value) -> Result<Value> {
+    const C: &str = "text.animatorFontAxes";
+    let (cid, lid) = layer_p(s, p, C)?;
+    let layer = s.project.comp(cid).and_then(|c| c.layer(lid)).cloned().ok_or_else(|| bad(C, "no layer"))?;
+    let Some(KV::Text(doc)) = layer.props.prop("text/sourceText").map(|pr| pr.value_at(layer.layer_time(s.time()))) else {
+        return Err(bad(C, "not a text layer"));
+    };
+    let face = effectcraft_text::layout_doc(&doc).glyphs.first().map(|g| g.face).unwrap_or_else(|| effectcraft_text::resolve(&doc.font, &doc.style).face);
+    let axes = effectcraft_text::variable::font_axes(face);
+    let list = || json!(axes.iter().map(|a| json!({"tag": a.tag, "name": a.name, "min": a.min, "default": a.default, "max": a.max})).collect::<Vec<_>>());
+    let Some(want) = str_p(p, "axis") else { return Ok(json!({"font": doc.font, "axes": list()})) };
+    if axes.is_empty() {
+        return Err(bad(C, format!("{} {} has no variation axes (not a variable font)", doc.font, doc.style)));
+    }
+    let axis = axes
+        .iter()
+        .find(|a| a.tag == want || a.name.eq_ignore_ascii_case(want))
+        .ok_or_else(|| bad(C, format!("no axis `{want}`; the font has {}", list())))?
+        .clone();
+    let target = match p.get("animator") {
+        Some(_) => Some(animator_uid(s, &layer, p, C)?),
+        None => None,
+    };
+    let uid = s.edit("Add Variable Font Axis", None, |proj, _| {
+        let mut next = proj.next_id;
+        let mut ids = Ids(&mut next);
+        let prop = ids
+            .prop(&format!("{}{}", effectcraft_render::text::AXIS_PREFIX, axis.tag.trim_end()), &axis.name, KV::Scalar(0.0))
+            .with_ui(effectcraft_project::ParamUi::Number);
+        let l = layer_mut(proj, cid, lid)?;
+        let uid = match target {
+            Some(a) => {
+                let g = l.props.find_group_mut(a).and_then(|g| g.sub_mut("properties")).ok_or_else(|| bad(C, "no such animator"))?;
+                g.children.push(prop.into());
+                a
+            }
+            None => {
+                let anims = l.props.group_mut("text/animators").ok_or_else(|| bad(C, "not a text layer"))?;
+                let name = format!("Animator {}", anims.children.len() + 1);
+                let g = build::text_animator(&mut ids, &name, vec![prop]);
+                let uid = g.uid;
+                anims.children.push(g.into());
+                uid
+            }
+        };
+        proj.next_id = next;
+        Ok(uid)
+    })?;
+    Ok(json!({"animator": uid, "axis": axis.tag}))
+}
+
 fn list_kinds(_: &mut Session, _: &Value) -> Result<Value> {
     Ok(Value::Array(build::TEXT_ANIMATOR_KINDS.iter().filter(|(k, _)| *k != "-").map(|(k, l)| json!({"property": k, "label": l})).collect()))
 }
@@ -414,6 +468,15 @@ pub fn specs() -> Vec<CommandSpec> {
             "{layer?, preset: typewriter|fadeUpCharacters|bounceInWords|trackingIn|scramble|blurIn|jitter|dropInLines}",
             has_text_layer,
             apply_preset
+        ),
+        cmd!(
+            "text.animatorFontAxes",
+            "Variable Font Axes",
+            ["Animation", "Animate Text"],
+            None,
+            "{layer?, axis?: tag|name (omit to list the font's axes), animator?: uid|index}",
+            has_text_layer,
+            font_axes
         ),
         query!("text.presets", "Text Animation Presets", "{}", list_presets),
         query!("text.animatorProperties", "Text Animator Properties", "{}", list_kinds),

@@ -2139,6 +2139,19 @@ fn text_anim_popups(
             opts.push(l.to_string());
             acts.push(if *k == "-" { (String::new(), json!(null)) } else { ("layer.addTextAnimator".into(), json!({"layer": layer.id.0, "property": k})) });
         }
+        // Variable Font Axes of the layer's font.
+        if let Some(effectcraft_engine::keyframe::Value::Text(doc)) = layer.props.prop("text/sourceText").map(|p| p.value.clone()) {
+            let face = effectcraft_engine::text::resolve(&doc.font, &doc.style).face;
+            let axes = effectcraft_engine::text::variable::font_axes(face);
+            if !axes.is_empty() {
+                opts.push("-".into());
+                acts.push((String::new(), json!(null)));
+            }
+            for a in axes {
+                opts.push(format!("Variable Font Axes: {}", a.name));
+                acts.push(("text.animatorFontAxes".into(), json!({"layer": layer.id.0, "axis": a.tag})));
+            }
+        }
     } else {
         for (kind, l) in [("range", "Selector: Range"), ("wiggly", "Selector: Wiggly"), ("expression", "Selector: Expression")] {
             opts.push(l.into());

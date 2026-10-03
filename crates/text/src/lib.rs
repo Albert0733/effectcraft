@@ -10,6 +10,7 @@ pub mod layout;
 pub mod path_text;
 pub mod selectors;
 pub mod sfnt;
+pub mod variable;
 
 pub use kurbo;
 
@@ -24,7 +25,7 @@ use skrifa::instance::{LocationRef, Size};
 use skrifa::outline::{DrawSettings, OutlinePen};
 use skrifa::{GlyphId, MetadataProvider};
 
-struct Pen(BezPath);
+pub(crate) struct Pen(pub(crate) BezPath);
 
 impl OutlinePen for Pen {
     fn move_to(&mut self, x: f32, y: f32) {
@@ -70,10 +71,15 @@ pub(crate) fn outline_units(face: FaceId, gid: u32) -> Option<Arc<BezPath>> {
 /// horizontal / vertical scale and faux italic.
 pub fn glyph_outline(g: &Glyph) -> BezPath {
     let Some(units) = outline_units(g.face, g.id) else { return BezPath::new() };
+    glyph_affine(g) * (*units).clone()
+}
+
+/// Font units → the glyph's outline in pixels (size, horizontal / vertical scale, faux italic).
+pub fn glyph_affine(g: &Glyph) -> Affine {
     let k = g.size as f64 / fonts::face(g.face).units_per_em() as f64;
     let slant = if g.synth_italic { 0.21 } else { 0.0 };
     let (hs, vs) = (g.h_scale as f64, g.v_scale as f64);
-    Affine::new([k * hs, 0.0, slant * k * vs * hs, -k * vs, 0.0, 0.0]) * (*units).clone()
+    Affine::new([k * hs, 0.0, slant * k * vs * hs, -k * vs, 0.0, 0.0])
 }
 
 /// One character of laid-out text.
@@ -97,6 +103,10 @@ pub struct CharGlyph {
     pub size: f64,
     /// Index into [`TextLayout::styles`].
     pub run: usize,
+    /// Face and glyph id, and font units → `path` (for variable-font redraws).
+    pub face: FaceId,
+    pub gid: u32,
+    pub outline_xf: Affine,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -266,6 +276,7 @@ pub fn layout_doc(doc: &TextDoc) -> TextLayout {
             let st = styles.get(g.run);
             let ch = if st.is_some_and(|s| s.all_caps) { src.to_uppercase().next().unwrap_or(src) } else { src };
             let mut path = glyph_outline(g);
+            let mut outline_xf = glyph_affine(g);
             let next_x = lay.glyphs.get(gi + 1).filter(|_| line.glyphs.contains(&(gi + 1))).map(|n| n.x).unwrap_or(line.x + line.width);
             let advance = (next_x - g.x) as f64;
             let mut origin = to_layer * Point::new(g.x as f64 - shift, g.y as f64);
@@ -293,10 +304,13 @@ pub fn layout_doc(doc: &TextDoc) -> TextLayout {
                     // Keep the character upright around its centre.
                     let c = Point::new(advance / 2.0, -0.35 * g.size as f64);
                     let rc = ROT90 * c;
-                    path = Affine::translate((rc.x - c.x, rc.y - c.y)) * path;
+                    let t = Affine::translate((rc.x - c.x, rc.y - c.y));
+                    path = t * path;
+                    outline_xf = t * outline_xf;
                 } else {
                     // Roman characters turn on their side with the column.
                     path = ROT90 * path;
+                    outline_xf = ROT90 * outline_xf;
                 }
             }
             if let Some(r) = (!path.elements().is_empty()).then(|| kurbo::Shape::bounding_box(&path)) {
@@ -318,6 +332,9 @@ pub fn layout_doc(doc: &TextDoc) -> TextLayout {
                 synth_bold: g.synth_bold,
                 size: g.size as f64,
                 run: g.run,
+                face: g.face,
+                gid: g.id,
+                outline_xf,
             });
         }
     }

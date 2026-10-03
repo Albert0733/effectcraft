@@ -284,6 +284,49 @@ fn tate_chu_yoko_via_set_text_with_undo_and_serde() {
 }
 
 #[test]
+fn variable_font_axes_animator() {
+    let mut s = comp(400, 200);
+    let t = s.execute("layer.newText", json!({"text": "HH", "size": 60})).unwrap()["layer"].as_u64().unwrap();
+    s.execute("layer.select", json!({"layers": [t]})).unwrap();
+    assert!(s.is_enabled("text.animatorFontAxes"));
+    // Inter (bundled) is static.
+    assert_eq!(s.execute("text.animatorFontAxes", json!({})).unwrap()["axes"], json!([]));
+    assert!(s.execute("text.animatorFontAxes", json!({"axis": "wght"})).is_err());
+    let Some((face, axes)) = effectcraft_text::variable::find_variable_face() else {
+        eprintln!("no variable font installed: animation check skipped");
+        return;
+    };
+    let info = effectcraft_text::fonts::face(face).info.clone();
+    s.execute("layer.setText", json!({"layer": t, "font": info.family, "style": info.style})).unwrap();
+    let axis = axes.iter().find(|a| a.max > a.min).unwrap().clone();
+    let listed = s.execute("text.animatorFontAxes", json!({})).unwrap();
+    if listed["axes"].as_array().is_none_or(|a| a.is_empty()) {
+        eprintln!("the variable face isn't reachable by family/style: skipped");
+        return;
+    }
+    let tag = listed["axes"][0]["tag"].as_str().unwrap().to_string();
+    let r = s.execute("text.animatorFontAxes", json!({"axis": tag})).unwrap();
+    let anim = r["animator"].as_u64().unwrap();
+    let area = |s: &Session| {
+        let cid = s.active_comp_id().unwrap();
+        let comp = s.project.comp(cid).unwrap();
+        let ctx = effectcraft_render::EvalCtx::new(&s.project, cid, comp, s.time());
+        let l = comp.layer(LayerId(t)).unwrap();
+        effectcraft_render::text::glyph_paths(&ctx, l).iter().map(|(p, _)| effectcraft_text::kurbo::Shape::area(p).abs()).sum::<f64>()
+    };
+    let before = area(&s);
+    let l = s.active_comp().unwrap().layer(LayerId(t)).unwrap().clone();
+    let pg = l.props.find_group(anim).unwrap().sub("properties").unwrap().props().next().unwrap().uid;
+    let range = (axis.max - axis.min) as f64;
+    s.execute("prop.set", json!({"layer": t, "prop": pg, "value": range})).unwrap();
+    let after = area(&s);
+    assert!((after - before).abs() > 1.0, "{} axis moved the outline: {before} → {after}", axis.tag);
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!((area(&s) - before).abs() < 1e-6);
+    let _ = info;
+}
+
+#[test]
 fn camera_focus_commands_undo_and_serde() {
     let mut s = comp(400, 300);
     let t = s.execute("layer.newSolid", json!({"color": "#ffffff", "width": 50, "height": 50})).unwrap()["layer"].as_u64().unwrap();

@@ -53,7 +53,32 @@ pub struct CharXf {
     pub char_range: u32,
     pub char_align: u32,
     pub blur: [f64; 2],
+    /// Variable Font Axes offsets (axis tag, user units), the first `n_axes` used.
+    pub axes: [([u8; 4], f64); 4],
+    pub n_axes: u8,
 }
+
+impl CharXf {
+    /// The variable-font axis offsets that move the outline.
+    pub fn axis_deltas(&self) -> Vec<(String, f32)> {
+        self.axes[..self.n_axes as usize]
+            .iter()
+            .filter(|(_, d)| d.abs() > 1e-6)
+            .map(|(t, d)| (String::from_utf8_lossy(t).trim_end().to_string(), *d as f32))
+            .collect()
+    }
+    fn add_axis(&mut self, tag: [u8; 4], d: f64) {
+        if let Some(a) = self.axes[..self.n_axes as usize].iter_mut().find(|a| a.0 == tag) {
+            a.1 += d;
+        } else if (self.n_axes as usize) < self.axes.len() {
+            self.axes[self.n_axes as usize] = (tag, d);
+            self.n_axes += 1;
+        }
+    }
+}
+
+/// Animator property match id of a Variable Font Axes property (`axis_wght`).
+pub const AXIS_PREFIX: &str = "axis_";
 
 impl Default for CharXf {
     fn default() -> Self {
@@ -86,6 +111,8 @@ impl Default for CharXf {
             char_range: 0,
             char_align: 1,
             blur: [0.0; 2],
+            axes: [([0; 4], 0.0); 4],
+            n_axes: 0,
         }
     }
 }
@@ -245,6 +272,17 @@ pub fn char_transforms(ctx: &EvalCtx, layer: &Layer, text: &PropGroup, lay: &Tex
         let char_range = props.get("characterRange").map(|p| ctx.value(layer, p).as_enum());
         let char_align = props.get("characterAlignment").map(|p| ctx.value(layer, p).as_enum());
         let blur = props.get("blur").map(|p| ctx.value(layer, p).as_vec2());
+        let axes: Vec<([u8; 4], f64)> = props
+            .props()
+            .filter_map(|p| {
+                let t = p.match_id.strip_prefix(AXIS_PREFIX)?;
+                let mut tag = [b' '; 4];
+                for (i, c) in t.bytes().take(4).enumerate() {
+                    tag[i] = c;
+                }
+                Some((tag, ctx.value(layer, p).as_f64()))
+            })
+            .collect();
         for (gi, k3) in sel.iter().enumerate() {
             let k = k3[0];
             if k3.iter().all(|x| *x == 0.0) {
@@ -341,6 +379,9 @@ pub fn char_transforms(ctx: &EvalCtx, layer: &Layer, text: &PropGroup, lay: &Tex
             if let Some(b) = blur {
                 c.blur[0] += (b[0] * k3[0]).abs();
                 c.blur[1] += (b[1] * k3[1]).abs();
+            }
+            for (tag, v) in &axes {
+                c.add_axis(*tag, v * k);
             }
         }
     }
@@ -641,7 +682,11 @@ pub fn text_geom(ctx: &EvalCtx, layer: &Layer) -> Option<TextGeom> {
                 };
                 (kurbo::Affine::translate((dx, 0.0)) * p, g.advance)
             }
-            None => (g.path.clone(), g.advance),
+            // Variable Font Axes: the outline redrawn at the animated design-space position.
+            None => match x.axis_deltas() {
+                d if !d.is_empty() => (effectcraft_text::variable::char_outline_varied(g, &d).unwrap_or_else(|| g.path.clone()), g.advance),
+                _ => (g.path.clone(), g.advance),
+            },
         };
         if outline.elements().is_empty() {
             continue;
