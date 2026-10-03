@@ -746,6 +746,9 @@ pub fn specs() -> Vec<CommandSpec> {
             save_as
         ),
         cmd!("templates.delete", "Delete Template", [], None, "{id: user/<file>}", always, delete),
+        cmd!("file.newFromTemplate", "New Project from Template...", ["File", "New"], None, "{} → the Home screen's Templates tab", always, |s, p| {
+            crate::commands::frontend(s, "file.newFromTemplate", p)
+        }),
     ]
 }
 

@@ -383,6 +383,8 @@ pub enum SimProfile {
     Pal,
     /// Legacy Macintosh RGB: Rec. 709 primaries, gamma 1.8.
     Mac18,
+    /// My Custom RGB: the user's own device ([`CustomRgb`], in Settings).
+    MyCustom,
 }
 
 /// A transfer curve of a simulated or display profile.
@@ -421,7 +423,7 @@ impl Curve {
 const P709: [[f64; 2]; 3] = [[0.640, 0.330], [0.300, 0.600], [0.150, 0.060]];
 
 impl SimProfile {
-    pub const ALL: [SimProfile; 9] = [
+    pub const ALL: [SimProfile; 10] = [
         SimProfile::None,
         SimProfile::Rec709,
         SimProfile::Ntsc,
@@ -431,6 +433,7 @@ impl SimProfile {
         SimProfile::Rec2020,
         SimProfile::P3,
         SimProfile::Linear,
+        SimProfile::MyCustom,
     ];
 
     pub fn id(self) -> &'static str {
@@ -444,6 +447,7 @@ impl SimProfile {
             SimProfile::Ntsc => "ntsc",
             SimProfile::Pal => "pal",
             SimProfile::Mac18 => "mac18",
+            SimProfile::MyCustom => "myCustom",
         }
     }
 
@@ -458,6 +462,7 @@ impl SimProfile {
             SimProfile::Ntsc => "SDTV NTSC",
             SimProfile::Pal => "SDTV PAL",
             SimProfile::Mac18 => "Legacy Macintosh RGB (Gamma 1.8)",
+            SimProfile::MyCustom => "My Custom RGB",
         }
     }
 
@@ -465,7 +470,7 @@ impl SimProfile {
         let k: String = s.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>().to_ascii_lowercase();
         SimProfile::ALL
             .into_iter()
-            .find(|p| p.id() == k || p.label().chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>().to_ascii_lowercase() == k)
+            .find(|p| p.id().to_ascii_lowercase() == k || p.label().chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>().to_ascii_lowercase() == k)
             .or(match k.as_str() {
                 "off" => Some(SimProfile::None),
                 "hdtv" | "bt709" => Some(SimProfile::Rec709),
@@ -476,10 +481,10 @@ impl SimProfile {
             })
     }
 
-    /// (primaries, curve); `None` for No Output Simulation.
+    /// (primaries, curve); `None` for No Output Simulation and My Custom RGB (see [`CustomRgb`]).
     pub fn space(self) -> Option<([[f64; 2]; 3], Curve)> {
         Some(match self {
-            SimProfile::None => return None,
+            SimProfile::None | SimProfile::MyCustom => return None,
             SimProfile::Rec709 => (P709, Curve::Gamma(2.4)),
             SimProfile::Rec2020 => (ColorSpace::Rec2020.primaries(), Curve::Gamma(2.4)),
             SimProfile::P3 => (ColorSpace::DisplayP3.primaries(), Curve::Srgb),
@@ -499,6 +504,93 @@ impl SimProfile {
 pub struct Simulation {
     pub profile: SimProfile,
     pub preserve_rgb: bool,
+}
+
+/// View ▸ Simulate Output ▸ My Custom RGB…: a user-defined output device, kept in Settings
+/// (`customRgb`). Defined by primaries and white point (CIE xy) and a gamma or the sRGB curve,
+/// typed in or read from an RGB ICC profile.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct CustomRgb {
+    pub name: String,
+    pub red: [f64; 2],
+    pub green: [f64; 2],
+    pub blue: [f64; 2],
+    pub white: [f64; 2],
+    pub gamma: f64,
+    /// The sRGB piecewise curve instead of a pure power curve.
+    pub srgb_curve: bool,
+    /// The ICC profile the numbers were read from (empty: typed in).
+    pub icc: String,
+}
+
+impl Default for CustomRgb {
+    fn default() -> Self {
+        CustomRgb { name: "My Custom RGB".into(), red: P709[0], green: P709[1], blue: P709[2], white: D65, gamma: 2.2, srgb_curve: false, icc: String::new() }
+    }
+}
+
+impl CustomRgb {
+    pub fn primaries(&self) -> [[f64; 2]; 3] {
+        [self.red, self.green, self.blue]
+    }
+
+    pub fn curve(&self) -> Curve {
+        if self.srgb_curve {
+            Curve::Srgb
+        } else if (self.gamma - 1.0).abs() < 1e-9 {
+            Curve::Linear
+        } else {
+            Curve::Gamma(self.gamma as f32)
+        }
+    }
+
+    /// Chromaticities inside (0, 1) with y > 0, a gamma in 0.1–10, and primaries that span a
+    /// triangle.
+    pub fn validate(&self) -> std::result::Result<(), String> {
+        for (n, c) in [("red", self.red), ("green", self.green), ("blue", self.blue), ("white", self.white)] {
+            if !(c[0] > 0.0 && c[1] > 0.0 && c[0] < 1.0 && c[1] < 1.0 && c[0] + c[1] <= 1.0) {
+                return Err(format!("{n}: chromaticity x, y must be in (0, 1) with x + y ≤ 1"));
+            }
+        }
+        if !self.srgb_curve && !(0.1..=10.0).contains(&self.gamma) {
+            return Err("gamma must be between 0.1 and 10".into());
+        }
+        let [r, g, b] = self.primaries();
+        let area = (g[0] - r[0]) * (b[1] - r[1]) - (b[0] - r[0]) * (g[1] - r[1]);
+        if area.abs() < 1e-6 {
+            return Err("the primaries must form a triangle".into());
+        }
+        Ok(())
+    }
+
+    /// Take primaries, white and curve from an RGB ICC profile.
+    pub fn from_icc(bytes: &[u8], path: &str) -> std::result::Result<CustomRgb, String> {
+        let p = effectcraft_color::icc::parse(bytes)?;
+        let name = if p.description.trim().is_empty() {
+            std::path::Path::new(path).file_stem().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "ICC Profile".into())
+        } else {
+            p.description.trim().to_string()
+        };
+        let gamma = (p.trc.iter().map(|t| t.fit_gamma()).sum::<f64>() / 3.0 * 1000.0).round() / 1000.0;
+        let r = |c: [f64; 2]| c.map(|v| (v * 1e5).round() / 1e5);
+        Ok(CustomRgb {
+            name,
+            red: r(p.primaries[0]),
+            green: r(p.primaries[1]),
+            blue: r(p.primaries[2]),
+            white: r(p.white),
+            gamma,
+            srgb_curve: p.trc[0].is_srgb(),
+            icc: path.to_string(),
+        })
+    }
+
+    fn prof(&self) -> Prof {
+        let m = space::rgb_to_xyz(self.primaries(), self.white);
+        let xyz = if self.white == D65 { m } else { space::mul(&space::bradford(self.white, D65), &m) };
+        Prof { xyz, curve: self.curve() }
+    }
 }
 
 /// An RGB space for viewer conversions: primaries (D65) and curve.
@@ -562,7 +654,16 @@ impl DisplayColor {
     /// After Effects); `linear`: the working space is linear; `source`: the space rendered
     /// frames are in (the project's output space, sRGB by default); `dcm`: Use Display Color
     /// Management; `display`: the monitor's space.
-    pub fn new(working: Option<ColorSpace>, linear: bool, source: ColorSpace, dcm: bool, display: ColorSpace, sim: Simulation) -> Option<DisplayColor> {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        working: Option<ColorSpace>,
+        linear: bool,
+        source: ColorSpace,
+        dcm: bool,
+        display: ColorSpace,
+        sim: Simulation,
+        custom: &CustomRgb,
+    ) -> Option<DisplayColor> {
         let ws = working?;
         let src = Prof::of(source, false);
         if !dcm {
@@ -570,8 +671,11 @@ impl DisplayColor {
             let raw = Conv::new(src, Prof::of(ws, linear));
             return Some(DisplayColor { sim: None, display: Some(raw) });
         }
-        let sim = sim.profile.space().map(|(prims, curve)| {
-            let out = Prof::new(prims, curve);
+        let out = match sim.profile {
+            SimProfile::MyCustom => Some(custom.prof()),
+            p => p.space().map(|(prims, curve)| Prof::new(prims, curve)),
+        };
+        let sim = out.map(|out| {
             (
                 Conv::new(src, out),
                 Some(if sim.preserve_rgb {
@@ -591,7 +695,15 @@ impl DisplayColor {
         let display = ColorSpace::parse(&s.prefs.previews.display_profile).unwrap_or(ColorSpace::Srgb);
         let v = &s.state.viewer;
         let linear = st.working_space.is_some_and(|w| st.linearize || w.is_linear());
-        DisplayColor::new(st.working_space, linear, st.output_space.unwrap_or(ColorSpace::Srgb), v.display_color_management, display, v.simulation)
+        DisplayColor::new(
+            st.working_space,
+            linear,
+            st.output_space.unwrap_or(ColorSpace::Srgb),
+            v.display_color_management,
+            display,
+            v.simulation,
+            &s.prefs.custom_rgb,
+        )
     }
 
     /// One straight colour (0..1 floats).
