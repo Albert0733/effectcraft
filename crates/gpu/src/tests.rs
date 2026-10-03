@@ -100,7 +100,7 @@ impl Scene {
             missing: false,
             sequence: vec![],
             color_profile: None,
-            layer: None,
+            ..Default::default()
         };
         let fid = self.p.add_item("Pattern", Label::Lavender, None, ItemKind::Footage(f));
         build::layer(&mut self.p, &self.comp, "Pattern", LayerSource::Footage { item: fid }, (w, h), None)

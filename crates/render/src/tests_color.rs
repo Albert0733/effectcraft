@@ -172,7 +172,7 @@ fn footage(profile: Option<ColorSpace>) -> Footage {
         missing: false,
         sequence: vec![],
         color_profile: profile,
-        layer: None,
+        ..Default::default()
     }
 }
 

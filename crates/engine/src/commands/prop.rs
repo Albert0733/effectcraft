@@ -557,7 +557,8 @@ fn convert_expr_to_keys(s: &mut Session, p: &Value) -> Result<Value> {
     let fd = comp.frame_duration();
     let mut t = layer.in_point;
     while t < layer.out_point {
-        let ctx = effectcraft_render::EvalCtx { project: &s.project, comp_id: cid, comp: &comp, time: t, expr: s.expr.as_deref() };
+        let ctx =
+            effectcraft_render::EvalCtx { project: &s.project, comp_id: cid, comp: &comp, time: t, expr: s.expr.as_deref(), footage: Some(s.footage.as_ref()) };
         keys.push(Keyframe::new(layer.layer_time(t), ctx.value(&layer, &pr)));
         t += fd;
     }

@@ -1,11 +1,14 @@
 //! Panel bodies.
 
 pub mod anim_tools;
+pub mod camera_tracker_ui;
 pub mod comp_settings;
 pub mod dialogs;
 pub mod dialogs_3d;
 pub mod effect_controls;
 pub mod effects_presets;
+pub mod essential;
+pub mod expr_bar;
 pub mod flowchart;
 pub mod forms;
 pub mod fx_widgets;
@@ -51,6 +54,8 @@ pub enum DragPayload {
     Item(u64),
     /// An effect id from Effects & Presets.
     Effect(String),
+    /// A property dragged from the timeline (to the Essential Graphics panel).
+    Property { layer: u64, prop: u64 },
 }
 
 /// The current time formatted per project settings (timecode with `;` for drop-frame, or frames).
@@ -95,6 +100,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: PanelKind, rect: Rec
         PanelKind::Layer => layer_panel::show(app, ui, rect),
         PanelKind::Paint => paint_panels::paint(app, ui, rect),
         PanelKind::Brushes => paint_panels::brushes(app, ui, rect),
+        PanelKind::EssentialGraphics => essential::show(app, ui, rect),
         PanelKind::Flowchart => flowchart::show(app, ui, rect),
     }
 }

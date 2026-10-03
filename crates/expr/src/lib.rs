@@ -28,6 +28,7 @@ pub mod host;
 mod noise;
 pub mod rewrite;
 mod runtime;
+mod sample;
 
 use effectcraft_keyframe::Value;
 use effectcraft_project::{ItemId, Layer, LayerId, Project, Property};
@@ -112,7 +113,7 @@ fn evaluate_out(
     if depth >= MAX_DEPTH {
         return Err("Error: expressions reference each other too deeply (circular reference?)".into());
     }
-    let ctx = EvalCtx { project: ctx.project, comp_id: ctx.comp_id, comp: ctx.comp, time: ctx.time, expr: Some(host) };
+    let ctx = EvalCtx { project: ctx.project, comp_id: ctx.comp_id, comp: ctx.comp, time: ctx.time, expr: Some(host), footage: ctx.footage };
     let comp = ctx.comp_id.0;
     let path = layer.props.path_of(prop.uid).unwrap_or_else(|| format!("@{}", prop.uid));
     let resolver = Resolver { ctx, own: Own { comp, layer, prop, path: path.clone() } };

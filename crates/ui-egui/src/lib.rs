@@ -434,6 +434,7 @@ impl EffectcraftApp {
             view: self.session.view_camera(comp),
             roi,
             backend: effectcraft_engine::render::Backend::Auto,
+            proxy: Default::default(),
         }
     }
 
@@ -748,6 +749,11 @@ impl EffectcraftApp {
         if self.session.warp_job.is_some() || !self.session.warp_pending.is_empty() {
             self.session.poll_warp(true);
             self.session.poll_roto(true);
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
+        // 3D Camera Tracker: likewise (tracking, then solving).
+        if self.session.camera_job.is_some() || !self.session.camera_pending.is_empty() {
+            self.session.poll_camera(true);
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
         self.apply_prefs(&ctx);

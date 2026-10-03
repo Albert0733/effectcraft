@@ -107,7 +107,7 @@ fn placeholder_footage(p: &Value) -> Footage {
         missing: true,
         sequence: vec![],
         color_profile: None,
-        layer: None,
+        ..Default::default()
     }
 }
 
@@ -443,56 +443,179 @@ fn script_run(s: &mut Session, p: &Value) -> Result<Value> {
 
 // ---------------------------------------------------------------- footage
 
+/// Interpret Footage settings parsed from command parameters (every field optional).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Interpretation {
+    rate: Option<FrameRate>,
+    /// Back to the file's own rate (Use frame rate from file).
+    native: bool,
+    alpha: Option<AlphaMode>,
+    /// Alpha ▸ Guess: decide Straight / Premultiplied (and the matte colour) from a frame.
+    guess: bool,
+    matte: Option<[f32; 3]>,
+    invert_alpha: Option<bool>,
+    loops: Option<u32>,
+    par: Option<f64>,
+    fields: Option<effectcraft_project::FieldOrder>,
+    profile: Option<Option<effectcraft_project::ColorSpace>>,
+    linear: Option<bool>,
+}
+
+impl Interpretation {
+    pub(crate) fn parse(p: &Value, cmd: &str) -> Result<Interpretation> {
+        let mut it = Interpretation { rate: f_p(p, "frameRate").map(FrameRate::from_f64), ..Default::default() };
+        if str_p(p, "frameRate") == Some("file") {
+            it.native = true;
+        }
+        match str_p(p, "alpha") {
+            Some("straight") => it.alpha = Some(AlphaMode::Straight),
+            Some("premultiplied") => it.alpha = Some(AlphaMode::Premultiplied),
+            Some("ignore") => it.alpha = Some(AlphaMode::Ignore),
+            Some("guess") => it.guess = true,
+            Some(a) => return Err(bad(cmd, format!("alpha: straight|premultiplied|ignore|guess, not `{a}`"))),
+            None => {}
+        }
+        it.guess |= super::b_p(p, "guessAlpha").unwrap_or(false);
+        it.matte = match p.get("matteColor").or(p.get("premulColor")) {
+            None => None,
+            Some(v) => Some(
+                effectcraft_keyframe::Value::Color([0.0, 0.0, 0.0, 1.0])
+                    .coerce_json(v)
+                    .map(|c| {
+                        let c = c.as_color();
+                        [c[0], c[1], c[2]]
+                    })
+                    .ok_or_else(|| bad(cmd, "matteColor: #hex or [r, g, b] (0..1)"))?,
+            ),
+        };
+        it.invert_alpha = super::b_p(p, "invertAlpha");
+        it.loops = p.get("loop").and_then(Value::as_u64).map(|v| v.clamp(1, 9999) as u32);
+        it.par = f_p(p, "pixelAspect").filter(|x| *x > 0.0);
+        it.fields = match str_p(p, "fields") {
+            Some(f) => Some(effectcraft_project::FieldOrder::parse(f).ok_or_else(|| bad(cmd, "fields: off|upper|lower"))?),
+            None => None,
+        };
+        // Color ▸ Assign Profile: a colour space id, or "auto"/"none" for the file's own (sRGB).
+        it.profile = match str_p(p, "colorProfile") {
+            Some("auto" | "none" | "") => Some(None),
+            Some(c) => match effectcraft_project::ColorSpace::parse(c) {
+                Some(cs) => Some(Some(cs)),
+                None => return Err(bad(cmd, format!("colorProfile: srgb|rec709|rec2020|p3|auto, not `{c}`"))),
+            },
+            None => None,
+        };
+        it.linear = super::b_p(p, "linearLight");
+        Ok(it)
+    }
+
+    pub(crate) fn apply(&self, f: &mut Footage, guessed: Option<(AlphaMode, [f32; 3])>) {
+        if self.native {
+            if let Some(n) = f.native_rate.take() {
+                f.frame_rate = n;
+            }
+        } else if let Some(r) = self.rate {
+            if f.native_rate.is_none() {
+                f.native_rate = Some(f.frame_rate);
+            }
+            f.frame_rate = r;
+        }
+        if let Some(a) = self.alpha {
+            f.alpha = a;
+        }
+        if let Some((a, m)) = guessed {
+            f.alpha = a;
+            f.premul_color = m;
+        }
+        if let Some(m) = self.matte {
+            f.premul_color = m;
+        }
+        if let Some(v) = self.invert_alpha {
+            f.invert_alpha = v;
+        }
+        if let Some(l) = self.loops {
+            f.loop_count = l;
+        }
+        if let Some(x) = self.par {
+            f.pixel_aspect = x;
+        }
+        if let Some(x) = self.fields {
+            f.fields = x;
+        }
+        if let Some(c) = self.profile {
+            f.color_profile = c;
+        }
+        if let Some(v) = self.linear {
+            f.linear_light = v;
+        }
+    }
+}
+
+/// Interpret Footage ▸ Alpha ▸ Guess: read the first frame as straight colour and decide
+/// whether the file is premultiplied (every partly transparent pixel's colour within its alpha
+/// of a black or white matte) or straight. `None` when the frame has no partial alpha.
+pub(crate) fn guess_alpha(s: &Session, item: ItemId, f: &Footage) -> Option<(AlphaMode, [f32; 3])> {
+    let probe = Footage { alpha: AlphaMode::Straight, invert_alpha: false, ..f.clone() };
+    let img = s.footage.frame(item, &probe, Tick::ZERO)?;
+    let (mut partial, mut black, mut white) = (0usize, true, true);
+    let eps = 1.5 / 255.0;
+    for px in img.data.iter() {
+        let a = px[3];
+        if a <= eps || a >= 1.0 - eps {
+            continue;
+        }
+        partial += 1;
+        for c in &px[..3] {
+            // The file's colour (the decoder premultiplied it as straight).
+            let file = c / a;
+            black &= file <= a + eps;
+            white &= file >= 1.0 - a - eps;
+        }
+    }
+    if partial == 0 {
+        return None;
+    }
+    Some(if black {
+        (AlphaMode::Premultiplied, [0.0; 3])
+    } else if white {
+        (AlphaMode::Premultiplied, [1.0; 3])
+    } else {
+        (AlphaMode::Straight, f.premul_color)
+    })
+}
+
 fn interpret(s: &mut Session, p: &Value) -> Result<Value> {
     let items = items_p(s, p);
     if items.is_empty() {
         return Err(bad("file.interpretFootage", "select footage"));
     }
-    let rate = f_p(p, "frameRate").map(FrameRate::from_f64);
-    let alpha = match str_p(p, "alpha") {
-        Some("straight") => Some(AlphaMode::Straight),
-        Some("premultiplied") => Some(AlphaMode::Premultiplied),
-        Some("ignore") => Some(AlphaMode::Ignore),
-        Some(a) => return Err(bad("file.interpretFootage", format!("alpha: straight|premultiplied|ignore, not `{a}`"))),
-        None => None,
-    };
-    let loops = p.get("loop").and_then(Value::as_u64).map(|v| v.max(1) as u32);
-    let par = f_p(p, "pixelAspect");
-    // Color ▸ Assign Profile: a colour space id, or "auto"/"none" for the file's own (sRGB).
-    let profile = match str_p(p, "colorProfile") {
-        Some("auto" | "none" | "") => Some(None),
-        Some(c) => match effectcraft_project::ColorSpace::parse(c) {
-            Some(cs) => Some(Some(cs)),
-            None => return Err(bad("file.interpretFootage", format!("colorProfile: srgb|rec709|rec2020|p3|auto, not `{c}`"))),
-        },
-        None => None,
-    };
+    let it = Interpretation::parse(p, "file.interpretFootage")?;
+    let guesses: Vec<Option<(AlphaMode, [f32; 3])>> = items
+        .iter()
+        .map(|i| match (it.guess, s.project.item(*i).map(|x| &x.kind)) {
+            (true, Some(ItemKind::Footage(f))) => guess_alpha(s, *i, f),
+            _ => None,
+        })
+        .collect();
     s.edit("Interpret Footage", None, |proj, _| {
-        for i in &items {
+        for (i, g) in items.iter().zip(&guesses) {
             if let Some(ItemKind::Footage(f)) = proj.item_mut(*i).map(|x| &mut x.kind) {
-                if let Some(r) = rate {
-                    if f.native_rate.is_none() {
-                        f.native_rate = Some(f.frame_rate);
-                    }
-                    f.frame_rate = r;
-                }
-                if let Some(a) = alpha {
-                    f.alpha = a;
-                }
-                if let Some(l) = loops {
-                    f.loop_count = l;
-                }
-                if let Some(x) = par {
-                    f.pixel_aspect = x;
-                }
-                if let Some(c) = profile {
-                    f.color_profile = c;
-                }
+                it.apply(f, *g);
             }
         }
         Ok(())
     })?;
-    Ok(Value::Null)
+    let out: Vec<Value> = items
+        .iter()
+        .filter_map(|i| match s.project.item(*i).map(|x| &x.kind) {
+            Some(ItemKind::Footage(f)) => Some(json!({
+                "item": i.0, "alpha": format!("{:?}", f.alpha), "matteColor": f.premul_color, "invertAlpha": f.invert_alpha,
+                "fields": f.fields.label(), "pixelAspect": f.pixel_aspect, "loop": f.loop_count, "frameRate": f.frame_rate.as_f64(),
+                "linearLight": f.linear_light,
+            })),
+            _ => None,
+        })
+        .collect();
+    Ok(json!({"items": out}))
 }
 
 fn remember_interpretation(s: &mut Session, p: &Value) -> Result<Value> {
@@ -513,6 +636,10 @@ fn apply_interpretation(s: &mut Session, p: &Value) -> Result<Value> {
                 f.premul_color = src.premul_color;
                 f.pixel_aspect = src.pixel_aspect;
                 f.loop_count = src.loop_count;
+                f.fields = src.fields;
+                f.invert_alpha = src.invert_alpha;
+                f.linear_light = src.linear_light;
+                f.color_profile = src.color_profile;
                 if src.native_rate.is_some() {
                     if f.native_rate.is_none() {
                         f.native_rate = Some(f.frame_rate);
@@ -700,7 +827,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Main...",
             ["File", "Interpret Footage"],
             Some("Cmd+Alt+G"),
-            "{items?, frameRate?, alpha?: straight|premultiplied|ignore, loop?, pixelAspect?, colorProfile?: srgb|rec709|rec2020|p3|auto}",
+            "{items?, frameRate?: fps|\"file\", alpha?: straight|premultiplied|ignore|guess, guessAlpha?, matteColor?, invertAlpha?, loop?, pixelAspect?, fields?: off|upper|lower, colorProfile?: srgb|rec709|rec2020|p3|auto, linearLight?}",
             has_footage_selection,
             interpret
         ),

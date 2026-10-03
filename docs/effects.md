@@ -3,11 +3,11 @@
 <!-- Generated from the effect registry (crates/effects/src/catalog.rs); do not edit by hand.
      Regenerate: UPDATE_DOCS=1 cargo test -p effectcraft-effects --lib effects_doc_is_current -->
 
-EffectCraft ships 302 effects with 2416 parameters in total, grouped into the same categories as the Effects & Presets panel. Every effect is our own implementation, written from public behaviour descriptions and standard image-processing literature. Parameter names, order, popup options, units, defaults and ranges follow the reference application so that projects, expressions and muscle memory carry over.
+EffectCraft ships 303 effects with 2434 parameters in total, grouped into the same categories as the Effects & Presets panel. Every effect is our own implementation, written from public behaviour descriptions and standard image-processing literature. Parameter names, order, popup options, units, defaults and ranges follow the reference application so that projects, expressions and muscle memory carry over.
 
 - **GPU**: 24 effects also run on the GPU compositor with identical results.
-- **32**: 302 effects process 32-bit float (HDR, overbright) pixels without clamping.
-- **Status**: 260 implemented in full, 42 partial (what is missing is listed).
+- **32**: 303 effects process 32-bit float (HDR, overbright) pixels without clamping.
+- **Status**: 261 implemented in full, 42 partial (what is missing is listed).
 
 Effects are addressed by id (`ec.<category>.<name>`) or display name in commands, scripts and the control channel, and every parameter by its id (`effects/#1/blurriness`).
 
@@ -301,6 +301,7 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 
 | Effect | Id | Params | GPU | 32 | Status |
 |---|---|---:|:-:|:-:|---|
+| 3D Camera Tracker | `ec.perspective.cameratracker` | 10 |  | 32 | Implemented |
 | 3D Glasses | `ec.perspective.3dglasses` | 8 |  | 32 | Implemented |
 | Bevel Alpha | `ec.perspective.bevelalpha` | 4 |  | 32 | Implemented |
 | Bevel Edges | `ec.perspective.beveledges` | 4 |  | 32 | Implemented |

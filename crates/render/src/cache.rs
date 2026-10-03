@@ -342,6 +342,8 @@ fn key_with(ctx: &EvalCtx, layer: &Layer, scale: f64, draft: bool, footage: bool
             let it = ctx.project.item(*item)?;
             let ItemKind::Footage(f) = &it.kind else { return None };
             hash_debug(&mut h, f);
+            // A proxy (and its Use Proxy switch) changes the pixels.
+            hash_debug(&mut h, &it.proxy);
             item.hash(&mut h);
             ctx.source_time(layer).0.hash(&mut h);
             // Frame blending mixes neighbouring source frames.

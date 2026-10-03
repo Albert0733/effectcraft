@@ -157,6 +157,7 @@ fn footage_item(proj: &mut Project, cx: &mut Ctx, index: usize, name: &str) -> (
         sequence: vec![],
         color_profile: None,
         layer: Some(SourceLayer { index: index as u32, name: name.to_string(), layer_size: retain && !l.rect.is_empty() }),
+        ..Default::default()
     };
     let id = proj.add_item(&format!("{name}/{file}"), Label::Lavender, Some(cx.folder), ItemKind::Footage(f));
     cx.items.push(id);
