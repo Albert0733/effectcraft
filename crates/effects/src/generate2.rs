@@ -639,7 +639,40 @@ type Seg = ((f64, f64), (f64, f64), f32);
 /// Advanced Lightning's Lightning Type options.
 const LIGHTNING_TYPES: [&str; 8] = ["Direction", "Strike", "Breaking", "Bouncy", "Omni", "Anywhere", "Vertical", "Two-Way Strike"];
 
-fn bolt(a: (f64, f64), z: (f64, f64), depth: u32, inten: f32, turb: f64, fork: f64, decay: f32, rng: &mut Rng, out: &mut Vec<Seg>) {
+/// Advanced Lightning's Fractal Type options.
+const FRACTAL_TYPES: [&str; 3] = ["Linear", "Semi-Linear", "Spline"];
+
+/// How bolts grow: the general and Expert Settings.
+struct BoltCfg<'a> {
+    turb: f64,
+    fork: f64,
+    decay: f32,
+    /// The layer's alpha (buffer grid) and Alpha Obstacle (−10..10; positive avoids opaque
+    /// areas, negative is drawn to them).
+    alpha: Option<&'a Plane>,
+    obstacle: f64,
+    main_only: bool,
+    /// Min Fork Distance (px): shorter stretches do not fork.
+    min_fork: f64,
+    /// Termination Threshold: branches fainter than this stop.
+    term: f32,
+    /// Zig-zag scale from Fractal Type (Linear 1, Semi-Linear 0.7, Spline 0.45 with an extra
+    /// subdivision level).
+    shape: f64,
+    fork_strength: f32,
+    fork_var: f32,
+}
+
+impl BoltCfg<'_> {
+    fn alpha_at(&self, p: (f64, f64)) -> f32 {
+        self.alpha.map_or(0.0, |a| a.sample(p.0, p.1))
+    }
+}
+
+/// Grow a bolt from `a` to `z` by midpoint displacement (`depth` levels), forking at random.
+/// Segments go to `out` with their intensity; `mains` marks the main core's segments.
+#[allow(clippy::too_many_arguments)]
+fn bolt(cfg: &BoltCfg, a: (f64, f64), z: (f64, f64), depth: u32, inten: f32, main: bool, rng: &mut Rng, out: &mut Vec<Seg>, mains: &mut Vec<bool>) {
     if out.len() > 20_000 {
         return;
     }
@@ -647,19 +680,38 @@ fn bolt(a: (f64, f64), z: (f64, f64), depth: u32, inten: f32, turb: f64, fork: f
     let len = (dx * dx + dy * dy).sqrt();
     if depth == 0 || len < 1.0 {
         out.push((a, z, inten));
+        mains.push(main);
         return;
     }
     let (nx, ny) = (-dy / len.max(1e-9), dx / len.max(1e-9));
-    let off = rng.s() * len * 0.22 * turb;
+    let mut off = rng.s() * len * 0.22 * cfg.turb * cfg.shape;
+    // Alpha Obstacle: of the two mirror positions for the midpoint, prefer the one with less
+    // (positive) or more (negative) alpha, the more strongly the larger the setting.
+    if cfg.obstacle != 0.0 && cfg.alpha.is_some() && (main || !cfg.main_only) {
+        let mid = ((a.0 + z.0) * 0.5, (a.1 + z.1) * 0.5);
+        let p1 = (mid.0 + nx * off, mid.1 + ny * off);
+        let p2 = (mid.0 - nx * off, mid.1 - ny * off);
+        let (a1, a2) = (cfg.alpha_at(p1), cfg.alpha_at(p2));
+        let worse = if cfg.obstacle > 0.0 { a1 > a2 } else { a1 < a2 };
+        if worse && rng.f() < cfg.obstacle.abs() / 10.0 {
+            off = -off;
+        }
+    }
     let m = ((a.0 + z.0) * 0.5 + nx * off, (a.1 + z.1) * 0.5 + ny * off);
-    bolt(a, m, depth - 1, inten, turb, fork, decay, rng, out);
-    bolt(m, z, depth - 1, inten, turb, fork, decay, rng, out);
-    if rng.f() < fork && inten > 0.05 {
+    // Positive obstacles stop branches that run into opaque areas.
+    if cfg.obstacle > 0.0 && !main && cfg.alpha_at(m) > 0.5 && rng.f() < cfg.obstacle / 10.0 {
+        return;
+    }
+    bolt(cfg, a, m, depth - 1, inten, main, rng, out, mains);
+    bolt(cfg, m, z, depth - 1, inten, main, rng, out, mains);
+    if rng.f() < cfg.fork && inten > cfg.term && len >= cfg.min_fork {
         let ang = rng.s() * 0.7;
         let (s, c) = ang.sin_cos();
         let (fx, fy) = ((m.0 - a.0) * c - (m.1 - a.1) * s, (m.0 - a.0) * s + (m.1 - a.1) * c);
         let k = 1.2;
-        bolt(m, (m.0 + fx * k, m.1 + fy * k), depth.saturating_sub(1), inten * (1.0 - decay), turb, fork, decay, rng, out);
+        // Fork Strength 50 % keeps the decayed intensity; Fork Variation randomises it.
+        let fi = inten * (1.0 - cfg.decay) * cfg.fork_strength * 2.0 * if cfg.fork_var > 0.0 { 1.0 - cfg.fork_var * rng.f() as f32 } else { 1.0 };
+        bolt(cfg, m, (m.0 + fx * k, m.1 + fy * k), depth.saturating_sub(1), fi.min(1.0), false, rng, out, mains);
     }
 }
 
@@ -671,26 +723,49 @@ fn lightning_segments(ctx: &EffectCtx, b: &Buf) -> Vec<Seg> {
     let turb = ctx.params.f("turbulence").max(0.0);
     let fork = (ctx.params.f("forking") / 100.0).clamp(0.0, 1.0);
     let decay = ctx.params.f("decay").clamp(0.0, 1.0) as f32;
-    let depth = ctx.params.f("expertSettings/complexity").round().clamp(1.0, 12.0) as u32;
+    let fractal = ctx.params.e("expertSettings/fractalType");
+    let depth = ctx.params.f("expertSettings/complexity").round().clamp(1.0, 12.0) as u32 + u32::from(fractal == 2);
     let state = ctx.params.f("conductivityState").floor() as i64 as u64;
     let mut rng = Rng::new(state ^ ((ctx.seed as u64) << 32));
+    let obstacle = ctx.params.f("alphaObstacle").clamp(-10.0, 10.0);
+    let alpha_plane = (obstacle != 0.0).then(|| Plane::alpha(&b.img));
+    let g = |id: &str, dflt: f64| ctx.params.get(id).map(Value::as_f64).unwrap_or(dflt);
+    let cfg = BoltCfg {
+        turb,
+        fork,
+        decay,
+        alpha: alpha_plane.as_ref(),
+        obstacle,
+        main_only: ctx.params.b("expertSettings/mainCoreCollisionOnly"),
+        min_fork: g("expertSettings/minForkDistance", 0.0).max(0.0) * b.scale,
+        term: (g("expertSettings/terminationThreshold", 5.0) / 100.0).clamp(0.0, 1.0) as f32,
+        shape: match fractal {
+            1 => 0.7,
+            2 => 0.45,
+            _ => 1.0,
+        },
+        fork_strength: (g("expertSettings/forkStrength", 50.0) / 100.0).clamp(0.0, 1.0) as f32,
+        fork_var: (g("expertSettings/forkVariation", 0.0) / 100.0).clamp(0.0, 1.0) as f32,
+    };
     let mut segs = Vec::new();
+    let mut mains = Vec::new();
     let (h, w) = (b.img.height as f64, b.img.width as f64);
+    let mut go = |a, z, depth, cfg: &BoltCfg, rng: &mut Rng| bolt(cfg, a, z, depth, 1.0, true, rng, &mut segs, &mut mains);
     // LIGHTNING_TYPES order.
     match kind {
         // Direction: travels toward the Direction point and beyond.
         0 => {
             let z = (o.0 + (d.0 - o.0) * 3.0, o.1 + (d.1 - o.1) * 3.0);
-            bolt(o, z, depth, 1.0, turb, fork, decay, &mut rng, &mut segs);
+            go(o, z, depth, &cfg, &mut rng);
         }
         // Breaking: more branching as the points move apart.
         2 => {
             let dist = ((d.0 - o.0).powi(2) + (d.1 - o.1).powi(2)).sqrt();
             let f = (fork * (0.5 + dist / w.max(h).max(1.0))).min(1.0);
-            bolt(o, d, depth, 1.0, turb, f, decay, &mut rng, &mut segs);
+            go(o, d, depth, &BoltCfg { fork: f, ..cfg }, &mut rng);
         }
         // Bouncy: a strike with a stronger zig-zag.
-        3 => bolt(o, d, depth, 1.0, turb * 1.6, fork, decay, &mut rng, &mut segs),
+        3 => go(o, d, depth, &BoltCfg { turb: turb * 1.6, ..cfg }, &mut rng),
         // Omni / Anywhere: bolts in all directions out to the Outer Radius.
         4 | 5 => {
             let len = ((d.0 - o.0).powi(2) + (d.1 - o.1).powi(2)).sqrt().max(w.min(h) * 0.25);
@@ -698,25 +773,35 @@ fn lightning_segments(ctx: &EffectCtx, b: &Buf) -> Vec<Seg> {
                 let a = rng.f() * 2.0 * PI;
                 let l = if kind == 5 { len * (0.3 + 0.7 * rng.f()) } else { len };
                 let z = (o.0 + a.cos() * l, o.1 + a.sin() * l);
-                bolt(o, z, depth, 1.0, turb, fork, decay, &mut rng, &mut segs);
+                go(o, z, depth, &cfg, &mut rng);
             }
         }
-        6 => bolt(o, (o.0, h), depth, 1.0, turb, fork, decay, &mut rng, &mut segs),
+        6 => go(o, (o.0, h), depth, &cfg, &mut rng),
         // Two-Way Strike: from both ends toward the middle.
         7 => {
             let m = ((o.0 + d.0) * 0.5, (o.1 + d.1) * 0.5);
-            bolt(o, m, depth.saturating_sub(1).max(1), 1.0, turb, fork, decay, &mut rng, &mut segs);
-            bolt(d, m, depth.saturating_sub(1).max(1), 1.0, turb, fork, decay, &mut rng, &mut segs);
+            go(o, m, depth.saturating_sub(1).max(1), &cfg, &mut rng);
+            go(d, m, depth.saturating_sub(1).max(1), &cfg, &mut rng);
         }
         // Strike.
-        _ => bolt(o, d, depth, 1.0, turb, fork, decay, &mut rng, &mut segs),
+        _ => go(o, d, depth, &cfg, &mut rng),
     }
+    let dist = |p: (f64, f64)| ((p.0 - o.0).powi(2) + (p.1 - o.1).powi(2)).sqrt();
+    let far = segs.iter().map(|(_, z, _)| dist(*z)).fold(1e-9, f64::max);
     // Decay Main Core: the whole bolt fades with distance from the origin.
     if decay_main {
-        let far = segs.iter().map(|(_, z, _)| ((z.0 - o.0).powi(2) + (z.1 - o.1).powi(2)).sqrt()).fold(1e-9, f64::max);
         for (a, _, i) in &mut segs {
-            let t = (((a.0 - o.0).powi(2) + (a.1 - o.1).powi(2)).sqrt() / far) as f32;
+            let t = (dist(*a) / far) as f32;
             *i *= (1.0 - decay * t).max(0.0);
+        }
+    }
+    // Core Drain: the main core loses intensity along its length.
+    let drain = (g("expertSettings/coreDrain", 0.0) / 100.0).clamp(0.0, 1.0) as f32;
+    if drain > 0.0 {
+        for ((a, _, i), m) in segs.iter_mut().zip(&mains) {
+            if *m {
+                *i *= (1.0 - drain * (dist(*a) / far) as f32).max(0.0);
+            }
         }
     }
     segs
@@ -1052,8 +1137,16 @@ pub fn specs() -> Vec<EffectSpec> {
                 p("forking", "Forking", num(25.0), pct()),
                 p("decay", "Decay", num(0.3), slider(0.0, 1.0, 0.0, 1.0, 2)),
                 p("decayMainCore", "Decay Main Core", Value::Bool(false), ParamUi::Checkbox),
+                p("alphaObstacle", "Alpha Obstacle", num(0.0), slider(-10.0, 10.0, -10.0, 10.0, 2)),
                 p("compositeOnOriginal", "Composite On Original", Value::Bool(true), ParamUi::Checkbox),
                 p("expertSettings/complexity", "Complexity", num(6.0), slider(1.0, 12.0, 1.0, 12.0, 0)),
+                p("expertSettings/minForkDistance", "Min Fork Distance", num(0.0), slider(0.0, 1000.0, 0.0, 100.0, 1)),
+                p("expertSettings/terminationThreshold", "Termination Threshold", num(5.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
+                p("expertSettings/mainCoreCollisionOnly", "Main Core Collision Only", Value::Bool(false), ParamUi::Checkbox),
+                p("expertSettings/fractalType", "Fractal Type", Value::Enum(0), popup(&FRACTAL_TYPES)),
+                p("expertSettings/coreDrain", "Core Drain", num(0.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
+                p("expertSettings/forkStrength", "Fork Strength", num(50.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
+                p("expertSettings/forkVariation", "Fork Variation", num(0.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
             ],
             advanced_lightning,
         ),
@@ -1209,6 +1302,43 @@ mod tests {
         // Between points (45°) the outline sits near half the radius.
         assert!(o.img.get(39, 24)[3] > 0.5, "{:?}", o.img.get(39, 24));
         assert!(o.img.get(46, 18)[3] < 0.01, "no circle there");
+    }
+
+    #[test]
+    fn lightning_alpha_obstacle_and_expert_settings() {
+        let sum = |i: &Image| i.data.iter().map(|p| p[3]).sum::<f32>();
+        let alpha_in = |img: &Image, src: &Image| img.data.iter().zip(&src.data).filter(|(_, s)| s[3] > 0.5).map(|(p, _)| p[3]).sum::<f32>();
+        // A wall of opaque pixels across the middle of the bolt's path.
+        let mut wall = Image::new(64, 48);
+        for y in 0..48 {
+            for x in 0..64 {
+                if (18..30).contains(&y) && x < 50 {
+                    wall.set(x, y, [0.0, 0.0, 0.0, 1.0]);
+                }
+            }
+        }
+        let opts = |o: f64| {
+            vec![("alphaObstacle", num(o)), ("compositeOnOriginal", Value::Bool(false)), ("glowSettings/glowRadius", num(0.0)), ("forking", num(60.0))]
+        };
+        let free = run("ec.generate.advancedlightning", &opts(0.0), wall.clone());
+        let avoid = run("ec.generate.advancedlightning", &opts(10.0), wall.clone());
+        assert!(alpha_in(&avoid.img, &wall) < alpha_in(&free.img, &wall), "{} vs {}", alpha_in(&avoid.img, &wall), alpha_in(&free.img, &wall));
+        // Fractal Type, Core Drain, Fork Strength, Termination Threshold, Min Fork Distance.
+        let base = run("ec.generate.advancedlightning", &[], Image::new(64, 48));
+        for (id, v) in [
+            ("expertSettings/fractalType", Value::Enum(2)),
+            ("expertSettings/coreDrain", num(100.0)),
+            ("expertSettings/forkStrength", num(100.0)),
+            ("expertSettings/forkVariation", num(100.0)),
+        ] {
+            assert_ne!(run("ec.generate.advancedlightning", &[(id, v)], Image::new(64, 48)).img, base.img, "{id}");
+        }
+        let drained = run("ec.generate.advancedlightning", &[("expertSettings/coreDrain", num(100.0))], Image::new(64, 48));
+        assert!(sum(&drained.img) < sum(&base.img));
+        let no_forks = run("ec.generate.advancedlightning", &[("expertSettings/minForkDistance", num(1000.0))], Image::new(64, 48));
+        let term = run("ec.generate.advancedlightning", &[("expertSettings/terminationThreshold", num(100.0))], Image::new(64, 48));
+        assert_eq!(no_forks.img, term.img, "no forks either way");
+        assert!(sum(&no_forks.img) < sum(&base.img));
     }
 
     #[test]

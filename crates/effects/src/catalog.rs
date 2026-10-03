@@ -8,7 +8,6 @@ use crate::{CATEGORIES, registry};
 /// `(effect id, what is missing)`. Everything else in the registry is implemented in full as far
 /// as the public behaviour documentation describes it.
 pub const PARTIAL: &[(&str, &str)] = &[
-    ("ec.generate.advancedlightning", "no Alpha Obstacle; most Expert Settings missing"),
     ("ec.obsolete.pathtext", "no kerning, shear/scale, line spacing, fade time or jitter"),
     ("ec.noise.addgrain", "no preview region, presets, channel balance or temporal controls"),
     ("ec.noise.matchgrain", "no preview region, presets, sampling or temporal controls"),
