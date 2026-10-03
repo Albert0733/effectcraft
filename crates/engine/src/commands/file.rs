@@ -102,6 +102,14 @@ pub(crate) fn import(s: &mut Session, p: &Value) -> Result<Value> {
         "compositionLayerSizes" | "compositionRetainLayerSizes" | "layerSizes" => Some(true),
         other => return Err(bad("file.import", format!("importAs: footage|composition|compositionLayerSizes, not `{other}`"))),
     };
+    // PDF / Illustrator: which page (1-based, as in the Import dialog).
+    let page = match p.get("page") {
+        None | Some(Value::Null) => 0,
+        Some(v) => match v.as_u64().or_else(|| v.as_f64().filter(|x| x.fract() == 0.0 && *x >= 1.0).map(|x| x as u64)) {
+            Some(n) if n >= 1 => (n - 1) as u32,
+            _ => return Err(bad("file.import", "page: a page number from 1")),
+        },
+    };
     let mut paths = paths;
     let mut out_comps = vec![];
     let mut ids = vec![];
@@ -113,7 +121,7 @@ pub(crate) fn import(s: &mut Session, p: &Value) -> Result<Value> {
                 Ok(b) if effectcraft_psd::is_psd(&b) => b,
                 Ok(b) if effectcraft_pdf::sniff(&b).is_some() && !path.to_ascii_lowercase().ends_with(".svg") => {
                     // PDF / Illustrator / EPS: one layer per file layer.
-                    match import_vector_comp(s, &path, &b) {
+                    match import_vector_comp(s, &path, &b, page) {
                         Ok((comp, items)) => {
                             out_comps.push(comp);
                             ids.extend(items);
@@ -185,6 +193,24 @@ pub(crate) fn import(s: &mut Session, p: &Value) -> Result<Value> {
                     f.frame_rate = r;
                     f.duration = r.tick_of(frames.max(1));
                 }
+                // Page: another page of a PDF / Illustrator file.
+                if page > 0 && matches!(f.codec.as_str(), "PDF" | "AI") {
+                    match s
+                        .services
+                        .read_file(path)
+                        .map_err(|e| e.to_string())
+                        .and_then(|b| effectcraft_pdf::parse_page(&b, page as usize).map_err(|e| e.to_string()))
+                    {
+                        Ok(doc) => {
+                            (f.width, f.height) = doc.pixel_size();
+                            f.page = page;
+                        }
+                        Err(e) => {
+                            errors.push(format!("{path}: {e}"));
+                            continue;
+                        }
+                    }
+                }
                 // Choose Layer: one layer of a Photoshop document (document-sized).
                 if let Some(sel) = &psd_layer
                     && f.codec == "PSD"
@@ -210,6 +236,7 @@ pub(crate) fn import(s: &mut Session, p: &Value) -> Result<Value> {
             let name = std::path::Path::new(&path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or(path.clone());
             let name = match &f.layer {
                 Some(l) => format!("{}/{name}", l.name),
+                None if f.page > 0 => format!("{name} (Page {})", f.page + 1),
                 None => name,
             };
             let label = match f.kind {
@@ -298,14 +325,18 @@ pub(crate) fn import_psd_comp(s: &mut Session, path: &str, bytes: Vec<u8>, retai
     Ok((r.comp.0, items, r.warnings))
 }
 
-/// Import a PDF / Illustrator / EPS file as a composition (one undo step). Returns (comp, items).
-fn import_vector_comp(s: &mut Session, path: &str, bytes: &[u8]) -> Result<(u64, Vec<u64>)> {
-    let name = std::path::Path::new(path).file_stem().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "Vector".into());
+/// Import page `page` of a PDF / Illustrator / EPS file as a composition (one undo step).
+/// Returns (comp, items).
+fn import_vector_comp(s: &mut Session, path: &str, bytes: &[u8], page: u32) -> Result<(u64, Vec<u64>)> {
+    let mut name = std::path::Path::new(path).file_stem().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "Vector".into());
+    if page > 0 {
+        name = format!("{name} (Page {})", page + 1);
+    }
     let rate = effectcraft_time::FrameRate::FPS_29_97;
     let secs = if s.prefs.import.still_footage == "seconds" { s.prefs.import.still_seconds } else { 10.0 };
     let duration = rate.snap_nearest(effectcraft_time::Tick::from_seconds_f64(secs));
     let (comp, folder, items) = s.edit("Import", None, |proj, st| {
-        let r = crate::vector::import_vector_comp(proj, path, bytes, &name, rate, duration).map_err(EngineError::Other)?;
+        let r = crate::vector::import_vector_comp(proj, path, bytes, &name, page, rate, duration).map_err(EngineError::Other)?;
         st.project_selection = vec![r.0];
         Ok(r)
     })?;
@@ -478,7 +509,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "File...",
             ["File", "Import"],
             Some("Cmd+I"),
-            "{paths: [string], importAs?: footage|composition|compositionLayerSizes (Photoshop, PDF, Illustrator and EPS files), layer?: name|index (footage of one Photoshop layer), drag?: bool (dropped files: Settings ▸ Import ▸ Default Drag Import As)}",
+            "{paths: [string], importAs?: footage|composition|compositionLayerSizes (Photoshop, PDF, Illustrator and EPS files), layer?: name|index (footage of one Photoshop layer), page?: number from 1 (PDF / Illustrator page), drag?: bool (dropped files: Settings ▸ Import ▸ Default Drag Import As)}",
             always,
             import
         ),

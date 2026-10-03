@@ -122,32 +122,131 @@ fn group(ids: &mut Ids, name: &str, items: Vec<PropGroup>, opacity: f64) -> Prop
     g
 }
 
+/// A Merge Paths item in `mode` (0 Merge, 3 Intersect).
+fn merge_item(ids: &mut Ids, mode: u32) -> Option<PropGroup> {
+    let mut g = build::shape_simple_op(ids, "merge")?;
+    set(&mut g, "mode", Value::Enum(mode));
+    Some(g)
+}
+
+/// A shape inside clipping groups: its geometry merged into one compound path (an inner group
+/// with Merge Paths), the clip paths, and Merge Paths ▸ Intersect before its paint, so the fill
+/// is exactly the clipped area. Open stroked paths stay unclipped (an intersection would close
+/// them).
+fn clipped_items(ids: &mut Ids, s: &effectcraft_svg::Shape, m: Affine, clips: &[BezPath]) -> Vec<PropGroup> {
+    let items = shape_items(ids, s, m);
+    let path = s.geom.to_path();
+    let closed = path.elements().iter().any(|e| matches!(e, kurbo::PathEl::ClosePath)) || s.fill.is_some();
+    if clips.is_empty() || !closed {
+        return items;
+    }
+    let (geom, paint): (Vec<PropGroup>, Vec<PropGroup>) =
+        items.into_iter().partition(|g| !matches!(g.match_id.as_str(), "fill" | "stroke" | "gfill" | "gstroke"));
+    let mut inner = geom;
+    inner.extend(merge_item(ids, 0));
+    let mut out = vec![build::shape_group(ids, "Clipped Path", inner)];
+    for (i, c) in clips.iter().enumerate() {
+        let mut parts = shape_paths(ids, c);
+        parts.extend(merge_item(ids, 0));
+        out.push(build::shape_group(ids, &format!("Clip Path {}", i + 1), parts));
+    }
+    out.extend(merge_item(ids, 3));
+    out.extend(paint);
+    out
+}
+
 /// Shape layer contents for an SVG document, in document pixels (transforms are baked into the
-/// geometry; group and element opacity go to the group transforms). Top of the paint order first.
+/// geometry; group and element opacity go to the group transforms, blend modes to the groups'
+/// Blend Mode). Top of the paint order first.
+///
+/// Clipping groups (PDF / Illustrator clipping masks): shapes inside them are intersected with
+/// the clip paths through Merge Paths ▸ Intersect (see [`clipped_items`]). Clips enclosing the
+/// whole document are layer masks instead ([`vector_clip_masks`], used by
+/// [`shapes_from_vector`]). Images and soft masks are not converted.
 pub fn svg_contents(ids: &mut Ids, doc: &Doc) -> Vec<PropGroup> {
-    fn walk(ids: &mut Ids, nodes: &[Node], m: Affine) -> Vec<PropGroup> {
+    fn walk(ids: &mut Ids, nodes: &[Node], m: Affine, clips: &[BezPath]) -> Vec<PropGroup> {
         let mut out = vec![];
         for n in nodes.iter().rev() {
             match n {
                 Node::Group(g) => {
-                    let items = walk(ids, &g.children, m * g.transform);
+                    let gm = m * g.transform;
+                    let mut inner_clips = clips.to_vec();
+                    inner_clips.extend(g.clip.iter().map(|(p, _)| gm * p.clone()));
+                    let items = walk(ids, &g.children, gm, &inner_clips);
                     if !items.is_empty() {
-                        out.push(group(ids, &g.name, items, g.opacity));
+                        let mut grp = group(ids, &g.name, items, g.opacity);
+                        if g.blend != effectcraft_svg::BlendMode::Normal {
+                            set(&mut grp, "blend", Value::Enum(blend_index(g.blend)));
+                        }
+                        out.push(grp);
                     }
                 }
                 Node::Shape(s) => {
-                    let items = shape_items(ids, s, m * s.transform);
+                    let sm = m * s.transform;
+                    let items = if clips.is_empty() { shape_items(ids, s, sm) } else { clipped_items(ids, s, sm, clips) };
                     if !items.is_empty() {
                         out.push(group(ids, &s.name, items, s.opacity));
                     }
                 }
+                Node::Image(_) => {}
             }
         }
         out
     }
     let root = &doc.root;
-    let items = walk(ids, &root.children, root.transform);
+    let mut clips = vec![];
+    clips.extend(root.clip.iter().map(|(p, _)| root.transform * p.clone()));
+    let items = walk(ids, &root.children, root.transform, &clips);
     if (root.opacity - 1.0).abs() > 1e-9 { vec![group(ids, "svg", items, root.opacity)] } else { items }
+}
+
+/// The shape-layer Blend Mode index of an SVG / PDF blend mode.
+fn blend_index(b: effectcraft_svg::BlendMode) -> u32 {
+    use effectcraft_color::BlendMode as P;
+    use effectcraft_svg::BlendMode as S;
+    let p = match b {
+        S::Normal => P::Normal,
+        S::Multiply => P::Multiply,
+        S::Screen => P::Screen,
+        S::Overlay => P::Overlay,
+        S::Darken => P::Darken,
+        S::Lighten => P::Lighten,
+        S::ColorDodge => P::ColorDodge,
+        S::ColorBurn => P::ColorBurn,
+        S::HardLight => P::HardLight,
+        S::SoftLight => P::SoftLight,
+        S::Difference => P::Difference,
+        S::Exclusion => P::Exclusion,
+        S::Hue => P::Hue,
+        S::Saturation => P::Saturation,
+        S::Color => P::Color,
+        S::Luminosity => P::Luminosity,
+    };
+    P::ALL.iter().position(|x| *x == p).unwrap_or(0) as u32
+}
+
+/// Clips that enclose the whole document (on a chain of single-child groups from the root, as
+/// an Illustrator artboard clip or a PDF page clip), in document pixels, and the document with
+/// those clips removed: Create Shapes from Vector Layer makes them layer masks.
+pub fn vector_clip_masks(doc: &Doc) -> (Vec<BezPath>, Doc) {
+    let mut out = doc.clone();
+    let mut masks = vec![];
+    let mut m = Affine::IDENTITY;
+    let mut g = &mut out.root;
+    loop {
+        m *= g.transform;
+        for (p, _) in g.clip.drain(..) {
+            masks.push(m * p);
+        }
+        if g.children.len() != 1 {
+            break;
+        }
+        match &mut g.children[0] {
+            Node::Group(sub) if sub.mask.is_none() && sub.blend == effectcraft_svg::BlendMode::Normal => g = sub,
+            _ => break,
+        }
+    }
+    (masks, out)
 }
 
 /// Whether footage is a vector file (SVG / PDF / AI / EPS).
@@ -155,15 +254,15 @@ pub fn is_vector(f: &effectcraft_project::Footage) -> bool {
     effectcraft_render::is_vector_footage(f) || f.path.to_ascii_lowercase().ends_with(".svg")
 }
 
-/// The vector document of an SVG / PDF / AI / EPS file (`None` for other formats), restricted
-/// to one layer when `layer` names it.
-pub fn vector_doc(path: &str, bytes: &[u8], layer: Option<&effectcraft_project::SourceLayer>) -> Option<Result<Doc, String>> {
+/// The vector document of an SVG / PDF / AI / EPS file (`None` for other formats): page
+/// `page` of a PDF, restricted to one layer when `layer` names it.
+pub fn vector_doc(path: &str, bytes: &[u8], layer: Option<&effectcraft_project::SourceLayer>, page: u32) -> Option<Result<Doc, String>> {
     if path.to_ascii_lowercase().ends_with(".svg") || effectcraft_svg::looks_like_svg(bytes) {
         return Some(effectcraft_svg::parse(bytes).map_err(|e| format!("{path}: {e}")));
     }
     effectcraft_pdf::sniff(bytes)?;
     Some(
-        effectcraft_pdf::parse(bytes)
+        effectcraft_pdf::parse_page(bytes, page as usize)
             .map(|d| match layer {
                 Some(l) => effectcraft_pdf::layer_doc(&d, l.index as usize),
                 None => d,
@@ -172,20 +271,21 @@ pub fn vector_doc(path: &str, bytes: &[u8], layer: Option<&effectcraft_project::
     )
 }
 
-/// Import a PDF / Illustrator / EPS document as a composition the size of its page: one footage
-/// item per file layer (each showing only that layer, continuously rasterisable), top layer
-/// first. Returns (comp, folder, items).
+/// Import page `page` of a PDF / Illustrator / EPS document as a composition the size of the
+/// page: one footage item per file layer (each showing only that layer, continuously
+/// rasterisable), top layer first. Returns (comp, folder, items).
 pub fn import_vector_comp(
     proj: &mut Project,
     path: &str,
     bytes: &[u8],
     name: &str,
+    page: u32,
     rate: effectcraft_time::FrameRate,
     duration: effectcraft_time::Tick,
 ) -> Result<(ItemId, ItemId, Vec<ItemId>), String> {
     use effectcraft_color::Label;
     use effectcraft_project::{AlphaMode, Footage, FootageKind, ItemKind, SourceLayer};
-    let doc = effectcraft_pdf::parse(bytes).map_err(|e| format!("{path}: {e}"))?;
+    let doc = effectcraft_pdf::parse_page(bytes, page as usize).map_err(|e| format!("{path}: {e}"))?;
     let codec = effectcraft_pdf::codec(path, bytes).unwrap_or("PDF");
     let (w, h) = doc.pixel_size();
     let file = std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
@@ -206,6 +306,7 @@ pub fn import_vector_comp(
             loop_count: 1,
             codec: codec.into(),
             layer: Some(SourceLayer { index: i as u32, name: lname.clone(), layer_size: false, ..Default::default() }),
+            page,
             ..Default::default()
         };
         let id = proj.add_item(&format!("{lname}/{file}"), Label::Lavender, Some(folder), ItemKind::Footage(f));
@@ -239,12 +340,27 @@ fn like_source(dst: &mut Layer, src: &Layer) {
     dst.switches.three_d = src.switches.three_d;
 }
 
-/// Layer ▸ Create ▸ Create Shapes from Vector Layer: `doc` is the SVG shown by `src`.
+/// Layer ▸ Create ▸ Create Shapes from Vector Layer: `doc` is the SVG shown by `src`. A clip
+/// enclosing the whole document becomes the layer's masks (Add, then Intersect); nested clips
+/// are kept with Merge Paths (see [`svg_contents`]).
 pub fn shapes_from_vector(proj: &mut Project, comp: &Comp, src: &Layer, doc: &Doc) -> Layer {
     let mut l = build::layer(proj, comp, &format!("{} Outlines", src.name), LayerSource::Shape, (0, 0), None);
-    let items = svg_contents(&mut Ids(&mut proj.next_id), doc);
+    let (clips, doc) = vector_clip_masks(doc);
+    let mut ids = Ids(&mut proj.next_id);
+    let items = svg_contents(&mut ids, &doc);
     if let Some(c) = l.props.sub_mut("contents") {
         c.children.extend(items.into_iter().map(Into::into));
+    }
+    let mut n = 0;
+    for (k, clip) in clips.iter().enumerate() {
+        for sp in effectcraft_path::from_kurbo(clip) {
+            n += 1;
+            let mode = if k == 0 { MaskMode::Add } else { MaskMode::Intersect };
+            let mk = build::mask(&mut ids, &format!("Mask {n}"), sp, mode, [255, 255, 0]);
+            if let Some(masks) = l.props.sub_mut("masks") {
+                masks.children.push(mk.into());
+            }
+        }
     }
     copy_transform(proj, src, &mut l);
     like_source(&mut l, src);

@@ -1,6 +1,7 @@
 //! A minimal PDF writer for generating test files (EffectCraft does not export PDF).
 
-/// Numbered objects `(number, dictionary, stream data)` (streams Flate-compressed), a
+/// Numbered objects `(number, dictionary, stream data)` (streams Flate-compressed unless the
+/// dictionary names its own `/Filter`, in which case the data is written as given), a
 /// cross-reference table and a trailer naming object `root` as the catalog.
 pub fn pdf(objects: &[(u32, String, Option<Vec<u8>>)], root: u32) -> Vec<u8> {
     let mut out = b"%PDF-1.7\n%\xE2\xE3\xCF\xD3\n".to_vec();
@@ -8,6 +9,12 @@ pub fn pdf(objects: &[(u32, String, Option<Vec<u8>>)], root: u32) -> Vec<u8> {
     for (n, dict, stream) in objects {
         offsets.push((*n, out.len()));
         match stream {
+            Some(data) if dict.contains("/Filter") => {
+                let d = format!("{} /Length {} >>", dict.trim_end().trim_end_matches(">>"), data.len());
+                out.extend_from_slice(format!("{n} 0 obj\n{d}\nstream\n").as_bytes());
+                out.extend_from_slice(data);
+                out.extend_from_slice(b"\nendstream\nendobj\n");
+            }
             Some(data) => {
                 let z = miniz_oxide::deflate::compress_to_vec_zlib(data, 6);
                 let d = format!("{} /Filter /FlateDecode /Length {} >>", dict.trim_end().trim_end_matches(">>"), z.len());

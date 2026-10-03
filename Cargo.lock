@@ -1405,9 +1405,14 @@ dependencies = [
 name = "effectcraft-pdf"
 version = "0.1.0"
 dependencies = [
+ "effectcraft-raster",
  "effectcraft-svg",
+ "effectcraft-text",
+ "image",
  "kurbo",
  "miniz_oxide 0.8.9",
+ "skrifa",
+ "zune-jpeg",
 ]
 
 [[package]]

@@ -13,15 +13,20 @@ fn is_svg(path: &str, bytes: &[u8]) -> bool {
     path.to_ascii_lowercase().ends_with(".svg") || effectcraft_svg::looks_like_svg(bytes)
 }
 
-/// The vector document of an SVG / PDF / AI / EPS file (`None` for other formats), restricted
-/// to the footage's layer when it names one.
-pub fn vector_doc(path: &str, bytes: &[u8], layer: Option<&effectcraft_project::SourceLayer>) -> Option<std::result::Result<effectcraft_svg::Doc, String>> {
+/// The vector document of an SVG / PDF / AI / EPS file (`None` for other formats): page
+/// `page` of a PDF, restricted to the footage's layer when it names one.
+pub fn vector_doc(
+    path: &str,
+    bytes: &[u8],
+    layer: Option<&effectcraft_project::SourceLayer>,
+    page: u32,
+) -> Option<std::result::Result<effectcraft_svg::Doc, String>> {
     if is_svg(path, bytes) {
         return Some(effectcraft_svg::parse(bytes).map_err(|e| format!("{path}: {e}")));
     }
     effectcraft_pdf::sniff(bytes)?;
     Some(
-        effectcraft_pdf::parse(bytes)
+        effectcraft_pdf::parse_page(bytes, page as usize)
             .map(|d| match layer {
                 Some(l) => effectcraft_pdf::layer_doc(&d, l.index as usize),
                 None => d,
@@ -86,7 +91,7 @@ pub(crate) fn decode(path: &str, bytes: &[u8], footage: &Footage, op: AlphaOp) -
         return Ok(Some(straight_to_image(px.width, px.height, &px.data, op)));
     }
     if is_svg(path, bytes) || is_pdf_like(path, bytes) {
-        let doc = vector_doc(path, bytes, footage.layer.as_ref()).unwrap_or(Err(String::new())).map_err(MediaError::Decode)?;
+        let doc = vector_doc(path, bytes, footage.layer.as_ref(), footage.page).unwrap_or(Err(String::new())).map_err(MediaError::Decode)?;
         let (w, h) = doc.pixel_size();
         let img = effectcraft_svg::rasterize(&doc, w, h, 1.0);
         // The rasteriser produces premultiplied pixels already.
@@ -97,8 +102,8 @@ pub(crate) fn decode(path: &str, bytes: &[u8], footage: &Footage, op: AlphaOp) -
 }
 
 /// A vector file rasterised at `scale` × its pixel size (Continuously Rasterize).
-pub(crate) fn rasterize_vector(path: &str, bytes: &[u8], layer: Option<&effectcraft_project::SourceLayer>, scale: f64) -> Option<Image> {
-    let doc = vector_doc(path, bytes, layer)?.ok()?;
+pub(crate) fn rasterize_vector(path: &str, bytes: &[u8], layer: Option<&effectcraft_project::SourceLayer>, page: u32, scale: f64) -> Option<Image> {
+    let doc = vector_doc(path, bytes, layer, page)?.ok()?;
     let (w, h) = doc.pixel_size();
     let (sw, sh) = (((w as f64 * scale).ceil() as u32).clamp(1, 16384), ((h as f64 * scale).ceil() as u32).clamp(1, 16384));
     Some(effectcraft_svg::rasterize(&doc, sw, sh, scale))

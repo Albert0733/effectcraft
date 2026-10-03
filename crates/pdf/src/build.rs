@@ -19,7 +19,7 @@ pub(crate) struct Builder {
 }
 
 pub(crate) fn group(name: &str) -> Group {
-    Group { name: name.to_string(), transform: Affine::IDENTITY, opacity: 1.0, children: vec![], clip: vec![] }
+    Group::new(name)
 }
 
 impl Builder {
@@ -70,7 +70,21 @@ impl Builder {
         self.stack.push((group(name), if layer { Kind::Layer } else { Kind::Plain }));
     }
 
+    /// Open a group (blend mode, soft mask) closed with the graphics state.
+    pub fn open_group(&mut self, g: Group) {
+        self.stack.push((g, Kind::Plain));
+    }
+
+    /// Add a finished node (an image, pattern tiles).
+    pub fn push(&mut self, n: Node) {
+        self.add(n, false);
+    }
+
     pub fn fill_stroke(&mut self, path: BezPath, transform: Affine, fill: Option<(Paint, f64, FillRule)>, stroke: Option<Stroke>) {
+        self.fill_stroke_named("Path", path, transform, fill, stroke);
+    }
+
+    pub fn fill_stroke_named(&mut self, name: &str, path: BezPath, transform: Affine, fill: Option<(Paint, f64, FillRule)>, stroke: Option<Stroke>) {
         if path.elements().is_empty() || (fill.is_none() && stroke.is_none()) {
             return;
         }
@@ -79,7 +93,7 @@ impl Builder {
             Some((p, o, r)) => (Some(p), o, r),
             None => (None, 1.0, FillRule::NonZero),
         };
-        let s = Shape { name: "Path".into(), geom: Geom::Path(path), transform, fill: f, fill_opacity: fo, fill_rule: rule, stroke, opacity: 1.0 };
+        let s = Shape { name: name.into(), geom: Geom::Path(path), transform, fill: f, fill_opacity: fo, fill_rule: rule, stroke, opacity: 1.0 };
         self.add(Node::Shape(s), false);
     }
 

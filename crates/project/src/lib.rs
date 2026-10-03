@@ -769,6 +769,9 @@ pub struct Footage {
     /// project so expressions read it everywhere (and on the web).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data: Option<String>,
+    /// PDF / Illustrator footage: the page shown (0-based; File ▸ Import ▸ Page).
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub page: u32,
 }
 
 fn is_default<T: Default + PartialEq>(v: &T) -> bool {
@@ -800,6 +803,7 @@ impl Default for Footage {
             linear_light: false,
             data: None,
             layer: None,
+            page: 0,
         }
     }
 }

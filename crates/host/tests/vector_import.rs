@@ -247,15 +247,13 @@ fn pdf_and_ai_footage_layers_and_shapes_from_vector_layer() {
         let c = s.active_comp().unwrap();
         assert_eq!(c.layers[0].id.0, sid);
         let shapes = s.render(cid, t, RenderOpts::default());
-        // Clipping groups are not shape-layer features: the clipped bar (rows 33–47) draws in
-        // full; everything else matches.
-        let rows = |img: &Image| Image {
-            width: w,
-            height: h - 15,
-            data: img.data.iter().enumerate().filter(|(i, _)| !(33..48).contains(&(*i as u32 / w))).map(|(_, p)| *p).collect(),
-        };
-        let d = mean_diff(&rows(&shapes), &rows(&direct));
+        // The clipped bar (rows 33–47) keeps its clip through Merge Paths ▸ Intersect.
+        let d = mean_diff(&shapes, &direct);
         assert!(d < 0.01, "{name}: shapes vs page mean diff {d}");
+        for x in [10, 50, 100] {
+            let (a, b) = (shapes.get(x, 40), direct.get(x, 40));
+            assert!((0..4).all(|c| (a[c] - b[c]).abs() < 0.02), "{name}: bar clipped at x = {x}: {a:?} vs {b:?}");
+        }
         let fill = shapes.get(60, 30);
         assert!(fill[0] > 0.9 && fill[1] < 0.1, "red shape {fill:?}");
     }
@@ -333,4 +331,77 @@ fn eps_footage_imports() {
     let cid = s.active_comp_id().unwrap();
     let img = s.render(cid, effectcraft_time::Tick::ZERO, RenderOpts::default());
     assert!(img.get(10, 10)[0] > 0.99 && img.get(30, 10)[2] > 0.99, "{:?} {:?}", img.get(10, 10), img.get(30, 10));
+}
+
+/// A two-page PDF: page 2 has text in a non-embedded standard font inside a page-wide clip.
+fn two_page_pdf() -> Vec<u8> {
+    effectcraft_pdf::write::pdf(
+        &[
+            (1, "<< /Type /Catalog /Pages 2 0 R >>".into(), None),
+            (2, "<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >>".into(), None),
+            (3, "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 120 80] /Contents 4 0 R >>".into(), None),
+            (4, "<< >>".into(), Some(b"1 0 0 rg 0 0 120 80 re f".to_vec())),
+            (
+                5,
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 60] /Resources << /Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >> >> >> /Contents 6 0 R >>".into(),
+                None,
+            ),
+            (6, "<< >>".into(), Some(b"10 5 80 50 re W n 0 0 1 rg 0 0 100 60 re f 1 1 0 rg BT /F1 40 Tf 15 15 Td (Hi) Tj ET".to_vec())),
+        ],
+        1,
+    )
+}
+
+#[test]
+fn pdf_pages_text_and_clips_to_masks() {
+    let bytes = two_page_pdf();
+    let path = tmp("pages.pdf");
+    std::fs::write(&path, &bytes).unwrap();
+    let mut s = effectcraft_host::session();
+    // Page 2 as footage (File ▸ Import ▸ Page), named after its page.
+    let r = s.execute_checked("file.import", json!({"paths": [path], "page": 2})).unwrap();
+    assert_eq!(r["errors"], json!([]), "{r}");
+    let item = ItemId(r["items"][0].as_u64().unwrap());
+    let it = s.project.item(item).unwrap();
+    assert_eq!(it.name, "pages.pdf (Page 2)");
+    let effectcraft_project::ItemKind::Footage(f) = &it.kind else { panic!() };
+    assert_eq!((f.width, f.height, f.page), (100, 60, 1));
+    assert!(s.execute_checked("file.import", json!({"paths": [path], "page": 3})).unwrap()["errors"][0].as_str().unwrap().contains("no page 3"));
+    assert!(s.execute("file.import", json!({"paths": [path], "page": 0})).is_err());
+    let doc = effectcraft_pdf::parse_page(&bytes, 1).unwrap();
+    let direct = effectcraft_svg::rasterize(&doc, 100, 60, 1.0);
+    s.execute("comp.new", json!({"name": "P", "width": 100, "height": 60, "frameRate": 30, "duration": 1})).unwrap();
+    let lid = s.execute_checked("layer.addItem", json!({"item": item.0})).unwrap()["layer"].as_u64().unwrap();
+    let cid = s.active_comp_id().unwrap();
+    let t = effectcraft_time::Tick::ZERO;
+    let foot = s.render(cid, t, RenderOpts::default());
+    assert!(mean_diff(&foot, &direct) < 1.0 / 255.0, "page 2 footage");
+    // Text drew (yellow glyphs over the blue page).
+    let ink = (0..60).flat_map(|y| (0..100).map(move |x| (x, y))).filter(|&(x, y)| foot.get(x, y)[0] > 0.9).count();
+    assert!(ink > 100, "text pixels {ink}");
+    // Create Shapes from Vector Layer: the page-wide clip becomes the layer's mask, the text a
+    // shape group named after it.
+    s.execute("layer.select", json!({"layers": [lid]})).unwrap();
+    let sid = s.execute_checked("layer.create", json!({"op": "shapesFromVector"})).unwrap()["layers"][0].as_u64().unwrap();
+    let c = s.active_comp().unwrap();
+    let l = c.layer(effectcraft_project::LayerId(sid)).unwrap();
+    assert_eq!(l.masks().map(|m| m.groups().count()), Some(1));
+    fn names(g: &effectcraft_project::PropGroup, out: &mut Vec<String>) {
+        for c in g.groups() {
+            out.push(c.name.clone());
+            names(c, out);
+        }
+    }
+    let mut names_found = vec![];
+    names(l.props.sub("contents").unwrap(), &mut names_found);
+    let names = names_found;
+    assert!(names.iter().any(|n| n == "Text: Hi"), "{names:?}");
+    let shapes = s.render(cid, t, RenderOpts::default());
+    let d = mean_diff(&shapes, &direct);
+    assert!(d < 0.01, "shapes vs page {d}");
+    assert_eq!(shapes.get(5, 30)[3], 0.0, "masked outside the clip");
+    // Page 1 as a composition.
+    let r = s.execute_checked("file.import", json!({"paths": [path], "importAs": "composition", "page": 1})).unwrap();
+    let comp = s.project.comp(ItemId(r["comps"][0].as_u64().unwrap())).unwrap();
+    assert_eq!((comp.width, comp.height), (120, 80));
 }
