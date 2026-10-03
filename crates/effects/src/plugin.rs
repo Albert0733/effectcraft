@@ -137,6 +137,7 @@ pub struct PluginManifest {
 impl PluginManifest {
     /// Check the manifest against this API version.
     pub fn validate(&self) -> Result<(), String> {
+        const MAX_PARAMS: usize = 256;
         if self.api != PLUGIN_API_VERSION {
             return Err(format!("plug-in `{}` targets plug-in API {} but this build implements API {PLUGIN_API_VERSION}", self.id, self.api));
         }
@@ -147,6 +148,9 @@ impl PluginManifest {
         if self.name.trim().is_empty() || self.category.trim().is_empty() {
             return Err(format!("plug-in `{}` needs a name and a category", self.id));
         }
+        if self.params.len() > MAX_PARAMS {
+            return Err(format!("plug-in `{}` has {} parameters (at most {MAX_PARAMS})", self.id, self.params.len()));
+        }
         let mut seen = std::collections::HashSet::new();
         for p in &self.params {
             if p.id.is_empty() || !p.id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') || !seen.insert(p.id.as_str()) {
@@ -156,6 +160,12 @@ impl PluginManifest {
                 && (options.is_empty() || *default as usize >= options.len())
             {
                 return Err(format!("plug-in `{}`: popup `{}` needs options and a default index in range", self.id, p.id));
+            }
+            if let PluginParamKind::Slider { default, min, max, slider_min, slider_max, .. } = &p.kind {
+                let (lo, hi) = (slider_min.unwrap_or(*min), slider_max.unwrap_or(*max));
+                if [*default, *min, *max, lo, hi].iter().any(|v| !v.is_finite()) || min > max || lo > hi || default < min || default > max {
+                    return Err(format!("plug-in `{}`: slider `{}` needs min ≤ default ≤ max (and sliderMin ≤ sliderMax)", self.id, p.id));
+                }
             }
         }
         Ok(())

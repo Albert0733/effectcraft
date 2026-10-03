@@ -143,6 +143,12 @@ function __uiParseRes(src) {
         ws();
         if (s.charAt(i) === ",") {
           i++;
+          // A trailing comma, as JavaScript allows.
+          ws();
+          if (s.charAt(i) === "]") {
+            i++;
+            return a;
+          }
           continue;
         }
         if (s.charAt(i) === "]") {

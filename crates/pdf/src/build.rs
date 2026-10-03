@@ -62,6 +62,8 @@ impl Builder {
     pub fn clip(&mut self, path: BezPath, rule: FillRule) {
         let mut g = group("Clip Group");
         g.clip.push((path, rule));
+        // Clipping is not a transparency group: blend modes inside reach the backdrop.
+        g.isolated = false;
         self.stack.push((g, Kind::Clip));
     }
 

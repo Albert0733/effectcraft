@@ -314,13 +314,32 @@ fn variable_font_axes_animator() {
         let l = comp.layer(LayerId(t)).unwrap();
         effectcraft_render::text::glyph_paths(&ctx, l).iter().map(|(p, _)| effectcraft_text::kurbo::Shape::area(p).abs()).sum::<f64>()
     };
+    // The distance between the two H's left edges: the H advance.
+    let gap = |s: &Session| {
+        let cid = s.active_comp_id().unwrap();
+        let comp = s.project.comp(cid).unwrap();
+        let ctx = effectcraft_render::EvalCtx::new(&s.project, cid, comp, s.time());
+        let l = comp.layer(LayerId(t)).unwrap();
+        let x0: Vec<f64> = effectcraft_render::text::glyph_paths(&ctx, l).iter().map(|(p, _)| effectcraft_text::kurbo::Shape::bounding_box(p).x0).collect();
+        x0[1] - x0[0]
+    };
     let before = area(&s);
+    let gap_before = gap(&s);
     let l = s.active_comp().unwrap().layer(LayerId(t)).unwrap().clone();
     let pg = l.props.find_group(anim).unwrap().sub("properties").unwrap().props().next().unwrap().uid;
     let range = (axis.max - axis.min) as f64;
     s.execute("prop.set", json!({"layer": t, "prop": pg, "value": range})).unwrap();
     let after = area(&s);
     assert!((after - before).abs() > 1.0, "{} axis moved the outline: {before} → {after}", axis.tag);
+    // Advances follow the axis too (the text is re-spaced, not only redrawn).
+    let a = axes.iter().find(|a| a.tag == tag).unwrap();
+    let f = effectcraft_text::fonts::face(face);
+    let gid = f.glyph('H').unwrap();
+    let upem = f.units_per_em() as f64;
+    let units = |v: f32| effectcraft_text::variable::advance_units_at(face, gid, &[(a.tag.clone(), v)]).unwrap() as f64;
+    let want = (units((a.default + range as f32).min(a.max)) - units(a.default)) * 60.0 / upem;
+    let moved = gap(&s) - gap_before;
+    assert!((moved - want).abs() < 0.5, "{} axis: advance change {moved}, expected {want}", a.tag);
     s.execute("edit.undo", json!({})).unwrap();
     assert!((area(&s) - before).abs() < 1e-6);
     let _ = info;

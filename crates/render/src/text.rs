@@ -568,8 +568,17 @@ pub fn text_geom(ctx: &EvalCtx, layer: &Layer) -> Option<TextGeom> {
         (lay, xfs)
     };
 
-    // Tracking (before / after each character) and Line Anchor, per line.
+    // Variable Font Axes: the advance at the animated design-space position (later characters
+    // on the line move with it).
     let n = lay.glyphs.len();
+    let vadv: Vec<f64> = (0..n)
+        .map(|gi| match (subs[gi], xfs[gi].axis_deltas()) {
+            (None, d) if !d.is_empty() => effectcraft_text::variable::char_advance_delta(&lay.glyphs[gi], &d).unwrap_or(0.0),
+            _ => 0.0,
+        })
+        .collect();
+    let advance = |gi: usize| lay.glyphs[gi].advance + vadv[gi];
+    // Tracking (before / after each character) and Line Anchor, per line.
     let mut shift = vec![0.0f64; n];
     let mut li_start = 0;
     while li_start < n {
@@ -585,7 +594,7 @@ pub fn text_geom(ctx: &EvalCtx, layer: &Layer) -> Option<TextGeom> {
             let em = lay.styles.get(lay.glyphs[gi].run).map_or(doc.size, |s| s.size) / 1000.0;
             pen += x.track_before * em;
             shift[gi] = pen;
-            pen += x.track_after * em;
+            pen += x.track_after * em + vadv[gi];
             if x.line_anchor_k > la_k {
                 la = x.line_anchor;
                 la_k = x.line_anchor_k;
@@ -622,7 +631,7 @@ pub fn text_geom(ctx: &EvalCtx, layer: &Layer) -> Option<TextGeom> {
             let o = origin(gi);
             let e = extents.entry(group_key(g)).or_insert([f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY]);
             e[0] = e[0].min(o[0]);
-            e[2] = e[2].max(o[0] + g.advance);
+            e[2] = e[2].max(o[0] + advance(gi));
             e[1] = e[1].min(o[1]);
             e[3] = e[3].max(o[1]);
         }
@@ -645,7 +654,7 @@ pub fn text_geom(ctx: &EvalCtx, layer: &Layer) -> Option<TextGeom> {
             while j < n && lay.glyphs[j].line_index == line {
                 j += 1;
             }
-            let xs: Vec<f64> = (i..j).map(|gi| origin(gi)[0] + lay.glyphs[gi].advance / 2.0).collect();
+            let xs: Vec<f64> = (i..j).map(|gi| origin(gi)[0] + advance(gi) / 2.0).collect();
             let lb = lay.line_boxes.get(line).copied().unwrap_or([0.0; 4]);
             let pos = path_text::arc_positions(&xs, [lb[0], lb[0] + lb[2]], align, pm.length(), *fm, *lm, *force);
             arc[i..j].copy_from_slice(&pos);
@@ -684,7 +693,7 @@ pub fn text_geom(ctx: &EvalCtx, layer: &Layer) -> Option<TextGeom> {
             }
             // Variable Font Axes: the outline redrawn at the animated design-space position.
             None => match x.axis_deltas() {
-                d if !d.is_empty() => (effectcraft_text::variable::char_outline_varied(g, &d).unwrap_or_else(|| g.path.clone()), g.advance),
+                d if !d.is_empty() => (effectcraft_text::variable::char_outline_varied(g, &d).unwrap_or_else(|| g.path.clone()), advance(gi)),
                 _ => (g.path.clone(), g.advance),
             },
         };
