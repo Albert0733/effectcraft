@@ -1,12 +1,14 @@
 //! A fully wired [`Session`]: footage decoding through `effectcraft-media` (FilmCraft's codecs),
-//! the media importer, the expression engine and Render Queue export through
-//! `effectcraft-export` (FilmCraft's encoders). Frontends (desktop, CLI, MCP, web) start here.
+//! the media importer, the expression engine, JavaScript scripting (`effectcraft-script`) and
+//! Render Queue export through `effectcraft-export` (FilmCraft's encoders). Frontends (desktop,
+//! CLI, MCP, web) start here.
 
 use std::sync::Arc;
 
 use effectcraft_engine::project::render_queue::OutputFormat;
 use effectcraft_engine::{ExportJob, ExportResult, Exporter, Importer, Session};
 use effectcraft_project::Footage;
+pub use effectcraft_script as script;
 
 struct MediaImporter;
 
@@ -47,7 +49,7 @@ impl Exporter for FileExporter {
     }
 }
 
-/// A new session with media, import, expressions and export enabled.
+/// A new session with media, import, expressions, scripting and export enabled.
 pub fn session() -> Session {
     Session {
         exporter: Some(Arc::new(FileExporter::default())),
@@ -55,6 +57,7 @@ pub fn session() -> Session {
         importer: Some(Arc::new(MediaImporter)),
         expr: Some(Arc::new(effectcraft_expr::Expressions)),
         expr_check: Some(effectcraft_expr::check_syntax),
+        script: Some(effectcraft_script::runner),
         ..Default::default()
     }
 }
@@ -186,6 +189,35 @@ mod tests {
         s.execute("prop.separateDimensions", json!({"layer": b})).unwrap();
         link(&mut s, "transform/rotation", "transform/positionX");
         assert_eq!(value(&s, a, "transform/rotation").as_f64(), 12.0);
+    }
+
+    /// A script builds a comp, queues it and renders it through the Render Queue.
+    #[test]
+    fn script_renders_through_the_render_queue() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/test-out/host-script");
+        let _ = std::fs::remove_dir_all(&dir);
+        let out = dir.join("scripted.gif");
+        let mut s = super::session();
+        let code = format!(
+            r#"
+            var comp = app.project.items.addComp("Scripted", 64, 48, 1, 0.2, 10);
+            var sq = comp.layers.addSolid([1, 0.5, 0], "Square", 16, 16, 1);
+            sq.transform.position.setValueAtTime(0, [8, 24]);
+            sq.transform.position.setValueAtTime(0.1, [56, 24]);
+            var item = app.project.renderQueue.items.add(comp);
+            item.outputModule(1).applyTemplate("GIF");
+            item.outputModule(1).file = new File({});
+            app.project.renderQueue.render();
+            [item.status == RQItemStatus.DONE, item.outputModule(1).file.fsName, app.project.renderQueue.numItems]
+            "#,
+            serde_json::to_string(&out.to_string_lossy()).unwrap()
+        );
+        let r = s.execute("script.run", json!({"code": code})).unwrap();
+        assert_eq!(r["ok"], json!(true), "{r}");
+        assert_eq!(r["result"][0], json!(true), "{r}");
+        assert_eq!(r["result"][2], json!(1));
+        let bytes = std::fs::read(&out).unwrap();
+        assert!(bytes.starts_with(b"GIF89a"));
     }
 
     #[test]

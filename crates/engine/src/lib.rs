@@ -285,7 +285,24 @@ pub struct Session {
     pub autosave: autosave::AutoSaveState,
     /// The viewer snapshot (Take Snapshot / Show Snapshot).
     pub snapshot: Option<viewer::Snapshot>,
+    /// The JavaScript scripting engine (set by the host that links `effectcraft-script`):
+    /// `script.run`, File ▸ Scripts ▸ Run Script File… (`.jsx`/`.js`) and the Script Console.
+    pub script: Option<ScriptRunner>,
 }
+
+/// A script to run (see [`Session::script`]).
+#[derive(Clone, Copy, Debug)]
+pub struct ScriptRequest<'a> {
+    pub code: &'a str,
+    /// File name shown in errors and `$.fileName` (`console` for the Script Console).
+    pub name: &'a str,
+    /// Run in the Script Console's persistent context (variables survive between runs).
+    pub console: bool,
+}
+
+/// Runs a script against the session and reports `{ok, result, output, error: {message, line,
+/// column, file} | null}`.
+pub type ScriptRunner = fn(&mut Session, &ScriptRequest) -> Value;
 
 impl Default for Session {
     fn default() -> Self {
@@ -319,6 +336,7 @@ impl Default for Session {
             shortcut_table: std::sync::OnceLock::new(),
             autosave: autosave::AutoSaveState::default(),
             snapshot: None,
+            script: None,
         }
     }
 }

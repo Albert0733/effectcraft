@@ -14,3 +14,6 @@ effectcraft-engine = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 image = { workspace = true }
+
+[dev-dependencies]
+effectcraft-script = { workspace = true }

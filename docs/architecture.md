@@ -30,13 +30,15 @@ cpal or muda. Everything in L0 to L4, the egui UI and the web app also build for
 | L3 | `gpu` | The GPU compositor and GPU effects on wgpu compute shaders (Metal, Vulkan, Direct3D 12, WebGPU), checked against the CPU renderer |
 | L3 | `lottie` | Lottie JSON / dotLottie import and export (layers, precomps, eased and spatial keyframes, shapes, masks, mattes) with a warnings list for what Lottie cannot express |
 | L4 | `engine` | `Session`: project, undo history, editor state, the command registry and menus |
-| L4 | `host` | A fully wired `Session` (media, expressions, exporter) for the frontends |
+| L4 | `script` | Scripting: JavaScript (boa) with an After Effects-style object model (`app.project`, comps, layers, properties, render queue) whose edits run engine commands; AE match names |
+| L4 | `host` | A fully wired `Session` (media, expressions, scripting, exporter) for the frontends |
 | L5 | `ui-egui` | The desktop interface: docking, panels, viewer, timeline, graph editor, dialogs, control channel |
 | L5 | `automation` | The MCP server, headless or bridged to the running app |
 | L6 | apps `effectcraft`, `effectcraft-cli`, `effectcraft-web` | Desktop app; command-line tool (render, exec, get/set, MCP); the browser app (wasm32, [web.md](web.md)) |
 
 Allowed same-layer edges: `path → keyframe, raster`, `text → path`, `effects → project, text, path, track`,
-`media / expr / export / gpu → render`, `export → media`, `lottie → format`, `host → engine`.
+`media / expr / export / gpu → render`, `export → media`, `lottie → format`, `host → engine, script`,
+`script → engine`.
 
 ## 2. Time
 
@@ -181,6 +183,28 @@ effects crate, hence the `effects → track` edge.
 Expressions are JavaScript, run by boa, with After Effects' object model (`thisComp`, `thisLayer`,
 `time`, `value`, `wiggle`, `loopOut`, vector maths on arrays, and so on). A syntax error keeps the
 text, disables the expression and shows a warning, like After Effects.
+
+## 5a. Scripting
+
+`effectcraft-script` runs JavaScript (boa, a fresh context per run; the Script Console keeps one)
+with an object model written from the behaviour the After Effects Scripting Guide documents:
+`app`, `Project`, `ItemCollection`, `CompItem`/`FootageItem`/`FolderItem`, `LayerCollection`,
+`AVLayer`/`TextLayer`/`ShapeLayer`/`CameraLayer`/`LightLayer`, `PropertyGroup`/`Property`
+(values, keyframes, eases, expressions), `TextDocument`, `Shape`, `KeyframeEase`, `MarkerValue`,
+`RenderQueue`/`RenderQueueItem`/`OutputModule`, `File`/`Folder` and the enums. The model lives in
+`prelude.js`; it reads the session through `__query` (JSON snapshots of items, layers, property
+nodes, values and keys) and edits only through `__exec`, which runs engine commands, so every
+scripted edit is undoable and identical to the UI's. While a script runs the session is moved
+into a thread-local the natives borrow (nothing borrowed enters the JS heap); the comp a call
+targets is made active for that command only. `app.beginUndoGroup`/`endUndoGroup` fold the undo
+steps in between into one named step. Match names (`ADBE Transform Group`, `ADBE Position`,
+`ADBE Gaussian Blur 2`, `ADBE Vector Shape - Rect`…) come from a table in `matchnames.rs`; effect
+parameters are `<effect match name>-0001…`. `File` reads are limited to the project's folder, and
+writes and the network are refused, unless Preferences ▸ Scripting & Expressions ▸ Allow Scripts
+to Write Files and Access Network is on. Entry points: the `script.run` command
+(`Session::script`, set by the host), File ▸ Scripts ▸ Run Script File… (`.jsx`/`.js`; `.json`
+command scripts still run as steps), Window ▸ Script Console, `effectcraft-cli script` and the
+MCP `run_script` tool.
 
 ## 6. Commands, the UI seam and automation
 

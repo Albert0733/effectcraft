@@ -529,16 +529,10 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     }
     dresp.on_hover_text("Project color depth: click to cycle 8/16/32 bpc, Alt-click for Project Settings");
     let tr = Rect::from_min_size(pos2(foot.max.x - 30.0, foot.min.y + 3.0), vec2(22.0, 22.0));
-    if widgets::icon_button(ui, tr, Icon::Trash, false, &t, egui::Id::new("ptrash")).on_hover_text("Delete selected project items").clicked() {
-        let sel = app.session.state.project_selection.clone();
-        let _ = app.session.edit("Delete Items", None, |proj, st| {
-            for id in &sel {
-                proj.items.remove(id);
-            }
-            st.project_selection.clear();
-            Ok(())
-        });
-        app.session.sanitize_state();
+    if widgets::icon_button(ui, tr, Icon::Trash, false, &t, egui::Id::new("ptrash")).on_hover_text("Delete selected project items").clicked()
+        && !app.session.state.project_selection.is_empty()
+    {
+        actions.push(("project.delete".into(), json!({})));
     }
     app.auto.add("project.delete", tr, "Delete");
     for (id, params) in actions {

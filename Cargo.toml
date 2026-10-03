@@ -32,6 +32,7 @@ effectcraft-engine = { path = "crates/engine" }
 effectcraft-host = { path = "crates/host" }
 effectcraft-ui-egui = { path = "crates/ui-egui" }
 effectcraft-automation = { path = "crates/automation" }
+effectcraft-script = { path = "crates/script" }
 
 # foundation
 thiserror = "2"

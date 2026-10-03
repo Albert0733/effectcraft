@@ -697,7 +697,7 @@ fn file_dialog(app: &mut EffectcraftApp, id: &str, params: &Value) -> Option<Res
         "file.exportLottie" => ("path", Ask::Save("Animation.json")),
         "file.importLottie" => ("path", Ask::Open(&["json", "lottie"])),
         "render.saveCurrentPreview" => ("path", Ask::Save("Preview.mp4")),
-        "file.runScript" => ("path", Ask::Open(&["jsonl", "json", "txt"])),
+        "file.runScript" => ("path", Ask::Open(&["jsx", "js", "jsonl", "json", "txt"])),
         "file.replaceFootage" => ("path", Ask::Import),
         "file.collectFiles" => ("folder", Ask::Save("Collected Files")),
         _ => return None,
