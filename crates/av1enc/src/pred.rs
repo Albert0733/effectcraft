@@ -249,9 +249,67 @@ pub(crate) fn predict_inter(
     }
 }
 
+/// The visible `w x h` area of a reference plane interpolated at the sub-sample phase
+/// (`fx`, `fy`) (1/16 units) with the EIGHTTAP filter, as `predict_inter` computes it for
+/// blocks wider and taller than 4. Used for motion search.
+pub(crate) fn subpel_plane(refp: &Plane, w: usize, h: usize, fx: usize, fy: usize, bit_depth: u32) -> Vec<u16> {
+    let kh = &SUBPEL_FILTERS[EIGHTTAP][fx];
+    let kv = &SUBPEL_FILTERS[EIGHTTAP][fy];
+    let max = (1i32 << bit_depth) - 1;
+    let (lx, ly) = (w as i32 - 1, h as i32 - 1);
+    let mut inter = vec![0i32; w * h];
+    for y in 0..h {
+        let row = refp.row(y);
+        for x in 0..w {
+            let mut s = 0i32;
+            for t in 0..8 {
+                s += kh[t] as i32 * row[(x as i32 + t as i32 - 3).clamp(0, lx) as usize] as i32;
+            }
+            inter[y * w + x] = round2(s, 3);
+        }
+    }
+    let mut out = vec![0u16; w * h];
+    for y in 0..h {
+        for x in 0..w {
+            let mut s = 0i32;
+            for t in 0..8 {
+                s += kv[t] as i32 * inter[(y as i32 + t as i32 - 3).clamp(0, ly) as usize * w + x];
+            }
+            out[y * w + x] = round2(s, 11).clamp(0, max) as u16;
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Whole-plane interpolation equals block inter prediction at the same phase.
+    #[test]
+    fn subpel_plane_matches_block_prediction() {
+        let (w, h) = (37, 29);
+        let mut p = Plane::new(64, 64);
+        for (i, v) in p.data.iter_mut().enumerate() {
+            *v = ((i * 7919) % 256) as u16;
+        }
+        for (fx, fy) in [(8, 0), (0, 8), (8, 8), (4, 12)] {
+            let plane = subpel_plane(&p, w, h, fx, fy, 8);
+            for (bx, by) in [(0i32, 0i32), (8, 8), (24, 16), (-5, 20), (30, -3)] {
+                let mut pred = vec![0u16; 64];
+                let mv = [by * 8 + fy as i32 / 2, bx * 8 + fx as i32 / 2];
+                predict_inter(&p, w as i32 - 1, h as i32 - 1, 0, 0, 8, 8, mv, 0, 8, &mut pred);
+                for r in 0..8 {
+                    for c in 0..8 {
+                        let (x, y) = ((bx + c).clamp(0, w as i32 - 1), (by + r).clamp(0, h as i32 - 1));
+                        if bx + c == x && by + r == y {
+                            assert_eq!(pred[(r * 8 + c) as usize], plane[y as usize * w + x as usize], "phase ({fx}, {fy}) at ({}, {})", bx + c, by + r);
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn phase_zero_filters_are_impulses() {

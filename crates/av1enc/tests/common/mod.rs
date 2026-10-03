@@ -83,6 +83,7 @@ pub struct Run {
     pub packets: Vec<Packet>,
     pub recons: Vec<[Vec<u16>; 3]>,
     pub psnr_y: Vec<f64>,
+    pub lf_levels: Vec<u32>,
 }
 
 /// Encodes `pics`, checks every packet decodes (filmcraft-av1) to exactly the encoder's
@@ -91,7 +92,7 @@ pub fn encode_and_check(cfg: EncoderConfig, pics: &[Pic]) -> Run {
     let bd = cfg.bit_depth as u32;
     let mut enc = Encoder::new(cfg).expect("config");
     let mut dec = filmcraft_av1::Decoder::new();
-    let mut run = Run { packets: Vec::new(), recons: Vec::new(), psnr_y: Vec::new() };
+    let mut run = Run { packets: Vec::new(), recons: Vec::new(), psnr_y: Vec::new(), lf_levels: Vec::new() };
     for (i, p) in pics.iter().enumerate() {
         let pkt = enc.encode(&p.frame());
         let rec = enc.last_reconstruction().expect("reconstruction");
@@ -107,6 +108,7 @@ pub fn encode_and_check(cfg: EncoderConfig, pics: &[Pic]) -> Run {
             }
         }
         run.psnr_y.push(psnr(&p.y, &rec[0], bd));
+        run.lf_levels.push(enc.last_loop_filter_level().expect("level"));
         run.recons.push(rec);
         run.packets.push(pkt);
     }

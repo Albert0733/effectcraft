@@ -11,6 +11,7 @@
 mod bitw;
 mod cdf;
 mod decide;
+mod loopfilter;
 mod pred;
 mod symbol;
 mod tables;
@@ -19,6 +20,7 @@ mod writer;
 
 use bitw::{BitWriter, obu};
 use decide::{Decider, FrameGeom, RefFrame};
+use loopfilter::{LfInfo, loop_filter};
 use pred::Plane;
 use writer::TileWriter;
 
@@ -263,7 +265,7 @@ impl Encoder {
     }
 
     /// uncompressed_header( ) (5.9) for a shown KEY_FRAME or an INTER_FRAME referencing slot 0.
-    fn frame_header(&self, w: &mut BitWriter, key: bool, qidx: u8) {
+    fn frame_header(&self, w: &mut BitWriter, key: bool, qidx: u8, lf_level: u32) {
         w.f(1, 0); // show_existing_frame
         w.f(2, if key { 0 } else { 1 }); // frame_type
         w.f(1, 1); // show_frame
@@ -311,9 +313,13 @@ impl Encoder {
         w.f(1, 0); // using_qmatrix
         w.f(1, 0); // segmentation_enabled
         w.f(1, 0); // delta_q_present (base_q_idx > 0)
-        // loop_filter_params( )
-        w.f(6, 0);
-        w.f(6, 0);
+        // loop_filter_params( ): the same level for every plane and direction
+        w.f(6, lf_level);
+        w.f(6, lf_level);
+        if lf_level != 0 {
+            w.f(6, lf_level);
+            w.f(6, lf_level);
+        }
         w.f(3, 0); // loop_filter_sharpness
         w.f(1, 0); // loop_filter_delta_enabled
         w.f(1, 0); // tx_mode_select (TX_MODE_LARGEST)
@@ -366,17 +372,66 @@ impl Encoder {
                 tw.superblock(sbr * 16, sbc * 16, &node);
             }
         }
+        let lf_level = self.pick_filter_level(&dec.rec, &tw.lf_info(), src, qidx);
+        loop_filter(&mut dec.rec, &tw.lf_info(), [lf_level; 4], self.cfg.bit_depth as u32, false);
         let tile = tw.finish();
         let mut w = BitWriter::new();
-        self.frame_header(&mut w, key, qidx);
+        self.frame_header(&mut w, key, qidx, lf_level);
         w.byte_align();
         // tile_group_obu( ): a single tile, no tile_start_and_end_present_flag
         let mut payload = w.into_bytes();
         payload.extend_from_slice(&tile);
         let mut out = Vec::with_capacity(payload.len() + 8);
         obu(OBU_FRAME, &payload, &mut out);
-        let rf = RefFrame { planes: dec.rec, mvs: dec.mvs };
+        let rf = RefFrame { planes: dec.rec, mvs: dec.mvs, lf_level };
         (out, rf)
+    }
+
+    /// The loop filter level minimising the luma error (searched around a guess from the
+    /// quantizer; luma only).
+    fn pick_filter_level(&self, rec: &[Plane; 3], info: &LfInfo, src: &[Plane; 3], qidx: u8) -> u32 {
+        let (w, h) = (self.geom.width, self.geom.height);
+        let sse = |pl: &Plane| -> u64 {
+            let mut s = 0u64;
+            for y in 0..h {
+                for (a, b) in pl.row(y)[..w].iter().zip(&src[0].row(y)[..w]) {
+                    let d = *a as i64 - *b as i64;
+                    s += (d * d) as u64;
+                }
+            }
+            s
+        };
+        let bd = self.cfg.bit_depth as u32;
+        let mut cache: Vec<(u32, u64)> = vec![(0, sse(&rec[0]))];
+        let mut eval = |lvl: u32| -> u64 {
+            if let Some(&(_, e)) = cache.iter().find(|(l, _)| *l == lvl) {
+                return e;
+            }
+            let mut planes = [rec[0].clone(), Plane::new(0, 0), Plane::new(0, 0)];
+            loop_filter(&mut planes, info, [lvl; 4], bd, true);
+            let e = sse(&planes[0]);
+            cache.push((lvl, e));
+            e
+        };
+        let guess = ((qidx as u32 * 3) / 16).clamp(2, 50);
+        let mut best = (0u32, eval(0));
+        let mut step = (guess / 2).max(1);
+        let mut center = guess;
+        let e = eval(center);
+        if e < best.1 {
+            best = (center, e);
+        }
+        while step >= 1 {
+            for lvl in [center.saturating_sub(step), (center + step).min(63)] {
+                let e = eval(lvl);
+                if e < best.1 {
+                    best = (lvl, e);
+                }
+            }
+            center = best.0.max(1);
+            step /= 2;
+        }
+        best.0
     }
 
     /// Encodes one frame.
@@ -433,6 +488,12 @@ impl Encoder {
             rc.q = (rc.q + 12.0 * err).clamp(1.0, 255.0);
         }
         (obu, rf)
+    }
+
+    /// The loop filter level of the last encoded frame. For tests.
+    #[doc(hidden)]
+    pub fn last_loop_filter_level(&self) -> Option<u32> {
+        self.refr.as_ref().map(|r| r.lf_level)
     }
 
     /// The reconstruction of the last encoded frame (visible area, planes Y, U, V), equal to

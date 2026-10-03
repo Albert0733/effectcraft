@@ -23,8 +23,11 @@ reconstruction, so prediction never drifts.
 - **Frames**: a `KEY_FRAME` every `keyint` frames, `INTER_FRAME`s otherwise. Inter frames use
   slot 0 (the previous reconstruction) for all seven references and refresh slot 0 only, so
   `LAST_FRAME` is always the previous frame. `primary_ref_frame = PRIMARY_REF_NONE` (default
-  CDFs every frame), symbol-level CDF adaptation on, frame-end CDF update off. One tile, loop
-  filter level 0, `TX_MODE_LARGEST`, `reduced_tx_set`, no segmentation, no delta q / lf.
+  CDFs every frame), symbol-level CDF adaptation on, frame-end CDF update off. One tile,
+  `TX_MODE_LARGEST`, `reduced_tx_set`, no segmentation, no delta q / lf.
+- **Deblocking**: the normative loop filter (7.14) runs on the reconstruction; the frame level
+  (the same for both luma directions and both chroma planes, no deltas, sharpness 0) is searched
+  per frame for the lowest luma error.
 - **Tiles**: the multi-symbol arithmetic encoder is the exact inverse of the spec's symbol
   decoder (8.2), including the exit process padding; CDF adaptation as in 8.2.6.
 - **Partitions**: 64x64 superblocks, `PARTITION_NONE` / `PARTITION_SPLIT` down to 8x8 chosen by
@@ -33,9 +36,10 @@ reconstruction, so prediction never drifts.
 - **Intra**: DC, V, H, Paeth, smooth, smooth-V, smooth-H for luma and chroma (chosen by SAD),
   with the spec's edge preparation and above-right / below-left availability.
 - **Inter**: single reference (`LAST_FRAME`), `NEWMV` / `NEARESTMV` / `NEARMV` / `GLOBALMV`
-  chosen from the spec's motion vector prediction stack (7.10.2, mirrored exactly), full-sample
-  motion search (candidates + diamond search), the normative 8-tap `EIGHTTAP` prediction for
-  luma and (half-sample) chroma, skip blocks, per-block intra / inter choice.
+  chosen from the spec's motion vector prediction stack (7.10.2, mirrored exactly); motion search
+  from neighbour / co-located / parent candidates, a whole-sample diamond search and half- then
+  quarter-sample refinement (`allow_high_precision_mv` = 0); the normative 8-tap `EIGHTTAP`
+  prediction for luma and chroma; skip blocks; per-block intra / inter choice.
 - **Residual**: one transform per plane and block (4x4 ... 32x32): `DCT_DCT` for luma, the
   mode-dependent `DCT` / `ADST` combination for intra chroma; dead-zone quantisation with the
   spec's `Dc_Qlookup` / `Ac_Qlookup`; the normative dequantisation and inverse transforms in the
@@ -48,8 +52,9 @@ reconstruction, so prediction never drifts.
 ## Limits
 
 - One tile: width and height up to 4096 and at most 2304 superblocks (4096x2304 samples).
-- No in-loop filters (deblocking, CDEF, loop restoration), so compression at low rates is below
-  mature encoders; no sub-sample motion search, no compound prediction, no 4xN blocks.
+- No CDEF or loop restoration, no compound prediction, no rectangular or 4xN blocks, no
+  directional intra modes other than V / H, no CfL or palette, no transform-size splits, so
+  compression is below mature encoders.
 - 4:2:0 only (Main profile), no 12 bit.
 
 ## Specification and provenance

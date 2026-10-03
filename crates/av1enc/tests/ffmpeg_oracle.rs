@@ -45,14 +45,17 @@ fn ivf(w: usize, h: usize, packets: &[Packet]) -> Vec<u8> {
 
 /// Encodes `pics`, decodes the IVF stream with `ffmpeg -c:v libdav1d` and compares every
 /// decoded frame with the encoder's reconstruction.
-fn check(name: &str, cfg: EncoderConfig, pics: &[Pic]) {
+/// Returns the loop filter levels used.
+fn check(name: &str, cfg: EncoderConfig, pics: &[Pic]) -> Vec<u32> {
     let (w, h, bd) = (cfg.width as usize, cfg.height as usize, cfg.bit_depth);
     let mut enc = Encoder::new(cfg).expect("config");
     let mut packets = Vec::new();
     let mut recons = Vec::new();
+    let mut levels = Vec::new();
     for p in pics {
         packets.push(enc.encode(&p.frame()));
         recons.push(enc.last_reconstruction().expect("reconstruction"));
+        levels.push(enc.last_loop_filter_level().expect("level"));
     }
     let dir = std::env::temp_dir().join(format!("effectcraft-av1enc-{}-{name}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("temp dir");
@@ -87,7 +90,12 @@ fn check(name: &str, cfg: EncoderConfig, pics: &[Pic]) {
             }
         }
     }
-    eprintln!("{name}: libdav1d bit-exact over {} frames ({} bytes)", pics.len(), packets.iter().map(|p| p.data.len()).sum::<usize>());
+    eprintln!(
+        "{name}: libdav1d bit-exact over {} frames ({} bytes, loop filter levels {levels:?})",
+        pics.len(),
+        packets.iter().map(|p| p.data.len()).sum::<usize>()
+    );
+    levels
 }
 
 fn cfg(w: usize, h: usize, bd: u8, rate: RateControl, keyint: u32) -> EncoderConfig {
@@ -116,7 +124,12 @@ fn libdav1d_decodes_bit_exact() {
     check("odd10", cfg(101, 75, 10, RateControl::ConstantQ(110), 4), &pics);
     // a noisy moving picture, bitrate mode
     let pics: Vec<Pic> = (0..6).map(|t| noisy(128, 80, t)).collect();
-    check("bitrate", cfg(128, 80, 8, RateControl::Bitrate { kbps: 300 }, 10), &pics);
+    let levels = check("bitrate", cfg(128, 80, 8, RateControl::Bitrate { kbps: 300 }, 10), &pics);
+    assert!(levels.iter().any(|&l| l > 0), "the deblocking filter is exercised");
+    // a coarse quantizer: strong deblocking, 10 bit
+    let pics: Vec<Pic> = (0..4).map(|t| synth(120, 88, 10, t)).collect();
+    let levels = check("deblock10", cfg(120, 88, 10, RateControl::ConstantQ(220), 2), &pics);
+    assert!(levels.iter().any(|&l| l > 0), "the deblocking filter is exercised");
 }
 
 #[test]

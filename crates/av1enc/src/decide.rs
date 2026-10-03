@@ -33,6 +33,8 @@ pub(crate) struct RefFrame {
     pub planes: [Plane; 3],
     /// Motion vectors chosen for the frame (per 4x4), used as search candidates.
     pub mvs: Vec<[i32; 2]>,
+    /// The frame's loop filter level.
+    pub lf_level: u32,
 }
 
 pub(crate) struct FrameGeom {
@@ -125,8 +127,8 @@ pub(crate) struct Decider<'a> {
     ac_qi: i64,
     lambda: f64,
     lambda_sad: f64,
-    sb_r: usize,
-    sb_c: usize,
+    /// Half-sample interpolations of the reference luma (visible area): (8, 0), (0, 8), (8, 8).
+    half: [Vec<u16>; 3],
 }
 
 const MODE_BITS_INTRA: f64 = 3.0;
@@ -138,7 +140,7 @@ impl<'a> Decider<'a> {
         let ac_qi = AC_QLOOKUP[bdi][qidx as usize] as i64;
         // Lagrangian multiplier in squared-sample units of the coded bit depth.
         let step = ac_qi as f64 / 8.0;
-        let lambda = 0.22 * step * step;
+        let lambda = 0.25 * step * step;
         let rec = std::array::from_fn(|p| {
             let (w, h) = g.padded(p);
             Plane::new(w, h)
@@ -158,15 +160,15 @@ impl<'a> Decider<'a> {
             ac_qi,
             lambda,
             lambda_sad: lambda.sqrt(),
-            sb_r: 0,
-            sb_c: 0,
+            half: match refr {
+                Some(rf) => [(8, 0), (0, 8), (8, 8)].map(|(fx, fy)| subpel_plane(&rf.planes[0], g.width, g.height, fx, fy, bd)),
+                None => Default::default(),
+            },
         }
     }
 
     /// Decides one 64x64 superblock (reconstruction is written to `rec`).
     pub fn superblock(&mut self, r: usize, c: usize) -> Node {
-        self.sb_r = r;
-        self.sb_c = c;
         // clear_block_decoded_flags( r, c, sbSize4 )
         for plane in 0..3 {
             let s = (plane > 0) as usize;
@@ -475,7 +477,7 @@ impl<'a> Decider<'a> {
         let cost =
             |m: [i32; 2]| -> f64 { self.sad_ref(&refr.planes[0], x0 + (m[1] >> 3), y0 + (m[0] >> 3), c * 4, r * 4, n) as f64 + self.lambda_sad * mv_bits(m) };
         let mut best = ([0, 0], f64::MAX);
-        for m in cands {
+        for &m in &cands {
             let m = [m[0] & !7, m[1] & !7];
             if !valid(m) {
                 continue;
@@ -507,7 +509,113 @@ impl<'a> Decider<'a> {
             }
             step >>= 1;
         }
+        // half- then quarter-sample refinement (plus the exact neighbour candidates)
+        let mut buf = vec![0u16; n * n];
+        let sub_cost = |m: [i32; 2], buf: &mut Vec<u16>| -> f64 {
+            self.search_block(m, c * 4, r * 4, n, buf);
+            self.sad(0, c * 4, r * 4, n, buf) as f64 + self.lambda_sad * mv_bits(m)
+        };
+        for m in cands {
+            if m[0] & 7 != 0 || m[1] & 7 != 0 {
+                let m = [m[0] & !1, m[1] & !1];
+                if valid(m) {
+                    let cst = sub_cost(m, &mut buf);
+                    if cst < best.1 {
+                        best = (m, cst);
+                    }
+                }
+            }
+        }
+        for step in [4, 2] {
+            let center = best.0;
+            for d in [[-1, -1], [-1, 0], [-1, 1], [0, -1], [0, 1], [1, -1], [1, 0], [1, 1]] {
+                let m = [center[0] + d[0] * step, center[1] + d[1] * step];
+                if !valid(m) {
+                    continue;
+                }
+                let cst = sub_cost(m, &mut buf);
+                if cst < best.1 {
+                    best = (m, cst);
+                }
+            }
+        }
         (best.0, mv_bits(best.0))
+    }
+
+    /// Approximate luma prediction for motion search: exact at whole and half-sample
+    /// positions (precomputed planes), averaged neighbours at quarter-sample positions.
+    fn search_block(&self, mv: [i32; 2], x: usize, y: usize, n: usize, out: &mut [u16]) {
+        let refr = self.refr.expect("reference frame");
+        let (w, h) = (self.g.width as i32, self.g.height as i32);
+        // per axis: up to two (integer offset, half) taps
+        let axis = |v: i32| -> ([(i32, bool); 2], usize) {
+            let p = 2 * v; // 1/16 units
+            let (i, f) = (p >> 4, p & 15);
+            match f {
+                0 => ([(i, false), (i, false)], 1),
+                8 => ([(i, true), (i, true)], 1),
+                4 => ([(i, false), (i, true)], 2),
+                _ => ([(i, true), (i + 1, false)], 2),
+            }
+        };
+        let (ax, nx) = axis(mv[1]);
+        let (ay, ny) = axis(mv[0]);
+        let taps = nx.max(ny);
+        let fetch = |k: usize, xx: i32, yy: i32| -> u16 {
+            let (ox, hx) = ax[k.min(nx - 1)];
+            let (oy, hy) = ay[k.min(ny - 1)];
+            let sx = (xx + ox).clamp(0, w - 1) as usize;
+            let sy = (yy + oy).clamp(0, h - 1) as usize;
+            match (hx, hy) {
+                (false, false) => refr.planes[0].at(sx, sy),
+                (true, false) => self.half[0][sy * w as usize + sx],
+                (false, true) => self.half[1][sy * w as usize + sx],
+                (true, true) => self.half[2][sy * w as usize + sx],
+            }
+        };
+        let vw = n.min(self.g.width.saturating_sub(x));
+        let vh = n.min(self.g.height.saturating_sub(y));
+        // fast path: every tap inside the picture
+        let (x0, y0) = (x as i32, y as i32);
+        let inside = (0..taps).all(|k| {
+            let (ox, _) = ax[k.min(nx - 1)];
+            let (oy, _) = ay[k.min(ny - 1)];
+            x0 + ox >= 0 && y0 + oy >= 0 && x0 + ox + vw as i32 <= w && y0 + oy + vh as i32 <= h
+        });
+        if inside {
+            let src = |k: usize| -> (&[u16], usize, usize) {
+                let (ox, hx) = ax[k.min(nx - 1)];
+                let (oy, hy) = ay[k.min(ny - 1)];
+                let (sx, sy) = ((x0 + ox) as usize, (y0 + oy) as usize);
+                match (hx, hy) {
+                    (false, false) => (&refr.planes[0].data, refr.planes[0].stride, sy * refr.planes[0].stride + sx),
+                    (true, false) => (&self.half[0], w as usize, sy * w as usize + sx),
+                    (false, true) => (&self.half[1], w as usize, sy * w as usize + sx),
+                    (true, true) => (&self.half[2], w as usize, sy * w as usize + sx),
+                }
+            };
+            let (a, sa, oa) = src(0);
+            if taps == 1 {
+                for i in 0..vh {
+                    out[i * n..i * n + vw].copy_from_slice(&a[oa + i * sa..oa + i * sa + vw]);
+                }
+            } else {
+                let (b, sb, ob) = src(1);
+                for i in 0..vh {
+                    let (ra, rb) = (&a[oa + i * sa..oa + i * sa + vw], &b[ob + i * sb..ob + i * sb + vw]);
+                    for (o, (&p, &q)) in out[i * n..i * n + vw].iter_mut().zip(ra.iter().zip(rb)) {
+                        *o = ((p as u32 + q as u32 + 1) >> 1) as u16;
+                    }
+                }
+            }
+            return;
+        }
+        for i in 0..vh {
+            for j in 0..vw {
+                let (xx, yy) = (x0 + j as i32, y0 + i as i32);
+                out[i * n + j] = if taps == 1 { fetch(0, xx, yy) } else { ((fetch(0, xx, yy) as u32 + fetch(1, xx, yy) as u32 + 1) >> 1) as u16 };
+            }
+        }
     }
 
     /// SAD of the source block at (x, y) (luma) against the reference block at (rx, ry).
@@ -594,7 +702,7 @@ impl<'a> Decider<'a> {
         let mut coef = vec![0f32; n * n];
         forward_2d(&res, &mut coef, n, tx_type);
         // dead-zone quantiser: rounding offset below one half
-        let rnd = if intra { 0.40f32 } else { 0.33f32 };
+        let rnd = if intra { 0.38f32 } else { 0.30f32 };
         let mut levels = vec![0i32; n * n];
         let mut nonzero = false;
         for (k, (&cf, l)) in coef.iter().zip(levels.iter_mut()).enumerate() {

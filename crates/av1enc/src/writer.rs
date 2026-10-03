@@ -6,6 +6,7 @@
 
 use crate::cdf::Cdfs;
 use crate::decide::{FrameGeom, Leaf, Node, intra_uv_tx_type, scan_for, tx_in_set, tx_set, tx_size_for};
+use crate::loopfilter::LfInfo;
 use crate::symbol::SymbolWriter;
 use crate::tables::*;
 
@@ -59,6 +60,8 @@ pub(crate) struct TileWriter<'a> {
     above_dc: [Vec<u8>; 3],
     left_level: [Vec<u8>; 3],
     left_dc: [Vec<u8>; 3],
+    /// LoopfilterTxSizes per plane (row stride mi_cols + 32).
+    lf_tx: [Vec<u8>; 3],
     // current block
     r: usize,
     c: usize,
@@ -101,6 +104,7 @@ impl<'a> TileWriter<'a> {
             above_dc: std::array::from_fn(|_| vec![0; g.mi_cols + 64]),
             left_level: std::array::from_fn(|_| vec![0; g.mi_rows + 64]),
             left_dc: std::array::from_fn(|_| vec![0; g.mi_rows + 64]),
+            lf_tx: std::array::from_fn(|_| vec![0; (g.mi_cols + 32) * (g.mi_rows + 32)]),
             r: 0,
             c: 0,
             bsize: 0,
@@ -112,6 +116,20 @@ impl<'a> TileWriter<'a> {
 
     pub fn finish(self) -> Vec<u8> {
         self.sw.finish()
+    }
+
+    /// The mode info the loop filter needs.
+    pub fn lf_info(&self) -> LfInfo<'_> {
+        LfInfo {
+            mi_cols: self.g.mi_cols,
+            mi_rows: self.g.mi_rows,
+            width: self.g.width,
+            height: self.g.height,
+            mi_size: &self.mi.mi_size,
+            skip: &self.mi.skip,
+            is_inter: &self.mi.is_inter,
+            tx: [&self.lf_tx[0], &self.lf_tx[1], &self.lf_tx[2]],
+        }
     }
 
     /// Start of a superblock row (clear_left_context).
@@ -275,6 +293,17 @@ impl<'a> TileWriter<'a> {
                 self.mi.is_inter[i] = b.is_inter;
                 self.mi.skip[i] = b.skip;
                 self.mi.mi_size[i] = bsize as u8;
+            }
+        }
+        // LoopfilterTxSizes: one transform block per plane
+        let log2 = (n4 * 4).trailing_zeros();
+        let stride = self.g.mi_cols + 32;
+        for plane in 0..3 {
+            let s = (plane > 0) as usize;
+            let tx = tx_size_for(log2 - s as u32) as u8;
+            let (r0, c0, m) = (r >> s, c >> s, n4 >> s);
+            for y in r0..r0 + m {
+                self.lf_tx[plane][y * stride + c0..y * stride + c0 + m].iter_mut().for_each(|v| *v = tx);
             }
         }
     }
