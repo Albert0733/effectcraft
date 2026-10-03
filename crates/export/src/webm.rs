@@ -126,9 +126,12 @@ fn cluster(frames: &mut [Frame]) -> Vec<u8> {
 
 /// The Opus encoder of a WebM output: the module's channel count, bitrate and application.
 pub(crate) fn opus_encoder(job: &Cx) -> effectcraft_opusenc::OpusEncoder {
-    // TEMP(M13.4): application mapping lands with the SILK encoder.
     let channels = if job.output.audio_channels == 1 { 1 } else { 2 };
-    effectcraft_opusenc::OpusEncoder::new(channels, job.output.opus_bitrate_kbps.clamp(6, 510) * 1000)
+    let app = match job.output.opus_application {
+        effectcraft_project::render_queue::OpusApplication::Audio => effectcraft_opusenc::Application::Audio,
+        effectcraft_project::render_queue::OpusApplication::Voip => effectcraft_opusenc::Application::Voip,
+    };
+    effectcraft_opusenc::OpusEncoder::with_application(channels, job.output.opus_bitrate_kbps.clamp(6, 510) * 1000, app)
 }
 
 pub(crate) fn webm(job: &Cx, comp: &Comp, w: u32, h: u32, st: &mut State) -> Result<Report> {

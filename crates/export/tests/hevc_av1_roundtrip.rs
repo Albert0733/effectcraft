@@ -9,7 +9,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use effectcraft_color::Label;
-use effectcraft_export::render_queue::{AudioOutput, CodecProfile, OutputFormat, OutputModule, RateControlMode, RenderSettings, TimeSpan, WebmVideoCodec};
+use effectcraft_export::render_queue::{
+    AudioOutput, CodecProfile, OpusApplication, OutputFormat, OutputModule, RateControlMode, RenderSettings, TimeSpan, WebmVideoCodec,
+};
 use effectcraft_export::{Job, Progress, export};
 use effectcraft_media::MediaPool;
 use effectcraft_project::{Comp, ItemId, ItemKind, LayerSource, Project, Solid, build};
@@ -248,6 +250,34 @@ fn av1_webm_with_opus() {
         assert_eq!(s, "av1|64|48|yuv420p10le|12");
     }
     ffmpeg_check(&path, Some("libdav1d"), 0.08);
+}
+
+/// Low-bitrate WebM audio goes through Opus SILK (voice) or hybrid (audio) coding and still
+/// decodes to the tone (FilmCraft's decoder, and ffmpeg when installed).
+#[test]
+fn webm_low_bitrate_opus_modes() {
+    let d = out_dir("opus-modes");
+    let wav = d.join("tone.wav");
+    write_tone(&wav, 2.0);
+    let (p, cid) = project(Some(&wav));
+    let pool = MediaPool::new();
+    for (kbps, app, name) in [(24u32, OpusApplication::Voip, "voice24.webm"), (40, OpusApplication::Audio, "audio40.webm")] {
+        let mut om = OutputModule::for_format(OutputFormat::WebM);
+        om.audio = AudioOutput::On;
+        om.opus_bitrate_kbps = kbps;
+        om.opus_application = app;
+        let path = d.join(name);
+        assert!(run(&p, cid, &pool, &om, &path).audio);
+        let f = effectcraft_media::probe(&path).expect("probe");
+        let s = MediaPool::new().audio_samples(&f, Tick::from_seconds_f64(0.3), 24_000, 48_000);
+        let l = rms(s.iter().step_by(2).copied());
+        assert!((l - 0.3536).abs() < 0.08, "{name}: left RMS {l}");
+        if have("ffmpeg") {
+            let out =
+                Command::new("ffmpeg").args(["-v", "error", "-xerror", "-i"]).arg(&path).args(["-map", "0:a", "-f", "null", "-"]).output().expect("ffmpeg");
+            assert!(out.status.success() && out.stderr.is_empty(), "{name}: {}", String::from_utf8_lossy(&out.stderr));
+        }
+    }
 }
 
 fn rms(v: impl Iterator<Item = f32>) -> f32 {
