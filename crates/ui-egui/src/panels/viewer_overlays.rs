@@ -433,8 +433,8 @@ pub(crate) enum Drag {
     Feather { layer: LayerId, mask: u64, index: usize, inv: Mat3 },
     /// A guide dragged in the viewer.
     Guide { index: usize, vertical: bool },
-    /// Drawing the region of interest.
-    Roi { start: [f64; 2] },
+    /// Drawing the region of interest from `start`; `keep` pins the end's x / y (edge handles).
+    Roi { start: [f64; 2], keep: [Option<f64>; 2] },
 }
 
 /// Start a motion-path drag at `press` (keys before tangents), selecting the key.

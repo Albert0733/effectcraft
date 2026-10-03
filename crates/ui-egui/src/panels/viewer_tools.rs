@@ -569,6 +569,8 @@ pub(crate) fn bottom_bar(app: &mut EffectcraftApp, ui: &mut egui::Ui, bar: Rect,
         ("Grid".to_string(), v.grid),
         ("Guides".to_string(), v.guides),
         ("Rulers".to_string(), v.rulers),
+        ("-".to_string(), false),
+        ("3D Reference Axes".to_string(), app.session.prefs.three_d.show_reference_axes),
     ];
     if let Some(i) = popup(app, ui, "vw-grid-pop", gr, &items, "gridItem") {
         let v = &mut app.ui.viewer;
@@ -577,7 +579,9 @@ pub(crate) fn bottom_bar(app: &mut EffectcraftApp, ui: &mut egui::Ui, bar: Rect,
             1 => v.proportional_grid = !v.proportional_grid,
             2 => v.grid = !v.grid,
             3 => v.guides = !v.guides,
-            _ => v.rulers = !v.rulers,
+            4 => v.rulers = !v.rulers,
+            6 => app.session.prefs.three_d.show_reference_axes = !app.session.prefs.three_d.show_reference_axes,
+            _ => {}
         }
     }
     // Show Channel and Color Management Settings.

@@ -333,3 +333,70 @@ fn mask_feather_tool_adds_and_drags_feather_points() {
     let pts = h.state_mut().session.execute("mask.featherPoint.list", json!({"layer": box_id.0, "mask": mask})).unwrap();
     assert!(pts["points"][0]["radius"].as_f64().unwrap() > 0.0);
 }
+
+#[test]
+fn region_of_interest_resizes_by_its_handles() {
+    let mut h = harness();
+    h.state_mut().session.execute("view.setRegionOfInterest", json!({"rect": [100, 50, 200, 200]})).unwrap();
+    h.run_steps(3);
+    // Bottom-right corner (handle 2) to (400, 300): the top-left stays.
+    let c = rect(&h, "viewer.regionOfInterest.handle.2").center();
+    let to = screen(&h, [400.0, 300.0]);
+    drag(&mut h, c, to);
+    let r = h.state().session.state.region_of_interest.expect("roi");
+    assert!((r[0] - 100.0).abs() <= 1.0 && (r[1] - 50.0).abs() <= 1.0 && (r[2] - 300.0).abs() <= 2.0 && (r[3] - 250.0).abs() <= 2.0, "{r:?}");
+    // The left edge (handle 7) only moves x.
+    h.run_steps(2);
+    let c = rect(&h, "viewer.regionOfInterest.handle.7").center();
+    let to = pos2(screen(&h, [150.0, 0.0]).x, c.y + 40.0);
+    drag(&mut h, c, to);
+    let r = h.state().session.state.region_of_interest.expect("roi");
+    assert!((r[0] - 150.0).abs() <= 1.0 && (r[1] - 50.0).abs() <= 1.0 && (r[2] - 250.0).abs() <= 2.0 && (r[3] - 250.0).abs() <= 2.0, "{r:?}");
+}
+
+#[test]
+fn pan_behind_snaps_the_anchor_point() {
+    let mut h = harness();
+    let box_id = h.state().session.active_comp().unwrap().layers[0].id;
+    h.state_mut().session.execute("prop.set", json!({"layer": box_id.0, "path": "transform/position", "value": [100, 100, 0]})).unwrap();
+    h.state_mut().session.execute("layer.select", json!({"layers": [box_id.0]})).unwrap();
+    h.state_mut().ui.tool = Tool::PanBehind;
+    h.run_steps(2);
+    // Drag the anchor (at the box centre) to 3 px from the comp centre: it snaps there, and the
+    // position follows so the box doesn't move.
+    let from = screen(&h, [100.0, 100.0]);
+    let to = screen(&h, [323.0, 182.0]);
+    // (The gesture applies the pointer of the previous frame: hold the end point a frame.)
+    h.input_mut().events.push(Event::PointerMoved(from));
+    h.input_mut().events.push(Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() });
+    h.step();
+    for i in 1..=10 {
+        h.input_mut().events.push(Event::PointerMoved(from + (to - from) * (i.min(8) as f32 / 8.0)));
+        h.step();
+    }
+    h.input_mut().events.push(Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() });
+    h.run_steps(2);
+    let l = h.state().session.active_comp().unwrap().layer(box_id).unwrap().clone();
+    let p = l.props.prop("transform/position").unwrap().value.as_vec3();
+    let a = l.props.prop("transform/anchor").unwrap().value.as_vec3();
+    assert!((p[0] - 320.0).abs() < 0.01 && (p[1] - 180.0).abs() < 0.01, "anchor point snapped to the comp centre: {p:?}");
+    assert!((a[0] - 260.0).abs() < 0.01 && (a[1] - 120.0).abs() < 0.01, "{a:?}");
+}
+
+#[test]
+fn reference_axes_toggle_from_the_grid_menu() {
+    let mut h = harness();
+    // A 3D layer makes the axes relevant.
+    let box_id = h.state().session.active_comp().unwrap().layers[0].id;
+    h.state_mut().session.execute("layer.setSwitch", json!({"layers": [box_id.0], "switch": "threeD", "value": true})).unwrap();
+    h.run_steps(3);
+    assert!(h.state().auto.find("viewer.referenceAxes").is_some(), "on by default (Settings ▸ 3D)");
+    let g = rect(&h, "viewer.grid").center();
+    click(&mut h, g);
+    h.run_steps(2);
+    let item = rect(&h, "viewer.gridItem.6").center();
+    click(&mut h, item);
+    h.run_steps(3);
+    assert!(!h.state().session.prefs.three_d.show_reference_axes);
+    assert!(h.state().auto.find("viewer.referenceAxes").is_none());
+}
