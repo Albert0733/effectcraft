@@ -9,6 +9,7 @@
 
 pub mod descriptor;
 pub mod engine_data;
+pub mod placed;
 mod read;
 pub mod write;
 
@@ -214,6 +215,8 @@ pub struct SmartObject {
     pub quad: [[f64; 2]; 4],
     /// The content's size in pixels (`Sz  `), when recorded.
     pub size: Option<[f64; 2]>,
+    /// The placed layer's warp (`warp`), when it has one ([`placed`]).
+    pub warp: Option<placed::Warp>,
 }
 
 impl SmartObject {
@@ -665,8 +668,11 @@ impl Psd {
                     }
                 };
                 let t = nums("Trnf").filter(|t| t.len() == 8).unwrap_or_else(|| vec![0.0; 8]);
+                // The non-affine transform when present (perspective), else the transform.
+                let t = nums("nonAffineTransform").filter(|t| t.len() == 8).unwrap_or(t);
                 let size = d.obj("Sz  ").and_then(|s| Some([s.num("Wdth")?, s.num("Hght")?]));
-                l.smart_object = Some(SmartObject { uuid, quad: [[t[0], t[1]], [t[2], t[3]], [t[4], t[5]], [t[6], t[7]]], size });
+                let warp = d.obj("warp").and_then(placed::Warp::read);
+                l.smart_object = Some(SmartObject { uuid, quad: [[t[0], t[1]], [t[2], t[3]], [t[4], t[5]], [t[6], t[7]]], size, warp });
             }
             b"PlLd" if l.smart_object.is_none() => {
                 let _id = r.tag()?;
@@ -681,7 +687,7 @@ impl Psd {
                 for v in &mut t {
                     *v = r.f64()?;
                 }
-                l.smart_object = Some(SmartObject { uuid, quad: [[t[0], t[1]], [t[2], t[3]], [t[4], t[5]], [t[6], t[7]]], size: None });
+                l.smart_object = Some(SmartObject { uuid, quad: [[t[0], t[1]], [t[2], t[3]], [t[4], t[5]], [t[6], t[7]]], size: None, warp: None });
             }
             b"vmsk" | b"vsms" => {
                 let _ver = r.u32()?;

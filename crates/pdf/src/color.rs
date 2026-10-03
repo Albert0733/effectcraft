@@ -1,5 +1,5 @@
 //! Colour spaces (ISO 32000-1 §8.6) reduced to sRGB, and functions (§7.10: sampled,
-//! exponential and stitching; PostScript calculator functions are not evaluated).
+//! exponential, stitching and PostScript calculator functions).
 
 use crate::object::{Dict, File, Obj, decode_stream};
 
@@ -98,7 +98,13 @@ pub fn color_space(file: &File, o: &Obj, res: Option<&Dict>) -> Cs {
             let head = a.first().map(|h| file.resolve(h)).and_then(Obj::name).unwrap_or("");
             match head {
                 "ICCBased" => {
-                    let n = a.get(1).map(|s| file.resolve(s)).and_then(Obj::dict).and_then(|d| file.get_num(d, "N")).unwrap_or(3.0) as usize;
+                    let d = a.get(1).map(|s| file.resolve(s)).and_then(Obj::dict);
+                    // The profile's alternate space when it names one (profiles are not
+                    // evaluated), else the device space with the same number of components.
+                    if let Some(alt) = d.and_then(|d| file.get(d, "Alternate")) {
+                        return color_space(file, alt, res);
+                    }
+                    let n = d.and_then(|d| file.get_num(d, "N")).unwrap_or(3.0) as usize;
                     match n {
                         1 => Cs::Gray,
                         4 => Cs::Cmyk,
@@ -163,7 +169,195 @@ pub enum Func {
     },
     /// An array of one-output functions.
     Array(Vec<Func>),
+    /// Type 4: a PostScript calculator program (§7.10.5).
+    Calc {
+        domain: Vec<f64>,
+        range: Vec<f64>,
+        code: Vec<PsOp>,
+    },
     Unsupported,
+}
+
+/// A PostScript calculator token; procedures nest for `if` / `ifelse`.
+#[derive(Clone, Debug, PartialEq)]
+pub enum PsOp {
+    Num(f64),
+    Op(String),
+    Proc(Vec<PsOp>),
+}
+
+fn ps_parse(lx: &mut crate::object::Lexer, depth: usize) -> Vec<PsOp> {
+    let mut out = vec![];
+    while let Some(o) = lx.next() {
+        match o {
+            Obj::Num(n) => out.push(PsOp::Num(n)),
+            Obj::Bool(b) => out.push(PsOp::Num(if b { 1.0 } else { 0.0 })),
+            Obj::Op(op) if op == "{" => {
+                if depth < 32 {
+                    out.push(PsOp::Proc(ps_parse(lx, depth + 1)));
+                }
+            }
+            Obj::Op(op) if op == "}" => return out,
+            Obj::Op(op) => out.push(PsOp::Op(op)),
+            _ => {}
+        }
+    }
+    out
+}
+
+fn ps_run(code: &[PsOp], st: &mut Vec<f64>, depth: usize) {
+    if depth > 32 {
+        return;
+    }
+    let mut procs: Vec<&[PsOp]> = vec![];
+    for op in code {
+        match op {
+            PsOp::Num(n) => st.push(*n),
+            PsOp::Proc(p) => procs.push(p),
+            PsOp::Op(o) => {
+                let pop = |st: &mut Vec<f64>| st.pop().unwrap_or(0.0);
+                let b = |v: bool| if v { 1.0 } else { 0.0 };
+                match o.as_str() {
+                    "if" => {
+                        let p = procs.pop();
+                        if pop(st) != 0.0
+                            && let Some(p) = p
+                        {
+                            ps_run(p, st, depth + 1);
+                        }
+                    }
+                    "ifelse" => {
+                        let (f, t) = (procs.pop(), procs.pop());
+                        let c = pop(st) != 0.0;
+                        if let Some(p) = if c { t } else { f } {
+                            ps_run(p, st, depth + 1);
+                        }
+                    }
+                    "true" => st.push(1.0),
+                    "false" => st.push(0.0),
+                    "pop" => {
+                        st.pop();
+                    }
+                    "dup" => {
+                        let v = st.last().copied().unwrap_or(0.0);
+                        st.push(v);
+                    }
+                    "exch" => {
+                        let n = st.len();
+                        if n >= 2 {
+                            st.swap(n - 1, n - 2);
+                        }
+                    }
+                    "copy" => {
+                        let k = pop(st).max(0.0) as usize;
+                        let n = st.len();
+                        if k <= n {
+                            let tail = st[n - k..].to_vec();
+                            st.extend(tail);
+                        }
+                    }
+                    "index" => {
+                        let k = pop(st).max(0.0) as usize;
+                        let v = st.len().checked_sub(k + 1).map(|i| st[i]).unwrap_or(0.0);
+                        st.push(v);
+                    }
+                    "roll" => {
+                        let j = pop(st) as i64;
+                        let n = pop(st).max(0.0) as usize;
+                        let len = st.len();
+                        if n > 0 && n <= len {
+                            let s = &mut st[len - n..];
+                            let r = j.rem_euclid(n as i64) as usize;
+                            s.rotate_right(r);
+                        }
+                    }
+                    _ => {
+                        // Unary and binary operators.
+                        let unary: Option<fn(f64) -> f64> = match o.as_str() {
+                            "abs" => Some(f64::abs),
+                            "neg" => Some(|x| -x),
+                            "ceiling" => Some(f64::ceil),
+                            "floor" => Some(f64::floor),
+                            "round" => Some(|x: f64| (x + 0.5).floor()),
+                            "truncate" | "cvi" => Some(f64::trunc),
+                            "cvr" => Some(|x| x),
+                            "sqrt" => Some(|x: f64| x.max(0.0).sqrt()),
+                            "sin" => Some(|x: f64| x.to_radians().sin()),
+                            "cos" => Some(|x: f64| x.to_radians().cos()),
+                            "ln" => Some(|x: f64| x.max(1e-300).ln()),
+                            "log" => Some(|x: f64| x.max(1e-300).log10()),
+                            "not" => Some(|x: f64| {
+                                if x == 0.0 {
+                                    1.0
+                                } else if x == 1.0 {
+                                    0.0
+                                } else {
+                                    !(x as i64) as f64
+                                }
+                            }),
+                            _ => None,
+                        };
+                        if let Some(f) = unary {
+                            let x = pop(st);
+                            st.push(f(x));
+                            continue;
+                        }
+                        let y = pop(st);
+                        let x = pop(st);
+                        let v = match o.as_str() {
+                            "add" => x + y,
+                            "sub" => x - y,
+                            "mul" => x * y,
+                            "div" => {
+                                if y != 0.0 {
+                                    x / y
+                                } else {
+                                    0.0
+                                }
+                            }
+                            "idiv" => {
+                                if y as i64 != 0 {
+                                    ((x as i64) / (y as i64)) as f64
+                                } else {
+                                    0.0
+                                }
+                            }
+                            "mod" => {
+                                if y as i64 != 0 {
+                                    ((x as i64) % (y as i64)) as f64
+                                } else {
+                                    0.0
+                                }
+                            }
+                            "exp" => x.powf(y),
+                            "atan" => {
+                                let a = x.atan2(y).to_degrees();
+                                if a < 0.0 { a + 360.0 } else { a }
+                            }
+                            "eq" => b(x == y),
+                            "ne" => b(x != y),
+                            "gt" => b(x > y),
+                            "ge" => b(x >= y),
+                            "lt" => b(x < y),
+                            "le" => b(x <= y),
+                            "and" => ((x as i64) & (y as i64)) as f64,
+                            "or" => ((x as i64) | (y as i64)) as f64,
+                            "xor" => ((x as i64) ^ (y as i64)) as f64,
+                            "bitshift" => {
+                                let (v, s) = (x as i64, y as i64);
+                                (if s >= 0 { v << s.min(62) } else { v >> (-s).min(62) }) as f64
+                            }
+                            _ => {
+                                st.push(x);
+                                y
+                            }
+                        };
+                        st.push(v);
+                    }
+                }
+            }
+        }
+    }
 }
 
 impl Func {
@@ -215,6 +409,17 @@ impl Func {
                 }
                 Func::Sampled { domain, size, outputs, encode, decode, samples }
             }
+            4 => {
+                let Obj::Stream(sd, raw) = o else { return Func::Unsupported };
+                let Some(data) = decode_stream(file, sd, raw) else { return Func::Unsupported };
+                let mut lx = crate::object::Lexer::new(&data, 0);
+                // The program is one procedure: `{ … }`.
+                let code = match ps_parse(&mut lx, 0).into_iter().next() {
+                    Some(PsOp::Proc(p)) => p,
+                    _ => return Func::Unsupported,
+                };
+                Func::Calc { domain: dom, range: file.get(d, "Range").map(|x| file.nums(x)).unwrap_or_default(), code }
+            }
             _ => Func::Unsupported,
         }
     }
@@ -222,6 +427,20 @@ impl Func {
     /// Evaluate at the first input (the functions used by shadings and tints take one input
     /// in practice; extra inputs of DeviceN tints are averaged in).
     pub fn eval(&self, input: &[f64]) -> Vec<f64> {
+        if let Func::Calc { domain, range, code } = self {
+            let mut st: Vec<f64> = input
+                .iter()
+                .enumerate()
+                .map(|(i, v)| match (domain.get(2 * i), domain.get(2 * i + 1)) {
+                    (Some(a), Some(b)) => v.clamp(a.min(*b), a.max(*b)),
+                    _ => *v,
+                })
+                .collect();
+            ps_run(code, &mut st, 0);
+            let n = range.len() / 2;
+            let k = st.len().saturating_sub(n);
+            return st[k..].iter().enumerate().map(|(i, v)| v.clamp(range[2 * i], range[2 * i + 1])).collect();
+        }
         let t = input.first().copied().unwrap_or(0.0);
         self.eval1(t)
     }
@@ -262,6 +481,7 @@ impl Func {
                     .collect()
             }
             Func::Array(fs) => fs.iter().map(|f| f.eval1(t).first().copied().unwrap_or(0.0)).collect(),
+            Func::Calc { .. } => self.eval(&[t]),
             Func::Unsupported => vec![0.5],
         }
     }
@@ -285,4 +505,20 @@ pub fn text_string(b: &[u8]) -> String {
         return String::from_utf8_lossy(rest).into_owned();
     }
     b.iter().map(|&c| c as char).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn calculator_functions() {
+        // Two inputs → three outputs: { 2 copy mul 3 1 roll add 2 div  dup 0.5 gt { pop 1 } if  0 }
+        let code = b"{ 2 copy mul 3 1 roll add 2 div dup 0.5 gt { pop 1 } { 0.25 mul } ifelse 0 }";
+        let mut lx = crate::object::Lexer::new(code, 0);
+        let Some(PsOp::Proc(code)) = ps_parse(&mut lx, 0).into_iter().next() else { panic!() };
+        let f = Func::Calc { domain: vec![0.0, 1.0, 0.0, 1.0], range: vec![0.0, 1.0, 0.0, 1.0, 0.0, 1.0], code };
+        assert_eq!(f.eval(&[0.5, 0.4]), vec![0.2, 0.1125, 0.0]);
+        assert_eq!(f.eval(&[1.0, 0.8]), vec![0.8, 1.0, 0.0]);
+    }
 }

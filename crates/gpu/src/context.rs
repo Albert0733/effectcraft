@@ -27,6 +27,9 @@ const ENTRIES: &[&str] = &[
     "shadow_combine",
     "pointwise",
     "adjust_mix",
+    "bokeh_boost",
+    "bokeh_prefix",
+    "bokeh_gather",
 ];
 
 /// Entry points that also bind group 1 (four read-only storage buffers; see

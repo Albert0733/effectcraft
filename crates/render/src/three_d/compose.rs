@@ -62,6 +62,21 @@ pub(crate) struct Item<'a> {
     winv: Mat4,
     bounds: [f64; 4],
     bbox: [i64; 4],
+    /// Depth of field left to an accelerator (`buf` is then unblurred and unpadded).
+    dof: Option<PlaneDof>,
+}
+
+/// Depth of field of a plane for an accelerator to apply ([`Plane3d::dof`]): pad the buffer by
+/// `pad` transparent pixels, boost its highlights, then blur it at each of `levels` with
+/// [`super::bokeh::kernel_spans`] and blend the levels by each pixel's `radius` (padded buffer
+/// pixels, row-major) with [`super::bokeh::level_weight`] — what the CPU's depth of field does.
+#[derive(Clone, Debug)]
+pub struct PlaneDof {
+    pub pad: u32,
+    pub iris: super::bokeh::Iris,
+    pub highlight: super::bokeh::Highlight,
+    pub radius: Arc<Vec<f32>>,
+    pub levels: Vec<f32>,
 }
 
 impl Item<'_> {
@@ -218,10 +233,20 @@ fn prepare_with<'a>(
     let world = outer * ctx.world_matrix(layer) * local;
     // Depth of field: a bokeh blur by each buffer pixel's circle of confusion (constant for a
     // layer facing the camera, progressive for a tilted one).
+    let mut plane_dof = None;
+    let mut bounds = buf_bounds(&buf);
     if let Some(dof) = cam.dof.filter(|_| !ctx.comp.draft_3d && !r.opts.draft) {
-        buf = dof_blur(&cam, &dof, world, buf);
+        if r.defer_dof {
+            // An accelerator blurs: hand it the radius map of the padded buffer.
+            if let Some((pd, padded_bounds)) = dof_plan(&cam, &dof, world, &buf) {
+                plane_dof = Some(pd);
+                bounds = padded_bounds;
+            }
+        } else {
+            buf = dof_blur(&cam, &dof, world, buf);
+            bounds = buf_bounds(&buf);
+        }
     }
-    let bounds = buf_bounds(&buf);
     let n = if in_run { mb_samples(r, ctx, layer) } else { 1 };
     let geos: Vec<Geo> = if n <= 1 {
         geo(&cam, world, bounds, comp, s, out, r.out_offset()).into_iter().collect()
@@ -260,16 +285,20 @@ fn prepare_with<'a>(
         winv: world.inverse().unwrap_or(Mat4::IDENTITY),
         bounds,
         bbox,
+        dof: plane_dof,
     })
 }
 
 /// Blur radius (buffer pixels) of every buffer pixel of a plane at `world` (layer → world), from
 /// its camera depth: the circle of confusion over the on-screen size of one layer pixel there.
 fn dof_radii(cam: &CameraState, dof: &super::camera::Dof, world: Mat4, buf: &Buf) -> Vec<f32> {
-    let s = buf.scale.max(1e-9);
+    dof_radii_at(cam, dof, world, (buf.img.width as usize, buf.img.height as usize), buf.offset, buf.scale)
+}
+
+fn dof_radii_at(cam: &CameraState, dof: &super::camera::Dof, world: Mat4, (w, h): (usize, usize), offset: [f64; 2], scale: f64) -> Vec<f32> {
+    let s = scale.max(1e-9);
     let sx = world.apply_vec(vec3(1.0, 0.0, 0.0)).length().max(1e-9);
-    let (w, h) = (buf.img.width as usize, buf.img.height as usize);
-    let at = |x: f64, y: f64| cam.depth(world.apply(vec3((x - buf.offset[0]) / s, (y - buf.offset[1]) / s, 0.0)));
+    let at = |x: f64, y: f64| cam.depth(world.apply(vec3((x - offset[0]) / s, (y - offset[1]) / s, 0.0)));
     // Camera depth is affine across a plane.
     let z0 = at(0.5, 0.5);
     let (zx, zy) = (at(1.5, 0.5) - z0, at(0.5, 1.5) - z0);
@@ -287,6 +316,30 @@ fn dof_radii(cam: &CameraState, dof: &super::camera::Dof, world: Mat4, buf: &Buf
     out
 }
 
+/// The padding [`dof_blur`] gives a buffer whose largest blur radius is `rmax`.
+fn dof_pad(dof: &super::camera::Dof, rmax: f64) -> u32 {
+    let a = dof.iris.aspect.clamp(0.01, 100.0).sqrt().max(1.0 / dof.iris.aspect.clamp(0.01, 100.0).sqrt());
+    (rmax * a).ceil() as u32 + 2
+}
+
+/// [`dof_blur`] planned for an accelerator: the padding, radius map and levels, and the padded
+/// buffer's layer-space bounds. `None` when nothing blurs.
+fn dof_plan(cam: &CameraState, dof: &super::camera::Dof, world: Mat4, buf: &Buf) -> Option<(PlaneDof, [f64; 4])> {
+    let radii = dof_radii(cam, dof, world, buf);
+    let rmax = radii.iter().copied().fold(0.0f32, f32::max) as f64;
+    if rmax <= 0.3 {
+        return None;
+    }
+    let pad = dof_pad(dof, rmax);
+    let (w, h) = (buf.img.width as usize + 2 * pad as usize, buf.img.height as usize + 2 * pad as usize);
+    let offset = [buf.offset[0] + pad as f64, buf.offset[1] + pad as f64];
+    let radius = dof_radii_at(cam, dof, world, (w, h), offset, buf.scale);
+    let levels = super::bokeh::blur_levels(&radius)?;
+    let s = buf.scale.max(1e-9);
+    let bounds = [-offset[0] / s, -offset[1] / s, (w as f64 - offset[0]) / s, (h as f64 - offset[1]) / s];
+    Some((PlaneDof { pad, iris: dof.iris, highlight: dof.highlight, radius: Arc::new(radius), levels }, bounds))
+}
+
 /// Depth of field for one plane: highlights boosted, then a bokeh-shaped blur by depth.
 fn dof_blur(cam: &CameraState, dof: &super::camera::Dof, world: Mat4, buf: Arc<Buf>) -> Arc<Buf> {
     let radii = dof_radii(cam, dof, world, &buf);
@@ -294,8 +347,7 @@ fn dof_blur(cam: &CameraState, dof: &super::camera::Dof, world: Mat4, buf: Arc<B
     if rmax <= 0.3 {
         return buf;
     }
-    let a = dof.iris.aspect.clamp(0.01, 100.0).sqrt().max(1.0 / dof.iris.aspect.clamp(0.01, 100.0).sqrt());
-    let pad = (rmax * a).ceil() as u32 + 2;
+    let pad = dof_pad(dof, rmax);
     let mut padded = buf.img.padded(pad);
     super::bokeh::boost_highlights(&mut padded, &dof.highlight);
     let pbuf = Buf { img: padded, offset: [buf.offset[0] + pad as f64, buf.offset[1] + pad as f64], scale: buf.scale };
@@ -666,8 +718,11 @@ pub struct Run3d {
 /// One plane of a [`Run3d`].
 #[derive(Clone, Debug)]
 pub struct Plane3d {
-    /// The layer buffer (blending space; depth of field already applied).
+    /// The layer buffer (blending space; depth of field already applied unless `dof` is set).
     pub buf: Arc<Buf>,
+    /// Depth of field for the accelerator to apply to `buf` (`bounds` are then the padded
+    /// buffer's).
+    pub dof: Option<PlaneDof>,
     pub bicubic: bool,
     /// One per motion-blur sub-sample (equal weights).
     pub geos: Vec<Geo>,
@@ -697,7 +752,9 @@ pub(crate) fn gpu_run(r: &Renderer, ctx: &EvalCtx, run: &[&Layer], out: (u32, u3
     if super::adv::active(r, ctx) {
         return None;
     }
-    let g = gather(r, ctx, run, out);
+    // Depth of field is left to the accelerator (its blur runs where the planes are drawn).
+    let rd = Renderer { defer_dof: true, ..*r };
+    let g = gather(&rd, ctx, run, out);
     let planes: Vec<Plane3d> = g
         .items
         .into_iter()
@@ -706,6 +763,7 @@ pub(crate) fn gpu_run(r: &Renderer, ctx: &EvalCtx, run: &[&Layer], out: (u32, u3
             layer_id: it.layer.id.0 as u32,
             mode: it.layer.blend_mode,
             buf: it.buf,
+            dof: it.dof,
             bicubic: it.bicubic,
             geos: it.geos,
             mat: it.mat,

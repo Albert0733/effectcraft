@@ -327,6 +327,51 @@ fn variable_font_axes_animator() {
 }
 
 #[test]
+fn variable_font_axes_in_the_character_style() {
+    let mut s = comp(600, 200);
+    let t = s.execute("layer.newText", json!({"text": "Hamburg", "size": 60})).unwrap()["layer"].as_u64().unwrap();
+    // The attribute round-trips and is undoable even for static fonts (it is kept, unused).
+    s.execute("layer.setText", json!({"layer": t, "variations": {"wght": 650}})).unwrap();
+    let d = crate::commands::text_edit::layer_doc(&s, LayerId(t)).unwrap();
+    assert_eq!(d.style_at(0).variations, vec![("wght".to_string(), 650.0)]);
+    assert_eq!(effectcraft_keyframe::text_doc::char_style_json(&d.style_at(0))["variations"], json!({"wght": 650.0}));
+    s.execute("layer.setText", json!({"layer": t, "range": [0, 3], "variations": {"wght": null}})).unwrap();
+    let d = crate::commands::text_edit::layer_doc(&s, LayerId(t)).unwrap();
+    assert!(d.style_at(0).variations.is_empty() && !d.style_at(5).variations.is_empty());
+    s.execute("edit.undo", json!({})).unwrap();
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(crate::commands::text_edit::layer_doc(&s, LayerId(t)).unwrap().style_at(0).variations.is_empty());
+    assert!(s.execute("layer.setText", json!({"layer": t, "variations": 3})).is_err());
+    let Some((face, axes)) = effectcraft_text::variable::find_variable_face() else {
+        eprintln!("no variable font installed: rendering check skipped");
+        return;
+    };
+    let info = effectcraft_text::fonts::face(face).info.clone();
+    if effectcraft_text::resolve(&info.family, &info.style).face != face {
+        eprintln!("variable face not reachable by family/style: skipped");
+        return;
+    }
+    s.execute("layer.setText", json!({"layer": t, "font": info.family, "style": info.style})).unwrap();
+    let a = axes.iter().find(|a| a.tag == "wght" && a.max > a.min).or_else(|| axes.iter().find(|a| a.max > a.min)).unwrap().clone();
+    let geom = |s: &Session| {
+        let cid = s.active_comp_id().unwrap();
+        let comp = s.project.comp(cid).unwrap();
+        let ctx = effectcraft_render::EvalCtx::new(&s.project, cid, comp, s.time());
+        let l = comp.layer(LayerId(t)).unwrap();
+        let paths = effectcraft_render::text::glyph_paths(&ctx, l);
+        let area: f64 = paths.iter().map(|(p, _)| effectcraft_text::kurbo::Shape::area(p).abs()).sum();
+        let right = paths.iter().map(|(p, _)| effectcraft_text::kurbo::Shape::bounding_box(p).x1).fold(f64::MIN, f64::max);
+        (area, right)
+    };
+    s.execute("layer.setText", json!({"layer": t, "variations": {a.tag.trim_end(): a.min}})).unwrap();
+    let lo = geom(&s);
+    s.execute("layer.setText", json!({"layer": t, "variations": {a.tag.trim_end(): a.max}})).unwrap();
+    let hi = geom(&s);
+    assert!((hi.0 - lo.0).abs() > 1.0, "{} outlines {lo:?} → {hi:?}", a.tag);
+    assert!((hi.1 - lo.1).abs() > 0.5, "{} advances {lo:?} → {hi:?}", a.tag);
+}
+
+#[test]
 fn camera_focus_commands_undo_and_serde() {
     let mut s = comp(400, 300);
     let t = s.execute("layer.newSolid", json!({"color": "#ffffff", "width": 50, "height": 50})).unwrap()["layer"].as_u64().unwrap();

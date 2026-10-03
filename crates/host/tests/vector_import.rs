@@ -247,15 +247,13 @@ fn pdf_and_ai_footage_layers_and_shapes_from_vector_layer() {
         let c = s.active_comp().unwrap();
         assert_eq!(c.layers[0].id.0, sid);
         let shapes = s.render(cid, t, RenderOpts::default());
-        // Clipping groups are not shape-layer features: the clipped bar (rows 33–47) draws in
-        // full; everything else matches.
-        let rows = |img: &Image| Image {
-            width: w,
-            height: h - 15,
-            data: img.data.iter().enumerate().filter(|(i, _)| !(33..48).contains(&(*i as u32 / w))).map(|(_, p)| *p).collect(),
-        };
-        let d = mean_diff(&rows(&shapes), &rows(&direct));
+        // The clipped bar (rows 33–47) keeps its clip through Merge Paths ▸ Intersect.
+        let d = mean_diff(&shapes, &direct);
         assert!(d < 0.01, "{name}: shapes vs page mean diff {d}");
+        for x in [10, 50, 100] {
+            let (a, b) = (shapes.get(x, 40), direct.get(x, 40));
+            assert!((0..4).all(|c| (a[c] - b[c]).abs() < 0.02), "{name}: bar clipped at x = {x}: {a:?} vs {b:?}");
+        }
         let fill = shapes.get(60, 30);
         assert!(fill[0] > 0.9 && fill[1] < 0.1, "red shape {fill:?}");
     }
@@ -333,4 +331,133 @@ fn eps_footage_imports() {
     let cid = s.active_comp_id().unwrap();
     let img = s.render(cid, effectcraft_time::Tick::ZERO, RenderOpts::default());
     assert!(img.get(10, 10)[0] > 0.99 && img.get(30, 10)[2] > 0.99, "{:?} {:?}", img.get(10, 10), img.get(30, 10));
+}
+
+/// A two-page PDF: page 2 has text in a non-embedded standard font inside a page-wide clip.
+fn two_page_pdf() -> Vec<u8> {
+    effectcraft_pdf::write::pdf(
+        &[
+            (1, "<< /Type /Catalog /Pages 2 0 R >>".into(), None),
+            (2, "<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >>".into(), None),
+            (3, "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 120 80] /Contents 4 0 R >>".into(), None),
+            (4, "<< >>".into(), Some(b"1 0 0 rg 0 0 120 80 re f".to_vec())),
+            (
+                5,
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 60] /Resources << /Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >> >> >> /Contents 6 0 R >>".into(),
+                None,
+            ),
+            (6, "<< >>".into(), Some(b"10 5 80 50 re W n 0 0 1 rg 0 0 100 60 re f 1 1 0 rg BT /F1 40 Tf 15 15 Td (Hi) Tj ET".to_vec())),
+        ],
+        1,
+    )
+}
+
+#[test]
+fn pdf_pages_text_and_clips_to_masks() {
+    let bytes = two_page_pdf();
+    let path = tmp("pages.pdf");
+    std::fs::write(&path, &bytes).unwrap();
+    let mut s = effectcraft_host::session();
+    // Page 2 as footage (File ▸ Import ▸ Page), named after its page.
+    let r = s.execute_checked("file.import", json!({"paths": [path], "page": 2})).unwrap();
+    assert_eq!(r["errors"], json!([]), "{r}");
+    let item = ItemId(r["items"][0].as_u64().unwrap());
+    let it = s.project.item(item).unwrap();
+    assert_eq!(it.name, "pages.pdf (Page 2)");
+    let effectcraft_project::ItemKind::Footage(f) = &it.kind else { panic!() };
+    assert_eq!((f.width, f.height, f.page), (100, 60, 1));
+    assert!(s.execute_checked("file.import", json!({"paths": [path], "page": 3})).unwrap()["errors"][0].as_str().unwrap().contains("no page 3"));
+    assert!(s.execute("file.import", json!({"paths": [path], "page": 0})).is_err());
+    let doc = effectcraft_pdf::parse_page(&bytes, 1).unwrap();
+    let direct = effectcraft_svg::rasterize(&doc, 100, 60, 1.0);
+    s.execute("comp.new", json!({"name": "P", "width": 100, "height": 60, "frameRate": 30, "duration": 1})).unwrap();
+    let lid = s.execute_checked("layer.addItem", json!({"item": item.0})).unwrap()["layer"].as_u64().unwrap();
+    let cid = s.active_comp_id().unwrap();
+    let t = effectcraft_time::Tick::ZERO;
+    let foot = s.render(cid, t, RenderOpts::default());
+    assert!(mean_diff(&foot, &direct) < 1.0 / 255.0, "page 2 footage");
+    // Text drew (yellow glyphs over the blue page).
+    let ink = (0..60).flat_map(|y| (0..100).map(move |x| (x, y))).filter(|&(x, y)| foot.get(x, y)[0] > 0.9).count();
+    assert!(ink > 100, "text pixels {ink}");
+    // Create Shapes from Vector Layer: the page-wide clip becomes the layer's mask, the text a
+    // shape group named after it.
+    s.execute("layer.select", json!({"layers": [lid]})).unwrap();
+    let sid = s.execute_checked("layer.create", json!({"op": "shapesFromVector"})).unwrap()["layers"][0].as_u64().unwrap();
+    let c = s.active_comp().unwrap();
+    let l = c.layer(effectcraft_project::LayerId(sid)).unwrap();
+    assert_eq!(l.masks().map(|m| m.groups().count()), Some(1));
+    fn names(g: &effectcraft_project::PropGroup, out: &mut Vec<String>) {
+        for c in g.groups() {
+            out.push(c.name.clone());
+            names(c, out);
+        }
+    }
+    let mut names_found = vec![];
+    names(l.props.sub("contents").unwrap(), &mut names_found);
+    let names = names_found;
+    assert!(names.iter().any(|n| n == "Text: Hi"), "{names:?}");
+    let shapes = s.render(cid, t, RenderOpts::default());
+    let d = mean_diff(&shapes, &direct);
+    assert!(d < 0.01, "shapes vs page {d}");
+    assert_eq!(shapes.get(5, 30)[3], 0.0, "masked outside the clip");
+    // Page 1 as a composition.
+    let r = s.execute_checked("file.import", json!({"paths": [path], "importAs": "composition", "page": 1})).unwrap();
+    let comp = s.project.comp(ItemId(r["comps"][0].as_u64().unwrap())).unwrap();
+    assert_eq!((comp.width, comp.height), (120, 80));
+}
+
+#[test]
+fn psd_smart_objects_with_perspective_and_warp_bake_as_placed() {
+    let mut inner = WDoc::new(20, 10);
+    inner.layers =
+        vec![WLayer::solid("Red", Rect::new(0, 0, 10, 10), [1.0, 0.0, 0.0, 1.0]), WLayer::solid("Green", Rect::new(10, 0, 10, 10), [0.0, 1.0, 0.0, 1.0])];
+    let inner_bytes = write(&inner);
+    let mut d = WDoc::new(64, 48);
+    // A perspective trapezoid, and an affine placement with an Arc warp.
+    let trap = [[20.0, 4.0], [44.0, 10.0], [44.0, 38.0], [20.0, 44.0]];
+    let warp = warp_descriptor("warpArc", 50.0, 0.0, 0.0, [0.0, 0.0, 20.0, 10.0], None);
+    d.layers = vec![
+        WLayer::solid("Back", Rect::new(0, 0, 64, 48), [0.0, 0.0, 0.0, 1.0]),
+        WLayer::solid("Pinned", Rect::new(20, 4, 24, 40), [0.5, 0.5, 0.5, 1.0]).with_block(smart_object_block_warped("so-1", trap, [20.0, 10.0], None)),
+    ];
+    d.linked = vec![("so-1".into(), "inner.psd".into(), *b"8BPS", inner_bytes.clone())];
+    let mut d2 = WDoc::new(64, 48);
+    d2.layers = vec![
+        WLayer::solid("Back", Rect::new(0, 0, 64, 48), [0.0, 0.0, 0.0, 1.0]),
+        WLayer::solid("Arc", Rect::new(20, 10, 40, 20), [0.5, 0.5, 0.5, 1.0]).with_block(smart_object_block_warped(
+            "so-2",
+            [[20.0, 10.0], [60.0, 10.0], [60.0, 30.0], [20.0, 30.0]],
+            [20.0, 10.0],
+            Some(warp),
+        )),
+    ];
+    d2.linked = vec![("so-2".into(), "inner.psd".into(), *b"8BPS", inner_bytes)];
+    let parsed = effectcraft_psd::Psd::parse(write(&d2)).unwrap();
+    let so = parsed.layers.iter().find_map(|l| l.smart_object.clone()).unwrap();
+    assert_eq!(so.warp.as_ref().map(|w| w.style.as_str()), Some("warpArc"));
+    let mut s = effectcraft_host::session();
+    let render = |s: &mut effectcraft_engine::Session, doc: &WDoc, file: &str| {
+        let path = tmp(file);
+        std::fs::write(&path, write(doc)).unwrap();
+        let r = s.execute_checked("file.import", json!({"paths": [path], "importAs": "composition"})).unwrap();
+        assert_eq!(r["errors"], json!([]), "{r}");
+        let cid = ItemId(r["comps"][0].as_u64().unwrap());
+        let placed = s.project.comp(cid).unwrap().layers.iter().any(|l| {
+            let effectcraft_project::LayerSource::Footage { item } = l.source else { return false };
+            matches!(&s.project.item(item).unwrap().kind, effectcraft_project::ItemKind::Footage(f) if f.layer.as_ref().is_some_and(|x| x.placed))
+        });
+        assert!(placed, "{file}: baked as placed");
+        s.render(cid, effectcraft_time::Tick::ZERO, RenderOpts::default())
+    };
+    let img = render(&mut s, &d, "pinned.psd");
+    let (red, green) = (img.get(24, 24), img.get(40, 24));
+    assert!(red[0] > 0.9 && red[1] < 0.1, "{red:?}");
+    assert!(green[1] > 0.9 && green[0] < 0.1, "{green:?}");
+    // Above the slanted top edge (y = 4 + 6·(x − 20)/24): background.
+    assert!(img.get(42, 6)[0] < 0.05 && img.get(42, 6)[1] < 0.05, "{:?}", img.get(42, 6));
+    let img = render(&mut s, &d2, "arc.psd");
+    // The arc keeps the top centre and pulls the corners down and out.
+    let top = img.get(40, 11);
+    assert!(top[0] > 0.5 || top[1] > 0.5, "top centre covered {top:?}");
+    assert!(img.get(21, 11)[0] < 0.05 && img.get(21, 11)[1] < 0.05, "corner region empty {:?}", img.get(21, 11));
 }

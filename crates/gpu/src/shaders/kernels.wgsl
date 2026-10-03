@@ -844,3 +844,118 @@ fn adjust_mix(@builtin(global_invocation_id) gid: vec3<u32>) {
     let k = data[(gid.y * P.u[0].x + gid.x) * 4u + 3u] * P.f[0].x;
     textureStore(out, p, c + (a - c) * k);
 }
+
+// ---------------------------------------------------------------- Classic 3D bokeh depth of field
+// (render::three_d::bokeh: boost_highlights, row prefix sums, span gathers per blur level
+// blended by each pixel's radius.)
+
+// Highlight boost: f[0] = (gain, threshold, saturation).
+@compute @workgroup_size(16, 16)
+fn bokeh_boost(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let dims = out_dims();
+    let p = vec2<i32>(gid.xy);
+    if (p.x >= dims.x || p.y >= dims.y) {
+        return;
+    }
+    var c = textureLoad(src, p, 0);
+    let gain = P.f[0].x;
+    let thr = clamp(P.f[0].y, 0.0, 1.0);
+    let satk = P.f[0].z;
+    if (c.w > 0.0 && gain > 0.0) {
+        let a = c.w;
+        let rgb = c.xyz / a;
+        let l = 0.2126 * rgb.x + 0.7152 * rgb.y + 0.0722 * rgb.z;
+        if (!(l < thr || (thr >= 1.0 && l < 1.0))) {
+            var over = 1.0;
+            if (thr < 1.0) {
+                over = clamp((l - thr) / (1.0 - thr), 0.0, 1.0);
+            }
+            let k = 1.0 + gain * 4.0 * max(over, 0.25);
+            let sat = 1.0 + satk;
+            let o = max(vec3<f32>(l) + (rgb - vec3<f32>(l)) * sat, vec3<f32>(0.0)) * k;
+            c = vec4<f32>(o * a, a);
+        }
+    }
+    textureStore(out, p, c);
+}
+
+// Row prefix sums: out is (w + 1) × h, out[x] = sum of src[0..x]. One invocation per row.
+@compute @workgroup_size(64, 1)
+fn bokeh_prefix(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let dims = vec2<i32>(textureDimensions(src));
+    let y = i32(gid.x);
+    if (y >= dims.y) {
+        return;
+    }
+    var acc = vec4<f32>(0.0);
+    textureStore(out, vec2<i32>(0, y), acc);
+    for (var x = 0; x < dims.x; x = x + 1) {
+        acc = acc + textureLoad(src, vec2<i32>(x, y), 0);
+        textureStore(out, vec2<i32>(x + 1, y), acc);
+    }
+}
+
+fn bokeh_prefix_at(y: i32, t: f32) -> vec4<f32> {
+    let n = i32(textureDimensions(src).x) - 1;
+    if (t <= 0.0) {
+        return vec4<f32>(0.0);
+    }
+    if (t >= f32(n)) {
+        return textureLoad(src, vec2<i32>(n, y), 0);
+    }
+    let i = i32(floor(t));
+    let f = t - f32(i);
+    let a = textureLoad(src, vec2<i32>(i, y), 0);
+    let b = textureLoad(src, vec2<i32>(i + 1, y), 0);
+    return a + (b - a) * f;
+}
+
+// One blur level added into the accumulator `aux`: src = prefix sums; data = the radius map
+// (w·h) then spans (dy, x0, x1, weight). u[0] = (span offset, span count, level, levels),
+// u[1].x = 1 for the first level (no accumulator yet); f[0] = (1 / norm, lo, hi).
+@compute @workgroup_size(16, 16)
+fn bokeh_gather(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let dims = out_dims();
+    let p = vec2<i32>(gid.xy);
+    if (p.x >= dims.x || p.y >= dims.y) {
+        return;
+    }
+    var acc = vec4<f32>(0.0);
+    if (P.u[1].x == 0u) {
+        acc = textureLoad(aux, p, 0);
+    }
+    let r = data[u32(p.y) * u32(dims.x) + u32(p.x)];
+    let k = P.u[0].z;
+    let n = P.u[0].w;
+    var wgt = 1.0;
+    if (n > 1u) {
+        let lo = P.f[0].y;
+        let hi = P.f[0].z;
+        let f = clamp((r - lo) / (hi - lo) * f32(n - 1u), 0.0, f32(n - 1u));
+        let kk = min(u32(floor(f)), n - 2u);
+        let t = f - f32(kk);
+        if (k == kk) {
+            wgt = 1.0 - t;
+        } else if (k == kk + 1u) {
+            wgt = t;
+        } else {
+            wgt = 0.0;
+        }
+    }
+    if (wgt > 0.0) {
+        var g = vec4<f32>(0.0);
+        let off = P.u[0].x;
+        for (var i = 0u; i < P.u[0].y; i = i + 1u) {
+            let s = off + i * 4u;
+            let sy = p.y + i32(data[s]);
+            if (sy < 0 || sy >= dims.y) {
+                continue;
+            }
+            let hi = bokeh_prefix_at(sy, f32(p.x) + data[s + 2u] + 0.5);
+            let lo = bokeh_prefix_at(sy, f32(p.x) + data[s + 1u] + 0.5);
+            g = g + (hi - lo) * data[s + 3u];
+        }
+        acc = acc + g * P.f[0].x * wgt;
+    }
+    textureStore(out, p, acc);
+}
