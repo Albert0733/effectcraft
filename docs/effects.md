@@ -3,11 +3,11 @@
 <!-- Generated from the effect registry (crates/effects/src/catalog.rs); do not edit by hand.
      Regenerate: UPDATE_DOCS=1 cargo test -p effectcraft-effects --lib effects_doc_is_current -->
 
-EffectCraft ships 303 effects with 2730 parameters in total, grouped into the same categories as the Effects & Presets panel. Every effect is our own implementation, written from public behaviour descriptions and standard image-processing literature. Parameter names, order, popup options, units, defaults and ranges follow the reference application so that projects, expressions and muscle memory carry over.
+EffectCraft ships 303 effects with 2742 parameters in total, grouped into the same categories as the Effects & Presets panel. Every effect is our own implementation, written from public behaviour descriptions and standard image-processing literature. Parameter names, order, popup options, units, defaults and ranges follow the reference application so that projects, expressions and muscle memory carry over.
 
 - **GPU**: 24 effects also run on the GPU compositor with identical results.
 - **32**: 303 effects process 32-bit float (HDR, overbright) pixels without clamping.
-- **Status**: 274 implemented in full, 29 partial (what is missing is listed).
+- **Status**: 275 implemented in full, 28 partial (what is missing is listed).
 
 Effects are addressed by id (`ec.<category>.<name>`) or display name in commands, scripts and the control channel, and every parameter by its id (`effects/#1/blurriness`).
 
@@ -330,7 +330,7 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 | CC Star Burst | `ec.sim.ccstarburst` | 6 |  | 32 | Implemented |
 | Card Dance | `ec.sim.carddance` | 53 |  | 32 | Implemented |
 | Caustics | `ec.sim.caustics` | 21 |  | 32 | Partial: no Sky group or light type |
-| Foam | `ec.sim.foam` | 24 |  | 32 | Partial: no wobble, pop velocity, custom bubble texture, environment map or flow map |
+| Foam | `ec.sim.foam` | 36 |  | 32 | Implemented |
 | Particle Playground | `ec.sim.particleplayground` | 92 |  | 32 | Implemented |
 | Shatter | `ec.sim.shatter` | 60 |  | 32 | Implemented |
 | Wave World | `ec.sim.waveworld` | 27 |  | 32 | Partial: no wireframe controls, dry-area rendering or ground group |

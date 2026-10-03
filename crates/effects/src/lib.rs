@@ -574,6 +574,7 @@ pub const PARAM_GROUPS: &[(&str, &str)] = &[
     ("force2", "Force 2"),
     ("bubbles", "Bubbles"),
     ("rendering", "Rendering"),
+    ("flowMap", "Flow Map"),
     ("heightMapControls", "Height Map Controls"),
     ("simulation", "Simulation"),
     ("producer1", "Producer 1"),
