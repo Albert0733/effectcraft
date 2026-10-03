@@ -192,6 +192,71 @@ try {
   check(fwk.after.syncs >= 2, `project synced as diffs: ${JSON.stringify(fwk.after)}`);
   check(fwk.maxGapMs < 400, `event loop blocked ${fwk.maxGapMs} ms while scrubbing`);
 
+  // GPU effects in the browser (M13.24): each frame worker opens its own WebGPU device; frames
+  // with effects go to the workers, which render them on the GPU in passes (awaiting the
+  // device's readbacks), while the page's event loop stays free.
+  const gw = await js(`(async () => {
+    const t0 = performance.now();
+    while (effectcraft.info().frameWorkers.gpu.some((g) => g === null) && performance.now() - t0 < 30000) await new Promise((r) => setTimeout(r, 200));
+    return {gpu: effectcraft.info().frameWorkers.gpu, workerWebGpu: effectcraft.info().webgpu};
+  })()`);
+  report.steps.gpuWorkers = gw;
+  if (gw.gpu.some((g) => typeof g === "string")) {
+    report.steps.gpuWorkers.effects = await js(`(async () => {
+      const before = effectcraft.info().frameWorkers;
+      let maxGapMs = 0, last = performance.now();
+      const timer = setInterval(() => { const now = performance.now(); maxGapMs = Math.max(maxGapMs, now - last); last = now; }, 10);
+      await effectcraft.execute("layer.newSolid", {name: "GPU Blur Solid", color: "#cc3366", width: 300, height: 200});
+      await effectcraft.execute("effect.apply", {effect: "Gaussian Blur"});
+      await effectcraft.execute("prop.set", {path: "effects/#1/blurriness", value: 25});
+      await effectcraft.execute("effect.apply", {effect: "Glow"});
+      for (let k = 0; k < 6; k++) {
+        await effectcraft.execute("time.set", {time: 0.3 + k / 5});
+        await new Promise((r) => setTimeout(r, 200));
+      }
+      const t0 = performance.now();
+      while (effectcraft.info().frameWorkers.gpuFrames < before.gpuFrames + 3 && performance.now() - t0 < 120000) await new Promise((r) => setTimeout(r, 100));
+      clearInterval(timer);
+      const after = effectcraft.info().frameWorkers;
+      // The worker's GPU frame against the page's CPU render of the same frame.
+      let parity = null;
+      for (let i = 0; i < 100 && !parity; i++) {
+        parity = await effectcraft.workerFrameCheck({scale: 0.5}).catch(() => null);
+        if (!parity) await new Promise((r) => setTimeout(r, 100));
+      }
+      after.parity = parity;
+      await effectcraft.execute("edit.undo", {});
+      await effectcraft.execute("edit.undo", {});
+      await effectcraft.execute("edit.undo", {});
+      await effectcraft.execute("edit.undo", {});
+      return {before, after, maxGapMs};
+    })()`);
+    const ge = report.steps.gpuWorkers.effects;
+    report.steps.gpuWorkers.screenshot = await shot("01b-gpu-effects");
+    check(ge.after.gpuFrames >= ge.before.gpuFrames + 3, `GPU effect frames rendered in workers: ${JSON.stringify(ge)}`);
+    check(ge.after.lastPasses >= 2, `frames rendered in passes (deferred readbacks): ${ge.after.lastPasses}`);
+    const pa = ge.after.parity;
+    check(pa && pa.meanDiff < 0.5 && pa.over4 < 0.005, `GPU worker frame vs the CPU: ${JSON.stringify(pa)}`);
+    check(ge.maxGapMs < 400, `event loop blocked ${ge.maxGapMs} ms while GPU workers rendered`);
+  } else {
+    report.steps.gpuWorkers.note = "no WebGPU in workers here: frame workers render on their CPU";
+  }
+
+  // The storage manager (Settings ▸ Disk ▸ Browser Storage) and its commands.
+  await js(`effectcraft.execute("storage.persist", {})`);
+  const st = await js(`(async () => { await new Promise((r) => setTimeout(r, 1200)); return effectcraft.execute("storage.info", {}); })()`);
+  report.steps.storage = st;
+  check(st.available && st.quota > 0 && st.usage > 0, `storage.info: ${JSON.stringify(st)}`);
+  check(st.diskCache && st.diskCache.enabled && st.diskCache.writes > 0, `disk cache in OPFS: ${JSON.stringify(st.diskCache)}`);
+  await js(`effectcraft.execute("prefs.open", {page: "disk"})`);
+  await sleep(800);
+  report.steps.storage.screenshot = await shot("01c-storage-manager");
+  const ids = await js(`effectcraft.request("ui.elements", {prefix: "settings.storage."}).then((l) => l.map((e) => e.id))`);
+  report.steps.storage.elements = ids;
+  check(ids.includes("settings.storage.usage") && ids.includes("settings.storage.clear.diskCache"), `storage manager widgets: ${ids}`);
+  await js(`effectcraft.request("ui.click", {id: "settings.cancel"})`);
+  await sleep(300);
+
   // Render Queue: a short, small GIF → download. `renderQueue.render` waits by default; the
   // render still runs in a worker and the reply comes when it ends (the page keeps running).
   const rqT = Date.now();
@@ -302,6 +367,25 @@ try {
   await js(`effectcraft.execute("prefs.set", {key: "general.recentItems", value: 7})`);
   const saved = await js(`effectcraft.saveToBrowser("/persist-test.ecproj")`);
   await js(`effectcraft.execute("layer.newSolid", {name: "Unsaved Solid"})`);
+  // Disk cache: frames the workers render now are stored in the Origin Private File System
+  // (the CPU renderer sends every frame to the workers).
+  await js(`effectcraft.execute("render.backend", {backend: "cpu"})`);
+  const diskTimes = [0.4, 0.8, 1.2];
+  const stored = await js(`(async () => {
+    const w0 = (await effectcraft.execute("cache.diskStats", {})).writes;
+    for (const t of ${JSON.stringify(diskTimes)}) {
+      await effectcraft.execute("time.set", {time: t});
+      await new Promise((r) => setTimeout(r, 300));
+    }
+    const t0 = performance.now();
+    let st;
+    do {
+      await new Promise((r) => setTimeout(r, 200));
+      st = await effectcraft.execute("cache.diskStats", {});
+    } while (st.writes < w0 + ${diskTimes.length} && performance.now() - t0 < 60000);
+    return {writesBefore: w0, after: st};
+  })()`);
+  check(stored.after.writes >= stored.writesBefore + diskTimes.length, `frames written to the disk cache: ${JSON.stringify(stored)}`);
   await sleep(1500); // the session snapshot is taken at most every second
   await js("effectcraft.flush()");
   const before = await js("effectcraft.listStored()");
@@ -321,6 +405,31 @@ try {
   check(paths.includes("/tone.wav") && paths.includes("/persist-test.ecproj"), `stored files: ${paths}`);
   check(recentItems === 7, `setting after reload: ${recentItems}`);
   check(rec.recentProjects[0] === "/persist-test.ecproj", `recent projects: ${rec.recentProjects}`);
+  // The disk cache survived the reload: the same frames come from it, not from a render.
+  report.steps.diskCache = await js(`(async () => {
+    const t0 = performance.now();
+    let st;
+    do {
+      await new Promise((r) => setTimeout(r, 200));
+      st = await effectcraft.execute("cache.diskStats", {});
+    } while (!st.loaded && performance.now() - t0 < 20000);
+    const listed = st.entries;
+    for (const t of ${JSON.stringify(diskTimes)}) {
+      await effectcraft.execute("time.set", {time: t});
+      await new Promise((r) => setTimeout(r, 300));
+    }
+    const t1 = performance.now();
+    while (effectcraft.info().frameWorkers.diskHits < ${diskTimes.length} && performance.now() - t1 < 30000) await new Promise((r) => setTimeout(r, 200));
+    return {listed, stats: await effectcraft.execute("cache.diskStats", {}), frameWorkers: effectcraft.info().frameWorkers};
+  })()`);
+  const dcr = report.steps.diskCache;
+  dcr.stored = stored;
+  check(dcr.listed >= diskTimes.length, `disk cache entries after reload: ${JSON.stringify(dcr)}`);
+  check(dcr.frameWorkers.diskHits >= diskTimes.length, `cache hits after reload: ${JSON.stringify(dcr.frameWorkers)}`);
+  const cleared = await js(`effectcraft.execute("storage.clear", {what: "diskCache"})`);
+  const afterClear = await js(`effectcraft.execute("cache.diskStats", {})`);
+  dcr.cleared = { cleared, afterClear };
+  check(cleared.entries >= diskTimes.length && afterClear.entries === 0, `storage.clear diskCache: ${JSON.stringify(dcr.cleared)}`);
   await js(`effectcraft.execute("file.openRecent", {index: 0})`);
   const reopened = await js(`effectcraft.execute("comp.info", {}).then(c => c.layers.map(l => l.name))`);
   check(reopened.includes("Persisted Solid") && !reopened.includes("Unsaved Solid"), `Open Recent: ${reopened}`);

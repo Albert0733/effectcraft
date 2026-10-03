@@ -105,6 +105,14 @@ export async function storeLoadAll() { return backend.loadAll(); }
 export async function storePut(key, data, modified) { return backend.put(key, data, modified); }
 export async function storeDelete(key) { return backend.del(key); }
 
+/// Ask the browser to keep the origin's storage under pressure; resolves with whether it is.
+export async function storePersist() {
+  try {
+    if (navigator.storage && navigator.storage.persist) return await navigator.storage.persist();
+  } catch {}
+  return false;
+}
+
 /// {usage, quota, persisted, backend}.
 export async function storeEstimate() {
   const out = { backend: backend ? backend.name : null };
@@ -341,8 +349,10 @@ export function workerStats() {
 const frameWorkers = [];
 
 /// Start a frame worker; returns its index. `onMessage(index, json, bytes, error)` receives each
-/// `frameReply` (JSON, pixels as a Uint8Array) or, if the worker dies, the error.
-export function frameWorkerStart(base, onMessage) {
+/// `frameReply` (JSON, pixels as a Uint8Array) or, if the worker dies, the error. `gpu`: the
+/// worker opens its own WebGPU device (when the browser has WebGPU in workers) and renders
+/// GPU effects on it.
+export function frameWorkerStart(base, onMessage, gpu) {
   const index = frameWorkers.length;
   const worker = new Worker(new URL("worker.js", base), { type: "module", name: `effectcraft-frames-${index}` });
   worker.onmessage = (e) => {
@@ -353,9 +363,103 @@ export function frameWorkerStart(base, onMessage) {
     onMessage(index, undefined, undefined, String(e.message || "frame worker failed"));
     worker.terminate();
   };
-  worker.postMessage({ type: "init", module: self.effectcraftModule ?? null, base });
+  worker.postMessage({ type: "init", module: self.effectcraftModule ?? null, base, frames: true, gpu: !!gpu });
   frameWorkers.push(worker);
   return index;
+}
+
+// ------------------------------------------------------------------ disk cache (OPFS)
+
+// The disk cache's frames (src/diskcache.rs): one file per frame under
+// effectcraft-cache/v1/frames/<32 hex>.ecc in the Origin Private File System. Frame workers write
+// them with synchronous access handles (a temporary file moved into place, so a reader never
+// sees a partial entry; every entry also ends in a checksum); the page lists, reads and deletes.
+const CACHE_ROOT = "effectcraft-cache";
+const CACHE_PATH = [CACHE_ROOT, "v1", "frames"];
+let cacheDirHandle = null;
+
+async function cacheDir() {
+  if (cacheDirHandle) return cacheDirHandle;
+  if (!navigator.storage || !navigator.storage.getDirectory) throw new Error("no Origin Private File System");
+  let d = await navigator.storage.getDirectory();
+  for (const n of CACHE_PATH) d = await d.getDirectoryHandle(n, { create: true });
+  cacheDirHandle = d;
+  return d;
+}
+
+/// Every cached entry: [{name, size, modified}]. Temporaries older than ten minutes (a writer
+/// that died) are removed.
+export async function cacheList() {
+  const dir = await cacheDir();
+  const out = [];
+  const stale = [];
+  for await (const [name, h] of dir.entries()) {
+    if (h.kind !== "file") continue;
+    const f = await h.getFile();
+    if (name.includes(".tmp")) {
+      if (Date.now() - f.lastModified > 600000) stale.push(name);
+      continue;
+    }
+    out.push({ name, size: f.size, modified: f.lastModified });
+  }
+  for (const n of stale) { try { await dir.removeEntry(n); } catch {} }
+  return out;
+}
+
+/// An entry's bytes.
+export async function cacheRead(name) {
+  const dir = await cacheDir();
+  const f = await (await dir.getFileHandle(name)).getFile();
+  return new Uint8Array(await f.arrayBuffer());
+}
+
+/// Write an entry (in a worker: a synchronous access handle; elsewhere a writable stream);
+/// resolves with its size.
+export async function cacheWrite(name, bytes) {
+  const dir = await cacheDir();
+  const canMove = typeof FileSystemHandle !== "undefined" && "move" in FileSystemHandle.prototype;
+  const tmp = canMove ? `${name}.tmp.${Math.random().toString(36).slice(2)}` : name;
+  const fh = await dir.getFileHandle(tmp, { create: true });
+  if (fh.createSyncAccessHandle) {
+    const h = await fh.createSyncAccessHandle();
+    try {
+      h.truncate(0);
+      h.write(bytes, { at: 0 });
+      h.flush();
+    } finally {
+      h.close();
+    }
+  } else {
+    const w = await fh.createWritable();
+    await w.write(bytes);
+    await w.close();
+  }
+  if (canMove) {
+    try { await fh.move(dir, name); } catch (e) { try { await dir.removeEntry(tmp); } catch {} throw e; }
+  }
+  return bytes.length;
+}
+
+/// Delete entries (names); missing ones are ignored.
+export async function cacheDelete(names) {
+  const dir = await cacheDir();
+  for (const n of names) { try { await dir.removeEntry(n); } catch {} }
+}
+
+/// Delete the whole cache.
+export async function cacheClear() {
+  cacheDirHandle = null;
+  try {
+    const root = await navigator.storage.getDirectory();
+    await root.removeEntry(CACHE_ROOT, { recursive: true });
+  } catch (e) {
+    if (e.name !== "NotFoundError") throw e;
+  }
+}
+
+/// Whether this thread has WebGPU (`navigator.gpu`).
+export function hasWebGpu() {
+  return !!(self.navigator && self.navigator.gpu);
 }
 
 /// Post a message ({type: "frame", json} or {type: "file", path, bytes}) to frame worker `index`.

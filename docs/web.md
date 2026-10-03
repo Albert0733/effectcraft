@@ -43,13 +43,14 @@ URL flags: `?empty` (a blank project; the session is not restored or recorded), 
 project instead of the last session), `?home` (show the start screen), `?storage=indexeddb` /
 `?storage=memory` (force a storage backend), `?noworkers` (render, analyse and draw viewer
 frames on the page's thread), `?frameworkers=N` (frame workers, default 2; 0 = viewer frames on
-the page's thread), `?nosw` (don't register the service worker).
+the page's thread), `?nogpuworkers` (frame workers render on their CPU, without a WebGPU device of
+their own), `?nosw` (don't register the service worker).
 
 ## How the desktop pieces map to the browser
 
 | Desktop | Web |
 |---|---|
-| frame render thread pool (`ui-egui/src/frames.rs`) | frame workers (below): `Frames::pump` hands queued frames to them, most important first (the viewer's frame, then prefetch); frames the GPU compositor can keep on the GPU render on the page. Without workers, queued frames render on the UI thread after each egui frame within 40 ms (24 ms while playing) |
+| frame render thread pool (`ui-egui/src/frames.rs`) | frame workers (below), each with its own WebGPU device: `Frames::pump` hands queued frames to them, most important first (the viewer's frame, then prefetch); frames without effects that the page's GPU compositor can keep on the GPU render on the page. Without workers, queued frames render on the UI thread after each egui frame within 40 ms (24 ms while playing) |
 | Render Queue on a background thread | a Web Worker running a second engine instance (below); progress streams back, the page never waits |
 | tracker / mask tracker / Warp Stabilizer / 3D Camera Tracker / Roto Brush Freeze threads | the same workers; the analysed property group comes back as one undo step |
 | `rayon` parallel loops (raster, effects, export batches) | rayon's global pool falls back to the calling thread when threads are unavailable: same code, serial |
@@ -64,7 +65,9 @@ the page's thread), `?nosw` (don't register the service worker).
 | system fonts | not scanned; the bundled fonts (Inter, Noto Serif, JetBrains Mono) are always there |
 | TCP control channel / MCP | `window.effectcraft` (below) |
 | cpal audio output | Web Audio (below) |
-| GPU compositor on the desktop's wgpu device | the same compositor on eframe's WebGPU device (below) |
+| GPU compositor on the desktop's wgpu device | the same compositor on eframe's WebGPU device, and GPU effects on each frame worker's own WebGPU device (below) |
+| disk cache folder (Settings ▸ Disk ▸ Disk Cache) | viewer frames in the Origin Private File System, written by the frame workers (below) |
+| (the file system's own tools) | the storage manager: Settings ▸ Disk ▸ Browser Storage and `storage.*` (below) |
 
 ### Persistence
 
@@ -144,17 +147,26 @@ of the project:
    before prefetch); a request for a revision the worker does not hold is refused, a worker that
    lost its replica asks for the whole project again (`FrameReply::Resync`).
 
-Frames the WebGPU compositor can finish alone still render on the page (they stay on the GPU, no
-readback); everything else (CPU-only effects, 3D runs, the Software Only renderer, WebGL2) goes to
-the workers. If no worker is usable, frames render on the page's thread as before.
-`effectcraft.info().frameWorkers` reports `{workers, alive, busy, rendered, failed, lastMs,
-syncs, syncBytes}`.
+Frames without effects that the WebGPU compositor can finish alone still render on the page
+(they stay on the GPU, no readback); everything else (frames with effects, 3D runs, the Software
+Only renderer, WebGL2) goes to the workers. If no worker is usable, frames render on the page's
+thread as before. `effectcraft.info().frameWorkers` reports `{workers, alive, busy, rendered,
+failed, lastMs, syncs, syncBytes, gpu, gpuFrames, lastPasses, diskHits}` (`gpu`: each worker's
+adapter, `{cpu: why}` without one, `null` until it reported).
 
-**Why workers and not wasm threads:** shared-memory threads (SharedArrayBuffer + atomics, a
-`wasm-bindgen-rayon`-style pool) need the standard library rebuilt with atomics (`build-std`,
-nightly Rust); the repository builds on stable, so each worker runs its own engine instance with
-its own memory. The page is still cross-origin isolated (`--serve` and the service worker send
-COOP / COEP), so a threaded build can be added later without changing the deployment.
+**Threading design: one engine instance per worker (decided, M13.24).** Shared-memory threads
+inside one instance (SharedArrayBuffer + atomics, a `wasm-bindgen-rayon`-style pool) need the
+standard library rebuilt with atomics (`-Z build-std`, nightly Rust) and every crate's statics
+made thread-safe for the browser's rules (no blocking on the page's thread). The repository
+builds on stable Rust, so concurrency comes from workers that each run their own engine instance
+with their own memory: job workers (renders, analyses), frame workers (viewer frames, each with
+its own GPU device) and the page. What crosses between them is explicit: project diffs, footage
+bytes, frames, Roto Brush segmentations, cache keys. The cost is memory per worker (a project
+replica, the footage it reads, a layer cache) and serial loops inside one frame (rayon's pool
+falls back to the calling thread). The page is still cross-origin isolated (`--serve` and the
+service worker send COOP / COEP), so a threaded build (`build-std` with `+atomics,+bulk-memory`,
+`wasm-bindgen-rayon`) could be added later without changing the deployment; it would parallelise
+the loops inside a frame, not replace the workers.
 
 ### Media Browser
 
@@ -189,12 +201,93 @@ key press.
 
 eframe starts on WebGPU where the browser has it (WebGL2 otherwise), and the GPU compositor
 (`effectcraft-gpu`) runs on the same device: viewer frames are composited by compute shaders and
-drawn straight from their texture, with no readback. Steps that need the CPU mid-render (3D runs,
-adjustment layers, CPU-only effects) fall back to the CPU renderer for that frame, because the
-page's thread can't wait for a GPU readback. The Info panel's pixel readout and the eyedroppers
-read GPU frames back asynchronously (`Gpu::read_display_async`: the pixels arrive a frame
-later). On WebGL2, or without a usable adapter, everything renders on the CPU.
+drawn straight from their texture, with no readback. The Info panel's pixel readout and the
+eyedroppers read GPU frames back asynchronously (`Gpu::read_display_async`: the pixels arrive a
+frame later). On WebGL2, or without a usable adapter, everything renders on the CPU.
 `effectcraft.info().gpu` reports `{compositor, viewerOnGpu}`.
+
+**GPU effects run in the frame workers.** A browser never lets JavaScript (or wasm) wait for a GPU
+readback, not even in a worker: a buffer maps only once the thread returns to its event loop.
+The CPU renderer, which runs GPU effect chains and reads their results back mid-frame, therefore
+can't use the page's device. Instead each frame worker opens its own WebGPU device
+(`navigator.gpu` in dedicated workers: Chromium, Safari Technology Preview; `Gpu::request_deferred`)
+and renders with **deferred readbacks** (`crates/gpu/src/deferred.rs`):
+
+1. Every readback the renderer needs is keyed by what determines its pixels: a GPU effect chain by
+   its input buffer's pixels and the chain's parameters, the top-level frame by comp, time and
+   render options.
+2. A key seen for the first time records the GPU work, starts an asynchronous copy (`map_async`)
+   and *misses*: the step returns a cheap placeholder (its input), and the pass is marked missed.
+   From the first miss to the end of the pass, the layer cache drops inserts
+   (`LayerCache::set_gate`), so no placeholder-derived buffer is kept.
+3. The worker awaits the device (`Gpu::settled`) and renders the frame again
+   (`FrameServer::resume`); keys whose bytes arrived are served from them. A pass without a miss
+   is the frame. Chains that depend on other chains (a precomp with effects inside, effects that
+   read other layers) take one more pass per level; independent chains resolve together. A chain
+   whose kernels read data that missed while they ran (through the effect host) is not started,
+   so a result is only ever computed from genuine inputs. After 24 passes a frame renders on the
+   worker's CPU.
+
+The whole frame renders on the GPU (the compositor walk with GPU effects, then one readback) when
+it can; steps that would need a mid-walk readback (an Advanced 3D run the kernels decline, CPU-only
+effects on an adjustment layer) make the frame composite on the CPU instead, with its GPU effect
+chains still on the GPU. Backend **Auto** works in the workers: it picks CPU or GPU per comp from
+the frames' total times across their passes (`AutoPick`), as on the desktop. Without WebGPU in
+workers (Firefox, older Safari) or with `?nogpuworkers`, the workers render on their CPU, as
+before. A frame with effects goes to a worker when the workers have a GPU, so the page never runs
+an effect on its thread. Particles and Advanced 3D scenes (which read back without a key) simulate
+and rasterise on the worker's CPU.
+
+`effectcraft.workerFrameCheck({time?, scale?, backend?})` renders the active comp's frame in a
+worker (its GPU by default) and on the page's CPU and reports the differences (`{maxDiff,
+meanDiff, over4, workerMs}` in 8-bit levels): the smoke test uses it to check the GPU workers'
+pixels.
+
+### Disk cache
+
+Settings ▸ Disk ▸ Disk Cache works in the browser, backed by the **Origin Private File System**
+(`src/diskcache.rs`): viewer frames are kept under `effectcraft-cache/v1/frames/<32 hex>.ecc`
+between visits, in the desktop cache's format (`disk_cache::frame_entry`: 8-bit premultiplied
+RGBA, LZ4, a checksum), keyed by the same content hash (the comp and everything it uses, frame,
+scale, view, render options).
+
+- A render request to a frame worker carries the frame's disk key; the worker posts the frame,
+  then writes the entry with a **synchronous access handle** into a temporary file moved into
+  place (`cacheWrite` in `js/host.js`; where `move()` is missing, the entry is written in place
+  and its checksum catches a partial file), and reports `FrameReply::Stored`.
+- The page keeps the index (`DiskIndex`, shared with the desktop's cache): rebuilt at startup from
+  the folder listing (oldest files first, stale temporaries removed), updated by the workers'
+  writes and by reads. The size limit is Maximum Disk Cache Size, at most half the origin's quota;
+  the least recently used entries are deleted beyond it.
+- A frame whose key is indexed is read and decoded on the page (asynchronously) instead of being
+  rendered; a damaged or missing file is a miss and is forgotten. The timeline's blue cache bar
+  shows the frames on disk.
+- `cache.diskStats` reports the browser's cache (`{enabled, available, loaded, entries, bytes,
+  maxBytes, hits, misses, writes, evictions}`); Empty Disk Cache / `edit.purge {what: "disk"}`
+  clears it. `effectcraft.info().diskCache` has the same.
+
+Only frames are cached on disk in the browser: the desktop also keeps slow layer buffers, but a
+layer lookup happens in the middle of a synchronous render, where the browser's file system can't
+be read.
+
+### Storage manager
+
+Settings ▸ Disk ▸ **Browser Storage** (shown in the browser only) reports where the data lives
+(Origin Private File System, IndexedDB or memory), the origin's usage and quota
+(`navigator.storage.estimate()`), what the store holds (projects, imported media, auto-saves:
+count and size) and the disk cache, whether the storage is persistent (with **Request Persistent
+Storage**, `navigator.storage.persist()`), and **Clear** buttons for the disk cache, imported
+media, auto-saves and saved projects. Agents use the same through engine commands
+(`crates/engine/src/storage.rs`, the session's `StorageHost`):
+
+| Command | |
+|---|---|
+| `storage.info` | `{available, backend, usage, quota, persisted, files: {projects, media, autoSaves: {count, bytes}}, diskCache: {...}}` (`{available: false}` on the desktop) |
+| `storage.persist` | ask for persistent storage; `persisted` in a later `storage.info` says whether it was granted |
+| `storage.clear {what: diskCache\|media\|projects\|autoSaves\|all}` | delete them (settings stay); `{cleared, entries, bytes}` |
+
+The widgets have automation ids `settings.storage.backend`, `.usage`, `.diskCache`, `.persist`
+and `.clear.<what>`.
 
 ### Offline and install (PWA)
 
@@ -222,7 +315,8 @@ with the method's `result`, errors reject with the message.
 | `effectcraft.listStored()` | `{backend, usage, quota, persisted, pending, files: [{path, size, modified}], config: [name]}` |
 | `effectcraft.removeStored(path)` | delete a stored file |
 | `effectcraft.flush()` | resolves once every change is written to browser storage |
-| `effectcraft.info()` | graphics backend, `gpu`, `storage`, `audio` (`{state, sampleRate, backend, posted, played, underruns}`), `workers`, `restored`, `webgpu`, `serviceWorker`, version, `crossOriginIsolated`, load timings |
+| `effectcraft.info()` | graphics backend, `gpu`, `storage`, `audio` (`{state, sampleRate, backend, posted, played, underruns}`), `workers`, `frameWorkers`, `diskCache`, `restored`, `webgpu`, `serviceWorker`, version, `crossOriginIsolated`, load timings |
+| `effectcraft.workerFrameCheck(params)` | a frame rendered in a frame worker (its GPU by default) against the page's CPU render: `{width, height, maxDiff, meanDiff, over4, workerMs}` |
 
 `window.effectcraftLoad` holds `{wasmMs, readyMs}` (module fetch + compile, and until the app runs).
 
@@ -251,7 +345,12 @@ node apps/effectcraft-web/tests/smoke.mjs --url http://127.0.0.1:8765/ --out tar
 
 It also checks the M13.10 paths: viewer frames rendered in frame workers while scrubbing with the
 CPU renderer (project synced as diffs, event-loop gaps under 400 ms), a `wait: true` render that
-replies when done while the page keeps running, and the Media Browser over browser storage.
+replies when done while the page keeps running, and the Media Browser over browser storage; and
+the M13.24 ones: GPU effects (Gaussian Blur, Glow) rendered on the frame workers' own WebGPU
+devices in passes while the page's event loop stays free, the worker's GPU frame matching the
+page's CPU render (`workerFrameCheck`), the storage manager (`storage.info`, `storage.persist`,
+the Settings ▸ Disk widgets), and the disk cache: frames written to the Origin Private File
+System, served from it after a reload without rendering, and cleared with `storage.clear`.
 
 Native unit tests cover the storage model (`apps/effectcraft-web/src/store.rs`: write
 coalescing, file table, `ConfigStore` / `FileOps`, auto-save and crash recovery through the
@@ -261,15 +360,24 @@ propagation through an offload streaming segmentations), the frame-worker protoc
 (`crates/engine/src/remote.rs`: diff / patch, a replica following edits renders the same pixels;
 `crates/ui-egui/tests/ui_web_offload.rs`: the frame cache through a remote renderer, `wait: true`
 deferred until the offloaded job ends) and the Media Browser's virtual tree (`media_browser.rs`,
-`tests_panels.rs`).
+`tests_panels.rs`). M13.24: deferred readbacks on a real device (`crates/gpu/src/tests_deferred.rs`:
+whole-frame GPU and CPU-composited frames in passes match the CPU, placeholders never reach the
+layer cache; `deferred.rs`: keys, late readbacks of an older frame dropped), the frame server's
+passes and Auto timing (`remote.rs`, a deferred stand-in accelerator), the browser's routing and
+disk cache (`crates/ui-egui/tests/ui_web_gpu_storage.rs`: a GPU frame worker renders effect frames,
+the page's GPU keeps frames without effects, frames stored under their disk keys come back after a
+"reload" without rendering, the blue cache bar sees them; the storage manager's widgets and
+commands), the disk index (`disk_cache.rs`), the store's usage by kind and clearing (`store.rs`),
+`storage.*` (`storage.rs`), and every WGSL float literal fitting f32 (browsers reject the whole
+module otherwise; `tests.rs`).
 
 ## Gaps
 
 - No shared-memory threads: each worker is a separate engine instance (memory per worker: the
-  project replica and the footage it reads).
-- GPU effects run only in the desktop GPU path: in the browser, effects run on the CPU (inside
-  workers for renders) because the page's thread can't wait for mid-render readbacks.
-- No disk cache (Settings ▸ Media & Disk Cache) in the browser: the layer cache stays in memory.
+  project replica and the footage it reads); see the threading design above.
+- GPU effects run in the frame workers (viewer frames, RAM preview). Render Queue renders and
+  analyses in job workers still run on their CPU (their loops are synchronous); particles and
+  Advanced 3D scenes in frame workers too. Browsers without WebGPU in workers render frames on
+  the workers' CPU.
+- The browser's disk cache holds frames, not layer buffers.
 - Cancelling an analysis drops its partial result (the worker is terminated).
-- Stored media count against the origin's storage quota; `effectcraft.listStored()` shows usage,
-  `removeStored` frees it (there is no storage manager in the UI yet).

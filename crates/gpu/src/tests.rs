@@ -562,3 +562,45 @@ fn backend_selection_and_display_frames() {
         }
     }
 }
+
+/// Browsers' WGSL compilers reject an f32 literal whose exact decimal value lies outside the f32
+/// range (`3.40282347e38` rounds to f32::MAX in Rust but exceeds it), which invalidates the whole
+/// module (every kernel); naga accepts it, so native runs can't catch it. Every float literal
+/// with an exponent must be within the f32 range exactly.
+#[test]
+fn wgsl_float_literals_fit_f32() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/shaders");
+    let mut checked = 0;
+    for entry in std::fs::read_dir(&dir).unwrap() {
+        let path = entry.unwrap().path();
+        let src = std::fs::read_to_string(&path).unwrap();
+        for (n, line) in src.lines().enumerate() {
+            let code = line.split("//").next().unwrap_or("");
+            let bytes = code.as_bytes();
+            let mut i = 0;
+            while i < bytes.len() {
+                let starts = bytes[i].is_ascii_digit() && (i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_' || bytes[i - 1] == b'.'));
+                if !starts {
+                    i += 1;
+                    continue;
+                }
+                let mut j = i;
+                while j < bytes.len()
+                    && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'.' || ((bytes[j] == b'-' || bytes[j] == b'+') && matches!(bytes[j - 1], b'e' | b'E')))
+                {
+                    j += 1;
+                }
+                let lit = code[i..j].trim_end_matches('f');
+                if !lit.starts_with("0x")
+                    && lit.contains(['e', 'E'])
+                    && let Ok(v) = lit.parse::<f64>()
+                {
+                    checked += 1;
+                    assert!(v.abs() <= f32::MAX as f64, "{}:{}: {lit} is outside the f32 range", path.display(), n + 1);
+                }
+                i = j;
+            }
+        }
+    }
+    assert!(checked > 0);
+}
