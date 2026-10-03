@@ -215,7 +215,7 @@ pub fn preview(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     }
 
     // Cache bar over the preview range.
-    if let Some(c) = app.session.active_comp().cloned() {
+    if let Some(c) = app.session.active_comp_arc() {
         let cid = app.session.active_comp_id().map(|i| i.0).unwrap_or(0);
         let scale = app.viewer_shown.as_ref().map(|(_, k)| k.scale).unwrap_or(1000);
         let pl = match app.playback.plan.filter(|_| app.playback.playing) {
@@ -431,7 +431,7 @@ pub fn history(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
 pub fn markers(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let p = ui.painter().with_clip_rect(rect);
-    let Some(c) = app.session.active_comp().cloned() else { return };
+    let Some(c) = app.session.active_comp_arc() else { return };
     let mut y = rect.min.y + 8.0;
     if c.markers.is_empty() {
         p.text(rect.center(), Align2::CENTER_CENTER, "No composition markers", Tokens::ui(12.0), t.text_faint);

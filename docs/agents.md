@@ -47,14 +47,18 @@ The server speaks JSON-RPC 2.0 over stdio, one message per line, and supports MC
 
 | Tool | What it does |
 |---|---|
-| `list_commands {filter?, enabled_only?}` | Discover command ids, their param docs, and whether each can run now. |
-| `execute_command {command, params?}` | Run any command (undoable). |
+| `list_commands {filter?, enabled_only?, schemas?}` | Discover command ids, their param docs (and, with `schemas`, a JSON Schema each), and whether each can run now. |
+| `describe_command {command}` | One command in full: label, menu, shortcut, params doc, JSON `schema`, enabled / `why`. |
+| `execute_command {command, params?}` | Run any command (undoable). Unknown parameter keys are rejected with the accepted list. |
+| `get_state` | Editor state (active comp, time, selections, tool) plus `app`: version, command and effect counts, export formats, parity summary. |
 | `run_script {code, name?}` | Run JavaScript with the After Effects-style scripting object model (`app.project`, `comp.layers.addText(…)`, `layer.property("ADBE Transform Group").property("ADBE Position").setValueAtTime(…)`…). Returns `{ok, result, output, error: {message, line, column}}`; edits are undoable. |
 | `get_project` / `get_comp {comp?}` | Project items, comp settings and layers. |
 | `get_layer {layer, comp?, time?, flat?}` | A layer's property tree. Every node has a `path`. |
 | `get_property {layer, path, comp?, time?}` | Value at a time, keyframes and expression. |
 | `set_property {layer, path, value?, time?, expression?, comp?}` | Sets a static value. With `time` it sets a keyframe; with `expression` it sets an expression. |
 | `add_keyframe {layer, path, time+value \| keys:[...], interpolation?}` | Adds keys, then optionally applies linear/bezier/hold/easyEase. |
+| `list_effects {filter?}` | Effect ids, names, categories, GPU / 32-bpc support and parameters. |
+| `add_effect {layer, effect, values?, comp?}` | Apply an effect and set its parameters in one call; returns the instance path (`effects/#n`) and its parameter paths. |
 | `render_frame {comp?, time?, max_side?, path?, inline?}` | Returns a PNG image of a frame. |
 | `open_project {path \| demo \| new}` / `save_project {path?}` | Open and save files. |
 | `undo {steps?}` / `redo {steps?}` | History. |
@@ -77,6 +81,27 @@ instead of being ignored.
 3. `add_keyframe {"layer":2,"path":"transform/position","keys":[{"time":0,"value":[-300,540]},{"time":1.5,"value":[960,540]}],"interpolation":"easyEase"}`
 4. `execute_command {"command":"effect.apply","params":{"layer":2,"effect":"Gaussian Blur"}}`, then `set_property {"layer":2,"path":"effects/#1/blurriness","value":8}`
 5. `render_frame {"time":1.0}` lets you look at the result, and `save_project {"path":"intro.ecproj"}` saves it.
+
+### Cookbook
+
+Short recipes; every step is one tool call.
+
+| Goal | Calls |
+|---|---|
+| Orient yourself | `get_state` → `get_project` → `get_comp {}` |
+| Find the right command | `list_commands {"filter":"mask"}` → `describe_command {"command":"mask.new"}` (params + JSON Schema) |
+| Title card | `execute_command comp.new {...}` → `execute_command layer.newText {"text":"Hi","size":120}` → `render_frame {"time":0}` |
+| Animate | `add_keyframe {"layer":2,"path":"transform/scale","keys":[{"time":0,"value":[0,0]},{"time":0.5,"value":[100,100]}],"interpolation":"easyEase"}` |
+| Effect with settings | `list_effects {"filter":"glow"}` → `add_effect {"layer":2,"effect":"Glow","values":{"threshold":40,"radius":30}}` → `set_property {"layer":2,"path":"effects/#1/intensity","value":2}` |
+| Drive with an expression | `set_property {"layer":2,"path":"transform/rotation","expression":"time*90"}` |
+| Inspect a layer | `get_layer {"layer":2,"flat":true}` (every property with its `path`, value, key count) |
+| Check the result | `render_frame {"time":1.5,"max_side":640}`; in bridge mode `screenshot {"panel":"Timeline"}` |
+| Undo a mistake | `undo {}`, or `history {}` then `history {"goto": n}` |
+| Missing media after opening | `execute_command footage.check {"wait":true}` → `{checked, missing, probed}`; then `file.findMissing {"what":"footage"}` |
+| Save | `save_project {"path":"out.ecproj"}` |
+
+The desktop app checks footage in the background after every open (a "Checking footage" job in
+the Progress panel, `jobs.list`); headless sessions run `footage.check` when they want it.
 
 ### Motion tracking
 
@@ -273,6 +298,7 @@ on stdout. Errors print `{"error": ...}` and exit with status 1; usage errors ex
 ```sh
 effectcraft-cli info --json
 effectcraft-cli commands --filter keys
+effectcraft-cli exec --list --schemas --json                     # every command with its params JSON Schema
 effectcraft-cli exec comp.new --params '{"name":"Main","width":1280,"height":720}' --empty --save-as main.ecproj
 effectcraft-cli exec layer.newSolid '{"color":"#3366ff"}' main.ecproj --save
 effectcraft-cli props Main '#1' --project main.ecproj           # flat property list with paths

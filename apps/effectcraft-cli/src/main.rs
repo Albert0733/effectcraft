@@ -16,6 +16,8 @@
 //! effectcraft-cli render F.ecproj --queue                    render the project's Render Queue
 //! effectcraft-cli bench [--comp C] [--time S] [--scale K] [--n N] [--play N] [--gpu]   render timings
 //!     (--gpu: CPU vs GPU ms/frame for every comp at Full and Half)
+//! effectcraft-cli bench --ops [--small] [--layers N] [--comps N] [--footage N]   everyday-operation timings
+//!     on a large generated project (open, save, auto-save, undo/redo, timeline, Project panel)
 //! effectcraft-cli script FILE.jsx [F.ecproj] | --eval CODE    run an After Effects-style script
 //! effectcraft-cli mcp [--bridge PORT]                         MCP server on stdio
 //!
@@ -49,6 +51,9 @@ const USAGE: &str = "usage: effectcraft-cli <info|commands|exec|run|props|get|se
   bench [--comp C] [--time S] [--scale K] [--n N] [--play N] [--gpu]   per-layer/effect render timings;
                                            --play N renders N consecutive frames with/without the layer cache;
                                            --gpu compares CPU and GPU ms/frame for every comp at Full and Half
+  bench --ops [--small] [--layers N] [--comps N] [--footage N]
+                                           everyday operations on a large generated project: startup, open,
+                                           save, auto-save, edits + undo/redo, timeline, Project panel
   script FILE.jsx [F.ecproj] | --eval CODE run JavaScript with the After Effects-style object model
                                            (app.project, comps, layers, properties…); prints writeLn
                                            output and the result; errors exit 1 with file:line:col
@@ -60,6 +65,9 @@ options: --project F.ecproj | --demo | --empty   --save | --save-as F   --bridge
 const VALUED: &[&str] = &[
     "--n",
     "--play",
+    "--layers",
+    "--comps",
+    "--footage",
     "--params",
     "--project",
     "--bridge",
@@ -615,6 +623,9 @@ fn list_commands_cmd(args: &Args, json_out: bool) -> Result<(), Failure> {
 /// `bench`: time one frame N times without the layer cache (per-layer and per-effect breakdown),
 /// and optionally `--play N` consecutive frames with and without the cache.
 fn bench_cmd(args: &Args) -> Result<(), Failure> {
+    if args.flag("--ops") {
+        return bench_ops(args);
+    }
     let mut s = effectcraft_host::session();
     match &args.project {
         Some(p) => s.execute("file.open", json!({"path": p})),
@@ -633,6 +644,50 @@ fn bench_cmd(args: &Args) -> Result<(), Failure> {
     bench(&s, cid, t, opts, args.num("--n")?.unwrap_or(10.0).max(1.0) as usize);
     if let Some(n) = args.num("--play")? {
         bench_play(&s, cid, t, opts, n.max(1.0) as usize);
+    }
+    Ok(())
+}
+
+/// `bench --ops`: everyday operations on a large generated project (200 comps, 5,000 layers in
+/// the main comp, 300 footage items, 20-deep precomp nesting, expressions): startup to first
+/// frame, open, save, auto-save, small and large edits with undo/redo, first frame, timeline
+/// scrolling and the Project panel. `--small` for a quick run; `--layers N`, `--comps N`,
+/// `--footage N` resize it. See docs/architecture.md ▸ Performance.
+fn bench_ops(args: &Args) -> Result<(), Failure> {
+    use effectcraft_engine::perf::{self, LargeSpec};
+    let mut spec = if args.flag("--small") { LargeSpec::small() } else { LargeSpec::default() };
+    if let Some(n) = args.num("--layers")? {
+        spec.main_layers = n.max(1.0) as usize;
+    }
+    if let Some(n) = args.num("--comps")? {
+        spec.comps = n.max(1.0) as usize;
+    }
+    if let Some(n) = args.num("--footage")? {
+        spec.footage = n.max(0.0) as usize;
+    }
+    let dir = std::env::temp_dir().join(format!("effectcraft-bench-ops-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).map_err(|e| Failure::Error(format!("{}: {e}", dir.display())))?;
+    let t0 = std::time::Instant::now();
+    drop(effectcraft_host::session());
+    let host_ms = t0.elapsed().as_secs_f64() * 1000.0;
+    let (mut m, _) = perf::ops_bench(&spec, &dir, &effectcraft_host::session);
+    m.insert(0, perf::Measure { name: "hostSession", ms: host_ms, note: "a fully wired session (media, expressions, scripting, export)".into() });
+    let path = dir.join("bench-large.ecproj").to_string_lossy().to_string();
+    m.extend(effectcraft_ui_egui::bench::ui_ops(|| {
+        let mut s = effectcraft_host::session();
+        if let Err(e) = s.execute("file.open", json!({"path": path})) {
+            eprintln!("bench --ops: {e}");
+        }
+        s
+    }));
+    let _ = std::fs::remove_dir_all(&dir);
+    if args.flag("--json") {
+        emit(&json!({"spec": format!("{spec:?}"), "measures": m.iter().map(perf::Measure::json).collect::<Vec<_>>()}), true);
+    } else {
+        println!("bench --ops: {} comps, {} layers in Main, {} footage items", spec.comps, spec.main_layers, spec.footage);
+        for x in &m {
+            println!("  {:<22} {:>10.2} ms  {}", x.name, x.ms, x.note);
+        }
     }
     Ok(())
 }

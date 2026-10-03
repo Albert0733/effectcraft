@@ -1175,6 +1175,7 @@ dependencies = [
  "effectcraft-host",
  "effectcraft-render",
  "effectcraft-time",
+ "effectcraft-ui-egui",
  "image",
  "serde_json",
 ]

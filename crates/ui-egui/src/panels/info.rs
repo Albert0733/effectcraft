@@ -60,7 +60,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     y += 82.0;
     p.line_segment([pos2(rect.min.x + 8.0, y), pos2(rect.max.x - 8.0, y)], egui::Stroke::new(1.0, t.separator));
     y += 14.0;
-    let comp = app.session.active_comp().cloned();
+    let comp = app.session.active_comp_arc();
     if let Some(c) = comp {
         let sel: Vec<String> = app.session.state.selected_layers.iter().filter_map(|id| c.layer(*id)).map(|l| l.name.clone()).collect();
         let tc = crate::panels::timecode(&app.session, &c, app.session.time());

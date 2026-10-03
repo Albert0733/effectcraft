@@ -152,7 +152,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         run(app, &ctx, "track.stabilize", src_p.clone());
     }
     y += 34.0;
-    let Some(comp) = app.session.active_comp().cloned() else {
+    let Some(comp) = app.session.active_comp_arc() else {
         p.text(pos2(x0, y + 8.0), Align2::LEFT_CENTER, "Open a composition to track motion.", Tokens::ui(12.0), t.text_faint);
         return;
     };

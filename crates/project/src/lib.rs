@@ -987,6 +987,14 @@ impl Project {
     pub fn comp(&self, id: ItemId) -> Option<&Comp> {
         self.items.get(&id)?.as_comp()
     }
+    /// A shared handle on a comp: a snapshot that costs a reference count, not a deep copy of
+    /// its layers (frontends hold one across a frame instead of cloning the comp).
+    pub fn comp_arc(&self, id: ItemId) -> Option<Arc<Comp>> {
+        match &self.items.get(&id)?.kind {
+            ItemKind::Comp(c) => Some(c.clone()),
+            _ => None,
+        }
+    }
     /// Mutable comp (copy-on-write).
     pub fn comp_mut(&mut self, id: ItemId) -> Option<&mut Comp> {
         match &mut self.items.get_mut(&id)?.kind {

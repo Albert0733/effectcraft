@@ -283,6 +283,16 @@ pub fn ops_bench(spec: &LargeSpec, dir: &std::path::Path, fresh: &dyn Fn() -> Se
         s
     });
     out.push(Measure { name: "open", ms, note: format!("active comp {:?}", s.state.active_comp.map(|c| c.0)) });
+    // Its parts: reading the file and parsing it (the rest is replacing the session's project).
+    let (ms, text) = time_best(3, || std::fs::read_to_string(&path).unwrap_or_default());
+    out.push(Measure { name: "openRead", ms, note: format!("{} MB", text.len() / 1_000_000) });
+    let (ms, _) = time_best(3, || Project::from_json(&text).expect("parse"));
+    out.push(Measure { name: "openParse", ms, note: "JSON → Project".into() });
+    let compact = Project::from_json(&text).expect("parse").to_json_compact();
+    drop(text);
+    let (ms, _) = time_best(3, || Project::from_json(&compact).expect("parse"));
+    out.push(Measure { name: "openParseCompact", ms, note: format!("the same as compact JSON ({} MB, as auto-saves are written)", compact.len() / 1_000_000) });
+    drop(compact);
 
     // First frame of the main comp at 1/4 resolution (the viewer's first request).
     let cid = s.active_comp_id().expect("main comp");

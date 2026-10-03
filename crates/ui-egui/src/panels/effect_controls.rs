@@ -317,7 +317,7 @@ fn prop_row(
             }
         }
         Value::Layer(l) => {
-            let comp = app.session.active_comp().cloned();
+            let comp = app.session.active_comp_arc();
             if let Some(comp) = comp {
                 let dr = Rect::from_min_size(pos2(vx, cy - 9.0), vec2(((r.max.x - vx) * 0.55).clamp(90.0, 170.0), 18.0));
                 let idx_of = |id: u64| comp.layers.iter().position(|x| x.id.0 == id);
@@ -883,7 +883,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         return;
     };
     let Some(cid) = app.session.active_comp_id() else { return };
-    let comp = app.session.project.comp(cid).cloned().unwrap_or_else(|| effectcraft_engine::project::Comp::new(1, 1, Default::default(), Default::default()));
+    let comp = app.session.project.comp_arc(cid).unwrap_or_else(|| effectcraft_engine::project::Comp::new(1, 1, Default::default(), Default::default()).into());
     let comp_name = app.session.project.item(cid).map(|i| i.name.clone()).unwrap_or_default();
     let snap_project = app.session.project.clone();
     let snap_expr = app.session.expr.clone();

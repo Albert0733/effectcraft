@@ -75,15 +75,23 @@ fn row_height(row: &Row, rh: f32) -> f32 {
 /// Insert an expression editor row after every property that has an expression.
 fn with_expr_rows(rows: Vec<Row>, comp: &Comp, closed: &std::collections::BTreeSet<u64>) -> Vec<Row> {
     let mut out = Vec::with_capacity(rows.len());
+    // Rows come grouped by layer: look each layer up once (a linear search per property row
+    // made twirling open many layers of a big comp quadratic).
+    let mut cur: Option<&Layer> = None;
     for r in rows {
-        let extra = match r.kind {
-            RowKind::Prop { uid } if !closed.contains(&uid) => comp.layer(r.layer).and_then(|l| l.props.find(uid)).and_then(|p| p.expr.as_ref()).map(|e| Row {
+        let mut extra = None;
+        if let RowKind::Prop { uid } = r.kind
+            && !closed.contains(&uid)
+        {
+            if cur.is_none_or(|l| l.id != r.layer) {
+                cur = comp.layer(r.layer);
+            }
+            extra = cur.and_then(|l| l.props.find(uid)).and_then(|p| p.expr.as_ref()).map(|e| Row {
                 layer: r.layer,
                 depth: r.depth,
                 kind: RowKind::Expr { uid, lines: e.text.lines().count().max(1) },
-            }),
-            _ => None,
-        };
+            });
+        }
         out.push(r);
         out.extend(extra);
     }
@@ -336,7 +344,7 @@ fn tl_map_id() -> egui::Id {
 /// Zoom the time ruler around the CTI.
 pub fn zoom(app: &mut EffectcraftApp, ctx: &egui::Context, k: f64) {
     let Some((x0, w)) = ctx.data(|d| d.get_temp::<(f32, f32)>(egui::Id::new("timeline-graph-area"))) else { return };
-    let comp = app.session.active_comp().cloned();
+    let comp = app.session.active_comp_arc();
     let Some(comp) = comp else { return };
     let fit = (w as f64 - 20.0) / comp.duration.seconds().max(0.01);
     let pps = app.ui.timeline.pps.unwrap_or(fit);
@@ -731,7 +739,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         ui.painter().text(rect.center(), Align2::CENTER_CENTER, "(no composition)", Tokens::ui(12.0), t.text_faint);
         return;
     };
-    let Some(comp) = app.session.project.comp(cid).cloned() else { return };
+    let Some(comp) = app.session.project.comp_arc(cid) else { return };
     let p = ui.painter().clone();
     let time = app.session.time();
     let fr = comp.frame_rate;
@@ -1294,14 +1302,19 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     if tresp.clicked() {
                         widgets::open_popup(ui, pop);
                     }
+                    // The menu lists every layer: built only while it is open (per visible row
+                    // it made a big comp's timeline quadratic).
                     let mut opts = vec!["No Track Matte".to_string(), "-".to_string()];
-                    let candidates: Vec<&Layer> = comp.layers.iter().filter(|l| l.id != layer.id && l.source.is_av()).collect();
-                    for l in &candidates {
-                        opts.push(format!("{}. {}", idx_of(l.id), l.name));
-                    }
-                    opts.push("-".into());
-                    for k in MatteKind::ALL {
-                        opts.push(k.label().into());
+                    let mut candidates: Vec<&Layer> = vec![];
+                    if widgets::popup_is_open(ui, pop) {
+                        for (i, l) in comp.layers.iter().enumerate().filter(|(_, l)| l.id != layer.id && l.source.is_av()) {
+                            opts.push(format!("{}. {}", i + 1, l.name));
+                            candidates.push(l);
+                        }
+                        opts.push("-".into());
+                        for k in MatteKind::ALL {
+                            opts.push(k.label().into());
+                        }
                     }
                     if let Some(i) = widgets::popup_menu(ui, pop, mr.left_bottom(), &opts, None) {
                         if i == 0 {
@@ -1340,9 +1353,14 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     if presp.clicked() {
                         widgets::open_popup(ui, pop);
                     }
-                    let cands: Vec<&Layer> = comp.layers.iter().filter(|l| l.id != layer.id).collect();
+                    let mut cands: Vec<&Layer> = vec![];
                     let mut popts = vec!["None".to_string(), "-".to_string()];
-                    popts.extend(cands.iter().map(|l| format!("{}. {}", idx_of(l.id), l.name)));
+                    if widgets::popup_is_open(ui, pop) {
+                        for (i, l) in comp.layers.iter().enumerate().filter(|(_, l)| l.id != layer.id) {
+                            popts.push(format!("{}. {}", i + 1, l.name));
+                            cands.push(l);
+                        }
+                    }
                     if let Some(i) = widgets::popup_menu(ui, pop, pr_rect.left_bottom(), &popts, None) {
                         let par = if i == 0 { serde_json::Value::Null } else { json!(cands[i - 2].id.0) };
                         actions.push(("layer.setParent".into(), json!({"layers": [layer.id.0], "parent": par})));
@@ -1839,7 +1857,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                         // Alt-drag the first or last key of a selected group: scale the group in time.
                         if kresp.drag_started()
                             && ui.input(|i| i.modifiers.alt)
-                            && let Some(c) = app.session.active_comp().cloned()
+                            && let Some(c) = app.session.active_comp_arc()
                         {
                             super::graph_tools::alt_scale_begin(app, &ctx, &c, ct.seconds());
                         }
@@ -1889,7 +1907,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         }
     }
     // Alt-drag key group scaling (follows the pointer until release).
-    if let Some(c) = app.session.active_comp().cloned() {
+    if let Some(c) = app.session.active_comp_arc() {
         super::graph_tools::alt_scale_update(app, &ctx, &c, tm, &mut actions);
     }
     // Graph editor.

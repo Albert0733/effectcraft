@@ -45,6 +45,11 @@ pub(crate) fn open(s: &mut Session, p: &Value) -> Result<Value> {
     let proj = Project::from_json(&text)?;
     s.replace_project(proj, Some(path.to_string()));
     s.note_project_path(path);
+    // Lazy open: footage is checked in the background (Progress panel), not before the
+    // project shows.
+    if s.check_footage_on_open {
+        crate::footage_check::start(s, None, false)?;
+    }
     Ok(json!({"path": path}))
 }
 

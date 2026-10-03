@@ -561,6 +561,9 @@ pub struct UiState {
     /// Horizontal scroll of the Project panel's optional columns (Name and Label stay put).
     #[serde(default)]
     pub project_hscroll: f32,
+    /// Vertical scroll of the Project panel's item list (points); only visible rows are drawn.
+    #[serde(default)]
+    pub project_scroll: f32,
     /// Effect Controls twirl state (group uids that are collapsed).
     pub fx_closed: BTreeSet<u64>,
     /// Slider params whose slider row is twirled open (AE hides sliders by default).
@@ -652,6 +655,7 @@ impl Default for UiState {
             project_sort: default_project_sort(),
             project_sort_desc: false,
             project_hscroll: 0.0,
+            project_scroll: 0.0,
             project_columns: default_project_columns(),
             fx_closed: BTreeSet::new(),
             fx_slider_open: BTreeSet::new(),

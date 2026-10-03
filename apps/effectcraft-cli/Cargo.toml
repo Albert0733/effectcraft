@@ -16,6 +16,7 @@ path = "src/main.rs"
 effectcraft-engine = { workspace = true }
 effectcraft-host = { workspace = true }
 effectcraft-automation = { workspace = true }
+effectcraft-ui-egui = { workspace = true }
 effectcraft-render = { workspace = true }
 effectcraft-gpu = { workspace = true }
 effectcraft-time = { workspace = true }

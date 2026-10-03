@@ -824,6 +824,15 @@ pub fn specs() -> Vec<CommandSpec> {
         ),
         cmd!("file.findMissing", "Find Missing", [], None, "{what: footage|effects|fonts}", has_items, find_missing),
         cmd!(
+            "footage.check",
+            "Check Footage",
+            [],
+            None,
+            "{items?: [id], wait?} — look for every footage file (in the background unless `wait`) and flag missing items",
+            has_items,
+            crate::footage_check::command
+        ),
+        cmd!(
             "file.runScript",
             "Run Script File...",
             ["File", "Scripts"],
