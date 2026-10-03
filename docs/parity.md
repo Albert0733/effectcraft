@@ -75,9 +75,10 @@ library groundwork for mask tracking and Warp Stabilizer.
 
 What is left is concentrated in large systems: the 3D camera tracker,
 the Warp Stabilizer and mask-tracking UI on top of
-the new tracking library, SVG/PSD import, WebM, a disk cache,
-native macOS menus, and wasm threads. (The missing effect categories, 3D Channel, Immersive Video
-and OCIO, landed in M9.11; the scripting object model in M14.4; Roto Brush and Refine Edge in M6.7.)
+the new tracking library, SVG/PSD import, WebM, a disk cache, and wasm threads. (The missing
+effect categories, 3D Channel, Immersive Video and OCIO, landed in M9.11; the scripting object
+model in M14.4; Roto Brush and Refine Edge in M6.7; native macOS menus, the Composition Flowchart,
+Timeline column/search depth, the Home screen and every After Effects workspace in the UI-polish wave.)
 
 ## By area
 
@@ -89,13 +90,13 @@ and OCIO, landed in M9.11; the scripting object model in M14.4; Roto Brush and R
 | Import | 78% | 4.5 | PSD, SVG as shapes, Lottie |
 | Automation | ≈ 90% | 0.8 | scripting covers the documented core object model (AUT-2, M14.4: `app`, project items, comps, layers, properties and keyframes, text documents, markers, render queue, Script Console, `effectcraft-cli script`, MCP `run_script`); still missing: ScriptUI panels/dialogs, `.jsxbin`, sockets |
 | Shapes | 68% | 3.9 | taper and wave strokes (pen tool for shape paths and vertex editing landed in M6.5) |
-| Compositions | 67% | 7.4 | marker dialog, flowchart, Essential Graphics |
+| Compositions | 72% | 6.0 | Essential Graphics panel (the marker dialog and Composition Flowchart landed) |
 | Animation | 65% | 10.4 | puppet, Wiggler/Smoother/Motion Sketch (motion-path handles and the graph editor transform box landed in M5.8) |
 | Text | ≈ 86% | 1.3 | vertical type is basic (upright characters, no tate-chu-yoko), no OpenType feature panel, no extruded strokes (extruded, bevelled text landed in M7.6); per-character styles, paragraph settings, on-canvas editing and the `sourceText` style API landed (M9.9–M9.10) |
 | Web | 60% | 2.5 | threads, browser storage, audio |
 | 3D | 72% | 12.0 | 3D camera tracker, multi-view layouts, Advanced 3D motion blur and blend modes, cameras/lights from models; Advanced 3D (glTF/OBJ models, primitives, extruded text and shapes, PBR, image-based light, shadow maps, GPU rasteriser) landed in M7.4–M7.6 |
 | Effects | ≈ 75% | 5.0 | GPU versions of more effects and the 3D Camera Tracker (every other After Effects effect exists since M9.11 and M12.5) |
-| Interface | 55% | 10.4 | drag-to-dock and floating panels, preferences, native macOS menus (viewer rulers/snapping/channels/snapshots landed in M0.13) |
+| Interface | 70% | 6.0 | Timeline horizontal scrolling of many columns, a richer Learn area (native macOS menu bar, Timeline columns/search/reveal-add, Home screen with recent projects and all AE workspaces landed; viewer rulers/snapping/channels/snapshots landed in M0.13) |
 | Project | 53% | 8.1 | 8/16/32-bit pipeline and colour management, auto-save, proxies, folder moves |
 | Masks & roto | 68% | 6.0 | variable-width mask feather points, Roto Brush's learned (3.0) segmentation model (mask tracking and Mask Interpolation landed in M6.6; Roto Brush & Refine Edge with graph-cut segmentation, flow propagation, edge matting, decontamination and Freeze in M6.7) |
 | Preview | 55% | 6.1 | GPU 3D and adjustment layers, disk cache (region of interest, snapshots, exposure and Fast Previews landed in M0.13) |
@@ -134,7 +135,7 @@ Mocha and Cineware are third-party and not counted.
 7. Point tracking and stabilization (in progress).
 8. Frame blending, collapse transformations, slip edit.
 9. A real 8/16/32-bit pipeline with linear blending and colour management.
-10. Drag-to-dock and floating panels, saved workspaces, native macOS menus.
+10. ~~Drag-to-dock and floating panels, saved workspaces, native macOS menus.~~
 11. Auto-save, crash recovery, recent projects (in progress).
 12. Expression gaps: `sampleImage`, `footage()` (the `sourceText` style API landed in M9.9).
 13. Lottie (in progress), WebM, SVG and PSD import.

@@ -14,6 +14,7 @@ pub mod frames;
 pub mod header;
 pub mod icons;
 pub mod menus;
+pub mod native_menu;
 pub mod panels;
 pub mod state;
 pub mod theme;
@@ -86,6 +87,11 @@ pub struct Hooks {
     pub pick_folder: Option<Box<dyn Fn() -> Option<String>>>,
     /// Save dialog for other file kinds: (default name, extension).
     pub pick_save_file: Option<Box<dyn Fn(&str, &str) -> Option<String>>>,
+    /// The system clipboard's text (native menu Edit ▸ Paste into a text field).
+    pub clipboard_text: Option<Box<dyn Fn() -> Option<String>>>,
+    /// Application actions the OS performs (`app.hide`, `app.hideOthers`, `app.showAll` on
+    /// macOS). Returns false when the host doesn't handle the id.
+    pub app_action: Option<Box<dyn Fn(&str) -> bool>>,
 }
 
 #[derive(Default)]
@@ -158,6 +164,10 @@ pub struct EffectcraftApp {
     /// Docked groups laid out last frame: (active panel, group rect) — `~` maximizes the one
     /// under the pointer.
     pub(crate) dock_rects: Vec<(PanelKind, egui::Rect)>,
+    /// Home screen: recent-project thumbnail textures by path (None = no thumbnail).
+    pub(crate) home_thumbs: std::collections::HashMap<String, Option<egui::TextureHandle>>,
+    /// The (project path, saved revision) whose thumbnail was stored last.
+    pub(crate) home_thumb_saved: Option<(String, u64)>,
 }
 
 impl EffectcraftApp {
@@ -202,6 +212,8 @@ impl EffectcraftApp {
             applied_prefs: None,
             recovery: None,
             dock_rects: vec![],
+            home_thumbs: Default::default(),
+            home_thumb_saved: None,
         }
         .with_ui_commands()
     }
@@ -267,8 +279,12 @@ impl EffectcraftApp {
     pub fn set_workspace(&mut self, name: &str) {
         self.ui.workspace = name.to_string();
         self.ui.dock = self.ui.saved_workspaces.get(name).cloned().unwrap_or_else(|| dock::workspace(name));
-        self.ui.floating = self.ui.saved_floating.get(name).cloned().unwrap_or_default();
+        self.ui.floating = self.ui.saved_floating.get(name).cloned().unwrap_or_else(|| dock::workspace_floating(name));
         self.ui.maximized = None;
+        // Learn: the Home screen (community links) in the Composition panel.
+        if name == "Learn" {
+            self.ui.start_screen = true;
+        }
     }
 
     /// Built-in workspaces followed by the saved ones (Window ▸ Workspace ▸ Save as New Workspace).
@@ -757,6 +773,7 @@ impl EffectcraftApp {
         let body = egui::Rect::from_min_max(egui::pos2(full.min.x + 4.0, header.max.y + 2.0), egui::pos2(full.max.x - 4.0, full.max.y - 4.0));
         self.dock_area(ui, body);
         panels::precomp::mini_flowchart(self, &ctx);
+        panels::home::capture_thumbnail(self);
         panels::dialogs::show(self, &ctx);
         self.draw_toast(ui, full);
     }

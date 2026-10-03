@@ -175,7 +175,43 @@ fn vsplit(size: SplitSize, a: DockNode, b: DockNode) -> DockNode {
     DockNode::Split { vertical: true, size, a: Box::new(a), b: Box::new(b) }
 }
 
-pub const WORKSPACES: [&str; 10] = ["Default", "Standard", "Small Screen", "Animation", "Effects", "Motion Tracking", "Paint", "Text", "Minimal", "All Panels"];
+/// The built-in workspaces: After Effects 2026's (Window ▸ Workspace), less Libraries (an Adobe
+/// service). Learn shows the Home screen (community links instead of Adobe's tutorials);
+/// Essential Graphics uses the Properties panel; Undocked Panels floats the panels over the
+/// Composition panel.
+pub const WORKSPACES: &[&str] = &[
+    "Default",
+    "Standard",
+    "Small Screen",
+    "Animation",
+    "Effects",
+    "Motion Tracking",
+    "Paint",
+    "Text",
+    "Minimal",
+    "All Panels",
+    "Review",
+    "Learn",
+    "Essential Graphics",
+    "Color",
+    "Undocked Panels",
+];
+
+/// The floating panels a workspace starts with (Undocked Panels), in points for a window of
+/// about 1680×1020 (they are kept inside the window when drawn).
+pub fn workspace_floating(name: &str) -> Vec<Floating> {
+    use PanelKind::*;
+    let f = |panels: &[PanelKind], rect: [f32; 4]| Floating { panels: panels.to_vec(), active: 0, rect };
+    match name {
+        "Undocked Panels" => vec![
+            f(&[Project, EffectControls], [24.0, 110.0, 320.0, 420.0]),
+            f(&[Preview, Info, Audio], [1330.0, 110.0, 320.0, 300.0]),
+            f(&[EffectsPresets, Properties, Character, Paragraph], [1330.0, 430.0, 320.0, 360.0]),
+            f(&[Timeline, RenderQueue], [24.0, 640.0, 1280.0, 340.0]),
+        ],
+        _ => vec![],
+    }
+}
 
 /// The default layout of a named workspace.
 pub fn workspace(name: &str) -> DockNode {
@@ -229,6 +265,40 @@ pub fn workspace(name: &str) -> DockNode {
             tabs(&[Timeline], 0),
         ),
         "Minimal" => vsplit(Ratio(0.6), tabs(&[Composition], 0), tabs(&[Timeline], 0)),
+        // Review: a large viewer with the markers and the project beside it.
+        "Review" => vsplit(
+            Ratio(0.66),
+            hsplit(FixedA(280.0), tabs(&[Project, Markers], 0), hsplit(FixedB(260.0), tabs(&[Composition, Layer], 0), right(&[Preview, Info], &[Audio]))),
+            tabs(&[Timeline, RenderQueue], 0),
+        ),
+        // Essential Graphics: the Properties panel (After Effects' successor to the Essential
+        // Graphics panel) full height on the right, type panels beside the viewer.
+        "Essential Graphics" => hsplit(
+            FixedB(320.0),
+            vsplit(
+                Ratio(0.58),
+                hsplit(
+                    FixedA(280.0),
+                    tabs(&[Project, EffectControls], 0),
+                    hsplit(FixedB(260.0), tabs(&[Composition, Layer], 0), right(&[Character, Paragraph], &[Align, Preview])),
+                ),
+                tabs(&[Timeline], 0),
+            ),
+            stack(&[(Properties, true, None), (EffectsPresets, false, None)]),
+        ),
+        // Color: wide Effect Controls for grading effects, Info for colour readouts.
+        "Color" => vsplit(
+            Ratio(0.6),
+            hsplit(
+                FixedA(360.0),
+                tabs(&[EffectControls, Project], 0),
+                hsplit(FixedB(300.0), tabs(&[Composition, Layer], 0), right(&[Info, Preview], &[EffectsPresets])),
+            ),
+            tabs(&[Timeline], 0),
+        ),
+        // Undocked Panels: the Composition panel docked, the others floating
+        // ([`workspace_floating`]).
+        "Undocked Panels" => tabs(&[Composition, Layer, Flowchart], 0),
         "Small Screen" => vsplit(
             Ratio(0.55),
             hsplit(
@@ -817,8 +887,59 @@ mod tests {
     fn workspaces_contain_core_panels() {
         for w in WORKSPACES {
             let d = workspace(w);
-            assert!(d.contains(PanelKind::Timeline), "{w}");
+            let floating: Vec<PanelKind> = workspace_floating(w).into_iter().flat_map(|f| f.panels).collect();
+            assert!(d.contains(PanelKind::Timeline) || floating.contains(&PanelKind::Timeline), "{w}");
             assert!(d.contains(PanelKind::Composition) || d.contains(PanelKind::Layer), "{w}");
+            // A panel is in one place only.
+            let mut all = vec![];
+            d.panels(&mut all);
+            all.extend(floating);
+            let n = all.len();
+            all.sort_by_key(|p| p.id());
+            all.dedup();
+            assert_eq!(all.len(), n, "{w} has a panel twice");
+        }
+    }
+
+    #[test]
+    fn after_effects_workspaces_exist() {
+        // Window ▸ Workspace in After Effects 2026, less Libraries (an Adobe service).
+        for w in [
+            "Default",
+            "Review",
+            "Learn",
+            "Small Screen",
+            "Standard",
+            "All Panels",
+            "Animation",
+            "Essential Graphics",
+            "Color",
+            "Effects",
+            "Minimal",
+            "Motion Tracking",
+            "Paint",
+            "Text",
+            "Undocked Panels",
+        ] {
+            assert!(WORKSPACES.contains(&w), "{w}");
+        }
+        assert!(!WORKSPACES.contains(&"Libraries"));
+        // Layouts differ from Default (except Learn, which is Default plus the Home screen).
+        let def = workspace("Default");
+        for w in WORKSPACES.iter().filter(|w| !matches!(**w, "Default" | "Learn")) {
+            assert_ne!(workspace(w), def, "{w} falls back to Default");
+        }
+        assert!(workspace("Essential Graphics").contains(PanelKind::Properties));
+        assert!(workspace("Color").contains(PanelKind::EffectControls));
+        assert!(!workspace_floating("Undocked Panels").is_empty());
+        // Every built-in workspace is in Window ▸ Workspace.
+        let menu: Vec<String> = effectcraft_engine::menus::entries()
+            .into_iter()
+            .filter(|(_, e)| e.command == "window.workspace")
+            .filter_map(|(_, e)| e.params.get("name").and_then(|v| v.as_str()).map(str::to_string))
+            .collect();
+        for w in WORKSPACES {
+            assert!(menu.iter().any(|m| m == w), "{w} missing from Window > Workspace");
         }
     }
 

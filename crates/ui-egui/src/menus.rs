@@ -59,6 +59,21 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("timeline.reveal.feather", "Reveal Mask Feather", [], Some("F")),
     uic!("timeline.reveal.levels", "Reveal Audio Levels (press twice: Waveform)", [], Some("L")),
     uic!("timeline.reveal.waveform", "Reveal Audio Waveform", [], None),
+    uic!("timeline.revealAdd.position", "Add Position to Revealed Properties", [], Some("Shift+P")),
+    uic!("timeline.revealAdd.scale", "Add Scale to Revealed Properties", [], Some("Shift+S")),
+    uic!("timeline.revealAdd.rotation", "Add Rotation to Revealed Properties", [], Some("Shift+R")),
+    uic!("timeline.revealAdd.opacity", "Add Opacity to Revealed Properties", [], Some("Shift+T")),
+    uic!("timeline.revealAdd.anchor", "Add Anchor Point to Revealed Properties", [], Some("Shift+A")),
+    uic!("timeline.revealAdd.effects", "Add Effects to Revealed Properties", [], Some("Shift+E")),
+    uic!("timeline.revealAdd.masks", "Add Masks to Revealed Properties", [], Some("Shift+M")),
+    uic!("timeline.revealAdd.feather", "Add Mask Feather to Revealed Properties", [], Some("Shift+F")),
+    uic!("timeline.revealAdd.levels", "Add Audio Levels to Revealed Properties", [], Some("Shift+L")),
+    uic!("timeline.revealAdd.animated", "Add Animated Properties to Revealed Properties", [], Some("Shift+U")),
+    uic!("timeline.column", "Show/Hide Timeline Column", [], None),
+    uic!("timeline.sourceName", "Source Name / Layer Name", [], None),
+    uic!("timeline.search", "Search Timeline", [], None),
+    uic!("flowchart.options", "Flowchart Options", [], None),
+    uic!("flowchart.graph", "Flowchart Graph", [], None),
     uic!("timeline.collapseAll", "Collapse All", [], Some("Cmd+`")),
     uic!("tool.selection", "Selection Tool", [], Some("V")),
     uic!("tool.hand", "Hand Tool", [], Some("H")),
@@ -89,26 +104,42 @@ pub fn panel_command_id(p: PanelKind) -> String {
     format!("window.panel.{}", p.id())
 }
 
-fn reveal(app: &mut EffectcraftApp, kind: &str, now: f64) {
+/// The reveal shortcuts (P, S, R, T, A, E, M, F, L…). `add` (Shift+key) adds the property to
+/// (or removes it from) those already revealed instead of replacing them.
+pub fn reveal(app: &mut EffectcraftApp, kind: &str, now: f64, add: bool) {
     // AE's double-press shortcuts: L then L again quickly reveals the Waveform (LL).
     let kind = match app.last_reveal.take() {
         Some((k, t)) if k == "levels" && kind == "levels" && now - t < 0.6 => "waveform",
         _ => kind,
     };
     app.last_reveal = Some((kind.to_string(), now));
-    let add = app.ui.timeline.reveal.contains(&kind.to_string());
-    if add && app.ui.timeline.reveal.len() == 1 {
-        app.ui.timeline.reveal.clear();
-        app.ui.timeline.open_layers.clear();
+    let tl = &mut app.ui.timeline;
+    let present = tl.reveal.iter().any(|k| k == kind);
+    let sel: Vec<u64> = if app.session.state.selected_layers.is_empty() {
+        app.session.active_comp().map(|c| c.layers.iter().map(|l| l.id.0).collect()).unwrap_or_default()
+    } else {
+        app.session.state.selected_layers.iter().map(|l| l.0).collect()
+    };
+    if add {
+        if present {
+            tl.reveal.retain(|k| k != kind);
+            if tl.reveal.is_empty() {
+                tl.open_layers.clear();
+            }
+        } else {
+            tl.reveal.retain(|k| k != "props" || !tl.reveal_props.is_empty());
+            tl.reveal.push(kind.to_string());
+            tl.open_layers.extend(sel);
+        }
         return;
     }
-    app.ui.timeline.reveal = vec![kind.to_string()];
-    let sel = if app.session.state.selected_layers.is_empty() {
-        app.session.active_comp().map(|c| c.layers.iter().map(|l| l.id).collect()).unwrap_or_default()
-    } else {
-        app.session.state.selected_layers.clone()
-    };
-    app.ui.timeline.open_layers = sel.iter().map(|l| l.0).collect();
+    if present && tl.reveal.len() == 1 {
+        tl.reveal.clear();
+        tl.open_layers.clear();
+        return;
+    }
+    tl.reveal = vec![kind.to_string()];
+    tl.open_layers = sel.into_iter().collect();
 }
 
 fn no_params(p: &Value) -> bool {
@@ -167,8 +198,29 @@ pub fn invoke(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, params: V
         if k == "animated" {
             return run_engine(app, ctx, "anim.reveal", json!({"kind": "keyframes"}));
         }
-        reveal(app, k, now);
+        reveal(app, k, now, false);
         return Ok(Value::Null);
+    }
+    if let Some(k) = id.strip_prefix("timeline.revealAdd.") {
+        reveal(app, k, now, true);
+        return Ok(json!({"revealed": app.ui.timeline.reveal}));
+    }
+    // U reveals keyframed properties; UU (pressed twice quickly) all modified properties; U
+    // again later hides them.
+    if id == "anim.reveal" && params.get("kind").and_then(Value::as_str) == Some("keyframes") {
+        let last = app.last_reveal.take();
+        app.last_reveal = Some(("keyframes".into(), now));
+        match last {
+            Some((k, t)) if k == "keyframes" && now - t < 0.6 => {
+                return run_engine(app, ctx, "anim.reveal", json!({"kind": "modified"}));
+            }
+            Some((k, _)) if k == "keyframes" && app.ui.timeline.reveal == ["props"] => {
+                app.ui.timeline.reveal.clear();
+                app.ui.timeline.open_layers.clear();
+                return Ok(json!({"revealed": 0}));
+            }
+            _ => {}
+        }
     }
     // Docking: {panel, anchor, zone: center|left|right|top|bottom}, {panel, rect?}, {panel?}.
     if let Some(op) = id.strip_prefix("window.").filter(|o| matches!(*o, "maximizePanel" | "dockPanel" | "floatPanel" | "closePanel")) {
@@ -269,6 +321,24 @@ pub fn invoke(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, params: V
             return Ok(Value::Null);
         }
         "timeline.zoomFit" => app.ui.timeline.pps = None,
+        "timeline.column" => {
+            let col = params.get("column").and_then(Value::as_str).ok_or("timeline.column: need `column`")?;
+            let on = params.get("visible").and_then(Value::as_bool).unwrap_or(!crate::panels::timeline::column_visible(&app.ui.timeline, col));
+            crate::panels::timeline::set_column(&mut app.ui.timeline, col, on)?;
+            let shown: Vec<&str> =
+                crate::panels::timeline::COLUMNS.iter().map(|c| c.0).filter(|c| crate::panels::timeline::column_visible(&app.ui.timeline, c)).collect();
+            return Ok(json!({"columns": shown}));
+        }
+        "timeline.sourceName" => {
+            let tl = &mut app.ui.timeline;
+            tl.source_name = params.get("value").and_then(Value::as_bool).unwrap_or(!tl.source_name);
+            return Ok(json!({"sourceName": tl.source_name}));
+        }
+        "flowchart.options" | "flowchart.graph" => return crate::panels::flowchart::command(app, id, &params),
+        "timeline.search" => {
+            app.ui.timeline.search = params.get("query").and_then(Value::as_str).unwrap_or_default().to_string();
+            app.show_panel(PanelKind::Timeline);
+        }
         "timeline.graphEditor" => app.ui.timeline.graph_editor = !app.ui.timeline.graph_editor,
         "timeline.switchesModes" => app.ui.timeline.show_modes = !app.ui.timeline.show_modes,
         "timeline.collapseAll" => {
@@ -400,8 +470,16 @@ pub fn frontend(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, p: Valu
             );
             Value::Null
         }
-        "app.hide" => {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+        "app.hide" | "app.hideOthers" | "app.showAll" => {
+            // The desktop app asks macOS (NSApplication hide / hideOtherApplications /
+            // unhideAllApplications); elsewhere Hide minimizes and the others don't apply.
+            if app.hooks.app_action.as_ref().is_some_and(|f| f(id)) {
+                return Ok(Value::Null);
+            }
+            match id {
+                "app.hide" => ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true)),
+                _ => return Err(format!("`{id}` is only available on macOS")),
+            }
             Value::Null
         }
         "app.quit" => {
@@ -638,6 +716,13 @@ pub fn frontend(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, p: Valu
             Value::Null
         }
         "comp.flowchart" => {
+            // Chart the active comp; Layer ▸ Reveal ▸ Reveal Layer in Project Flowchart shows
+            // layers and selects the layer's node.
+            app.ui.flowchart.root = app.session.active_comp_id().map(|c| c.0);
+            if let (Some(c), Some(l)) = (app.session.active_comp_id(), app.session.state.selected_layers.first()) {
+                app.ui.flowchart.layers = true;
+                app.ui.flowchart.selected = Some(format!("layer:{}:{}", c.0, l.0));
+            }
             app.show_panel(PanelKind::Flowchart);
             Value::Null
         }
@@ -769,7 +854,7 @@ pub fn menus() -> Vec<&'static str> {
     effectcraft_engine::menus::top_level()
 }
 
-fn entry_label(app: &EffectcraftApp, e: &MenuEntry) -> String {
+pub(crate) fn entry_label(app: &EffectcraftApp, e: &MenuEntry) -> String {
     match e.command.as_str() {
         "edit.undo" => app.session.history.undo.last().map(|u| format!("Undo {}", u.0)).unwrap_or_else(|| "Can't Undo".into()),
         "edit.redo" => app.session.history.redo.last().map(|u| format!("Redo {}", u.0)).unwrap_or_else(|| "Can't Redo".into()),
@@ -778,12 +863,12 @@ fn entry_label(app: &EffectcraftApp, e: &MenuEntry) -> String {
 }
 
 /// The entry's shortcut in the active keyboard shortcut preset.
-fn entry_shortcut(app: &EffectcraftApp, e: &MenuEntry) -> Option<String> {
+pub(crate) fn entry_shortcut(app: &EffectcraftApp, e: &MenuEntry) -> Option<String> {
     app.session.shortcuts().shortcut_of(&e.command, &e.params).map(str::to_string)
 }
 
 /// Check-mark state of frontend toggles (engine state is answered by the engine).
-fn entry_checked(app: &EffectcraftApp, e: &MenuEntry) -> Option<bool> {
+pub(crate) fn entry_checked(app: &EffectcraftApp, e: &MenuEntry) -> Option<bool> {
     let v = &app.ui.viewer;
     let pstr = |k: &str| e.params.get(k).and_then(Value::as_str);
     match e.command.as_str() {
@@ -815,7 +900,7 @@ fn entry_checked(app: &EffectcraftApp, e: &MenuEntry) -> Option<bool> {
     }
 }
 
-fn entry_enabled(app: &EffectcraftApp, e: &MenuEntry) -> bool {
+pub(crate) fn entry_enabled(app: &EffectcraftApp, e: &MenuEntry) -> bool {
     if e.command == "window.panel" {
         return true;
     }

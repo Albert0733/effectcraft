@@ -26,6 +26,9 @@ pub fn specs() -> Vec<CommandSpec> {
         ),
         fe!("app.gpuInfo", "GPU Information...", [], None, "{}", always),
         fe!("app.hide", "Hide EffectCraft", [], None, "{}", always),
+        // macOS: the native menu's Hide Others / Show All (the desktop app hides the other apps).
+        fe!("app.hideOthers", "Hide Others", [], None, "{}", always),
+        fe!("app.showAll", "Show All", [], None, "{}", always),
         fe!("app.quit", "Quit EffectCraft", [], Some("Cmd+Q"), "{}", always),
         fe!("app.commandPalette", "Quick Apply...", ["Edit"], Some("Cmd+Shift+Space"), "{query?}", always),
         fe!("app.keyboardShortcuts", "Keyboard Shortcuts", ["Edit"], Some("Cmd+Alt+'"), "{}", always),
