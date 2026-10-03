@@ -1,6 +1,7 @@
 //! Panel bodies.
 
 pub mod anim_tools;
+pub mod camera_tracker_ui;
 pub mod comp_settings;
 pub mod dialogs;
 pub mod dialogs_3d;

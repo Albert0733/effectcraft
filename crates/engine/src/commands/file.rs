@@ -84,10 +84,48 @@ fn import(s: &mut Session, p: &Value) -> Result<Value> {
         Some(Value::String(x)) => vec![x.clone()],
         _ => return Err(bad("file.import", "missing `paths`")),
     };
-    let importer = s.importer.clone().ok_or_else(|| EngineError::Other("media import is not available in this build".into()))?;
+    // Photoshop documents as compositions (Import As: Composition / – Retain Layer Sizes).
+    let import_as = str_p(p, "importAs").unwrap_or("footage");
+    let retain = match import_as {
+        "footage" => None,
+        "composition" | "comp" => Some(false),
+        "compositionLayerSizes" | "compositionRetainLayerSizes" | "layerSizes" => Some(true),
+        other => return Err(bad("file.import", format!("importAs: footage|composition|compositionLayerSizes, not `{other}`"))),
+    };
+    let mut paths = paths;
+    let mut out_comps = vec![];
     let mut ids = vec![];
     let mut errors = vec![];
+    if let Some(retain) = retain {
+        let mut rest = vec![];
+        for path in paths {
+            let bytes = match s.services.read_file(&path) {
+                Ok(b) if effectcraft_psd::is_psd(&b) => b,
+                _ => {
+                    rest.push(path);
+                    continue;
+                }
+            };
+            match import_psd_comp(s, &path, bytes, retain) {
+                Ok((comp, items, warnings)) => {
+                    out_comps.push(comp);
+                    ids.extend(items);
+                    errors.extend(warnings);
+                }
+                Err(e) => errors.push(format!("{path}: {e}")),
+            }
+        }
+        paths = rest;
+        if paths.is_empty() {
+            if let Some(c) = out_comps.first() {
+                s.open_comp(effectcraft_project::ItemId(*c));
+            }
+            return Ok(json!({"items": ids, "comps": out_comps, "errors": errors}));
+        }
+    }
+    let importer = s.importer.clone().ok_or_else(|| EngineError::Other("media import is not available in this build".into()))?;
     let mut probed = vec![];
+    let psd_layer = p.get("layer").cloned();
     let seq_rate = effectcraft_time::FrameRate::from_f64(s.prefs.import.sequence_fps);
     for path in &paths {
         match importer.probe(path) {
@@ -99,6 +137,18 @@ fn import(s: &mut Session, p: &Value) -> Result<Value> {
                     f.frame_rate = r;
                     f.duration = r.tick_of(frames.max(1));
                 }
+                // Choose Layer: one layer of a Photoshop document (document-sized).
+                if let Some(sel) = &psd_layer
+                    && f.codec == "PSD"
+                {
+                    match s.services.read_file(path).ok().and_then(|b| effectcraft_psd::Psd::parse(b).ok()).and_then(|d| find_psd_layer(&d, sel)) {
+                        Some((index, name)) => f.layer = Some(effectcraft_project::SourceLayer { index: index as u32, name, layer_size: false }),
+                        None => {
+                            errors.push(format!("{path}: no layer {sel}"));
+                            continue;
+                        }
+                    }
+                }
                 probed.push((path.clone(), f))
             }
             Err(e) => errors.push(format!("{path}: {e}")),
@@ -107,6 +157,10 @@ fn import(s: &mut Session, p: &Value) -> Result<Value> {
     s.edit("Import", None, |proj, st| {
         for (path, f) in probed {
             let name = std::path::Path::new(&path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or(path.clone());
+            let name = match &f.layer {
+                Some(l) => format!("{}/{name}", l.name),
+                None => name,
+            };
             let label = match f.kind {
                 FootageKind::Still | FootageKind::Sequence => Label::Lavender,
                 FootageKind::Audio => Label::SeaFoam,
@@ -118,7 +172,37 @@ fn import(s: &mut Session, p: &Value) -> Result<Value> {
         }
         Ok(())
     })?;
-    Ok(json!({"items": ids, "errors": errors}))
+    if let Some(c) = out_comps.first() {
+        s.open_comp(effectcraft_project::ItemId(*c));
+    }
+    Ok(json!({"items": ids, "comps": out_comps, "errors": errors}))
+}
+
+/// A Photoshop layer by index or name (pixel layers only).
+fn find_psd_layer(d: &effectcraft_psd::Psd, sel: &Value) -> Option<(usize, String)> {
+    let l = match sel {
+        Value::Number(n) => d.layers.get(n.as_u64()? as usize)?,
+        Value::String(name) => d.layers.iter().find(|l| &l.name == name)?,
+        _ => return None,
+    };
+    Some((l.index, l.name.clone()))
+}
+
+/// Import a Photoshop document as a composition (one undo step). Returns (comp, items, warnings).
+fn import_psd_comp(s: &mut Session, path: &str, bytes: Vec<u8>, retain: bool) -> Result<(u64, Vec<u64>, Vec<String>)> {
+    let psd = effectcraft_psd::Psd::parse(bytes).map_err(|e| EngineError::Other(e.to_string()))?;
+    let name = std::path::Path::new(path).file_stem().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "Photoshop".into());
+    let rate = effectcraft_time::FrameRate::FPS_29_97;
+    let secs = if s.prefs.import.still_footage == "seconds" { s.prefs.import.still_seconds } else { 10.0 };
+    let duration = rate.snap_nearest(effectcraft_time::Tick::from_seconds_f64(secs));
+    let r = s.edit("Import", None, |proj, st| {
+        let r = crate::psd_import::import(proj, &psd, path, &name, retain, rate, duration);
+        st.project_selection = vec![r.comp];
+        Ok(r)
+    })?;
+    let mut items = vec![r.folder.0];
+    items.extend(r.items.iter().map(|i| i.0));
+    Ok((r.comp.0, items, r.warnings))
 }
 
 fn project_settings(s: &mut Session, p: &Value) -> Result<Value> {
@@ -224,7 +308,15 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!("file.saveAs", "Save As...", ["File", "Save As"], Some("Cmd+Shift+S"), "{path}", always, save_as),
         cmd!("file.incrementAndSave", "Increment and Save", ["File"], Some("Cmd+Alt+Shift+S"), "{}", has_path, increment_save),
         cmd!("file.revert", "Revert", ["File"], None, "{}", has_path, revert),
-        cmd!("file.import", "File...", ["File", "Import"], Some("Cmd+I"), "{paths: [string]}", always, import),
+        cmd!(
+            "file.import",
+            "File...",
+            ["File", "Import"],
+            Some("Cmd+I"),
+            "{paths: [string], importAs?: footage|composition|compositionLayerSizes (Photoshop files), layer?: name|index (footage of one Photoshop layer)}",
+            always,
+            import
+        ),
         cmd!(
             "file.projectSettings",
             "Project Settings...",

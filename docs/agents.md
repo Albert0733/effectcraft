@@ -147,6 +147,34 @@ effectcraft-cli exec warp.analyze '{"layer":"#1","wait":true}' shaky.ecproj --sa
 effectcraft-cli exec warp.status '{"layer":"#1"}' shaky.ecproj --json
 ```
 
+### 3D Camera Tracker
+
+Animation ▸ Track Camera and the Tracker panel's button (`track.camera {layer?, shotType?:
+fixed|variable|specify, aov?, solveMethod?: auto|typical|flat|tripod, detailed?, wait?}`) apply
+Effect ▸ Perspective ▸ 3D Camera Tracker (or reuse the layer's) and analyse it in the background:
+"Analyzing in background (step 1 of 2)" tracks features, "Solving camera" solves.
+`camera.analyze {layer?, effect?, wait?}` re-runs it, `camera.cancel` stops it without writing
+anything. `camera.solveStatus` reports `progress`/`banner`, `analyzed`, `solved`, `methodUsed`,
+`averageError` (pixels), `focalLength`, `horizontalAngleOfView`, the current frame's `camera`
+(position, orientation, zoom) and `groundPlane`. `camera.points {time?}` lists the solved points
+visible now with their `id`, `comp` position, `depth`, `world` position and `error`.
+
+Select points with `camera.selectPoints {points, add?, toggle?}` (the viewer's click / Shift-click /
+marquee), then the right-click menu's commands: `camera.setGroundPlane {points?}` (Set Ground Plane
+and Origin), `camera.createFromSolve {kind: text|solid|null|shadowCatcher, points? | target:
+{center, normal, size?}, multiple?}` (Create Text / Solid / Null / Shadow Catcher, Camera and Light,
+Create Multiple …), `camera.deletePoints {points?, wait?}` (re-solves; with Auto-delete Points
+Across Time the same feature's other tracks go too) and `camera.create` (the Create Camera button).
+Each is one undo step; the first create adds the one-node "3D Tracker Camera" keyed on every frame.
+Changing the layer's frames clears the analysis; changing `effects/#1/shotType`,
+`effects/#1/horizontalAngleOfView`, `effects/#1/advanced/solveMethod` re-solves the stored tracks.
+
+```sh
+effectcraft-cli run shot.ecproj track.camera '{"layer":"#1","wait":true}' \
+  camera.points '{}' --json
+effectcraft-cli run shot.ecproj camera.createFromSolve '{"kind":"solid","points":[12,40,77]}' --save
+```
+
 ### Roto Brush & Refine Edge
 
 The Roto Brush tool (Alt+W cycles Roto Brush / Refine Edge) paints in the Layer panel; agents use

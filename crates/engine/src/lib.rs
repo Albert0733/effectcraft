@@ -9,6 +9,7 @@
 //! (compositions are `Arc`s, so untouched comps are shared).
 
 pub mod autosave;
+pub mod camera_track;
 pub mod commands;
 pub mod config;
 pub mod demo;
@@ -17,11 +18,13 @@ pub mod mask_track;
 pub mod menus;
 pub mod offload;
 pub mod prefs;
+pub mod psd_import;
 pub mod render_queue;
 pub mod roto;
 mod session_settings;
 pub mod shortcuts;
 pub mod tracking;
+pub mod vector;
 pub mod viewer;
 pub mod warp;
 
@@ -173,6 +176,9 @@ pub struct EditorState {
     /// Tracker panel ▸ Method in mask mode (Track Mask).
     #[serde(default)]
     pub mask_track_method: mask_track::MaskMethod,
+    /// 3D Camera Tracker: the selected track points (ids) in the viewer.
+    #[serde(default)]
+    pub camera_points: Vec<u32>,
     /// Mask Interpolation panel options.
     #[serde(default)]
     pub mask_interp: commands::mask_interp::MaskInterpOptions,
@@ -269,6 +275,10 @@ pub struct Session {
     pub warp_job: Option<warp::WarpJob>,
     /// Warp Stabilizers waiting for (re-)analysis: (comp, layer, effect uid).
     pub warp_pending: Vec<(ItemId, LayerId, Uid)>,
+    /// The running (or finished, not yet polled) 3D Camera Tracker analysis.
+    pub camera_job: Option<camera_track::CameraJob>,
+    /// 3D Camera Trackers waiting for (re-)analysis: (comp, layer, effect uid).
+    pub camera_pending: Vec<(ItemId, LayerId, Uid)>,
     /// The running (or finished, not yet polled) Roto Brush propagation / Freeze.
     pub roto_job: Option<roto::RotoJob>,
     /// Roto Brush instances edited since their last propagation: (comp, layer, effect uid).
@@ -278,6 +288,8 @@ pub struct Session {
     pub journal: Vec<(String, Value)>,
     /// Processed-layer pixels reused across frames and edits (content-keyed, never stale).
     pub layer_cache: Arc<LayerCache>,
+    /// The persistent disk cache (Settings ▸ Media & Disk Cache), when enabled.
+    pub disk_cache: Option<Arc<effectcraft_render::disk_cache::DiskCache>>,
     /// Settings (Preferences).
     pub prefs: prefs::Prefs,
     /// Bumped whenever settings change (frontends re-apply theme, labels…).
@@ -340,11 +352,14 @@ impl Default for Session {
             mask_job: None,
             warp_job: None,
             warp_pending: vec![],
+            camera_job: None,
+            camera_pending: vec![],
             roto_job: None,
             roto_pending: vec![],
             events: vec![],
             journal: vec![],
             layer_cache: Arc::new(LayerCache::default()),
+            disk_cache: None,
             prefs: prefs::Prefs::default(),
             prefs_revision: 0,
             config: None,
@@ -411,6 +426,12 @@ impl Session {
                 self.warp_pending.push(w);
             }
         }
+        // So are 3D Camera Tracker tracks (and solves made with other settings).
+        for w in camera_track::invalidate(&before, &mut p) {
+            if !self.camera_pending.contains(&w) {
+                self.camera_pending.push(w);
+            }
+        }
         // Roto Brush Input Keys follow the frames; edited instances propagate again.
         for r in roto::sync(&before, &mut p) {
             if !self.roto_pending.contains(&r) {
@@ -436,6 +457,9 @@ impl Session {
 
     pub fn bump(&mut self) {
         self.revision += 1;
+        if self.disk_cache.is_some() {
+            self.layer_cache.set_disk_salt(effectcraft_render::disk_cache::footage_salt(&self.project));
+        }
         self.events.push(Event::ProjectChanged { revision: self.revision });
     }
 
@@ -594,6 +618,9 @@ impl Session {
         self.stop_warp();
         self.warp_job = None;
         self.warp_pending.clear();
+        self.stop_camera();
+        self.camera_job = None;
+        self.camera_pending.clear();
         self.stop_roto();
         self.roto_job = None;
         self.roto_pending.clear();
@@ -619,6 +646,10 @@ mod tests;
 mod tests_3d;
 #[cfg(test)]
 mod tests_anim_tools;
+#[cfg(test)]
+mod tests_camera_track;
+#[cfg(test)]
+mod tests_disk_cache;
 #[cfg(test)]
 mod tests_effects;
 #[cfg(test)]
@@ -649,6 +680,8 @@ mod tests_text_edit;
 mod tests_timeline;
 #[cfg(test)]
 mod tests_track;
+#[cfg(test)]
+mod tests_vector_import;
 #[cfg(test)]
 mod tests_viewer;
 

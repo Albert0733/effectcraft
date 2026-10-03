@@ -50,7 +50,7 @@ thread), `?nosw` (don't register the service worker).
 |---|---|
 | frame render thread pool (`ui-egui/src/frames.rs`) | `Frames::pump`: queued frames render on the UI thread after each egui frame, most important first (the viewer's frame, then prefetch), within 40 ms (24 ms while playing) |
 | Render Queue on a background thread | a Web Worker running a second engine instance (below); progress streams back, the page never waits |
-| tracker / mask tracker / Warp Stabilizer / Roto Brush Freeze threads | the same workers; the analysed property group comes back as one undo step |
+| tracker / mask tracker / Warp Stabilizer / 3D Camera Tracker / Roto Brush Freeze threads | the same workers; the analysed property group comes back as one undo step |
 | `rayon` parallel loops (raster, effects, export batches) | rayon's global pool falls back to the calling thread when threads are unavailable: same code, serial |
 | `std::time::Instant` / `SystemTime` (panic on wasm32) | `web-time` (re-exports `std::time` on native) |
 | `std::fs` project reads/writes (`FsServices`) | `files::WebServices`: the virtual file table, persisted (below); saving also downloads the `.ecproj` |
@@ -97,8 +97,8 @@ of the same module (the page compiles it once and posts the `WebAssembly.Module`
 compiled twice) and its own memory (`crates/engine/src/offload.rs`, `src/worker.rs`):
 
 1. The session's `Offload` serializes a `WorkerRequest`: the project JSON, the footage paths it
-   reads, and the job (`render` with the resolved queue items and output paths; `warp`, `track`,
-   `maskTrack`, `rotoFreeze` with the target and analysis parameters).
+   reads, and the job (`render` with the resolved queue items and output paths; `warp`, `camera`,
+   `track`, `maskTrack`, `rotoFreeze` with the target and analysis parameters).
 2. `js/host.js` takes an idle worker from its pool (or starts one), sends it the footage bytes it
    doesn't have yet, then the request.
 3. The worker runs the job on a plain engine session, blocking, and posts `WorkerReply`s: render
@@ -203,6 +203,7 @@ every request and reply, a render through an in-process offload).
   frame at a time between UI frames).
 - GPU effects run only in the desktop GPU path: in the browser, effects run on the CPU (inside
   workers for renders) because the page's thread can't wait for mid-render readbacks.
+- No disk cache (Settings ▸ Media & Disk Cache) in the browser: the layer cache stays in memory.
 - Cancelling an analysis drops its partial result (the worker is terminated).
 - Stored media count against the origin's storage quota; `effectcraft.listStored()` shows usage,
   `removeStored` frees it (there is no storage manager in the UI yet).

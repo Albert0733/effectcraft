@@ -849,6 +849,31 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     if let Some((a, b)) = run {
         draw_run(a, b);
     }
+    // Disk-cached frames not in RAM (blue), like After Effects.
+    if app.session.disk_cache.is_some() {
+        let frames = comp.frame_rate.frame_at(comp.duration);
+        let opts = app.frame_opts(cid, scale_key as f64 / 1000.0);
+        let disk = app.frames.disk_frames(&app.render_source(), app.session.revision, cid.0, scale_key, app.view_hash(cid), frames, &opts);
+        let draw_blue = |a: i64, b: i64| {
+            let x0 = tm.x(a as f64 * fd);
+            let x1 = tm.x((b + 1) as f64 * fd);
+            p.rect_filled(Rect::from_min_max(pos2(x0, cy0), pos2(x1, cy0 + 2.5)), 0.0, t.cache_blue);
+        };
+        let mut run: Option<(i64, i64)> = None;
+        for f in disk {
+            run = match run {
+                Some((a, b)) if f == b + 1 => Some((a, f)),
+                Some((a, b)) => {
+                    draw_blue(a, b);
+                    Some((f, f))
+                }
+                None => Some((f, f)),
+            };
+        }
+        if let Some((a, b)) = run {
+            draw_blue(a, b);
+        }
+    }
     // Ticks + labels.
     // Label spacing in whole frames (AE: `00:15f`-style seconds:frames labels).
     let fps_i = fr.as_f64().round().max(1.0) as i64;

@@ -1,9 +1,36 @@
 # Parity with After Effects
 
 How close EffectCraft is to After Effects 2026, feature by feature, and how much work is left.
-Audited against the code at commit `5273f1b` (2 October 2026). Every feature in our catalog was
-graded from the code itself: a disabled menu entry, or a setting that is stored but never
-rendered, does not count as done.
+
+## Current status (audit at commit `fa26ad9`, 2 October 2026, late)
+
+| Measure | Value |
+|---|---|
+| **Feature parity, weighted by tier** (P0 ×3, P1 ×2, P2 ×1) | **≈ 93%** |
+| Unweighted | ≈ 91% |
+| P0 / P1 / P2 | ≈ 96% / 90% / 65% |
+| Features done / partial / missing | 41 / 50 / 1 of 92 (missing: a plug-in API) |
+| **Effects** | **298 of 298** After Effects 2026 effects exist (some still simplified) |
+| Disabled menu entries left | 26 commands (31 menu items) |
+| Remaining work | ≈ 50–55 agent-hours at the pace measured so far (≈ 150 by the original conservative audit scale) |
+| **Wall-clock estimate** | **≈ 11–14 hours** with five agents in parallel; ≈ 6–8 hours for 100% of P0 + P1 |
+
+By area: Layers 98%, Output 95%, Compositions 95%, Automation 96%, Paint 95%, Text 95%, Import 96%,
+Animation 94%, Masks 94%, Preview 94%, Interface 93%, Shapes 93%, 3D 91%, Audio 90%, Project 90%,
+Tracking 88%, Effects 85%, Web 65%.
+
+What is left, in priority order: the web app's depth (threads, storage, audio, non-blocking
+renders); stroke taper/wave and multi-segment dashes; variable mask feather points; real
+`sampleImage` and `footage()` in expressions; camera iris/bokeh and focus-link commands; GPU
+rendering of 3D runs and adjustment layers; Render Queue field render, crop/resize and templates;
+approximated effects (Subspace Warp, Key Cleaner) and Liquify's viewer brush; Advanced 3D motion blur
+and blend modes; a few viewer and colour-management menu items; OpenType features and variable
+font axes; AI/EPS/PDF import; more codecs; 59 preferences not yet wired; proxies; ScriptUI;
+Lumetri Scopes, Footage, Media Browser and Metadata panels; Content-Aware Fill; face tracking; and
+the "better than After Effects" items (a plug-in API, branching history, GPU particles).
+
+The sections below are the original audit (morning of 2 October, ≈ 64%) and its updates, kept for
+history.
 
 ## Summary
 
@@ -15,7 +42,7 @@ rendered, does not count as done.
 | P1 (professional daily use) | ≈ 38% |
 | P2 (long tail) | ≈ 17% |
 | Features done / partial / missing | 18 / 60 / 14 of 92 |
-| **Effects** | **297 of 298** After Effects 2026 effects by name (99.7%, after M9.11 and Warp Stabilizer; was 257); only the 3D Camera Tracker is left |
+| **Effects** | **298 of 298** After Effects 2026 effects by name (100%, after M9.11, Warp Stabilizer and the 3D Camera Tracker; was 257) |
 | Remaining work | ≈ **167 agent-hours** (139 h of features + ≈ 20% for 1:1 polish against After Effects) |
 | Wall-clock estimate | ≈ **42–50 hours** with five agents working in parallel and one integrating; ≈ 31–35 h for P0 + P1 only |
 
@@ -73,39 +100,39 @@ library groundwork for mask tracking and Warp Stabilizer.
 | Remaining (audit-scale agent-hours) | ≈ 167 | ≈ 100 |
 | Wall clock, five parallel agents | 42–50 h | **≈ 8–10 h at today's measured pace; ≈ 25 h by the audit's conservative figures** |
 
-What is left is concentrated in large systems: the 3D camera tracker,
-the Warp Stabilizer and mask-tracking UI on top of
-the new tracking library, SVG/PSD import, WebM, a disk cache, and wasm threads. (The missing
-effect categories, 3D Channel, Immersive Video and OCIO, landed in M9.11; the scripting object
-model in M14.4; Roto Brush and Refine Edge in M6.7; native macOS menus, the Composition Flowchart,
-Timeline column/search depth, the Home screen and every After Effects workspace in the UI-polish wave.)
+What is left is concentrated in large systems: the Warp Stabilizer and mask-tracking UI on top of
+the new tracking library, and wasm threads. (The missing effect categories, 3D Channel, Immersive
+Video and OCIO, landed in M9.11; the scripting object model in M14.4; Roto Brush and Refine Edge in
+M6.7; native macOS menus, the Composition Flowchart, Timeline column/search depth, the Home screen
+and every After Effects workspace in the UI-polish wave; PSD/SVG import, WebM/WAV/AIFF output and
+the disk cache in the formats wave; the 3D Camera Tracker in M12.6.)
 
 ## By area
 
 | Area | Weighted parity | Remaining (agent-hours) | Biggest gaps |
 |---|---|---|---|
 | Layers | 88% | 4.8 | frame blending, collapse transformations, slip edit |
-| Output | 85% | 4.2 | multiple output modules, pre-render, WebM, audio-only |
+| Output | 90% | 3.0 | multiple output modules, pre-render (WebM with VP9 alpha + Opus and WAV/AIFF audio-only landed: VP9 is intra-only, Opus CELT-only) |
 | Audio | 85% | 0.5 | audio to keyframes |
-| Import | 78% | 4.5 | PSD, SVG as shapes, Lottie |
+| Import | 88% | 2.0 | AI/EPS/PDF vector footage, PSD smart objects and 3D layers (PSD as footage/composition/retain layer sizes, SVG footage and Create Shapes from Vector Layer landed) |
 | Automation | ≈ 90% | 0.8 | scripting covers the documented core object model (AUT-2, M14.4: `app`, project items, comps, layers, properties and keyframes, text documents, markers, render queue, Script Console, `effectcraft-cli script`, MCP `run_script`); still missing: ScriptUI panels/dialogs, `.jsxbin`, sockets |
 | Shapes | 68% | 3.9 | taper and wave strokes (pen tool for shape paths and vertex editing landed in M6.5) |
 | Compositions | 72% | 6.0 | Essential Graphics panel (the marker dialog and Composition Flowchart landed) |
 | Animation | 65% | 10.4 | puppet, Wiggler/Smoother/Motion Sketch (motion-path handles and the graph editor transform box landed in M5.8) |
 | Text | ≈ 86% | 1.3 | vertical type is basic (upright characters, no tate-chu-yoko), no OpenType feature panel, no extruded strokes (extruded, bevelled text landed in M7.6); per-character styles, paragraph settings, on-canvas editing and the `sourceText` style API landed (M9.9–M9.10) |
 | Web | 85% | 1.0 | viewer frames and Roto Brush propagation still on the page's thread; GPU effects in the browser (browser storage, Web Audio, Web Worker renders/analyses, WebGPU viewer and offline install landed in M15.2) |
-| 3D | 72% | 12.0 | 3D camera tracker, multi-view layouts, Advanced 3D motion blur and blend modes, cameras/lights from models; Advanced 3D (glTF/OBJ models, primitives, extruded text and shapes, PBR, image-based light, shadow maps, GPU rasteriser) landed in M7.4–M7.6 |
-| Effects | ≈ 75% | 5.0 | GPU versions of more effects and the 3D Camera Tracker (every other After Effects effect exists since M9.11 and M12.5) |
+| 3D | 76% | 10.0 | multi-view layouts, Advanced 3D motion blur and blend modes, cameras/lights from models; Advanced 3D (glTF/OBJ models, primitives, extruded text and shapes, PBR, image-based light, shadow maps, GPU rasteriser) landed in M7.4–M7.6 |
+| Effects | ≈ 75% | 5.0 | GPU versions of more effects (every After Effects effect exists since M9.11, M12.5 and M12.6) |
 | Interface | 70% | 6.0 | Timeline horizontal scrolling of many columns, a richer Learn area (native macOS menu bar, Timeline columns/search/reveal-add, Home screen with recent projects and all AE workspaces landed; viewer rulers/snapping/channels/snapshots landed in M0.13) |
 | Project | 53% | 8.1 | 8/16/32-bit pipeline and colour management, auto-save, proxies, folder moves |
 | Masks & roto | 68% | 6.0 | variable-width mask feather points, Roto Brush's learned (3.0) segmentation model (mask tracking and Mask Interpolation landed in M6.6; Roto Brush & Refine Edge with graph-cut segmentation, flow propagation, edge matting, decontamination and Freeze in M6.7) |
-| Preview | 55% | 6.1 | GPU 3D and adjustment layers, disk cache (region of interest, snapshots, exposure and Fast Previews landed in M0.13) |
-| Tracking | ≈ 70% | 4.0 | 3D camera tracker, face tracking and Subspace Warp's mesh warp (Rolling Shutter Repair landed in M9.11; point tracker, mask tracking and Warp Stabilizer landed in M6.x / M12.5) |
+| Preview | 62% | 5.0 | GPU 3D and adjustment layers (persistent disk cache with the blue cache bar landed; region of interest, snapshots, exposure and Fast Previews landed in M0.13) |
+| Tracking | ≈ 85% | 2.5 | face tracking, Subspace Warp's mesh warp, lens distortion in the camera solve (Rolling Shutter Repair landed in M9.11; point tracker, mask tracking, Warp Stabilizer and the 3D Camera Tracker landed in M6.x / M12.5 / M12.6) |
 | Paint | 0% | 4.0 | Brush, Clone Stamp, Eraser |
 
 ## Effects still missing
 
-The 3D Camera Tracker (built on the tracking library by other work). Boris FX
+None: the 3D Camera Tracker landed in M12.6. Boris FX
 Mocha and Cineware are third-party and not counted.
 
 ### Added in M9.11 (39 effects)
@@ -138,7 +165,7 @@ Mocha and Cineware are third-party and not counted.
 10. ~~Drag-to-dock and floating panels, saved workspaces, native macOS menus.~~
 11. Auto-save, crash recovery, recent projects (in progress).
 12. Expression gaps: `sampleImage`, `footage()` (the `sourceText` style API landed in M9.9).
-13. Lottie (in progress), WebM, SVG and PSD import.
+13. ~~Lottie, WebM, SVG and PSD import~~ (landed; a disk cache too).
 14. Puppet and paint tools (in progress).
 15. Preferences and a shortcut editor that can rebind (in progress); real Wiggler, Smoother and Motion Sketch; the marker dialog.
 

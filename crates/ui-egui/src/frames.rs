@@ -7,6 +7,11 @@
 //! wasm32 has no threads: jobs wait in the same priority queue and [`Frames::pump`] renders them
 //! on the UI thread between egui frames, within a time budget.
 //!
+//! With the disk cache on (Settings ▸ Media & Disk Cache), every CPU-rendered frame is also
+//! written to disk under a content key (the comp's content hash, frame, scale, view and render
+//! options), and a job first looks there: frames survive restarts and project reopenings. The
+//! timeline shows disk-only frames as a blue cache bar.
+//!
 //! With Mercury GPU Acceleration (a [`Gpu`] on egui-wgpu's device and the project's renderer set
 //! to the GPU) frames stay on the GPU: the compositor writes an RGBA8 texture that the viewer
 //! registers with egui-wgpu and draws directly; pixels are read back only when something needs
@@ -16,6 +21,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use effectcraft_engine::project::{ItemId, Project};
+use effectcraft_engine::render::disk_cache::{self, DiskCache};
 use effectcraft_engine::render::{ExprHost, FootageSource, LayerCache, RenderOpts, Renderer};
 use effectcraft_engine::time::Tick;
 use effectcraft_gpu::{DisplayFrame, Gpu};
@@ -124,6 +130,37 @@ pub struct RenderSource {
     /// while the viewer draws plainly, because there frames can't be read back synchronously
     /// (`EffectcraftApp::gpu_display`).
     pub gpu_display: bool,
+    /// The persistent disk cache, when enabled.
+    pub disk: Option<Arc<DiskCache>>,
+}
+
+/// Content keys of (project revision, comp), computed once per revision.
+type ContentKeys = Arc<Mutex<HashMap<(u64, u64), u128>>>;
+
+fn content_key(keys: &ContentKeys, project: &Project, revision: u64, comp: u64) -> u128 {
+    if let Some(k) = keys.lock().ok().and_then(|m| m.get(&(revision, comp)).copied()) {
+        return k;
+    }
+    let k = disk_cache::comp_content_key(project, ItemId(comp));
+    if let Ok(mut m) = keys.lock() {
+        if m.len() > 256 {
+            m.clear();
+        }
+        m.insert((revision, comp), k);
+    }
+    k
+}
+
+fn opts_hash(o: &RenderOpts) -> u64 {
+    let mut h = disk_cache::Hash128::default();
+    h.write(format!("{o:?}").as_bytes());
+    h.finish() as u64
+}
+
+/// Disk key of a viewer frame (render options included: region of interest, draft…).
+fn frame_disk_key(keys: &ContentKeys, project: &Project, key: &FrameKey, opts_hash: u64) -> u128 {
+    let content = content_key(keys, project, key.revision, key.comp);
+    disk_cache::frame_key(content, key.frame, key.scale, key.view ^ opts_hash)
 }
 
 pub struct Frames {
@@ -137,6 +174,7 @@ pub struct Frames {
     ctx: Option<egui::Context>,
     /// Render time of the last viewer (urgent) frame in ms, for the Info panel / perf readout.
     pub last_ms: Arc<Mutex<f64>>,
+    content_keys: ContentKeys,
 }
 
 impl Default for Frames {
@@ -151,6 +189,7 @@ impl Default for Frames {
             pool: rayon::ThreadPoolBuilder::new().num_threads(threads).thread_name(|i| format!("ec-frame-{i}")).build().expect("frame pool"),
             ctx: None,
             last_ms: Arc::new(Mutex::new(0.0)),
+            content_keys: Arc::default(),
         }
     }
 }
@@ -200,6 +239,21 @@ impl Frames {
         let mut v: Vec<i64> = c.map.keys().filter(|k| k.revision == revision && k.comp == comp && k.scale == scale).map(|k| k.frame).collect();
         v.sort_unstable();
         v
+    }
+
+    /// Frames of (revision, comp, scale) in the disk cache but not in RAM — the blue cache bar.
+    /// `opts` are the viewer's render options (part of the disk key).
+    pub fn disk_frames(&self, src: &RenderSource, revision: u64, comp: u64, scale: u32, view: u64, frames: i64, opts: &RenderOpts) -> Vec<i64> {
+        let Some(dc) = &src.disk else { return vec![] };
+        let ram: HashSet<i64> = self.cached_frames(revision, comp, scale).into_iter().collect();
+        let oh = opts_hash(opts);
+        (0..frames.clamp(0, 100_000))
+            .filter(|f| !ram.contains(f))
+            .filter(|f| {
+                let key = FrameKey { revision, comp, frame: *f, scale, view };
+                dc.contains(disk_cache::Kind::Frame, frame_disk_key(&self.content_keys, &src.project, &key, oh))
+            })
+            .collect()
     }
 
     /// Change the RAM preview cache budget (Settings ▸ Memory & CPU), evicting the oldest
@@ -285,7 +339,14 @@ impl Frames {
     }
 
     fn worker(&self) -> Worker {
-        Worker { queue: self.queue.clone(), cache: self.cache.clone(), inflight: self.inflight.clone(), ctx: self.ctx.clone(), last: self.last_ms.clone() }
+        Worker {
+            queue: self.queue.clone(),
+            cache: self.cache.clone(),
+            inflight: self.inflight.clone(),
+            ctx: self.ctx.clone(),
+            last: self.last_ms.clone(),
+            content_keys: self.content_keys.clone(),
+        }
     }
 
     /// Render queued frames on this thread, most important first, until the queue is empty or
@@ -313,12 +374,13 @@ struct Worker {
     inflight: Arc<Mutex<HashSet<FrameKey>>>,
     ctx: Option<egui::Context>,
     last: Arc<Mutex<f64>>,
+    content_keys: ContentKeys,
 }
 
 impl Worker {
     /// Render the queued job that matters most right now. `false` when the queue was empty.
     fn run_next(&self) -> bool {
-        let Worker { queue, cache, inflight, ctx, last } = self;
+        let Worker { queue, cache, inflight, ctx, last, content_keys } = self;
         let job = {
             let Ok(mut q) = queue.lock() else { return false };
             // Urgent first (newest), then prefetch in request order.
@@ -332,19 +394,18 @@ impl Worker {
             job
         };
         let t0 = web_time::Instant::now();
-        let mut r = Renderer::new(&job.src.project, job.src.footage.as_ref(), job.opts);
-        r.expr = job.src.expr.as_deref();
-        r.cache = Some(&job.src.layer_cache);
-        r.accel = job.src.gpu.as_ref().map(|g| g as &dyn effectcraft_engine::render::Accelerator);
-        // The GPU leaves the frame in a texture for the viewer; otherwise (Software Only, no
-        // adapter, or a frame the GPU cannot finish here) the CPU renders it.
-        let gpu_frame = match (&job.src.gpu, r.active_accel()) {
-            (Some(g), Some(_)) if job.src.gpu_display => g.render_display(&r, job.comp, job.t),
-            _ => None,
-        };
-        let ci = match gpu_frame {
-            Some(f) => FrameImage::Gpu(Arc::new(f)),
-            None => FrameImage::Cpu(Arc::new(to_color_image(&r.comp_frame(job.comp, job.t)))),
+        let disk = job.src.disk.as_ref().map(|dc| (dc.clone(), frame_disk_key(content_keys, &job.src.project, &job.key, opts_hash(&job.opts))));
+        let from_disk = disk.as_ref().and_then(|(dc, k)| dc.get_frame(*k));
+        let ci = match from_disk {
+            Some(f) => FrameImage::Cpu(Arc::new(egui::ColorImage::from_rgba_premultiplied([f.width as usize, f.height as usize], &f.rgba))),
+            None => {
+                let ci = self.render_job(&job);
+                if let (Some((dc, k)), FrameImage::Cpu(img)) = (&disk, &ci) {
+                    let rgba: Vec<u8> = img.pixels.iter().flat_map(|c| c.to_array()).collect();
+                    dc.put_frame(*k, img.size[0] as u32, img.size[1] as u32, &rgba);
+                }
+                ci
+            }
         };
         if job.urgent
             && let Ok(mut l) = last.lock()
@@ -367,6 +428,23 @@ impl Worker {
             ctx.request_repaint();
         }
         true
+    }
+
+    fn render_job(&self, job: &Job) -> FrameImage {
+        let mut r = Renderer::new(&job.src.project, job.src.footage.as_ref(), job.opts);
+        r.expr = job.src.expr.as_deref();
+        r.cache = Some(&job.src.layer_cache);
+        r.accel = job.src.gpu.as_ref().map(|g| g as &dyn effectcraft_engine::render::Accelerator);
+        // The GPU leaves the frame in a texture for the viewer; otherwise (Software Only, no
+        // adapter, or a frame the GPU cannot finish here) the CPU renders it.
+        let gpu_frame = match (&job.src.gpu, r.active_accel()) {
+            (Some(g), Some(_)) if job.src.gpu_display => g.render_display(&r, job.comp, job.t),
+            _ => None,
+        };
+        match gpu_frame {
+            Some(f) => FrameImage::Gpu(Arc::new(f)),
+            None => FrameImage::Cpu(Arc::new(to_color_image(&r.comp_frame(job.comp, job.t)))),
+        }
     }
 }
 

@@ -136,17 +136,26 @@ pub enum OutputFormat {
     ExrSequence,
     /// Animated GIF.
     Gif,
+    /// WebM: VP9 video (alpha with RGB + Alpha) + Opus audio.
+    WebM,
+    /// Audio only: WAV (16-bit PCM).
+    Wav,
+    /// Audio only: AIFF (16-bit PCM).
+    Aiff,
 }
 
 impl OutputFormat {
-    pub const ALL: [OutputFormat; 7] = [
+    pub const ALL: [OutputFormat; 10] = [
         OutputFormat::H264,
         OutputFormat::ProRes,
+        OutputFormat::WebM,
         OutputFormat::PngSequence,
         OutputFormat::JpegSequence,
         OutputFormat::TiffSequence,
         OutputFormat::ExrSequence,
         OutputFormat::Gif,
+        OutputFormat::Wav,
+        OutputFormat::Aiff,
     ];
 
     pub fn label(self) -> &'static str {
@@ -158,6 +167,9 @@ impl OutputFormat {
             OutputFormat::TiffSequence => "TIFF Sequence",
             OutputFormat::ExrSequence => "OpenEXR Sequence",
             OutputFormat::Gif => "Animated GIF",
+            OutputFormat::WebM => "WebM (VP9 + Opus)",
+            OutputFormat::Wav => "WAV",
+            OutputFormat::Aiff => "AIFF",
         }
     }
     pub fn extension(self) -> &'static str {
@@ -169,19 +181,26 @@ impl OutputFormat {
             OutputFormat::TiffSequence => "tif",
             OutputFormat::ExrSequence => "exr",
             OutputFormat::Gif => "gif",
+            OutputFormat::WebM => "webm",
+            OutputFormat::Wav => "wav",
+            OutputFormat::Aiff => "aif",
         }
     }
     pub fn is_sequence(self) -> bool {
         matches!(self, OutputFormat::PngSequence | OutputFormat::JpegSequence | OutputFormat::TiffSequence | OutputFormat::ExrSequence)
     }
     pub fn is_movie(self) -> bool {
-        matches!(self, OutputFormat::H264 | OutputFormat::ProRes)
+        matches!(self, OutputFormat::H264 | OutputFormat::ProRes | OutputFormat::WebM)
+    }
+    /// Audio-only outputs (no video is rendered).
+    pub fn is_audio_only(self) -> bool {
+        matches!(self, OutputFormat::Wav | OutputFormat::Aiff)
     }
     pub fn supports_alpha(self) -> bool {
-        !matches!(self, OutputFormat::H264 | OutputFormat::JpegSequence)
+        !matches!(self, OutputFormat::H264 | OutputFormat::JpegSequence | OutputFormat::Wav | OutputFormat::Aiff)
     }
     pub fn supports_audio(self) -> bool {
-        self.is_movie()
+        self.is_movie() || self.is_audio_only()
     }
     /// The written frame size for a rendered size: H.264 needs even dimensions (rounded down,
     /// at least 2).
@@ -201,6 +220,9 @@ impl OutputFormat {
             "tif" | "tiff" | "tiffsequence" => OutputFormat::TiffSequence,
             "exr" | "openexr" | "openexrsequence" => OutputFormat::ExrSequence,
             "gif" | "animatedgif" => OutputFormat::Gif,
+            "webm" | "vp9" | "webmvp9opus" => OutputFormat::WebM,
+            "wav" | "wave" => OutputFormat::Wav,
+            "aif" | "aiff" | "aifc" => OutputFormat::Aiff,
             _ => return None,
         })
     }

@@ -327,6 +327,7 @@ impl EffectcraftApp {
             layer_cache: self.session.layer_cache.clone(),
             gpu: self.gpu.clone(),
             gpu_display: self.gpu_display(),
+            disk: self.session.disk_cache.clone(),
         }
     }
 
@@ -460,13 +461,11 @@ impl EffectcraftApp {
         self.request_frame_with(comp, frame, scale, true);
     }
 
-    fn request_frame_with(&self, comp: ItemId, frame: i64, scale: f64, urgent: bool) {
-        let Some(c) = self.session.project.comp(comp) else { return };
-        let key = self.frame_key(comp, frame, scale);
-        let t = c.frame_rate.tick_of(frame);
+    /// Render options of viewer frames of `comp` at `scale`.
+    pub fn frame_opts(&self, comp: ItemId, scale: f64) -> RenderOpts {
         let (draft, _) = self.session.state.viewer.fast_previews.render(self.ui.viewer.interacting);
         let roi = self.session.state.region_of_interest.filter(|_| self.session.active_comp_id() == Some(comp));
-        let opts = RenderOpts {
+        RenderOpts {
             scale,
             motion_blur: true,
             guides: true,
@@ -474,7 +473,14 @@ impl EffectcraftApp {
             view: self.session.view_camera(comp),
             roi,
             backend: effectcraft_engine::render::Backend::Auto,
-        };
+        }
+    }
+
+    fn request_frame_with(&self, comp: ItemId, frame: i64, scale: f64, urgent: bool) {
+        let Some(c) = self.session.project.comp(comp) else { return };
+        let key = self.frame_key(comp, frame, scale);
+        let t = c.frame_rate.tick_of(frame);
+        let opts = self.frame_opts(comp, scale);
         if urgent {
             self.frames.request_urgent(&self.render_source(), key, comp, t, opts);
         } else {
@@ -787,6 +793,11 @@ impl EffectcraftApp {
         if self.session.warp_job.is_some() || !self.session.warp_pending.is_empty() {
             self.session.poll_warp(true);
             self.session.poll_roto(true);
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
+        // 3D Camera Tracker: likewise (tracking, then solving).
+        if self.session.camera_job.is_some() || !self.session.camera_pending.is_empty() {
+            self.session.poll_camera(true);
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
         self.apply_prefs(&ctx);

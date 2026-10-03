@@ -802,7 +802,7 @@ fn file_dialog(app: &mut EffectcraftApp, id: &str, params: &Value) -> Option<Res
             let Some(f) = app.hooks.pick_files.as_ref() else { return Some(Err("no file dialog available (pass `paths`)".into())) };
             let paths = f(&[
                 "mp4", "mov", "m4v", "mkv", "webm", "png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "bmp", "exr", "wav", "aif", "aiff", "mp3", "flac",
-                "ogg", "opus", "svg", "gltf", "glb", "obj",
+                "ogg", "opus", "svg", "psd", "psb", "gltf", "glb", "obj",
             ]);
             match (paths.is_empty(), key) {
                 (true, _) => None,
@@ -825,6 +825,10 @@ fn file_dialog(app: &mut EffectcraftApp, id: &str, params: &Value) -> Option<Res
     };
     let Some(v) = picked else { return Some(Ok(Value::Null)) };
     p.insert(key.to_string(), v);
+    // Photoshop files ask how to import them first.
+    if id == "file.import" && crate::panels::dialogs::open_form(app, id, &Value::Object(p.clone())) {
+        return Some(Ok(json!({"dialog": id})));
+    }
     // Save (untitled) becomes Save As.
     let id = if id == "file.save" { "file.saveAs" } else { id };
     let r = app.session.execute(id, Value::Object(p)).map_err(|e| e.to_string());

@@ -16,6 +16,7 @@
 //! | Track Motion / Stabilize Motion | the tracker analysis | the tracker group |
 //! | Mask tracking | the mask track | the mask group |
 //! | Roto Brush Freeze | the freeze | the effect group |
+//! | 3D Camera Tracker analysis | [`Session::start_camera`] | the effect's property group |
 //!
 //! Roto Brush propagation fills the session's segmentation cache rather than the project, so it
 //! keeps running on the UI thread.
@@ -65,6 +66,11 @@ pub enum WorkerJob {
         layer: LayerId,
         effect: Uid,
     },
+    Camera {
+        comp: ItemId,
+        layer: LayerId,
+        effect: Uid,
+    },
     RotoFreeze {
         comp: ItemId,
         layer: LayerId,
@@ -95,6 +101,7 @@ impl WorkerJob {
         match self {
             WorkerJob::Render { .. } => JobKind::Render,
             WorkerJob::Warp { .. } => JobKind::Warp,
+            WorkerJob::Camera { .. } => JobKind::Camera,
             WorkerJob::RotoFreeze { .. } => JobKind::RotoFreeze,
             WorkerJob::Track { .. } => JobKind::Track,
             WorkerJob::MaskTrack { .. } => JobKind::MaskTrack,
@@ -105,7 +112,9 @@ impl WorkerJob {
     pub fn target(&self) -> Option<(ItemId, LayerId, Uid)> {
         match *self {
             WorkerJob::Render { .. } => None,
-            WorkerJob::Warp { comp, layer, effect } | WorkerJob::RotoFreeze { comp, layer, effect } => Some((comp, layer, effect)),
+            WorkerJob::Warp { comp, layer, effect } | WorkerJob::Camera { comp, layer, effect } | WorkerJob::RotoFreeze { comp, layer, effect } => {
+                Some((comp, layer, effect))
+            }
             WorkerJob::Track { comp, layer, tracker, .. } => Some((comp, layer, tracker)),
             WorkerJob::MaskTrack { comp, layer, mask, .. } => Some((comp, layer, mask)),
         }
@@ -117,6 +126,7 @@ impl WorkerJob {
 pub enum JobKind {
     Render,
     Warp,
+    Camera,
     RotoFreeze,
     Track,
     MaskTrack,
@@ -128,6 +138,7 @@ impl JobKind {
         match self {
             JobKind::Render => "Render",
             JobKind::Warp => "Warp Stabilizer Analysis",
+            JobKind::Camera => "3D Camera Tracker Analysis",
             JobKind::RotoFreeze => "Freeze",
             JobKind::Track => "Analyze Track",
             JobKind::MaskTrack => "Track Mask",
@@ -277,6 +288,7 @@ fn run_job(s: &mut Session, job: WorkerJob, post: Post) -> Result<(), String> {
             Ok(())
         }
         WorkerJob::Warp { comp, layer, effect } => analysis(s, kind, target, post, |s| s.start_warp(comp, layer, effect, true).map(|_| ())),
+        WorkerJob::Camera { comp, layer, effect } => analysis(s, kind, target, post, |s| s.start_camera(comp, layer, effect, true).map(|_| ())),
         WorkerJob::RotoFreeze { comp, layer, effect } => analysis(s, kind, target, post, |s| {
             s.start_roto(comp, layer, effect, crate::roto::RotoTask::Freeze, crate::roto::Direction::Both, true).map(|_| ())
         }),
@@ -554,6 +566,7 @@ mod tests {
             WorkerJob::Render { items: vec![vec![(item.clone(), "/out.gif".into())]] },
             WorkerJob::Warp { comp, layer: LayerId(3), effect: 9 },
             WorkerJob::RotoFreeze { comp, layer: LayerId(3), effect: 9 },
+            WorkerJob::Camera { comp, layer: LayerId(3), effect: 9 },
             WorkerJob::Track {
                 comp,
                 layer: LayerId(1),
