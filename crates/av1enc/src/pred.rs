@@ -1,0 +1,262 @@
+//! Prediction processes, mirrored from the spec (7.11.2 intra prediction for the non-directional
+//! modes plus V_PRED / H_PRED without edge filtering, 7.11.3 block inter prediction without
+//! reference scaling) so that the encoder predicts exactly like a decoder.
+
+use crate::tables::*;
+use crate::transform::round2;
+
+/// A plane buffer (padded to whole superblocks).
+#[derive(Clone)]
+pub(crate) struct Plane {
+    pub data: Vec<u16>,
+    pub stride: usize,
+}
+
+impl Plane {
+    pub fn new(w: usize, h: usize) -> Plane {
+        Plane { data: vec![0; w * h], stride: w }
+    }
+    #[inline(always)]
+    pub fn at(&self, x: usize, y: usize) -> u16 {
+        self.data[y * self.stride + x]
+    }
+    #[inline(always)]
+    pub fn row(&self, y: usize) -> &[u16] {
+        &self.data[y * self.stride..(y + 1) * self.stride]
+    }
+}
+
+/// The intra modes this encoder uses (values are the spec's y / uv mode numbers).
+pub(crate) const INTRA_MODES_USED: [usize; 7] = [DC_PRED, V_PRED, H_PRED, PAETH_PRED, SMOOTH_PRED, SMOOTH_V_PRED, SMOOTH_H_PRED];
+
+/// Inputs of the intra prediction process.
+pub(crate) struct IntraEdge {
+    pub x: usize,
+    pub y: usize,
+    pub have_left: bool,
+    pub have_above: bool,
+    pub have_above_right: bool,
+    pub have_below_left: bool,
+    pub log2: u32,
+    /// ((MiCols * MI_SIZE) >> subX) - 1 and the same for rows.
+    pub max_x: i32,
+    pub max_y: i32,
+    pub bit_depth: u32,
+}
+
+/// Edge samples: `above[0..2n]`, `left[0..2n]` and the top-left corner.
+pub(crate) struct Edges {
+    above: [i32; 64],
+    left: [i32; 64],
+    corner: i32,
+}
+
+pub(crate) fn edges(pl: &Plane, e: &IntraEdge) -> Edges {
+    let w = 1usize << e.log2;
+    let h = w;
+    let bd = e.bit_depth;
+    let (x, y) = (e.x, e.y);
+    let n = w + h;
+    let mut above = [0i32; 64];
+    let mut left = [0i32; 64];
+    if !e.have_above && e.have_left {
+        let v = pl.at(x - 1, y) as i32;
+        above[..n].iter_mut().for_each(|a| *a = v);
+    } else if !e.have_above && !e.have_left {
+        let v = (1 << (bd - 1)) - 1;
+        above[..n].iter_mut().for_each(|a| *a = v);
+    } else {
+        let above_limit = e.max_x.min(x as i32 + if e.have_above_right { 2 * w as i32 } else { w as i32 } - 1);
+        let row = pl.row(y - 1);
+        for (i, a) in above[..n].iter_mut().enumerate() {
+            *a = row[above_limit.min(x as i32 + i as i32) as usize] as i32;
+        }
+    }
+    if !e.have_left && e.have_above {
+        let v = pl.at(x, y - 1) as i32;
+        left[..n].iter_mut().for_each(|a| *a = v);
+    } else if !e.have_left && !e.have_above {
+        let v = (1 << (bd - 1)) + 1;
+        left[..n].iter_mut().for_each(|a| *a = v);
+    } else {
+        let left_limit = e.max_y.min(y as i32 + if e.have_below_left { 2 * h as i32 } else { h as i32 } - 1);
+        for (i, l) in left[..n].iter_mut().enumerate() {
+            *l = pl.at(x - 1, left_limit.min(y as i32 + i as i32) as usize) as i32;
+        }
+    }
+    let corner = if e.have_above && e.have_left {
+        pl.at(x - 1, y - 1) as i32
+    } else if e.have_above {
+        pl.at(x, y - 1) as i32
+    } else if e.have_left {
+        pl.at(x - 1, y) as i32
+    } else {
+        1 << (bd - 1)
+    };
+    Edges { above, left, corner }
+}
+
+fn sm_weights(log2: u32) -> &'static [u8] {
+    match log2 {
+        2 => &SM_WEIGHTS_TX_4X4,
+        3 => &SM_WEIGHTS_TX_8X8,
+        4 => &SM_WEIGHTS_TX_16X16,
+        _ => &SM_WEIGHTS_TX_32X32,
+    }
+}
+
+/// Predicts a square `2^log2` block with `mode` into `pred` (row stride = block width).
+pub(crate) fn predict_intra(ed: &Edges, e: &IntraEdge, mode: usize, pred: &mut [u16]) {
+    let log2 = e.log2;
+    let w = 1usize << log2;
+    let h = w;
+    let bd = e.bit_depth;
+    let (above, left) = (&ed.above, &ed.left);
+    match mode {
+        DC_PRED => {
+            let v = if e.have_left && e.have_above {
+                let sum: i32 = left[..h].iter().sum::<i32>() + above[..w].iter().sum::<i32>() + ((w + h) >> 1) as i32;
+                sum / (w + h) as i32
+            } else if e.have_left {
+                (left[..h].iter().sum::<i32>() + (h >> 1) as i32) >> log2
+            } else if e.have_above {
+                (above[..w].iter().sum::<i32>() + (w >> 1) as i32) >> log2
+            } else {
+                1 << (bd - 1)
+            };
+            let v = v.clamp(0, (1 << bd) - 1) as u16;
+            pred[..w * h].iter_mut().for_each(|p| *p = v);
+        }
+        V_PRED => {
+            for i in 0..h {
+                for j in 0..w {
+                    pred[i * w + j] = above[j] as u16;
+                }
+            }
+        }
+        H_PRED => {
+            for i in 0..h {
+                pred[i * w..i * w + w].iter_mut().for_each(|p| *p = left[i] as u16);
+            }
+        }
+        PAETH_PRED => {
+            let tl = ed.corner;
+            for i in 0..h {
+                for j in 0..w {
+                    let a = above[j];
+                    let l = left[i];
+                    let base = a + l - tl;
+                    let p_left = (base - l).abs();
+                    let p_top = (base - a).abs();
+                    let p_tl = (base - tl).abs();
+                    pred[i * w + j] = if p_left <= p_top && p_left <= p_tl {
+                        l as u16
+                    } else if p_top <= p_tl {
+                        a as u16
+                    } else {
+                        tl as u16
+                    };
+                }
+            }
+        }
+        _ => {
+            let wx = sm_weights(log2);
+            let wy = wx;
+            for i in 0..h {
+                for j in 0..w {
+                    let v = if mode == SMOOTH_PRED {
+                        let s = wy[i] as i32 * above[j] + (256 - wy[i] as i32) * left[h - 1] + wx[j] as i32 * left[i] + (256 - wx[j] as i32) * above[w - 1];
+                        round2(s, 9)
+                    } else if mode == SMOOTH_V_PRED {
+                        round2(wy[i] as i32 * above[j] + (256 - wy[i] as i32) * left[h - 1], 8)
+                    } else {
+                        round2(wx[j] as i32 * left[i] + (256 - wx[j] as i32) * above[w - 1], 8)
+                    };
+                    pred[i * w + j] = v as u16;
+                }
+            }
+        }
+    }
+}
+
+/// Block inter prediction (7.11.3.3 motion vector scaling without scaling, 7.11.3.4 block
+/// inter prediction with the EIGHTTAP filter, single reference so InterRound1 = 11 and the
+/// final rounding is the identity) of the `w x h` block at plane position (x, y) displaced by
+/// `mv` (1/8 luma sample units, [row, col]). `last_x` / `last_y` are the largest sample
+/// coordinates of the reference plane; the result goes to `pred` (row stride `w`).
+pub(crate) fn predict_inter(
+    refp: &Plane,
+    last_x: i32,
+    last_y: i32,
+    x: usize,
+    y: usize,
+    w: usize,
+    h: usize,
+    mv: [i32; 2],
+    ss: usize,
+    bit_depth: u32,
+    pred: &mut [u16],
+) {
+    // positions in 1/16 sample units ((startX >> 6) & 15 is the filter phase)
+    let px = ((x as i32) << 4) + ((2 * mv[1]) >> ss);
+    let py = ((y as i32) << 4) + ((2 * mv[0]) >> ss);
+    let (fx, fy) = ((px & 15) as usize, (py & 15) as usize);
+    let (ix, iy) = (px >> 4, py >> 4);
+    let max = (1i32 << bit_depth) - 1;
+    if fx == 0 && fy == 0 {
+        // the filters' phase-0 kernel is a unit impulse: a clamped copy
+        for r in 0..h {
+            let ry = (iy + r as i32).clamp(0, last_y) as usize;
+            let row = refp.row(ry);
+            let out = &mut pred[r * w..r * w + w];
+            let x0 = ix;
+            if x0 >= 0 && x0 + w as i32 - 1 <= last_x {
+                out.copy_from_slice(&row[x0 as usize..x0 as usize + w]);
+            } else {
+                for (c, o) in out.iter_mut().enumerate() {
+                    *o = row[(x0 + c as i32).clamp(0, last_x) as usize];
+                }
+            }
+        }
+        return;
+    }
+    let filt_h = if w <= 4 { 4 } else { EIGHTTAP };
+    let filt_v = if h <= 4 { 4 } else { EIGHTTAP };
+    let kh = &SUBPEL_FILTERS[filt_h][fx];
+    let kv = &SUBPEL_FILTERS[filt_v][fy];
+    let inter_h = h + 7;
+    let mut inter = vec![0i32; inter_h * w];
+    for r in 0..inter_h {
+        let ry = (iy + r as i32 - 3).clamp(0, last_y) as usize;
+        let row = refp.row(ry);
+        for c in 0..w {
+            let bx = ix + c as i32 - 3;
+            let mut s = 0i32;
+            for t in 0..8 {
+                s += kh[t] as i32 * row[(bx + t as i32).clamp(0, last_x) as usize] as i32;
+            }
+            inter[r * w + c] = round2(s, 3);
+        }
+    }
+    for r in 0..h {
+        for c in 0..w {
+            let mut s = 0i32;
+            for t in 0..8 {
+                s += kv[t] as i32 * inter[(r + t) * w + c];
+            }
+            pred[r * w + c] = round2(s, 11).clamp(0, max) as u16;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn phase_zero_filters_are_impulses() {
+        for f in SUBPEL_FILTERS.iter() {
+            assert_eq!(f[0], [0, 0, 0, 128, 0, 0, 0, 0]);
+        }
+    }
+}
