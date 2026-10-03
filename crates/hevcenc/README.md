@@ -52,10 +52,10 @@ adaptive quantisation, tiles / WPP / multiple slices, range extensions (4:2:2, 4
 ## Measurements
 
 On a shared, heavily loaded machine, opt-level 3: about 0.45 s of CPU per 1920x1080 picture
-(ffmpeg `testsrc2`, QP 22 / 32). On ffmpeg's `mandelbrot` 1080p source at QP 32 the stream is
-about 10 % larger at about 0.3 dB lower PSNR-Y than x265 `--preset medium` at the same QP without
-psy tuning (I 40.6 kB / 43.2 dB vs 42.3 kB / 43.7 dB). The synthetic test image reaches
-45.8 dB PSNR-Y at QP 22.
+(ffmpeg `testsrc2`, QP 22 / 32). On ffmpeg's `mandelbrot` 1080p source (8 pictures, IPPP, QP 32)
+the stream is about 12 % larger at about 0.2 dB lower mean PSNR-Y than x265 `--preset medium` at
+the same QP without psy tuning (110.5 kB / 42.3 dB vs 98.3 kB / 42.5 dB). The synthetic test image
+reaches 45.8 dB PSNR-Y at QP 22.
 
 ## Tests
 
