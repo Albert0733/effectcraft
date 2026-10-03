@@ -11,6 +11,7 @@ mod fit;
 pub mod interp;
 pub mod offset;
 pub mod ops;
+pub mod trace;
 pub mod varstroke;
 
 use effectcraft_geom::Mat3;
