@@ -10,7 +10,7 @@ How close EffectCraft is to After Effects 2026, feature by feature, and how much
 | Unweighted | ≈ 94% (half-credit) / 98% (fractions) |
 | P0 / P1 / P2 | ≈ 96% / 92% / 85% (half-credit); 99% / 97% / 96% (fractions) |
 | Features done / partial / missing | 80 / 12 / 0 of 92 |
-| **Effects** | **298 of 298** After Effects 2026 effects exist; 42 still simplified ([effects.md](effects.md)); 166 run on the GPU |
+| **Effects** | **298 of 298** After Effects 2026 effects exist, all implemented in full ([effects.md](effects.md)); 166 run on the GPU |
 | Disabled menu entries left | 0 (the stub list is empty) |
 | Remaining work | ≈ 19–22 agent-hours at the pace measured so far (≈ 58 on the conservative audit scale) |
 | **Wall-clock estimate** | **≈ 4–5 hours** with five agents in parallel; ≈ 3 hours for 100% of P0 + P1 |

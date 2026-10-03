@@ -15,11 +15,11 @@ once.
 | M6 | Shapes, masks and footage: shape operators, masks and the pen tool, video and image import | Done |
 | M7 | 3D: 3D layers, cameras, lights, shadows, depth of field, 3D views and camera tools | In review |
 | M8 | Expressions with the After Effects object model | Done |
-| M9 | Text and effects: text animators, layer styles, 259 effects incl. time and audio effects | Done (range, wiggly and expression selectors, per-character 3D, text on a path) |
+| M9 | Text and effects: text animators, layer styles, 306 effects (all 298 of After Effects') incl. time and audio effects | Done (range, wiggly and expression selectors, per-character 3D, text on a path) |
 | M10 | Export: render queue, H.264, ProRes, image sequences, GIF, audio | Done |
-| M11 | Animation tools: audio playback, meters and waveforms, Lottie import and export (done); presets, Motion Sketch, Wiggler | In progress |
-| M12 | Performance: layer cache and parallel compositing (done), GPU compositing, disk cache, motion tracking | In progress |
-| M13+ | Puppet, paint, roto, motion tracking, a plugin API | Planned |
+| M11 | Animation tools: audio playback, meters and waveforms, Lottie import and export, presets, Motion Sketch, Wiggler, Smoother | Done |
+| M12 | Performance: layer cache, parallel and GPU compositing, disk cache, motion tracking (done); GPU versions of the remaining CPU-only effects | Mostly done |
+| M13 | Puppet tools, paint, Roto Brush, motion tracking, a plug-in API, Timeline depth | Done (Roto Brush and face tracking use classical models; learned models are still to come) |
 | M15 | The web app (WebAssembly, WebGPU) | Done: browser storage, Web Audio, renders and analyses in Web Workers, offline install ([docs/web.md](docs/web.md)) |
 | M14 | Built for agents: MCP server, command-line tool, control channel; Settings, keyboard shortcut editor, auto-save and crash recovery ([docs/preferences.md](docs/preferences.md)) | Done |
 
@@ -29,7 +29,7 @@ Measured feature by feature in [docs/parity.md](docs/parity.md) (3 October 2026)
 
 - **≈ 94% of After Effects' features, weighted by importance**, counting partial features as half
   done (≈ 98% with per-feature fractions): 80 of 92 features done, 12 partial, none missing; all
-  298 After Effects effects (42 still simplified).
+  298 After Effects effects, every one implemented in full.
 - **≈ 19–22 agent-hours of work remain**: about **4–5 hours of wall-clock time** with five Claude
   Opus 5.5 agents in parallel, ≈ 3 hours for the essentials and daily-use features.
 - Hardest remaining pieces: the web app's threading, wider GPU effect coverage, Advanced 3D
