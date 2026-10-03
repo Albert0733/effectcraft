@@ -24,6 +24,8 @@ fn app_icon() -> egui::IconData {
 }
 
 fn main() -> eframe::Result {
+    // Help ▸ Enable Logging writes through this logger; warnings feed the compatibility report.
+    effectcraft_engine::logging::install();
     let mut control_port: Option<u16> = std::env::var("EFFECTCRAFT_CONTROL_PORT").ok().and_then(|p| p.parse().ok());
     let mut files = Vec::new();
     let mut demo = true;
@@ -99,8 +101,9 @@ fn main() -> eframe::Result {
             app.hooks.pick_save = Some(Box::new(|name: &str| {
                 rfd::FileDialog::new().add_filter("EffectCraft Project", &["ecproj"]).set_file_name(name).save_file().map(|p| p.to_string_lossy().to_string())
             }));
-            app.hooks.pick_open_project =
-                Some(Box::new(|| rfd::FileDialog::new().add_filter("EffectCraft Project", &["ecproj"]).pick_file().map(|p| p.to_string_lossy().to_string())));
+            app.hooks.pick_open_project = Some(Box::new(|| {
+                rfd::FileDialog::new().add_filter("EffectCraft Project", &["ecproj", "ecprojx"]).pick_file().map(|p| p.to_string_lossy().to_string())
+            }));
             app.hooks.audio_device = Some(Box::new(audio_out::open));
             app.hooks.audio_devices = Some(Box::new(audio_out::devices));
             app.hooks.pick_folder = Some(Box::new(|| rfd::FileDialog::new().pick_folder().map(|p| p.to_string_lossy().to_string())));

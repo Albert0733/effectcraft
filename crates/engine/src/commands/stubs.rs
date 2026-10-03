@@ -4,8 +4,10 @@
 //! always disabled. When a feature lands, delete its line here and register the real command
 //! with the same id (the menu tree in `menus.rs` already points at it).
 
+#[allow(unused_imports)]
 use super::{CommandSpec, not_yet, not_yet_run};
 
+#[allow(unused_macros)]
 macro_rules! stub {
     ($id:literal, $label:literal, [$($m:literal),*], $params:literal) => {
         CommandSpec { id: $id, label: $label, menu: &[$($m),*], shortcut: None, params: $params, enabled: not_yet, run: not_yet_run, journal: true }
@@ -16,19 +18,6 @@ macro_rules! stub {
 }
 
 pub fn specs() -> Vec<CommandSpec> {
-    vec![
-        // Layer ▸ New (3D / content-aware fill).
-        stub!("layer.newContentAwareFill", "Content-Aware Fill Layer...", ["Layer", "New"], "{}"),
-        // Mask options not in the mask model yet; pen / vertex editing (timeline milestone).
-        // Time (timeline milestone).
-        stub!("layer.alignVideoToData", "Align Video to Data", ["Layer", "Time"], "{}"),
-        stub!("layer.autoTrace", "Auto-trace...", ["Layer"], "{}"),
-        stub!("layer.sceneEditDetection", "Scene Edit Detection...", ["Layer"], "{}"),
-        // Cameras / lights / materials / 3D views (3D milestone).
-        // Keyframes / text / tracking.
-        stub!("keys.audioToKeyframes", "Convert Audio to Keyframes", ["Animation", "Keyframe Assistant"], "{}"),
-        stub!("keys.rpfCameraImport", "RPF Camera Import", ["Animation", "Keyframe Assistant"], "{}"),
-        // Workspaces and panels that don't exist yet.
-        stub!("window.unavailablePanel", "Panel", [], "{panel}"),
-    ]
+    // Every After Effects menu entry has a real command now.
+    vec![]
 }

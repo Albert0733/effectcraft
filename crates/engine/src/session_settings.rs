@@ -25,14 +25,67 @@ impl Session {
     /// Settings changed: apply what the engine owns (cache budgets) and tell frontends.
     pub fn prefs_changed(&mut self) {
         self.prefs.normalize();
-        self.layer_cache.set_budget(self.prefs.layer_cache_bytes());
-        self.footage.set_cache_budget(self.prefs.media_cache_bytes());
+        self.apply_cache_budgets();
         self.configure_disk_cache();
+        self.footage.set_conform_folder(self.conformed_audio_folder());
+        // Switches Affect Nested Comps changes what precomp layers render: drop cached pixels.
+        let nested = self.prefs.general.switches_affect_nested_comps;
+        if self.applied_nested_switches.replace(nested).is_some_and(|was| was != nested) {
+            self.layer_cache.clear();
+            self.events.push(crate::Event::PurgeCaches);
+        }
         // Fewer undo levels apply right away.
         let levels = self.prefs.general.undo_levels.max(1) as usize;
         let current = self.project.clone();
         self.history.trim(levels, &current);
         self.prefs_revision += 1;
+    }
+
+    /// A Disk settings folder: the setting, or (for frontends with a settings store) `name` next
+    /// to the platform disk cache folder. Headless sessions without the setting stay off disk.
+    fn cache_folder(&self, setting: &str, name: &str) -> Option<std::path::PathBuf> {
+        let s = setting.trim();
+        if !s.is_empty() {
+            return Some(std::path::PathBuf::from(s));
+        }
+        let base = effectcraft_render::disk_cache::default_folder();
+        self.config.is_some().then(|| base.parent().map(|p| p.join(name)).unwrap_or_else(|| base.join(name)))
+    }
+
+    /// Settings ▸ Disk ▸ Database and Cache Folder (media cache: audio waveform summaries).
+    pub fn media_cache_folder(&self) -> Option<std::path::PathBuf> {
+        self.cache_folder(&self.prefs.disk.media_cache_folder, "Media Cache")
+    }
+
+    /// Settings ▸ Disk ▸ Conformed Audio Folder (decoded footage audio, see
+    /// `MediaPool::set_conform_folder`).
+    pub fn conformed_audio_folder(&self) -> Option<std::path::PathBuf> {
+        self.cache_folder(&self.prefs.disk.conformed_media_folder, "Conformed Audio")
+    }
+
+    /// Apply the Memory & CPU cache budgets, limited by RAM Reserved for Other Applications and
+    /// reduced while the system is low on memory (see [`crate::prefs::Prefs::cache_budgets`]).
+    pub fn apply_cache_budgets(&mut self) {
+        let b = self.prefs.cache_budgets(self.sys_memory);
+        self.layer_cache.set_budget(b.layer);
+        self.footage.set_cache_budget(b.media);
+    }
+
+    /// Re-read the system's memory (desktop frontends call this every few seconds) and re-apply
+    /// the cache budgets when the reading changes them. Returns the effective budgets.
+    pub fn memory_tick(&mut self) -> crate::prefs::CacheBudgets {
+        let before = self.prefs.cache_budgets(self.sys_memory);
+        self.sys_memory = crate::sysinfo::memory().or(self.sys_memory);
+        let after = self.prefs.cache_budgets(self.sys_memory);
+        if after != before {
+            self.apply_cache_budgets();
+            // Frontends re-apply their preview cache budget.
+            self.prefs_revision += 1;
+            if after.reduced && !before.reduced {
+                self.toast("The system is low on memory: cache sizes were reduced");
+            }
+        }
+        after
     }
 
     /// Apply Settings ▸ Media & Disk Cache ▸ Disk Cache: open (or close) the persistent cache

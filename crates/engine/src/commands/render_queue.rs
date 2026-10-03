@@ -499,8 +499,15 @@ fn save_current_preview(s: &mut Session, p: &Value) -> Result<Value> {
     let mut item = RenderQueueItem::new(0, cid);
     item.output = OutputModule::for_format(format);
     item.output.output = path.clone();
-    let job =
-        crate::ExportJob { project: &s.project, footage: s.footage.as_ref(), expr: s.expr.as_deref(), accel: s.accel.as_deref(), item: &item, path: &path };
+    let job = crate::ExportJob {
+        project: &s.project,
+        footage: s.footage.as_ref(),
+        expr: s.expr.as_deref(),
+        accel: s.accel.as_deref(),
+        item: &item,
+        path: &path,
+        nested_switches: s.prefs.general.switches_affect_nested_comps,
+    };
     let r = exporter.export(&job, &mut |_, _| true).map_err(EngineError::Other)?;
     s.toast(format!("Saved preview to {}", r.path));
     Ok(serde_json::to_value(&r).unwrap_or_default())

@@ -78,10 +78,11 @@ fn script_windows_are_drawn_and_clickable() {
     assert!(h.state().ui.dock.contains(PanelKind::ScriptPanel(panel)), "the panel docks");
     assert!(h.state().auto.find(&format!("scriptui.{panel}")).is_some());
     // The menus list scripts and panels.
-    let window_menu = effectcraft_ui_egui::menus::dynamic_entries(h.state(), "Window");
-    assert!(window_menu.iter().any(|(l, c, _)| l == "Layer Tools.jsx" && c == "window.scriptPanel"));
-    let scripts = effectcraft_ui_egui::menus::dynamic_entries(h.state(), "Scripts");
-    assert!(scripts.iter().any(|(l, c, _)| l == "Rename Layers.jsx" && c == "file.runScript"));
+    let cx = effectcraft_engine::menus::DynCtx::default();
+    let (panels, _) = effectcraft_engine::menus::dynamic(&h.state().session, "scriptPanels", &cx);
+    assert!(panels.iter().any(|e| e.label == "Layer Tools.jsx" && e.command == "window.scriptPanel"));
+    let (scripts, _) = effectcraft_engine::menus::dynamic(&h.state().session, "scripts", &cx);
+    assert!(scripts.iter().any(|e| e.label == "Rename Layers.jsx" && e.command == "file.runScript"));
     // Closing the panel's tab closes its script window.
     h.state_mut().close_panel(PanelKind::ScriptPanel(panel));
     h.run_steps(2);

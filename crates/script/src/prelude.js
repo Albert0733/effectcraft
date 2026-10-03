@@ -204,7 +204,7 @@ File.prototype = {
     return true;
   },
   rename: function () { throw __err("File.rename is not supported"); },
-  execute: function () { throw __err("scripts can't execute files"); },
+  execute: function () { return JSON.parse(__file("execute", this.__path)); },
   openDlg: function () { return null; },
   saveDlg: function () { return null; },
 };
