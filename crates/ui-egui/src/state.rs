@@ -590,16 +590,13 @@ pub struct UiState {
     pub snapping: bool,
     /// Tool creates shape (true) or mask (false) when a layer is selected.
     pub tool_creates_shape: bool,
-    /// Preview panel options.
-    pub preview_loop: bool,
-    pub preview_cache_first: bool,
-    /// Preview panel "Include Audio" (Mute Audio off).
-    #[serde(default = "yes")]
-    pub preview_audio: bool,
     pub start_screen: bool,
     /// The Home screen shows its Learn tab (tutorials) instead of the recent projects.
     #[serde(default)]
     pub home_learn: bool,
+    /// Align panel: Align Layers to Selection (off: to the composition).
+    #[serde(default)]
+    pub align_to_selection: bool,
     /// Composition ▸ Preview ▸ Cache Frames When Idle.
     pub cache_when_idle: bool,
     /// Tracker panel ▸ Motion Source chosen without a tracker yet (layer id).
@@ -665,11 +662,9 @@ impl Default for UiState {
             stroke_width: 0.0,
             snapping: true,
             tool_creates_shape: true,
-            preview_loop: true,
-            preview_cache_first: false,
-            preview_audio: true,
             start_screen: false,
             home_learn: false,
+            align_to_selection: false,
             cache_when_idle: false,
             tracker_source: None,
             layer_panel: None,

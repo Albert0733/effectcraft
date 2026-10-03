@@ -360,3 +360,16 @@ fn gltf_cameras_and_punctual_lights() {
     let d = lights[0].world.apply_vec(vec3(0.0, 0.0, -1.0));
     assert!((d.y + 1.0).abs() < 1e-6, "{d:?}");
 }
+
+#[test]
+fn stacked_extrusions_move_towards_the_camera() {
+    let square = Outline { outer: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]], holes: vec![] };
+    let p = ExtrudeParams { bevel: BevelStyle::None, bevel_depth: 0.0, hole_bevel: 1.0, depth: 10.0 };
+    let base = extrude(std::slice::from_ref(&square), &p);
+    let up = super::extrude::extrude_stacked(std::slice::from_ref(&square), &p, 3);
+    assert_eq!(base.indices, up.indices);
+    for (a, b) in base.positions.iter().zip(&up.positions) {
+        assert!((a[2] - b[2] - 3.0 * super::extrude::STACK_GAP as f32).abs() < 1e-6);
+        assert_eq!((a[0], a[1]), (b[0], b[1]));
+    }
+}

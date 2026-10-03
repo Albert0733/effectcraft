@@ -24,6 +24,7 @@ pub mod media_cache;
 pub mod menus;
 pub mod offload;
 pub mod prefs;
+pub mod preview;
 pub mod psd_import;
 pub mod render_queue;
 pub mod roto;
