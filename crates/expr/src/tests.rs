@@ -1131,3 +1131,16 @@ fn project_and_time_globals() {
     assert_close!(f.num("thisLayer.marker.key(1).protectedRegion ? 1 : 0", 0.0), 1.0);
     assert_eq!(f.text("thisComp.layer(\"A\").marker.key(1).cuePointName + thisComp.layer(\"A\").marker.key(1).parameters.k", 0.0), "gov");
 }
+
+#[test]
+fn thousands_of_host_reads_on_one_thread_keep_working() {
+    // Every pending host request unwinds through call frames, which leaks boa stack slots; the
+    // runtime replaces a context that fills up instead of failing every later expression.
+    let f = fx();
+    for i in 0..2000 {
+        let t = (i % 20) as f64 * 0.05;
+        assert_eq!(f.num("effect(\"Slider Control\")(\"Slider\")", t), 42.0, "evaluation {i}");
+        assert!(close(f.num("thisComp.layer(\"A\").transform.rotation.valueAtTime(1)", t), 90.0), "evaluation {i}");
+        assert_eq!(f.num("function a() { return effect(1)(1); } function b() { return a(); } b() + 1", t), 43.0, "evaluation {i}");
+    }
+}
