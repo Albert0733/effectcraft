@@ -57,6 +57,10 @@ pub(crate) struct Font {
     codespace: Vec<(usize, u32, u32)>,
     cid_ranges: Vec<(u32, u32, u32)>,
     pub vertical: bool,
+    /// Vertical metrics (`/W2`, in text space): CID → (w1y, vx, vy).
+    cid_vmetrics: HashMap<u32, (f64, f64, f64)>,
+    /// `/DW2`: default (vy, w1y).
+    dw2: (f64, f64),
     cache: RefCell<HashMap<u32, Option<Arc<BezPath>>>>,
     /// Program glyph advances (font units → text space) for fonts without `/Widths`.
     has_widths: bool,
@@ -194,6 +198,8 @@ struct CMap {
     codespace: Vec<(usize, u32, u32)>,
     unicode: HashMap<u32, String>,
     cids: Vec<(u32, u32, u32)>,
+    /// `/WMode 1`: vertical writing.
+    wmode: bool,
 }
 
 fn be(b: &[u8]) -> u32 {
@@ -285,6 +291,14 @@ fn parse_cmap(data: &[u8]) -> CMap {
                 }
                 mode = "";
             }
+            "def" if mode.is_empty() => {
+                if let [.., Obj::Name(k), Obj::Num(v)] = args.as_slice()
+                    && k == "WMode"
+                {
+                    m.wmode = *v == 1.0;
+                }
+                args.clear();
+            }
             _ => {
                 if mode.is_empty() {
                     args.clear();
@@ -315,6 +329,8 @@ impl Font {
             codespace: vec![],
             cid_ranges: vec![],
             vertical: false,
+            cid_vmetrics: HashMap::new(),
+            dw2: (0.88, -1.0),
             cache: RefCell::new(HashMap::new()),
             has_widths: false,
             base_name: base_name.clone(),
@@ -366,6 +382,37 @@ impl Font {
                     }
                 }
             }
+            // Vertical metrics (§9.7.4.3): /DW2 [vy w1y] and /W2 entries
+            // `c [w1y vx vy …]` or `cfirst clast w1y vx vy`.
+            let dw2 = file.get(&desc_dict, "DW2").map(|x| file.nums(x)).unwrap_or_default();
+            if dw2.len() == 2 {
+                f.dw2 = (dw2[0] / 1000.0, dw2[1] / 1000.0);
+            }
+            if let Some(w) = file.get(&desc_dict, "W2").and_then(Obj::array) {
+                let num = |i: usize| w.get(i).and_then(|x| file.resolve(x).num());
+                let mut i = 0;
+                while i < w.len() {
+                    let Some(first) = num(i) else { break };
+                    let first = first.max(0.0) as u32;
+                    match w.get(i + 1).map(|x| file.resolve(x)) {
+                        Some(Obj::Array(list)) => {
+                            let v: Vec<f64> = list.iter().filter_map(|x| file.resolve(x).num()).collect();
+                            for (k, t) in v.chunks_exact(3).enumerate() {
+                                f.cid_vmetrics.insert(first + k as u32, (t[0] / 1000.0, t[1] / 1000.0, t[2] / 1000.0));
+                            }
+                            i += 2;
+                        }
+                        Some(Obj::Num(last)) => {
+                            let (Some(w1), Some(vx), Some(vy)) = (num(i + 2), num(i + 3), num(i + 4)) else { break };
+                            for c in first..=(last.max(0.0) as u32).min(first + 65535) {
+                                f.cid_vmetrics.insert(c, (w1 / 1000.0, vx / 1000.0, vy / 1000.0));
+                            }
+                            i += 5;
+                        }
+                        _ => break,
+                    }
+                }
+            }
             f.has_widths = true;
             // Encoding CMap.
             match file.get(d, "Encoding") {
@@ -378,6 +425,7 @@ impl Font {
                 Some(Obj::Stream(sd, raw)) => {
                     if let Some(data) = decode_stream(file, sd, raw) {
                         let cm = parse_cmap(&data);
+                        f.vertical = cm.wmode || file.get_num(sd, "WMode") == Some(1.0);
                         f.codespace = cm.codespace;
                         f.cid_ranges = cm.cids;
                     }
@@ -528,6 +576,17 @@ impl Font {
             return code;
         }
         self.cid_ranges.iter().find(|(lo, hi, _)| code >= *lo && code <= *hi).map(|(lo, _, c)| c + (code - lo)).unwrap_or(0)
+    }
+
+    /// Vertical metrics of a code in text space (before the font size): the vertical
+    /// displacement `w1y` (negative: downwards) and the position vector `(vx, vy)` from the
+    /// horizontal origin to the vertical origin (§9.7.4.3; defaults from `/DW2`, `vx` half the
+    /// horizontal advance).
+    pub fn vmetrics(&self, code: u32) -> (f64, f64, f64) {
+        match self.cid_vmetrics.get(&self.cid(code)) {
+            Some(m) => *m,
+            None => (self.dw2.1, self.width(code) / 2.0, self.dw2.0),
+        }
     }
 
     /// The advance of a code in text space (before the font size).

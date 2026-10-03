@@ -97,3 +97,57 @@ fn soft_mask_applies_to_the_masked_group_result() {
     let p = img.get(75, 50);
     assert!((p[3] - 0.5).abs() < 0.02 && p[0] < 0.02 && (p[2] - 0.5).abs() < 0.02, "{p:?}");
 }
+
+/// The ink bounding box `(x0, y0, x1, y1)` of a render (pixels with alpha > 0.5).
+fn ink_box(img: &effectcraft_raster::Image) -> (i64, i64, i64, i64) {
+    let (mut x0, mut y0, mut x1, mut y1) = (i64::MAX, i64::MAX, i64::MIN, i64::MIN);
+    for y in 0..img.height as i64 {
+        for x in 0..img.width as i64 {
+            if img.get(x, y)[3] > 0.5 {
+                (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x), y1.max(y));
+            }
+        }
+    }
+    (x0, y0, x1, y1)
+}
+
+#[test]
+fn vertical_metrics_w2_and_dw2() {
+    use skrifa::MetadataProvider;
+    let inter = effectcraft_text::fonts::INTER_REGULAR.to_vec();
+    let font = skrifa::FontRef::new(&inter).unwrap();
+    let h = font.charmap().map('H').unwrap().to_u32();
+    let doc = |desc_extra: &str| {
+        let bytes = page_pdf(
+            &format!("BT /F1 20 Tf 100 95 Td <{h:04X}{h:04X}> Tj ET"),
+            "/Font << /F1 10 0 R >>",
+            vec![
+                (10, "<< /Type /Font /Subtype /Type0 /BaseFont /Inter /Encoding /Identity-V /DescendantFonts [13 0 R] >>".into(), None),
+                (
+                    13,
+                    format!(
+                        "<< /Type /Font /Subtype /CIDFontType2 /BaseFont /Inter /CIDToGIDMap /Identity /W [{h} [700]] {desc_extra} /FontDescriptor 11 0 R >>"
+                    ),
+                    None,
+                ),
+                (11, "<< /Type /FontDescriptor /Flags 32 /FontFile2 12 0 R >>".into(), None),
+                (12, "<< >>".into(), Some(inter.clone())),
+            ],
+        );
+        let d = parse(&bytes).unwrap();
+        assert!(d.skipped.is_empty(), "{:?}", d.skipped);
+        ink_box(&render(&d))
+    };
+    // Defaults: an advance of 1 em down; the vertical origin (350, 880) from the horizontal one.
+    let base = doc("");
+    // /W2: a 2 em advance and vx 250.
+    let w2 = doc(&format!("/W2 [{h} [-2000 250 880]]"));
+    assert_eq!(w2.1, base.1, "the first glyph's top stays: {base:?} {w2:?}");
+    assert!(((w2.3 - base.3) - 20).abs() <= 1, "second glyph 20 pt lower: {base:?} {w2:?}");
+    assert!(((w2.0 - base.0) - 2).abs() <= 1, "vx 250 vs 350 → 2 pt right: {base:?} {w2:?}");
+    // The range form gives the same; /DW2 with vy 780 draws the glyphs 2 pt higher.
+    let range = doc(&format!("/W2 [{h} {h} -2000 250 880]"));
+    assert_eq!(range, w2);
+    let dw2 = doc("/DW2 [780 -1000]");
+    assert!(((base.1 - dw2.1) - 2).abs() <= 1, "vy 780 → 2 pt higher: {base:?} {dw2:?}");
+}

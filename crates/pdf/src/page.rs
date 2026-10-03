@@ -1047,7 +1047,8 @@ impl<'a> Interp<'a> {
                     for (code, nbytes) in font.codes(s) {
                         let w0 = font.width(code);
                         let trm = self.tm * Affine::new([fs * th, 0.0, 0.0, fs, 0.0, rise]);
-                        let trm = if font.vertical { trm * Affine::translate((-w0 / 2.0, -0.88)) } else { trm };
+                        let (w1y, vx, vy) = if font.vertical { font.vmetrics(code) } else { (0.0, 0.0, 0.0) };
+                        let trm = if font.vertical { trm * Affine::translate((-vx, -vy)) } else { trm };
                         if let Some((proc_, t3res)) = font.type3_proc(code) {
                             let proc_ = proc_.to_vec();
                             let r = t3res.cloned().unwrap_or_else(|| res.clone());
@@ -1060,7 +1061,7 @@ impl<'a> Interp<'a> {
                         text.push_str(&font.unicode(code));
                         let tw = if nbytes == 1 && code == 32 { self.gs.word_spacing } else { 0.0 };
                         if font.vertical {
-                            self.tm *= Affine::translate((0.0, -(fs + self.gs.char_spacing + tw)));
+                            self.tm *= Affine::translate((0.0, w1y * fs - self.gs.char_spacing - tw));
                         } else {
                             self.tm *= Affine::translate(((w0 * fs + self.gs.char_spacing + tw) * th, 0.0));
                         }
