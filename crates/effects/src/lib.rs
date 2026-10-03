@@ -24,8 +24,10 @@ mod generate2;
 mod generate3;
 mod keying;
 mod keying2;
+pub mod keylight;
 mod matte;
 mod misc;
+pub mod mocha_shape;
 mod noise;
 mod noise2;
 mod obsolete;
@@ -360,6 +362,8 @@ pub fn registry() -> &'static [EffectSpec] {
         v.extend(vr::specs());
         v.extend(blur3::specs());
         v.extend(distort4::specs());
+        v.extend(keylight::specs());
+        v.extend(mocha_shape::specs());
         v.extend(time_fx::specs());
         v.extend(audio_fx::specs());
         v.extend(paint::specs());
@@ -380,7 +384,10 @@ pub fn find(id: &str) -> Option<&'static EffectSpec> {
 
 /// Find by id or (case-insensitive) display name.
 pub fn lookup(name_or_id: &str) -> Option<&'static EffectSpec> {
-    find(name_or_id).or_else(|| registry().iter().find(|s| s.name.eq_ignore_ascii_case(name_or_id)))
+    find(name_or_id).or_else(|| registry().iter().find(|s| s.name.eq_ignore_ascii_case(name_or_id))).or_else(|| {
+        // After Effects' third-party display names we register under a generic name.
+        keylight::KEYLIGHT_ALIASES.iter().any(|a| a.eq_ignore_ascii_case(name_or_id)).then(|| find("ec.keying.keylight")).flatten()
+    })
 }
 
 /// A parameter's default value on a layer of `layer_size` (point defaults are fractions of the
@@ -478,6 +485,7 @@ pub const TIME_DEPENDENT: &[&str] = &[
     "ec.vr.digitalglitch",
     "ec.blur.camerashakedeblur",
     "ec.distort.rollingshutterrepair",
+    "ec.obsolete.mochashape",
 ];
 
 /// See [`TIME_DEPENDENT`].
