@@ -96,6 +96,19 @@ fn bench_lavfi() {
 
 #[test]
 #[ignore]
+fn bench_intra() {
+    for src in ["mandelbrot", "sierpinski", "gradients"] {
+        let Some(pics) = lavfi(src, 640, 360, 4) else {
+            return;
+        };
+        for q in [40, 80, 120, 160] {
+            run(&format!("{src}-intra"), &pics, RateControl::ConstantQ(q), 1);
+        }
+    }
+}
+
+#[test]
+#[ignore]
 fn bench_1080p_loop() {
     let Some(pics) = lavfi("mandelbrot", 1920, 1080, 4) else {
         return;

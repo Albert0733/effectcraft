@@ -341,19 +341,20 @@ impl<'a> Decider<'a> {
             bit_depth: bd,
         };
         let ed = edges(&self.rec[0], &e);
-        // the two best modes by SAD, then a rate-distortion choice of mode and transform type
+        // modes ranked by SATD, then a rate-distortion choice of mode and transform type among
+        // the best three
         let mut ranked: Vec<(f64, usize)> = INTRA_MODES_USED
             .iter()
             .map(|&mode| {
                 predict_intra(&ed, &e, mode, &mut pred);
-                let sad = self.sad(0, c * 4, r * 4, n, &pred[..n * n]) as f64;
+                let sad = self.satd(0, c * 4, r * 4, n, &pred[..n * n]) as f64;
                 (sad + self.lambda_sad * if mode == DC_PRED { 1.0 } else { MODE_BITS_INTRA }, mode)
             })
             .collect();
         ranked.sort_by(|a, b| a.0.total_cmp(&b.0));
         let tx_y = tx_size_for(log2);
         let mut best: Option<(f64, usize, usize, TxResult, Option<Vec<u16>>)> = None;
-        for &(_, mode) in ranked.iter().take(2) {
+        for &(_, mode) in ranked.iter().take(3) {
             predict_intra(&ed, &e, mode, &mut pred);
             let mut types = vec![DCT_DCT];
             let alt = MODE_TO_TXFM[mode] as usize;
@@ -403,7 +404,7 @@ impl<'a> Decider<'a> {
             let mut sad = 0u64;
             for i in 0..2 {
                 predict_intra(&ced[i], &ce[i], mode, &mut pred);
-                sad += self.sad(1 + i, c * 2, r * 2, cn, &pred[..cn * cn]);
+                sad += self.satd(1 + i, c * 2, r * 2, cn, &pred[..cn * cn]);
             }
             let cost = sad as f64 + self.lambda_sad * if mode == DC_PRED { 1.0 } else { 2.5 };
             if cost < best_uv.0 {
@@ -676,6 +677,39 @@ impl<'a> Decider<'a> {
         sad
     }
 
+    /// Sum of absolute Hadamard-transformed differences (4x4 or 8x8 sub-blocks) of a prediction
+    /// against the source, scaled to about the size of the SAD.
+    fn satd(&self, p: usize, x: usize, y: usize, n: usize, pred: &[u16]) -> u64 {
+        let src = &self.src[p];
+        let k = n.min(8);
+        let mut total = 0u64;
+        let mut d = [0i32; 64];
+        for by in (0..n).step_by(k) {
+            for bx in (0..n).step_by(k) {
+                for i in 0..k {
+                    let row = &src.row(y + by + i)[x + bx..x + bx + k];
+                    for j in 0..k {
+                        d[i * k + j] = row[j] as i32 - pred[(by + i) * n + bx + j] as i32;
+                    }
+                }
+                for i in 0..k {
+                    hadamard(&mut d[i * k..i * k + k]);
+                }
+                let mut col = [0i32; 8];
+                let mut s = 0u64;
+                for j in 0..k {
+                    for i in 0..k {
+                        col[i] = d[i * k + j];
+                    }
+                    hadamard(&mut col[..k]);
+                    s += col[..k].iter().map(|v| v.unsigned_abs() as u64).sum::<u64>();
+                }
+                total += s / (k as u64 / 2);
+            }
+        }
+        total
+    }
+
     /// SAD of a prediction against the source over the visible part of the block.
     fn sad(&self, p: usize, x: usize, y: usize, n: usize, pred: &[u16]) -> u64 {
         let (vw, vh) = self.g.visible(p);
@@ -787,6 +821,22 @@ impl<'a> Decider<'a> {
         inverse_2d(&deq, &mut resid, tx_sz, tx_type, bd);
         let max = (1i32 << bd) - 1;
         pred.iter().zip(&resid).map(|(&p, &r)| (p as i32 + r).clamp(0, max) as u16).collect()
+    }
+}
+
+/// Unnormalised Walsh-Hadamard transform of 4 or 8 values, in place.
+fn hadamard(v: &mut [i32]) {
+    let n = v.len();
+    let mut h = 1;
+    while h < n {
+        for i in (0..n).step_by(2 * h) {
+            for j in i..i + h {
+                let (a, b) = (v[j], v[j + h]);
+                v[j] = a + b;
+                v[j + h] = a - b;
+            }
+        }
+        h *= 2;
     }
 }
 

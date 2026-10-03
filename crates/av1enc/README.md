@@ -34,7 +34,8 @@ reconstruction, so prediction never drifts.
   a rate-distortion cost (SSE + λ·estimated bits); blocks crossing the frame edge are split as
   the syntax requires. 64x64 blocks are only used as inter skip blocks.
 - **Intra**: DC, V, H, Paeth, smooth, smooth-V, smooth-H for luma and chroma (chosen by SAD),
-  with the spec's edge preparation and above-right / below-left availability.
+  ranked by SATD with a rate-distortion choice among the best three; the spec's edge preparation
+  and above-right / below-left availability.
 - **Inter**: single reference (`LAST_FRAME`), `NEWMV` / `NEARESTMV` / `NEARMV` / `GLOBALMV`
   chosen from the spec's motion vector prediction stack (7.10.2, mirrored exactly); motion search
   from neighbour / co-located / parent candidates, a whole-sample diamond search and half- then
