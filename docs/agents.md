@@ -105,11 +105,18 @@ effectcraft-cli run clip.ecproj track.motion '{"layer":"#2"}' \
 
 `track.mask` follows the pixels inside a mask and keys its Mask Path on every frame (vertices and
 tangents move with the fitted motion). `method` is `position`, `positionScale`,
-`positionScaleRotation` (the default, also kept as the Tracker panel's Method), `positionScaleRotationSkew`
-or `perspective`; `direction` is `forward|backward|frameForward|frameBackward` from the current
+`positionScaleRotation` (the default, also kept as the Tracker panel's Method), `positionScaleRotationSkew`,
+`perspective`, `faceOutline` (Face Tracking (Outline Only): the mask, drawn around a face, becomes
+the face outline on every frame) or `faceDetailed` (Face Tracking (Detailed Features): also keys a
+Face Track Points effect with one point per landmark — eyebrows, eyes, pupils, nose tip,
+nostrils, mouth corners and lips, chin, jaw); `direction` is `forward|backward|frameForward|frameBackward` from the current
 time (or `start` / `end` in seconds). Like `track.analyze` it runs in the background in the app
 (progress in `track.status` under `mask`, `track.stop` cancels and keeps what was tracked) and is
-one undo step; `"wait": true` blocks.
+one undo step; `"wait": true` blocks. `track.extractFaceMeasurements {layer?}` (Extract & Copy Face
+Measurements) keys a Face Measurements effect from the Face Track Points (head position, scale and
+orientation X/Y/Z, eye openness, eyebrow distance from eye, mouth openness, width and offset), puts
+those keys on the keyframe clipboard and returns them per frame plus a tab-separated `clipboard`
+text.
 
 `mask.interpolate` (Window ▸ Mask Interpolation ▸ Apply) adds in-between Mask Path keys between
 each pair of selected Mask Path keys (or the existing keys at `times`, in seconds), giving both
@@ -138,7 +145,11 @@ the app re-analyses automatically (headless: run `warp.analyze` again). Settings
 properties under the instance's groups, e.g. `effects/#1/stabilization/result` (0 Smooth Motion,
 1 No Motion), `effects/#1/stabilization/smoothness`, `effects/#1/stabilization/method`,
 `effects/#1/borders/framing` (0 Stabilize Only … 3 Stabilize, Synthesize Edges),
-`effects/#1/borders/autoScale/maximumScale`, `effects/#1/advanced/showTrackPoints`.
+`effects/#1/borders/autoScale/maximumScale`, `effects/#1/advanced/showTrackPoints`. Method 3
+(Subspace Warp, the default) bends a mesh per frame to the smoothed feature trajectories, so
+scenes with depth stabilise where one perspective transform cannot;
+`effects/#1/advanced/rollingShutterRipple` (0 Automatic Reduction, 1 Enhanced Reduction: a finer,
+softer mesh) tunes it.
 
 ```sh
 effectcraft-cli run shaky.ecproj track.warpStabilizer '{"layer":"#1","wait":true}' \
@@ -150,13 +161,17 @@ effectcraft-cli exec warp.status '{"layer":"#1"}' shaky.ecproj --json
 ### 3D Camera Tracker
 
 Animation ▸ Track Camera and the Tracker panel's button (`track.camera {layer?, shotType?:
-fixed|variable|specify, aov?, solveMethod?: auto|typical|flat|tripod, detailed?, wait?}`) apply
+fixed|variable|specify, aov?, solveMethod?: auto|typical|flat|tripod, detailed?, lensDistortion?,
+undistort?, wait?}`) apply
 Effect ▸ Perspective ▸ 3D Camera Tracker (or reuse the layer's) and analyse it in the background:
 "Analyzing in background (step 1 of 2)" tracks features, "Solving camera" solves.
 `camera.analyze {layer?, effect?, wait?}` re-runs it, `camera.cancel` stops it without writing
 anything. `camera.solveStatus` reports `progress`/`banner`, `analyzed`, `solved`, `methodUsed`,
 `averageError` (pixels), `focalLength`, `horizontalAngleOfView`, the current frame's `camera`
-(position, orientation, zoom) and `groundPlane`. `camera.points {time?}` lists the solved points
+(position, orientation, zoom), `groundPlane` and the solved `lensDistortion` (`k1`, `k2`, normalised by
+half the frame diagonal) when Solve Lens Distortion (`effects/#1/advanced/lensDistortion`, also on
+with Detailed Analysis) is on; `effects/#1/advanced/undistort` renders the footage undistorted so
+the solved camera's 3D layers line up. `camera.points {time?}` lists the solved points
 visible now with their `id`, `comp` position, `depth`, `world` position and `error`.
 
 Select points with `camera.selectPoints {points, add?, toggle?}` (the viewer's click / Shift-click /

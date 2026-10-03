@@ -17,13 +17,13 @@ How close EffectCraft is to After Effects 2026, feature by feature, and how much
 
 By area: Layers 98%, Output 95%, Compositions 95%, Automation 96%, Paint 95%, Text 95%, Import 96%,
 Animation 94%, Masks 94%, Preview 94%, Interface 93%, Shapes 93%, 3D 91%, Audio 90%, Project 90%,
-Tracking 88%, Effects 85%, Web 65%.
+Tracking 96%, Effects 85%, Web 65%.
 
 What is left, in priority order: the web app's depth (threads, storage, audio, non-blocking
 renders); stroke taper/wave and multi-segment dashes; variable mask feather points; camera iris/bokeh and focus-link commands; Render Queue field render, crop/resize and templates;
-approximated effects (Subspace Warp, Key Cleaner) and Liquify's viewer brush; OpenType features and variable
+approximated effects (Key Cleaner) and Liquify's viewer brush; OpenType features and variable
 font axes; AI/EPS/PDF import; more codecs; 59 preferences not yet wired; ScriptUI;
-Lumetri Scopes, Footage, Media Browser and Metadata panels; Content-Aware Fill; face tracking; and
+Lumetri Scopes, Footage, Media Browser and Metadata panels; Content-Aware Fill; and
 the "better than After Effects" items (a plug-in API, branching history; GPU particles landed in M12.7).
 
 The sections below are the original audit (morning of 2 October, ≈ 64%) and its updates, kept for
@@ -124,7 +124,7 @@ the disk cache in the formats wave; the 3D Camera Tracker in M12.6.)
 | Project | ≈ 68% | 5.5 | auto-save, folder moves, OCIO displays beyond the built-in tone map (Color Engine with OCIO/ACES working spaces, HDR compand/tone mapping, Rec. 2100 PQ/HLG output, Feet + Frames, display colour management, Simulate Output and the locked viewer landed in M7.7; proxies and Interpret Footage fields / pixel aspect / alpha guess landed: PRJ-8, PRJ-3) |
 | Masks & roto | 74% | 5.0 | Roto Brush's learned (3.0) segmentation model (variable-width mask feather points with the Mask Feather tool landed in M13.5; mask tracking and Mask Interpolation landed in M6.6; Roto Brush & Refine Edge with graph-cut segmentation, flow propagation, edge matting, decontamination and Freeze in M6.7) |
 | Preview | 66% | 4.0 | GPU bokeh depth of field, wireframes and Advanced 3D compositing (Classic 3D runs and adjustment layers composite on the GPU since M12.7; persistent disk cache with the blue cache bar landed; region of interest, snapshots, exposure and Fast Previews landed in M0.13) |
-| Tracking | ≈ 85% | 2.5 | face tracking, Subspace Warp's mesh warp, lens distortion in the camera solve (Rolling Shutter Repair landed in M9.11; point tracker, mask tracking, Warp Stabilizer and the 3D Camera Tracker landed in M6.x / M12.5 / M12.6) |
+| Tracking | ≈ 96% | 0.3 | face tracking is a classical (skin model + feature components + shape model) fitter, not a learned detector: profile views and occluded faces are weak; Rolling Shutter Ripple is approximated by Subspace Warp's mesh density (face tracking (Outline Only / Detailed Features with Face Track Points and Extract & Copy Face Measurements), Subspace Warp's content-preserving mesh warp on subspace-smoothed trajectories, and radial lens distortion (k1, k2) in the camera bundle adjustment with Undistort Footage landed in M13.3; Rolling Shutter Repair in M9.11; point tracker, mask tracking, Warp Stabilizer and the 3D Camera Tracker in M6.x / M12.5 / M12.6) |
 | Paint | 0% | 4.0 | Brush, Clone Stamp, Eraser |
 
 ## Effects still missing

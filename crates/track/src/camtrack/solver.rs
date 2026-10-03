@@ -8,7 +8,7 @@ use rayon::prelude::*;
 use super::bundle::{self, BaCam, BaObs, BaOpts, FocalMode};
 use super::geometry::{self, Pose};
 use super::linalg::*;
-use super::{CameraSolve, CameraTracks, ShotType, SolveMethod, SolveSettings, SolvedFrame, SolvedPoint};
+use super::{CameraSolve, CameraTracks, Distortion, ShotType, SolveMethod, SolveSettings, SolvedFrame, SolvedPoint};
 use crate::fit::{Model, ransac};
 
 fn debug() -> bool {
@@ -142,6 +142,8 @@ struct Cfg {
     focal: FocalMode,
     /// Registration estimates a focal length per frame.
     per_frame_f: bool,
+    /// The global adjustments also adjust the lens distortion.
+    distortion: bool,
 }
 
 const F_PRIOR: f64 = 30.0;
@@ -183,7 +185,7 @@ impl Recon {
             &mut cams,
             &mut pts,
             &obs,
-            &BaOpts { focal, fix_points: false, fix_centers: cfg.kind == Kind::Tripod, fixed, huber: d.huber(), max_iter: iters },
+            &BaOpts { focal, fix_points: false, fix_centers: cfg.kind == Kind::Tripod, fixed, huber: d.huber(), max_iter: iters, distortion: cfg.distortion },
         );
         for (k, c) in frames.iter().zip(&cams) {
             self.cams.insert(*k, *c);
@@ -289,6 +291,7 @@ impl Recon {
             fixed: vec![false],
             huber,
             max_iter: 40,
+            distortion: false,
         };
         let mut best: Option<(usize, BaCam)> = None;
         // Robust start (large Huber threshold), then tighten; from the prediction and, failing
@@ -371,7 +374,11 @@ fn predict(r: &Recon, k: usize) -> Option<BaCam> {
     match (before, after) {
         (Some((ka, a)), Some((kb, b))) => {
             let t = (k - ka) as f64 / (kb - ka) as f64;
-            Some(BaCam { pose: Pose { r: slerp(&a.pose.r, &b.pose.r, t), c: add(scale(a.pose.c, 1.0 - t), scale(b.pose.c, t)) }, f: a.f * (b.f / a.f).powf(t) })
+            Some(BaCam {
+                pose: Pose { r: slerp(&a.pose.r, &b.pose.r, t), c: add(scale(a.pose.c, 1.0 - t), scale(b.pose.c, t)) },
+                f: a.f * (b.f / a.f).powf(t),
+                dist: a.dist,
+            })
         }
         (Some((ka, a)), None) => {
             // Constant velocity from the two previous cameras.
@@ -381,7 +388,7 @@ fn predict(r: &Recon, k: usize) -> Option<BaCam> {
                     let dr = log_rot(&mm(&a.pose.r, &mt(&p.pose.r)));
                     let rr = mm(&rodrigues(scale(dr, t.min(2.0))), &a.pose.r);
                     let c = add(a.pose.c, scale(sub(a.pose.c, p.pose.c), t.min(2.0)));
-                    Some(BaCam { pose: Pose { r: rr, c }, f: a.f })
+                    Some(BaCam { pose: Pose { r: rr, c }, f: a.f, dist: a.dist })
                 }
                 None => Some(a),
             }
@@ -392,7 +399,7 @@ fn predict(r: &Recon, k: usize) -> Option<BaCam> {
                 let dr = log_rot(&mm(&b.pose.r, &mt(&nx.pose.r)));
                 let rr = mm(&rodrigues(scale(dr, t.min(2.0))), &b.pose.r);
                 let c = add(b.pose.c, scale(sub(b.pose.c, nx.pose.c), t.min(2.0)));
-                Some(BaCam { pose: Pose { r: rr, c }, f: b.f })
+                Some(BaCam { pose: Pose { r: rr, c }, f: b.f, dist: b.dist })
             }
             None => Some(b),
         },
@@ -459,8 +466,8 @@ fn init_pair(d: &Data, a: usize, b: usize, f: f64, use_e: bool, use_h: bool) -> 
 fn grow(d: &Data, kfs: &[usize], j: usize, init: &(Pose, HashMap<u32, V3>), f: f64, cfg: &Cfg, cancel: Option<&AtomicBool>) -> Option<Recon> {
     let (a, b) = (kfs[0], kfs[j]);
     let mut r = Recon::default();
-    r.cams.insert(a, BaCam { pose: Pose::IDENTITY, f });
-    r.cams.insert(b, BaCam { pose: init.0, f });
+    r.cams.insert(a, BaCam { pose: Pose::IDENTITY, f, dist: Distortion::NONE });
+    r.cams.insert(b, BaCam { pose: init.0, f, dist: Distortion::NONE });
     r.pts = init.1.clone();
     let inner = |r: &mut Recon, frames: &[usize]| {
         let focal = if cfg.per_frame_f && frames.len() > 2 { FocalMode::PerCamera(F_PRIOR) } else { FocalMode::Fixed };
@@ -495,7 +502,7 @@ fn grow(d: &Data, kfs: &[usize], j: usize, init: &(Pose, HashMap<u32, V3>), f: f
 /// Tripod reconstruction over keyframes `kfs` at focal length `f`.
 fn grow_tripod(d: &Data, kfs: &[usize], f: f64, cfg: &Cfg, cancel: Option<&AtomicBool>) -> Option<Recon> {
     let mut r = Recon::default();
-    r.cams.insert(kfs[0], BaCam { pose: Pose::IDENTITY, f });
+    r.cams.insert(kfs[0], BaCam { pose: Pose::IDENTITY, f, dist: Distortion::NONE });
     let ray = |p: [f64; 2], f: f64| normalize([p[0] / f, p[1] / f, 1.0]);
     for w in kfs.windows(2) {
         if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
@@ -519,7 +526,7 @@ fn grow_tripod(d: &Data, kfs: &[usize], f: f64, cfg: &Cfg, cancel: Option<&Atomi
             rel = geometry::procrustes(&ia, &ib)?;
         }
         let pa = r.cams[&a].pose.r;
-        r.cams.insert(b, BaCam { pose: Pose { r: mm(&rel, &pa), c: [0.0; 3] }, f });
+        r.cams.insert(b, BaCam { pose: Pose { r: mm(&rel, &pa), c: [0.0; 3] }, f, dist: Distortion::NONE });
     }
     r.triangulate(d, Kind::Tripod, 0.0, 20.0);
     let frames: Vec<usize> = r.cams.keys().copied().collect();
@@ -640,8 +647,101 @@ fn search_focal(w: f64, eval: &(dyn Fn(f64) -> f64 + Sync)) -> f64 {
     if best.1 <= errs[i] { best.0.exp() } else { fs[i] }
 }
 
+/// A solve before its canonical output.
+struct Core {
+    d: Data,
+    r: Recon,
+    method: SolveMethod,
+    kind: Kind,
+    cfg: Cfg,
+    focal: FocalMode,
+    kfs: Vec<usize>,
+}
+
+/// `tracks` with every position undistorted by `dist`.
+fn undistorted(tracks: &CameraTracks, dist: &Distortion) -> CameraTracks {
+    let c = [tracks.size[0] * 0.5, tracks.size[1] * 0.5];
+    let mut t = tracks.clone();
+    for tr in t.tracks.iter_mut() {
+        for p in tr.pts.iter_mut() {
+            let q = dist.undistort([p[0] as f64 - c[0], p[1] as f64 - c[1]]);
+            *p = [(q[0] + c[0]) as f32, (q[1] + c[1]) as f32];
+        }
+    }
+    t
+}
+
 /// Solve the camera of a tracked clip.
 pub fn solve(tracks: &CameraTracks, s: &SolveSettings, cancel: Option<&AtomicBool>) -> Result<CameraSolve, SolveError> {
+    if !s.lens_distortion {
+        let c = solve_core(tracks, s, cancel)?;
+        return Ok(finish(&c.d, tracks, s, c.r, c.method, c.kind));
+    }
+    // Lens distortion: solve, adjust (k1, k2) jointly on the raw tracks, then solve again on
+    // tracks undistorted with the estimate and adjust jointly once more.
+    let mut dist = Distortion::for_size(tracks.size);
+    let mut out = None;
+    for pass in 0..2 {
+        let und = (pass > 0).then(|| undistorted(tracks, &dist));
+        let c = solve_core(und.as_ref().unwrap_or(tracks), s, cancel)?;
+        let d = Data::new(tracks, &s.deleted);
+        d.set_noise(c.d.noise());
+        let mut r = c.r;
+        for cam in r.cams.values_mut() {
+            cam.dist = dist;
+        }
+        let cfg = Cfg { distortion: true, ..c.cfg };
+        let all: Vec<usize> = r.cams.keys().copied().collect();
+        let frames: Vec<usize> = if all.len() <= 160 { all.clone() } else { c.kfs.iter().copied().filter(|k| r.cams.contains_key(k)).collect() };
+        if frames.len() < 2 {
+            return err("the camera could not be solved (not enough parallax or features)");
+        }
+        // The pinhole solve's outliers include the distorted frame edges: start from all
+        // observations (the Huber loss keeps real outliers in check), then reject again.
+        r.outliers.clear();
+        r.adjust(&d, &frames, &cfg, c.focal, 30);
+        r.outliers.clear();
+        r.reject(&d);
+        r.adjust(&d, &frames, &cfg, c.focal, 30);
+        dist = r.cams[&frames[0]].dist;
+        for cam in r.cams.values_mut() {
+            cam.dist = dist;
+        }
+        if frames.len() < all.len() {
+            // Refine the other frames against the adjusted points and distortion.
+            let base = r.clone();
+            let rcfg = Cfg { distortion: false, ..cfg };
+            let refined: Vec<(usize, Option<BaCam>)> = all
+                .par_iter()
+                .filter(|k| !frames.contains(k))
+                .map(|k| {
+                    let mut local = Recon { cams: base.cams.clone(), pts: base.pts.clone(), outliers: HashSet::new() };
+                    let start = local.cams[k];
+                    let ok = local.register(&d, *k, start, &rcfg);
+                    (*k, if ok { local.cams.get(k).copied() } else { None })
+                })
+                .collect();
+            for (k, cam) in refined {
+                if let Some(cam) = cam {
+                    r.cams.insert(k, cam);
+                }
+            }
+            r.reject(&d);
+        }
+        if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
+            return err("cancelled");
+        }
+        if debug() {
+            eprintln!("lens distortion pass {pass}: k1 {:.5} k2 {:.5}", dist.k1, dist.k2);
+        }
+        let mut sol = finish(&d, tracks, s, r, c.method, c.kind);
+        sol.distortion = Some(dist);
+        out = Some(sol);
+    }
+    out.ok_or_else(|| SolveError("the camera could not be solved".into()))
+}
+
+fn solve_core(tracks: &CameraTracks, s: &SolveSettings, cancel: Option<&AtomicBool>) -> Result<Core, SolveError> {
     let d = Data::new(tracks, &s.deleted);
     if d.n < 2 {
         return err("the clip must be at least two frames long");
@@ -653,7 +753,7 @@ pub fn solve(tracks: &CameraTracks, s: &SolveSettings, cancel: Option<&AtomicBoo
     let cancelled = || cancel.is_some_and(|c| c.load(Ordering::Relaxed));
     let fixed_f = (s.shot == ShotType::SpecifyAngle).then(|| focal_of(d.w, if s.hfov > 0.0 { s.hfov } else { 40.0 }));
     let variable = s.shot == ShotType::VariableZoom;
-    let gcfg = Cfg { kind: Kind::General, focal: FocalMode::Fixed, per_frame_f: false };
+    let gcfg = Cfg { kind: Kind::General, focal: FocalMode::Fixed, per_frame_f: false, distortion: false };
     let tcfg = Cfg { kind: Kind::Tripod, ..gcfg };
     // The focal-length search runs on the first keyframes only.
     let mini: Vec<usize> = kfs.iter().copied().take(10).collect();
@@ -738,7 +838,7 @@ pub fn solve(tracks: &CameraTracks, s: &SolveSettings, cancel: Option<&AtomicBoo
     }
     let (att, _) = results.swap_remove(pick);
     let kind = if att.method == SolveMethod::TripodPan { Kind::Tripod } else { Kind::General };
-    let cfg = Cfg { kind, focal: FocalMode::Fixed, per_frame_f: variable };
+    let cfg = Cfg { kind, focal: FocalMode::Fixed, per_frame_f: variable, distortion: false };
     let mut r = att.recon;
     let focal = match (fixed_f, variable) {
         (Some(_), _) => FocalMode::Fixed,
@@ -845,7 +945,7 @@ pub fn solve(tracks: &CameraTracks, s: &SolveSettings, cancel: Option<&AtomicBoo
         (m, _) => m,
     };
     lap("final adjustment");
-    Ok(finish(&d, tracks, s, r, method, kind))
+    Ok(Core { d, r, method, kind, cfg, focal, kfs: kf_frames })
 }
 
 /// Thickness of a point cloud: √(smallest / middle eigenvalue of its covariance).
@@ -949,5 +1049,6 @@ fn finish(d: &Data, tracks: &CameraTracks, s: &SolveSettings, r: Recon, method: 
         frames,
         points,
         ground: None,
+        distortion: None,
     }
 }

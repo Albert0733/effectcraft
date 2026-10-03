@@ -6,6 +6,12 @@
 //! algorithm is `effectcraft_track::mask` (KLT features inside the mask + a RANSAC fit of the
 //! chosen motion model), and every frame's motion is applied to the mask's vertices and
 //! tangents, so the shape's Bezier structure is kept.
+//!
+//! The two **Face Tracking** methods use `effectcraft_track::face` instead: the mask (drawn
+//! around a face) seeds the tracker, and every frame's face outline becomes the Mask Path
+//! (*Outline Only*); *Detailed Features* also keys the facial landmarks into a **Face Track
+//! Points** effect on the layer (created on first use), from which Extract & Copy Face
+//! Measurements (`track.extractFaceMeasurements`) derives a keyed **Face Measurements** effect.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -31,11 +37,22 @@ pub enum MaskMethod {
     PositionScaleRotation,
     PositionScaleRotationSkew,
     Perspective,
+    /// Face Tracking (Outline Only).
+    FaceOutline,
+    /// Face Tracking (Detailed Features).
+    FaceDetailed,
 }
 
 impl MaskMethod {
-    pub const ALL: [MaskMethod; 5] =
-        [MaskMethod::Position, MaskMethod::PositionScale, MaskMethod::PositionScaleRotation, MaskMethod::PositionScaleRotationSkew, MaskMethod::Perspective];
+    pub const ALL: [MaskMethod; 7] = [
+        MaskMethod::Position,
+        MaskMethod::PositionScale,
+        MaskMethod::PositionScaleRotation,
+        MaskMethod::PositionScaleRotationSkew,
+        MaskMethod::Perspective,
+        MaskMethod::FaceOutline,
+        MaskMethod::FaceDetailed,
+    ];
     pub fn label(self) -> &'static str {
         match self {
             MaskMethod::Position => "Position",
@@ -43,7 +60,13 @@ impl MaskMethod {
             MaskMethod::PositionScaleRotation => "Position, Scale & Rotation",
             MaskMethod::PositionScaleRotationSkew => "Position, Scale, Rotation & Skew",
             MaskMethod::Perspective => "Perspective",
+            MaskMethod::FaceOutline => "Face Tracking (Outline Only)",
+            MaskMethod::FaceDetailed => "Face Tracking (Detailed Features)",
         }
+    }
+    /// One of the Face Tracking methods.
+    pub fn is_face(self) -> bool {
+        matches!(self, MaskMethod::FaceOutline | MaskMethod::FaceDetailed)
     }
     pub fn id(self) -> &'static str {
         match self {
@@ -52,6 +75,8 @@ impl MaskMethod {
             MaskMethod::PositionScaleRotation => "positionScaleRotation",
             MaskMethod::PositionScaleRotationSkew => "positionScaleRotationSkew",
             MaskMethod::Perspective => "perspective",
+            MaskMethod::FaceOutline => "faceOutline",
+            MaskMethod::FaceDetailed => "faceDetailed",
         }
     }
     pub fn from_name(s: &str) -> Option<MaskMethod> {
@@ -67,6 +92,7 @@ impl MaskMethod {
             MaskMethod::PositionScaleRotation => Model::Similarity,
             MaskMethod::PositionScaleRotationSkew => Model::Affine,
             MaskMethod::Perspective => Model::Homography,
+            MaskMethod::FaceOutline | MaskMethod::FaceDetailed => Model::Similarity,
         }
     }
 }
@@ -109,8 +135,29 @@ pub fn transform_path(p: &ShapePath, h: &trk::Homography) -> ShapePath {
     }
 }
 
-/// One tracked frame: (layer time, comp time, mask path).
-type MaskFrame = (Tick, Tick, ShapePath);
+/// A closed, smooth mask path through a face outline polygon: `n` vertices with Catmull-Rom
+/// tangents. `like` lends its feather points.
+pub fn outline_path(poly: &[[f64; 2]], n: usize, like: &ShapePath) -> ShapePath {
+    let m = poly.len();
+    let n = n.clamp(3, m.max(3));
+    let v: Vec<[f64; 2]> = (0..n).map(|i| poly[(i * m / n) % m.max(1)]).collect();
+    let tan: Vec<[f64; 2]> = (0..n)
+        .map(|i| {
+            let (a, b) = (v[(i + n - 1) % n], v[(i + 1) % n]);
+            [(b[0] - a[0]) / 6.0, (b[1] - a[1]) / 6.0]
+        })
+        .collect();
+    ShapePath {
+        vertices: v,
+        in_tangents: tan.iter().map(|t| [-t[0], -t[1]]).collect(),
+        out_tangents: tan,
+        closed: true,
+        feather: if like.len() == n { like.feather.clone() } else { vec![] },
+    }
+}
+
+/// One tracked frame: (layer time, comp time, mask path, face landmarks for Detailed Features).
+type MaskFrame = (Tick, Tick, ShapePath, Option<[[f64; 2]; trk::face::N]>);
 
 #[derive(Default)]
 pub struct MaskTrackShared {
@@ -169,9 +216,12 @@ fn run_work(w: MaskWork, shared: &MaskTrackShared) {
     let frame_at = |t: Tick| source_frame(r, &w.project, w.comp, comp, layer, t, w.expr.as_deref());
     lock(&shared.state).total = w.times.len().saturating_sub(1) as u64;
     let Some(first) = frame_at(w.times[0]) else { return fail("the layer has no pixels to track") };
+    if w.method.is_face() {
+        return run_face(&w, shared, first, &frame_at, layer, t0);
+    }
     let mut tracker = trk::mask::MaskTracker::new(w.method.model(), flatten(&w.path, 8), &trk::Frame { img: &first.0, offset: first.1 });
     let mut path = w.path.clone();
-    lock(&shared.frames).push((layer.layer_time(w.times[0]), w.times[0], path.clone()));
+    lock(&shared.frames).push((layer.layer_time(w.times[0]), w.times[0], path.clone(), None));
     let mut next = if w.times.len() > 1 { frame_at(w.times[1]) } else { None };
     for k in 1..w.times.len() {
         if shared.cancel.load(Ordering::Relaxed) {
@@ -190,7 +240,7 @@ fn run_work(w: MaskWork, shared: &MaskTrackShared) {
             break;
         };
         path = transform_path(&path, &step.motion);
-        lock(&shared.frames).push((layer.layer_time(w.times[k]), w.times[k], path.clone()));
+        lock(&shared.frames).push((layer.layer_time(w.times[k]), w.times[k], path.clone(), None));
         let mut s = lock(&shared.state);
         s.done = k as u64;
         s.elapsed = t0.elapsed().as_secs_f64();
@@ -203,12 +253,99 @@ fn run_work(w: MaskWork, shared: &MaskTrackShared) {
     s.finished = true;
 }
 
+/// Face tracking: the face outline keys the mask; Detailed Features adds the landmarks.
+fn run_face(
+    w: &MaskWork,
+    shared: &MaskTrackShared,
+    first: (Arc<effectcraft_raster::Image>, [f64; 2]),
+    frame_at: &(dyn Fn(Tick) -> Option<(Arc<effectcraft_raster::Image>, [f64; 2])> + Sync),
+    layer: &effectcraft_project::Layer,
+    t0: web_time::Instant,
+) {
+    let detailed = w.method == MaskMethod::FaceDetailed;
+    let b = trk::mask::bounds(&flatten(&w.path, 8));
+    let Some((mut tracker, fit)) = trk::face::FaceTracker::new(&trk::Frame { img: &first.0, offset: first.1 }, b) else {
+        let mut s = lock(&shared.state);
+        s.error = Some("no face found inside the mask (draw the mask around a face)".into());
+        s.finished = true;
+        return;
+    };
+    let key = |fit: &trk::face::FaceFit| (outline_path(&fit.outline, 16, &w.path), detailed.then_some(fit.landmarks));
+    let (path, pts) = key(&fit);
+    lock(&shared.frames).push((layer.layer_time(w.times[0]), w.times[0], path, pts));
+    let mut next = if w.times.len() > 1 { frame_at(w.times[1]) } else { None };
+    for k in 1..w.times.len() {
+        if shared.cancel.load(Ordering::Relaxed) {
+            lock(&shared.state).cancelled = true;
+            break;
+        }
+        let Some(cur) = next.take() else {
+            lock(&shared.state).error = Some(format!("no frame at {:.3} s", w.times[k].seconds()));
+            break;
+        };
+        let (res, nf) =
+            rayon::join(|| tracker.step(&trk::Frame { img: &cur.0, offset: cur.1 }), || if k + 1 < w.times.len() { frame_at(w.times[k + 1]) } else { None });
+        next = nf;
+        let Some(fit) = res else {
+            lock(&shared.state).error = Some(format!("lost the face at {:.3} s", w.times[k].seconds()));
+            break;
+        };
+        let (path, pts) = key(&fit);
+        lock(&shared.frames).push((layer.layer_time(w.times[k]), w.times[k], path, pts));
+        let mut s = lock(&shared.state);
+        s.done = k as u64;
+        s.elapsed = t0.elapsed().as_secs_f64();
+        s.fps = if s.elapsed > 0.0 { k as f64 / s.elapsed } else { 0.0 };
+        s.time = w.times[k].seconds();
+        crate::offload::report(s.done, s.total);
+    }
+    let mut s = lock(&shared.state);
+    s.elapsed = t0.elapsed().as_secs_f64();
+    s.finished = true;
+}
+
+/// The layer's Face Track Points effect (created when missing). Returns its uid.
+pub(crate) fn face_points_group(p: &mut Project, comp: ItemId, layer: LayerId) -> Option<Uid> {
+    face_effect(p, comp, layer, effectcraft_effects::face_track::POINTS_ID)
+}
+
+/// The layer's effect `id`, applied when missing (data effects of face tracking).
+pub(crate) fn face_effect(p: &mut Project, comp: ItemId, layer: LayerId, id: &str) -> Option<Uid> {
+    let spec = effectcraft_effects::find(id)?;
+    let l = p.comp(comp)?.layer(layer)?;
+    if let Some(g) = l.effects().and_then(|fx| fx.groups().find(|g| g.match_id == spec.id)) {
+        return Some(g.uid);
+    }
+    let (w, h) = effectcraft_render::source_size(p, l);
+    let size = if w == 0 { p.comp(comp).map(|c| [c.width as f64, c.height as f64]).unwrap_or([1920.0, 1080.0]) } else { [w as f64, h as f64] };
+    let mut next = p.next_id;
+    let g = effectcraft_effects::instantiate(spec, &mut effectcraft_project::build::Ids(&mut next), spec.name, size);
+    let uid = g.uid;
+    let fx = p.comp_mut(comp)?.layer_mut(layer)?.props.sub_mut("effects")?;
+    fx.children.push(g.into());
+    p.next_id = next;
+    Some(uid)
+}
+
 fn write_frames(p: &mut Project, job: &MaskTrackJob, frames: &[MaskFrame]) {
+    let points = if frames.iter().any(|f| f.3.is_some()) { face_points_group(p, job.comp, job.layer) } else { None };
     let Some(layer) = p.comp_mut(job.comp).and_then(|c| c.layer_mut(job.layer)) else { return };
-    let Some(g) = layer.props.find_group_mut(job.mask) else { return };
-    let Some(pr) = g.get_mut("path") else { return };
-    for (lt, _, path) in frames {
-        effectcraft_keyframe::set_key(&mut pr.keys, Keyframe::new(*lt, Value::Path(path.clone())));
+    if let Some(g) = layer.props.find_group_mut(job.mask)
+        && let Some(pr) = g.get_mut("path")
+    {
+        for (lt, _, path, _) in frames {
+            effectcraft_keyframe::set_key(&mut pr.keys, Keyframe::new(*lt, Value::Path(path.clone())));
+        }
+    }
+    if let Some(g) = points.and_then(|u| layer.props.find_group_mut(u)) {
+        for (lt, _, _, pts) in frames {
+            let Some(pts) = pts else { continue };
+            for (i, (id, _, _)) in trk::face::LANDMARKS.iter().enumerate() {
+                if let Some(pr) = g.get_mut(id) {
+                    effectcraft_keyframe::set_key(&mut pr.keys, Keyframe::new(*lt, Value::Vec2(pts[i])));
+                }
+            }
+        }
     }
 }
 
@@ -242,7 +379,7 @@ impl Session {
             return Err("a track analysis is already running".into());
         }
         self.poll_mask_track();
-        if !wait && self.offloads() {
+        if !wait && self.offloads() && !work.method.is_face() {
             let MaskWork { comp, layer, path, method, times, .. } = work;
             return self.offload_analysis(crate::offload::WorkerJob::MaskTrack { comp, layer, mask, direction, path, method, times });
         }

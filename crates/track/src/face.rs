@@ -624,6 +624,11 @@ impl FaceTracker {
         };
         let mut t = FaceTracker { skin, prev: guess, expect: canon };
         let fit = t.fit(frame)?;
+        // A face shows at least two of: left eye, right eye, mouth.
+        let found = [EYE[0][4], EYE[1][4], MOUTH[0]].iter().filter(|i| fit.detected[**i]).count();
+        if found < 2 {
+            return None;
+        }
         t.accept(&fit);
         Some((t, fit))
     }

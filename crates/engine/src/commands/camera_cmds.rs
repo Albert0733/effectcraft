@@ -23,7 +23,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Track Camera",
             ["Animation"],
             None,
-            "{layer?, shotType?: fixed|variable|specify, aov?: degrees, solveMethod?: auto|typical|flat|tripod, detailed?, wait?}",
+            "{layer?, shotType?: fixed|variable|specify, aov?: degrees, solveMethod?: auto|typical|flat|tripod, detailed?, lensDistortion?: solve k1/k2, undistort?: render undistorted, wait?}",
             can_track,
             track_camera
         ),
@@ -140,6 +140,8 @@ fn track_camera(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad("track.camera", "aov: 1..170 degrees"));
     }
     let detailed = b_p(p, "detailed");
+    let lens = b_p(p, "lensDistortion");
+    let undistort = b_p(p, "undistort");
     let existing = s.project.comp(cid).and_then(|c| c.layer(lid)).and_then(Layer::effects).and_then(|fx| fx.groups().find(|g| is_tracker(g)).map(|g| g.uid));
     let uid = match existing {
         Some(u) => u,
@@ -148,7 +150,7 @@ fn track_camera(s: &mut Session, p: &Value) -> Result<Value> {
             r["effects"].get(0).and_then(Value::as_u64).ok_or_else(|| EngineError::Other("the effect could not be applied".into()))?
         }
     };
-    if shot.is_some() || method.is_some() || aov.is_some() || detailed.is_some() {
+    if shot.is_some() || method.is_some() || aov.is_some() || detailed.is_some() || lens.is_some() || undistort.is_some() {
         s.edit("3D Camera Tracker Settings", None, |proj, _| {
             let g = proj
                 .comp_mut(cid)
@@ -175,6 +177,12 @@ fn track_camera(s: &mut Session, p: &Value) -> Result<Value> {
             }
             if let Some(d) = detailed {
                 set("advanced/detailedAnalysis", KV::Bool(d));
+            }
+            if let Some(d) = lens {
+                set("advanced/lensDistortion", KV::Bool(d));
+            }
+            if let Some(d) = undistort {
+                set("advanced/undistort", KV::Bool(d));
             }
             Ok(())
         })?;
@@ -222,6 +230,7 @@ fn status(s: &mut Session, p: &Value) -> Result<Value> {
     out["shotType"] = json!(settings.shot.label());
     out["solveMethod"] = json!(settings.method.label());
     out["deleted"] = json!(settings.deleted.len());
+    out["lensDistortionSolved"] = json!(settings.lens_distortion);
     let solve = ct::solve(&params);
     out["solved"] = json!(solve.is_some());
     if let Some(sv) = &solve {
@@ -233,6 +242,11 @@ fn status(s: &mut Session, p: &Value) -> Result<Value> {
         out["focalLength"] = json!(f);
         out["horizontalAngleOfView"] = json!(sv.hfov(f));
         out["groundPlane"] = json!(sv.ground.is_some());
+        out["lensDistortion"] = match &sv.distortion {
+            Some(d) => json!({"k1": d.k1, "k2": d.k2, "radius": d.radius}),
+            None => Value::Null,
+        };
+        out["undistort"] = json!(ct::undistorts(&params, sv));
         if let Some(pl) = placed(&s.project, cid, lid, uid) {
             let k = pl.frame_at(s.time_of(cid));
             let (pos, ori, zoom) = pl.camera(k);

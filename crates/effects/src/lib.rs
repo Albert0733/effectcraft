@@ -22,6 +22,7 @@ mod distort;
 mod distort2;
 mod distort3;
 pub mod distort4;
+pub mod face_track;
 mod generate;
 mod generate2;
 mod generate3;
@@ -412,6 +413,7 @@ pub fn registry() -> &'static [EffectSpec] {
         v.extend(puppet::specs());
         v.extend(warp_stab::specs());
         v.extend(camera_tracker::specs());
+        v.extend(face_track::specs());
         v.extend(roto::specs());
         v.sort_by(|a, b| a.category.cmp(b.category).then(a.name.cmp(b.name)));
         for s in v.iter_mut() {
