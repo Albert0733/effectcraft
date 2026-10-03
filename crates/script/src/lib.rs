@@ -37,7 +37,13 @@
 //!   `onChange` / `onChanging` / `onClose`, `show()` / `close()` and `layout.layout()`. Windows
 //!   are published to [`Session::script_ui`](effectcraft_engine::Session::script_ui) for
 //!   frontends and agents (`scriptui.*` commands); modal dialogs block `show()` until they close.
-//!   Scripts in the ScriptUI Panels folder run with `this` = a dockable `Panel`.
+//!   Scripts in the ScriptUI Panels folder run with `this` = a dockable `Panel`. Resource
+//!   strings (`new Window("dialog { ok: Button { text: 'OK' } }")`, `add("group { … }")`) build
+//!   whole trees; `onDraw` handlers paint with `ScriptUIGraphics` (`newPen`/`newBrush`/`rectPath`/
+//!   `ellipsePath`/`moveTo`/`lineTo`/`fillPath`/`strokePath`/`drawString`/`measureString`) into a
+//!   serde draw list frontends paint; edit texts and sliders fire `onChanging` live.
+//! * **Sockets** (`socket.rs`): `Socket` (`open`/`listen`/`poll`/`read`/`readln`/`write`/`close`)
+//!   over TCP, behind the same network preference; on the web `open` returns false.
 //!
 //! Entry points: [`install`] sets [`Session::script`](effectcraft_engine::Session::script), which
 //! the `script.run` command, File ▸ Scripts ▸ Run Script File… (`.jsx`/`.js`), the Script Console
@@ -48,6 +54,7 @@
 pub mod matchnames;
 mod model;
 mod runtime;
+mod socket;
 mod ui;
 
 use effectcraft_engine::{ScriptRequest, Session};
@@ -75,3 +82,5 @@ pub fn run_code(s: &mut Session, code: &str, name: &str) -> Outcome {
 mod tests;
 #[cfg(test)]
 mod tests_ui;
+#[cfg(test)]
+mod tests_ui_more;

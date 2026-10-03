@@ -58,13 +58,205 @@ var __uiContainers = { window: 1, panel: 1, group: 1, tabbedpanel: 1, tab: 1 };
 
 function Window(type, title, bounds, props) {
   if (!(this instanceof Window)) return new Window(type, title, bounds, props);
-  type = String(type === undefined ? "window" : type).toLowerCase();
-  if (type.indexOf("{") >= 0) throw __err("ScriptUI resource strings are not supported: build the window with add()");
+  type = String(type === undefined ? "window" : type);
+  var res = null;
+  if (type.indexOf("{") >= 0) {
+    // A resource string: `dialog { text: 'Title', ok: Button { text: 'OK' } }`.
+    res = __uiParseRes(type);
+    type = res.type;
+    var p0 = __uiResProps(res).props;
+    if (title === undefined && p0.text !== undefined) title = p0.text;
+    if (bounds === undefined && p0.bounds !== undefined) bounds = p0.bounds;
+    if (props === undefined && p0.properties !== undefined) props = p0.properties;
+  }
+  type = type.toLowerCase();
   if (type !== "dialog" && type !== "palette" && type !== "window") throw __err("Bad window type " + type);
   __uiInit(this, "window", null, null, bounds, title, props);
   this.__kind = type;
   this.__root = true;
   __uiWins.push(this);
+  if (res) __uiApplyRes(this, res);
+}
+
+// ---------------------------------------------------------------- resource strings
+//
+// The resource specification the JavaScript Tools Guide documents: `type { name: value, … }`
+// where a value is a string ('…' or "…"), a number, true / false, an array `[…]`, an object
+// literal `{…}` (e.g. `properties: {multiline: true}`) or a nested element `Type { … }` (a
+// child control, also reachable as `parent.name`). Comments are allowed.
+
+function __uiParseRes(src) {
+  var s = String(src), i = 0;
+  function fail(m) { throw __err("ScriptUI resource string: " + m + " at offset " + i); }
+  function ws() {
+    for (;;) {
+      while (i < s.length && /\s/.test(s.charAt(i))) i++;
+      if (s.substring(i, i + 2) === "//") {
+        while (i < s.length && s.charAt(i) !== "\n") i++;
+        continue;
+      }
+      if (s.substring(i, i + 2) === "/*") {
+        var e = s.indexOf("*/", i + 2);
+        i = e < 0 ? s.length : e + 2;
+        continue;
+      }
+      return;
+    }
+  }
+  function ident() {
+    ws();
+    var m = /^[A-Za-z_$][\w$]*/.exec(s.slice(i));
+    if (!m) fail("expected a name");
+    i += m[0].length;
+    return m[0];
+  }
+  function str(q) {
+    i++;
+    var out = "";
+    while (i < s.length && s.charAt(i) !== q) {
+      var c = s.charAt(i);
+      if (c === "\\") {
+        i++;
+        var e = s.charAt(i);
+        out += e === "n" ? "\n" : e === "t" ? "\t" : e === "r" ? "\r" : e;
+      } else out += c;
+      i++;
+    }
+    if (i >= s.length) fail("unterminated string");
+    i++;
+    return out;
+  }
+  function value() {
+    ws();
+    var c = s.charAt(i);
+    if (c === "'" || c === '"') return str(c);
+    if (c === "[") {
+      i++;
+      var a = [];
+      ws();
+      if (s.charAt(i) === "]") {
+        i++;
+        return a;
+      }
+      for (;;) {
+        a.push(value());
+        ws();
+        if (s.charAt(i) === ",") {
+          i++;
+          continue;
+        }
+        if (s.charAt(i) === "]") {
+          i++;
+          return a;
+        }
+        fail("expected , or ]");
+      }
+    }
+    if (c === "{") return { __object: body() };
+    var m = /^[-+]?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?/.exec(s.slice(i));
+    if (m) {
+      i += m[0].length;
+      return Number(m[0]);
+    }
+    var id = ident();
+    if (id === "true") return true;
+    if (id === "false") return false;
+    if (id === "null" || id === "undefined") return null;
+    ws();
+    if (s.charAt(i) === "{") return { __element: id, list: body() };
+    // A bare word (an enum-like value).
+    return id;
+  }
+  function body() {
+    i++;
+    var list = [];
+    for (;;) {
+      ws();
+      if (s.charAt(i) === "}") {
+        i++;
+        return list;
+      }
+      var k = s.charAt(i) === "'" || s.charAt(i) === '"' ? str(s.charAt(i)) : ident();
+      ws();
+      if (s.charAt(i) !== ":") fail("expected : after " + k);
+      i++;
+      list.push([k, value()]);
+      ws();
+      if (s.charAt(i) === ",") {
+        i++;
+        continue;
+      }
+      if (s.charAt(i) === "}") {
+        i++;
+        return list;
+      }
+      fail("expected , or }");
+    }
+  }
+  var t = ident();
+  ws();
+  if (s.charAt(i) !== "{") fail("expected { after " + t);
+  var list = body();
+  ws();
+  if (i < s.length) fail("unexpected text after the resource");
+  return { type: t, list: list };
+}
+
+// The plain JavaScript value of a parsed resource value (object literals become objects).
+function __uiResPlain(v) {
+  if (v instanceof Array) return v.map(__uiResPlain);
+  if (v && typeof v === "object" && v.__object) {
+    var o = {};
+    for (var k = 0; k < v.__object.length; k++) o[v.__object[k][0]] = __uiResPlain(v.__object[k][1]);
+    return o;
+  }
+  return v;
+}
+
+// A resource's own properties and its child elements (in source order).
+function __uiResProps(res) {
+  var props = {}, kids = [];
+  for (var k = 0; k < res.list.length; k++) {
+    var e = res.list[k];
+    if (e[1] && typeof e[1] === "object" && e[1].__element) kids.push([e[0], { type: e[1].__element, list: e[1].list }]);
+    else props[e[0]] = __uiResPlain(e[1]);
+  }
+  return { props: props, kids: kids };
+}
+
+var __uiResSkip = { text: 1, bounds: 1, properties: 1, minvalue: 1, maxvalue: 1, items: 1 };
+var __uiSizes = { preferredSize: 1, minimumSize: 1, maximumSize: 1, size: 1, location: 1 };
+
+// Set a control's properties and create its children from a parsed resource.
+function __uiApplyRes(c, res) {
+  var pk = __uiResProps(res), props = pk.props;
+  // Ranges before values, items before selections.
+  if (props.minvalue !== undefined) c.minvalue = __num(props.minvalue);
+  if (props.maxvalue !== undefined) c.maxvalue = __num(props.maxvalue);
+  if (props.items instanceof Array && c.items) for (var n = 0; n < props.items.length; n++) c.add("item", props.items[n]);
+  for (var k in props) {
+    if (__uiResSkip[k]) continue;
+    var v = props[k];
+    if (__uiSizes[k] && v instanceof Array) v = __dim(v[0], v[1]);
+    c[k] = v;
+  }
+  for (var j = 0; j < pk.kids.length; j++) {
+    var child = __uiAddRes(c, pk.kids[j][1]);
+    child.__key = pk.kids[j][0];
+    c[pk.kids[j][0]] = child;
+  }
+  return c;
+}
+
+// add() with a resource string (or a parsed element): the new control.
+function __uiAddRes(parent, spec) {
+  var res = typeof spec === "string" ? __uiParseRes(spec) : spec;
+  var p = __uiResProps(res).props;
+  var t = String(res.type).toLowerCase();
+  var valued = t === "dropdownlist" || t === "listbox" || t === "slider" || t === "scrollbar" || t === "progressbar";
+  var c = parent.add(t, p.bounds, valued ? undefined : p.text, p.properties);
+  if (valued && p.text !== undefined) c.text = String(p.text);
+  return __uiApplyRes(c, res);
 }
 Window.alert = function (s) { alert(s); };
 Window.confirm = function (s) { return confirm(s); };
@@ -106,16 +298,93 @@ var ScriptUI = {
   events: { createEvent: function (t) { return { type: t }; } }
 };
 
+// A colour for the draw list: [r, g, b, a] in 0..1, or null for a theme colour (by name).
+function __uiColor(c) {
+  if (c instanceof Array && c.length >= 3) return [__num(c[0]), __num(c[1]), __num(c[2]), c.length > 3 ? __num(c[3]) : 1];
+  return null;
+}
+function __uiFontSize(f, g) {
+  var x = f && f.size !== undefined ? Number(f.size) : g && g.font && g.font.size !== undefined ? Number(g.font.size) : 12;
+  return x > 0 ? x : 12;
+}
+
+// ScriptUIGraphics: what onDraw handlers paint with. Paths and paint calls are recorded into the
+// control's draw list (`draw` in the window snapshot), which frontends paint.
 function __uiGraphics() {
   return {
-    newBrush: function (t, c) { return { type: t, color: c }; },
-    newPen: function (t, c, w) { return { type: t, color: c, lineWidth: w }; },
-    newPath: function () {}, moveTo: function () {}, lineTo: function () {}, rectPath: function () {},
-    ellipsePath: function () {}, fillPath: function () {}, strokePath: function () {}, closePath: function () {},
-    drawString: function () {}, drawOSControl: function () {}, drawImage: function () {}, drawFocusRing: function () {},
-    measureString: function (s) { return __dim(String(s).length * 7, 16); },
-    font: null, foregroundColor: null, backgroundColor: null, disabledForegroundColor: null, disabledBackgroundColor: null
+    BrushType: ScriptUI.BrushType,
+    PenType: ScriptUI.PenType,
+    font: ScriptUI.newFont("dialog", "REGULAR", 12),
+    foregroundColor: null, backgroundColor: null, disabledForegroundColor: null, disabledBackgroundColor: null,
+    currentPath: [],
+    currentPoint: [0, 0],
+    __rec: null,
+    __push: function (op) { if (this.__rec) this.__rec.push(op); },
+    newBrush: function (t, c) { return { type: t, color: __uiColor(c), theme: typeof c === "string" ? c : "" }; },
+    newPen: function (t, c, w) { return { type: t, color: __uiColor(c), theme: typeof c === "string" ? c : "", lineWidth: w === undefined ? 1 : __num(w) }; },
+    newPath: function () { this.currentPath = []; return this.currentPath; },
+    moveTo: function (x, y) { this.currentPath.push({ k: "M", x: __num(x), y: __num(y) }); this.currentPoint = [__num(x), __num(y)]; },
+    lineTo: function (x, y) { this.currentPath.push({ k: "L", x: __num(x), y: __num(y) }); this.currentPoint = [__num(x), __num(y)]; },
+    closePath: function () { this.currentPath.push({ k: "Z" }); },
+    rectPath: function (x, y, w, h) {
+      if (x instanceof Array) { h = x[3] - x[1]; w = x[2] - x[0]; y = x[1]; x = x[0]; }
+      this.currentPath.push({ k: "R", x: __num(x), y: __num(y), w: __num(w), h: __num(h) });
+      return this.currentPath;
+    },
+    ellipsePath: function (x, y, w, h) {
+      if (x instanceof Array) { h = x[3] - x[1]; w = x[2] - x[0]; y = x[1]; x = x[0]; }
+      this.currentPath.push({ k: "E", x: __num(x), y: __num(y), w: __num(w), h: __num(h) });
+      return this.currentPath;
+    },
+    fillPath: function (brush, path) {
+      this.__push({ op: "fill", color: brush ? brush.color : null, path: (path || this.currentPath).slice() });
+    },
+    strokePath: function (pen, path) {
+      this.__push({ op: "stroke", color: pen ? pen.color : null, width: pen && pen.lineWidth !== undefined ? pen.lineWidth : 1, path: (path || this.currentPath).slice() });
+    },
+    drawString: function (text, pen, x, y, font) {
+      var f = font || this.font;
+      this.__push({ op: "text", text: String(text), color: pen ? pen.color : null, x: __num(x || 0), y: __num(y || 0), size: __uiFontSize(f, this), style: String(f && f.style !== undefined ? f.style : "") });
+    },
+    drawOSControl: function () { this.__push({ op: "os" }); },
+    drawImage: function (img, x, y, w, h) { this.__push({ op: "image", x: __num(x || 0), y: __num(y || 0), w: w === undefined ? 0 : __num(w), h: h === undefined ? 0 : __num(h) }); },
+    drawFocusRing: function () {},
+    measureString: function (s, font, boundaryWidth) {
+      var size = __uiFontSize(font, this);
+      var lines = String(s).split("\n");
+      var cw = size * 0.58, w = 0;
+      for (var i = 0; i < lines.length; i++) w = Math.max(w, Math.ceil(lines[i].length * cw));
+      var n = lines.length;
+      if (boundaryWidth > 0 && w > boundaryWidth) {
+        n = Math.ceil(w / boundaryWidth) + lines.length - 1;
+        w = boundaryWidth;
+      }
+      return __dim(w, Math.ceil(size * 1.25) * n);
+    }
   };
+}
+
+// Run the onDraw handlers of a window's controls (after laying it out, so `size` is known),
+// recording what they paint.
+function __uiRunDraws(win) {
+  var drawn = [];
+  (function walk(c) {
+    if (typeof c.onDraw === "function") drawn.push(c);
+    for (var i = 0; i < (c.children || []).length; i++) walk(c.children[i]);
+  })(win);
+  if (!drawn.length) return;
+  __uiLayout(win);
+  for (var k = 0; k < drawn.length; k++) {
+    var c = drawn[k];
+    c.__draw = [];
+    c.graphics.__rec = c.__draw;
+    try {
+      c.onDraw.call(c, { type: "draw", target: c });
+    } catch (e) {
+      try { writeLn("onDraw: " + (e && e.message ? e.message : e)); } catch (e2) {}
+    }
+    c.graphics.__rec = null;
+  }
 }
 
 function __uiInit(o, type, win, parent, bounds, text, props) {
@@ -180,6 +449,10 @@ function __uiProto() {
   return {
     add: function (type, bounds, text, props) {
       var t = String(type).toLowerCase();
+      if (t.indexOf("{") >= 0) {
+        if (!__uiContainers[this.type]) throw __err("add(): a " + this.type + " can't contain controls");
+        return __uiAddRes(this, String(type));
+      }
       if (t === "item" || t === "separator") return this.__addItem(t === "separator" ? "-" : bounds);
       if (!__uiContainers[this.type]) throw __err("add(): a " + this.type + " can't contain controls");
       var ctor = __uiTypes[t];
@@ -302,7 +575,7 @@ function __uiProto() {
     },
     __handlers: function () {
       var out = [];
-      var names = ["onClick", "onChange", "onChanging", "onDoubleClick", "onClose", "onShow", "onActivate", "onDeactivate", "onResize"];
+      var names = ["onClick", "onChange", "onChanging", "onDoubleClick", "onClose", "onShow", "onActivate", "onDeactivate", "onResize", "onDraw"];
       for (var i = 0; i < names.length; i++) {
         var n = names[i];
         if (typeof this[n] === "function" || (this.__listeners[n.slice(2).toLowerCase()] || []).length) out.push(n);
@@ -411,7 +684,7 @@ function __uiJson(c) {
   var o = {
     id: c.__id,
     type: c.type,
-    name: String(c.name || c.properties.name || ""),
+    name: String(c.name || c.properties.name || c.__key || ""),
     text: String(c.text === undefined || c.text === null ? "" : c.text),
     enabled: c.enabled !== false,
     visible: c.visible !== false,
@@ -444,6 +717,7 @@ function __uiJson(c) {
     o.selection = c.__sel.slice();
   }
   if (c.type === "tabbedpanel") o.activeTab = c.__sel.length ? c.__sel[0] : 0;
+  if (c.__draw && typeof c.onDraw === "function") o.draw = c.__draw;
   if (c.type === "edittext") {
     o.multiline = !!c.__multiline;
     o.readOnly = !!c.__readonly;
@@ -456,6 +730,7 @@ function __uiSnapshot() {
   var out = [];
   for (var i = 0; i < __uiWins.length; i++) {
     var w = __uiWins[i];
+    if (w.__shown && !w.__closed) __uiRunDraws(w);
     out.push({ id: w.__wid, kind: w.__kind, title: String(w.text || ""), visible: !!w.__shown && !w.__closed, modal: !!w.__modal, root: __uiJson(w) });
   }
   // Closed windows are forgotten.
@@ -529,14 +804,17 @@ function __uiDispatch(winId, id, kind, valueJson) {
     }
     return;
   }
-  // change / changing
+  // change / changing (live: each keystroke of an edit text, each step of a slider drag)
+  var before = c.type === "edittext" ? c.text : c.value;
   if (c.type === "edittext") c.text = v === null ? "" : String(v);
   else if (c.type === "statictext") c.text = v === null ? "" : String(v);
   else if (c.type === "slider" || c.type === "scrollbar" || c.type === "progressbar") c.value = Number(v);
   else if (c.type === "checkbox") c.value = !!v;
   else if (c.type === "radiobutton") { if (v) radio(); else c.value = false; }
   else if (c.type === "dropdownlist" || c.type === "listbox" || c.type === "tabbedpanel") c.selection = v;
-  if (c.type === "edittext" || c.type === "slider" || c.type === "scrollbar") c.__fire("onChanging");
+  var now = c.type === "edittext" ? c.text : c.value;
+  // onChanging already ran for live updates of the same value.
+  if ((c.type === "edittext" || c.type === "slider" || c.type === "scrollbar") && (kind === "changing" || now !== before)) c.__fire("onChanging");
   if (kind === "change") {
     if (c.type === "checkbox" || c.type === "radiobutton") c.__fire("onClick");
     else c.__fire("onChange");

@@ -1223,6 +1223,7 @@ dependencies = [
  "effectcraft-text",
  "effectcraft-time",
  "effectcraft-track",
+ "exr",
  "image",
  "kurbo",
  "log",

@@ -1116,6 +1116,10 @@ fn project_and_time_globals() {
     assert_close!(f.num("createPath([[0, 0], [10, 0], [10, 10]], [], [], true).points()[2][1]", 0.0), 10.0);
     assert_close!(f.num("createPath([[0, 0], [10, 0]], [[1, 1], [2, 2]], [], false).inTangents()[1][0]", 0.0), 2.0);
     assert_close!(f.num("mask(\"Mask 1\").maskPath.points().length", 0.0), 4.0);
+    assert_close!(f.num("createPath([[0, 0], [10, 0], [10, 10]], [], [], false).pointOnPath(0.75)[1]", 0.0), 5.0);
+    assert_close!(f.num("createPath([[0, 0], [10, 0], [10, 10]], [], [], false).pointOnPath(0.75)[0]", 0.0), 10.0);
+    assert_close!(f.num("createPath([[0, 0], [10, 0], [10, 10]], [], [], false).tangentOnPath(0.25)[0]", 0.0), 1.0);
+    assert_close!(f.num("mask(\"Mask 1\").maskPath.pointOnPath(0)[0] - mask(\"Mask 1\").maskPath.points()[0][0]", 0.0), 0.0);
     assert_close!(f.num("mask(\"Mask 1\").maskPath.isClosed() ? 1 : 0", 0.0), 1.0);
     // Marker keys carry protected regions and cue points.
     {

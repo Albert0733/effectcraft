@@ -15,11 +15,17 @@ How close EffectCraft is to After Effects 2026, feature by feature, and how much
 | Remaining work | ≈ 19–22 agent-hours at the pace measured so far (≈ 58 on the conservative audit scale) |
 | **Wall-clock estimate** | **≈ 4–5 hours** with five agents in parallel; ≈ 3 hours for 100% of P0 + P1 |
 
-Partial features: effect implementations (42 simplified effects), GPU coverage (Advanced 3D, more
-GPU effects), the web app (no threads for viewer frames and Roto Brush), the Learn panel, ScriptUI resource
-strings and `onDraw`, Essential Graphics font and scale controls, and the learned-model quality of
-Roto Brush and face tracking (both are classical). Menu items still absent: Save Frame As ▸
-Photoshop Layers / ProEXR, Open in Essential Graphics, Vanishing Point import, Watch Folder.
+Partial features: GPU coverage (Advanced 3D, more GPU effects), the web app (no threads for
+viewer frames and Roto Brush), Essential Graphics mirrored properties, and the learned-model quality
+of Roto Brush and face tracking (both are classical). Since this audit, M9.13 completed all 42
+simplified effects, M13.5 added the Learn panel, and M13.8 the Preview panel settings, Align to
+Selection / Distribute and Advanced 3D iris DOF, collapsed precomps and extruded strokes. M13.7 added ScriptUI resource strings,
+`onDraw` (ScriptUIGraphics draw lists), live `onChanging`, `Socket`, the Essential Graphics
+scripting hooks and Font / uniform Scale controls, and the last missing menu items: Save Frame As ▸
+Photoshop Layers / ProEXR, Composition ▸ Open in Essential Graphics, File ▸ Watch Folder,
+Window ▸ Create Nulls From Paths / VR Comp Editor (built-in panels) and Help ▸ In-App / Online
+Tutorials. File ▸ Import ▸ Vanishing Point (.vpe) is present but permanently disabled: the format
+has no public specification, so a clean-room implementation is not possible (its tooltip says so).
 
 ### Previous audit (commit `fa26ad9`, 2 October 2026, late): ≈ 93%
 
@@ -123,9 +129,9 @@ the disk cache in the formats wave; the 3D Camera Tracker in M12.6.)
 | Output | 97% | 0.8 | Render Settings complete (field render + 3:2 pulldown, effects/solo/guide/depth/blending/blur overrides, time sampling, storage overflow), Output Module crop/ROI/resize, alpha modes, post-render actions, PCM formats, templates with defaults, render logs, Notify (M10.2); WebM VP9 key + inter frames with motion search, loop filter and rate control. Left: Opus is CELT-only, Photoshop sequence output, overflow for movies only checks at file creation |
 | Audio | 85% | 0.5 | audio to keyframes |
 | Import | 94% | 1.0 | text and images inside PDF/AI files, Illustrator EPS relying on Adobe procsets, smart-object perspective/warps, PSD 3D layers (PDF / PDF-compatible AI / EPS vector footage with Continuously Rasterize, layered composition import and Create Shapes from Vector Layer, and PSD smart objects with embedded files landed in M13.2; PSD as footage/composition/retain layer sizes, SVG footage earlier) |
-| Automation | ≈ 97% | 0.3 | `.jsxbin`, sockets, ScriptUI resource strings and custom `onDraw` graphics (the core object model landed in M14.4; ScriptUI windows/dialogs/dockable panels with `scriptui.*` agent commands, File ▸ Scripts install + sample scripts, and the effect plug-in API (EFF-6, WebAssembly) landed in M13.1) |
+| Automation | ≈ 99% | 0.1 | `.jsxbin` (AUT-2: ScriptUI resource strings, `onDraw`/ScriptUIGraphics, live `onChanging`, `Socket`, Essential Graphics hooks — `addToMotionGraphicsTemplate(As)`, `canAddToMotionGraphicsTemplate`, `exportAsMotionGraphicsTemplate`, `motionGraphicsTemplateName`, controller count/names — and Watch Folder landed in M13.7; the core object model landed in M14.4; ScriptUI windows/dialogs/dockable panels with `scriptui.*` agent commands, File ▸ Scripts install + sample scripts, and the effect plug-in API (EFF-6, WebAssembly) landed in M13.1) |
 | Shapes | ≈ 80% | 1.5 | Lottie can't carry stroke taper/wave (stroke Taper and Wave, Dash 2/Gap 2/Dash 3/Gap 3 and radial-gradient Highlight Length/Angle landed in M13.5; pen tool for shape paths and vertex editing in M6.5) |
-| Compositions | ≈ 80% | 3.5 | Mocha-style planar tracks for templates, Essential Graphics' rare controls (font menus, mirrored properties) (the marker dialog, Composition Flowchart, Essential Graphics with master properties, `.ectemplate` templates and Responsive Design — Time landed: CMP-6, CMP-7) |
+| Compositions | ≈ 80% | 3.5 | Mocha-style planar tracks for templates, Essential Graphics' mirrored properties (CMP-7: Font and uniform Scale controls, Composition ▸ Open in Essential Graphics, Save Frame As ▸ Photoshop Layers / ProEXR and the VR Comp Editor landed in M13.7; the marker dialog, Composition Flowchart, Essential Graphics with master properties, `.ectemplate` templates and Responsive Design — Time landed: CMP-6, CMP-7) |
 | Animation | 70% | 9.0 | puppet depth beyond pins and recording (puppet pin recording with Record Options landed in M13.1), Wiggler/Smoother/Motion Sketch (motion-path handles and the graph editor transform box landed in M5.8; keyframe colour labels and Select Keyframe Label Group, Graph Editor snapping to markers / layer ends in M13.5) |
 | Text | ≈ 94% | 0.5 | no extruded strokes, variable-axis animation changes outlines but not advances (OpenType features — stylistic sets, discretionary ligatures, contextual / stylistic alternates, swash, titling, ordinals, fractions, figure styles, true small caps / all small caps and superior / inferior glyphs with faux fallback — per character with the Character panel's OpenType popup and `text.fontFeatures` landed in M13.2; vertical Roman / Tate-Chu-Yoko, forced LTR paragraphs, caret on animated and path text, Variable Font Axes and Lottie style runs landed in M13.5; extruded, bevelled text in M7.6; per-character styles, paragraph settings, on-canvas editing and the `sourceText` style API in M9.9–M9.10) |
 | Web | 85% | 1.0 | viewer frames and Roto Brush propagation still on the page's thread; GPU effects in the browser (browser storage, Web Audio, Web Worker renders/analyses, WebGPU viewer and offline install landed in M15.2) |
