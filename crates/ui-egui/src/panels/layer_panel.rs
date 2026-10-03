@@ -3,9 +3,13 @@
 //!
 //! The image is the layer's source and masks followed by its effects up to the View menu's
 //! choice (by default the last Paint effect, as After Effects shows "Paint"). Dragging with a
-//! paint tool records the stroke's points in layer space and, on release, runs `paint.stroke`
+//! paint tools records the stroke's points in layer space and, on release, runs `paint.stroke`
 //! at the current time (the drag's duration feeds Write On). Alt/Option-click with the Clone
 //! Stamp sets the clone source.
+//!
+//! With a Roto Brush & Refine Edge effect the panel shows the effect's input with the matte
+//! overlay, the segmentation span bar and the view / Freeze buttons; the Roto Brush and Refine
+//! Edge tools paint their strokes here (see [`super::roto_tool`]).
 
 use effectcraft_engine::effects::paint;
 use effectcraft_engine::project::{Layer, LayerId};
@@ -46,9 +50,15 @@ pub fn current_layer(app: &EffectcraftApp) -> Option<Layer> {
     comp.layer(id).cloned()
 }
 
-/// Number of effects shown by default: through the last Paint effect (none when there isn't one).
-fn default_view(layer: &Layer) -> usize {
-    layer.effects().and_then(|fx| fx.groups().enumerate().filter(|(_, g)| paint::is_paint(g)).map(|(i, _)| i + 1).last()).unwrap_or(0)
+/// Number of effects shown by default: the Roto Brush's input while a Roto Brush tool is active
+/// (or when there is no Paint effect), else through the last Paint effect (none when there
+/// isn't one).
+fn default_view(layer: &Layer, tool: Tool) -> usize {
+    let paint = layer.effects().and_then(|fx| fx.groups().enumerate().filter(|(_, g)| paint::is_paint(g)).map(|(i, _)| i + 1).last());
+    match super::roto_tool::roto_index(layer) {
+        Some(r) if tool.roto_kind(false).is_some() || paint.is_none() => r,
+        _ => paint.unwrap_or(0),
+    }
 }
 
 pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
@@ -64,7 +74,8 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let comp = app.session.project.comp(cid).cloned().unwrap_or_else(|| effectcraft_engine::project::Comp::new(1, 1, Default::default(), Default::default()));
     let time = app.session.time();
     let fx_count = layer.effects().map(|f| f.groups().count()).unwrap_or(0);
-    let view = app.ui.layer_view.map(|v| v.min(fx_count)).unwrap_or_else(|| default_view(&layer));
+    let view = app.ui.layer_view.map(|v| v.min(fx_count)).unwrap_or_else(|| default_view(&layer, app.ui.tool));
+    let roto = super::roto_tool::roto_index(&layer);
 
     // Title strip.
     let top = Rect::from_min_size(rect.min, vec2(rect.width(), 24.0));
@@ -90,9 +101,17 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     }
     let tc = super::timecode(&app.session, &comp, time);
     p.text(pos2(bar.max.x - 10.0, bar.center().y), Align2::RIGHT_CENTER, tc, Tokens::mono(12.0), t.timecode);
+    // Roto Brush: view / Freeze buttons and the segmentation span bar.
+    let mut canvas_bottom = bar.min.y;
+    if roto.is_some() {
+        super::roto_tool::bar_buttons(app, ui, &p, bar, vr.max.x + 12.0, &layer);
+        let sb = Rect::from_min_max(pos2(rect.min.x, bar.min.y - 18.0), pos2(rect.max.x, bar.min.y));
+        super::roto_tool::span_bar(app, ui, &p, sb, &comp, &layer);
+        canvas_bottom = sb.min.y;
+    }
 
     // Canvas.
-    let area = Rect::from_min_max(pos2(rect.min.x, top.max.y), pos2(rect.max.x, bar.min.y));
+    let area = Rect::from_min_max(pos2(rect.min.x, top.max.y), pos2(rect.max.x, canvas_bottom));
     p.rect_filled(area, 0.0, t.pasteboard);
     let (w, h) = effectcraft_engine::render::source_size(&app.session.project, &layer);
     let (lw, lh) = if w == 0 { (comp.width as f64, comp.height as f64) } else { (w as f64, h as f64) };
@@ -139,10 +158,18 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         let r = Rect::from_min_max(to_screen([tx.rect[0], tx.rect[1]]), to_screen([tx.rect[2], tx.rect[3]]));
         painter.image(tx.tex.id(), r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
     }
+    if roto.is_some_and(|r| r == view) {
+        super::roto_tool::draw_overlay(app, &ctx, &painter, &comp, &layer, scale, &to_screen);
+    }
     painter.rect_stroke(frame, 0.0, Stroke::new(1.0, Color32::from_black_alpha(160)), StrokeKind::Outside);
     app.auto.add("layerPanel.canvas", frame, &layer.name);
     app.auto.add("layerPanel.area", area, "Layer panel");
 
+    // Interaction: Roto Brush / Refine Edge.
+    if app.ui.tool.roto_kind(false).is_some() {
+        super::roto_tool::interact(app, ui, &painter, area, &layer, zoom, &to_screen, &to_layer);
+        return;
+    }
     // Interaction: paint tools.
     let resp = ui.interact(area, egui::Id::new("layer-panel-interact"), Sense::click_and_drag());
     let kind = app.ui.tool.paint_kind();

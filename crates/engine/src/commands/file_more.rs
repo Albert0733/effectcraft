@@ -359,9 +359,30 @@ fn collect_files(s: &mut Session, p: &Value) -> Result<Value> {
 
 // ---------------------------------------------------------------- scripts
 
-/// Run a command script: a JSON array or JSON lines of `{"command": id, "params": {…}}` (also
-/// accepts the control channel's `{"method": "engine.execute", "params": {"id", "params"}}`).
+/// File ▸ Scripts ▸ Run Script File…: `.jsx` / `.js` files run as JavaScript against the After
+/// Effects-style object model ([`Session::script`]); anything else is a command script: a JSON
+/// array or JSON lines of `{"command": id, "params": {…}}` (also accepts the control channel's
+/// `{"method": "engine.execute", "params": {"id", "params"}}`).
 fn run_script(s: &mut Session, p: &Value) -> Result<Value> {
+    if let Some(path) = str_p(p, "path")
+        && p.get("steps").is_none()
+        && is_js_script(path)
+    {
+        if path.to_ascii_lowercase().ends_with(".jsxbin") {
+            return Err(bad("file.runScript", "binary .jsxbin scripts are not supported: run the .jsx source"));
+        }
+        let bytes = s.services.read_file(path).map_err(|e| EngineError::Other(format!("cannot read {path}: {e}")))?;
+        let code = String::from_utf8_lossy(&bytes).to_string();
+        let name = std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| path.to_string());
+        let out = run_js(s, &code, path, false)?;
+        if let Some(e) = out.get("error").filter(|e| !e.is_null()) {
+            let line = e.get("line").and_then(Value::as_u64).map(|l| format!(" (line {l})")).unwrap_or_default();
+            let msg = e.get("message").and_then(Value::as_str).unwrap_or("script error");
+            s.events.push(crate::Event::Toast { message: format!("{name}{line}: {msg}"), error: true });
+            return Err(EngineError::Other(format!("{name}{line}: {msg}")));
+        }
+        return Ok(out);
+    }
     let steps: Vec<Value> = match (p.get("steps"), str_p(p, "path")) {
         (Some(Value::Array(a)), _) => a.clone(),
         (_, Some(path)) => {
@@ -389,13 +410,35 @@ fn run_script(s: &mut Session, p: &Value) -> Result<Value> {
             }
             _ => return Err(bad("file.runScript", format!("step {}: needs `command`", i + 1))),
         };
-        if id == "file.runScript" {
+        if id == "file.runScript" || id == "script.run" {
             return Err(bad("file.runScript", "scripts can't run scripts"));
         }
         let r = s.execute(&id, params).map_err(|e| EngineError::Other(format!("step {} ({id}): {e}", i + 1)))?;
         results.push(r);
     }
     Ok(json!({"steps": results.len(), "results": results}))
+}
+
+/// `.jsx` / `.js` (and `.jsxbin`, rejected) are JavaScript; `.json` / `.jsonl` / other files are
+/// command scripts.
+fn is_js_script(path: &str) -> bool {
+    let l = path.to_ascii_lowercase();
+    l.ends_with(".jsx") || l.ends_with(".js") || l.ends_with(".jsxbin")
+}
+
+/// Run JavaScript through the session's scripting engine.
+fn run_js(s: &mut Session, code: &str, name: &str, console: bool) -> Result<Value> {
+    let runner = s.script.ok_or_else(|| EngineError::Other("JavaScript scripting is not available in this build".into()))?;
+    Ok(runner(s, &crate::ScriptRequest { code, name, console }))
+}
+
+/// `script.run`: run JavaScript (the After Effects scripting object model: `app.project`, comps,
+/// layers, properties…) and report `{ok, result, output, error}`; script errors are reported in
+/// `error` (with line and column), not as a command failure.
+fn script_run(s: &mut Session, p: &Value) -> Result<Value> {
+    let code = str_p(p, "code").ok_or_else(|| bad("script.run", "missing `code` (JavaScript)"))?.to_string();
+    let name = str_p(p, "name").unwrap_or("script").to_string();
+    run_js(s, &code, &name, super::b_p(p, "console").unwrap_or(false))
 }
 
 // ---------------------------------------------------------------- footage
@@ -766,9 +809,18 @@ pub fn specs() -> Vec<CommandSpec> {
             "Run Script File...",
             ["File", "Scripts"],
             None,
-            "{path (.jsonl/.json command script) | steps: [{command, params}]}",
+            "{path (.jsx/.js JavaScript, or a .jsonl/.json command script) | steps: [{command, params}]}",
             always,
             run_script
+        ),
+        cmd!(
+            "script.run",
+            "Run Script",
+            [],
+            None,
+            "{code (JavaScript: app, app.project, CompItem, Layer, Property… like After Effects scripting), name?, console? (Script Console context)} → {ok, result, output, error: {message, line, column} | null}",
+            always,
+            script_run
         ),
         cmd!(
             "file.interpretFootage",

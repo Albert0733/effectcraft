@@ -17,16 +17,12 @@ macro_rules! stub {
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
-        // macOS application menu items handled by the OS.
-        stub!("app.hideOthers", "Hide Others", [], "{}"),
-        stub!("app.showAll", "Show All", [], "{}"),
         stub!("keys.selectLabelGroup", "Select Keyframe Label Group", [], "{scope}"),
         // Layer ▸ New (3D / content-aware fill).
         stub!("layer.newContentAwareFill", "Content-Aware Fill Layer...", ["Layer", "New"], "{}"),
         // Mask options not in the mask model yet; pen / vertex editing (timeline milestone).
         // Time (timeline milestone).
         stub!("layer.alignVideoToData", "Align Video to Data", ["Layer", "Time"], "{}"),
-        stub!("layer.create", "Create", [], "{op}"),
         stub!("layer.autoTrace", "Auto-trace...", ["Layer"], "{}"),
         stub!("layer.sceneEditDetection", "Scene Edit Detection...", ["Layer"], "{}"),
         // Cameras / lights / materials / 3D views (3D milestone).
@@ -48,7 +44,6 @@ pub fn specs() -> Vec<CommandSpec> {
         stub!("keys.audioToKeyframes", "Convert Audio to Keyframes", ["Animation", "Keyframe Assistant"], "{}"),
         stub!("keys.rpfCameraImport", "RPF Camera Import", ["Animation", "Keyframe Assistant"], "{}"),
         stub!("text.animatorFontAxes", "Variable Font Axes", ["Animation", "Animate Text"], "{}"),
-        stub!("track.camera", "Track Camera", ["Animation"], "{}"),
         // Workspaces and panels that don't exist yet.
         stub!("window.unavailablePanel", "Panel", [], "{panel}"),
     ]

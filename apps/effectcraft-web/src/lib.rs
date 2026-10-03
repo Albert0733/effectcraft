@@ -105,8 +105,8 @@ fn query_flag(name: &str) -> bool {
     web_sys::window().and_then(|w| w.location().search().ok()).and_then(|s| web_sys::UrlSearchParams::new_with_str(&s).ok()).is_some_and(|p| p.has(name))
 }
 
-/// A session wired for the browser: media decoding from memory, expressions, Render Queue export
-/// to downloads.
+/// A session wired for the browser: media decoding from memory, expressions, scripting, Render
+/// Queue export to downloads.
 pub fn session() -> Session {
     let pool = Arc::new(effectcraft_media::MediaPool::new());
     Session {
@@ -115,6 +115,7 @@ pub fn session() -> Session {
         importer: Some(Arc::new(files::WebImporter { pool })),
         expr: Some(Arc::new(effectcraft_expr::Expressions)),
         expr_check: Some(effectcraft_expr::check_syntax),
+        script: Some(effectcraft_host::script::runner),
         exporter: Some(Arc::new(effectcraft_host::FileExporter { sink: Some(files::export_sink()) })),
         ..Default::default()
     }

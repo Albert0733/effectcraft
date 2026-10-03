@@ -972,6 +972,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "crossbeam-channel"
+version = "0.5.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "98b0cc327b5bc766e7fda9c9260cc0fa81b43a8e240440422dff70788e3f9ef1"
+dependencies = [
+ "crossbeam-utils",
+]
+
+[[package]]
 name = "crossbeam-deque"
 version = "0.8.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1133,6 +1142,10 @@ dependencies = [
  "effectcraft-ui-egui",
  "eframe",
  "egui",
+ "log",
+ "muda",
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
  "rfd",
  "serde_json",
@@ -1145,6 +1158,7 @@ name = "effectcraft-automation"
 version = "0.1.0"
 dependencies = [
  "effectcraft-engine",
+ "effectcraft-script",
  "image",
  "serde_json",
  "thiserror 2.0.21",
@@ -1184,6 +1198,7 @@ dependencies = [
  "effectcraft-raster",
  "effectcraft-track",
  "rayon",
+ "serde",
  "serde_json",
 ]
 
@@ -1199,12 +1214,15 @@ dependencies = [
  "effectcraft-model",
  "effectcraft-path",
  "effectcraft-project",
+ "effectcraft-psd",
  "effectcraft-raster",
  "effectcraft-render",
+ "effectcraft-svg",
  "effectcraft-text",
  "effectcraft-time",
  "effectcraft-track",
  "image",
+ "kurbo",
  "log",
  "rayon",
  "serde",
@@ -1219,14 +1237,18 @@ version = "0.1.0"
 dependencies = [
  "effectcraft-color",
  "effectcraft-media",
+ "effectcraft-opusenc",
  "effectcraft-project",
  "effectcraft-raster",
  "effectcraft-render",
  "effectcraft-time",
+ "effectcraft-vp9enc",
  "filmcraft-aac",
  "filmcraft-h264enc",
  "filmcraft-isobmff",
+ "filmcraft-opus",
  "filmcraft-prores",
+ "filmcraft-vp9",
  "gif",
  "image",
  "log",
@@ -1288,6 +1310,11 @@ dependencies = [
  "effectcraft-expr",
  "effectcraft-media",
  "effectcraft-project",
+ "effectcraft-psd",
+ "effectcraft-raster",
+ "effectcraft-script",
+ "effectcraft-svg",
+ "effectcraft-time",
  "serde_json",
 ]
 
@@ -1326,8 +1353,10 @@ version = "0.1.0"
 dependencies = [
  "effectcraft-model",
  "effectcraft-project",
+ "effectcraft-psd",
  "effectcraft-raster",
  "effectcraft-render",
+ "effectcraft-svg",
  "effectcraft-time",
  "exr",
  "filmcraft-codecs",
@@ -1352,6 +1381,10 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
 ]
+
+[[package]]
+name = "effectcraft-opusenc"
+version = "0.1.0"
 
 [[package]]
 name = "effectcraft-path"
@@ -1379,6 +1412,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "effectcraft-psd"
+version = "0.1.0"
+dependencies = [
+ "miniz_oxide 0.8.9",
+]
+
+[[package]]
 name = "effectcraft-raster"
 version = "0.1.0"
 dependencies = [
@@ -1403,9 +1443,37 @@ dependencies = [
  "effectcraft-time",
  "kurbo",
  "log",
+ "lz4_flex",
  "rayon",
  "serde",
  "web-time",
+]
+
+[[package]]
+name = "effectcraft-script"
+version = "0.1.0"
+dependencies = [
+ "boa_engine",
+ "effectcraft-engine",
+ "effectcraft-expr",
+ "effectcraft-keyframe",
+ "effectcraft-path",
+ "effectcraft-project",
+ "effectcraft-render",
+ "effectcraft-time",
+ "serde_json",
+]
+
+[[package]]
+name = "effectcraft-svg"
+version = "0.1.0"
+dependencies = [
+ "effectcraft-geom",
+ "effectcraft-path",
+ "effectcraft-raster",
+ "kurbo",
+ "rayon",
+ "roxmltree",
 ]
 
 [[package]]
@@ -1436,6 +1504,7 @@ dependencies = [
  "rayon",
  "serde",
  "serde_json",
+ "web-time",
 ]
 
 [[package]]
@@ -1465,6 +1534,10 @@ dependencies = [
  "serde_json",
  "web-time",
 ]
+
+[[package]]
+name = "effectcraft-vp9enc"
+version = "0.1.0"
 
 [[package]]
 name = "effectcraft-web"
@@ -2623,6 +2696,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "keyboard-types"
+version = "0.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0fbe853b403ae61a04233030ae8a79d94975281ed9770a1f9e246732b534b28d"
+dependencies = [
+ "bitflags 2.13.2",
+ "serde",
+]
+
+[[package]]
 name = "khronos-egl"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2767,6 +2850,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 
 [[package]]
+name = "lz4_flex"
+version = "0.11.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "373f5eceeeab7925e0c1098212f2fbc4d416adec9d35051a6ab251e824c1854a"
+
+[[package]]
 name = "mach2"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2827,6 +2916,25 @@ checksum = "bb85c154ba489f01b25c0d36ae69a87e4a1c73a72631fc6c0eb6dde34a73e44b"
 dependencies = [
  "num-traits",
  "pxfm",
+]
+
+[[package]]
+name = "muda"
+version = "0.21.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c6744ab645ebe79f9c428455c7cb9dfa4275fa3b50a25408e08f927da8dc618c"
+dependencies = [
+ "crossbeam-channel",
+ "dpi",
+ "keyboard-types",
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
+ "objc2-core-foundation",
+ "objc2-foundation 0.3.2",
+ "once_cell",
+ "png",
+ "thiserror 2.0.21",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3985,6 +4093,15 @@ dependencies = [
  "wayland-protocols",
  "web-sys",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "roxmltree"
+version = "0.21.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f1964b10c76125c36f8afe190065a4bf9a87bf324842c05701330bba9f1cacbb"
+dependencies = [
+ "memchr",
 ]
 
 [[package]]

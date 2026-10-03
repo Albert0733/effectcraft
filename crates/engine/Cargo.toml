@@ -23,6 +23,9 @@ effectcraft-render = { workspace = true }
 effectcraft-track = { workspace = true }
 effectcraft-model = { workspace = true }
 effectcraft-lottie = { workspace = true }
+effectcraft-psd = { workspace = true }
+kurbo = { workspace = true }
+effectcraft-svg = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

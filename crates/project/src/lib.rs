@@ -666,6 +666,9 @@ pub struct Footage {
     /// Colour profile (from the file's metadata, or Interpret Footage). `None` = sRGB.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color_profile: Option<ColorSpace>,
+    /// One layer of a layered file (Photoshop) instead of its merged image.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layer: Option<SourceLayer>,
     /// Interpret Footage ▸ Fields and Pulldown ▸ Separate Fields.
     #[serde(default, skip_serializing_if = "is_default")]
     pub fields: FieldOrder,
@@ -709,6 +712,7 @@ impl Default for Footage {
             invert_alpha: false,
             linear_light: false,
             data: None,
+            layer: None,
         }
     }
 }
@@ -737,6 +741,18 @@ pub struct Proxy {
     /// Use Proxy (the Project panel's proxy indicator: filled = in use, hollow = set but off).
     #[serde(default = "yes")]
     pub enabled: bool,
+}
+
+/// A layer of a layered still (a Photoshop document) used as footage
+/// (File ▸ Import ▸ Composition / Composition – Retain Layer Sizes, or Choose Layer).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceLayer {
+    /// Layer record index in the file (bottom of the stack = 0).
+    pub index: u32,
+    pub name: String,
+    /// The footage is the layer's own bounds (Retain Layer Sizes) rather than the document size.
+    #[serde(default)]
+    pub layer_size: bool,
 }
 
 fn one() -> u32 {

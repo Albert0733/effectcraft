@@ -112,7 +112,7 @@ fn output_menu(it: &RenderQueueItem, available: &[OutputFormat]) -> Vec<(String,
                 v.push((mark(o.bitrate_kbps == kbps, &format!("Bitrate: {} Mbps", kbps / 1000)), json!({"bitrate": kbps})));
             }
         }
-        OutputFormat::JpegSequence => {
+        OutputFormat::JpegSequence | OutputFormat::WebM => {
             v.push(("-".into(), Value::Null));
             for q in [60u8, 80, 90, 100] {
                 v.push((mark(o.quality == q, &format!("Quality: {q}")), json!({"quality": q})));

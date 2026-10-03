@@ -14,6 +14,7 @@ pub mod frames;
 pub mod header;
 pub mod icons;
 pub mod menus;
+pub mod native_menu;
 pub mod panels;
 pub mod state;
 pub mod theme;
@@ -86,6 +87,11 @@ pub struct Hooks {
     pub pick_folder: Option<Box<dyn Fn() -> Option<String>>>,
     /// Save dialog for other file kinds: (default name, extension).
     pub pick_save_file: Option<Box<dyn Fn(&str, &str) -> Option<String>>>,
+    /// The system clipboard's text (native menu Edit ▸ Paste into a text field).
+    pub clipboard_text: Option<Box<dyn Fn() -> Option<String>>>,
+    /// Application actions the OS performs (`app.hide`, `app.hideOthers`, `app.showAll` on
+    /// macOS). Returns false when the host doesn't handle the id.
+    pub app_action: Option<Box<dyn Fn(&str) -> bool>>,
 }
 
 #[derive(Default)]
@@ -158,6 +164,10 @@ pub struct EffectcraftApp {
     /// Docked groups laid out last frame: (active panel, group rect) — `~` maximizes the one
     /// under the pointer.
     pub(crate) dock_rects: Vec<(PanelKind, egui::Rect)>,
+    /// Home screen: recent-project thumbnail textures by path (None = no thumbnail).
+    pub(crate) home_thumbs: std::collections::HashMap<String, Option<egui::TextureHandle>>,
+    /// The (project path, saved revision) whose thumbnail was stored last.
+    pub(crate) home_thumb_saved: Option<(String, u64)>,
 }
 
 impl EffectcraftApp {
@@ -202,6 +212,8 @@ impl EffectcraftApp {
             applied_prefs: None,
             recovery: None,
             dock_rects: vec![],
+            home_thumbs: Default::default(),
+            home_thumb_saved: None,
         }
         .with_ui_commands()
     }
@@ -267,8 +279,12 @@ impl EffectcraftApp {
     pub fn set_workspace(&mut self, name: &str) {
         self.ui.workspace = name.to_string();
         self.ui.dock = self.ui.saved_workspaces.get(name).cloned().unwrap_or_else(|| dock::workspace(name));
-        self.ui.floating = self.ui.saved_floating.get(name).cloned().unwrap_or_default();
+        self.ui.floating = self.ui.saved_floating.get(name).cloned().unwrap_or_else(|| dock::workspace_floating(name));
         self.ui.maximized = None;
+        // Learn: the Home screen (community links) in the Composition panel.
+        if name == "Learn" {
+            self.ui.start_screen = true;
+        }
     }
 
     /// Built-in workspaces followed by the saved ones (Window ▸ Workspace ▸ Save as New Workspace).
@@ -308,6 +324,7 @@ impl EffectcraftApp {
             layer_cache: self.session.layer_cache.clone(),
             gpu: self.gpu.clone(),
             gpu_display: false,
+            disk: self.session.disk_cache.clone(),
         }
     }
 
@@ -405,13 +422,11 @@ impl EffectcraftApp {
         self.request_frame_with(comp, frame, scale, true);
     }
 
-    fn request_frame_with(&self, comp: ItemId, frame: i64, scale: f64, urgent: bool) {
-        let Some(c) = self.session.project.comp(comp) else { return };
-        let key = self.frame_key(comp, frame, scale);
-        let t = c.frame_rate.tick_of(frame);
+    /// Render options of viewer frames of `comp` at `scale`.
+    pub fn frame_opts(&self, comp: ItemId, scale: f64) -> RenderOpts {
         let (draft, _) = self.session.state.viewer.fast_previews.render(self.ui.viewer.interacting);
         let roi = self.session.state.region_of_interest.filter(|_| self.session.active_comp_id() == Some(comp));
-        let opts = RenderOpts {
+        RenderOpts {
             scale,
             motion_blur: true,
             guides: true,
@@ -420,7 +435,14 @@ impl EffectcraftApp {
             roi,
             backend: effectcraft_engine::render::Backend::Auto,
             proxy: Default::default(),
-        };
+        }
+    }
+
+    fn request_frame_with(&self, comp: ItemId, frame: i64, scale: f64, urgent: bool) {
+        let Some(c) = self.session.project.comp(comp) else { return };
+        let key = self.frame_key(comp, frame, scale);
+        let t = c.frame_rate.tick_of(frame);
+        let opts = self.frame_opts(comp, scale);
         if urgent {
             self.frames.request_urgent(&self.render_source(), key, comp, t, opts);
         } else {
@@ -726,6 +748,12 @@ impl EffectcraftApp {
         // Warp Stabilizer: finish analyses and start queued (re-)analyses in the background.
         if self.session.warp_job.is_some() || !self.session.warp_pending.is_empty() {
             self.session.poll_warp(true);
+            self.session.poll_roto(true);
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
+        // 3D Camera Tracker: likewise (tracking, then solving).
+        if self.session.camera_job.is_some() || !self.session.camera_pending.is_empty() {
+            self.session.poll_camera(true);
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
         self.apply_prefs(&ctx);
@@ -757,6 +785,7 @@ impl EffectcraftApp {
         let body = egui::Rect::from_min_max(egui::pos2(full.min.x + 4.0, header.max.y + 2.0), egui::pos2(full.max.x - 4.0, full.max.y - 4.0));
         self.dock_area(ui, body);
         panels::precomp::mini_flowchart(self, &ctx);
+        panels::home::capture_thumbnail(self);
         panels::dialogs::show(self, &ctx);
         self.draw_toast(ui, full);
     }

@@ -16,28 +16,34 @@ cpal or muda. Everything in L0 to L4, the egui UI and the web app also build for
 | L0 | `time` | `Tick` (254 016 000 000 per second), rational frame rates incl. NTSC, SMPTE and drop-frame timecode |
 | L0 | `geom` | Vectors, matrices, quaternions, the layer transform (anchor, position, scale, orientation, rotation) |
 | L0 | `color` | sRGB and linear, HSL/HSV, luminance, the 38 blend modes, label colors |
+| L0 | `vp9enc` | VP9 intra-frame encoder (profile 0, 8-bit 4:2:0; lossless at quality 100) for WebM export, from the VP9 bitstream specification |
+| L0 | `opusenc` | Opus (CELT) encoder: RFC 6716 CELT-only fullband 48 kHz 20 ms packets, mono/stereo, and the RFC 7845 `OpusHead`, for WebM export audio |
 | L1 | `raster` | Premultiplied float images, sampling, affine and projective warps, blurs, compositing (parallel with rayon) |
 | L1 | `keyframe` | Animated values, keyframes with temporal ease and spatial Bezier, roving, hold, velocity |
+| L1 | `psd` | Photoshop PSD/PSB reader (layers, groups, masks, blend modes, text, layer effects, adjustment layers; 8/16/32-bit; RGB/CMYK/Gray/Lab) and a minimal writer, from Adobe's published format specification |
 | L1 | `path` | Bezier paths, path operators (trim, offset, round corners, zig zag, twist, merge…), stroking, coverage masks |
 | L2 | `project` | The document: items, compositions, layers, the property tree, render queue model, `.ecproj` serde |
 | L2 | `text` | Fonts, shaping, layout, per-glyph geometry, text animators and selectors |
 | L2 | `effects` | The effect registry (241 effects) and their CPU implementations |
+| L2 | `svg` | SVG import (W3C SVG 1.1/2 static subset: shapes, paths, transforms, `use`, CSS, gradients) and rasterisation at any scale |
 | L2 | `model` | 3D models for Advanced 3D: glTF 2.0 (`.gltf`/`.glb`) and OBJ/MTL import (meshes, PBR metallic-roughness materials and textures, node hierarchy, skins, animations), parametric primitives, extruded/bevelled outline meshes and polygon triangulation |
 | L2 | `track` | Motion tracking: feature/search region point tracking (pyramid normalized cross-correlation, Lucas–Kanade sub-pixel refinement), confidence, homography/affine/similarity solves |
 | L3 | `render` | Evaluation and compositing: sources, masks, effects, transforms, 3D, motion blur, mattes, blending, layer cache, audio mixdown |
-| L3 | `media` | Footage decoding (FilmCraft's pure-Rust codecs), image sequences, frame cache |
+| L3 | `media` | Footage decoding (FilmCraft's pure-Rust codecs), image sequences, Photoshop and SVG stills, frame cache |
 | L3 | `expr` | The expression engine (JavaScript via boa) with the After Effects object model |
-| L3 | `export` | Render queue encoding: H.264, ProRes, PNG/JPEG/TIFF/EXR sequences, GIF, audio |
+| L3 | `export` | Render queue encoding: H.264, ProRes, WebM (VP9 + alpha, Opus), PNG/JPEG/TIFF/EXR sequences, GIF, WAV/AIFF |
 | L3 | `gpu` | The GPU compositor and GPU effects on wgpu compute shaders (Metal, Vulkan, Direct3D 12, WebGPU), checked against the CPU renderer |
 | L3 | `lottie` | Lottie JSON / dotLottie import and export (layers, precomps, eased and spatial keyframes, shapes, masks, mattes) with a warnings list for what Lottie cannot express |
 | L4 | `engine` | `Session`: project, undo history, editor state, the command registry and menus |
-| L4 | `host` | A fully wired `Session` (media, expressions, exporter) for the frontends |
+| L4 | `script` | Scripting: JavaScript (boa) with an After Effects-style object model (`app.project`, comps, layers, properties, render queue) whose edits run engine commands; AE match names |
+| L4 | `host` | A fully wired `Session` (media, expressions, scripting, exporter) for the frontends |
 | L5 | `ui-egui` | The desktop interface: docking, panels, viewer, timeline, graph editor, dialogs, control channel |
 | L5 | `automation` | The MCP server, headless or bridged to the running app |
 | L6 | apps `effectcraft`, `effectcraft-cli`, `effectcraft-web` | Desktop app; command-line tool (render, exec, get/set, MCP); the browser app (wasm32, [web.md](web.md)) |
 
 Allowed same-layer edges: `path → keyframe, raster`, `text → path`, `effects → project, text, path, track`,
-`media / expr / export / gpu → render`, `export → media`, `lottie → format`, `host → engine`.
+`media / expr / export / gpu → render`, `export → media`, `lottie → format`, `host → engine, script`,
+`script → engine`.
 
 ## 2. Time
 
@@ -103,6 +109,14 @@ A **layer cache** keeps each layer's finished pixels (source, masks and effects)
 its evaluated inputs, excluding the transform. Static and transform-only layers render once;
 editing one layer re-renders only that layer. Effects that read the clock directly are declared in
 `effects::TIME_DEPENDENT`, and a test checks every registered effect against that list.
+
+A persistent **disk cache** (`render::disk_cache`, Settings ▸ Media & Disk Cache) backs both
+the layer cache and the viewer's RAM preview: layer buffers that were slow to render and every
+preview frame are written (LZ4, atomic rename, checksummed) under 128-bit content keys — the
+comp's content hash (the comp, what it uses, footage file size and time) plus frame, scale and
+view for frames; the layer key salted with the footage fingerprint for layers — so entries
+survive restarts and never go stale. LRU eviction keeps it under the size limit; Edit ▸ Purge
+empties it, `cache.diskStats` reports it, and the timeline draws disk-only frames in blue.
 
 **Time effects** (Echo, Posterize Time, Timewarp…) read the layer at other times through
 `EffectHost::self_at`: the renderer renders the layer's source and masks (plus, optionally, the
@@ -223,6 +237,35 @@ lines interpolated); pixel aspect stretches footage, solids and precomps in the 
 (`EvalCtx::par_ratio`, not inherited by children); Invert Alpha and Interpret As Linear Light
 apply after decoding.
 
+**3D Camera Tracker** (`effects::camera_tracker`, `engine::camera_track`, `effectcraft-track`'s
+`camtrack`): `camera.analyze` / `track.camera` render the layer's input to the effect on a
+background thread and run structure from motion in two steps. Step 1 follows Shi–Tomasi features
+through the clip with pyramidal Lucas–Kanade (forward–backward checked, re-detected where the frame
+has none) into long 2D tracks. Step 2 solves the camera: parallax keyframes; a two-view start from
+the essential matrix (normalised 8-point in RANSAC) or a planar homography decomposition; incremental
+resection and triangulation; a sparse Levenberg–Marquardt bundle adjustment (Schur complement over
+the points, Huber loss) with the focal length fixed, shared, or per frame; a log-spaced and
+golden-section focal search for Fixed Angle of View / Variable Zoom; a rotation-only model for tripod
+pans, chosen by Auto Detect when it explains the tracks as well. Tracks and solve are stored as JSON
+in hidden effect parameters with keys: changing the layer's frames clears both, changing Shot Type,
+Angle of View, Solve Method or deleting points only re-solves. The solve's canonical frame maps to
+comp space so the first frame's camera is the default comp camera (or so a chosen ground plane is
+the X-Z plane at the origin); `camera.createFromSolve` keys a one-node "3D Tracker Camera" on every
+frame and places text, solids, nulls or a shadow catcher and light on the target plane.
+
+**Roto Brush & Refine Edge** (`effectcraft_track::roto`, `effects::roto`, `engine::roto`):
+strokes (foreground, background, Refine Edge) are stored as JSON in the effect's hidden Strokes
+parameter with the base frame and segmentation span. Each frame is segmented by graph cut
+(Boykov–Jolly hard constraints, GrabCut colour mixtures, our own Boykov–Kolmogorov max-flow,
+coarse to fine) and propagated to the next frame by warping the matte with block optical flow and
+re-cutting in a Search Radius band; frames with correction strokes are re-cut with the warped
+matte as a soft prior. Refine Edge bands get guided-filter + closed-form matting and
+foreground-colour decontamination. Segmentations are derived data: each frame's chain key (Input
+Key, settings, strokes from the base frame out) indexes a process-wide cache that renders fill on
+demand (`self_at`) and `roto.propagate` fills in the background; `Session::edit` keeps the Input
+Key in step with the layer's source, masks and upstream effects. Freeze stores final 8-bit mattes
+in the effect.
+
 ## 5. Expressions
 
 Expressions are JavaScript, run by boa, with After Effects' object model (`thisComp`, `thisLayer`,
@@ -232,6 +275,28 @@ sampled layer through the evaluating renderer's footage source (`EvalCtx::footag
 thread and frame; `footage(name)` reads data footage (JSON, CSV, TSV imported with File ▸ Import,
 text kept in the project) through `sourceData`, `sourceText` and `dataValue`. `expr.errors`
 lists failing expressions for the viewer's error bar.
+
+## 5a. Scripting
+
+`effectcraft-script` runs JavaScript (boa, a fresh context per run; the Script Console keeps one)
+with an object model written from the behaviour the After Effects Scripting Guide documents:
+`app`, `Project`, `ItemCollection`, `CompItem`/`FootageItem`/`FolderItem`, `LayerCollection`,
+`AVLayer`/`TextLayer`/`ShapeLayer`/`CameraLayer`/`LightLayer`, `PropertyGroup`/`Property`
+(values, keyframes, eases, expressions), `TextDocument`, `Shape`, `KeyframeEase`, `MarkerValue`,
+`RenderQueue`/`RenderQueueItem`/`OutputModule`, `File`/`Folder` and the enums. The model lives in
+`prelude.js`; it reads the session through `__query` (JSON snapshots of items, layers, property
+nodes, values and keys) and edits only through `__exec`, which runs engine commands, so every
+scripted edit is undoable and identical to the UI's. While a script runs the session is moved
+into a thread-local the natives borrow (nothing borrowed enters the JS heap); the comp a call
+targets is made active for that command only. `app.beginUndoGroup`/`endUndoGroup` fold the undo
+steps in between into one named step. Match names (`ADBE Transform Group`, `ADBE Position`,
+`ADBE Gaussian Blur 2`, `ADBE Vector Shape - Rect`…) come from a table in `matchnames.rs`; effect
+parameters are `<effect match name>-0001…`. `File` reads are limited to the project's folder, and
+writes and the network are refused, unless Preferences ▸ Scripting & Expressions ▸ Allow Scripts
+to Write Files and Access Network is on. Entry points: the `script.run` command
+(`Session::script`, set by the host), File ▸ Scripts ▸ Run Script File… (`.jsx`/`.js`; `.json`
+command scripts still run as steps), Window ▸ Script Console, `effectcraft-cli script` and the
+MCP `run_script` tool.
 
 ## 6. Commands, the UI seam and automation
 

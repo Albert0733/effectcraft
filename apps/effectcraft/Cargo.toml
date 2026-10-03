@@ -18,6 +18,7 @@ eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit", "
 serde_json = { workspace = true }
 rfd = { workspace = true }
 cpal = { workspace = true }
+log = { workspace = true }
 
 [build-dependencies]
 # Icon + VERSIONINFO for effectcraft.exe; build.rs only uses it when targeting Windows.
@@ -28,3 +29,8 @@ winresource = "0.1"
 winit = { version = "0.30", default-features = false }
 # Keep the control channel responsive when the window is covered (App Nap / occlusion throttling).
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSProcessInfo", "NSString", "NSObject"] }
+# The native menu bar (NSMenu). MIT OR Apache-2.0; macOS only, never in the web build.
+muda = { version = "0.21", default-features = false }
+objc2 = "0.6"
+# NSApplication hide / hide others / show all, and the pasteboard for Edit ▸ Paste in text fields.
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSPasteboard"] }

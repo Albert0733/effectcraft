@@ -49,6 +49,7 @@ The server speaks JSON-RPC 2.0 over stdio, one message per line, and supports MC
 |---|---|
 | `list_commands {filter?, enabled_only?}` | Discover command ids, their param docs, and whether each can run now. |
 | `execute_command {command, params?}` | Run any command (undoable). |
+| `run_script {code, name?}` | Run JavaScript with the After Effects-style scripting object model (`app.project`, `comp.layers.addText(…)`, `layer.property("ADBE Transform Group").property("ADBE Position").setValueAtTime(…)`…). Returns `{ok, result, output, error: {message, line, column}}`; edits are undoable. |
 | `get_project` / `get_comp {comp?}` | Project items, comp settings and layers. |
 | `get_layer {layer, comp?, time?, flat?}` | A layer's property tree. Every node has a `path`. |
 | `get_property {layer, path, comp?, time?}` | Value at a time, keyframes and expression. |
@@ -146,6 +147,56 @@ effectcraft-cli exec warp.analyze '{"layer":"#1","wait":true}' shaky.ecproj --sa
 effectcraft-cli exec warp.status '{"layer":"#1"}' shaky.ecproj --json
 ```
 
+### 3D Camera Tracker
+
+Animation ▸ Track Camera and the Tracker panel's button (`track.camera {layer?, shotType?:
+fixed|variable|specify, aov?, solveMethod?: auto|typical|flat|tripod, detailed?, wait?}`) apply
+Effect ▸ Perspective ▸ 3D Camera Tracker (or reuse the layer's) and analyse it in the background:
+"Analyzing in background (step 1 of 2)" tracks features, "Solving camera" solves.
+`camera.analyze {layer?, effect?, wait?}` re-runs it, `camera.cancel` stops it without writing
+anything. `camera.solveStatus` reports `progress`/`banner`, `analyzed`, `solved`, `methodUsed`,
+`averageError` (pixels), `focalLength`, `horizontalAngleOfView`, the current frame's `camera`
+(position, orientation, zoom) and `groundPlane`. `camera.points {time?}` lists the solved points
+visible now with their `id`, `comp` position, `depth`, `world` position and `error`.
+
+Select points with `camera.selectPoints {points, add?, toggle?}` (the viewer's click / Shift-click /
+marquee), then the right-click menu's commands: `camera.setGroundPlane {points?}` (Set Ground Plane
+and Origin), `camera.createFromSolve {kind: text|solid|null|shadowCatcher, points? | target:
+{center, normal, size?}, multiple?}` (Create Text / Solid / Null / Shadow Catcher, Camera and Light,
+Create Multiple …), `camera.deletePoints {points?, wait?}` (re-solves; with Auto-delete Points
+Across Time the same feature's other tracks go too) and `camera.create` (the Create Camera button).
+Each is one undo step; the first create adds the one-node "3D Tracker Camera" keyed on every frame.
+Changing the layer's frames clears the analysis; changing `effects/#1/shotType`,
+`effects/#1/horizontalAngleOfView`, `effects/#1/advanced/solveMethod` re-solves the stored tracks.
+
+```sh
+effectcraft-cli run shot.ecproj track.camera '{"layer":"#1","wait":true}' \
+  camera.points '{}' --json
+effectcraft-cli run shot.ecproj camera.createFromSolve '{"kind":"solid","points":[12,40,77]}' --save
+```
+
+### Roto Brush & Refine Edge
+
+The Roto Brush tool (Alt+W cycles Roto Brush / Refine Edge) paints in the Layer panel; agents use
+`roto.stroke {layer, kind: fg|bg|refine|refineErase, points: [[x, y], …], frame?, radius?}`
+(layer pixels, layer frames). The first foreground stroke applies the Roto Brush & Refine Edge
+effect and sets the base frame with a span of 20 frames each side. `roto.propagate {layer,
+direction?: forward|backward|both, to?, wait?}` segments the span (in the background unless
+`wait`); strokes on any other frame correct it and propagation restarts from there.
+`roto.span {start?, end?}`, `roto.freeze {wait?}` / `roto.unfreeze`, `roto.clearStrokes {frame?,
+kind?}`, `roto.cancel` and `roto.options {diameter?, refineDiameter?, view?: alphaBoundary|alpha|
+alphaOverlay|none}` complete the set; every edit is one undo step. `roto.status {layer, frame?,
+matte?, compute?, compareTo?}` reports the base frame, span, computed and stroked frames, frozen
+state, job progress and, for a frame, the matte's area, centroid, RLE matte and IoU against a
+reference. Matte settings are ordinary properties (`effects/#1/rotoBrushMatte/searchRadius`,
+`effects/#1/refineEdgeMatte/decontaminateEdgeColors`, …).
+
+```sh
+effectcraft-cli run clip.ecproj roto.stroke '{"layer":"#1","points":[[300,200],[360,230]],"radius":10}' \
+  roto.stroke '{"layer":"#1","kind":"bg","points":[[40,40],[600,40]],"radius":12}' \
+  roto.propagate '{"layer":"#1","wait":true}' roto.freeze '{"layer":"#1","wait":true}' --save
+```
+
 ### Text: styles and editing
 
 Source Text holds character style runs and per-paragraph settings. `layer.setText` changes the
@@ -190,6 +241,19 @@ effectcraft-cli exec layer.newNull --bridge 9877                 # same commands
 effectcraft-cli exec file.exportLottie '{"comp":"Main","path":"main.json","includeExpressions":true}' main.ecproj --json
 effectcraft-cli exec file.importLottie '{"path":"anim.json"}' main.ecproj --save
 ```
+
+Scripts written against After Effects' documented scripting API run with `script`:
+
+```sh
+effectcraft-cli script build.jsx --save-as main.ecproj     # empty project unless one is given
+effectcraft-cli script --eval 'app.project.item(1).numLayers' main.ecproj --json
+effectcraft-cli script tweak.jsx --bridge 9877              # against the live app
+```
+
+`writeLn`/`$.writeln`/`alert` output is printed, then the value of the last expression. A script
+error exits with status 1 and `file:line:col: message`. Scripts may read files only in the
+project's folder and may not write files or use the network unless the user turns on Preferences ▸
+Scripting & Expressions ▸ Allow Scripts to Write Files and Access Network.
 
 `file.exportLottie` returns `{path, bytes, warnings}`: the warnings list every feature Lottie
 cannot express (most effects, cameras and lights, layer styles, audio, video footage…), so an

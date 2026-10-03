@@ -9,6 +9,7 @@
 pub mod audio;
 pub mod cache;
 pub mod color;
+pub mod disk_cache;
 use color::Region;
 pub mod eval;
 pub mod masks;
@@ -56,6 +57,16 @@ pub trait FootageSource: Send + Sync {
     fn cache_budget(&self) -> Option<usize> {
         None
     }
+    /// Vector footage (SVG) rasterised at `scale` × its pixel size, for Continuously Rasterize.
+    /// `None` when the footage is not vector or cannot be read.
+    fn vector_frame(&self, _item: ItemId, _footage: &Footage, _scale: f64) -> Option<Arc<Image>> {
+        None
+    }
+}
+
+/// Footage that can be rasterised at any scale (SVG).
+pub fn is_vector_footage(f: &Footage) -> bool {
+    f.codec == "SVG"
 }
 
 /// Layer parameters and audio for effects (see [`effectcraft_effects::EffectHost`]).
@@ -418,7 +429,12 @@ impl<'a> Renderer<'a> {
     /// stays sharp when scaled up).
     pub fn raster_scale(&self, ctx: &EvalCtx, layer: &Layer) -> f64 {
         let s = self.opts.scale;
-        if !layer.switches.collapse || !matches!(layer.source, LayerSource::Text | LayerSource::Shape) {
+        let vector = match layer.source {
+            LayerSource::Text | LayerSource::Shape => true,
+            LayerSource::Footage { item } => matches!(self.project.item(item).map(|i| &i.kind), Some(ItemKind::Footage(f)) if is_vector_footage(f)),
+            _ => false,
+        };
+        if !layer.switches.collapse || !vector {
             return s;
         }
         let (l2c, _) = ctx.layer_to_comp(layer);
@@ -722,6 +738,17 @@ impl<'a> Renderer<'a> {
                 let ItemKind::Footage(f) = &it.kind else { return None };
                 if !f.has_video {
                     return None;
+                }
+                // Continuously rasterised vector footage: drawn at the on-screen scale.
+                if layer.switches.collapse && is_vector_footage(f) {
+                    let k = self.raster_scale(ctx, layer);
+                    if let Some(img) = self.footage.vector_frame(*item, f, k) {
+                        let mut buf = Buf { img: (*img).clone(), offset: [0.0; 2], scale: k };
+                        if let Some(c) = self.pipe.media_in(f.color_profile) {
+                            color::convert(&mut buf.img, &c);
+                        }
+                        return Some(buf);
+                    }
                 }
                 let lt = ctx.source_time(layer);
                 // The proxy is decoded instead, at its own size, and fills the footage's frame.

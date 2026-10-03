@@ -108,6 +108,16 @@ fn has(p: &Value, keys: &[&str]) -> bool {
 }
 
 /// If `id` is a dialog command invoked without its parameters, open its form and return true.
+/// The import includes a Photoshop document.
+fn is_layered(p: &Value) -> bool {
+    let psd = |v: &Value| v.as_str().is_some_and(|s| matches!(s.rsplit('.').next().map(str::to_ascii_lowercase).as_deref(), Some("psd" | "psb")));
+    match p.get("paths").or(p.get("path")) {
+        Some(Value::Array(a)) => a.iter().any(psd),
+        Some(v) => psd(v),
+        None => false,
+    }
+}
+
 pub fn open_form(app: &mut EffectcraftApp, id: &str, p: &Value) -> bool {
     let s = &app.session;
     let comp = s.active_comp();
@@ -116,6 +126,16 @@ pub fn open_form(app: &mut EffectcraftApp, id: &str, p: &Value) -> bool {
     let lt = layer.map(|l| l.layer_time(t)).unwrap_or(t);
     let base = p.clone();
     let (title, fields): (String, Vec<Field>) = match id {
+        // Photoshop files: Import Kind (Footage / Composition / – Retain Layer Sizes).
+        "file.import" if !has(p, &["importAs"]) && is_layered(p) => (
+            "Import Photoshop File".into(),
+            vec![Field::choice(
+                "importAs",
+                "Import Kind",
+                &[("Footage", json!("footage")), ("Composition", json!("composition")), ("Composition - Retain Layer Sizes", json!("compositionLayerSizes"))],
+                1,
+            )],
+        ),
         "layer.setTransform" if !has(p, &["value"]) => {
             let prop = p.get("prop").and_then(Value::as_str).unwrap_or("position");
             let cur = layer.and_then(|l| l.transform()).and_then(|tr| tr.get(if prop == "anchorPoint" { "anchor" } else { prop })).map(|pr| pr.value_at(lt));

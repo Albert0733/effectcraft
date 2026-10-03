@@ -70,6 +70,9 @@ pub fn probe_model(path: &str, bytes: &[u8], resolve: &dyn Fn(&str) -> Option<Ve
 
 /// Probe in-memory file contents; `path` names the footage (and is stored as `Footage::path`).
 pub fn probe_bytes(path: &str, bytes: Arc<[u8]>) -> Result<Footage> {
+    if let Some(f) = crate::layered::probe(path, &bytes)? {
+        return Ok(f);
+    }
     if crate::MODEL_EXTENSIONS.contains(&ext_of(Path::new(path)).as_str()) {
         return probe_model(path, &bytes, &|_| None);
     }
@@ -129,7 +132,7 @@ fn profile_of(c: &filmcraft_color::ColorInfo) -> Option<effectcraft_project::Col
     }
 }
 
-fn still_footage(path: &str, w: u32, h: u32, fmt: image::ImageFormat, has_alpha: bool) -> Footage {
+pub(crate) fn still_footage(path: &str, w: u32, h: u32, fmt: image::ImageFormat, has_alpha: bool) -> Footage {
     let codec = fmt.extensions_str().first().map_or("image", |s| s).to_ascii_uppercase();
     // OpenEXR stores premultiplied colour by convention; other formats straight alpha.
     let alpha = match (has_alpha, fmt) {

@@ -4,8 +4,10 @@
 mod anim;
 pub mod anim_tools;
 mod animation;
+mod camera_cmds;
 mod comp;
 mod comp_more;
+mod create;
 mod edit;
 mod effect;
 pub mod essential;
@@ -29,10 +31,12 @@ pub mod paint;
 mod paths;
 mod project_items;
 mod prop;
+mod prop_groups;
 mod proxy;
 pub mod puppet;
 mod query;
 mod render_queue;
+pub mod roto_cmds;
 mod settings;
 mod stubs;
 mod styles;
@@ -111,6 +115,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(text_edit::specs());
         v.extend(layer_time::specs());
         v.extend(prop::specs());
+        v.extend(prop_groups::specs());
         v.extend(project_items::specs());
         v.extend(anim::specs());
         v.extend(anim_tools::specs());
@@ -124,6 +129,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(help::specs());
         v.extend(query::specs());
         v.extend(layer_menu::specs());
+        v.extend(create::specs());
         v.extend(animation::specs());
         v.extend(view::specs());
         v.extend(viewer_cmds::specs());
@@ -135,6 +141,8 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(track::specs());
         v.extend(mask_interp::specs());
         v.extend(warp_cmds::specs());
+        v.extend(camera_cmds::specs());
+        v.extend(roto_cmds::specs());
         v.extend(paint::specs());
         v.extend(puppet::specs());
         v.extend(liquify::specs());

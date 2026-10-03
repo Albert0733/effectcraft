@@ -33,6 +33,7 @@ pub enum Icon {
     Clone,
     Eraser,
     RotoBrush,
+    RefineEdge,
     Puppet,
     // switches & timeline
     Eye,
@@ -281,6 +282,15 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             pen.line(&[(13.0, 2.5), (8.0, 7.5)]);
             pen.ellipse(6.0, 10.0, 3.6, 3.6);
             pen.dot(6.0, 10.0, 1.0);
+        }
+        RefineEdge => {
+            // A brush over a soft (dashed) edge.
+            pen.line(&[(13.5, 2.5), (9.0, 7.0)]);
+            pen.ellipse(7.0, 9.0, 2.6, 2.6);
+            pen.line(&[(2.0, 14.0), (3.5, 12.5)]);
+            pen.line(&[(5.0, 14.0), (6.5, 12.5)]);
+            pen.line(&[(8.0, 14.0), (9.5, 12.5)]);
+            pen.line(&[(11.0, 14.0), (12.5, 12.5)]);
         }
         Puppet => {
             pen.circle(8.0, 3.6, 1.6);

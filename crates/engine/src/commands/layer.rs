@@ -436,6 +436,20 @@ fn rename(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(Value::Null)
 }
 
+/// The Timeline's Comment column.
+fn set_comment(s: &mut Session, p: &Value) -> Result<Value> {
+    let (cid, ids) = layers_p(s, p)?;
+    let text = str_p(p, "comment").ok_or_else(|| bad("layer.setComment", "missing `comment`"))?.to_string();
+    s.edit("Layer Comment", None, |proj, _| {
+        let comp = proj.comp_mut(cid).ok_or(EngineError::NoComp)?;
+        for l in comp.layers.iter_mut().filter(|l| ids.contains(&l.id)) {
+            l.comment = text.clone();
+        }
+        Ok(())
+    })?;
+    Ok(Value::Null)
+}
+
 fn blend(s: &mut Session, p: &Value) -> Result<Value> {
     let (cid, ids) = layers_p(s, p)?;
     let mode = str_p(p, "mode").and_then(BlendMode::from_name);
@@ -1077,6 +1091,7 @@ pub fn specs() -> Vec<CommandSpec> {
             set_switch
         ),
         cmd!("layer.rename", "Rename", [], Some("Enter"), "{layer?, name}", has_layers, rename),
+        cmd!("layer.setComment", "Layer Comment", [], None, "{layers?, comment}", has_layers, set_comment),
         cmd!("layer.setBlendMode", "Blending Mode", [], None, "{layers?, mode?: Normal|Multiply|Screen|…, step?: ±1}", has_layers, blend),
         cmd!(
             "layer.setTrackMatte",

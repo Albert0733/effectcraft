@@ -363,3 +363,95 @@ fn movies_carry_audio() {
         assert!(!effectcraft_media::probe(&path).expect("probe").has_audio);
     }
 }
+
+#[test]
+fn webm_vp9_opus_roundtrip() {
+    let d = out_dir("webm");
+    let wav = d.join("tone.wav");
+    write_tone(&wav, 2.0);
+    let (p, cid) = project(Some(&wav));
+    let pool = MediaPool::new();
+    let om = OutputModule { quality: 90, audio: AudioOutput::Auto, ..OutputModule::for_format(OutputFormat::WebM) };
+    let path = d.join("comp.webm");
+    let r = run(&p, cid, &pool, &om, &path);
+    assert!(r.audio && r.bytes > 200, "{r:?}");
+    // Decoded back through FilmCraft (Matroska demuxer, VP9 and Opus decoders).
+    let f = decode_movie(&path, FRAMES, 0.08);
+    assert!(f.has_audio);
+    let s = MediaPool::new().audio_samples(&f, Tick::from_seconds_f64(0.3), 24_000, 48_000);
+    let l = rms(s.iter().step_by(2).copied());
+    assert!((l - 0.3536).abs() < 0.06, "left RMS {l}");
+    ffmpeg_check(&path, 0.08);
+    if let Some(s) = ffprobe(&path) {
+        assert!(s.contains("vp9|64|48|yuv420p"), "{s}");
+        assert!(s.contains("opus"), "{s}");
+    }
+}
+
+#[test]
+fn webm_with_alpha() {
+    let d = out_dir("webm-alpha");
+    let (p, cid) = project(None);
+    // Transparent outside the red solid.
+    let om = OutputModule { channels: Channels::Rgba, ..OutputModule::for_format(OutputFormat::WebM) };
+    let path = d.join("alpha.webm");
+    run(&p, cid, &NoFootage, &om, &path);
+    let f = effectcraft_media::probe(&path).expect("probe our output");
+    assert_eq!((f.width, f.height), (W, H));
+    let bytes = std::fs::read(&path).unwrap();
+    // AlphaMode element (0x53C0) and BlockAdditions (0x75A1).
+    assert!(bytes.windows(3).any(|w| w == [0x53, 0xC0, 0x81]), "AlphaMode 1");
+    assert!(bytes.windows(2).any(|w| w == [0x75, 0xA1]), "BlockAdditions");
+    // ffmpeg's libvpx decoder reads the alpha channel.
+    let png = path.with_extension("alpha.png");
+    let ok = Command::new("ffmpeg")
+        .args(["-hide_banner", "-loglevel", "error", "-y", "-c:v", "libvpx-vp9", "-i"])
+        .arg(&path)
+        .args(["-vf", "select=eq(n\\,8)", "-frames:v", "1", "-pix_fmt", "rgba"])
+        .arg(&png)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if ok {
+        let img = image::open(&png).unwrap().to_rgba8();
+        assert!(img.get_pixel(2, 2)[3] < 20, "corner transparent");
+        assert!(img.get_pixel(W / 2, H / 2)[3] > 235, "centre opaque");
+    } else {
+        eprintln!("ffmpeg with libvpx not available: skipping alpha oracle");
+    }
+}
+
+#[test]
+fn wav_and_aiff_audio_only() {
+    let d = out_dir("audio-only");
+    let wav = d.join("tone.wav");
+    write_tone(&wav, 2.0);
+    let (p, cid) = project(Some(&wav));
+    let pool = MediaPool::new();
+    for (fmt, name, magic) in [(OutputFormat::Wav, "out.wav", &b"RIFF"[..]), (OutputFormat::Aiff, "out.aif", &b"FORM"[..])] {
+        let om = OutputModule::for_format(fmt);
+        let path = d.join(name);
+        let r = run(&p, cid, &pool, &om, &path);
+        assert!(r.audio);
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(&bytes[..4], magic);
+        // 1.2 s of 48 kHz 16-bit stereo.
+        assert!((bytes.len() as i64 - 57_600 * 4).abs() < 200, "{name}: {}", bytes.len());
+        let l = if fmt == OutputFormat::Wav {
+            // Decoded by FilmCraft.
+            let f = effectcraft_media::probe(&path).expect("probe audio");
+            assert!(f.has_audio && !f.has_video, "{name}");
+            let s = MediaPool::new().audio_samples(&f, Tick::from_seconds_f64(0.3), 24_000, 48_000);
+            rms(s.iter().step_by(2).copied())
+        } else {
+            // AIFF: big-endian samples after the SSND chunk's offset/block size.
+            let at = bytes.windows(4).position(|w| w == b"SSND").expect("SSND") + 16;
+            let left = bytes[at..].chunks_exact(4).skip(14_400).take(24_000).map(|c| i16::from_be_bytes([c[0], c[1]]) as f32 / 32767.0);
+            rms(left)
+        };
+        assert!((l - 0.3536).abs() < 0.01, "{name}: left RMS {l}");
+        if let Some(s) = ffprobe(&path) {
+            assert!(s.contains("pcm_s16"), "{s}");
+        }
+    }
+}

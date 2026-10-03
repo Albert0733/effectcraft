@@ -25,9 +25,13 @@ use effectcraft_project::{ItemKind, Layer, LayerSource, Node, PropGroup};
 
 use crate::eval::EvalCtx;
 
-/// Thread-safe, memory-budgeted cache of processed layer buffers.
+/// Thread-safe, memory-budgeted cache of processed layer buffers, optionally backed by the
+/// persistent [`DiskCache`](crate::disk_cache::DiskCache): a memory miss reads the disk, and
+/// buffers that were slow to render are written there (keys salted per project, see
+/// [`LayerCache::set_disk`]).
 pub struct LayerCache {
     inner: Mutex<Inner>,
+    disk: Mutex<Option<(Arc<crate::disk_cache::DiskCache>, u64)>>,
 }
 
 struct Entry {
@@ -43,6 +47,8 @@ struct Inner {
     clock: u64,
     hits: u64,
     misses: u64,
+    /// When each recent miss happened (to time the render that follows it).
+    missed_at: HashMap<u64, web_time::Instant>,
 }
 
 /// Hit/miss counters and memory use (for perf readouts and tests).
@@ -63,7 +69,37 @@ impl Default for LayerCache {
 impl LayerCache {
     /// A cache holding at most `budget` bytes of pixels.
     pub fn new(budget: usize) -> LayerCache {
-        LayerCache { inner: Mutex::new(Inner { map: HashMap::new(), bytes: 0, budget, clock: 0, hits: 0, misses: 0 }) }
+        LayerCache {
+            inner: Mutex::new(Inner { map: HashMap::new(), bytes: 0, budget, clock: 0, hits: 0, misses: 0, missed_at: HashMap::new() }),
+            disk: Mutex::new(None),
+        }
+    }
+
+    /// Attach (or detach) the disk cache. `salt` separates projects and footage versions (see
+    /// `footage_salt`); keys on disk are `(salt, key)`.
+    pub fn set_disk(&self, disk: Option<(Arc<crate::disk_cache::DiskCache>, u64)>) {
+        if let Ok(mut d) = self.disk.lock() {
+            *d = disk;
+        }
+    }
+
+    /// Change the disk salt (after footage changed) keeping the attached disk cache.
+    pub fn set_disk_salt(&self, salt: u64) {
+        if let Ok(mut d) = self.disk.lock()
+            && let Some((_, s)) = d.as_mut()
+        {
+            *s = salt;
+        }
+    }
+
+    pub fn disk(&self) -> Option<Arc<crate::disk_cache::DiskCache>> {
+        self.disk.lock().ok()?.as_ref().map(|d| d.0.clone())
+    }
+
+    fn disk_key(&self, key: u64) -> Option<(Arc<crate::disk_cache::DiskCache>, u128)> {
+        let d = self.disk.lock().ok()?;
+        let (dc, salt) = d.as_ref()?;
+        Some((dc.clone(), ((*salt as u128) << 64) | key as u128))
     }
 
     pub fn get(&self, key: u64) -> Option<Arc<Buf>> {
@@ -79,12 +115,32 @@ impl LayerCache {
             }
             None => {
                 g.misses += 1;
-                None
+                if g.missed_at.len() > 4096 {
+                    g.missed_at.clear();
+                }
+                g.missed_at.insert(key, web_time::Instant::now());
+                drop(g);
+                // Disk cache: a hit comes back into memory.
+                let (dc, dk) = self.disk_key(key)?;
+                let buf = Arc::new(dc.get_layer(dk)?);
+                self.insert_mem(key, buf.clone());
+                Some(buf)
             }
         }
     }
 
     pub fn insert(&self, key: u64, buf: Arc<Buf>) {
+        let started = self.inner.lock().ok().and_then(|mut g| g.missed_at.remove(&key));
+        if let Some((dc, dk)) = self.disk_key(key) {
+            let slow = started.is_some_and(|t| t.elapsed().as_secs_f64() * 1e3 >= dc.min_layer_ms() as f64);
+            if slow {
+                dc.put_layer(dk, &buf);
+            }
+        }
+        self.insert_mem(key, buf);
+    }
+
+    fn insert_mem(&self, key: u64, buf: Arc<Buf>) {
         let bytes = buf.img.data.len() * std::mem::size_of::<effectcraft_raster::Px>();
         let Ok(mut g) = self.inner.lock() else { return };
         if bytes > g.budget / 4 {

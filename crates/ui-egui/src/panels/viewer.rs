@@ -1148,6 +1148,9 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
             app.session.open_comp(*item);
         }
     }
+    // 3D Camera Tracker points, targets and their menu (on top of the viewer's gestures while
+    // the effect is selected), and its analysis banner.
+    super::camera_tracker_ui::viewer_hook(app, ui, &painter, &map, &ectx, &|c, l| l2c(c, l).0);
     // Effect point controls and crosshair/eyedropper picks (on top of the viewer's gestures).
     crate::panels::effect_controls::viewer_hook(app, ui, &painter, &map, &ectx, &|c, l| l2c(c, l).0);
 

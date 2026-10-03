@@ -34,6 +34,7 @@ pub enum Tool {
     Clone,
     Eraser,
     RotoBrush,
+    RefineEdge,
     Puppet,
     PuppetStarch,
     PuppetBend,
@@ -58,10 +59,10 @@ impl Tool {
         &[Tool::Brush],
         &[Tool::Clone],
         &[Tool::Eraser],
-        &[Tool::RotoBrush],
+        &[Tool::RotoBrush, Tool::RefineEdge],
         &[Tool::Puppet, Tool::PuppetStarch, Tool::PuppetBend, Tool::PuppetAdvanced, Tool::PuppetOverlap],
     ];
-    pub const ALL: [Tool; 29] = [
+    pub const ALL: [Tool; 30] = [
         Tool::Selection,
         Tool::Hand,
         Tool::Zoom,
@@ -86,6 +87,7 @@ impl Tool {
         Tool::Clone,
         Tool::Eraser,
         Tool::RotoBrush,
+        Tool::RefineEdge,
         Tool::Puppet,
         Tool::PuppetStarch,
         Tool::PuppetBend,
@@ -118,6 +120,7 @@ impl Tool {
             Tool::Clone => "Clone Stamp Tool",
             Tool::Eraser => "Eraser Tool",
             Tool::RotoBrush => "Roto Brush Tool",
+            Tool::RefineEdge => "Refine Edge Tool",
             Tool::Puppet => "Puppet Position Pin Tool",
             Tool::PuppetStarch => "Puppet Starch Pin Tool",
             Tool::PuppetBend => "Puppet Bend Pin Tool",
@@ -139,7 +142,7 @@ impl Tool {
             Tool::Pen | Tool::PenAdd | Tool::PenDelete | Tool::PenConvert | Tool::MaskFeather => Some("G"),
             Tool::Type | Tool::TypeVertical => Some("Cmd+T"),
             Tool::Brush | Tool::Clone | Tool::Eraser => Some("Cmd+B"),
-            Tool::RotoBrush => Some("Alt+W"),
+            Tool::RotoBrush | Tool::RefineEdge => Some("Alt+W"),
             Tool::Puppet | Tool::PuppetStarch | Tool::PuppetBend | Tool::PuppetAdvanced | Tool::PuppetOverlap => Some("Cmd+P"),
         }
     }
@@ -169,6 +172,7 @@ impl Tool {
             Tool::Clone => Icon::Clone,
             Tool::Eraser => Icon::Eraser,
             Tool::RotoBrush => Icon::RotoBrush,
+            Tool::RefineEdge => Icon::RefineEdge,
             Tool::Puppet | Tool::PuppetStarch | Tool::PuppetBend | Tool::PuppetAdvanced | Tool::PuppetOverlap => Icon::Puppet,
         }
     }
@@ -184,6 +188,17 @@ impl Tool {
             Tool::PuppetBend => "bend",
             Tool::PuppetAdvanced => "advanced",
             Tool::PuppetOverlap => "overlap",
+            _ => return None,
+        })
+    }
+    /// Roto Brush / Refine Edge: the stroke kind they paint (`roto.stroke` kind), without and
+    /// with Alt/Option.
+    pub fn roto_kind(self, alt: bool) -> Option<&'static str> {
+        Some(match (self, alt) {
+            (Tool::RotoBrush, false) => "fg",
+            (Tool::RotoBrush, true) => "bg",
+            (Tool::RefineEdge, false) => "refine",
+            (Tool::RefineEdge, true) => "refineErase",
             _ => return None,
         })
     }
@@ -360,6 +375,18 @@ pub struct TimelineState {
     /// Properties whose inline expression editor is collapsed.
     #[serde(default)]
     pub expr_closed: BTreeSet<u64>,
+    /// Visible optional columns (column header right-click ▸ Columns): `av`, `keys`, `label`,
+    /// `num`, `comment`, `switches`, `parent`, `in`, `out`, `duration`, `stretch`. The name
+    /// column is always shown; Modes follows `show_modes` (F4).
+    #[serde(default = "default_tl_columns")]
+    pub columns: BTreeSet<String>,
+    /// The name column shows Source Name instead of Layer Name (click its header).
+    #[serde(default)]
+    pub source_name: bool,
+}
+
+pub fn default_tl_columns() -> BTreeSet<String> {
+    ["av", "label", "num", "switches", "parent"].map(String::from).into_iter().collect()
 }
 
 fn value_graph() -> String {
@@ -391,6 +418,8 @@ impl Default for TimelineState {
             graph_reference: false,
             graph_transform_box: true,
             expr_closed: BTreeSet::new(),
+            columns: default_tl_columns(),
+            source_name: false,
         }
     }
 }
@@ -476,6 +505,9 @@ impl Default for AnimToolsState {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UiState {
     pub tool: Tool,
+    /// Window ▸ Script Console input, output and history.
+    #[serde(default)]
+    pub script_console: crate::panels::script_console::ScriptConsole,
     /// Tool shown in each toolbar slot.
     pub slot_tools: Vec<Tool>,
     pub workspace: String,
@@ -570,12 +602,16 @@ pub struct UiState {
     /// Composition Mini-Flowchart popup position (open when set).
     #[serde(default)]
     pub mini_flowchart: Option<[f32; 2]>,
+    /// Flowchart panel options (layers, effects, solids, direction, root comp).
+    #[serde(default)]
+    pub flowchart: crate::panels::flowchart::FlowOptions,
 }
 
 impl Default for UiState {
     fn default() -> Self {
         UiState {
             tool: Tool::Selection,
+            script_console: Default::default(),
             slot_tools: Tool::SLOTS.iter().map(|s| s[0]).collect(),
             workspace: "Default".into(),
             dock: crate::dock::workspace("Default"),
@@ -620,6 +656,7 @@ impl Default for UiState {
             layer_view: None,
             anim_tools: AnimToolsState::default(),
             mini_flowchart: None,
+            flowchart: Default::default(),
         }
     }
 }

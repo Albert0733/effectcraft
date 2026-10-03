@@ -1,6 +1,6 @@
 [package]
 name = "effectcraft-export"
-description = "Render Queue jobs and output modules: H.264 MP4 (+AAC) and ProRes MOV (+PCM) via FilmCraft's pure-Rust encoders, PNG/JPEG/TIFF/EXR sequences, animated GIF"
+description = "Render Queue jobs and output modules: H.264 MP4 (+AAC) and ProRes MOV (+PCM) via FilmCraft's pure-Rust encoders, WebM (VP9 + Opus), PNG/JPEG/TIFF/EXR sequences, animated GIF, WAV/AIFF"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -18,6 +18,8 @@ filmcraft-h264enc = { workspace = true }
 filmcraft-prores = { workspace = true }
 filmcraft-aac = { workspace = true }
 filmcraft-isobmff = { workspace = true }
+effectcraft-opusenc = { workspace = true }
+effectcraft-vp9enc = { workspace = true }
 image = { workspace = true, features = ["png", "jpeg", "tiff", "exr"] }
 gif = { workspace = true }
 rayon = { workspace = true }
@@ -28,3 +30,5 @@ log = { workspace = true }
 [dev-dependencies]
 effectcraft-media = { workspace = true }
 effectcraft-color = { workspace = true }
+filmcraft-opus = { workspace = true }
+filmcraft-vp9 = { workspace = true }

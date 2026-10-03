@@ -130,11 +130,14 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let cur = current(app);
     let can_track = has_comp && source.is_some();
 
-    // Track Camera / Warp Stabilizer (not available) and Track Motion / Stabilize Motion.
+    // Track Camera / Warp Stabilizer and Track Motion / Stabilize Motion.
     let r1 = Rect::from_min_size(pos2(x0, y), vec2(half, 22.0));
     let r2 = Rect::from_min_size(pos2(x0 + half + 6.0, y), vec2(half, 22.0));
     let src_p = source.map(|l| json!({"layer": l.0})).unwrap_or_else(|| json!({}));
-    button(app, ui, r1, "Track Camera", false, "tracker.trackCamera");
+    let can_camera = app.session.is_enabled("track.camera") && !app.session.is_camera_analyzing();
+    if button(app, ui, r1, "Track Camera", can_camera, "tracker.trackCamera") {
+        run(app, &ctx, "track.camera", json!({}));
+    }
     let can_warp = app.session.is_enabled("track.warpStabilizer") && !app.session.is_warp_analyzing();
     if button(app, ui, r2, "Warp Stabilizer", can_warp, "tracker.warpStabilizer") {
         run(app, &ctx, "track.warpStabilizer", json!({}));

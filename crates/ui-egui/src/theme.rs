@@ -60,6 +60,8 @@ pub struct Tokens {
     pub cti: Color32,
     pub work_area: Color32,
     pub cache_green: Color32,
+    /// Timeline cache bar for frames held in the disk cache (not in RAM).
+    pub cache_blue: Color32,
     pub keyframe: Color32,
     pub keyframe_selected: Color32,
     pub pasteboard: Color32,
@@ -108,6 +110,7 @@ impl Tokens {
             cti: Color32::from_rgb(0x2d, 0x8c, 0xeb),
             work_area: Color32::from_rgb(0x4a, 0x4a, 0x4a),
             cache_green: Color32::from_rgb(0x3c, 0xa6, 0x4c),
+            cache_blue: Color32::from_rgb(0x3a, 0x6f, 0xd8),
             keyframe: Color32::from_rgb(0xa8, 0xa8, 0xa8),
             keyframe_selected: Color32::from_rgb(0x3d, 0x8f, 0xf5),
             pasteboard: Color32::from_rgb(0x1a, 0x1a, 0x1a),
