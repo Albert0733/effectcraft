@@ -560,3 +560,89 @@ fn timeline_rows_drag_to_reorder_layers() {
     drag(&mut h, from, top.center() - vec2(0.0, top.height() * 0.4));
     assert_eq!(names(&h), ["Box", "Plate"]);
 }
+
+fn layer_id(h: &Harness<'_, EffectcraftApp>, name: &str) -> u64 {
+    h.state().session.active_comp().unwrap().layers.iter().find(|l| l.name == name).unwrap().id.0
+}
+
+/// Uid of a layer's property by match path (`transform/position`).
+fn prop_uid(h: &Harness<'_, EffectcraftApp>, layer: &str, path: &str) -> u64 {
+    let id = layer_id(h, layer);
+    h.state().session.active_comp().unwrap().layer(LayerId(id)).unwrap().props.prop(path).unwrap().uid
+}
+
+/// Is the property's row on screen in the Timeline?
+fn shown(h: &Harness<'_, EffectcraftApp>, uid: u64) -> bool {
+    h.state().auto.find(&format!("timeline.prop.{uid}.stopwatch")).is_some()
+}
+
+fn key(h: &mut Harness<'_, EffectcraftApp>, key: egui::Key, modifiers: egui::Modifiers) {
+    h.input_mut().events.push(Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers });
+    h.input_mut().events.push(Event::Key { key, physical_key: None, pressed: false, repeat: false, modifiers });
+    h.run_steps(2);
+}
+
+#[test]
+fn timeline_twirl_arrows_open_layers_and_groups() {
+    let mut h = harness();
+    let id = layer_id(&h, "Box");
+    let transform = {
+        let comp = h.state().session.active_comp().unwrap().clone();
+        comp.layer(LayerId(id)).unwrap().props.sub("transform").unwrap().uid
+    };
+    let at = rect(&h, &format!("timeline.layer.{id}.twirl")).center();
+    click(&mut h, at);
+    assert!(h.state().ui.timeline.open_layers.contains(&id), "the layer twirls open");
+    let at = rect(&h, &format!("timeline.group.{transform}.twirl")).center();
+    click(&mut h, at);
+    for p in ["anchor", "position", "scale", "rotation", "opacity"] {
+        assert!(shown(&h, prop_uid(&h, "Box", &format!("transform/{p}"))), "{p} row");
+    }
+    // And closed again.
+    let at = rect(&h, &format!("timeline.layer.{id}.twirl")).center();
+    click(&mut h, at);
+    h.run_steps(2);
+    assert!(!h.state().ui.timeline.open_layers.contains(&id));
+    assert!(!shown(&h, prop_uid(&h, "Box", "transform/position")));
+}
+
+#[test]
+fn timeline_rename_commits_on_enter_and_on_click_away() {
+    // The rename field (double-click a name, or Enter on a selected layer) used to grab the
+    // keyboard every frame: clicking away or Enter could never leave it. (The harness can't
+    // double-click — its frames are longer than a double-click — so this opens it with Enter.)
+    let mut h = harness();
+    h.state_mut().session.execute("layer.newNull", json!({"name": "Ctrl"})).unwrap();
+    let id = layer_id(&h, "Ctrl");
+    let name = |h: &Harness<'_, EffectcraftApp>| h.state().session.active_comp().unwrap().layer(LayerId(id)).unwrap().name.clone();
+    let rename = |h: &mut Harness<'_, EffectcraftApp>| {
+        h.state_mut().session.execute("layer.select", json!({"layers": [id]})).unwrap();
+        h.run_steps(2);
+        key(h, egui::Key::Enter, Default::default());
+        h.run_steps(1);
+        assert!(h.ctx.memory(|m| m.focused().is_some()), "the name field has focus");
+    };
+    // The whole name is selected: typing replaces it; Enter commits and frees the keyboard.
+    rename(&mut h);
+    h.input_mut().events.push(Event::Text("Rig".into()));
+    h.step();
+    key(&mut h, egui::Key::Enter, Default::default());
+    assert_eq!(name(&h), "Rig");
+    assert!(h.ctx.memory(|m| m.focused().is_none()), "the field let go of the keyboard");
+    key(&mut h, egui::Key::P, Default::default());
+    assert_eq!(h.state().ui.timeline.reveal, vec!["position"], "P works after renaming");
+    // Clicking away commits too.
+    rename(&mut h);
+    h.input_mut().events.push(Event::Text("Hand".into()));
+    h.step();
+    let away = rect(&h, "viewer.comp").center();
+    click(&mut h, away);
+    assert_eq!(name(&h), "Hand");
+    assert!(h.ctx.memory(|m| m.focused().is_none()));
+    // Escape cancels.
+    rename(&mut h);
+    h.input_mut().events.push(Event::Text("Nope".into()));
+    h.step();
+    key(&mut h, egui::Key::Escape, Default::default());
+    assert_eq!(name(&h), "Hand");
+}

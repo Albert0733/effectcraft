@@ -363,11 +363,23 @@ pub fn locate(app: &EffectcraftApp, layer: u64, time: Option<f64>) -> Option<(f3
     }
 }
 
-/// Start renaming the first selected layer.
+/// Start renaming the first selected layer (Enter in the Timeline).
 pub fn begin_rename(app: &mut EffectcraftApp, ctx: &egui::Context) {
     if let Some(l) = app.session.state.selected_layers.first().and_then(|id| app.session.active_comp().and_then(|c| c.layer(*id))) {
-        ctx.data_mut(|d| d.insert_temp(egui::Id::new("tl-rename"), (l.id.0, l.name.clone())));
+        start_rename(ctx, l.id.0, &l.name);
     }
+}
+
+/// Open the rename field on layer `id`; it takes the keyboard focus on its first frame only.
+fn start_rename(ctx: &egui::Context, id: u64, name: &str) {
+    ctx.data_mut(|d| {
+        d.insert_temp(egui::Id::new("tl-rename"), (id, name.to_string()));
+        d.insert_temp(rename_focus_id(), true);
+    });
+}
+
+fn rename_focus_id() -> egui::Id {
+    egui::Id::new("tl-rename-focus")
 }
 
 fn group_visible(g: &PropGroup, layer: &Layer) -> bool {
@@ -1182,11 +1194,19 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     lp.text(pos2(cw.num + 13.0, cy), Align2::CENTER_CENTER, format!("{}", idx_of(layer.id)), Tokens::ui(11.5), t.text_dim);
                 }
                 layer_cells(app, ui, &lp, &cw, &comp, layer, r, cy, &mut actions);
+                // Row click → select; double-click → rename; drag → reorder. Registered before the
+                // twirl and the name field so those sit on top and get their clicks.
+                let row_x0 = if vis.num { cw.num } else { cw.name + 16.0 };
+                let row_resp = ui.interact(
+                    Rect::from_min_max(pos2(row_x0, r.min.y), pos2(cw.name_end, r.max.y)),
+                    egui::Id::new(("row", layer.id.0)),
+                    Sense::click_and_drag(),
+                );
                 // Twirl + icon + name.
                 let tw = Rect::from_center_size(pos2(cw.name + 8.0, cy), vec2(14.0, 14.0));
                 let open = app.ui.timeline.open_layers.contains(&layer.id.0);
                 if widgets::twirl(ui, tw, open, egui::Id::new(("twirl", layer.id.0)), &t).clicked() {
-                    ui_actions.push(UiAct::ToggleLayer(layer.id.0, ui.input(|i| i.modifiers.alt)));
+                    ui_actions.push(UiAct::ToggleLayer(layer.id.0, ui.input(|i| i.modifiers.alt || i.modifiers.command)));
                 }
                 app.auto.add(&format!("timeline.layer.{}.twirl", layer.id.0), tw, "twirl");
                 icons::paint(&lp, Rect::from_center_size(pos2(cw.name + 24.0, cy), vec2(13.0, 13.0)), layer_icon(layer, &app.session.project), t.text_dim);
@@ -1195,8 +1215,16 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 let renaming: Option<(u64, String)> = ctx.data(|d| d.get_temp(rename_id));
                 if let Some((rl, mut buf)) = renaming.filter(|(rl, _)| *rl == layer.id.0) {
                     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(name_rect.shrink2(vec2(0.0, 2.0))));
-                    let er = child.add(egui::TextEdit::singleline(&mut buf).font(Tokens::ui(12.0)).desired_width(name_rect.width()));
-                    er.request_focus();
+                    let out = egui::TextEdit::singleline(&mut buf).font(Tokens::ui(12.0)).desired_width(name_rect.width()).show(&mut child);
+                    let er = out.response;
+                    if ctx.data_mut(|d| d.remove_temp::<bool>(rename_focus_id())).unwrap_or(false) {
+                        // Just started: focus the field with the whole name selected.
+                        er.request_focus();
+                        let mut state = out.state;
+                        let all = egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(buf.chars().count()));
+                        state.cursor.set_char_range(Some(all));
+                        state.store(&ctx, er.id);
+                    }
                     if er.lost_focus() {
                         if !ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                             actions.push(("layer.rename".into(), json!({"layer": rl, "name": buf})));
@@ -1219,13 +1247,6 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     let lpn = lp.with_clip_rect(name_rect.intersect(lp.clip_rect()));
                     lpn.text(pos2(name_rect.min.x, cy), Align2::LEFT_CENTER, display_name(app, layer), Tokens::ui(12.0), name_col);
                 }
-                // Row click → select; double-click → rename; drag → reorder.
-                let row_x0 = if vis.num { cw.num } else { cw.name + 16.0 };
-                let row_resp = ui.interact(
-                    Rect::from_min_max(pos2(row_x0, r.min.y), pos2(cw.name_end, r.max.y)),
-                    egui::Id::new(("row", layer.id.0)),
-                    Sense::click_and_drag(),
-                );
                 if row_resp.drag_started() {
                     // The selected layers move together; an unselected row moves alone.
                     let moving: Vec<u64> =
@@ -1247,9 +1268,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                         LayerSource::Footage { .. } | LayerSource::Solid { .. } => {
                             actions.push(("layer.openLayer".into(), json!({"layer": layer.id.0})));
                         }
-                        _ => {
-                            ctx.data_mut(|d| d.insert_temp(rename_id, (layer.id.0, layer.name.clone())));
-                        }
+                        _ => start_rename(&ctx, layer.id.0, &layer.name),
                     }
                 }
                 layer_context_menu(&row_resp, layer, &mut actions);
