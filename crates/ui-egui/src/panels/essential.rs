@@ -4,7 +4,8 @@
 //!   be exposed) and the template name.
 //! - The controls: drag a property name from the timeline onto the list (or Animation ▸ Add
 //!   Property to Essential Graphics); each shows as a text / colour / slider / checkbox / point /
-//!   angle / dropdown control editing the source property; rename by double-clicking the name;
+//!   angle / dropdown control editing the source property (Add Selected As: Source Text as a font
+//!   control, Scale as one uniform slider); rename by double-clicking the name;
 //!   reorder with ▲▼, remove with ✕; groups and comments from Add Formatting; Media
 //!   Replacement for the selected footage layer.
 //! - **Export Template…** writes an open `.ectemplate`.
@@ -134,6 +135,19 @@ fn body(app: &mut EffectcraftApp, ui: &mut egui::Ui) -> (Actions, Actions) {
             }
         });
         app.auto.add("essential.addFormatting", r.response.rect, "Add Formatting");
+        // The selected property as a Font control (Source Text) or a uniform Scale slider.
+        let has_sel = !app.session.state.selected_props.is_empty();
+        let r = ui.add_enabled_ui(has_sel, |ui| {
+            ui.menu_button("Add Selected As", |ui| {
+                for (label, as_type) in [("Font Control", "font"), ("Uniform Scale", "scale")] {
+                    if ui.button(label).clicked() {
+                        actions.push(("essential.addProperty".into(), json!({"as": as_type})));
+                        ui.close();
+                    }
+                }
+            })
+        });
+        app.auto.add("essential.addAs", r.response.rect, "Add Selected As");
         let footage_layer = app.session.active_comp().and_then(|c| {
             app.session.state.selected_layers.iter().filter_map(|l| c.layer(*l)).find(|l| matches!(l.source, LayerSource::Footage { .. })).map(|l| l.id.0)
         });
@@ -184,7 +198,7 @@ fn controls(app: &mut EffectcraftApp, ui: &mut egui::Ui, cid: ItemId, list: &[Eg
                     match src {
                         Some((layer, lt, p)) => {
                             let v = p.value_at(lt);
-                            if let Some(nv) = value_widget(app, ui, &format!("essential.control.{}.value", c.id), &p, &v) {
+                            if let Some(nv) = value_widget(app, ui, &format!("essential.control.{}.value", c.id), essential::effective_type(c, &p), &p, &v) {
                                 actions.push((
                                     "prop.set".into(),
                                     json!({"comp": cid.0, "layer": layer, "prop": p.uid, "value": nv, "merge": format!("eg-{}", c.id)}),
@@ -245,8 +259,8 @@ fn name_label(app: &mut EffectcraftApp, ui: &mut egui::Ui, cid: ItemId, c: &EgCo
 }
 
 /// The editor for a control's value; returns the new value (JSON for `prop.set`).
-fn value_widget(app: &mut EffectcraftApp, ui: &mut egui::Ui, auto: &str, p: &Property, v: &KV) -> Option<Value> {
-    let ty = essential::control_type(p)?;
+fn value_widget(app: &mut EffectcraftApp, ui: &mut egui::Ui, auto: &str, ty: Option<ControlType>, p: &Property, v: &KV) -> Option<Value> {
+    let ty = ty?;
     let mut out = None;
     let rect;
     match ty {
@@ -316,6 +330,48 @@ fn value_widget(app: &mut EffectcraftApp, ui: &mut egui::Ui, auto: &str, p: &Pro
             let r = ui.add(egui::DragValue::new(&mut a).speed(1.0).suffix("°").max_decimals(1));
             if r.changed() {
                 out = Some(json!(a));
+            }
+            rect = r.rect;
+        }
+        ControlType::Font => {
+            // Family (from the installed fonts), style and size; the text stays as it is.
+            let KV::Text(doc) = v else { return None };
+            let fams = effectcraft_engine::text::fonts::families();
+            let mut d = (**doc).clone();
+            let mut changed = false;
+            let r1 = egui::ComboBox::from_id_salt(("eg-font", auto)).selected_text(&d.font).width(110.0).show_ui(ui, |ui| {
+                for (f, _) in &fams {
+                    if ui.selectable_label(*f == d.font, f).clicked() {
+                        d.font = f.clone();
+                        changed = true;
+                    }
+                }
+            });
+            let styles: Vec<String> = fams.iter().find(|(f, _)| *f == d.font).map(|(_, st)| st.clone()).unwrap_or_default();
+            let r2 = egui::ComboBox::from_id_salt(("eg-style", auto)).selected_text(&d.style).width(70.0).show_ui(ui, |ui| {
+                for st in &styles {
+                    if ui.selectable_label(*st == d.style, st).clicked() {
+                        d.style = st.clone();
+                        changed = true;
+                    }
+                }
+            });
+            let r3 = ui.add(egui::DragValue::new(&mut d.size).speed(0.5).range(1.0..=2000.0).suffix(" px").max_decimals(1));
+            app.auto.add(&format!("{auto}.font"), r1.response.rect, "Font");
+            app.auto.add(&format!("{auto}.style"), r2.response.rect, "Style");
+            app.auto.add(&format!("{auto}.size"), r3.rect, "Size");
+            if changed || r3.changed() {
+                out = serde_json::to_value(&d).ok();
+            }
+            rect = r1.response.rect.union(r3.rect);
+        }
+        ControlType::Scale => {
+            // One percentage for every axis.
+            let comps = v.components();
+            let mut x = comps.first().copied().unwrap_or(100.0);
+            let r = ui.add(egui::DragValue::new(&mut x).speed(0.5).suffix("%").max_decimals(1));
+            if r.changed() {
+                out = Some(json!(vec![x; comps.len().max(1)]));
             }
             rect = r.rect;
         }
@@ -389,7 +445,7 @@ fn instance(app: &mut EffectcraftApp, ui: &mut egui::Ui, actions: &mut Actions) 
                 }
                 _ => {
                     let v = p.value_at(lt);
-                    if let Some(nv) = value_widget(app, ui, &auto, &p, &v) {
+                    if let Some(nv) = value_widget(app, ui, &auto, essential::effective_type(c, &p), &p, &v) {
                         actions.push((
                             "essential.set".into(),
                             json!({"layer": layer.id.0, "control": c.id, "value": nv, "merge": format!("egi-{}-{}", layer.id.0, c.id)}),

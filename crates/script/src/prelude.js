@@ -715,6 +715,19 @@ Property.prototype.property = function () { return null; };
   });
   def("isDropdownEffect", function () { return false; });
 
+  // Essential Graphics: expose this property in `comp` (its own composition).
+  P.canAddToMotionGraphicsTemplate = function (comp) {
+    if (!comp || comp.__id !== this.__layer.__comp) return false;
+    return __call("essential.canAdd", this.__ref()).ok === true;
+  };
+  P.addToMotionGraphicsTemplateAs = function (comp, name) {
+    if (!this.canAddToMotionGraphicsTemplate(comp)) return false;
+    var p = this.__ref();
+    if (name !== undefined && name !== null) p.name = String(name);
+    __call("essential.addProperty", p);
+    return true;
+  };
+  P.addToMotionGraphicsTemplate = function (comp) { return this.addToMotionGraphicsTemplateAs(comp); };
   P.getSeparationFollower = function (dim) {
     return this.parentProperty.property(["ADBE Position_0", "ADBE Position_1", "ADBE Position_2"][dim]);
   };
@@ -875,8 +888,6 @@ Property.prototype.property = function () { return null; };
   };
   P.keyLabel = function () { return 0; };
   P.setLabelAtKey = function () {};
-  P.addToMotionGraphicsTemplate = function () { return false; };
-  P.canAddToMotionGraphicsTemplate = function () { return false; };
 })();
 
 // Layer / composition markers (`layer.marker`, `comp.markerProperty`): keyframes are markers.
@@ -1422,7 +1433,47 @@ CompItem.prototype.constructor = CompItem;
   };
   P.openInViewer = function () { __call("comp.open", { comp: this.__id }); return null; };
   P.duplicate = function () { return __item(__call("project.duplicate", { items: [this.__id] }).items[0]); };
-  P.exportAsMotionGraphicsTemplate = function () { return false; };
+  // Essential Graphics (templates are EffectCraft's open .ectemplate files).
+  P.__eg = function () { return __call("essential.list", { comp: this.__id }); };
+  P.__controllers = function () {
+    var out = [];
+    (function walk(list) {
+      for (var i = 0; i < list.length; i++) {
+        if (list[i].kind === "property" || list[i].kind === "media") out.push(list[i]);
+        if (list[i].children) walk(list[i].children);
+      }
+    })(this.__eg().controls);
+    return out;
+  };
+  def("motionGraphicsTemplateName", function () { return this.__eg().name; }, function (v) {
+    __call("essential.setName", { comp: this.__id, name: String(v) });
+  });
+  def("motionGraphicsTemplateControllerCount", function () { return this.__controllers().length; });
+  P.getMotionGraphicsTemplateControllerName = function (i) {
+    var c = this.__controllers();
+    i = __num(i, "index");
+    if (i < 1 || i > c.length) throw __err("controller index " + i + " is out of range 1.." + c.length);
+    return c[i - 1].name;
+  };
+  P.setMotionGraphicsControllerName = function (i, name) {
+    var c = this.__controllers();
+    i = __num(i, "index");
+    if (i < 1 || i > c.length) throw __err("controller index " + i + " is out of range 1.." + c.length);
+    __call("essential.rename", { comp: this.__id, control: c[i - 1].id, name: String(name) });
+    return String(name);
+  };
+  P.openInEssentialGraphics = function () { __call("comp.openInEssentialGraphics", { comp: this.__id }); };
+  P.exportAsMotionGraphicsTemplate = function (overwrite, path) {
+    var f = __str(path);
+    if (!f) return false;
+    if (!/\.[A-Za-z0-9]+$/.test(f)) f += ".ectemplate";
+    if (!overwrite && JSON.parse(__file("exists", f)) === true) return false;
+    if (this.__controllers().length === 0) return false;
+    // The file gate applies to templates too.
+    __file("write", f, "");
+    __call("essential.exportTemplate", { comp: this.__id, path: f });
+    return true;
+  };
 })();
 
 function FootageItem(id) {

@@ -780,6 +780,8 @@ mod tests_effects;
 #[cfg(test)]
 mod tests_essential;
 #[cfg(test)]
+mod tests_essential_more;
+#[cfg(test)]
 mod tests_face;
 #[cfg(test)]
 mod tests_fidelity;

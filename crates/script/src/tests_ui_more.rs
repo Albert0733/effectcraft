@@ -142,6 +142,49 @@ fn on_changing_fires_per_keystroke_and_slider_step() {
     s.execute("scriptui.close", json!({})).unwrap();
 }
 
+const MOGRT: &str = r#"
+var c = app.project.activeItem;
+var t = c.layer(1);
+var st = t.property("ADBE Text Properties").property("ADBE Text Document");
+var op = t.property("ADBE Transform Group").property("ADBE Opacity");
+var r = [st.canAddToMotionGraphicsTemplate(c), st.addToMotionGraphicsTemplate(c), op.addToMotionGraphicsTemplateAs(c, "Fade")];
+c.motionGraphicsTemplateName = "Lower Third";
+c.setMotionGraphicsControllerName(1, "Title");
+r.concat([c.motionGraphicsTemplateName, c.motionGraphicsTemplateControllerCount, c.getMotionGraphicsTemplateControllerName(1), c.getMotionGraphicsTemplateControllerName(2)]).join("|")
+"#;
+
+#[test]
+fn essential_graphics_scripting_hooks() {
+    let mut s = session();
+    s.execute("comp.new", json!({"name": "Card", "width": 64, "height": 64, "duration": 1})).unwrap();
+    s.execute("layer.newText", json!({"text": "Hi"})).unwrap();
+    let o = run_code(&mut s, MOGRT, "mogrt.jsx");
+    assert!(o.error.is_none(), "{:?} {:?}", o.error, o.output);
+    assert_eq!(o.result, json!("true|true|true|Lower Third|2|Title|Fade"));
+    let cid = s.active_comp_id().unwrap();
+    assert_eq!(s.project.comp(cid).unwrap().essential.as_ref().unwrap().name, "Lower Third");
+    // Another comp can't take this comp's properties.
+    s.execute("comp.new", json!({"name": "Other", "width": 64, "height": 64, "duration": 1})).unwrap();
+    let code = "var card = null; for (var i = 1; i <= app.project.numItems; i++) if (app.project.item(i).name === 'Card') card = app.project.item(i); var o = app.project.activeItem; var p = card.layer(1).property('ADBE Transform Group').property('ADBE Position'); [p.canAddToMotionGraphicsTemplate(o), p.canAddToMotionGraphicsTemplate(card)].join('|')";
+    let o = run_code(&mut s, code, "x.jsx");
+    assert_eq!(o.result, json!("false|true"), "{:?}", o.error);
+    // Export (behind the file-write preference).
+    let dir = std::env::temp_dir().join(format!("ec-mogrt-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("lower.ectemplate");
+    let export = format!(
+        "var card = null; for (var i = 1; i <= app.project.numItems; i++) if (app.project.item(i).name === 'Card') card = app.project.item(i); card.exportAsMotionGraphicsTemplate(false, {:?})",
+        path.to_string_lossy()
+    );
+    assert!(run_code(&mut s, &export, "x.jsx").error.is_some());
+    s.prefs.scripting.allow_scripts_write_files = true;
+    assert_eq!(run_code(&mut s, &export, "x.jsx").result, json!(true));
+    assert!(std::fs::metadata(&path).unwrap().len() > 100);
+    // It exists now: no overwrite → false.
+    assert_eq!(run_code(&mut s, &export, "x.jsx").result, json!(false));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn sockets_talk_tcp_behind_the_network_preference() {
     use std::io::{BufRead, BufReader, Write};

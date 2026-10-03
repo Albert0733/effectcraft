@@ -666,6 +666,7 @@ Composition
   Pre-render... | render.preRender
   Save Current Preview... | render.saveCurrentPreview
   ---
+  Open in Essential Graphics | comp.openInEssentialGraphics
   Responsive Design — Time
     Create Intro | comp.responsiveTime {"op":"intro"}
     Create Outro | comp.responsiveTime {"op":"outro"}
