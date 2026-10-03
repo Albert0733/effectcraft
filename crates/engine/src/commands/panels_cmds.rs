@@ -29,38 +29,61 @@ fn jobs_wait(s: &mut Session, _: &Value) -> Result<Value> {
 
 // ---------------------------------------------------------------- Media Browser
 
-fn browser_dir(s: &Session, p: &Value) -> String {
-    str_p(p, "path").map(str::to_string).or_else(|| s.state.media_browser.folder.clone()).unwrap_or_else(mb::home)
+fn browser(s: &Session) -> Result<std::sync::Arc<dyn mb::Browser>> {
+    s.media_browser().ok_or_else(|| EngineError::Other("the Media Browser is not available in this build".into()))
+}
+
+fn browser_dir(s: &Session, b: &dyn mb::Browser, p: &Value) -> String {
+    str_p(p, "path").map(str::to_string).or_else(|| s.state.media_browser.folder.clone()).unwrap_or_else(|| b.home())
 }
 
 fn browser_list(s: &mut Session, p: &Value) -> Result<Value> {
-    let dir = browser_dir(s, p);
+    let b = browser(s)?;
+    let dir = browser_dir(s, b.as_ref(), p);
     let only = b_p(p, "importableOnly").unwrap_or(s.state.media_browser.importable_only);
-    let entries = mb::list(&dir, only).map_err(EngineError::Other)?;
-    Ok(json!({"path": dir, "parent": mb::parent(&dir), "entries": entries, "favorites": s.state.media_browser.favorites}))
+    let entries = b.list(&dir, only).map_err(EngineError::Other)?;
+    let places: Vec<Value> = b.places().into_iter().map(|(name, path)| json!({"name": name, "path": path})).collect();
+    let actions: Vec<Value> = b.actions().into_iter().map(|(id, label)| json!({"id": id, "label": label})).collect();
+    Ok(json!({
+        "path": dir,
+        "parent": b.parent(&dir),
+        "entries": entries,
+        "favorites": s.state.media_browser.favorites,
+        "places": places,
+        "actions": actions,
+    }))
 }
 
-fn browser_enabled(_: &Session) -> std::result::Result<(), String> {
-    if mb::available() { Ok(()) } else { Err("the Media Browser needs the desktop app".into()) }
+fn browser_enabled(s: &Session) -> std::result::Result<(), String> {
+    if s.media_browser().is_some() { Ok(()) } else { Err("the Media Browser is not available in this build".into()) }
 }
 
 fn browser_go(s: &mut Session, p: &Value) -> Result<Value> {
+    let b = browser(s)?;
     let dir = match str_p(p, "path") {
-        Some("..") => s.state.media_browser.folder.clone().and_then(|d| mb::parent(&d)).unwrap_or_else(mb::home),
+        Some("..") => s.state.media_browser.folder.clone().and_then(|d| b.parent(&d)).unwrap_or_else(|| b.home()),
         Some(d) => d.to_string(),
-        None => mb::home(),
+        None => b.home(),
     };
-    if let Some(b) = b_p(p, "importableOnly") {
-        s.state.media_browser.importable_only = b;
+    if let Some(v) = b_p(p, "importableOnly") {
+        s.state.media_browser.importable_only = v;
     }
     // Validate before switching.
-    mb::list(&dir, false).map_err(EngineError::Other)?;
+    b.list(&dir, false).map_err(EngineError::Other)?;
     s.state.media_browser.folder = Some(dir.clone());
     browser_list(s, &json!({"path": dir}))
 }
 
+/// A browser-specific toolbar action (web: Open Folder…, Add Files…).
+fn browser_action(s: &mut Session, p: &Value) -> Result<Value> {
+    let b = browser(s)?;
+    let id = str_p(p, "action").ok_or_else(|| bad("mediaBrowser.action", "missing `action`"))?;
+    b.action(id).map_err(|e| bad("mediaBrowser.action", e))
+}
+
 fn browser_favorite(s: &mut Session, p: &Value, add: bool) -> Result<Value> {
-    let dir = browser_dir(s, p);
+    let b = browser(s)?;
+    let dir = browser_dir(s, b.as_ref(), p);
     let favs = &mut s.state.media_browser.favorites;
     favs.retain(|f| f != &dir);
     if add {
@@ -71,6 +94,16 @@ fn browser_favorite(s: &mut Session, p: &Value, add: bool) -> Result<Value> {
 
 fn browser_import(s: &mut Session, p: &Value) -> Result<Value> {
     let paths = p.get("paths").or(p.get("path")).cloned().ok_or_else(|| bad("mediaBrowser.import", "missing `paths`"))?;
+    // Files the browser still has to read (the web app's opened folders): imported when they
+    // arrive.
+    let list: Vec<String> = match &paths {
+        Value::String(one) => vec![one.clone()],
+        Value::Array(a) => a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect(),
+        _ => vec![],
+    };
+    if !browser(s)?.fetch(&list, p) {
+        return Ok(json!({"pending": true, "paths": list}));
+    }
     let r = s.execute("file.import", json!({"paths": paths}))?;
     // Add to the active comp (drag into the timeline).
     if b_p(p, "addToComp").unwrap_or(false)
@@ -201,6 +234,15 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!("mediaBrowser.addFavorite", "Add to Favorites", [], None, "{path?}", browser_enabled, |s, p| browser_favorite(s, p, true)),
         cmd!("mediaBrowser.removeFavorite", "Remove from Favorites", [], None, "{path?}", browser_enabled, |s, p| browser_favorite(s, p, false)),
         cmd!("mediaBrowser.import", "Import", [], None, "{paths, addToComp?}", browser_enabled, browser_import),
+        cmd!(
+            "mediaBrowser.action",
+            "Media Browser Action",
+            [],
+            None,
+            "{action}: an action from mediaBrowser.list's `actions` (web: openFolder, addFiles, uploadFolder)",
+            browser_enabled,
+            browser_action
+        ),
         query!("mediaBrowser.fileInfo", "File Info", "{path}", file_info),
         query!("item.metadata", "Metadata", "{item?: id|name}", metadata),
         cmd!("project.setProjectComment", "Project Comment", [], None, "{comment}", always, project_comment),

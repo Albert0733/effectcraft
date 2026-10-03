@@ -1,9 +1,15 @@
-//! Media Browser (Window ▸ Media Browser): browse the local file system for footage, keep
-//! favourite folders, read file metadata, and import (`file.import`). Desktop only: the web build
-//! has no file system to browse ([`available`] is false there).
+//! Media Browser (Window ▸ Media Browser): browse for footage, keep favourite folders, read file
+//! metadata, and import (`file.import`).
+//!
+//! What it browses is a [`Browser`]: the local file system on the desktop ([`FsBrowser`]); in the
+//! web app, a virtual tree ([`VirtualTree`]) of the browser's storage and of folders the user
+//! opened through the File System Access API, whose files are read only when imported
+//! ([`Browser::fetch`]).
 //!
 //! Also the metadata the Metadata panel shows for project items and files (codec, size, rate,
 //! duration, colour profile, dates).
+
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -25,9 +31,151 @@ pub struct BrowserState {
     pub importable_only: bool,
 }
 
-/// Whether this build can browse files.
+/// Whether this build can browse the local file system ([`FsBrowser`]).
 pub fn available() -> bool {
     !cfg!(target_arch = "wasm32")
+}
+
+/// Where the Media Browser browses.
+pub trait Browser: Send + Sync {
+    /// The folder shown first.
+    fn home(&self) -> String;
+    /// Places listed above the favourites: (name, folder). The default is Home.
+    fn places(&self) -> Vec<(String, String)> {
+        vec![("Home".into(), self.home())]
+    }
+    /// A folder's entries: folders first, then files, by name.
+    fn list(&self, dir: &str, importable_only: bool) -> Result<Vec<Entry>, String>;
+    /// The folder above `dir`.
+    fn parent(&self, dir: &str) -> Option<String> {
+        parent(dir)
+    }
+    /// Make `paths` readable by the importer. `false`: they are being fetched, and the host runs
+    /// `mediaBrowser.import` with `params` again once they are (the web app reads opened folders'
+    /// files on demand).
+    fn fetch(&self, paths: &[String], params: &Value) -> bool {
+        let _ = (paths, params);
+        true
+    }
+    /// Extra toolbar actions: (id, label), run by `mediaBrowser.action`.
+    fn actions(&self) -> Vec<(String, String)> {
+        vec![]
+    }
+    fn action(&self, id: &str) -> Result<Value, String> {
+        Err(format!("unknown Media Browser action `{id}`"))
+    }
+}
+
+/// The local file system (desktop).
+pub struct FsBrowser;
+
+impl Browser for FsBrowser {
+    fn home(&self) -> String {
+        home()
+    }
+    fn list(&self, dir: &str, importable_only: bool) -> Result<Vec<Entry>, String> {
+        list(dir, importable_only)
+    }
+}
+
+impl crate::Session {
+    /// What the Media Browser browses: [`crate::Session::browser`], else the local file system
+    /// where this build has one.
+    pub fn media_browser(&self) -> Option<std::sync::Arc<dyn Browser>> {
+        self.browser.clone().or_else(|| available().then(|| std::sync::Arc::new(FsBrowser) as std::sync::Arc<dyn Browser>))
+    }
+}
+
+/// One entry of a [`VirtualTree`].
+#[derive(Clone, Debug, PartialEq)]
+struct VNode {
+    /// What importing it reads (`None`: a folder).
+    import: Option<String>,
+    size: u64,
+    modified: Option<u64>,
+}
+
+/// A browsable tree of virtual paths (`/Folder/sub/file.mov`), each file standing for an
+/// importable path (the web app's file table, or a file of an opened folder).
+#[derive(Clone, Debug, Default)]
+pub struct VirtualTree {
+    nodes: BTreeMap<String, VNode>,
+}
+
+fn vparent(path: &str) -> Option<&str> {
+    if path == "/" || path.is_empty() {
+        return None;
+    }
+    let p = path.trim_end_matches('/');
+    match p.rfind('/') {
+        Some(0) => Some("/"),
+        Some(i) => Some(&p[..i]),
+        None => None,
+    }
+}
+
+impl VirtualTree {
+    /// Add a folder (and the folders above it).
+    pub fn add_dir(&mut self, path: &str) {
+        let mut cur = Some(path.trim_end_matches('/'));
+        while let Some(p) = cur.filter(|p| !p.is_empty() && *p != "/") {
+            self.nodes.entry(p.to_string()).or_insert(VNode { import: None, size: 0, modified: None });
+            cur = vparent(p);
+        }
+    }
+
+    /// Add a file shown at `path` that imports `import`.
+    pub fn add_file(&mut self, path: &str, import: &str, size: u64, modified: Option<u64>) {
+        if let Some(p) = vparent(path) {
+            self.add_dir(p);
+        }
+        self.nodes.insert(path.to_string(), VNode { import: Some(import.to_string()), size, modified });
+    }
+
+    /// Remove `path` and everything under it.
+    pub fn remove(&mut self, path: &str) {
+        let pre = format!("{}/", path.trim_end_matches('/'));
+        self.nodes.retain(|k, _| k != path && !k.starts_with(&pre));
+    }
+
+    pub fn is_dir(&self, path: &str) -> bool {
+        path == "/" || self.nodes.get(path.trim_end_matches('/')).is_some_and(|n| n.import.is_none())
+    }
+
+    /// What a file shown at `path` imports.
+    pub fn import_path(&self, path: &str) -> Option<&str> {
+        self.nodes.get(path).and_then(|n| n.import.as_deref())
+    }
+
+    pub fn list(&self, dir: &str, importable_only: bool) -> Result<Vec<Entry>, String> {
+        let dir = if dir.len() > 1 { dir.trim_end_matches('/') } else { dir };
+        if !self.is_dir(dir) {
+            return Err(format!("{dir}: no such folder"));
+        }
+        let mut out: Vec<Entry> = self
+            .nodes
+            .iter()
+            .filter(|(k, _)| vparent(k) == Some(dir))
+            .filter_map(|(k, n)| {
+                let name = k.rsplit('/').next().unwrap_or(k).to_string();
+                let kind = n.import.as_deref().and_then(kind_of);
+                if importable_only && n.import.is_some() && kind.is_none() {
+                    return None;
+                }
+                Some(Entry {
+                    name,
+                    // Folders browse by their virtual path; files import their own path.
+                    path: n.import.clone().unwrap_or_else(|| k.clone()),
+                    is_dir: n.import.is_none(),
+                    size: n.size,
+                    modified: n.modified,
+                    kind,
+                })
+            })
+            .collect();
+        out.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())));
+        Ok(out)
+    }
 }
 
 /// One directory entry.
@@ -259,6 +407,32 @@ mod tests {
         assert_eq!(parent(&dir.join("Shots").to_string_lossy()).as_deref(), Some(d.as_str()));
         assert!(list(&dir.join("nope").to_string_lossy(), false).is_err());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn virtual_tree_lists_like_a_folder() {
+        let mut t = VirtualTree::default();
+        t.add_file("/Browser Storage/clip.mov", "/clip.mov", 10, Some(5));
+        t.add_file("/Folders/Shoot/B/b.png", "/Folders/Shoot/B/b.png", 3, None);
+        t.add_file("/Folders/Shoot/a.wav", "/Folders/Shoot/a.wav", 4, None);
+        t.add_file("/Folders/Shoot/notes.txt", "/Folders/Shoot/notes.txt", 1, None);
+        t.add_dir("/Folders/Empty");
+        let names = |t: &VirtualTree, d: &str, only: bool| t.list(d, only).unwrap().into_iter().map(|e| e.name).collect::<Vec<_>>();
+        assert_eq!(names(&t, "/", false), ["Browser Storage", "Folders"]);
+        assert_eq!(names(&t, "/Folders", false), ["Empty", "Shoot"]);
+        assert_eq!(names(&t, "/Folders/Shoot", false), ["B", "a.wav", "notes.txt"]);
+        assert_eq!(names(&t, "/Folders/Shoot/", true), ["B", "a.wav"]);
+        let e = &t.list("/Browser Storage", false).unwrap()[0];
+        assert_eq!((e.path.as_str(), e.size, e.modified, e.kind, e.is_dir), ("/clip.mov", 10, Some(5), Some("video"), false));
+        let d = &t.list("/Folders", false).unwrap()[1];
+        assert_eq!((d.path.as_str(), d.is_dir), ("/Folders/Shoot", true));
+        assert_eq!(t.import_path("/Browser Storage/clip.mov"), Some("/clip.mov"));
+        assert!(t.list("/Folders/Shoot/a.wav", false).is_err(), "a file is not a folder");
+        assert!(t.list("/Nope", false).is_err());
+        t.remove("/Folders/Shoot");
+        assert_eq!(names(&t, "/Folders", false), ["Empty"]);
+        assert_eq!(vparent("/a"), Some("/"));
+        assert_eq!(vparent("/"), None);
     }
 
     #[test]

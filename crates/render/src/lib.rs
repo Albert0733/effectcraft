@@ -320,7 +320,8 @@ impl FxTarget for CpuFx<'_> {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(default, rename_all = "camelCase")]
 pub struct RenderOpts {
     /// Output scale relative to comp pixels (1 = Full, 0.5 = Half…).
     pub scale: f64,

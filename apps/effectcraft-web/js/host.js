@@ -333,3 +333,158 @@ export function workerCancel(id) {
 export function workerStats() {
   return { running: running.size, idle: idle.length };
 }
+
+// ------------------------------------------------------------------ frame workers
+
+// Long-lived workers that render viewer frames from a project replica (src/frames.rs). Unlike job
+// workers they are never terminated between requests; the page sends one frame at a time each.
+const frameWorkers = [];
+
+/// Start a frame worker; returns its index. `onMessage(index, json, bytes, error)` receives each
+/// `frameReply` (JSON, pixels as a Uint8Array) or, if the worker dies, the error.
+export function frameWorkerStart(base, onMessage) {
+  const index = frameWorkers.length;
+  const worker = new Worker(new URL("worker.js", base), { type: "module", name: `effectcraft-frames-${index}` });
+  worker.onmessage = (e) => {
+    const m = e.data;
+    if (m && m.type === "frameReply") onMessage(index, m.json, m.bytes ? new Uint8Array(m.bytes) : null, undefined);
+  };
+  worker.onerror = (e) => {
+    onMessage(index, undefined, undefined, String(e.message || "frame worker failed"));
+    worker.terminate();
+  };
+  worker.postMessage({ type: "init", module: self.effectcraftModule ?? null, base });
+  frameWorkers.push(worker);
+  return index;
+}
+
+/// Post a message ({type: "frame", json} or {type: "file", path, bytes}) to frame worker `index`.
+export function frameWorkerPost(index, msg, transfer) {
+  const w = frameWorkers[index];
+  if (w) w.postMessage(msg, transfer ?? []);
+}
+
+// ------------------------------------------------------------------ media browser
+
+// Folders opened with the File System Access API (src/browse.rs): name → {handle, files: Map of
+// "name/sub/file" → FileSystemFileHandle}. Their handles are remembered in IndexedDB so the
+// folders come back on the next visit (once the browser grants access again).
+const folders = new Map();
+const HANDLES_DB = "effectcraft-handles";
+const MAX_ENTRIES = 20000;
+
+async function handlesDb() {
+  const open = indexedDB.open(HANDLES_DB, 1);
+  open.onupgradeneeded = () => open.result.createObjectStore("folders", { keyPath: "name" });
+  return req(open);
+}
+
+async function enumerate(dir, prefix, out, files, depth) {
+  for await (const [name, h] of dir.entries()) {
+    if (name.startsWith(".") || out.length >= MAX_ENTRIES) continue;
+    const rel = `${prefix}/${name}`;
+    if (h.kind === "directory") {
+      out.push({ path: rel, dir: true, size: 0, modified: 0 });
+      if (depth < 8) await enumerate(h, rel, out, files, depth + 1);
+    } else {
+      const f = await h.getFile();
+      out.push({ path: rel, dir: false, size: f.size, modified: Math.floor(f.lastModified / 1000) });
+      files.set(rel, h);
+    }
+  }
+}
+
+async function openFolder(handle, remember) {
+  const name = handle.name;
+  const entries = [];
+  const files = new Map();
+  await enumerate(handle, name, entries, files, 0);
+  folders.set(name, { handle, files });
+  if (remember) {
+    try {
+      const db = await handlesDb();
+      await req(db.transaction("folders", "readwrite").objectStore("folders").put({ name, handle }));
+    } catch (e) { console.info("media browser: cannot remember the folder", e); }
+  }
+  return { name, entries };
+}
+
+/// Whether the browser can open folders (File System Access API).
+export function browseCanPickFolder() {
+  return typeof self.showDirectoryPicker === "function";
+}
+
+/// Ask for a folder; resolves with {name, entries: [{path, dir, size, modified}]}.
+export async function browsePickFolder() {
+  const handle = await self.showDirectoryPicker({ id: "effectcraft-media", mode: "read" });
+  return openFolder(handle, true);
+}
+
+/// Folders opened on earlier visits: [{name, granted, entries?}] (entries when access is granted).
+export async function browseRestore() {
+  if (!self.indexedDB || !browseCanPickFolder()) return [];
+  let all = [];
+  try {
+    const db = await handlesDb();
+    all = await req(db.transaction("folders", "readonly").objectStore("folders").getAll());
+  } catch { return []; }
+  const out = [];
+  for (const { name, handle } of all) {
+    let granted = false;
+    try { granted = (await handle.queryPermission({ mode: "read" })) === "granted"; } catch {}
+    if (granted) {
+      try { out.push({ granted, ...(await openFolder(handle, false)) }); continue; } catch {}
+    }
+    out.push({ name, granted: false });
+  }
+  return out;
+}
+
+/// Ask for access to a remembered folder again (needs a user gesture); resolves like
+/// browsePickFolder.
+export async function browseReconnect(name) {
+  const db = await handlesDb();
+  const rec = await req(db.transaction("folders", "readonly").objectStore("folders").get(name));
+  if (!rec) throw new Error(`${name} is not remembered`);
+  if ((await rec.handle.requestPermission({ mode: "read" })) !== "granted") throw new Error(`access to ${name} was not granted`);
+  return openFolder(rec.handle, false);
+}
+
+/// Forget a remembered folder.
+export async function browseForget(name) {
+  folders.delete(name);
+  try {
+    const db = await handlesDb();
+    await req(db.transaction("folders", "readwrite").objectStore("folders").delete(name));
+  } catch {}
+}
+
+/// A file of an opened folder ("/Folders/name/sub/file"): its bytes.
+export async function browseRead(path) {
+  const rel = path.replace(/^\/Folders\//, "");
+  const folder = folders.get(rel.split("/")[0]);
+  const h = folder && folder.files.get(rel);
+  if (!h) throw new Error(`${path}: its folder is not open (reconnect it)`);
+  return new Uint8Array(await (await h.getFile()).arrayBuffer());
+}
+
+/// The fallback where folders can't be opened: pick files (or a whole folder, `directory`) with a
+/// plain file input; resolves with [{path, bytes}] (path relative to the picked folder).
+export function browsePickFiles(directory) {
+  return new Promise((resolve, reject) => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.multiple = true;
+    if (directory) input.webkitdirectory = true;
+    input.onchange = async () => {
+      try {
+        const out = [];
+        for (const f of input.files) {
+          out.push({ path: (directory && f.webkitRelativePath) || f.name, bytes: new Uint8Array(await f.arrayBuffer()) });
+        }
+        resolve(out);
+      } catch (e) { reject(e); }
+    };
+    input.click();
+  });
+}
