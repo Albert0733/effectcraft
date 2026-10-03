@@ -193,11 +193,12 @@ fn compound_blur(ctx: &EffectCtx, mut b: Buf) -> Buf {
         return b;
     }
     let invert = ctx.params.b("invertBlur");
-    // The blur map is the layer's own luminance (sampled before padding grows the buffer).
     if !ctx.adjustment {
         b.pad((max_sigma * 3.0).ceil() as u32 + 1);
     }
-    let map = Plane::from_image(&b.img, |p| {
+    // The blur map: the Blur Layer's luminance (stretched to fit or centred), else the layer's own.
+    let map_img = crate::util::layer_or_self(ctx, &b, "blurLayer", true, ctx.params.b("stretchMapToFit"));
+    let map = Plane::from_image(&map_img, |p| {
         let (c, a) = unpremul(p);
         let l = luminance(c[0], c[1], c[2]) * a;
         if invert { 1.0 - l } else { l }
@@ -281,23 +282,44 @@ fn camera_lens_blur(ctx: &EffectCtx, mut b: Buf) -> Buf {
     if r < 0.5 {
         return b;
     }
-    let shape = ctx.params.e("irisShape");
+    let shape = ctx.params.e("irisProperties/irisShape");
     let sides = if shape >= 8 { 0 } else { shape + 3 };
-    let spans = iris_spans(r, sides, ctx.params.f("irisRotation"), ctx.params.f("irisRoundness").clamp(0.0, 100.0) / 100.0);
+    let mut spans = iris_spans(r, sides, ctx.params.f("irisProperties/irisRotation"), ctx.params.f("irisProperties/irisRoundness").clamp(0.0, 100.0) / 100.0);
+    // Aspect Ratio stretches the iris horizontally (> 1) or squeezes it (< 1).
+    let aspect = ctx.params.f("irisProperties/irisAspectRatio");
+    if aspect > 0.0 && (aspect - 1.0).abs() > 1e-6 {
+        for s in spans.iter_mut() {
+            s.1 = (s.1 as f64 * aspect).round() as i64;
+            s.2 = (s.2 as f64 * aspect).round() as i64;
+        }
+    }
+    let reach = r * aspect.max(1.0);
     let repeat = ctx.params.b("repeatEdge") || ctx.adjustment;
     if !repeat {
-        b.pad(r.ceil() as u32 + 1);
+        b.pad(reach.ceil() as u32 + 1);
     }
-    // Specular highlights: boost bright pixels before the blur so they bloom into bokeh shapes.
-    let thr = ctx.params.f("specularThreshold") as f32 / 255.0;
-    let boost = 1.0 + ctx.params.f("specularBrightness").max(0.0) as f32 / 100.0 * 4.0;
+    let linear = ctx.params.b("useLinear");
+    let to_lin = |px: &mut [f32; 4]| {
+        let (c, a) = unpremul(*px);
+        *px = premul(c.map(effectcraft_color::srgb_to_linear), a);
+    };
+    // Highlights: boost bright pixels before the blur so they bloom into bokeh shapes; Saturation
+    // keeps their colour (100) or pushes the added energy towards white (0).
+    let thr = ctx.params.f("highlight/specularThreshold") as f32 / 255.0;
+    let boost = 1.0 + ctx.params.f("highlight/specularBrightness").max(0.0) as f32 / 100.0 * 4.0;
+    let sat = (ctx.params.f("highlight/highlightSaturation") / 100.0).clamp(0.0, 1.0) as f32;
     let mut src = b.img.clone();
+    if linear {
+        src.data.par_iter_mut().for_each(to_lin);
+    }
     if boost > 1.0 {
         src.data.par_iter_mut().for_each(|px| {
             let (c, a) = unpremul(*px);
             if a > 0.0 && luminance(c[0], c[1], c[2]) >= thr {
+                let m = c[0].max(c[1]).max(c[2]);
                 for k in 0..3 {
-                    px[k] *= boost;
+                    let tinted = c[k] + (m - c[k]) * (1.0 - sat);
+                    px[k] = (c[k] + tinted * (boost - 1.0)) * a;
                 }
             }
         });
@@ -365,6 +387,10 @@ fn camera_lens_blur(ctx: &EffectCtx, mut b: Buf) -> Buf {
             }
             let mut px = acc.map(|v| (v * norm) as f32);
             px[3] = px[3].clamp(0.0, 1.0);
+            if linear {
+                let (c, a) = unpremul(px);
+                px = premul(c.map(|v| effectcraft_color::linear_to_srgb(v.max(0.0))), a);
+            }
             *o = px;
         }
     });
@@ -530,7 +556,7 @@ pub fn specs() -> Vec<EffectSpec> {
             vec![
                 p("radius", "Radius", num(3.0), slider(0.0, 100.0, 0.0, 20.0, 1)),
                 p("threshold", "Threshold", num(25.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
-                p("mode", "Mode", Value::Enum(0), popup(&["Normal", "Edge Only", "Edge Overlay"])),
+                p("mode", "Mode", Value::Enum(0), popup(&["Normal", "Edge Only", "Overlay Edge"])),
             ],
             smart_blur,
         ),
@@ -551,7 +577,9 @@ pub fn specs() -> Vec<EffectSpec> {
             "ec.blur.compound",
             "Compound Blur",
             vec![
+                p("blurLayer", "Blur Layer", Value::Layer(None), ParamUi::Layer),
                 p("maximumBlur", "Maximum Blur", num(20.0), slider(0.0, 1000.0, 0.0, 100.0, 1)),
+                p("stretchMapToFit", "Stretch Map to Fit", Value::Bool(true), ParamUi::Checkbox),
                 p("invertBlur", "Invert Blur", Value::Bool(false), ParamUi::Checkbox),
             ],
             compound_blur,
@@ -562,16 +590,19 @@ pub fn specs() -> Vec<EffectSpec> {
             vec![
                 p("blurRadius", "Blur Radius", num(10.0), slider(0.0, 500.0, 0.0, 100.0, 1)),
                 p(
-                    "irisShape",
-                    "Iris Shape",
+                    "irisProperties/irisShape",
+                    "Shape",
                     Value::Enum(3),
                     popup(&["Triangle", "Square", "Pentagon", "Hexagon", "Heptagon", "Octagon", "Nonagon", "Decagon", "Circle"]),
                 ),
-                p("irisRotation", "Iris Rotation", num(0.0), ParamUi::Angle),
-                p("irisRoundness", "Iris Roundness", num(0.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
-                p("specularThreshold", "Specular Threshold", num(255.0), slider(0.0, 255.0, 0.0, 255.0, 0)),
-                p("specularBrightness", "Specular Brightness", num(0.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
+                p("irisProperties/irisRoundness", "Roundness", num(0.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
+                p("irisProperties/irisAspectRatio", "Aspect Ratio", num(1.0), slider(0.01, 100.0, 0.25, 4.0, 2)),
+                p("irisProperties/irisRotation", "Rotation", num(0.0), ParamUi::Angle),
+                p("highlight/specularBrightness", "Gain", num(0.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
+                p("highlight/specularThreshold", "Threshold", num(255.0), slider(0.0, 255.0, 0.0, 255.0, 0)),
+                p("highlight/highlightSaturation", "Saturation", num(100.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
                 p("repeatEdge", "Repeat Edge Pixels", Value::Bool(false), ParamUi::Checkbox),
+                p("useLinear", "Use Linear Working Space", Value::Bool(false), ParamUi::Checkbox),
             ],
             camera_lens_blur,
         ),
@@ -683,6 +714,73 @@ mod tests {
         let total: f32 = out.img.data.iter().map(|p| p[3]).sum();
         assert!((total - 1.0).abs() < 1e-3, "{total}");
         assert!(out.img.width > 9);
+    }
+
+    #[test]
+    fn lens_blur_aspect_ratio_widens_the_bokeh() {
+        let mut dot = Image::new(41, 41);
+        dot.set(20, 20, [1.0, 1.0, 1.0, 1.0]);
+        let wide = run("ec.blur.cameralens", &dot, &[("blurRadius", num(5.0)), ("irisProperties/irisAspectRatio", num(2.0))]);
+        let (o, d) = (wide.offset[0] as i64, wide.offset[1] as i64);
+        // Lit 8 px to the side but not 8 px above.
+        assert!(wide.img.get(20 + o + 8, 20 + d)[3] > 0.0);
+        assert_eq!(wide.img.get(20 + o, 20 + d - 8)[3], 0.0);
+    }
+
+    #[test]
+    fn lens_blur_highlight_saturation_whitens_boosted_colour() {
+        let mut img = Image::new(21, 21);
+        img.set(10, 10, [1.0, 0.2, 0.2, 1.0]);
+        let over = |s: f64| {
+            [
+                ("blurRadius", num(3.0)),
+                ("highlight/specularBrightness", num(100.0)),
+                ("highlight/specularThreshold", num(0.0)),
+                ("highlight/highlightSaturation", num(s)),
+            ]
+        };
+        let keep = run("ec.blur.cameralens", &img, &over(100.0));
+        let white = run("ec.blur.cameralens", &img, &over(0.0));
+        let c = |b: &Buf| b.img.get(10 + b.offset[0] as i64, 10 + b.offset[1] as i64);
+        // Same red energy, more green with Saturation 0.
+        assert!((c(&keep)[0] - c(&white)[0]).abs() < 1e-5);
+        assert!(c(&white)[1] > c(&keep)[1] + 1e-4);
+    }
+
+    #[test]
+    fn compound_blur_reads_the_blur_layer() {
+        use crate::{EffectEnv, EffectHost, LayerPixels};
+        struct Map;
+        impl EffectHost for Map {
+            fn layer(&self, _: u64, _: bool) -> Option<LayerPixels> {
+                // Left half black (sharp), right half white (full blur).
+                let mut m = Image::new(20, 20);
+                for y in 0..20 {
+                    for x in 10..20 {
+                        m.set(x, y, [1.0, 1.0, 1.0, 1.0]);
+                    }
+                }
+                Some(LayerPixels { buf: Buf { img: m, offset: [0.0; 2], scale: 1.0 }, size: [20.0, 20.0] })
+            }
+            fn audio(&self, _: u64, _: f64, _: usize, _: u32) -> Option<Vec<f32>> {
+                None
+            }
+        }
+        let mut img = Image::filled(20, 20, [0.0, 0.0, 0.0, 1.0]);
+        for y in 0..20 {
+            img.set(4, y, [1.0, 1.0, 1.0, 1.0]);
+            img.set(15, y, [1.0, 1.0, 1.0, 1.0]);
+        }
+        let out = crate::run_fx(
+            "ec.blur.compound",
+            &[("blurLayer", Value::Layer(Some(1))), ("maximumBlur", num(6.0))],
+            img,
+            0.0,
+            EffectEnv { host: Some(&Map), ..Default::default() },
+        );
+        let (o, d) = (out.offset[0] as i64, out.offset[1] as i64);
+        assert!((out.img.get(4 + o, 10 + d)[0] - 1.0).abs() < 1e-4, "dark map keeps the line sharp");
+        assert!(out.img.get(15 + o, 10 + d)[0] < 0.9, "bright map blurs");
     }
 
     #[test]

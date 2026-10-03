@@ -26,6 +26,12 @@ pub struct Dof {
     pub aperture: f64,
     /// Blur Level (1.0 = 100%).
     pub blur_level: f64,
+    /// Iris Shape, Rotation, Roundness, Aspect Ratio and Diffraction Fringe.
+    #[serde(default)]
+    pub iris: super::bokeh::Iris,
+    /// Highlight Gain, Threshold and Saturation.
+    #[serde(default)]
+    pub highlight: super::bokeh::Highlight,
 }
 
 impl Dof {
@@ -294,6 +300,18 @@ pub fn layer_camera(ctx: &EvalCtx, cam: &Layer) -> CameraState {
         focus: ctx.f(cam, g, "focusDistance", zoom),
         aperture: ctx.f(cam, g, "aperture", default_aperture(w)).max(0.0),
         blur_level: ctx.f(cam, g, "blurLevel", 100.0).max(0.0) / 100.0,
+        iris: super::bokeh::Iris {
+            sides: super::bokeh::Iris::sides_of_shape(ctx.e(cam, g, "irisShape")),
+            rotation: ctx.f(cam, g, "irisRotation", 0.0),
+            roundness: ctx.f(cam, g, "irisRoundness", 0.0) / 100.0,
+            aspect: ctx.f(cam, g, "irisAspectRatio", 1.0).max(0.01),
+            fringe: ctx.f(cam, g, "irisDiffractionFringe", 0.0).max(0.0) / 100.0,
+        },
+        highlight: super::bokeh::Highlight {
+            gain: ctx.f(cam, g, "highlightGain", 0.0).clamp(0.0, 100.0) / 100.0,
+            threshold: ctx.f(cam, g, "highlightThreshold", 255.0).clamp(0.0, 255.0) / 255.0,
+            saturation: ctx.f(cam, g, "highlightSaturation", 0.0).clamp(0.0, 100.0) / 100.0,
+        },
     });
     CameraState { view: basis_view(eye, fwd, down), eye, zoom, ortho: false, dof }
 }

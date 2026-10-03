@@ -187,21 +187,59 @@ pub(crate) fn transform_box(
     }
 }
 
-/// Graph Editor ▸ Snap: a dragged key time (comp s) snaps to the current time or another key's
-/// time within 6 points.
+/// Graph Editor ▸ Snap: a dragged key time (comp s) snaps to the current time, another key's
+/// time, a layer's in or out point, a comp or layer marker or the work area within 6 points.
 pub(crate) fn snap_time(app: &EffectcraftApp, tm: TMap, t: f64, others: &[f64]) -> f64 {
     if !app.ui.timeline.graph_snap {
         return t;
     }
-    let cti = app.session.time().seconds();
+    let mut cands = vec![app.session.time().seconds()];
+    cands.extend_from_slice(others);
+    if let Some(c) = app.session.active_comp() {
+        cands.extend(comp_snap_times(c));
+    }
+    snap_px(tm, t, &cands, 6.0)
+}
+
+/// Snap targets of a comp besides keys: work area, markers, and every layer's in / out points
+/// and markers (comp seconds).
+pub fn comp_snap_times(c: &Comp) -> Vec<f64> {
+    let mut v = vec![c.work_area.0.seconds(), c.work_area.1.seconds()];
+    v.extend(c.markers.iter().map(|m| m.time.seconds()));
+    for l in &c.layers {
+        v.push(l.in_point.seconds());
+        v.push(l.out_point.seconds());
+        v.extend(l.markers.iter().map(|m| l.comp_time(m.time).seconds()));
+    }
+    v
+}
+
+/// The candidate nearest `t` within `tol` screen points, else `t`.
+pub(crate) fn snap_px(tm: TMap, t: f64, cands: &[f64], tol: f32) -> f64 {
     let x = tm.x(t);
-    std::iter::once(cti)
-        .chain(others.iter().copied())
-        .map(|c| (c, (tm.x(c) - x).abs()))
-        .filter(|(_, d)| *d < 6.0)
-        .min_by(|a, b| a.1.total_cmp(&b.1))
-        .map(|(c, _)| c)
-        .unwrap_or(t)
+    cands.iter().copied().map(|c| (c, (tm.x(c) - x).abs())).filter(|(_, d)| *d < tol).min_by(|a, b| a.1.total_cmp(&b.1)).map(|(c, _)| c).unwrap_or(t)
+}
+
+#[cfg(test)]
+mod snap_tests {
+    use super::*;
+
+    #[test]
+    fn graph_snap_targets_markers_and_layer_ends() {
+        use effectcraft_engine::Session;
+        let mut s = Session::default();
+        s.execute("comp.new", json!({"name": "S", "width": 100, "height": 100, "frameRate": 30, "duration": 4})).unwrap();
+        s.execute("layer.newSolid", json!({"color": "#ffffff", "width": 10, "height": 10})).unwrap();
+        s.execute("comp.addMarker", json!({"time": 1.5})).unwrap();
+        let c = s.active_comp().unwrap();
+        let cands = comp_snap_times(c);
+        assert!(cands.contains(&1.5), "{cands:?}");
+        assert!(cands.iter().any(|t| (*t - c.layers[0].out_point.seconds()).abs() < 1e-9));
+        let tm = TMap { x0: 0.0, start: 0.0, pps: 100.0 };
+        // 1.53 s is 3 points from the marker: snaps; 1.6 s (10 points) doesn't.
+        assert_eq!(snap_px(tm, 1.53, &cands, 6.0), 1.5);
+        assert_eq!(snap_px(tm, 1.6, &[1.5], 6.0), 1.6);
+    }
 }
 
 // ---------------------------------------------------------------- timeline Alt-drag scaling

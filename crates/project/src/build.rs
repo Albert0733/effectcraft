@@ -438,7 +438,34 @@ pub fn shape_stroke(ids: &mut Ids, color: [f64; 4], width: f64) -> PropGroup {
                 .with(ids.prop("gap", "Gap", Value::Scalar(0.0)).with_ui(ParamUi::Pixels))
                 .with(ids.prop("offset", "Offset", Value::Scalar(0.0)).with_ui(ParamUi::Pixels)),
         )
+        .with(stroke_taper(ids))
+        .with(stroke_wave(ids))
 }
+
+/// Stroke ▸ Taper (After Effects 17.1+): width ramps at the start and end of each path.
+pub fn stroke_taper(ids: &mut Ids) -> PropGroup {
+    ids.group("taper", "Taper")
+        .with(ids.prop("units", "Length Units", Value::Enum(0)).with_ui(popup(&["Pixels", "Percent"])))
+        .with(ids.prop("startLength", "Start Length", Value::Scalar(0.0)).with_ui(ParamUi::Pixels))
+        .with(ids.prop("endLength", "End Length", Value::Scalar(0.0)).with_ui(ParamUi::Pixels))
+        .with(ids.prop("startWidth", "Start Width", Value::Scalar(100.0)).with_ui(slider(0.0, 100.0, 0.0, 100.0, 1)))
+        .with(ids.prop("endWidth", "End Width", Value::Scalar(100.0)).with_ui(slider(0.0, 100.0, 0.0, 100.0, 1)))
+        .with(ids.prop("startEase", "Start Ease", Value::Scalar(0.0)).with_ui(slider(0.0, 100.0, 0.0, 100.0, 1)))
+        .with(ids.prop("endEase", "End Ease", Value::Scalar(0.0)).with_ui(slider(0.0, 100.0, 0.0, 100.0, 1)))
+}
+
+/// Stroke ▸ Wave: the width oscillates along the path.
+pub fn stroke_wave(ids: &mut Ids) -> PropGroup {
+    ids.group("wave", "Wave")
+        .with(ids.prop("amount", "Amount", Value::Scalar(0.0)).with_ui(slider(0.0, 100.0, 0.0, 100.0, 1)))
+        .with(ids.prop("units", "Units", Value::Enum(0)).with_ui(popup(&["Pixels", "Cycles"])))
+        .with(ids.prop("wavelength", "Wavelength", Value::Scalar(20.0)).with_ui(ParamUi::Pixels))
+        .with(ids.prop("cycles", "Cycles", Value::Scalar(10.0)).with_ui(slider(0.0, 1000.0, 0.0, 50.0, 1)))
+        .with(ids.prop("phase", "Phase", Value::Scalar(0.0)).with_ui(ParamUi::Angle))
+}
+
+/// Match ids of the optional Dash/Gap pairs After Effects adds with the Dashes "+" button.
+pub const EXTRA_DASHES: [(&str, &str); 2] = [("dash2", "gap2"), ("dash3", "gap3")];
 
 pub fn shape_gradient_fill(ids: &mut Ids, radial: bool, start: [f64; 2], end: [f64; 2], g: Gradient) -> PropGroup {
     indexed(ids.group("gfill", "Gradient Fill 1"))
@@ -475,6 +502,8 @@ pub fn shape_gradient_stroke(ids: &mut Ids, radial: bool, start: [f64; 2], end: 
                 .with(ids.prop("gap", "Gap", Value::Scalar(0.0)).with_ui(ParamUi::Pixels))
                 .with(ids.prop("offset", "Offset", Value::Scalar(0.0)).with_ui(ParamUi::Pixels)),
         )
+        .with(stroke_taper(ids))
+        .with(stroke_wave(ids))
 }
 
 pub fn shape_trim(ids: &mut Ids, start: f64, end: f64, offset: f64) -> PropGroup {

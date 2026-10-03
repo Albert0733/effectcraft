@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::ConfigStore;
+use crate::config::{ConfigStore, FileOps, StdFiles};
 use crate::prefs::Prefs;
 
 /// Folder created next to a project for its auto-saves.
@@ -68,16 +68,12 @@ pub fn folder(prefs: &Prefs, project: Option<&str>, fallback: Option<&Path>) -> 
 
 /// Existing auto-saves of `stem` in `dir`: (slot, path, modified).
 pub fn existing(dir: &Path, stem: &str) -> Vec<(u32, PathBuf, std::time::SystemTime)> {
-    let Ok(rd) = std::fs::read_dir(dir) else { return vec![] };
-    let mut v: Vec<_> = rd
-        .flatten()
-        .filter_map(|e| {
-            let name = e.file_name().to_string_lossy().to_string();
-            let n = slot_of(stem, &name)?;
-            let m = e.metadata().ok()?.modified().ok()?;
-            Some((n, e.path(), m))
-        })
-        .collect();
+    existing_in(&StdFiles, dir, stem)
+}
+
+/// [`existing`] through `fs`.
+pub fn existing_in(fs: &dyn FileOps, dir: &Path, stem: &str) -> Vec<(u32, PathBuf, std::time::SystemTime)> {
+    let mut v: Vec<_> = fs.list(dir).into_iter().filter_map(|(name, m)| Some((slot_of(stem, &name)?, dir.join(&name), m))).collect();
     v.sort_by_key(|x| x.0);
     v
 }
@@ -95,18 +91,29 @@ pub fn next_slot(existing: &[(u32, PathBuf, std::time::SystemTime)], last: Optio
 
 /// Write one auto-save of `json` for the project at `project` and rotate. Returns its path.
 pub fn write(prefs: &Prefs, project: Option<&str>, fallback: Option<&Path>, last_slot: Option<u32>, json: &str) -> std::io::Result<(PathBuf, u32)> {
+    write_in(&StdFiles, prefs, project, fallback, last_slot, json)
+}
+
+/// [`write`] through `fs`.
+pub fn write_in(
+    fs: &dyn FileOps,
+    prefs: &Prefs,
+    project: Option<&str>,
+    fallback: Option<&Path>,
+    last_slot: Option<u32>,
+    json: &str,
+) -> std::io::Result<(PathBuf, u32)> {
     let dir = folder(prefs, project, fallback).ok_or_else(|| std::io::Error::other("no auto-save folder for an untitled project"))?;
-    std::fs::create_dir_all(&dir)?;
     let stem = project_stem(project);
     let max = prefs.auto_save.max_versions.max(1);
-    let have = existing(&dir, &stem);
+    let have = existing_in(fs, &dir, &stem);
     let slot = next_slot(&have, last_slot, max);
     let path = dir.join(file_name(&stem, slot));
-    crate::config::atomic_write(&path, json.as_bytes())?;
+    fs.write(&path, json.as_bytes())?;
     // Max versions lowered: drop slots above it.
     for (n, p, _) in have {
         if n > max {
-            let _ = std::fs::remove_file(p);
+            let _ = fs.remove(&p);
         }
     }
     Ok((path, slot))
@@ -114,8 +121,13 @@ pub fn write(prefs: &Prefs, project: Option<&str>, fallback: Option<&Path>, last
 
 /// The newest auto-save of a project, if any.
 pub fn latest(prefs: &Prefs, project: Option<&str>, fallback: Option<&Path>) -> Option<PathBuf> {
+    latest_in(&StdFiles, prefs, project, fallback)
+}
+
+/// [`latest`] through `fs`.
+pub fn latest_in(fs: &dyn FileOps, prefs: &Prefs, project: Option<&str>, fallback: Option<&Path>) -> Option<PathBuf> {
     let dir = folder(prefs, project, fallback)?;
-    existing(&dir, &project_stem(project)).into_iter().max_by_key(|e| e.2).map(|e| e.1)
+    existing_in(fs, &dir, &project_stem(project)).into_iter().max_by_key(|e| e.2).map(|e| e.1)
 }
 
 /// What the crash-recovery sentinel records.
@@ -151,8 +163,8 @@ pub fn begin(store: &dyn ConfigStore, prefs: &Prefs) -> Option<Recovery> {
     let autosave = s
         .autosave
         .clone()
-        .filter(|p| Path::new(p).is_file())
-        .or_else(|| latest(prefs, s.project.as_deref(), fallback.as_deref()).map(|p| p.to_string_lossy().to_string()));
+        .filter(|p| store.files().is_file(Path::new(p)))
+        .or_else(|| latest_in(store.files(), prefs, s.project.as_deref(), fallback.as_deref()).map(|p| p.to_string_lossy().to_string()));
     Some(Recovery { project: s.project, autosave, dirty: s.dirty })
 }
 

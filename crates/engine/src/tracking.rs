@@ -70,7 +70,8 @@ pub fn track_options(o: &TrackerOptions) -> trk::TrackOptions {
 }
 
 /// A track point's regions and attach offset read from its properties at a layer time.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PointValues {
     pub uid: Uid,
     pub spec: trk::PointSpec,
@@ -292,6 +293,7 @@ pub(crate) fn run_work(w: Work, shared: &TrackShared) {
         s.elapsed = t0.elapsed().as_secs_f64();
         s.fps = if s.elapsed > 0.0 { k as f64 / s.elapsed } else { 0.0 };
         s.time = w.times[k].seconds();
+        crate::offload::report(s.done, s.total);
     }
     let mut s = lock(&shared.state);
     s.elapsed = t0.elapsed().as_secs_f64();
@@ -322,16 +324,19 @@ fn write_frames(p: &mut Project, job: &TrackJob, frames: &[FrameResult]) {
 impl Session {
     /// Whether a track analysis is running.
     pub fn is_tracking(&self) -> bool {
-        self.track_job.as_ref().is_some_and(|j| !j.is_finished())
+        self.track_job.as_ref().is_some_and(|j| !j.is_finished()) || self.offloaded(crate::offload::JobKind::Track).is_some()
     }
 
     /// Live progress of the running (or just finished) analysis.
     pub fn track_progress(&self) -> Option<TrackProgress> {
-        self.track_job.as_ref().map(|j| j.progress())
+        self.track_job.as_ref().map(|j| j.progress()).or_else(|| self.offloaded(crate::offload::JobKind::Track).map(|j| j.progress.track()))
     }
 
     /// Cancel the running analysis (results so far are kept).
     pub fn stop_track(&mut self) -> bool {
+        if self.cancel_offloaded(crate::offload::JobKind::Track) {
+            return true;
+        }
         match &self.track_job {
             Some(j) if !j.is_finished() => {
                 j.cancel();
@@ -348,6 +353,10 @@ impl Session {
             return Err("a track analysis is already running".into());
         }
         self.poll_track();
+        if !wait && self.offloads() {
+            let Work { comp, layer, settings, points, times, .. } = work;
+            return self.offload_analysis(crate::offload::WorkerJob::Track { comp, layer, tracker, direction, settings, points, times });
+        }
         let wait = wait || cfg!(target_arch = "wasm32");
         self.history.undo.push(("Analyze Track".into(), self.project.clone()));
         self.history.redo.clear();

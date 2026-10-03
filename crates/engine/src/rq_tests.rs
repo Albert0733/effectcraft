@@ -16,8 +16,8 @@ fn demo() -> Session {
 }
 
 /// Records exports; fails items whose path contains "fail"; honours cancellation.
-struct MockExporter {
-    log: Mutex<Vec<String>>,
+pub(crate) struct MockExporter {
+    pub(crate) log: Mutex<Vec<String>>,
 }
 
 impl Exporter for MockExporter {

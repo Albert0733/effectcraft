@@ -987,11 +987,11 @@ pub fn specs() -> Vec<EffectSpec> {
             vec![
                 p("config", "Configuration", Value::Enum(0), popup(CONFIGS)),
                 p("configFile", "Config File (.ocio)", Value::Str(String::new()), ParamUi::Text),
-                space_param("source", "Source", lin709),
+                space_param("source", "Input Color Space", lin709),
                 p("sourceName", "Source (config name)", Value::Str(String::new()), ParamUi::Text),
-                p("display", "Display", Value::Enum(0), popup(&DISPLAYS.iter().map(|d| d.0).collect::<Vec<_>>())),
+                p("display", "Display Device", Value::Enum(0), popup(&DISPLAYS.iter().map(|d| d.0).collect::<Vec<_>>())),
                 p("displayName", "Display (config name)", Value::Str(String::new()), ParamUi::Text),
-                p("view", "View", Value::Enum(0), popup(VIEWS)),
+                p("view", "View Transform", Value::Enum(0), popup(VIEWS)),
                 p("viewName", "View (config name)", Value::Str(String::new()), ParamUi::Text),
                 direction(),
             ],
@@ -1029,8 +1029,9 @@ pub fn specs() -> Vec<EffectSpec> {
             "Color Stabilizer",
             cc,
             vec![
-                p("stabilize", "Stabilize", Value::Enum(0), popup(&["Brightness", "Levels", "Curves"])),
+                // The pivot frame (After Effects' Set Frame button stores it).
                 p("referenceFrame", "Reference Frame (s)", num(0.0), slider(-100000.0, 100000.0, 0.0, 60.0, 2)),
+                p("stabilize", "Stabilize", Value::Enum(0), popup(&["Brightness", "Levels", "Curves"])),
                 p("blackPoint", "Black Point", Value::Vec2([0.25, 0.75]), ParamUi::Point),
                 p("midPoint", "Mid Point", Value::Vec2([0.5, 0.5]), ParamUi::Point),
                 p("whitePoint", "White Point", Value::Vec2([0.75, 0.25]), ParamUi::Point),
@@ -1048,6 +1049,10 @@ pub fn specs() -> Vec<EffectSpec> {
                 p("outputProfile", "Output Profile", Value::Enum(1), popup(PROFILES)),
                 p("linearizeOutputProfile", "Linearize Output Profile", Value::Bool(false), ParamUi::Checkbox),
                 p("intent", "Intent", Value::Enum(1), popup(&["Perceptual", "Relative Colorimetric", "Saturation", "Absolute Colorimetric"])),
+                // Our built-in profiles share a zero black point and none is scene-referred, so
+                // these two are kept for compatibility and do not change the result.
+                p("useBlackPointCompensation", "Use Black Point Compensation", Value::Bool(true), ParamUi::Checkbox),
+                p("sceneRefCompensation", "Scene-ref. Profile Compensation", Value::Enum(2), popup(&["On", "Off", "Use Project Setting"])),
             ],
             profile_converter,
         ),

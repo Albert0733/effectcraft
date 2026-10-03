@@ -10,6 +10,7 @@ pub mod audio_fx;
 mod blur2;
 mod blur3;
 pub mod camera_tracker;
+pub mod catalog;
 mod channel;
 mod channel2;
 mod channel3d;
@@ -28,10 +29,12 @@ mod keying;
 mod keying2;
 pub mod keylight;
 mod matte;
+pub mod migrate;
 mod misc;
 pub mod mocha_shape;
 mod noise;
 mod noise2;
+mod noise3;
 mod obsolete;
 mod ocio;
 pub mod ocio_config;
@@ -58,11 +61,13 @@ pub mod warp_stab;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
+pub use color_fx::{exposure_settings, levels_clip};
 pub use color2::Curve;
 use effectcraft_keyframe::Value;
 use effectcraft_project::build::Ids;
 use effectcraft_project::{GroupKind, ParamUi, PropGroup, Property};
 pub use effectcraft_raster::{AuxChannels, Image};
+pub use misc::{INVERT_ALPHA, INVERT_CHANNELS};
 
 /// Effect categories in Effects & Presets order.
 pub const CATEGORIES: &[&str] = &[
@@ -152,14 +157,20 @@ impl Params {
 /// meshes and pins). Direct properties keep their match id as the key. The `i`-th child group
 /// (1-based, counting groups only) of a group with key prefix `pre` gets the prefix
 /// `{pre}#{i}/`, its properties `{pre}#{i}/{match}`, and metadata keys `@match`, `@name`
-/// (`Value::Str`), `@enabled` (`Value::Bool`) and `@uid` (`Value::Scalar`).
+/// (`Value::Str`), `@enabled` (`Value::Bool`) and `@uid` (`Value::Scalar`). Nested properties
+/// are also keyed by their match path (`group/sub/param`, the first group with each match id),
+/// which is how effects with twirl-down groups declare and read them.
 pub fn flatten_params(g: &PropGroup, eval: &mut dyn FnMut(&Property) -> Value) -> Params {
-    fn walk(g: &PropGroup, pre: &str, eval: &mut dyn FnMut(&Property) -> Value, out: &mut HashMap<String, Value>) {
+    fn walk(g: &PropGroup, pre: &str, mpre: &str, eval: &mut dyn FnMut(&Property) -> Value, out: &mut HashMap<String, Value>) {
         let mut gi = 0;
         for c in &g.children {
             match c {
                 effectcraft_project::Node::Prop(p) => {
-                    out.insert(format!("{pre}{}", p.match_id), eval(p));
+                    let v = eval(p);
+                    if !mpre.is_empty() {
+                        out.entry(format!("{mpre}{}", p.match_id)).or_insert_with(|| v.clone());
+                    }
+                    out.insert(format!("{pre}{}", p.match_id), v);
                 }
                 effectcraft_project::Node::Group(sg) => {
                     gi += 1;
@@ -168,13 +179,13 @@ pub fn flatten_params(g: &PropGroup, eval: &mut dyn FnMut(&Property) -> Value) -
                     out.insert(format!("{sp}@name"), Value::Str(sg.name.clone()));
                     out.insert(format!("{sp}@enabled"), Value::Bool(sg.enabled));
                     out.insert(format!("{sp}@uid"), Value::Scalar(sg.uid as f64));
-                    walk(sg, &sp, eval, out);
+                    walk(sg, &sp, &format!("{mpre}{}/", sg.match_id), eval, out);
                 }
             }
         }
     }
     let mut values = HashMap::new();
-    walk(g, "", eval, &mut values);
+    walk(g, "", "", eval, &mut values);
     Params { values }
 }
 
@@ -369,6 +380,7 @@ pub fn registry() -> &'static [EffectSpec] {
         v.extend(channel2::specs());
         v.extend(keying2::specs());
         v.extend(noise2::specs());
+        v.extend(noise3::specs());
         v.extend(color3::specs());
         v.extend(obsolete::specs());
         v.extend(ocio::specs());
@@ -402,10 +414,16 @@ pub fn find(id: &str) -> Option<&'static EffectSpec> {
 
 /// Find by id or (case-insensitive) display name.
 pub fn lookup(name_or_id: &str) -> Option<&'static EffectSpec> {
-    find(name_or_id).or_else(|| registry().iter().find(|s| s.name.eq_ignore_ascii_case(name_or_id))).or_else(|| {
-        // After Effects' third-party display names we register under a generic name.
-        keylight::KEYLIGHT_ALIASES.iter().any(|a| a.eq_ignore_ascii_case(name_or_id)).then(|| find("ec.keying.keylight")).flatten()
-    })
+    find(name_or_id)
+        .or_else(|| registry().iter().find(|s| s.name.eq_ignore_ascii_case(name_or_id)))
+        .or_else(|| {
+            // After Effects' third-party display names we register under a generic name.
+            keylight::KEYLIGHT_ALIASES.iter().any(|a| a.eq_ignore_ascii_case(name_or_id)).then(|| find("ec.keying.keylight")).flatten()
+        })
+        .or_else(|| {
+            // Display names of earlier versions.
+            migrate::EFFECT_NAME_ALIASES.iter().find(|(old, _)| old.eq_ignore_ascii_case(name_or_id)).and_then(|(_, id)| find(id))
+        })
 }
 
 /// A parameter's default value on a layer of `layer_size` (point defaults are fractions of the
@@ -449,19 +467,143 @@ pub fn instantiate(spec: &EffectSpec, ids: &mut Ids, instance_name: &str, layer_
         }
         // Layer parameters carry a source choice (Source / Masks / Effects & Masks) unless the
         // effect declares its own (with its own default).
+        // A grouped layer parameter's companion sits next to it in its group, so it flattens
+        // to `group/paramSource` = `layer_source_id("group/param")`.
         let sid = layer_source_id(ps.id);
         if matches!(ps.ui, ParamUi::Layer) && !spec.params.iter().any(|q| q.id == sid) {
-            let mut src = Property::new(ids.alloc(), &sid, &format!("{} Source", ps.name), Value::Enum(2)).with_ui(ParamUi::Hidden);
+            let mut src = Property::new(ids.alloc(), &layer_source_id(leaf), &format!("{} Source", ps.name), Value::Enum(2)).with_ui(ParamUi::Hidden);
             src.hold_only = true;
-            g.children.push(src.into());
+            match path {
+                Some(path) => nested_group(&mut g, ids, path).children.push(src.into()),
+                None => g.children.push(src.into()),
+            }
         }
     }
     g
 }
 
+/// Display names of twirl-down parameter groups (`group/param` spec ids) by match id, for
+/// effects without their own table.
+pub const PARAM_GROUPS: &[(&str, &str)] = &[
+    // Color Correction: Exposure, Levels (Individual Controls), Change to Color, Colorama,
+    // Shadow/Highlight, Lumetri Color.
+    ("master", "Master"),
+    ("rgb", "RGB"),
+    ("red", "Red"),
+    ("green", "Green"),
+    ("blue", "Blue"),
+    ("alpha", "Alpha"),
+    ("toleranceGroup", "Tolerance"),
+    ("inputPhase", "Input Phase"),
+    ("outputCycle", "Output Cycle"),
+    ("moreOptions", "More Options"),
+    ("basicCorrection", "Basic Correction"),
+    ("whiteBalance", "White Balance"),
+    ("tone", "Tone"),
+    ("creative", "Creative"),
+    ("adjustments", "Adjustments"),
+    ("curves", "Curves"),
+    ("colorWheels", "Color Wheels"),
+    ("vignette", "Vignette"),
+    // Camera Lens Blur.
+    ("irisProperties", "Iris Properties"),
+    ("highlight", "Highlight"),
+    // Numbers.
+    ("format", "Format"),
+    ("fillAndStroke", "Fill and Stroke"),
+    // Stylize: Cartoon, Roughen Edges.
+    ("fill", "Fill"),
+    ("edge", "Edge"),
+    ("evolutionOptions", "Evolution Options"),
+    // Noise & Grain: Fractal / Turbulent Noise, Add / Match Grain, Remove Grain, Noise Alpha.
+    ("transform", "Transform"),
+    ("subSettings", "Sub Settings"),
+    ("tweaking", "Tweaking"),
+    ("channelIntensities", "Channel Intensities"),
+    ("channelSize", "Channel Size"),
+    ("color", "Color"),
+    ("application", "Application"),
+    ("animation", "Animation"),
+    ("noiseReductionSettings", "Noise Reduction Settings"),
+    ("fineTuning", "Fine Tuning"),
+    ("unsharpMask", "Unsharp Mask"),
+    ("noiseOptions", "Noise Options (Animation)"),
+    // Time: Timewarp.
+    ("tuning", "Tuning"),
+    ("motionBlur", "Motion Blur"),
+    // Simulation.
+    ("extras", "Extras"),
+    ("wiggle", "Wiggle"),
+    ("light", "Light"),
+    ("shading", "Shading"),
+    ("producer", "Producer"),
+    ("physics", "Physics"),
+    ("directionAxis", "Direction Axis"),
+    ("gravityVector", "Gravity Vector"),
+    ("particle", "Particle"),
+    ("hairfallMap", "Hairfall Map"),
+    ("hairColor", "Hair Color"),
+    ("bottom", "Bottom"),
+    ("water", "Water"),
+    ("lighting", "Lighting"),
+    ("material", "Material"),
+    ("shape", "Shape"),
+    ("force1", "Force 1"),
+    ("force2", "Force 2"),
+    ("bubbles", "Bubbles"),
+    ("rendering", "Rendering"),
+    ("heightMapControls", "Height Map Controls"),
+    ("simulation", "Simulation"),
+    ("producer1", "Producer 1"),
+    ("producer2", "Producer 2"),
+    ("xPosition", "X Position"),
+    ("yPosition", "Y Position"),
+    ("zPosition", "Z Position"),
+    ("xRotation", "X Rotation"),
+    ("yRotation", "Y Rotation"),
+    ("zRotation", "Z Rotation"),
+    ("xScale", "X Scale"),
+    ("yScale", "Y Scale"),
+    ("cameraPosition", "Camera Position"),
+    ("cannon", "Cannon"),
+    ("grid", "Grid"),
+    ("layerExploder", "Layer Exploder"),
+    ("layerMap", "Layer Map"),
+    ("gravity", "Gravity"),
+    ("repel", "Repel"),
+    ("wall", "Wall"),
+    ("persistentPropertyMapper", "Persistent Property Mapper"),
+    // Keying, Matte, Obsolete (Key Light's groups are in `keylight::GROUPS`).
+    ("ultraSettings", "Ultra Settings"),
+    ("fillAndStroke", "Fill and Stroke"),
+    ("pathOptions", "Path Options"),
+    ("controlPoints", "Control Points"),
+    ("character", "Character"),
+    ("orientation", "Orientation"),
+    ("paragraph", "Paragraph"),
+    ("preview", "Preview"),
+    // Generate.
+    ("positionsColors", "Positions & Colors"),
+    ("feather", "Feather"),
+    ("tilingOptions", "Tiling Options"),
+    ("polygon", "Polygon"),
+    ("waveMotion", "Wave Motion"),
+    ("waveStroke", "Stroke"),
+    ("coreSettings", "Core Settings"),
+    ("glowSettings", "Glow Settings"),
+    ("expertSettings", "Expert Settings"),
+    ("mandelbrot", "Mandelbrot"),
+    ("julia", "Julia"),
+    ("postInversionOffset", "Post-Inversion Offset"),
+    ("fractalColor", "Color"),
+    ("highQualitySettings", "High Quality Settings"),
+    ("edgeOptions", "Edge Options"),
+    ("strokeOptions", "Stroke Options"),
+];
+
 /// Display names of nested parameter groups by match id.
 fn group_name(m: &str) -> &str {
-    warp_stab::GROUPS.iter().chain(roto::GROUPS).find(|(id, _)| *id == m).map(|(_, n)| *n).unwrap_or(m)
+    warp_stab::GROUPS.iter().chain(roto::GROUPS).chain(keylight::GROUPS).chain(PARAM_GROUPS).find(|(id, _)| *id == m).map(|(_, n)| *n).unwrap_or(m)
 }
 
 /// The nested group at `path` (`borders/autoScale`) under `g`, created on first use.
@@ -527,6 +669,11 @@ pub const TIME_DEPENDENT: &[&str] = &[
     "ec.time.ccforcemotionblur",
     "ec.time.ccwidetime",
     "ec.time.pixelmotionblur",
+    // Temporal Smoothing reads neighbouring frames.
+    "ec.color.autolevels",
+    "ec.color.autocontrast",
+    "ec.color.autocolor",
+    "ec.color.shadowhighlight",
     "ec.vr.digitalglitch",
     "ec.blur.camerashakedeblur",
     "ec.distort.rollingshutterrepair",
@@ -597,6 +744,73 @@ mod tests {
                 assert!(pids.insert(p.id), "{}: duplicate param {}", s.id, p.id);
             }
         }
+    }
+
+    /// Registry-wide parameter sanity: unique ids and names, non-empty display names, defaults
+    /// of the right kind and inside their ranges, popup defaults inside their options.
+    #[test]
+    fn every_param_is_well_formed() {
+        let mut problems = vec![];
+        let mut names = std::collections::HashSet::new();
+        for s in registry() {
+            if s.name.trim().is_empty() {
+                problems.push(format!("{}: empty display name", s.id));
+            }
+            if !names.insert(s.name) {
+                problems.push(format!("{}: duplicate display name {}", s.id, s.name));
+            }
+            let mut ids = std::collections::HashSet::new();
+            for p in &s.params {
+                let at = format!("{} / {}", s.id, p.id);
+                if !ids.insert(p.id) {
+                    problems.push(format!("{at}: duplicate id"));
+                }
+                if p.id.is_empty() || p.id.contains(char::is_whitespace) {
+                    problems.push(format!("{at}: bad id"));
+                }
+                if p.name.trim().is_empty() {
+                    problems.push(format!("{at}: empty display name"));
+                }
+                match (&p.ui, &p.default) {
+                    (ParamUi::Slider { min, max, slider_min, slider_max, .. }, d) => {
+                        if !(min <= max && slider_min <= slider_max) {
+                            problems.push(format!("{at}: inverted range"));
+                        }
+                        if !(slider_min >= min && slider_max <= max) {
+                            problems.push(format!("{at}: slider range {slider_min}..{slider_max} outside valid range {min}..{max}"));
+                        }
+                        match d {
+                            Value::Scalar(v) if v < min || v > max => problems.push(format!("{at}: default {v} outside {min}..{max}")),
+                            Value::Scalar(_) => {}
+                            d => problems.push(format!("{at}: slider default {d:?} is not a number")),
+                        }
+                    }
+                    (ParamUi::Popup { options }, d) => {
+                        if options.is_empty() || options.iter().any(|o| o.trim().is_empty()) {
+                            problems.push(format!("{at}: empty popup option"));
+                        }
+                        let uniq: std::collections::HashSet<_> = options.iter().collect();
+                        if uniq.len() != options.len() {
+                            problems.push(format!("{at}: duplicate popup option"));
+                        }
+                        match d {
+                            Value::Enum(i) if (*i as usize) < options.len() => {}
+                            d => problems.push(format!("{at}: popup default {d:?} not among {} options", options.len())),
+                        }
+                    }
+                    (ParamUi::Checkbox, d) if !matches!(d, Value::Bool(_)) => problems.push(format!("{at}: checkbox default {d:?}")),
+                    (ParamUi::Color, d) if !matches!(d, Value::Color(_)) => problems.push(format!("{at}: color default {d:?}")),
+                    (ParamUi::Point, d) if !matches!(d, Value::Vec2(_)) => problems.push(format!("{at}: point default {d:?}")),
+                    (ParamUi::Point3, d) if !matches!(d, Value::Vec3(_)) => problems.push(format!("{at}: 3D point default {d:?}")),
+                    (ParamUi::Layer, d) if !matches!(d, Value::Layer(_)) => problems.push(format!("{at}: layer default {d:?}")),
+                    (ParamUi::Percent | ParamUi::Angle | ParamUi::Pixels | ParamUi::Number, d) if !matches!(d, Value::Scalar(_) | Value::Vec2(_)) => {
+                        problems.push(format!("{at}: numeric default {d:?}"))
+                    }
+                    _ => {}
+                }
+            }
+        }
+        assert!(problems.is_empty(), "{} problems:\n{}", problems.len(), problems.join("\n"));
     }
 
     /// Every effect runs on a small image with its default parameters without panicking and

@@ -254,7 +254,7 @@ fn new_path(s: &mut Session, p: &Value) -> Result<Value> {
             *t = [r.x, r.y];
         }
     }
-    let path = ShapePath { vertices: v, in_tangents: ins, out_tangents: outs, closed: b_p(p, "closed").unwrap_or(false) };
+    let path = ShapePath { vertices: v, in_tangents: ins, out_tangents: outs, closed: b_p(p, "closed").unwrap_or(false), feather: Vec::new() };
     let fill = (!matches!(p.get("fill"), Some(Value::Null) | Some(Value::Bool(false)))).then(|| rgba(p.get("fill"), [0.25, 0.55, 1.0, 1.0]));
     let width = f_p(p, "strokeWidth").unwrap_or(2.0);
     let stroke = (width > 0.0).then(|| rgba(p.get("stroke"), [1.0, 1.0, 1.0, 1.0]));

@@ -20,7 +20,7 @@ once.
 | M11 | Animation tools: audio playback, meters and waveforms, Lottie import and export (done); presets, Motion Sketch, Wiggler | In progress |
 | M12 | Performance: layer cache and parallel compositing (done), GPU compositing, disk cache, motion tracking | In progress |
 | M13+ | Puppet, paint, roto, motion tracking, a plugin API | Planned |
-| M15 | The web app (WebAssembly, WebGPU) | Done, single-threaded |
+| M15 | The web app (WebAssembly, WebGPU) | Done: browser storage, Web Audio, renders and analyses in Web Workers, offline install ([docs/web.md](docs/web.md)) |
 | M14 | Built for agents: MCP server, command-line tool, control channel; Settings, keyboard shortcut editor, auto-save and crash recovery ([docs/preferences.md](docs/preferences.md)) | Done |
 
 ## How far from full parity

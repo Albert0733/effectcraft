@@ -434,8 +434,22 @@ fn gpu_effects_match_cpu() {
     effect_case("ec.blur.directional", &[("direction", n(30.0)), ("length", n(12.0))]);
     effect_case("ec.stylize.glow", &[("threshold", n(40.0)), ("radius", n(14.0)), ("intensity", n(1.5))]);
     effect_case("ec.stylize.glow", &[("colors", Value::Enum(1)), ("operation", Value::Enum(1)), ("colorA", c(1.0, 0.8, 0.1))]);
+    effect_case(
+        "ec.stylize.glow",
+        &[
+            ("colors", Value::Enum(1)),
+            ("colorLooping", Value::Enum(3)),
+            ("colorLoops", n(2.5)),
+            ("colorPhase", n(40.0)),
+            ("abMidpoint", n(30.0)),
+            ("glowDimensions", Value::Enum(1)),
+        ],
+    );
+    effect_case("ec.stylize.glow", &[("based", Value::Enum(0)), ("operation", Value::Enum(2)), ("threshold", n(20.0))]);
     effect_case("ec.color.levels", &[("inBlack", n(0.1)), ("inWhite", n(0.8)), ("gamma", n(1.6)), ("outBlack", n(0.05))]);
     effect_case("ec.color.levels", &[("inWhite", n(0.5)), ("noClip", Value::Bool(true))]);
+    effect_case("ec.color.levels", &[("inBlack", n(0.2)), ("inWhite", n(0.6)), ("clipToOutputBlack", Value::Enum(0))]);
+    effect_case("ec.color.levels", &[("inBlack", n(0.2)), ("inWhite", n(0.6)), ("clipToOutputWhite", Value::Enum(0))]);
     effect_case(
         "ec.color.curves",
         &[("rgb", Value::Str("0,0 0.3,0.45 1,1".into())), ("red", Value::Str("0,0.1 1,0.9".into())), ("alpha", Value::Str("0,0 0.5,0.7 1,1".into()))],
@@ -450,15 +464,40 @@ fn gpu_effects_match_cpu() {
     effect_case("ec.noise.fractal", &[]);
     effect_case(
         "ec.noise.fractal",
-        &[("fractalType", Value::Enum(1)), ("complexity", n(4.5)), ("rotation", n(30.0)), ("evolution", n(90.0)), ("scale", n(40.0)), ("blend", n(30.0))],
+        &[
+            ("fractalType", Value::Enum(1)),
+            ("complexity", n(4.5)),
+            ("transform/rotation", n(30.0)),
+            ("evolution", n(90.0)),
+            ("transform/scale", n(40.0)),
+            ("blend", n(30.0)),
+        ],
     );
+    effect_case(
+        "ec.noise.fractal",
+        &[
+            ("fractalType", Value::Enum(2)),
+            ("overflow", Value::Enum(1)),
+            ("contrast", n(250.0)),
+            ("transform/uniformScaling", Value::Bool(false)),
+            ("transform/scaleWidth", n(60.0)),
+            ("transform/scaleHeight", n(25.0)),
+            ("subSettings/subInfluence", n(40.0)),
+            ("subSettings/subScaling", n(70.0)),
+            ("opacity", n(60.0)),
+        ],
+    );
+    effect_case("ec.noise.fractal", &[("overflow", Value::Enum(2)), ("contrast", n(300.0)), ("blendingMode", Value::Enum(0)), ("opacity", n(50.0))]);
     effect_case("ec.perspective.dropshadow", &[("distance", n(6.0)), ("softness", n(8.0)), ("opacity", n(80.0))]);
     effect_case("ec.perspective.dropshadow", &[("shadowOnly", Value::Bool(true)), ("color", c(0.0, 0.2, 0.6))]);
     effect_case("ec.color.brightnesscontrast", &[("brightness", n(20.0)), ("contrast", n(35.0))]);
     effect_case("ec.color.brightnesscontrast", &[("brightness", n(-10.0)), ("contrast", n(-40.0))]);
-    effect_case("ec.color.exposure", &[("exposure", n(1.3)), ("offset", n(0.02)), ("gamma", n(1.2))]);
+    effect_case("ec.color.brightnesscontrast", &[("brightness", n(20.0)), ("contrast", n(35.0)), ("useLegacy", Value::Bool(true))]);
+    effect_case("ec.color.exposure", &[("master/exposure", n(1.3)), ("master/offset", n(0.02)), ("master/gamma", n(1.2))]);
+    effect_case("ec.color.exposure", &[("channels", Value::Enum(1)), ("red/redExposure", n(0.8)), ("green/greenOffset", n(-0.05)), ("blue/blueGamma", n(1.6))]);
+    effect_case("ec.color.exposure", &[("master/exposure", n(0.5)), ("master/offset", n(-0.03)), ("bypassLinearLight", Value::Bool(true))]);
     effect_case("ec.channel.invert", &[]);
-    effect_case("ec.channel.invert", &[("channel", Value::Enum(4)), ("blend", n(30.0))]);
+    effect_case("ec.channel.invert", &[("channel", Value::Enum(effectcraft_effects::INVERT_ALPHA)), ("blend", n(30.0))]);
     effect_case("ec.channel.invert", &[("channel", Value::Enum(2))]);
     effect_case("ec.distort.transform", &[("rotation", n(20.0)), ("scaleHeight", n(80.0)), ("skew", n(10.0)), ("opacity", n(70.0))]);
 }
@@ -470,7 +509,7 @@ fn effect_chains_and_mixed_stacks() {
     for depth in [BitDepth::Bpc8, BitDepth::Bpc32] {
         let mut s = Scene::new(depth);
         let mut l = s.footage(80, 50);
-        s.effect(&mut l, "ec.color.exposure", &[("exposure", n(0.7))]);
+        s.effect(&mut l, "ec.color.exposure", &[("master/exposure", n(0.7))]);
         s.effect(&mut l, "ec.blur.gaussian", &[("blurriness", n(5.0))]);
         s.effect(&mut l, "ec.stylize.posterize", &[]);
         s.effect(&mut l, "ec.stylize.glow", &[]);

@@ -210,7 +210,7 @@ pub fn specs() -> Vec<EffectSpec> {
                 p("sceneConvergence", "Scene Convergence", num(0.0), slider(-1000.0, 1000.0, -100.0, 100.0, 1)),
                 p("verticalAlignment", "Vertical Alignment", num(0.0), slider(-1000.0, 1000.0, -100.0, 100.0, 1)),
                 p("units", "Units", Value::Enum(0), popup(&["Pixels", "% of Source"])),
-                p("leftRightSwap", "Left Right Swap", Value::Bool(false), ParamUi::Checkbox),
+                p("leftRightSwap", "Swap Left-Right", Value::Bool(false), ParamUi::Checkbox),
                 p("view3d", "3D View", Value::Enum(5), popup(&VIEWS)),
                 p("balance", "Balance", num(7.0), slider(0.0, 20.0, 0.0, 20.0, 1)),
             ],

@@ -38,12 +38,17 @@ fn cartoon(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let render = ctx.params.e("render");
     let r = (ctx.params.f("detailRadius") * b.scale).round().max(0.0) as usize;
     let thr = ctx.params.f("detailThreshold") as f32 / 100.0;
-    let steps = ctx.params.f("shadingSteps").max(1.0) as f32;
-    let smooth = ctx.params.f("shadingSmoothness") as f32 / 100.0;
-    let et = ctx.params.f("edgeThreshold") as f32;
-    let ew = ctx.params.f("edgeWidth") * b.scale;
-    let es = ctx.params.f("edgeSoftness") as f32 / 100.0;
-    let eo = ctx.params.f("edgeOpacity") as f32 / 100.0;
+    let steps = ctx.params.f("fill/shadingSteps").max(1.0) as f32;
+    let smooth = ctx.params.f("fill/shadingSmoothness") as f32 / 100.0;
+    let et = ctx.params.f("edge/edgeThreshold") as f32;
+    let ew = ctx.params.f("edge/edgeWidth") * b.scale;
+    let es = ctx.params.f("edge/edgeSoftness") as f32 / 100.0;
+    let eo = ctx.params.f("edge/edgeOpacity") as f32 / 100.0;
+    // Advanced: Edge Black Level shifts the grey representation of the edges towards white
+    // strokes on black; Edge Contrast (0.5 = neutral) steepens or flattens it.
+    let black = (ctx.params.f("advanced/edgeBlackLevel") as f32 / 100.0).clamp(0.0, 1.0);
+    let contrast = ((ctx.params.f("advanced/edgeContrast").clamp(0.0, 0.999) * std::f64::consts::FRAC_PI_2).tan() as f32).min(100.0);
+    let grey = move |e: f32| (((1.0 - e) - black).abs() - 0.5) * contrast + 0.5;
     // Edge-preserving smoothing: guided filter on each premultiplied channel, guided by luma.
     let smoothed = if r > 0 {
         let guide = Plane::luma(&b.img);
@@ -87,10 +92,11 @@ fn cartoon(ctx: &EffectCtx, mut b: Buf) -> Buf {
             if l > 1e-4 { c.map(|v| v * lq / l) } else { [lq; 3] }
         };
         let e = edges.as_ref().map(|e| e.data[i] * eo).unwrap_or(0.0);
+        let g = grey(e).clamp(0.0, 1.0);
         let o = match render {
             0 => fill,
-            1 => [1.0 - e; 3],
-            _ => fill.map(|v| v * (1.0 - e)),
+            1 => [g; 3],
+            _ => fill.map(|v| v * g),
         };
         *px = premul(o, a);
     });
@@ -109,6 +115,18 @@ fn roughen_edges(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let (ox, oy) = b.to_px(ctx.params.v2("offset"));
     let oct = ctx.params.f("complexity") as f32;
     let evo = ctx.params.f("evolution") as f32 / 360.0;
+    // Stretch Width or Height: positive values widen the fractal, negative ones heighten it.
+    let st = ctx.params.f("stretch") as f32;
+    let (sx, sy) = (1.0 + st.max(0.0), 1.0 + (-st).max(0.0));
+    // Cycle Evolution: cross-fade one cycle into the next so the roughness loops seamlessly.
+    let cycle = ctx.params.b("evolutionOptions/cycleEvolution").then(|| ctx.params.f("evolutionOptions/cycle").round().max(1.0) as f32);
+    let (evo, evo_w) = match cycle {
+        Some(c) => {
+            let e = evo.rem_euclid(c);
+            (e, e / c)
+        }
+        None => (evo, 0.0),
+    };
     // (frequency, influence, sharpness, coloured) per edge type.
     let (fm, im, sm, colored) = match kind {
         1 => (1.0, 1.0, 1.0, true),
@@ -123,14 +141,18 @@ fn roughen_edges(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let alpha = Plane::alpha(&b.img);
     let d = if border > 0.05 { gauss_plane(&alpha, border * 0.5, border * 0.5) } else { alpha };
     let extra = if kind == 4 || kind == 5 { 1.0 } else { 0.0 };
-    let seed = ctx.seed ^ 0x40f1;
+    let seed = ctx.seed ^ 0x40f1 ^ (ctx.params.f("evolutionOptions/randomSeed").round() as i64 as u32).wrapping_mul(0x9e37_79b9);
     b.img.rows_mut().for_each(|(y, row)| {
         for (x, px) in row.iter_mut().enumerate() {
             if px[3] <= 0.0 {
                 continue;
             }
             let dv = d.get(x, y);
-            let n = fbm((x as f32 + 0.5 - ox as f32) / scale * fm, (y as f32 + 0.5 - oy as f32) / scale * fm, evo, seed, oct + extra);
+            let (nx, ny) = ((x as f32 + 0.5 - ox as f32) / (scale * sx) * fm, (y as f32 + 0.5 - oy as f32) / (scale * sy) * fm);
+            let mut n = fbm(nx, ny, evo, seed, oct + extra);
+            if let Some(c) = cycle {
+                n += (fbm(nx, ny, evo - c, seed, oct + extra) - n) * evo_w;
+            }
             let s = dv - 0.5 + (n - 0.5) * infl * im * 0.5;
             let m = (s * sharp * sm * 4.0 + 0.5).clamp(0.0, 1.0);
             let (mut c, a) = unpremul(*px);
@@ -206,7 +228,7 @@ fn strobe(ctx: &EffectCtx, mut b: Buf) -> Buf {
     b
 }
 
-// ---- Texturize (self relief) ----
+// ---- Texturize ----
 
 fn texturize(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let ang = ctx.params.f("lightDirection").to_radians();
@@ -214,8 +236,11 @@ fn texturize(ctx: &EffectCtx, mut b: Buf) -> Buf {
     if k == 0.0 {
         return b;
     }
+    // Relief from the texture layer's luminance; without a texture there is nothing to do.
+    let Some(tex) = ctx.layer_param("textureLayer", true) else { return b };
+    let tex = crate::transition::place_layer(ctx, &b, &tex, ctx.params.e("texturePlacement"));
     let (lx, ly) = (ang.cos() as f32, -ang.sin() as f32);
-    let h = gauss_plane(&Plane::luma(&b.img), 0.7 * b.scale, 0.7 * b.scale);
+    let h = gauss_plane(&Plane::luma(&tex), 0.7 * b.scale, 0.7 * b.scale);
     b.img.rows_mut().for_each(|(y, row)| {
         for (x, px) in row.iter_mut().enumerate() {
             let gx = (h.get_clamped(x as i64 + 1, y as i64) - h.get_clamped(x as i64 - 1, y as i64)) * 0.5;
@@ -512,12 +537,14 @@ pub fn specs() -> Vec<EffectSpec> {
                 p("render", "Render", Value::Enum(2), popup(&["Fill", "Edges", "Fill & Edges"])),
                 p("detailRadius", "Detail Radius", num(8.0), slider(0.0, 50.0, 0.0, 50.0, 1)),
                 p("detailThreshold", "Detail Threshold", num(10.0), pct()),
-                p("shadingSteps", "Shading Steps", num(8.0), slider(1.0, 64.0, 1.0, 64.0, 1)),
-                p("shadingSmoothness", "Shading Smoothness", num(70.0), pct()),
-                p("edgeThreshold", "Edge Threshold", num(1.5), slider(0.0, 5.0, 0.0, 5.0, 2)),
-                p("edgeWidth", "Edge Width", num(1.5), slider(0.0, 10.0, 0.0, 5.0, 2)),
-                p("edgeSoftness", "Edge Softness", num(60.0), pct()),
-                p("edgeOpacity", "Edge Opacity", num(100.0), pct()),
+                p("fill/shadingSteps", "Shading Steps", num(8.0), slider(1.0, 64.0, 1.0, 64.0, 1)),
+                p("fill/shadingSmoothness", "Shading Smoothness", num(70.0), pct()),
+                p("edge/edgeThreshold", "Threshold", num(1.5), slider(0.0, 5.0, 0.0, 5.0, 2)),
+                p("edge/edgeWidth", "Width", num(1.5), slider(0.0, 10.0, 0.0, 5.0, 2)),
+                p("edge/edgeSoftness", "Softness", num(60.0), pct()),
+                p("edge/edgeOpacity", "Opacity", num(100.0), pct()),
+                p("advanced/edgeBlackLevel", "Edge Black Level", num(0.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
+                p("advanced/edgeContrast", "Edge Contrast", num(0.5), slider(0.0, 1.0, 0.0, 1.0, 2)),
             ],
             cartoon,
         ),
@@ -536,9 +563,13 @@ pub fn specs() -> Vec<EffectSpec> {
                 p("edgeSharpness", "Edge Sharpness", num(1.0), slider(0.0, 10.0, 0.0, 10.0, 2)),
                 p("fractalInfluence", "Fractal Influence", num(1.0), slider(0.0, 1.0, 0.0, 1.0, 2)),
                 p("scale", "Scale", num(100.0), slider(10.0, 1000.0, 10.0, 300.0, 1)),
+                p("stretch", "Stretch Width or Height", num(0.0), slider(-10.0, 10.0, -5.0, 5.0, 2)),
                 p("offset", "Offset (Turbulence)", pt(0.0, 0.0), ParamUi::Point),
                 p("complexity", "Complexity", num(2.0), slider(1.0, 10.0, 1.0, 10.0, 0)),
                 p("evolution", "Evolution", num(0.0), ParamUi::Angle),
+                p("evolutionOptions/cycleEvolution", "Cycle Evolution", Value::Bool(false), ParamUi::Checkbox),
+                p("evolutionOptions/cycle", "Cycle (in Revolutions)", num(1.0), slider(1.0, 1000.0, 1.0, 20.0, 0)),
+                p("evolutionOptions/randomSeed", "Random Seed", num(0.0), slider(0.0, 10000.0, 0.0, 100.0, 0)),
             ],
             roughen_edges,
         ),
@@ -548,7 +579,7 @@ pub fn specs() -> Vec<EffectSpec> {
             vec![
                 p("amount", "Scatter Amount", num(0.0), slider(0.0, 127.0, 0.0, 127.0, 1)),
                 p("grain", "Grain", Value::Enum(0), popup(&["Both", "Horizontal", "Vertical"])),
-                p("randomizeEveryFrame", "Randomize Every Frame", Value::Bool(false), ParamUi::Checkbox),
+                p("randomizeEveryFrame", "Scatter Randomness", Value::Bool(false), ParamUi::Checkbox),
             ],
             scatter,
         ),
@@ -575,8 +606,10 @@ pub fn specs() -> Vec<EffectSpec> {
             "ec.stylize.texturize",
             "Texturize",
             vec![
+                p("textureLayer", "Texture Layer", Value::Layer(None), ParamUi::Layer),
                 p("lightDirection", "Light Direction", num(135.0), ParamUi::Angle),
                 p("textureContrast", "Texture Contrast", num(1.0), slider(0.0, 2.0, 0.0, 2.0, 2)),
+                p("texturePlacement", "Texture Placement", Value::Enum(0), popup(&["Tile Texture", "Center Texture", "Stretch Texture to Fit"])),
             ],
             texturize,
         ),
@@ -800,7 +833,12 @@ mod tests {
 
     #[test]
     fn cartoon_quantises_flat_regions() {
-        let out = run_at("ec.stylize.cartoon", &[("render", Value::Enum(0)), ("shadingSmoothness", num(0.0)), ("shadingSteps", num(4.0))], ramp(24, 8), 0.0);
+        let out = run_at(
+            "ec.stylize.cartoon",
+            &[("render", Value::Enum(0)), ("fill/shadingSmoothness", num(0.0)), ("fill/shadingSteps", num(4.0))],
+            ramp(24, 8),
+            0.0,
+        );
         let mut lv: Vec<i32> = out
             .img
             .data
@@ -813,5 +851,146 @@ mod tests {
         lv.sort();
         lv.dedup();
         assert!(lv.len() <= 6, "{lv:?}");
+    }
+
+    /// A host whose every layer is `img`.
+    struct ImgHost(Image);
+    impl crate::EffectHost for ImgHost {
+        fn layer(&self, _: u64, _: bool) -> Option<crate::LayerPixels> {
+            let s = [self.0.width as f64, self.0.height as f64];
+            Some(crate::LayerPixels { buf: Buf { img: self.0.clone(), offset: [0.0; 2], scale: 1.0 }, size: s })
+        }
+        fn audio(&self, _: u64, _: f64, _: usize, _: u32) -> Option<Vec<f32>> {
+            None
+        }
+    }
+
+    fn run_env(id: &str, vals: &[(&str, Value)], img: Image, env: crate::EffectEnv) -> Buf {
+        let s = crate::find(id).unwrap();
+        let mut params = Params { values: s.params.iter().map(|p| (p.id.to_string(), p.default.clone())).collect() };
+        for (k, v) in vals {
+            params.values.insert(k.to_string(), v.clone());
+        }
+        let ctx = EffectCtx { params: &params, time: 0.0, layer_size: [img.width as f64, img.height as f64], seed: 1, adjustment: false, env };
+        crate::apply(s, &ctx, Buf { img, offset: [0.0, 0.0], scale: 1.0 })
+    }
+
+    #[test]
+    fn texturize_needs_a_texture_layer_and_places_it() {
+        let img = Image::filled(16, 16, [0.5, 0.5, 0.5, 1.0]);
+        // No texture layer: nothing to emboss.
+        assert_eq!(run_at("ec.stylize.texturize", &[], img.clone(), 0.0).img.data, img.data);
+        // A 4-px stripe texture, tiled, shades the flat layer along the stripes.
+        let mut tex = Image::new(4, 4);
+        for y in 0..4 {
+            for x in 0..4 {
+                let v = if x < 2 { 1.0 } else { 0.0 };
+                tex.set(x, y, [v, v, v, 1.0]);
+            }
+        }
+        let host = ImgHost(tex);
+        let env = crate::EffectEnv { host: Some(&host), ..Default::default() };
+        let out = run_env("ec.stylize.texturize", &[("textureLayer", Value::Layer(Some(1))), ("lightDirection", num(0.0))], img.clone(), env);
+        let row: Vec<f32> = (0..16).map(|x| out.img.get(x, 8)[0]).collect();
+        assert!(row.iter().any(|v| *v > 0.55) && row.iter().any(|v| *v < 0.45), "{row:?}");
+        // Repeats every 4 px (tiled).
+        assert!((row[5] - row[9]).abs() < 1e-4 && (row[6] - row[10]).abs() < 1e-4, "{row:?}");
+        // Stretched, the single stripe edge sits in the middle of the layer only.
+        let out = run_env(
+            "ec.stylize.texturize",
+            &[("textureLayer", Value::Layer(Some(1))), ("lightDirection", num(0.0)), ("texturePlacement", Value::Enum(2))],
+            img,
+            env,
+        );
+        let (a, b) = (out.img.get(4, 8)[0], out.img.get(8, 8)[0]);
+        assert!((a - b).abs() > 0.02, "stretched is not periodic every 4 px: {a} {b}");
+        assert!((out.img.get(8, 8)[0] - 0.5).abs() > 0.05);
+    }
+
+    #[test]
+    fn mosaic_averages_unless_sharp_colors() {
+        let img = ramp(20, 10);
+        let avg = run_at("ec.stylize.mosaic", &[("horizontal", num(2.0)), ("vertical", num(1.0))], img.clone(), 0.0);
+        // Left tile: the mean of x / 20 over x = 0..9 is 0.225.
+        assert!((avg.img.get(3, 4)[0] - 0.225).abs() < 1e-4, "{:?}", avg.img.get(3, 4));
+        let sharp = run_at("ec.stylize.mosaic", &[("horizontal", num(2.0)), ("vertical", num(1.0)), ("sharpColors", Value::Bool(true))], img.clone(), 0.0);
+        assert_eq!(sharp.img.get(3, 4), img.get(5, 5));
+    }
+
+    #[test]
+    fn find_edges_and_emboss_blend_with_original() {
+        let img = ramp(12, 12);
+        for id in ["ec.stylize.findedges", "ec.stylize.emboss"] {
+            let full = run_at(id, &[("blend", num(100.0))], img.clone(), 0.0);
+            assert!(full.img.data.iter().zip(&img.data).all(|(a, b)| (0..4).all(|c| (a[c] - b[c]).abs() < 1e-6)), "{id}");
+            let fx = run_at(id, &[], img.clone(), 0.0);
+            let half = run_at(id, &[("blend", num(50.0))], img.clone(), 0.0);
+            let (a, b, h) = (fx.img.get(6, 6)[1], img.get(6, 6)[1], half.img.get(6, 6)[1]);
+            assert!((h - (a + b) * 0.5).abs() < 1e-5, "{id}: {a} {b} {h}");
+        }
+    }
+
+    #[test]
+    fn glow_composite_none_dimensions_and_ab_looping() {
+        let mut img = Image::new(30, 30);
+        for y in 12..18 {
+            for x in 12..18 {
+                img.set(x, y, [1.0, 1.0, 1.0, 1.0]);
+            }
+        }
+        let vals = |extra: &[(&'static str, Value)]| {
+            let mut v = vec![("radius", num(8.0)), ("threshold", num(20.0))];
+            v.extend_from_slice(extra);
+            v
+        };
+        // None: the glow alone (the core is the glow's own brightness, not the original's 1.0 + glow).
+        let on_top = run_at("ec.stylize.glow", &vals(&[]), img.clone(), 0.0);
+        let none = run_at("ec.stylize.glow", &vals(&[("operation", Value::Enum(2))]), img.clone(), 0.0);
+        let (ox, oy) = (on_top.offset[0] as i64, on_top.offset[1] as i64);
+        assert!(none.img.get(ox + 15, oy + 15)[0] < on_top.img.get(ox + 15, oy + 15)[0]);
+        // Horizontal only: glow spreads sideways but not up.
+        let h = run_at("ec.stylize.glow", &vals(&[("glowDimensions", Value::Enum(1))]), img.clone(), 0.0);
+        assert!(h.img.get(ox + 21, oy + 15)[3] > 0.05);
+        assert!(h.img.get(ox + 15, oy + 9)[3] < 1e-4);
+        // A & B colour looping: triangle returns to A at full brightness, sawtooth ends at B.
+        assert!((crate::misc::glow_ab_t(1.0, 2, 1.0, 0.0, 0.5)).abs() < 1e-5);
+        assert!((crate::misc::glow_ab_t(1.0, 0, 1.0, 0.0, 0.5) - 1.0).abs() < 1e-5);
+        assert!((crate::misc::glow_ab_t(0.5, 2, 1.0, 0.0, 0.5) - 1.0).abs() < 1e-5);
+        // The midpoint moves where the gradient is half-way.
+        assert!((crate::misc::glow_ab_t(0.2, 0, 1.0, 0.0, 0.2) - 0.5).abs() < 1e-4);
+    }
+
+    #[test]
+    fn cartoon_edge_black_level_inverts_edges() {
+        let mut img = Image::filled(24, 24, [0.0, 0.0, 0.0, 1.0]);
+        for y in 0..24 {
+            for x in 12..24 {
+                img.set(x, y, [1.0, 1.0, 1.0, 1.0]);
+            }
+        }
+        let edges = |bl: f64| run_at("ec.stylize.cartoon", &[("render", Value::Enum(1)), ("advanced/edgeBlackLevel", num(bl))], img.clone(), 0.0);
+        let plain = edges(0.0);
+        let inv = edges(100.0);
+        // Flat areas: white without black level, black at full black level; the edge flips too.
+        assert!(plain.img.get(3, 12)[0] > 0.99 && inv.img.get(3, 12)[0] < 0.01);
+        assert!(plain.img.get(12, 12)[0] < inv.img.get(12, 12)[0]);
+    }
+
+    #[test]
+    fn roughen_edges_seed_stretch_and_cycle() {
+        let mut img = Image::new(40, 40);
+        for y in 8..32 {
+            for x in 8..32 {
+                img.set(x, y, [1.0, 1.0, 1.0, 1.0]);
+            }
+        }
+        let run = |vals: &[(&str, Value)]| run_at("ec.stylize.roughenedges", vals, img.clone(), 0.0).img.data;
+        let base = run(&[]);
+        assert_ne!(base, run(&[("evolutionOptions/randomSeed", num(7.0))]));
+        assert_ne!(base, run(&[("stretch", num(3.0))]));
+        // Cycling over 1 revolution: evolution 0° and 360° give the same roughness.
+        let cyc = |e: f64| run(&[("evolutionOptions/cycleEvolution", Value::Bool(true)), ("evolution", num(e))]);
+        assert_eq!(cyc(0.0), cyc(360.0));
+        assert_ne!(cyc(0.0), cyc(180.0));
     }
 }

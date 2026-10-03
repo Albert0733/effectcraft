@@ -370,19 +370,35 @@ pub(crate) fn draw_frame(app: &mut EffectcraftApp, ctx: &egui::Context, painter:
         painter.text(comp_rect.left_top() + vec2(6.0, 6.0), Align2::LEFT_TOP, "Snapshot", Tokens::ui(11.0), SNAP_COLOR);
         return;
     }
-    let Some((tex, k)) = app.viewer_tex.clone() else { return };
-    if k.comp != cid.0 {
-        return;
-    }
-    let zoom = comp_rect.width() as f64 / ectx.comp.width.max(1) as f64;
-    let rect = match texture_roi(ctx) {
-        Some([x, y, w, h]) => Rect::from_min_size(comp_rect.min + vec2((x * zoom) as f32, (y * zoom) as f32), vec2((w * zoom) as f32, (h * zoom) as f32)),
-        None => comp_rect,
+    // A GPU frame (the web viewer): drawn straight from its texture; Show Channel / exposure
+    // read it back first (asynchronously in the browser: from the next frame on).
+    let gpu = matches!((&app.viewer_shown, &app.viewer_native), (Some(s), Some(n)) if s.0 == n.0 && s.1 == n.1 && n.1.comp == cid.0);
+    let rect = if gpu {
+        let id = app.viewer_shown.map(|s| s.0).expect("shown");
+        if plain || app.viewer_pixels().is_none() {
+            if !plain {
+                ctx.request_repaint();
+            }
+            painter.image(id, comp_rect, uv, Color32::WHITE);
+            return;
+        }
+        comp_rect
+    } else {
+        let Some((tex, k)) = app.viewer_tex.clone() else { return };
+        if k.comp != cid.0 {
+            return;
+        }
+        let zoom = comp_rect.width() as f64 / ectx.comp.width.max(1) as f64;
+        let rect = match texture_roi(ctx) {
+            Some([x, y, w, h]) => Rect::from_min_size(comp_rect.min + vec2((x * zoom) as f32, (y * zoom) as f32), vec2((w * zoom) as f32, (h * zoom) as f32)),
+            None => comp_rect,
+        };
+        if plain {
+            painter.image(tex.id(), rect, uv, Color32::WHITE);
+            return;
+        }
+        rect
     };
-    if plain {
-        painter.image(tex.id(), rect, uv, Color32::WHITE);
-        return;
-    }
     let Some(src) = app.viewer_image.clone() else { return };
     let key = {
         use std::hash::{Hash, Hasher};
@@ -578,6 +594,8 @@ pub(crate) fn bottom_bar(app: &mut EffectcraftApp, ui: &mut egui::Ui, bar: Rect,
         ("Grid".to_string(), v.grid),
         ("Guides".to_string(), v.guides),
         ("Rulers".to_string(), v.rulers),
+        ("-".to_string(), false),
+        ("3D Reference Axes".to_string(), app.session.prefs.three_d.show_reference_axes),
     ];
     if let Some(i) = popup(app, ui, "vw-grid-pop", gr, &items, "gridItem") {
         let v = &mut app.ui.viewer;
@@ -586,7 +604,9 @@ pub(crate) fn bottom_bar(app: &mut EffectcraftApp, ui: &mut egui::Ui, bar: Rect,
             1 => v.proportional_grid = !v.proportional_grid,
             2 => v.grid = !v.grid,
             3 => v.guides = !v.guides,
-            _ => v.rulers = !v.rulers,
+            4 => v.rulers = !v.rulers,
+            6 => app.session.prefs.three_d.show_reference_axes = !app.session.prefs.three_d.show_reference_axes,
+            _ => {}
         }
     }
     // Show Channel and Color Management Settings.

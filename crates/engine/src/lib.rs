@@ -16,6 +16,7 @@ pub mod demo;
 pub mod links;
 pub mod mask_track;
 pub mod menus;
+pub mod offload;
 pub mod prefs;
 pub mod psd_import;
 pub mod render_queue;
@@ -319,6 +320,11 @@ pub struct Session {
     /// The JavaScript scripting engine (set by the host that links `effectcraft-script`):
     /// `script.run`, File ▸ Scripts ▸ Run Script File… (`.jsx`/`.js`) and the Script Console.
     pub script: Option<ScriptRunner>,
+    /// Runs renders and analyses off the UI thread where there are no threads (the web app's
+    /// Web Workers, see [`offload`]); `None` = threads (desktop) or inline (wasm32).
+    pub offload: Option<Arc<dyn offload::Offload>>,
+    /// Analyses running in the [`Session::offload`] worker.
+    pub offloaded: Vec<offload::OffloadedJob>,
 }
 
 /// A script to run (see [`Session::script`]).
@@ -373,6 +379,8 @@ impl Default for Session {
             autosave: autosave::AutoSaveState::default(),
             snapshot: None,
             script: None,
+            offload: None,
+            offloaded: vec![],
         }
     }
 }
@@ -630,6 +638,7 @@ impl Session {
         self.roto_job = None;
         self.roto_pending.clear();
         p.fix_next_id();
+        upgrade_effects(&mut p);
         self.project = Arc::new(p);
         self.history = History::default();
         self.state = EditorState { snapping: true, view_layout: 1, ..Default::default() };
@@ -641,6 +650,35 @@ impl Session {
             self.open_comp(c);
         }
     }
+}
+
+/// Bring effect instances saved by earlier versions up to date with the effect registry
+/// (renamed / regrouped / added parameters, reordered popups; see
+/// [`effectcraft_effects::migrate`]).
+pub fn upgrade_effects(p: &mut Project) {
+    let mut sizes = std::collections::HashMap::new();
+    for (cid, c) in p.comps() {
+        for l in &c.layers {
+            let (w, h) = effectcraft_render::source_size(p, l);
+            sizes.insert((*cid, l.id), if w == 0 { [c.width as f64, c.height as f64] } else { [w as f64, h as f64] });
+        }
+    }
+    let mut next = p.next_id;
+    for (cid, it) in p.items.iter_mut() {
+        let effectcraft_project::ItemKind::Comp(c) = &mut it.kind else { continue };
+        for l in &mut std::sync::Arc::make_mut(c).layers {
+            let size = sizes.get(&(*cid, l.id)).copied().unwrap_or([100.0, 100.0]);
+            let Some(fx) = l.props.sub_mut("effects") else { continue };
+            for n in &mut fx.children {
+                let effectcraft_project::Node::Group(g) = n else { continue };
+                let effectcraft_project::GroupKind::Effect { effect } = &g.kind else { continue };
+                if let Some(spec) = effectcraft_effects::find(effect) {
+                    effectcraft_effects::migrate::upgrade_instance(spec, g, &mut effectcraft_project::build::Ids(&mut next), size);
+                }
+            }
+        }
+    }
+    p.next_id = next;
 }
 
 #[cfg(test)]
@@ -685,6 +723,8 @@ mod tests_settings;
 mod tests_stubs;
 #[cfg(test)]
 mod tests_styles;
+#[cfg(test)]
+mod tests_tail;
 #[cfg(test)]
 mod tests_text;
 #[cfg(test)]

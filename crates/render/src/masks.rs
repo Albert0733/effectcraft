@@ -54,9 +54,17 @@ fn coverage_at(ctx: &EvalCtx, layer: &Layer, g: &effectcraft_project::PropGroup,
     let path = effectcraft_path::to_kurbo(&sp);
     let (w, h) = (buf.img.width, buf.img.height);
     let m = Mat3::translate(vec2(buf.offset[0], buf.offset[1])) * Mat3::scale(vec2(buf.scale, buf.scale));
-    let mut cov = effectcraft_path::fill_coverage(std::slice::from_ref(&path), &m, w, h, FillRule::NonZero);
     let exp = ctx.f(layer, g, "expansion", 0.0);
-    if exp.abs() > 0.01 {
+    let linear = matches!(g.kind, GroupKind::Mask { feather_falloff: FeatherFalloff::Linear, .. });
+    // Variable-width feather (Mask Feather tool points): expansion and the per-point feather
+    // are applied together from the signed distance to the path.
+    let variable = !sp.feather.is_empty();
+    let mut cov = if variable {
+        effectcraft_path::feather::variable_feather_coverage(&sp, &m, w, h, exp, linear)
+    } else {
+        effectcraft_path::fill_coverage(std::slice::from_ref(&path), &m, w, h, FillRule::NonZero)
+    };
+    if exp.abs() > 0.01 && !variable {
         let ring = effectcraft_path::stroke_coverage(
             std::slice::from_ref(&path),
             &StrokeStyle { width: exp.abs() * 2.0, join: effectcraft_path::Join::Round, ..Default::default() },
@@ -71,7 +79,6 @@ fn coverage_at(ctx: &EvalCtx, layer: &Layer, g: &effectcraft_project::PropGroup,
     let feather = ctx.v2(layer, g, "feather", [0.0; 2]);
     if feather[0] > 0.0 || feather[1] > 0.0 {
         let img = cov.to_image();
-        let linear = matches!(g.kind, GroupKind::Mask { feather_falloff: FeatherFalloff::Linear, .. });
         let b = if linear {
             // One box pass: a straight ramp `feather` pixels wide across the edge.
             let r = |f: f64| ((f * buf.scale / 2.0).round() as usize).max(if f > 0.0 { 1 } else { 0 });

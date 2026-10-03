@@ -61,8 +61,8 @@ pub fn specs() -> Vec<EffectSpec> {
                         "Blend",
                         "Max",
                         "Full On",
-                        "Lightness of Result",
-                        "Max of Result",
+                        "Lightness Of Result",
+                        "Max Of Result",
                         "Alpha Difference",
                         "Alpha Difference Only",
                     ]),
@@ -75,9 +75,9 @@ pub fn specs() -> Vec<EffectSpec> {
             "Time Displacement",
             vec![
                 p("displacementMapLayer", "Time Displacement Layer", Value::Layer(None), ParamUi::Layer),
-                p("maxDisplacementTime", "Max Displacement Time [sec]", num(1.0), slider(-30.0, 30.0, -5.0, 5.0, 2)),
-                p("timeResolution", "Time Resolution [fps]", num(60.0), slider(1.0, 999.0, 1.0, 120.0, 1)),
-                p("stretchMap", "If Layer Sizes Differ: Stretch Map to Fit", Value::Bool(true), ParamUi::Checkbox),
+                p("maxDisplacementTime", "Max Displacement Time (sec)", num(1.0), slider(-30.0, 30.0, -5.0, 5.0, 2)),
+                p("timeResolution", "Time Resolution (fps)", num(60.0), slider(1.0, 999.0, 1.0, 120.0, 1)),
+                p("stretchMap", "Stretch Map To Fit", Value::Bool(true), ParamUi::Checkbox),
             ],
             time_displacement,
         ),
@@ -89,11 +89,12 @@ pub fn specs() -> Vec<EffectSpec> {
                 p("adjustTimeBy", "Adjust Time By", Value::Enum(0), popup(&["Speed", "Source Frame"])),
                 p("speed", "Speed", num(50.0), slider(-10000.0, 10000.0, 0.0, 200.0, 1)),
                 p("sourceFrame", "Source Frame", num(0.0), slider(-100000.0, 100000.0, 0.0, 300.0, 1)),
-                p("vectorDetail", "Vector Detail", num(20.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
-                p("enableMotionBlur", "Enable Motion Blur", Value::Bool(false), ParamUi::Checkbox),
-                p("shutterControl", "Shutter Control", Value::Enum(0), popup(&["Automatic", "Manual"])),
-                p("shutterAngle", "Shutter Angle", num(180.0), slider(0.0, 720.0, 0.0, 360.0, 1)),
-                p("shutterSamples", "Shutter Samples", num(5.0), slider(1.0, 64.0, 1.0, 32.0, 0)),
+                p("tuning/vectorDetail", "Vector Detail", num(20.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
+                p("tuning/buildFromOneImage", "Build From One Image", Value::Bool(false), ParamUi::Checkbox),
+                p("motionBlur/enableMotionBlur", "Enable Motion Blur", Value::Bool(false), ParamUi::Checkbox),
+                p("motionBlur/shutterControl", "Shutter Control", Value::Enum(0), popup(&["Automatic", "Manual"])),
+                p("motionBlur/shutterAngle", "Shutter Angle", num(180.0), slider(0.0, 720.0, 0.0, 360.0, 1)),
+                p("motionBlur/shutterSamples", "Shutter Samples", num(5.0), slider(1.0, 64.0, 1.0, 32.0, 0)),
             ],
             timewarp,
         ),
@@ -436,17 +437,22 @@ fn timewarp(ctx: &EffectCtx, b: Buf) -> Buf {
     let speed = ctx.params.f("speed");
     let src = timewarp_source_time(ctx.time, by_frame, speed, ctx.params.f("sourceFrame"), fps);
     let method = ctx.params.e("method");
+    // Build From One Image: interpolated frames come from the nearest source frame alone.
+    let one = method > 0 && ctx.params.b("tuning/buildFromOneImage");
     // Sample times (with weights) for one instant of source time.
     let instant = |s: f64| -> Vec<(f64, f32)> {
         let f = s * fps;
         let f0 = (f + 1e-6).floor();
         let frac = (f - f0) as f32;
+        if one {
+            return vec![((f + 1e-6).round() / fps, 1.0)];
+        }
         if method == 0 || frac < 1e-4 { vec![(f0 / fps, 1.0)] } else { vec![(f0 / fps, 1.0 - frac), ((f0 + 1.0) / fps, frac)] }
     };
     let mut samples: Vec<(f64, f32)> = Vec::new();
-    if ctx.params.b("enableMotionBlur") {
-        let angle = if ctx.params.e("shutterControl") == 1 { ctx.params.f("shutterAngle") } else { 180.0 };
-        let n = ctx.params.f("shutterSamples").round().clamp(1.0, 64.0) as usize;
+    if ctx.params.b("motionBlur/enableMotionBlur") {
+        let angle = if ctx.params.e("motionBlur/shutterControl") == 1 { ctx.params.f("motionBlur/shutterAngle") } else { 180.0 };
+        let n = ctx.params.f("motionBlur/shutterSamples").round().clamp(1.0, 64.0) as usize;
         let rate = if by_frame { 1.0 } else { speed / 100.0 };
         let span = angle / 360.0 * rate / fps;
         for i in 0..n {
@@ -566,6 +572,12 @@ mod tests {
         // Frame Mix between 0.5 and 0.6 at source 0.55.
         let out = run("ec.time.timewarp", &[("method", Value::Enum(1))], 1.1, &h);
         assert!((out.img.data[0][0] - 0.55).abs() < 1e-4, "{}", out.img.data[0][0]);
+        // Build From One Image: the nearest source frame alone (0.57 → 0.6).
+        let out = run("ec.time.timewarp", &[("method", Value::Enum(1)), ("tuning/buildFromOneImage", Value::Bool(true))], 1.14, &h);
+        assert!((out.img.data[0][0] - 0.6).abs() < 1e-4, "{}", out.img.data[0][0]);
+        // Motion blur (in its twirl-down) averages over the shutter.
+        let out = run("ec.time.timewarp", &[("method", Value::Enum(1)), ("motionBlur/enableMotionBlur", Value::Bool(true))], 1.0, &h);
+        assert!(out.img.data[0][0] > 0.5 + 1e-3, "{}", out.img.data[0][0]);
         // Source Frame mode: frame 3 at 10 fps.
         let out = run("ec.time.timewarp", &[("method", Value::Enum(0)), ("adjustTimeBy", Value::Enum(1)), ("sourceFrame", num(3.0))], 2.0, &h);
         assert!((out.img.data[0][0] - 0.3).abs() < 1e-5);

@@ -183,20 +183,86 @@ fn luma_key(ctx: &EffectCtx, mut b: Buf) -> Buf {
 
 // ---- Color Difference Key ----
 
+/// Color Difference Key's View options.
+pub const COLOR_DIFF_VIEWS: [&str; 9] = [
+    "Source",
+    "Uncorrected Matte Partial A",
+    "Corrected Matte Partial A",
+    "Uncorrected Matte Partial B",
+    "Corrected Matte Partial B",
+    "Uncorrected Matte",
+    "Corrected Matte",
+    "Final Output",
+    "[A, B, Matte] Corrected, Final",
+];
+
+/// Levels on a 0..1 matte value: input black / white (0..255), gamma, output black / white.
+fn matte_levels(v: f32, in_b: f32, in_w: f32, gamma: f32, out_b: f32, out_w: f32) -> f32 {
+    let t = ((v - in_b / 255.0) / ((in_w - in_b) / 255.0).max(1e-4)).clamp(0.0, 1.0);
+    let t = t.powf(1.0 / gamma.max(0.01));
+    (out_b / 255.0 + t * (out_w - out_b) / 255.0).clamp(0.0, 1.0)
+}
+
+/// The key splits the colour difference between the key's primary channel and each of the two
+/// other channels into two partial mattes (A: first other channel, B: second); their union is
+/// the alpha matte. Each partial and the combined matte have their own levels controls.
 fn color_difference_key(ctx: &EffectCtx, mut b: Buf) -> Buf {
-    let k = ctx.params.color("keyColor");
-    let (pi, o1, o2) = primary(k);
-    let kd = (k[pi] - k[o1].max(k[o2])).max(1e-3);
-    let black = ctx.params.f("blackLevel") as f32 / 255.0;
-    let white = ctx.params.f("whiteLevel") as f32 / 255.0;
-    let gamma = ctx.params.f("gamma").max(0.01) as f32;
-    let m = matte_of(&b.img, |c, _| {
-        let diff = c[pi] - c[o1].max(c[o2]);
-        let a = 1.0 - (diff / kd).clamp(0.0, 1.0);
-        let v = ((a - black) / (white - black).max(1e-4)).clamp(0.0, 1.0);
-        v.powf(1.0 / gamma)
+    let pr = ctx.params;
+    let view = pr.e("view");
+    if view == 0 {
+        return b;
+    }
+    let accurate = pr.e("colorMatchingAccuracy") == 1;
+    let lin = |c: [f32; 3]| if accurate { c.map(|v| srgb_to_linear(v.clamp(0.0, 1.0))) } else { c };
+    let k = pr.color("keyColor");
+    let key = lin([k[0], k[1], k[2]]);
+    let (pi, o1, o2) = primary([key[0], key[1], key[2], 1.0]);
+    let kd1 = (key[pi] - key[o1]).max(1e-3);
+    let kd2 = (key[pi] - key[o2]).max(1e-3);
+    let lv = |pre: &str| {
+        let g = |s: &str| pr.f(&format!("{pre}{s}")) as f32;
+        (g("InBlack"), g("InWhite"), g("Gamma"), g("OutBlack"), g("OutWhite"))
+    };
+    let pa = lv("partialA");
+    let pb = lv("partialB");
+    let (mb, mw, mg) = (pr.f("blackLevel") as f32, pr.f("whiteLevel") as f32, pr.f("gamma") as f32);
+    let (w, h) = (b.img.width as usize, b.img.height as usize);
+    let src = b.img.clone();
+    b.img.data.par_iter_mut().enumerate().for_each(|(i, px)| {
+        let (c, a0) = unpremul(src.data[i]);
+        let c = lin(c);
+        let ua = 1.0 - ((c[pi] - c[o1]) / kd1).clamp(0.0, 1.0);
+        let ub = 1.0 - ((c[pi] - c[o2]) / kd2).clamp(0.0, 1.0);
+        let ca = matte_levels(ua, pa.0, pa.1, pa.2, pa.3, pa.4);
+        let cb = matte_levels(ub, pb.0, pb.1, pb.2, pb.3, pb.4);
+        let um = ua.max(ub);
+        let cm = matte_levels(ca.max(cb), mb, mw, mg, 0.0, 255.0);
+        // The four-up view: Partial A, Partial B, Matte (all corrected) and the final output.
+        let v = if view == 8 {
+            let (x, y) = (i % w.max(1), i / w.max(1));
+            match (x * 2 >= w, y * 2 >= h) {
+                (false, false) => 2,
+                (true, false) => 4,
+                (false, true) => 6,
+                (true, true) => 7,
+            }
+        } else {
+            view
+        };
+        let grey = |m: f32| {
+            let m = m * a0;
+            [m, m, m, 1.0]
+        };
+        *px = match v {
+            1 => grey(ua),
+            2 => grey(ca),
+            3 => grey(ub),
+            4 => grey(cb),
+            5 => grey(um),
+            6 => grey(cm),
+            _ => src.data[i].map(|v| v * cm),
+        };
     });
-    apply_matte(&mut b.img, &m, ctx.params.e("view"));
     b
 }
 
@@ -364,10 +430,31 @@ fn screen_key(ctx: &EffectCtx, mut b: Buf) -> Buf {
 
 // ---- Spill suppression ----
 
+/// Faster: limit the key's primary channel to the larger of the other two. Better: remove the
+/// part of each pixel's chroma that points along the key colour's chroma (works for any key
+/// colour, not only primaries).
 fn spill_suppressor(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let k = ctx.params.color("colorToSuppress");
-    let (pi, o1, o2) = primary(k);
     let amt = ctx.params.f("suppression") as f32 / 100.0;
+    if ctx.params.e("colorAccuracy") == 1 {
+        let kg = (k[0] + k[1] + k[2]) / 3.0;
+        let kc = [k[0] - kg, k[1] - kg, k[2] - kg];
+        let kn = (kc[0] * kc[0] + kc[1] * kc[1] + kc[2] * kc[2]).sqrt();
+        if kn < 1e-5 {
+            return b;
+        }
+        let dir = kc.map(|v| v / kn);
+        b.img.map_straight(|c| {
+            let g = (c[0] + c[1] + c[2]) / 3.0;
+            let proj = (c[0] - g) * dir[0] + (c[1] - g) * dir[1] + (c[2] - g) * dir[2];
+            if proj <= 0.0 {
+                return c;
+            }
+            [0, 1, 2].map(|i| c[i] - proj * dir[i] * amt)
+        });
+        return b;
+    }
+    let (pi, o1, o2) = primary(k);
     b.img.map_straight(|mut c| {
         let spill = (c[pi] - c[o1].max(c[o2])).max(0.0);
         c[pi] -= spill * amt;
@@ -381,7 +468,7 @@ const LUMA_W: [f32; 3] = [0.2126, 0.7152, 0.0722];
 fn advanced_spill(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let ultra = ctx.params.e("method") == 1;
     let pi = if ultra {
-        primary(ctx.params.color("keyColor")).0
+        primary(ctx.params.color("ultraSettings/keyColor")).0
     } else {
         // Dominant key primary: the channel with the largest total excess over the other two.
         let ex = b
@@ -407,8 +494,8 @@ fn advanced_spill(ctx: &EffectCtx, mut b: Buf) -> Buf {
         _ => (0, 1),
     };
     let amt = ctx.params.f("suppression") as f32 / 100.0;
-    let range = ctx.params.f("spillRange") as f32 / 100.0;
-    let luma = ctx.params.f("lumaCorrection") as f32 / 100.0;
+    let range = ctx.params.f("ultraSettings/spillRange") as f32 / 100.0;
+    let luma = ctx.params.f("ultraSettings/lumaCorrection") as f32 / 100.0;
     b.img.map_straight(|mut c| {
         let mx = c[o1].max(c[o2]);
         let avg = 0.5 * (c[o1] + c[o2]);
@@ -455,18 +542,19 @@ pub fn specs() -> Vec<EffectSpec> {
     let thin = || slider(-5.0, 5.0, -5.0, 5.0, 1);
     let feather = || slider(0.0, 100.0, 0.0, 20.0, 1);
     let b255 = || slider(0.0, 255.0, 0.0, 255.0, 0);
+    let gamma = || slider(0.01, 10.0, 0.1, 3.0, 2);
     vec![
         spec(
             "ec.key.linearcolor",
             "Linear Color Key",
             "Keying",
             vec![
+                p("view", "View", Value::Enum(0), view_popup()),
                 p("keyColor", "Key Color", col(0.0, 0.0, 1.0), ParamUi::Color),
                 p("matchColors", "Match colors", Value::Enum(0), popup(&["Using RGB", "Using Hue", "Using Chroma"])),
                 p("tolerance", "Matching Tolerance", num(10.0), pct()),
                 p("softness", "Matching Softness", num(10.0), pct()),
                 p("keyOperation", "Key Operation", Value::Enum(0), popup(&["Key Colors", "Keep Colors"])),
-                p("view", "View", Value::Enum(0), view_popup()),
             ],
             linear_color_key,
         ),
@@ -500,11 +588,22 @@ pub fn specs() -> Vec<EffectSpec> {
             "Color Difference Key",
             "Keying",
             vec![
+                p("view", "View", Value::Enum(7), popup(&COLOR_DIFF_VIEWS)),
                 p("keyColor", "Key Color", col(0.0, 0.0, 1.0), ParamUi::Color),
-                p("blackLevel", "Matte Black", num(0.0), b255()),
-                p("whiteLevel", "Matte White", num(255.0), b255()),
-                p("gamma", "Matte Gamma", num(1.0), slider(0.01, 10.0, 0.1, 3.0, 2)),
-                p("view", "View", Value::Enum(0), view_popup()),
+                p("colorMatchingAccuracy", "Color Matching Accuracy", Value::Enum(0), popup(&["Faster", "More Accurate"])),
+                p("partialAInBlack", "Partial A In Black", num(0.0), b255()),
+                p("partialAInWhite", "Partial A In White", num(255.0), b255()),
+                p("partialAGamma", "Partial A Gamma", num(1.0), gamma()),
+                p("partialAOutBlack", "Partial A Out Black", num(0.0), b255()),
+                p("partialAOutWhite", "Partial A Out White", num(255.0), b255()),
+                p("partialBInBlack", "Partial B In Black", num(0.0), b255()),
+                p("partialBInWhite", "Partial B In White", num(255.0), b255()),
+                p("partialBGamma", "Partial B Gamma", num(1.0), gamma()),
+                p("partialBOutBlack", "Partial B Out Black", num(0.0), b255()),
+                p("partialBOutWhite", "Partial B Out White", num(255.0), b255()),
+                p("blackLevel", "Matte In Black", num(0.0), b255()),
+                p("whiteLevel", "Matte In White", num(255.0), b255()),
+                p("gamma", "Matte Gamma", num(1.0), gamma()),
             ],
             color_difference_key,
         ),
@@ -513,8 +612,8 @@ pub fn specs() -> Vec<EffectSpec> {
             "Color Range",
             "Keying",
             vec![
-                p("colorSpace", "Color Space", Value::Enum(0), popup(&["Lab", "YUV", "RGB"])),
                 p("fuzziness", "Fuzziness", num(0.0), b255()),
+                p("colorSpace", "Color Space", Value::Enum(0), popup(&["Lab", "YUV", "RGB"])),
                 p("minL", "Min (L, Y, R)", num(0.0), b255()),
                 p("maxL", "Max (L, Y, R)", num(255.0), b255()),
                 p("minA", "Min (a, U, G)", num(0.0), b255()),
@@ -563,6 +662,7 @@ pub fn specs() -> Vec<EffectSpec> {
             "Obsolete",
             vec![
                 p("colorToSuppress", "Color To Suppress", col(0.0, 0.0, 1.0), ParamUi::Color),
+                p("colorAccuracy", "Color Accuracy", Value::Enum(0), popup(&["Faster", "Better"])),
                 p("suppression", "Suppression", num(100.0), slider(0.0, 200.0, 0.0, 100.0, 0)),
             ],
             spill_suppressor,
@@ -574,9 +674,9 @@ pub fn specs() -> Vec<EffectSpec> {
             vec![
                 p("method", "Method", Value::Enum(0), popup(&["Standard", "Ultra"])),
                 p("suppression", "Suppression", num(100.0), slider(0.0, 200.0, 0.0, 100.0, 0)),
-                p("keyColor", "Key Color", col(0.0, 1.0, 0.0), ParamUi::Color),
-                p("spillRange", "Spill Range", num(50.0), pct()),
-                p("lumaCorrection", "Luma Correction", num(0.0), pct()),
+                p("ultraSettings/keyColor", "Key Color", col(0.0, 1.0, 0.0), ParamUi::Color),
+                p("ultraSettings/spillRange", "Spill Range", num(50.0), pct()),
+                p("ultraSettings/lumaCorrection", "Luma Correction", num(0.0), pct()),
             ],
             advanced_spill,
         ),
@@ -702,6 +802,42 @@ mod tests {
         let img = Image::filled(2, 2, [0.3, 0.8, 0.3, 1.0]);
         let out = run("ec.key.advancedspill", &[], img);
         assert!((out.get(0, 0)[1] - 0.3).abs() < 1e-5);
+    }
+
+    #[test]
+    fn color_difference_key_partials_views_and_levels() {
+        // Source view passes through.
+        let src = run("ec.key.colordifference", &[("keyColor", green()), ("view", Value::Enum(0))], green_screen());
+        assert_eq!(src.get(2, 2), green_screen().get(2, 2));
+        // Matte views are opaque grey; the corrected matte keys the screen.
+        let m = run("ec.key.colordifference", &[("keyColor", green()), ("view", Value::Enum(6))], green_screen());
+        assert!(m.get(2, 2)[0] < 0.01 && m.get(12, 2)[0] > 0.99 && m.get(2, 2)[3] == 1.0);
+        // Partial A's output white caps that partial (and so the final matte where only A keeps).
+        let pa = run("ec.key.colordifference", &[("keyColor", green()), ("view", Value::Enum(2)), ("partialAOutWhite", num(128.0))], green_screen());
+        assert!((pa.get(12, 2)[0] - 128.0 / 255.0).abs() < 1e-3, "{:?}", pa.get(12, 2));
+        // The four-up view shows a different panel per quadrant.
+        let four = run("ec.key.colordifference", &[("keyColor", green()), ("view", Value::Enum(8))], green_screen());
+        assert_eq!(four.get(2, 2)[3], 1.0, "matte panel is opaque");
+        assert!(four.get(12, 6)[3] > 0.99, "final output keeps the foreground");
+    }
+
+    #[test]
+    fn spill_suppressor_better_handles_secondary_key_colours() {
+        // A yellow cast on a grey pixel: Faster only limits the primary channel, Better removes
+        // the yellow chroma along the key direction.
+        let img = Image::filled(1, 1, [0.7, 0.7, 0.3, 1.0]);
+        let yellow = Value::Color([1.0, 1.0, 0.0, 1.0]);
+        let better = run("ec.key.spill", &[("colorToSuppress", yellow), ("colorAccuracy", Value::Enum(1))], img);
+        let px = better.get(0, 0);
+        assert!((px[0] - px[2]).abs() < 1e-4 && (px[1] - px[2]).abs() < 1e-4, "{px:?}");
+    }
+
+    #[test]
+    fn advanced_spill_ultra_reads_its_twirl_down() {
+        // Ultra with a blue key leaves a green pixel alone.
+        let img = Image::filled(1, 1, [0.3, 0.8, 0.3, 1.0]);
+        let out = run("ec.key.advancedspill", &[("method", Value::Enum(1)), ("ultraSettings/keyColor", Value::Color([0.0, 0.0, 1.0, 1.0]))], img);
+        assert!((out.get(0, 0)[1] - 0.8).abs() < 1e-5);
     }
 
     #[test]

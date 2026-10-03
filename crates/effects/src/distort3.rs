@@ -54,7 +54,7 @@ fn centroid(pts: &[[f64; 2]]) -> [f64; 2] {
 }
 
 /// Elasticity popup (Stiff … Super Fluid) → inverse-distance weighting exponent.
-const ELASTICITY: [&str; 8] = ["Stiff", "Less Stiff", "Below Normal", "Normal", "Above Normal", "Loose", "Liquid", "Super Fluid"];
+const ELASTICITY: [&str; 8] = ["Stiff", "Less Stiff", "Below Normal", "Absolutely Normal", "Above Average", "Loose", "Liquid", "Super Fluid"];
 fn elastic_exp(i: u32) -> f64 {
     [1.0, 1.25, 1.5, 2.0, 2.5, 3.0, 3.5, 4.5][(i as usize).min(7)]
 }
@@ -652,6 +652,17 @@ fn upscale(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let noise = ctx.params.f("reduceNoise") / 100.0;
     let src = if noise > 0.0 { effectcraft_raster::gaussian_blur(&b.img, noise * 1.5, noise * 1.5, true) } else { b.img.clone() };
     let lc = [ctx.layer_size[0] * 0.5, ctx.layer_size[1] * 0.5];
+    // Alpha: Bilinear (index 0) resamples the alpha channel bilinearly, Bicubic like the colour.
+    let bilinear_alpha = ctx.params.e("alpha") == 0;
+    let up = |img: &Image, x: f64, y: f64| -> Px {
+        let p = bicubic(img, x, y);
+        if !bilinear_alpha {
+            return p;
+        }
+        let a = img.sample_bilinear_clamped(x, y)[3];
+        let k = if p[3] > 1e-6 { a / p[3] } else { 0.0 };
+        [p[0] * k, p[1] * k, p[2] * k, a]
+    };
     let mut out = if ctx.adjustment {
         // Scale in place about the layer centre.
         let c = b.to_px(lc);
@@ -660,7 +671,7 @@ fn upscale(ctx: &EffectCtx, mut b: Buf) -> Buf {
             for (x, px) in row.iter_mut().enumerate() {
                 let sx = c.0 + (x as f64 + 0.5 - c.0) / k;
                 let sy = c.1 + (y as f64 + 0.5 - c.1) / k;
-                *px = if sx < 0.0 || sy < 0.0 || sx > src.width as f64 || sy > src.height as f64 { [0.0; 4] } else { bicubic(&src, sx, sy) };
+                *px = if sx < 0.0 || sy < 0.0 || sx > src.width as f64 || sy > src.height as f64 { [0.0; 4] } else { up(&src, sx, sy) };
             }
         });
         o
@@ -671,7 +682,7 @@ fn upscale(ctx: &EffectCtx, mut b: Buf) -> Buf {
         let mut o = Image::new(w, h);
         o.rows_mut().for_each(|(y, row)| {
             for (x, px) in row.iter_mut().enumerate() {
-                *px = bicubic(&src, (x as f64 + 0.5) / kx, (y as f64 + 0.5) / ky);
+                *px = up(&src, (x as f64 + 0.5) / kx, (y as f64 + 0.5) / ky);
             }
         });
         let c_sc = [lc[0] * b.scale, lc[1] * b.scale];
@@ -814,7 +825,7 @@ pub fn specs() -> Vec<EffectSpec> {
                 p("maskScale", "Mask Scale", num(100.0), slider(1.0, 1000.0, 1.0, 400.0, 1)),
                 p("percent", "Percent", num(100.0), pct()),
                 p("elasticity", "Elasticity", Value::Enum(3), popup(&ELASTICITY)),
-                p("interpolation", "Interpolation", Value::Enum(1), popup(&["Discrete", "Linear", "Smooth"])),
+                p("interpolation", "Interpolation Method", Value::Enum(1), popup(&["Discrete", "Linear", "Smooth"])),
             ],
             smear,
         ),
@@ -827,7 +838,7 @@ pub fn specs() -> Vec<EffectSpec> {
                 p("boundaryMask", "Boundary Mask", Value::Enum(0), popup(&MASK_CHOICES)),
                 p("percent", "Percent", num(100.0), pct()),
                 p("elasticity", "Elasticity", Value::Enum(0), popup(&ELASTICITY)),
-                p("interpolation", "Interpolation", Value::Enum(1), popup(&["Discrete", "Linear", "Smooth"])),
+                p("interpolation", "Interpolation Method", Value::Enum(1), popup(&["Discrete", "Linear", "Smooth"])),
             ],
             reshape,
         ),
@@ -858,8 +869,9 @@ pub fn specs() -> Vec<EffectSpec> {
             "Detail-preserving Upscale",
             vec![
                 p("scale", "Scale", num(100.0), slider(100.0, 1000.0, 100.0, 400.0, 1)),
-                p("detail", "Detail", num(20.0), pct()),
                 p("reduceNoise", "Reduce Noise", num(0.0), pct()),
+                p("detail", "Detail", num(20.0), pct()),
+                p("alpha", "Alpha", Value::Enum(1), popup(&["Bilinear", "Bicubic"])),
             ],
             upscale,
         ),

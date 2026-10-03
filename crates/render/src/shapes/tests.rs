@@ -340,3 +340,87 @@ fn shape_perf_repeater_60_copies_1080p() {
     let ms = t0.elapsed().as_secs_f64() * 1000.0 / n as f64;
     println!("shape_perf: empty shape layer comp (compositor baseline): {ms:.2} ms");
 }
+
+fn line_path(ids: &mut Ids, from: [f64; 2], to: [f64; 2]) -> PropGroup {
+    let sp = effectcraft_keyframe::ShapePath {
+        vertices: vec![from, to],
+        in_tangents: vec![[0.0; 2]; 2],
+        out_tangents: vec![[0.0; 2]; 2],
+        closed: false,
+        feather: Vec::new(),
+    };
+    build::shape_path(ids, sp)
+}
+
+fn column_alpha(img: &Image, x: i64) -> f32 {
+    (0..img.height as i64).map(|y| alpha(img, x, y)).sum()
+}
+
+#[test]
+fn stroke_taper_narrows_the_ends() {
+    // A horizontal line from x = 20 to 180 (layer −80…80), 20 px wide, tapered over 40 px at both ends.
+    let (p, cid) = shape_comp(|ids| {
+        let mut st = build::shape_stroke(ids, RED, 20.0);
+        set(&mut st, "taper/startLength", Value::Scalar(40.0));
+        set(&mut st, "taper/endLength", Value::Scalar(40.0));
+        set(&mut st, "taper/startWidth", Value::Scalar(0.0));
+        set(&mut st, "taper/endWidth", Value::Scalar(50.0));
+        vec![line_path(ids, [-80.0, 0.0], [80.0, 0.0]), st]
+    });
+    let img = frame(&p, cid);
+    let near_start = column_alpha(&img, 30); // 10 px along → 25 % of 20 px
+    let mid = column_alpha(&img, 100);
+    let near_end = column_alpha(&img, 169); // 10 px before the end → (50 % + 50 % × 25 %) of 20 px
+    assert!((near_start - 5.0).abs() < 1.0, "{near_start}");
+    assert!((mid - 20.0).abs() < 0.6, "{mid}");
+    assert!((near_end - 12.5).abs() < 1.0, "{near_end}");
+}
+
+#[test]
+fn stroke_wave_and_multi_dashes() {
+    let (p, cid) = shape_comp(|ids| {
+        let mut st = build::shape_stroke(ids, RED, 10.0);
+        set(&mut st, "wave/amount", Value::Scalar(100.0));
+        set(&mut st, "wave/wavelength", Value::Scalar(40.0));
+        vec![line_path(ids, [-80.0, 0.0], [80.0, 0.0]), st]
+    });
+    let img = frame(&p, cid);
+    assert!(column_alpha(&img, 40) < 0.5, "trough (20 px along): {}", column_alpha(&img, 40));
+    assert!(column_alpha(&img, 60) > 9.0, "crest (40 px along): {}", column_alpha(&img, 60));
+
+    // Dash 20, Gap 10, Dash 2 = 5, Gap 2 = 15: on 0–20, 30–35, 50–70…
+    let (p, cid) = shape_comp(|ids| {
+        let mut st = build::shape_stroke(ids, RED, 10.0);
+        set(&mut st, "dashes/dash", Value::Scalar(20.0));
+        set(&mut st, "dashes/gap", Value::Scalar(10.0));
+        let d = st.sub_mut("dashes").unwrap();
+        d.children.insert(2, ids.prop("gap2", "Gap 2", Value::Scalar(15.0)).into());
+        d.children.insert(2, ids.prop("dash2", "Dash 2", Value::Scalar(5.0)).into());
+        vec![line_path(ids, [-80.0, 0.0], [80.0, 0.0]), st]
+    });
+    let img = frame(&p, cid);
+    let on = |s: i64| column_alpha(&img, 20 + s) > 9.0;
+    assert!(on(10) && !on(25) && on(32) && !on(40) && on(60), "{:?}", (0..80).map(|s| on(s) as u8).collect::<Vec<_>>());
+}
+
+#[test]
+fn radial_gradient_highlight_moves_the_focal_point() {
+    let build_with = |hl: f64| {
+        shape_comp_sized(200, 200, move |ids| {
+            let mut gf = build::shape_gradient_fill(ids, true, [0.0, 0.0], [80.0, 0.0], Gradient::default());
+            set(&mut gf, "highlightLength", Value::Scalar(hl));
+            set(&mut gf, "highlightAngle", Value::Scalar(90.0));
+            vec![build::shape_rect(ids, [200.0, 200.0], [0.0, 0.0], 0.0), gf]
+        })
+    };
+    let (p0, c0) = build_with(0.0);
+    let (p1, c1) = build_with(50.0);
+    let (a, b) = (frame(&p0, c0), frame(&p1, c1));
+    // Without a highlight the centre is white; a 50 % highlight at 90° (down the +y axis, 90° from
+    // the start→end axis) puts the white focus 40 px below the centre and darkens the centre.
+    assert!(a.get(100, 100)[0] > 0.98);
+    assert!(b.get(100, 140)[0] > 0.97, "focal point: {:?}", b.get(100, 140));
+    assert!(b.get(100, 100)[0] < 0.8, "{:?}", b.get(100, 100));
+    // The outer circle is unchanged: points just outside it are black in both.
+    assert!(a.get(100, 182)[0] < 0.03 && b.get(100, 182)[0] < 0.03 && b.get(100, 17)[0] < 0.03);
+}

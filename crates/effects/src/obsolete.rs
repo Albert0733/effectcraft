@@ -20,7 +20,7 @@ fn basic_3d(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let tilt = ctx.params.f("tilt").to_radians();
     let dist = ctx.params.f("distanceToImage") * b.scale;
     let spec_on = ctx.params.b("specularHighlight");
-    let wire = ctx.params.b("drawPreviewWireframe");
+    let wire = ctx.params.b("preview/drawPreviewWireframe");
     if swivel == 0.0 && tilt == 0.0 && dist == 0.0 && !spec_on && !wire {
         return b;
     }
@@ -113,7 +113,7 @@ pub fn specs() -> Vec<EffectSpec> {
                 p("tilt", "Tilt", num(0.0), ParamUi::Angle),
                 p("distanceToImage", "Distance to Image", num(0.0), slider(-1000.0, 30000.0, -100.0, 100.0, 1)),
                 p("specularHighlight", "Specular Highlight", Value::Bool(false), ParamUi::Checkbox),
-                p("drawPreviewWireframe", "Draw Preview Wireframe", Value::Bool(false), ParamUi::Checkbox),
+                p("preview/drawPreviewWireframe", "Draw Preview Wireframe", Value::Bool(false), ParamUi::Checkbox),
             ],
             basic_3d,
         ),
