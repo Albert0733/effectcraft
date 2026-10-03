@@ -3,11 +3,11 @@
 <!-- Generated from the effect registry (crates/effects/src/catalog.rs); do not edit by hand.
      Regenerate: UPDATE_DOCS=1 cargo test -p effectcraft-effects --lib effects_doc_is_current -->
 
-EffectCraft ships 303 effects with 2702 parameters in total, grouped into the same categories as the Effects & Presets panel. Every effect is our own implementation, written from public behaviour descriptions and standard image-processing literature. Parameter names, order, popup options, units, defaults and ranges follow the reference application so that projects, expressions and muscle memory carry over.
+EffectCraft ships 303 effects with 2716 parameters in total, grouped into the same categories as the Effects & Presets panel. Every effect is our own implementation, written from public behaviour descriptions and standard image-processing literature. Parameter names, order, popup options, units, defaults and ranges follow the reference application so that projects, expressions and muscle memory carry over.
 
 - **GPU**: 24 effects also run on the GPU compositor with identical results.
 - **32**: 303 effects process 32-bit float (HDR, overbright) pixels without clamping.
-- **Status**: 270 implemented in full, 33 partial (what is missing is listed).
+- **Status**: 273 implemented in full, 30 partial (what is missing is listed).
 
 Effects are addressed by id (`ec.<category>.<name>`) or display name in commands, scripts and the control channel, and every parameter by its id (`effects/#1/blurriness`).
 
@@ -202,7 +202,7 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 | Circle | `ec.generate.circle` | 11 |  | 32 | Implemented |
 | Ellipse | `ec.generate.ellipse` | 8 |  | 32 | Implemented |
 | Eyedropper Fill | `ec.generate.eyedropperfill` | 5 |  | 32 | Implemented |
-| Fill | `ec.generate.fill` | 3 | GPU | 32 | Partial: no Fill Mask / All Masks / feather |
+| Fill | `ec.generate.fill` | 7 | GPU | 32 | Implemented |
 | Fractal | `ec.generate.fractal` | 21 |  | 32 | Implemented |
 | Gradient Ramp | `ec.generate.gradientramp` | 7 | GPU | 32 | Implemented |
 | Grid | `ec.generate.grid` | 12 |  | 32 | Implemented |
@@ -254,8 +254,8 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 |---|---|---:|:-:|:-:|---|
 | Matte Choker | `ec.matte.mattechoker` | 7 |  | 32 | Implemented |
 | Mocha shape | `ec.obsolete.mochashape` | 6 |  | 32 | Implemented |
-| Refine Hard Matte | `ec.matte.refinehard` | 11 |  | 32 | Partial: no Reduce Chatter or motion blur |
-| Refine Soft Matte | `ec.matte.refinesoft` | 13 |  | 32 | Partial: no Reduce Chatter or motion blur |
+| Refine Hard Matte | `ec.matte.refinehard` | 16 |  | 32 | Implemented |
+| Refine Soft Matte | `ec.matte.refinesoft` | 18 |  | 32 | Implemented |
 | Roto Brush & Refine Edge | `ec.matte.rotobrush` | 24 |  | 32 | Implemented |
 | Simple Choker | `ec.matte.simplechoker` | 2 |  | 32 | Implemented |
 

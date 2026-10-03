@@ -340,10 +340,66 @@ fn black_white(ctx: &EffectCtx, mut b: Buf) -> Buf {
     b
 }
 
+/// Whether Fill uses masks (Fill Mask or All Masks): the GPU kernel fills alpha only.
+pub fn fill_uses_masks(ctx: &EffectCtx) -> bool {
+    !ctx.env.masks.is_empty() && (ctx.params.b("allMasks") || ctx.params.f("fillMask") >= 1.0)
+}
+
+/// Coverage (0..1, 2×2 supersampled) of the closed polygons `polys` (buffer px) on a `w`×`h`
+/// grid: the union of the shapes, each inverted when its mask is.
+pub(crate) fn polys_coverage(w: usize, h: usize, polys: &[(Vec<[f64; 2]>, bool)]) -> crate::util::Plane {
+    use rayon::prelude::*;
+    let mut out = crate::util::Plane::new(w, h);
+    out.data.par_chunks_mut(w.max(1)).enumerate().for_each(|(y, row)| {
+        for (x, v) in row.iter_mut().enumerate() {
+            let mut hit = 0.0;
+            for (sx, sy) in [(0.25, 0.25), (0.75, 0.25), (0.25, 0.75), (0.75, 0.75)] {
+                let (px, py) = (x as f64 + sx, y as f64 + sy);
+                if polys.iter().any(|(p, inv)| crate::util::point_in_poly(p, px, py) != *inv) {
+                    hit += 0.25;
+                }
+            }
+            *v = hit;
+        }
+    });
+    out
+}
+
+/// Fill: paints the layer's pixels with Color. With Fill Mask (or All Masks) only the pixels
+/// inside that mask (or any mask) are painted, with the mask edge feathered horizontally /
+/// vertically; Invert paints outside instead. Without a mask, Invert fills the transparent
+/// areas.
 fn fill(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let c = ctx.params.color("color");
     let invert = ctx.params.b("invert");
     let opacity = ctx.params.f("opacity") as f32 / 100.0;
+    if fill_uses_masks(ctx) {
+        let all = ctx.params.b("allMasks");
+        let idx = ctx.params.f("fillMask").round() as usize;
+        let polys: Vec<(Vec<[f64; 2]>, bool)> = ctx
+            .env
+            .masks
+            .iter()
+            .enumerate()
+            .filter(|(i, m)| (all || i + 1 == idx) && m.points.len() >= 3)
+            .map(|(_, m)| (m.points.iter().map(|q| [q[0] * b.scale + b.offset[0], q[1] * b.scale + b.offset[1]]).collect(), m.inverted))
+            .collect();
+        let (w, h) = (b.img.width as usize, b.img.height as usize);
+        let mut cov = polys_coverage(w, h, &polys);
+        let (fh, fv) = (ctx.params.f("horizontalFeather").max(0.0) * b.scale, ctx.params.f("verticalFeather").max(0.0) * b.scale);
+        if fh > 0.0 || fv > 0.0 {
+            cov = crate::util::gauss_plane(&cov, fh * 0.5, fv * 0.5);
+        }
+        use rayon::prelude::*;
+        b.img.data.par_iter_mut().zip(cov.data.par_iter()).for_each(|(px, &m)| {
+            let m = if invert { 1.0 - m } else { m } * opacity;
+            let a = px[3];
+            for i in 0..3 {
+                px[i] += (c[i] * a - px[i]) * m;
+            }
+        });
+        return b;
+    }
     b.img.data.iter_mut().for_each(|px| {
         let a = if invert { 1.0 - px[3] } else { px[3] };
         let f = [c[0] * a, c[1] * a, c[2] * a];
@@ -755,8 +811,12 @@ pub fn specs() -> Vec<EffectSpec> {
             name: "Fill",
             category: "Generate",
             params: vec![
+                p("fillMask", "Fill Mask", num(0.0), ParamUi::Mask),
+                p("allMasks", "All Masks", Value::Bool(false), ParamUi::Checkbox),
                 p("color", "Color", col(1.0, 0.0, 0.0), ParamUi::Color),
                 p("invert", "Invert", Value::Bool(false), ParamUi::Checkbox),
+                p("horizontalFeather", "Horizontal Feather", num(0.0), slider(0.0, 5000.0, 0.0, 100.0, 1)),
+                p("verticalFeather", "Vertical Feather", num(0.0), slider(0.0, 5000.0, 0.0, 100.0, 1)),
                 p("opacity", "Opacity", num(100.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
             ],
             render: fill,
@@ -1068,5 +1128,34 @@ mod tests {
         let params = crate::Params { values: [("redsHue".to_string(), num(10.0))].into_iter().collect() };
         let ctx = EffectCtx { params: &params, time: 0.0, layer_size: [1.0, 1.0], seed: 0, adjustment: false, env: Default::default() };
         assert!(!huesat_ranges_identity(&ctx));
+    }
+
+    #[test]
+    fn fill_mask_all_masks_feather_and_invert() {
+        let sq = |x0: f64, x1: f64| crate::MaskShape {
+            name: String::new(),
+            points: vec![[x0, 0.0], [x1, 0.0], [x1, 10.0], [x0, 10.0]],
+            closed: true,
+            inverted: false,
+        };
+        let masks = [sq(0.0, 5.0), sq(15.0, 20.0)];
+        let env = EffectEnv { masks: &masks, ..Default::default() };
+        let grey = Image::filled(20, 10, [0.5, 0.5, 0.5, 1.0]);
+        let run = |vals: &[(&str, Value)]| run_fx("ec.generate.fill", vals, grey.clone(), 0.0, env).img;
+        let one = run(&[("fillMask", num(1.0))]);
+        assert_eq!(one.get(2, 5), [1.0, 0.0, 0.0, 1.0]);
+        assert_eq!(one.get(10, 5), [0.5, 0.5, 0.5, 1.0]);
+        assert_eq!(one.get(17, 5), [0.5, 0.5, 0.5, 1.0]);
+        let all = run(&[("allMasks", Value::Bool(true))]);
+        assert_eq!(all.get(17, 5), [1.0, 0.0, 0.0, 1.0]);
+        let inv = run(&[("fillMask", num(1.0)), ("invert", Value::Bool(true))]);
+        assert_eq!(inv.get(2, 5), [0.5, 0.5, 0.5, 1.0]);
+        assert_eq!(inv.get(10, 5), [1.0, 0.0, 0.0, 1.0]);
+        let soft = run(&[("fillMask", num(1.0)), ("horizontalFeather", num(6.0))]);
+        let v = soft.get(6, 5)[1];
+        assert!(v > 0.05 && v < 0.5, "feathered edge {v}");
+        // Without masks, Fill fills the layer as before.
+        let plain = run_fx("ec.generate.fill", &[("fillMask", num(1.0))], grey.clone(), 0.0, EffectEnv::default()).img;
+        assert_eq!(plain.get(10, 5), [1.0, 0.0, 0.0, 1.0]);
     }
 }

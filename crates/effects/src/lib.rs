@@ -62,7 +62,9 @@ use std::collections::HashMap;
 use std::sync::OnceLock;
 
 pub use card3d::{CompLight, CompScene};
-pub use color_fx::{HUESAT_CHANNELS, LEVELS_CHANNELS, exposure_settings, huesat_ranges_identity, levels_channel_ids, levels_channels_identity, levels_clip};
+pub use color_fx::{
+    HUESAT_CHANNELS, LEVELS_CHANNELS, exposure_settings, fill_uses_masks, huesat_ranges_identity, levels_channel_ids, levels_channels_identity, levels_clip,
+};
 pub use color2::Curve;
 use effectcraft_keyframe::Value;
 use effectcraft_project::build::Ids;
@@ -693,6 +695,9 @@ pub const TIME_DEPENDENT: &[&str] = &[
     "ec.time.ccforcemotionblur",
     "ec.time.ccwidetime",
     "ec.time.pixelmotionblur",
+    // Refine mattes' Reduce Chatter / motion blur read neighbouring frames.
+    "ec.matte.refinesoft",
+    "ec.matte.refinehard",
     // Card Wipe's position / rotation jitter moves with time.
     "ec.transition.cardwipe",
     // Temporal Smoothing reads neighbouring frames.
