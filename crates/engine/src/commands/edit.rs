@@ -525,12 +525,41 @@ fn purge_caches(s: &mut Session, p: &Value) -> Result<Value> {
         s.snapshot = None;
         s.state.viewer.show_snapshot = false;
     }
+    let memory = matches!(what.as_str(), "all" | "memoryAndDisk" | "memory" | "image");
+    let disk = matches!(what.as_str(), "all" | "memoryAndDisk" | "disk");
+    if memory {
+        s.layer_cache.clear();
+    }
+    let mut disk_entries = 0;
+    if disk && let Some(dc) = &s.disk_cache {
+        disk_entries = dc.stats().entries;
+        dc.clear();
+    }
     if matches!(what.as_str(), "all" | "image" | "memory" | "memoryAndDisk") {
         effectcraft_effects::roto::purge();
     }
     s.events.push(crate::Event::PurgeCaches);
     s.toast(format!("Purged {what} cache"));
-    Ok(json!({"purged": what}))
+    Ok(json!({"purged": what, "diskEntries": disk_entries}))
+}
+
+/// `cache.diskStats`: the disk cache's folder, limit and contents.
+pub(crate) fn disk_stats(s: &mut Session, _: &Value) -> Result<Value> {
+    let Some(dc) = &s.disk_cache else { return Ok(json!({"enabled": false})) };
+    let st = dc.stats();
+    Ok(json!({
+        "enabled": true,
+        "folder": dc.folder().to_string_lossy(),
+        "entries": st.entries,
+        "frames": dc.keys(effectcraft_render::disk_cache::Kind::Frame).len(),
+        "layers": dc.keys(effectcraft_render::disk_cache::Kind::Layer).len(),
+        "bytes": st.bytes,
+        "maxBytes": st.max_bytes,
+        "hits": st.hits,
+        "misses": st.misses,
+        "writes": st.writes,
+        "evictions": st.evictions,
+    }))
 }
 
 /// Path of the footage behind the selected layer or project item.
@@ -599,6 +628,7 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!("edit.selectLabelGroup", "Select Label Group", ["Edit", "Label"], None, "{}", has_props_or_layers_or_items, select_label_group),
         cmd!("edit.purgeUndo", "Undo", ["Edit", "Purge"], None, "{}", always_ok, purge),
         cmd!("edit.purge", "Purge", [], None, "{what?: all|memoryAndDisk|memory|disk|3d|image|snapshot}", always_ok, purge_caches),
+        crate::query!("cache.diskStats", "Disk Cache Statistics", "{}", disk_stats),
         cmd!("edit.editOriginal", "Edit Original...", ["Edit"], Some("Cmd+E"), "{}", has_selected_footage, edit_original),
     ]
 }

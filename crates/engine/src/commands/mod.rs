@@ -6,6 +6,7 @@ pub mod anim_tools;
 mod animation;
 mod comp;
 mod comp_more;
+mod create;
 mod edit;
 mod effect;
 mod file;
@@ -124,6 +125,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(help::specs());
         v.extend(query::specs());
         v.extend(layer_menu::specs());
+        v.extend(create::specs());
         v.extend(animation::specs());
         v.extend(view::specs());
         v.extend(viewer_cmds::specs());

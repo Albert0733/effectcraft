@@ -29,7 +29,6 @@ pub fn specs() -> Vec<CommandSpec> {
         // Mask options not in the mask model yet; pen / vertex editing (timeline milestone).
         // Time (timeline milestone).
         stub!("layer.alignVideoToData", "Align Video to Data", ["Layer", "Time"], "{}"),
-        stub!("layer.create", "Create", [], "{op}"),
         stub!("layer.autoTrace", "Auto-trace...", ["Layer"], "{}"),
         stub!("layer.sceneEditDetection", "Scene Edit Detection...", ["Layer"], "{}"),
         // Cameras / lights / materials / 3D views (3D milestone).

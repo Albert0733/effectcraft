@@ -16,11 +16,13 @@ pub mod links;
 pub mod mask_track;
 pub mod menus;
 pub mod prefs;
+pub mod psd_import;
 pub mod render_queue;
 pub mod roto;
 mod session_settings;
 pub mod shortcuts;
 pub mod tracking;
+pub mod vector;
 pub mod viewer;
 pub mod warp;
 
@@ -277,6 +279,8 @@ pub struct Session {
     pub journal: Vec<(String, Value)>,
     /// Processed-layer pixels reused across frames and edits (content-keyed, never stale).
     pub layer_cache: Arc<LayerCache>,
+    /// The persistent disk cache (Settings ▸ Media & Disk Cache), when enabled.
+    pub disk_cache: Option<Arc<effectcraft_render::disk_cache::DiskCache>>,
     /// Settings (Preferences).
     pub prefs: prefs::Prefs,
     /// Bumped whenever settings change (frontends re-apply theme, labels…).
@@ -339,6 +343,7 @@ impl Default for Session {
             events: vec![],
             journal: vec![],
             layer_cache: Arc::new(LayerCache::default()),
+            disk_cache: None,
             prefs: prefs::Prefs::default(),
             prefs_revision: 0,
             config: None,
@@ -428,6 +433,9 @@ impl Session {
 
     pub fn bump(&mut self) {
         self.revision += 1;
+        if self.disk_cache.is_some() {
+            self.layer_cache.set_disk_salt(effectcraft_render::disk_cache::footage_salt(&self.project));
+        }
         self.events.push(Event::ProjectChanged { revision: self.revision });
     }
 
@@ -612,6 +620,8 @@ mod tests_3d;
 #[cfg(test)]
 mod tests_anim_tools;
 #[cfg(test)]
+mod tests_disk_cache;
+#[cfg(test)]
 mod tests_effects;
 #[cfg(test)]
 mod tests_fidelity;
@@ -641,6 +651,8 @@ mod tests_text_edit;
 mod tests_timeline;
 #[cfg(test)]
 mod tests_track;
+#[cfg(test)]
+mod tests_vector_import;
 #[cfg(test)]
 mod tests_viewer;
 

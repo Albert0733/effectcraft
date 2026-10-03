@@ -284,6 +284,22 @@ pub(crate) fn dynamic_to_image(img: &image::DynamicImage, op: AlphaOp) -> Image 
     out
 }
 
+/// Straight RGBA `f32` pixels (layered stills: Photoshop, SVG) to an [`Image`].
+pub(crate) fn straight_to_image(w: u32, h: u32, px: &[[f32; 4]], op: AlphaOp) -> Image {
+    let mut out = Image::new(w, h);
+    let wu = w as usize;
+    if wu == 0 || h == 0 {
+        return out;
+    }
+    out.data.par_chunks_mut(wu).enumerate().for_each(|(y, row)| {
+        for (x, o) in row.iter_mut().enumerate() {
+            let s = px[y * wu + x];
+            *o = op.apply([s[0], s[1], s[2]], s[3].clamp(0.0, 1.0));
+        }
+    });
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
