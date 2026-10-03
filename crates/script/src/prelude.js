@@ -166,7 +166,7 @@ File.prototype = {
   read: function (n) {
     if (this.__buf === null) this.open("r");
     if (this.__buf === null) return "";
-    var s = n === undefined ? this.__buf.substring(this.__pos) : this.__buf.substr(this.__pos, n);
+    var s = n === undefined ? this.__buf.substring(this.__pos) : this.__buf.substring(this.__pos, this.__pos + n);
     this.__pos += s.length;
     return s;
   },
@@ -255,7 +255,77 @@ Object.defineProperty(Folder, "temp", { get: function () { return null; } });
 Object.defineProperty(Folder, "desktop", { get: function () { return null; } });
 Object.defineProperty(Folder, "myDocuments", { get: function () { return null; } });
 
-function Socket() { __file("network", ""); }
+// TCP sockets (behind Allow Scripts to Write Files and Access Network; see socket.rs).
+function Socket() {
+  if (!(this instanceof Socket)) return new Socket();
+  __sock("check", 0, "{}");
+  this.__id = 0;
+  this.host = "";
+  this.timeout = 10;
+  this.encoding = "ASCII";
+  this.error = "";
+}
+function __sockCall(s, op, extra) {
+  var p = extra || {};
+  p.timeout = s.timeout;
+  p.encoding = s.encoding;
+  var r = JSON.parse(__sock(op, s.__id, JSON.stringify(p)));
+  s.error = r.error || "";
+  return r;
+}
+Socket.prototype = {
+  constructor: Socket,
+  get connected() { return this.__id > 0 && __sockCall(this, "connected").value === true; },
+  get eof() { return this.__id === 0 || __sockCall(this, "eof").value === true; },
+  open: function (host, encoding) {
+    if (this.__id) this.close();
+    if (encoding) this.encoding = String(encoding);
+    var r = __sockCall(this, "open", { host: String(host) });
+    if (r.error) return false;
+    this.__id = r.id;
+    this.host = String(host);
+    return true;
+  },
+  listen: function (port, encoding) {
+    if (this.__id) this.close();
+    if (encoding) this.encoding = String(encoding);
+    var r = __sockCall(this, "listen", { port: __num(port, "port") });
+    if (r.error) return false;
+    this.__id = r.id;
+    this.host = "127.0.0.1:" + r.port;
+    this.port = r.port;
+    return true;
+  },
+  poll: function () {
+    if (!this.__id) return null;
+    var r = __sockCall(this, "poll");
+    if (r.id === null || r.id === undefined) return null;
+    var s = Object.create(Socket.prototype);
+    s.__id = r.id;
+    s.host = r.host || "";
+    s.timeout = this.timeout;
+    s.encoding = this.encoding;
+    s.error = "";
+    return s;
+  },
+  read: function (count) {
+    if (!this.__id) return "";
+    return __sockCall(this, "read", { count: count === undefined ? -1 : __num(count, "count") }).data || "";
+  },
+  readln: function () { return this.__id ? __sockCall(this, "readln").data || "" : ""; },
+  write: function () {
+    if (!this.__id) return false;
+    var s = Array.prototype.slice.call(arguments).map(__str).join("");
+    return !__sockCall(this, "write", { data: s }).error;
+  },
+  writeln: function () { return this.write(Array.prototype.slice.call(arguments).map(__str).join("") + "\n"); },
+  close: function () {
+    if (this.__id) __sockCall(this, "close");
+    this.__id = 0;
+    return true;
+  },
+  toString: function () { return "[object Socket]"; }
+};
 var system = { callSystem: function () { throw __err("scripts can't run system commands"); } };
 
 // ------------------------------------------------------------------ helpers
@@ -645,6 +715,19 @@ Property.prototype.property = function () { return null; };
   });
   def("isDropdownEffect", function () { return false; });
 
+  // Essential Graphics: expose this property in `comp` (its own composition).
+  P.canAddToMotionGraphicsTemplate = function (comp) {
+    if (!comp || comp.__id !== this.__layer.__comp) return false;
+    return __call("essential.canAdd", this.__ref()).ok === true;
+  };
+  P.addToMotionGraphicsTemplateAs = function (comp, name) {
+    if (!this.canAddToMotionGraphicsTemplate(comp)) return false;
+    var p = this.__ref();
+    if (name !== undefined && name !== null) p.name = String(name);
+    __call("essential.addProperty", p);
+    return true;
+  };
+  P.addToMotionGraphicsTemplate = function (comp) { return this.addToMotionGraphicsTemplateAs(comp); };
   P.getSeparationFollower = function (dim) {
     return this.parentProperty.property(["ADBE Position_0", "ADBE Position_1", "ADBE Position_2"][dim]);
   };
@@ -805,8 +888,6 @@ Property.prototype.property = function () { return null; };
   };
   P.keyLabel = function () { return 0; };
   P.setLabelAtKey = function () {};
-  P.addToMotionGraphicsTemplate = function () { return false; };
-  P.canAddToMotionGraphicsTemplate = function () { return false; };
 })();
 
 // Layer / composition markers (`layer.marker`, `comp.markerProperty`): keyframes are markers.
@@ -1352,7 +1433,47 @@ CompItem.prototype.constructor = CompItem;
   };
   P.openInViewer = function () { __call("comp.open", { comp: this.__id }); return null; };
   P.duplicate = function () { return __item(__call("project.duplicate", { items: [this.__id] }).items[0]); };
-  P.exportAsMotionGraphicsTemplate = function () { return false; };
+  // Essential Graphics (templates are EffectCraft's open .ectemplate files).
+  P.__eg = function () { return __call("essential.list", { comp: this.__id }); };
+  P.__controllers = function () {
+    var out = [];
+    (function walk(list) {
+      for (var i = 0; i < list.length; i++) {
+        if (list[i].kind === "property" || list[i].kind === "media") out.push(list[i]);
+        if (list[i].children) walk(list[i].children);
+      }
+    })(this.__eg().controls);
+    return out;
+  };
+  def("motionGraphicsTemplateName", function () { return this.__eg().name; }, function (v) {
+    __call("essential.setName", { comp: this.__id, name: String(v) });
+  });
+  def("motionGraphicsTemplateControllerCount", function () { return this.__controllers().length; });
+  P.getMotionGraphicsTemplateControllerName = function (i) {
+    var c = this.__controllers();
+    i = __num(i, "index");
+    if (i < 1 || i > c.length) throw __err("controller index " + i + " is out of range 1.." + c.length);
+    return c[i - 1].name;
+  };
+  P.setMotionGraphicsControllerName = function (i, name) {
+    var c = this.__controllers();
+    i = __num(i, "index");
+    if (i < 1 || i > c.length) throw __err("controller index " + i + " is out of range 1.." + c.length);
+    __call("essential.rename", { comp: this.__id, control: c[i - 1].id, name: String(name) });
+    return String(name);
+  };
+  P.openInEssentialGraphics = function () { __call("comp.openInEssentialGraphics", { comp: this.__id }); };
+  P.exportAsMotionGraphicsTemplate = function (overwrite, path) {
+    var f = __str(path);
+    if (!f) return false;
+    if (!/\.[A-Za-z0-9]+$/.test(f)) f += ".ectemplate";
+    if (!overwrite && JSON.parse(__file("exists", f)) === true) return false;
+    if (this.__controllers().length === 0) return false;
+    // The file gate applies to templates too.
+    __file("write", f, "");
+    __call("essential.exportTemplate", { comp: this.__id, path: f });
+    return true;
+  };
 })();
 
 function FootageItem(id) {

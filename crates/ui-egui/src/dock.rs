@@ -44,10 +44,14 @@ pub enum PanelKind {
     Metadata,
     Progress,
     ContentAwareFill,
+    /// Window ▸ Create Nulls From Paths (our own panel).
+    CreateNullsFromPaths,
+    /// Window ▸ VR Comp Editor (our own panel).
+    VrCompEditor,
 }
 
 impl PanelKind {
-    pub const ALL: [PanelKind; 32] = [
+    pub const ALL: [PanelKind; 34] = [
         PanelKind::Project,
         PanelKind::EffectControls,
         PanelKind::Composition,
@@ -80,6 +84,8 @@ impl PanelKind {
         PanelKind::Metadata,
         PanelKind::Progress,
         PanelKind::ContentAwareFill,
+        PanelKind::CreateNullsFromPaths,
+        PanelKind::VrCompEditor,
     ];
     pub fn title(self) -> &'static str {
         match self {
@@ -116,6 +122,8 @@ impl PanelKind {
             PanelKind::Metadata => "Metadata",
             PanelKind::Progress => "Progress",
             PanelKind::ContentAwareFill => "Content-Aware Fill",
+            PanelKind::CreateNullsFromPaths => "Create Nulls From Paths",
+            PanelKind::VrCompEditor => "VR Comp Editor",
         }
     }
     pub fn id(self) -> String {
@@ -342,7 +350,20 @@ pub fn workspace(name: &str) -> DockNode {
                     tabs(&[Composition, Layer, Footage], 0),
                     right(
                         &[Info, Preview, Audio, Align, Character, Paragraph, LumetriScopes],
-                        &[EffectsPresets, Properties, Tracker, Wiggler, Smoother, MotionSketch, Paint, Brushes, Markers, ContentAwareFill],
+                        &[
+                            EffectsPresets,
+                            Properties,
+                            Tracker,
+                            Wiggler,
+                            Smoother,
+                            MotionSketch,
+                            Paint,
+                            Brushes,
+                            Markers,
+                            ContentAwareFill,
+                            CreateNullsFromPaths,
+                            VrCompEditor,
+                        ],
                     ),
                 ),
             ),

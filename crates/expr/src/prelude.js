@@ -351,6 +351,52 @@ __Path.prototype.points = function () { return this.__pts; };
 __Path.prototype.inTangents = function () { return this.__in; };
 __Path.prototype.outTangents = function () { return this.__out; };
 __Path.prototype.isClosed = function () { return this.__closed; };
+// pointOnPath / tangentOnPath: a point (or unit tangent) at a fraction of the path's arc length.
+__Path.prototype.pointOnPath = function (pct) { return __pathAt(this, pct === undefined ? 0.5 : pct, false); };
+__Path.prototype.tangentOnPath = function (pct) { return __pathAt(this, pct === undefined ? 0.5 : pct, true); };
+__Path.prototype.normalOnPath = function (pct) { var t = this.tangentOnPath(pct); return [t[1], -t[0]]; };
+
+function __pathSegs(p) {
+  var n = p.__pts.length, out = [];
+  var m = p.__closed ? n : n - 1;
+  for (var i = 0; i < m; i++) {
+    var j = (i + 1) % n, a = p.__pts[i], b = p.__pts[j];
+    var o = p.__out[i] || [0, 0], ii = p.__in[j] || [0, 0];
+    out.push([a, [a[0] + o[0], a[1] + o[1]], [b[0] + ii[0], b[1] + ii[1]], b]);
+  }
+  return out;
+}
+function __bezAt(s, u) {
+  var v = 1 - u;
+  return [0, 1].map(function (k) { return v * v * v * s[0][k] + 3 * v * v * u * s[1][k] + 3 * v * u * u * s[2][k] + u * u * u * s[3][k]; });
+}
+function __bezDer(s, u) {
+  var v = 1 - u;
+  return [0, 1].map(function (k) { return 3 * v * v * (s[1][k] - s[0][k]) + 6 * v * u * (s[2][k] - s[1][k]) + 3 * u * u * (s[3][k] - s[2][k]); });
+}
+function __pathAt(p, pct, tangent) {
+  var segs = __pathSegs(p);
+  if (!segs.length) return tangent ? [1, 0] : p.__pts.length ? [p.__pts[0][0], p.__pts[0][1]] : [0, 0];
+  var N = 32, table = [], total = 0;
+  for (var k = 0; k < segs.length; k++) {
+    var prev = __bezAt(segs[k], 0);
+    for (var s = 1; s <= N; s++) {
+      var q = __bezAt(segs[k], s / N);
+      total += Math.sqrt((q[0] - prev[0]) * (q[0] - prev[0]) + (q[1] - prev[1]) * (q[1] - prev[1]));
+      table.push([total, k, s / N]);
+      prev = q;
+    }
+  }
+  var target = Math.max(0, Math.min(1, pct)) * total;
+  var i = 0;
+  while (i < table.length - 1 && table[i][0] < target) i++;
+  var e = table[i], seg = e[1];
+  var l0 = i > 0 ? table[i - 1][0] : 0, u0 = i > 0 && table[i - 1][1] === seg ? table[i - 1][2] : 0;
+  var u = e[0] > l0 ? u0 + (e[2] - u0) * (target - l0) / (e[0] - l0) : e[2];
+  if (!tangent) return __bezAt(segs[seg], u);
+  var d = __bezDer(segs[seg], u), len = Math.sqrt(d[0] * d[0] + d[1] * d[1]);
+  return len > 0 ? [d[0] / len, d[1] / len] : [1, 0];
+}
 
 function createPath(points, inTangents, outTangents, isClosed) {
   points = points || [];
@@ -734,6 +780,9 @@ Prop.prototype = {
   inTangents: function (t) { return this.valueAtTime(t === undefined ? time : t).inTangents(); },
   outTangents: function (t) { return this.valueAtTime(t === undefined ? time : t).outTangents(); },
   isClosed: function () { return this.value.isClosed(); },
+  pointOnPath: function (pct, t) { return this.valueAtTime(t === undefined ? time : t).pointOnPath(pct); },
+  tangentOnPath: function (pct, t) { return this.valueAtTime(t === undefined ? time : t).tangentOnPath(pct); },
+  normalOnPath: function (pct, t) { return this.valueAtTime(t === undefined ? time : t).normalOnPath(pct); },
   // Source Text style API.
   __docAt: function (t) {
     var d = __h(__DOC, this.__c, this.__l, this.__p, t, this.__self);

@@ -1126,6 +1126,23 @@ impl EffectcraftApp {
         if self.session.prefs.auto_save.enabled {
             ctx.request_repaint_after(std::time::Duration::from_secs(30));
         }
+        // File ▸ Watch Folder: look for new projects every 10 seconds.
+        if self.session.state.watch_folder.is_some() {
+            let key = egui::Id::new("watchFolder.lastPoll");
+            let last: f64 = ctx.data(|d| d.get_temp(key)).unwrap_or(0.0);
+            if now - last >= 10.0 {
+                ctx.data_mut(|d| d.insert_temp(key, now));
+                match self.session.execute("file.watchFolder.poll", serde_json::json!({})) {
+                    Ok(r) => {
+                        if let Some(n) = r["rendered"].as_array().map(Vec::len).filter(|n| *n > 0) {
+                            self.ui.status = format!("Watch Folder: rendered {n} project(s)");
+                        }
+                    }
+                    Err(e) => self.ui.status = e.to_string(),
+                }
+            }
+            ctx.request_repaint_after(std::time::Duration::from_secs(10));
+        }
     }
 
     /// Take the pending synthetic input (from `ui.click`, `ui.key`, …). Hosts that don't call

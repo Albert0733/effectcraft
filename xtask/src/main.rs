@@ -61,6 +61,7 @@ const SAME_LAYER: &[(&str, &str)] = &[
     ("path", "raster"),
     ("text", "path"),
     ("pdf", "svg"),
+    ("pdf", "text"),
     ("effects", "project"),
     ("effects", "text"),
     ("effects", "path"),

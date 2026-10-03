@@ -511,7 +511,7 @@ fn effect_chains_and_mixed_stacks() {
         let mut l = s.footage(80, 50);
         s.effect(&mut l, "ec.color.exposure", &[("master/exposure", n(0.7))]);
         s.effect(&mut l, "ec.blur.gaussian", &[("blurriness", n(5.0))]);
-        s.effect(&mut l, "ec.stylize.posterize", &[]);
+        s.effect(&mut l, "ec.stylize.coloremboss", &[]);
         s.effect(&mut l, "ec.stylize.glow", &[]);
         s.effect(&mut l, "ec.channel.invert", &[("blend", n(50.0))]);
         s.push(l);

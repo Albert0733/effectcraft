@@ -330,10 +330,21 @@ fn stretch(v: f32, lo: f32, hi: f32) -> f32 {
 
 /// 0 = Auto Levels (per channel), 1 = Auto Contrast (shared), 2 = Auto Color (per channel + neutral mids).
 fn auto_correct(ctx: &EffectCtx, mut b: Buf, kind: u32) -> Buf {
+    let blend = (ctx.params.f("blend") / 100.0).clamp(0.0, 1.0) as f32;
+    let (ranges, gam) = auto_correct_settings(ctx, &b.img, kind);
+    map_ca(&mut b.img, |c, a| {
+        let o = [0, 1, 2].map(|k| stretch(c[k], ranges[k].0, ranges[k].1).powf(gam[k]));
+        (lerp3(o, c, blend), a)
+    });
+    b
+}
+
+/// What Auto Levels (`kind` 0), Auto Contrast (1) and Auto Color (2) measure on `img`: each
+/// channel's input range (low, high) and gamma. (The GPU effects apply them.)
+pub fn auto_correct_settings(ctx: &EffectCtx, img: &Image, kind: u32) -> ([(f32, f32); 3], [f32; 3]) {
     let black = ctx.params.f("blackClip").clamp(0.0, 49.0) / 100.0;
     let white = ctx.params.f("whiteClip").clamp(0.0, 49.0) / 100.0;
-    let blend = (ctx.params.f("blend") / 100.0).clamp(0.0, 1.0) as f32;
-    let h = smoothed_histograms(ctx, &b.img);
+    let h = smoothed_histograms(ctx, img);
     let ranges: [(f32, f32); 3] = if kind == 1 {
         let mut combined = vec![0.0; BINS];
         for k in 0..3 {
@@ -350,7 +361,7 @@ fn auto_correct(ctx: &EffectCtx, mut b: Buf, kind: u32) -> Buf {
     let mut gam = [1.0f32; 3];
     if kind == 2 && ctx.params.b("snapNeutralMidtones") {
         let mut sums = [0.0f64; 4];
-        for px in &b.img.data {
+        for px in &img.data {
             let (c, a) = unpremul(*px);
             if a > 1e-4 {
                 for k in 0..3 {
@@ -369,11 +380,7 @@ fn auto_correct(ctx: &EffectCtx, mut b: Buf, kind: u32) -> Buf {
             }
         }
     }
-    map_ca(&mut b.img, |c, a| {
-        let o = [0, 1, 2].map(|k| stretch(c[k], ranges[k].0, ranges[k].1).powf(gam[k]));
-        (lerp3(o, c, blend), a)
-    });
-    b
+    (ranges, gam)
 }
 
 fn auto_levels(ctx: &EffectCtx, b: Buf) -> Buf {
@@ -397,24 +404,12 @@ fn cdf(h: &[f64]) -> Vec<f32> {
         .collect()
 }
 
-fn equalize(ctx: &EffectCtx, mut b: Buf) -> Buf {
-    let amt = (ctx.params.f("amount") / 100.0).clamp(0.0, 1.0) as f32;
-    if amt <= 0.0 {
-        return b;
-    }
-    let style = ctx.params.e("style");
-    let h = histograms(&b.img);
-    let look = |c: &Vec<f32>, v: f32| c[((v.clamp(0.0, 1.0) * (BINS - 1) as f32).round() as usize).min(BINS - 1)];
+/// Equalize's lookup tables (`BINS` entries each) for `img`: the R, G and B cumulative
+/// histograms (Style RGB), the luminance one (Brightness) or the combined one (Photoshop Style).
+pub fn equalize_tables(img: &Image, style: u32) -> Vec<Vec<f32>> {
+    let h = histograms(img);
     match style {
-        1 => {
-            let c = cdf(&h[3]);
-            map_ca(&mut b.img, |col, a| {
-                let l = luminance(col[0], col[1], col[2]);
-                let nl = look(&c, l);
-                let o = if l > 1e-5 { col.map(|v| v * nl / l) } else { [nl; 3] };
-                (lerp3(col, o, amt), a)
-            });
-        }
+        1 => vec![cdf(&h[3])],
         2 => {
             let mut combined = vec![0.0; BINS];
             for k in 0..3 {
@@ -422,12 +417,34 @@ fn equalize(ctx: &EffectCtx, mut b: Buf) -> Buf {
                     combined[i] += h[k][i];
                 }
             }
-            let c = cdf(&combined);
-            map_ca(&mut b.img, |col, a| (lerp3(col, col.map(|v| look(&c, v)), amt), a));
+            vec![cdf(&combined)]
+        }
+        _ => vec![cdf(&h[0]), cdf(&h[1]), cdf(&h[2])],
+    }
+}
+
+fn equalize(ctx: &EffectCtx, mut b: Buf) -> Buf {
+    let amt = (ctx.params.f("amount") / 100.0).clamp(0.0, 1.0) as f32;
+    if amt <= 0.0 {
+        return b;
+    }
+    let style = ctx.params.e("style");
+    let t = equalize_tables(&b.img, style);
+    let look = |c: &Vec<f32>, v: f32| c[((v.clamp(0.0, 1.0) * (BINS - 1) as f32).round() as usize).min(BINS - 1)];
+    match style {
+        1 => {
+            map_ca(&mut b.img, |col, a| {
+                let l = luminance(col[0], col[1], col[2]);
+                let nl = look(&t[0], l);
+                let o = if l > 1e-5 { col.map(|v| v * nl / l) } else { [nl; 3] };
+                (lerp3(col, o, amt), a)
+            });
+        }
+        2 => {
+            map_ca(&mut b.img, |col, a| (lerp3(col, col.map(|v| look(&t[0], v)), amt), a));
         }
         _ => {
-            let cs = [cdf(&h[0]), cdf(&h[1]), cdf(&h[2])];
-            map_ca(&mut b.img, |col, a| (lerp3(col, [0, 1, 2].map(|k| look(&cs[k], col[k])), amt), a));
+            map_ca(&mut b.img, |col, a| (lerp3(col, [0, 1, 2].map(|k| look(&t[k], col[k])), amt), a));
         }
     }
     b
@@ -436,17 +453,29 @@ fn equalize(ctx: &EffectCtx, mut b: Buf) -> Buf {
 // ---------------------------------------------------------------------------------------------
 // Shadow/Highlight
 
-fn shadow_highlight(ctx: &EffectCtx, mut b: Buf) -> Buf {
+/// Shadow/Highlight's shadow and highlight amounts for `img` (Auto Amounts measures them).
+pub fn shadow_highlight_amounts(ctx: &EffectCtx, img: &Image) -> (f32, f32) {
     let (mut s_amt, mut h_amt) = (ctx.params.f("shadowAmount") as f32 / 100.0, ctx.params.f("highlightAmount") as f32 / 100.0);
-    let luma = Plane::luma(&b.img);
-    let src_hist = histograms(&b.img);
     if ctx.params.b("autoAmounts") {
         // Temporal Smoothing / Scene Detect average the analysis over neighbouring frames.
-        let mean =
-            if ctx.params.f("temporalSmoothing") > 0.0 { hist_mean(&smoothed_histograms(ctx, &b.img)[3]) as f32 } else { hist_mean(&src_hist[3]) as f32 };
+        let mean = if ctx.params.f("temporalSmoothing") > 0.0 { hist_mean(&smoothed_histograms(ctx, img)[3]) } else { hist_mean(&histograms(img)[3]) } as f32;
         s_amt = ((0.6 - mean) * 1.5).clamp(0.0, 1.0) * 0.8 + 0.1;
         h_amt = ((mean - 0.6) * 1.5).clamp(0.0, 1.0) * 0.8;
     }
+    (s_amt, h_amt)
+}
+
+/// The luminance values clipping `black` / `white` fractions of `img`'s alpha-weighted
+/// luminance histogram (Shadow/Highlight's Black / White Clip).
+pub fn luma_clip_points(img: &Image, black: f64, white: f64) -> (f32, f32) {
+    clip_points(&histograms(img)[3], black, white)
+}
+
+fn shadow_highlight(ctx: &EffectCtx, mut b: Buf) -> Buf {
+    let (s_amt, h_amt) = shadow_highlight_amounts(ctx, &b.img);
+    let luma = Plane::luma(&b.img);
+    let (bc, wc) = (ctx.params.f("moreOptions/blackClip").clamp(0.0, 49.0) / 100.0, ctx.params.f("moreOptions/whiteClip").clamp(0.0, 49.0) / 100.0);
+    let clip0 = (bc > 0.0 || wc > 0.0).then(|| luma_clip_points(&b.img, bc, wc));
     let s_tw = (ctx.params.f("moreOptions/shadowTonalWidth") as f32 / 100.0).max(0.01);
     let h_tw = (ctx.params.f("moreOptions/highlightTonalWidth") as f32 / 100.0).max(0.01);
     let s_r = ctx.params.f("moreOptions/shadowRadius").max(0.0) * b.scale / 2.0;
@@ -478,10 +507,8 @@ fn shadow_highlight(ctx: &EffectCtx, mut b: Buf) -> Buf {
     // Black / White Clip: the adjusted image's extremes (ignoring those fractions of pixels)
     // are mapped back onto the original's, so lifting shadows or recovering highlights doesn't
     // flatten the ends of the tonal range.
-    let (bc, wc) = (ctx.params.f("moreOptions/blackClip").clamp(0.0, 49.0) / 100.0, ctx.params.f("moreOptions/whiteClip").clamp(0.0, 49.0) / 100.0);
-    if bc > 0.0 || wc > 0.0 {
-        let (lo0, hi0) = clip_points(&src_hist[3], bc, wc);
-        let (lo1, hi1) = clip_points(&histograms(&b.img)[3], bc, wc);
+    if let Some((lo0, hi0)) = clip0 {
+        let (lo1, hi1) = luma_clip_points(&b.img, bc, wc);
         if (lo0, hi0) != (lo1, hi1) && hi1 - lo1 > 1e-3 {
             let k = (hi0 - lo0) / (hi1 - lo1);
             map_ca(&mut b.img, |c, a| (c.map(|v| (lo0 + (v - lo1) * k).max(0.0)), a));

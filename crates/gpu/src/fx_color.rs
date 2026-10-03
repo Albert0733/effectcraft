@@ -235,7 +235,7 @@ fn morph(e: &mut Enc, img: &GpuImage, r: u32, modes: [u32; 4]) -> GpuImage {
 }
 
 /// util::morph_frac (blend between the two nearest integer radii).
-fn morph_frac(e: &mut Enc, img: &GpuImage, radius: f64, modes: [u32; 4]) -> GpuImage {
+pub(crate) fn morph_frac(e: &mut Enc, img: &GpuImage, radius: f64, modes: [u32; 4]) -> GpuImage {
     if radius <= 0.0 {
         return img.clone();
     }
@@ -253,8 +253,8 @@ fn morph_frac(e: &mut Enc, img: &GpuImage, radius: f64, modes: [u32; 4]) -> GpuI
     out
 }
 
-const ERODE_X: [u32; 4] = [0, 2, 2, 2];
-const DILATE_X: [u32; 4] = [1, 2, 2, 2];
+pub(crate) const ERODE_X: [u32; 4] = [0, 2, 2, 2];
+pub(crate) const DILATE_X: [u32; 4] = [1, 2, 2, 2];
 
 // ---------------------------------------------------------------- Key Light
 
