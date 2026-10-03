@@ -93,6 +93,12 @@ impl Gpu {
         Enc::new(&self.ctx).read_texture(&f.texture, f.width, f.height, 4)
     }
 
+    /// [`Gpu::read_display`] without blocking (the browser's main thread): `done` gets the bytes
+    /// once the GPU has them.
+    pub fn read_display_async(&self, f: &DisplayFrame, done: impl FnOnce(Option<Vec<u8>>) + wgpu::WasmNotSend + 'static) {
+        Enc::new(&self.ctx).read_texture_async(&f.texture, f.width, f.height, 4, done);
+    }
+
     /// Render a frame on the GPU and read it back (`None` = not handled).
     pub fn render(&self, r: &Renderer, comp: ItemId, t: Tick) -> Option<Image> {
         if !self.ctx.can_readback() {

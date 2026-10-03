@@ -26,6 +26,7 @@ use effectcraft_track::camtrack::linalg::{self, Similarity, V3};
 use effectcraft_track::camtrack::{AnalyzeOpts, CameraSolve, CameraTracks, SolveSettings, Target, TrackAnalyzer};
 use serde::Serialize;
 
+use crate::offload::JobKind;
 use crate::tracking::lock;
 use crate::warp::{analysis_times, signature};
 use crate::{Event, Session};
@@ -242,6 +243,7 @@ fn run_work(w: CamWork, shared: &CameraShared) {
                 s.done = k as u64 + 1;
                 s.elapsed = t0.elapsed().as_secs_f64();
                 s.fps = if s.elapsed > 0.0 { s.done as f64 / s.elapsed } else { 0.0 };
+                crate::offload::report(s.done, s.total);
             }
             (Arc::new(an.finish(lt0, fd)), true)
         }
@@ -259,21 +261,29 @@ fn run_work(w: CamWork, shared: &CameraShared) {
 
 impl Session {
     pub fn is_camera_analyzing(&self) -> bool {
-        self.camera_job.as_ref().is_some_and(|j| !j.is_finished())
+        self.camera_job.as_ref().is_some_and(|j| !j.is_finished()) || self.offloaded(JobKind::Camera).is_some()
     }
 
     /// Progress of the running (or just finished) analysis.
     pub fn camera_progress(&self) -> Option<CameraProgress> {
-        self.camera_job.as_ref().map(|j| j.progress())
+        self.camera_job.as_ref().map(|j| j.progress()).or_else(|| {
+            self.offloaded(JobKind::Camera).map(|j| {
+                let p = &j.progress;
+                CameraProgress { step: 1, done: p.done, total: p.total, elapsed: p.elapsed, fps: crate::offload::rate(p.done, p.elapsed), ..Default::default() }
+            })
+        })
     }
 
     /// The tracker being analysed: (comp, layer, effect uid).
     pub fn camera_target(&self) -> Option<(ItemId, LayerId, Uid)> {
-        self.camera_job.as_ref().map(|j| (j.comp, j.layer, j.effect))
+        self.camera_job.as_ref().map(|j| (j.comp, j.layer, j.effect)).or_else(|| self.offloaded(JobKind::Camera).map(|j| (j.comp, j.layer, j.uid)))
     }
 
     /// Cancel the running analysis (nothing is written).
     pub fn stop_camera(&mut self) -> bool {
+        if self.cancel_offloaded(JobKind::Camera) {
+            return true;
+        }
         match &self.camera_job {
             Some(j) if !j.is_finished() => {
                 j.shared.cancel.store(true, Ordering::Relaxed);
@@ -326,6 +336,11 @@ impl Session {
             tracks: tracks.clone(),
             settings,
         };
+        if !wait && self.offloads() {
+            drop(work);
+            self.offload_analysis(crate::offload::WorkerJob::Camera { comp, layer, effect })?;
+            return Ok(n);
+        }
         let wait = wait || cfg!(target_arch = "wasm32");
         let shared = Arc::new(CameraShared::default());
         {
@@ -423,7 +438,7 @@ impl Session {
     /// (re-)analyses in the background, like After Effects.
     pub fn poll_camera(&mut self, auto: bool) -> bool {
         let changed = self.poll_camera_job();
-        if auto && self.camera_job.is_none() {
+        if auto && self.camera_job.is_none() && self.offloaded(JobKind::Camera).is_none() {
             while let Some((c, l, e)) = self.camera_pending.first().copied() {
                 self.camera_pending.remove(0);
                 if self.start_camera(c, l, e, false).is_ok() {

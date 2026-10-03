@@ -484,6 +484,41 @@ impl<'g> Enc<'g> {
         Some(out)
     }
 
+    /// [`Enc::read_texture`] without waiting for the GPU (the browser's main thread can't): `done`
+    /// gets the bytes once the copy is mapped (from the browser's event loop on the web; from
+    /// a later device poll natively).
+    pub fn read_texture_async(&mut self, texture: &wgpu::Texture, w: u32, h: u32, bpp: u32, done: impl FnOnce(Option<Vec<u8>>) + wgpu::WasmNotSend + 'static) {
+        let row = w * bpp;
+        let padded = row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let buf = self.g.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("readback-async"),
+            size: padded as u64 * h as u64,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.encoder().copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo { texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::TexelCopyBufferInfo { buffer: &buf, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(padded), rows_per_image: Some(h) } },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+        self.submit();
+        let b = buf.clone();
+        buf.map_async(wgpu::MapMode::Read, .., move |r| {
+            let out = r.ok().and_then(|_| {
+                let view = b.get_mapped_range(..).ok()?;
+                let mut out = Vec::with_capacity((row * h) as usize);
+                for y in 0..h as usize {
+                    out.extend_from_slice(&view[y * padded as usize..y * padded as usize + row as usize]);
+                }
+                Some(out)
+            });
+            b.unmap();
+            done(out);
+        });
+        #[cfg(not(target_arch = "wasm32"))]
+        let _ = self.g.device.poll(wgpu::PollType::Poll);
+    }
+
     /// A data buffer for kernels that read tables (curves).
     pub fn data(&self, v: &[f32]) -> wgpu::Buffer {
         let mut bytes = Vec::with_capacity(v.len().max(4) * 4);

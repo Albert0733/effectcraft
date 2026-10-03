@@ -119,7 +119,7 @@ the disk cache in the formats wave; the 3D Camera Tracker in M12.6.)
 | Compositions | ≈ 80% | 3.5 | Mocha-style planar tracks for templates, Essential Graphics' rare controls (font menus, mirrored properties) (the marker dialog, Composition Flowchart, Essential Graphics with master properties, `.ectemplate` templates and Responsive Design — Time landed: CMP-6, CMP-7) |
 | Animation | 65% | 10.4 | puppet, Wiggler/Smoother/Motion Sketch (motion-path handles and the graph editor transform box landed in M5.8) |
 | Text | ≈ 86% | 1.3 | vertical type is basic (upright characters, no tate-chu-yoko), no OpenType feature panel, no extruded strokes (extruded, bevelled text landed in M7.6); per-character styles, paragraph settings, on-canvas editing and the `sourceText` style API landed (M9.9–M9.10) |
-| Web | 60% | 2.5 | threads, browser storage, audio |
+| Web | 85% | 1.0 | viewer frames and Roto Brush propagation still on the page's thread; GPU effects in the browser (browser storage, Web Audio, Web Worker renders/analyses, WebGPU viewer and offline install landed in M15.2) |
 | 3D | 76% | 10.0 | multi-view layouts, Advanced 3D motion blur and blend modes, cameras/lights from models; Advanced 3D (glTF/OBJ models, primitives, extruded text and shapes, PBR, image-based light, shadow maps, GPU rasteriser) landed in M7.4–M7.6 |
 | Effects | ≈ 75% | 5.0 | GPU versions of more effects (every After Effects effect exists since M9.11, M12.5 and M12.6) |
 | Interface | 70% | 6.0 | Timeline horizontal scrolling of many columns, a richer Learn area (native macOS menu bar, Timeline columns/search/reveal-add, Home screen with recent projects and all AE workspaces landed; viewer rulers/snapping/channels/snapshots landed in M0.13) |

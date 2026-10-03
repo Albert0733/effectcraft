@@ -11,6 +11,7 @@
 //! for re-analysis, which frontends start with [`Session::poll_warp`] (After Effects re-analyses
 //! automatically too).
 
+use crate::offload::{JobKind, rate};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -232,6 +233,7 @@ fn run_work(w: WarpWork, shared: &WarpShared) {
         s.done = k as u64 + 1;
         s.elapsed = t0.elapsed().as_secs_f64();
         s.fps = if s.elapsed > 0.0 { s.done as f64 / s.elapsed } else { 0.0 };
+        crate::offload::report(s.done, s.total);
     }
     lock(&shared.state).step = 2;
     let lt0 = layer.layer_time(w.times[0]).seconds();
@@ -264,21 +266,29 @@ pub(crate) fn analysis_times(comp: &effectcraft_project::Comp, layer: &Layer) ->
 
 impl Session {
     pub fn is_warp_analyzing(&self) -> bool {
-        self.warp_job.as_ref().is_some_and(|j| !j.is_finished())
+        self.warp_job.as_ref().is_some_and(|j| !j.is_finished()) || self.offloaded(JobKind::Warp).is_some()
     }
 
     /// Progress of the running (or just finished) analysis.
     pub fn warp_progress(&self) -> Option<WarpProgress> {
-        self.warp_job.as_ref().map(|j| j.progress())
+        self.warp_job.as_ref().map(|j| j.progress()).or_else(|| {
+            self.offloaded(JobKind::Warp).map(|j| {
+                let p = &j.progress;
+                WarpProgress { step: 1, done: p.done, total: p.total, elapsed: p.elapsed, fps: rate(p.done, p.elapsed), ..Default::default() }
+            })
+        })
     }
 
     /// The effect being analysed: (comp, layer, effect uid).
     pub fn warp_target(&self) -> Option<(ItemId, LayerId, Uid)> {
-        self.warp_job.as_ref().map(|j| (j.comp, j.layer, j.effect))
+        self.warp_job.as_ref().map(|j| (j.comp, j.layer, j.effect)).or_else(|| self.offloaded(JobKind::Warp).map(|j| (j.comp, j.layer, j.uid)))
     }
 
     /// Cancel the running analysis (nothing is written).
     pub fn stop_warp(&mut self) -> bool {
+        if self.cancel_offloaded(JobKind::Warp) {
+            return true;
+        }
         match &self.warp_job {
             Some(j) if !j.is_finished() => {
                 j.shared.cancel.store(true, Ordering::Relaxed);
@@ -325,6 +335,11 @@ impl Session {
             times,
         };
         let key = signature(&self.project, comp, l);
+        if !wait && self.offloads() {
+            drop(work);
+            self.offload_analysis(crate::offload::WorkerJob::Warp { comp, layer, effect })?;
+            return Ok(n);
+        }
         let wait = wait || cfg!(target_arch = "wasm32");
         let shared = Arc::new(WarpShared::default());
         let thread = if wait {
@@ -391,7 +406,7 @@ impl Session {
     /// re-analyses in the background, like After Effects.
     pub fn poll_warp(&mut self, auto: bool) -> bool {
         let changed = self.poll_warp_job();
-        if auto && self.warp_job.is_none() {
+        if auto && self.warp_job.is_none() && self.offloaded(JobKind::Warp).is_none() {
             while let Some((c, l, e)) = self.warp_pending.first().copied() {
                 self.warp_pending.remove(0);
                 if self.start_warp(c, l, e, false).is_ok() {

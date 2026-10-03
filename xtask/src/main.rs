@@ -289,13 +289,55 @@ fn web(args: &[String]) -> Result<(), String> {
             std::fs::copy(e.path(), dist.join(&name)).map_err(|e| format!("{name}: {e}"))?;
         }
     }
+    // PWA icons: the app icon (assets/app-icon, attributed there).
+    for n in [256, 512] {
+        let src = format!("assets/app-icon/hicolor/{n}x{n}/apps/ai.storyteller.effectcraft.png");
+        std::fs::copy(&src, dist.join(format!("icon-{n}.png"))).map_err(|e| format!("{src}: {e}"))?;
+    }
+    service_worker(&dist)?;
     let size = |p: &std::path::Path| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
-    let total: u64 = std::fs::read_dir(&dist).map_err(|e| e.to_string())?.flatten().map(|e| size(&e.path())).sum();
+    let total: u64 = dist_files(&dist).iter().map(|f| size(&dist.join(f))).sum();
     println!("web: {} ({:.1} MB wasm, {:.1} MB total)", dist.display(), size(&bg) as f64 / 1e6, total as f64 / 1e6);
     if let Some(port) = serve {
         serve_dir(&dist, port)?;
     }
     Ok(())
+}
+
+/// Every file under `dist`, as `/`-separated relative paths, sorted.
+fn dist_files(dist: &std::path::Path) -> Vec<String> {
+    fn walk(dir: &std::path::Path, rel: &str, out: &mut Vec<String>) {
+        for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            let r = if rel.is_empty() { name } else { format!("{rel}/{name}") };
+            if e.path().is_dir() {
+                walk(&e.path(), &r, out);
+            } else {
+                out.push(r);
+            }
+        }
+    }
+    let mut v = vec![];
+    walk(dist, "", &mut v);
+    v.sort();
+    v
+}
+
+/// Fill the service worker's precache list and version (a hash of the build's files).
+fn service_worker(dist: &std::path::Path) -> Result<(), String> {
+    let sw = dist.join("sw.js");
+    let text = std::fs::read_to_string(&sw).map_err(|e| format!("sw.js: {e}"))?;
+    let files: Vec<String> = dist_files(dist).into_iter().filter(|f| f != "sw.js").collect();
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for f in &files {
+        for b in f.bytes().chain(std::fs::read(dist.join(f)).map_err(|e| format!("{f}: {e}"))?) {
+            h ^= b as u64;
+            h = h.wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+    let list: Vec<String> = std::iter::once("./".to_string()).chain(files.iter().map(|f| format!("./{f}"))).map(|f| format!("{f:?}")).collect();
+    let text = text.replace("__EC_VERSION__", &format!("{h:016x}")).replace("__EC_FILES__", &format!("[{}]", list.join(", ")));
+    std::fs::write(&sw, text).map_err(|e| format!("sw.js: {e}"))
 }
 
 /// A tiny static file server for the web build (localhost only). Sends the cross-origin
@@ -334,7 +376,7 @@ fn serve_dir(dir: &std::path::Path, port: u16) -> Result<(), String> {
                 "js" => "text/javascript",
                 "wasm" => "application/wasm",
                 "svg" => "image/svg+xml",
-                "json" => "application/json",
+                "json" | "webmanifest" => "application/json",
                 "png" => "image/png",
                 "gif" => "image/gif",
                 "ecproj" => "application/json",

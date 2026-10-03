@@ -1,7 +1,11 @@
 //! Persistent configuration storage (Settings, keyboard shortcut presets, the crash-recovery
 //! sentinel). The engine only sees the [`ConfigStore`] trait; frontends choose where it lives:
-//! the desktop app uses a [`DirConfig`] in the platform config directory, the web app can back it
-//! with `localStorage`, tests and headless runs use [`MemoryConfig`] (or none at all).
+//! the desktop app uses a [`DirConfig`] in the platform config directory, the web app backs it
+//! with the browser's Origin Private File System (IndexedDB fallback), tests and headless runs use
+//! [`MemoryConfig`] (or none at all).
+//!
+//! Auto-saves are project files, not settings, but they live wherever the store says: the store's
+//! [`FileOps`] (the file system by default; the browser's storage on the web).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -12,10 +16,51 @@ pub trait ConfigStore: Send + Sync {
     fn read(&self, name: &str) -> Option<String>;
     fn write(&self, name: &str, data: &str) -> std::io::Result<()>;
     fn remove(&self, name: &str) -> std::io::Result<()>;
-    /// A directory on disk next to the configuration (default Auto-Save folder for untitled
-    /// projects); `None` for stores that aren't on the file system.
+    /// The folder next to the configuration (default Auto-Save folder for untitled projects),
+    /// in the namespace of [`ConfigStore::files`]; `None` when there is none.
     fn dir(&self) -> Option<PathBuf> {
         None
+    }
+    /// Where auto-saves are listed, written and found (default: the file system).
+    fn files(&self) -> &dyn FileOps {
+        &StdFiles
+    }
+}
+
+/// The file operations auto-save and crash recovery need.
+pub trait FileOps: Send + Sync {
+    /// Files directly in `dir`: (file name, modified time).
+    fn list(&self, dir: &Path) -> Vec<(String, std::time::SystemTime)>;
+    /// Write `data` to `path` atomically, creating its folder.
+    fn write(&self, path: &Path, data: &[u8]) -> std::io::Result<()>;
+    fn remove(&self, path: &Path) -> std::io::Result<()>;
+    fn is_file(&self, path: &Path) -> bool;
+}
+
+/// [`FileOps`] on the file system.
+pub struct StdFiles;
+
+impl FileOps for StdFiles {
+    fn list(&self, dir: &Path) -> Vec<(String, std::time::SystemTime)> {
+        let Ok(rd) = std::fs::read_dir(dir) else { return vec![] };
+        rd.flatten()
+            .filter_map(|e| {
+                let m = e.metadata().ok().filter(|m| m.is_file())?.modified().ok()?;
+                Some((e.file_name().to_string_lossy().to_string(), m))
+            })
+            .collect()
+    }
+    fn write(&self, path: &Path, data: &[u8]) -> std::io::Result<()> {
+        if let Some(d) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+            std::fs::create_dir_all(d)?;
+        }
+        atomic_write(path, data)
+    }
+    fn remove(&self, path: &Path) -> std::io::Result<()> {
+        std::fs::remove_file(path)
+    }
+    fn is_file(&self, path: &Path) -> bool {
+        path.is_file()
     }
 }
 

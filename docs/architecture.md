@@ -166,7 +166,8 @@ chain with one upload and one readback. Tests render scenes on both paths and co
 (≤ 1/255 at 8 bpc, ≤ 1e-3 at 32 bpc); they skip without an adapter. The desktop viewer builds the
 `Gpu` on egui-wgpu's device and shows frames from GPU textures without reading them back
 (`ui-egui::frames`); headless renders, the CLI (unless `--gpu`) and CI use the CPU. On the web
-(WebGPU) the GPU composites viewer frames; steps that need a readback fall back to the CPU.
+(WebGPU) the GPU composites viewer frames; steps that need a readback fall back to the CPU (the
+Info panel's pixel readout reads GPU frames back asynchronously).
 
 **Colour and bit depth** (`crates/render/src/color.rs`, `crates/color/src/space.rs`). Pixels are
 `f32`, but 8 and 16 bpc projects clamp and quantise each layer after its source and masks and
@@ -309,6 +310,14 @@ inspect and click the interface. See [agents.md](agents.md) and
 
 Settings (`engine::prefs`), keyboard shortcut presets (`engine::shortcuts`) and auto-save /
 crash recovery (`engine::autosave`) live in the engine too; they persist through a
-`ConfigStore` the frontend provides (a directory on the desktop, `localStorage` on the web).
+`ConfigStore` the frontend provides (a directory on the desktop; the Origin Private File System,
+or IndexedDB, on the web). Auto-saves go through the store's `FileOps` (the file system by
+default, the browser storage on the web).
+
+Renders and analyses run on background threads on the desktop. Where there are no threads (the
+browser), `engine::offload` sends them to a second engine instance instead: the session's
+`Offload` ships the serialized project, the footage it reads and the job (`WorkerRequest`) to a
+Web Worker, and the worker's replies (progress, item status, the analysed property group) are
+applied on the UI thread.
 The shortcut dispatcher and the menus read the active preset. See
 [preferences.md](preferences.md).
