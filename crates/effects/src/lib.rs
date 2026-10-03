@@ -40,6 +40,7 @@ mod ocio;
 pub mod paint;
 mod perspective;
 mod perspective2;
+pub mod psim;
 pub mod puppet;
 pub mod roto;
 mod sim;
@@ -67,6 +68,8 @@ use effectcraft_project::build::Ids;
 use effectcraft_project::{GroupKind, ParamUi, PropGroup, Property};
 pub use effectcraft_raster::{AuxChannels, Image};
 pub use misc::{INVERT_ALPHA, INVERT_CHANNELS};
+pub use sim::particle_state;
+pub use sim3::playground_state;
 
 /// Effect categories in Effects & Presets order.
 pub const CATEGORIES: &[&str] = &[
@@ -258,6 +261,11 @@ pub trait EffectHost: Sync {
     /// [`AuxChannels`]). `None` when the source has none (the 3D Channel effects then pass the
     /// layer through).
     fn aux(&self) -> Option<std::sync::Arc<AuxChannels>> {
+        None
+    }
+    /// A particle simulation backend (GPU particles; see [`psim`]). `None` = simulate on the
+    /// CPU.
+    fn particles(&self) -> Option<&dyn psim::ParticleSim> {
         None
     }
 }

@@ -29,6 +29,7 @@ mod fx_color;
 mod fx_distort;
 mod fx_generate;
 mod ops;
+mod particles;
 mod walk;
 
 use std::sync::Arc;
@@ -139,6 +140,16 @@ impl Accelerator for Gpu {
     fn raster_3d(&self, scene: &effectcraft_render::three_d::adv::Scene) -> Option<effectcraft_render::three_d::adv::Target> {
         adv3d::render(&self.ctx, scene)
     }
+
+    fn particles(&self) -> Option<&dyn effectcraft_effects::psim::ParticleSim> {
+        self.ctx.can_readback().then_some(self as &dyn effectcraft_effects::psim::ParticleSim)
+    }
+}
+
+impl effectcraft_effects::psim::ParticleSim for Gpu {
+    fn simulate(&self, req: &effectcraft_effects::psim::SimRequest) -> Option<Vec<effectcraft_effects::psim::SimParticle>> {
+        particles::simulate(&self.ctx, req)
+    }
 }
 
 #[cfg(test)]
@@ -149,3 +160,5 @@ mod tests_3d;
 mod tests_adjust;
 #[cfg(test)]
 mod tests_adv3d;
+#[cfg(test)]
+mod tests_particles;

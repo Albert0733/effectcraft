@@ -82,6 +82,9 @@ struct FxHost<'r, 'a, 'c> {
 const MAX_FX_DEPTH: usize = 8;
 
 impl EffectHost for FxHost<'_, '_, '_> {
+    fn particles(&self) -> Option<&dyn effectcraft_effects::psim::ParticleSim> {
+        self.r.active_accel().and_then(|a| a.particles())
+    }
     fn layer(&self, id: u64, masks_and_effects: bool) -> Option<LayerPixels> {
         let other = self.ctx.layer(effectcraft_project::LayerId(id))?;
         if other.id == self.layer.id || self.r.depth > MAX_FX_DEPTH {
@@ -238,6 +241,11 @@ pub trait Accelerator: Send + Sync {
     /// based light, shadow maps), with the CPU rasteriser's semantics
     /// ([`three_d::adv::raster::render`]). `None` = not handled (the CPU renders it).
     fn raster_3d(&self, _scene: &three_d::adv::Scene) -> Option<three_d::adv::Target> {
+        None
+    }
+    /// A particle simulation backend (GPU particles) for the stepped particle effects, with
+    /// the CPU simulation's semantics. `None` = they simulate on the CPU.
+    fn particles(&self) -> Option<&dyn effectcraft_effects::psim::ParticleSim> {
         None
     }
 }

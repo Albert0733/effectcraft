@@ -231,6 +231,38 @@ impl Pg {
 
 static PG_CACHE: SimCache<PgState> = SimCache::new(6);
 
+/// Particle Playground cannons with gravity only, simulated by the host's particle backend.
+fn pg_accelerated(ctx: &EffectCtx, key: u64, pg: &Pg) -> Option<std::sync::Arc<PgState>> {
+    let backend = ctx.env.host?.particles()?;
+    let steps = steps_at(ctx.time);
+    let births = crate::psim::births(pg.rate, steps, 60_000)?;
+    let desc = crate::psim::CannonDesc {
+        pos: pg.pos,
+        barrel_angle: pg.barrel_angle,
+        barrel_radius: pg.barrel_radius,
+        dir_spread: pg.dir_spread,
+        vel: pg.vel,
+        vel_spread: pg.vel_spread,
+        gravity: pg.gravity,
+        grav_spread: pg.grav_spread,
+        seed: pg.seed,
+        bounds: pg.bounds,
+    };
+    let req = crate::psim::SimRequest { key, steps, births: &births, system: crate::psim::ParticleSystem::Cannon(desc) };
+    let parts = backend.simulate(&req)?;
+    Some(std::sync::Arc::new(PgState {
+        parts: parts
+            .into_iter()
+            .map(|q| {
+                let born = pg.spawn(q.id);
+                PgParticle { p: [q.p[0], q.p[1]], v: [q.v[0], q.v[1]], ..born }
+            })
+            .collect(),
+        carry: 0.0,
+        next_id: births.len() as u32,
+    }))
+}
+
 fn image_key(img: &Image) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -244,14 +276,15 @@ fn image_key(img: &Image) -> u64 {
     h.finish()
 }
 
-fn particle_playground(ctx: &EffectCtx, mut b: Buf) -> Buf {
+/// Particle Playground's producers and forces.
+fn pg_of(ctx: &EffectCtx) -> Pg {
     let pr = ctx.params;
     let (lw, lh) = (ctx.layer_size[0] as f32, ctx.layer_size[1] as f32);
     let grav_dir = (pr.f("gravity/gravityDirection") as f32).to_radians();
     let gf = pr.f("gravity/gravityForce") as f32;
     let wall = (pr.f("wall/wallBoundary").round() as usize).checked_sub(1).and_then(|i| ctx.env.masks.get(i)).map(|m| m.points.clone());
     let mapper = if pr.b("mapperEnabled") { ctx.layer_param("persistentPropertyMapper/useLayerAsMap", true).map(|lp| MapImg::from(ctx, lp)) } else { None };
-    let pg = Pg {
+    Pg {
         cannon: pr.b("cannonEnabled"),
         pos: { pr.v2("cannon/cannonPosition").map(|v| v as f32) },
         barrel_angle: pr.f("cannon/barrelAngle") as f32,
@@ -275,7 +308,34 @@ fn particle_playground(ctx: &EffectCtx, mut b: Buf) -> Buf {
         ],
         seed: (pr.f("randomSeed") as u32).wrapping_mul(0x9e37_79b9) ^ ctx.seed,
         bounds: [-lw * 2.0, -lh * 2.0, lw * 3.0, lh * 3.0],
-    };
+    }
+}
+
+/// The live particles of a Particle Playground whose cannon is the only producer and force
+/// besides gravity, at `ctx.time`: from the host's particle backend when it has one (GPU
+/// particles), else from the CPU simulation (`None` for other set-ups). For comparing the two.
+pub fn playground_state(ctx: &EffectCtx) -> Option<Vec<crate::psim::SimParticle>> {
+    let pg = pg_of(ctx);
+    let pr = ctx.params;
+    let grid = pr.b("gridEnabled") && pr.f("grid/particlesAcross").round() > 0.0 && pr.f("grid/particlesDown").round() > 0.0;
+    let exploder = pr.b("exploderEnabled") && pr.get("layerExploder/explodeLayer").and_then(Value::as_layer).is_some();
+    if !pg.cannon || grid || exploder || (pg.repel != 0.0 && pg.repel_radius > 0.0) || pg.wall.is_some() || pg.mapper.is_some() {
+        return None;
+    }
+    let key = params_key(ctx, &Buf { img: Image::new(0, 0), offset: [0.0; 2], scale: 1.0 }, 0x7067);
+    let st = pg_accelerated(ctx, key, &pg).unwrap_or_else(|| PG_CACHE.run(key, steps_at(ctx.time), PgState::default, |st, _| pg.step(st)));
+    Some(
+        st.parts
+            .iter()
+            .map(|q| crate::psim::SimParticle { p: [q.p[0], q.p[1], 0.0], v: [q.v[0], q.v[1], 0.0], age: 0.0, life: 0.0, rnd: 0.0, id: q.id })
+            .collect(),
+    )
+}
+
+fn particle_playground(ctx: &EffectCtx, mut b: Buf) -> Buf {
+    let pr = ctx.params;
+    let (lw, lh) = (ctx.layer_size[0] as f32, ctx.layer_size[1] as f32);
+    let pg = pg_of(ctx);
     // Initial particles: Grid and Layer Exploder.
     let grid_on = pr.b("gridEnabled");
     let across = pr.f("grid/particlesAcross").max(0.0).round() as u32;
@@ -347,7 +407,15 @@ fn particle_playground(ctx: &EffectCtx, mut b: Buf) -> Buf {
         }
         st
     };
-    let st = PG_CACHE.run(key, steps_at(ctx.time), init, |st, _| pg.step(st));
+    // A cannon with gravity only: every particle moves on its own (GPU particles).
+    let independent = pg.cannon
+        && !(grid_on && across > 0 && down > 0)
+        && exploder.is_none()
+        && !(pg.repel != 0.0 && pg.repel_radius > 0.0)
+        && pg.wall.is_none()
+        && pg.mapper.is_none();
+    let gpu = if independent { pg_accelerated(ctx, key, &pg) } else { None };
+    let st = gpu.unwrap_or_else(|| PG_CACHE.run(key, steps_at(ctx.time), init, |st, _| pg.step(st)));
     let s = b.scale as f32;
     let sprites: Vec<Sprite> = st
         .parts
