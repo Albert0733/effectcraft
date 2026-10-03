@@ -84,6 +84,13 @@ pub struct Keyframe {
     pub spatial_continuous: bool,
     #[serde(default)]
     pub roving: bool,
+    /// Keyframe color label: index into the label list (0 = None).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub label: u8,
+}
+
+fn is_zero(v: &u8) -> bool {
+    *v == 0
 }
 
 fn yes() -> bool {
@@ -106,6 +113,7 @@ impl Keyframe {
             spatial_auto: true,
             spatial_continuous: false,
             roving: false,
+            label: 0,
         }
     }
     pub fn hold(mut self) -> Keyframe {

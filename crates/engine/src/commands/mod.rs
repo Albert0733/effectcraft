@@ -13,6 +13,7 @@ mod file_more;
 mod focus;
 mod frontend;
 mod help;
+mod key_labels;
 mod key_transform;
 mod layer;
 mod layer_menu;
@@ -131,6 +132,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(viewer_cmds::specs());
         v.extend(shape_stroke::specs());
         v.extend(focus::specs());
+        v.extend(key_labels::specs());
         v.extend(key_transform::specs());
         v.extend(file_more::specs());
         v.extend(lottie::specs());

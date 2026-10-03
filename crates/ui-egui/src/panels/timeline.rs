@@ -714,7 +714,13 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let footer_h = 24.0;
     let vis = Vis::of(&app.ui.timeline);
     let left_w = (vis.fixed() + 190.0).clamp(420.0, (rect.width() * 0.72).max(420.0));
-    let cw = cols(rect.min.x, left_w, vis);
+    // Columns wider than the pane scroll horizontally (Shift+wheel / trackpad over the outline,
+    // or the scroll bar above the footer); the name column keeps its minimum width.
+    let natural_w = vis.fixed() + 190.0;
+    let overflow = (natural_w - left_w).max(0.0);
+    app.ui.timeline.outline_scroll = app.ui.timeline.outline_scroll.clamp(0.0, overflow);
+    let oscroll = app.ui.timeline.outline_scroll;
+    let cw = cols(rect.min.x - oscroll, left_w + overflow, vis);
     let graph_x0 = rect.min.x + left_w + 1.0;
     let graph_x1 = rect.max.x - 10.0;
     ctx.data_mut(|d| d.insert_temp(egui::Id::new("timeline-graph-area"), (graph_x0, graph_x1 - graph_x0)));
@@ -898,8 +904,10 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     p.rect_filled(Rect::from_min_max(ch.min, pos2(graph_x0 - 1.0, ch.max.y)), 0.0, t.panel_bg);
     p.line_segment([pos2(rect.min.x, ch.max.y), pos2(rect.max.x, ch.max.y)], Stroke::new(1.0, t.separator));
     let hy = ch.center().y;
-    let hic = |icon: Icon, x: f32| icons::paint(&p, Rect::from_center_size(pos2(x, hy), vec2(12.0, 12.0)), icon, t.text_dim);
-    let htext = |x: f32, s: &str| p.text(pos2(x, hy), Align2::LEFT_CENTER, s, Tokens::ui(11.0), t.text_dim);
+    // Column headers scroll with the outline and never spill into the time ruler.
+    let hp = p.with_clip_rect(Rect::from_min_max(ch.min, pos2(graph_x0 - 1.0, ch.max.y)));
+    let hic = |icon: Icon, x: f32| icons::paint(&hp, Rect::from_center_size(pos2(x, hy), vec2(12.0, 12.0)), icon, t.text_dim);
+    let htext = |x: f32, s: &str| hp.text(pos2(x, hy), Align2::LEFT_CENTER, s, Tokens::ui(11.0), t.text_dim);
     if vis.av {
         hic(Icon::Eye, cw.av + 10.0);
         hic(Icon::Speaker, cw.av + 28.0);
@@ -910,7 +918,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         htext(cw.keys + 6.0, "Keys");
     }
     if vis.label {
-        icons::paint(&p, Rect::from_center_size(pos2(cw.label + 10.0, hy), vec2(10.0, 10.0)), Icon::Keyframe, t.text_dim);
+        icons::paint(&hp, Rect::from_center_size(pos2(cw.label + 10.0, hy), vec2(10.0, 10.0)), Icon::Keyframe, t.text_dim);
     }
     if vis.num {
         htext(cw.num + 6.0, "#");
@@ -933,7 +941,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         htext(cw.trkmat + 4.0, "Track Matte");
     }
     if vis.parent {
-        icons::paint(&p, Rect::from_center_size(pos2(cw.parent + 10.0, hy), vec2(12.0, 12.0)), Icon::PickWhip, t.text_dim);
+        icons::paint(&hp, Rect::from_center_size(pos2(cw.parent + 10.0, hy), vec2(12.0, 12.0)), Icon::PickWhip, t.text_dim);
         htext(cw.parent + 20.0, "Parent & Link");
     }
     for (on, x, s) in [(vis.in_, cw.in_, "In"), (vis.out, cw.out, "Out"), (vis.duration, cw.duration, "Duration"), (vis.stretch, cw.stretch, "Stretch")] {
@@ -1006,8 +1014,15 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         if zoom && dy.abs() > 0.0 {
             zoom_at(app, &comp, tm, (dy as f64 / 200.0).exp(), ui.input(|i| i.pointer.hover_pos()).map(|p| p.x).unwrap_or(graph_x0));
         } else {
-            app.ui.timeline.scroll_y = (app.ui.timeline.scroll_y - dy).clamp(0.0, max_scroll);
-            if dx.abs() > 0.0 && app.ui.timeline.pps.is_some() {
+            let over_outline = ui.input(|i| i.pointer.hover_pos()).is_some_and(|p| p.x < graph_x0);
+            let shift = ui.input(|i| i.modifiers.shift);
+            if over_outline && overflow > 0.0 && (dx.abs() > 0.0 || (shift && dy.abs() > 0.0)) {
+                let d = if dx.abs() > 0.0 { dx } else { dy };
+                app.ui.timeline.outline_scroll = (app.ui.timeline.outline_scroll - d).clamp(0.0, overflow);
+            } else {
+                app.ui.timeline.scroll_y = (app.ui.timeline.scroll_y - dy).clamp(0.0, max_scroll);
+            }
+            if dx.abs() > 0.0 && app.ui.timeline.pps.is_some() && !over_outline {
                 app.ui.timeline.start = (app.ui.timeline.start - dx as f64 / pps).max(0.0);
             }
         }
@@ -1623,7 +1638,16 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                         let ks = sel_keys.contains(&kref);
                         let icon = k.icon();
                         let c = pos2(x, cy);
-                        icons::keyframe(&gp, c, 11.0, icon.left, icon.right, if ks { t.keyframe_selected } else { t.keyframe }, Color32::from_black_alpha(200));
+                        // Labelled keys take their label colour (brighter when selected).
+                        let kcol = match effectcraft_engine::color::Label::ALL.get(k.label as usize).filter(|_| k.label > 0) {
+                            Some(l) => {
+                                let c = t.label(*l);
+                                if ks { c } else { c.gamma_multiply(0.75) }
+                            }
+                            None if ks => t.keyframe_selected,
+                            None => t.keyframe,
+                        };
+                        icons::keyframe(&gp, c, 11.0, icon.left, icon.right, kcol, Color32::from_black_alpha(200));
                         let kr = Rect::from_center_size(c, vec2(12.0, 14.0));
                         let kresp = ui.interact(kr, egui::Id::new(("key", uid, k.time.0)), Sense::click_and_drag());
                         app.auto.add(&format!("timeline.key.{uid}.{}", fr.frame_at(ct)), kr, &format!("{} key", prop.name));
@@ -1660,6 +1684,23 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                                 ("Select All Keyframes", "keys.selectAll", json!({})),
                                 ("Delete", "keys.delete", json!({})),
                             ] {
+                                if lbl == "Select All Keyframes" {
+                                    // Keyframe colour labels.
+                                    ui.menu_button("Label", |ui| {
+                                        for (i, l) in effectcraft_engine::color::Label::ALL.iter().enumerate() {
+                                            if ui.add(egui::Button::new(l.name()).selected(k.label as usize == i)).clicked() {
+                                                if !ks {
+                                                    actions.push((
+                                                        "keys.select".into(),
+                                                        json!({"keys": [{"layer": layer.id.0, "prop": uid, "time": k.time.seconds()}]}),
+                                                    ));
+                                                }
+                                                actions.push(("keys.setLabel".into(), json!({"label": i})));
+                                                ui.close();
+                                            }
+                                        }
+                                    });
+                                }
                                 if lbl == "-" {
                                     ui.separator();
                                     continue;
@@ -1794,6 +1835,22 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let footer = Rect::from_min_max(pos2(rect.min.x, rect.max.y - footer_h), rect.max);
     p.rect_filled(footer, 0.0, t.panel_bg);
     p.line_segment([footer.left_top(), footer.right_top()], Stroke::new(1.0, t.separator));
+    if overflow > 0.0 {
+        // Outline scroll bar along the top of the footer, under the columns.
+        let track = Rect::from_min_max(pos2(rect.min.x + 2.0, footer.min.y + 1.0), pos2(graph_x0 - 3.0, footer.min.y + 5.0));
+        let frac = left_w / natural_w;
+        let tw = (track.width() * frac).max(20.0);
+        let tx = track.min.x + (track.width() - tw) * (oscroll / overflow);
+        let thumb = Rect::from_min_size(pos2(tx, track.min.y), vec2(tw, track.height()));
+        p.rect_filled(track, 2.0, t.field_bg);
+        let sresp = ui.interact(track.expand2(vec2(0.0, 2.0)), egui::Id::new("tl-outline-scroll"), Sense::drag());
+        p.rect_filled(thumb, 2.0, if sresp.dragged() || sresp.hovered() { t.text_dim } else { t.text_faint });
+        app.auto.add("timeline.outlineScroll", track, &format!("{oscroll}/{overflow}"));
+        if sresp.dragged() {
+            let k = overflow / (track.width() - tw).max(1.0);
+            app.ui.timeline.outline_scroll = (oscroll + sresp.drag_delta().x * k).clamp(0.0, overflow);
+        }
+    }
     let tgl = Rect::from_min_size(pos2(footer.min.x + 10.0, footer.min.y + 3.0), vec2(150.0, 18.0));
     let tresp = ui.interact(tgl, egui::Id::new("tl-toggle-modes"), Sense::click());
     p.text(tgl.left_center(), Align2::LEFT_CENTER, "Toggle Switches / Modes", Tokens::ui(11.0), if tresp.hovered() { t.text } else { t.text_dim });

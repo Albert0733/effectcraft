@@ -23,7 +23,6 @@ pub fn specs() -> Vec<CommandSpec> {
         stub!("file.setProxy", "File...", ["File", "Set Proxy"], "{path}"),
         stub!("file.setProxyNone", "None", ["File", "Set Proxy"], "{}"),
         stub!("file.interpretProxy", "Proxy...", ["File", "Interpret Footage"], "{}"),
-        stub!("keys.selectLabelGroup", "Select Keyframe Label Group", [], "{scope}"),
         // Layer ▸ New (3D / content-aware fill).
         stub!("layer.newContentAwareFill", "Content-Aware Fill Layer...", ["Layer", "New"], "{}"),
         // Mask options not in the mask model yet; pen / vertex editing (timeline milestone).

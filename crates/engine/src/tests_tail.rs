@@ -221,6 +221,46 @@ fn adaptive_sample_limit_drives_layer_samples() {
 }
 
 #[test]
+fn keyframe_label_groups() {
+    let mut s = comp(200, 100);
+    let a = s.execute("layer.newSolid", json!({"color": "#ff0000", "width": 20, "height": 20})).unwrap()["layer"].as_u64().unwrap();
+    let b = s.execute("layer.newSolid", json!({"color": "#00ff00", "width": 20, "height": 20})).unwrap()["layer"].as_u64().unwrap();
+    for l in [a, b] {
+        for t in [0.0, 0.5, 1.0] {
+            s.execute("prop.addKey", json!({"layer": l, "path": "transform/opacity", "time": t})).unwrap();
+        }
+    }
+    let uid = |s: &Session, l: u64| s.active_comp().unwrap().layer(LayerId(l)).unwrap().props.prop("transform/opacity").unwrap().uid;
+    let (ua, ub) = (uid(&s, a), uid(&s, b));
+    // Label a's first key and b's last key Blue.
+    s.execute("keys.select", json!({"keys": [{"layer": a, "prop": ua, "time": 0.0}, {"layer": b, "prop": ub, "time": 1.0}]})).unwrap();
+    s.execute("keys.setLabel", json!({"label": "Blue"})).unwrap();
+    s.execute("keys.select", json!({"keys": [{"layer": a, "prop": ua, "time": 0.5}]})).unwrap();
+    s.execute("keys.setLabel", json!({"label": "Green"})).unwrap();
+    // On selected layers: from a's first key, only a's Blue key.
+    s.execute("layer.select", json!({"layers": [a]})).unwrap();
+    s.execute("keys.select", json!({"keys": [{"layer": a, "prop": ua, "time": 0.0}]})).unwrap();
+    assert_eq!(s.execute("keys.selectLabelGroup", json!({"scope": "selected"})).unwrap()["keys"], json!(1));
+    // On all layers: both Blue keys.
+    assert_eq!(s.execute("keys.selectLabelGroup", json!({"scope": "all"})).unwrap()["keys"], json!(2));
+    assert!(s.state.selected_keys.iter().any(|k| k.layer == LayerId(b) && (k.time.seconds() - 1.0).abs() < 1e-6));
+    // Visible keyframes: only the revealed properties count.
+    s.execute("keys.select", json!({"keys": [{"layer": a, "prop": ua, "time": 0.0}]})).unwrap();
+    assert_eq!(s.execute("keys.selectLabelGroup", json!({"scope": "visibleAll", "visible": [ua]})).unwrap()["keys"], json!(1));
+    // Unlabelled keys group together too (label None).
+    s.execute("keys.select", json!({"keys": [{"layer": a, "prop": ua, "time": 1.0}]})).unwrap();
+    assert_eq!(s.execute("keys.selectLabelGroup", json!({"scope": "all"})).unwrap()["keys"], json!(3));
+    // Undo, serde.
+    let lab = |s: &Session| s.active_comp().unwrap().layer(LayerId(a)).unwrap().props.prop("transform/opacity").unwrap().keys[1].label;
+    assert_eq!(lab(&s), 9);
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(lab(&s), 0);
+    s.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(roundtrip(&s).comp(s.active_comp_id().unwrap()).unwrap().layer(LayerId(a)).unwrap().props.prop("transform/opacity").unwrap().keys[1].label, 9);
+    assert!(s.execute("keys.setLabel", json!({"label": "Mauve"})).is_err());
+}
+
+#[test]
 fn camera_focus_commands_undo_and_serde() {
     let mut s = comp(400, 300);
     let t = s.execute("layer.newSolid", json!({"color": "#ffffff", "width": 50, "height": 50})).unwrap()["layer"].as_u64().unwrap();
