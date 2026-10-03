@@ -147,6 +147,28 @@ effectcraft-cli exec warp.analyze '{"layer":"#1","wait":true}' shaky.ecproj --sa
 effectcraft-cli exec warp.status '{"layer":"#1"}' shaky.ecproj --json
 ```
 
+### Roto Brush & Refine Edge
+
+The Roto Brush tool (Alt+W cycles Roto Brush / Refine Edge) paints in the Layer panel; agents use
+`roto.stroke {layer, kind: fg|bg|refine|refineErase, points: [[x, y], …], frame?, radius?}`
+(layer pixels, layer frames). The first foreground stroke applies the Roto Brush & Refine Edge
+effect and sets the base frame with a span of 20 frames each side. `roto.propagate {layer,
+direction?: forward|backward|both, to?, wait?}` segments the span (in the background unless
+`wait`); strokes on any other frame correct it and propagation restarts from there.
+`roto.span {start?, end?}`, `roto.freeze {wait?}` / `roto.unfreeze`, `roto.clearStrokes {frame?,
+kind?}`, `roto.cancel` and `roto.options {diameter?, refineDiameter?, view?: alphaBoundary|alpha|
+alphaOverlay|none}` complete the set; every edit is one undo step. `roto.status {layer, frame?,
+matte?, compute?, compareTo?}` reports the base frame, span, computed and stroked frames, frozen
+state, job progress and, for a frame, the matte's area, centroid, RLE matte and IoU against a
+reference. Matte settings are ordinary properties (`effects/#1/rotoBrushMatte/searchRadius`,
+`effects/#1/refineEdgeMatte/decontaminateEdgeColors`, …).
+
+```sh
+effectcraft-cli run clip.ecproj roto.stroke '{"layer":"#1","points":[[300,200],[360,230]],"radius":10}' \
+  roto.stroke '{"layer":"#1","kind":"bg","points":[[40,40],[600,40]],"radius":12}' \
+  roto.propagate '{"layer":"#1","wait":true}' roto.freeze '{"layer":"#1","wait":true}' --save
+```
+
 ### Text: styles and editing
 
 Source Text holds character style runs and per-paragraph settings. `layer.setText` changes the

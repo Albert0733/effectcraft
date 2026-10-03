@@ -72,7 +72,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("tool.pen", "Pen Tool", [], Some("G")),
     uic!("tool.type", "Type Tools", [], Some("Cmd+T")),
     uic!("tool.brush", "Brush Tools", [], Some("Cmd+B")),
-    uic!("tool.rotoBrush", "Roto Brush Tool", [], Some("Alt+W")),
+    uic!("tool.rotoBrush", "Roto Brush & Refine Edge Tools", [], Some("Alt+W")),
     uic!("tool.puppet", "Puppet Tools", [], Some("Cmd+P")),
     uic!("app.newComp", "New Composition...", [], None),
     uic!("app.compSettings", "Composition Settings...", [], None),
@@ -139,6 +139,7 @@ pub fn invoke(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, params: V
             "pen" => Some(9),
             "type" => Some(10),
             "brush" => Some(11),
+            "rotoBrush" => Some(14),
             "puppet" => Some(15),
             _ => None,
         };

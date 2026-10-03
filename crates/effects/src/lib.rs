@@ -37,6 +37,7 @@ pub mod paint;
 mod perspective;
 mod perspective2;
 pub mod puppet;
+pub mod roto;
 mod sim;
 mod sim2;
 mod sim3;
@@ -381,6 +382,7 @@ pub fn registry() -> &'static [EffectSpec] {
         v.extend(paint::specs());
         v.extend(puppet::specs());
         v.extend(warp_stab::specs());
+        v.extend(roto::specs());
         v.sort_by(|a, b| a.category.cmp(b.category).then(a.name.cmp(b.name)));
         for s in v.iter_mut() {
             if GPU_EFFECTS.contains(&s.id) {
@@ -456,7 +458,7 @@ pub fn instantiate(spec: &EffectSpec, ids: &mut Ids, instance_name: &str, layer_
 
 /// Display names of nested parameter groups by match id.
 fn group_name(m: &str) -> &str {
-    warp_stab::GROUPS.iter().find(|(id, _)| *id == m).map(|(_, n)| *n).unwrap_or(m)
+    warp_stab::GROUPS.iter().chain(roto::GROUPS).find(|(id, _)| *id == m).map(|(_, n)| *n).unwrap_or(m)
 }
 
 /// The nested group at `path` (`borders/autoScale`) under `g`, created on first use.
@@ -528,6 +530,8 @@ pub const TIME_DEPENDENT: &[&str] = &[
     "ec.obsolete.mochashape",
     // Each frame gets its own stabilizing warp.
     warp_stab::ID,
+    // Each frame has its own segmentation.
+    roto::ID,
 ];
 
 /// See [`TIME_DEPENDENT`].

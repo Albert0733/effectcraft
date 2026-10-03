@@ -219,6 +219,19 @@ auto-scale; cached per analysis and settings) and warps each frame; Synthesize E
 borders from neighbouring frames read with `EffectHost::self_at`. The effect lives in the
 effects crate, hence the `effects → track` edge.
 
+**Roto Brush & Refine Edge** (`effectcraft_track::roto`, `effects::roto`, `engine::roto`):
+strokes (foreground, background, Refine Edge) are stored as JSON in the effect's hidden Strokes
+parameter with the base frame and segmentation span. Each frame is segmented by graph cut
+(Boykov–Jolly hard constraints, GrabCut colour mixtures, our own Boykov–Kolmogorov max-flow,
+coarse to fine) and propagated to the next frame by warping the matte with block optical flow and
+re-cutting in a Search Radius band; frames with correction strokes are re-cut with the warped
+matte as a soft prior. Refine Edge bands get guided-filter + closed-form matting and
+foreground-colour decontamination. Segmentations are derived data: each frame's chain key (Input
+Key, settings, strokes from the base frame out) indexes a process-wide cache that renders fill on
+demand (`self_at`) and `roto.propagate` fills in the background; `Session::edit` keeps the Input
+Key in step with the layer's source, masks and upstream effects. Freeze stores final 8-bit mattes
+in the effect.
+
 ## 5. Expressions
 
 Expressions are JavaScript, run by boa, with After Effects' object model (`thisComp`, `thisLayer`,
