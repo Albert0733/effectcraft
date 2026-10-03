@@ -90,11 +90,20 @@ pub(crate) struct Tiling {
     uncolored: Option<[f64; 3]>,
 }
 
+/// A shading pattern without a gradient equivalent (function-based or mesh shadings),
+/// rasterised when it fills a path.
+pub(crate) struct ShadingFill {
+    sh: Obj,
+    /// Shading space → page.
+    space: Affine,
+}
+
 #[derive(Clone)]
 enum Fill {
     Color([f64; 3]),
     Paint(Paint),
     Tiling(Rc<Tiling>),
+    Shading(Rc<ShadingFill>),
     None,
 }
 
@@ -650,6 +659,10 @@ impl<'a> Interp<'a> {
                 self.b.skip("tiling pattern stroke");
                 Some(Paint::Color(t.uncolored.unwrap_or([0.5; 3])))
             }
+            Fill::Shading(_) => {
+                self.b.skip("shading pattern stroke");
+                Some(Paint::Color([0.5; 3]))
+            }
             Fill::None => None,
         }
     }
@@ -680,6 +693,21 @@ impl<'a> Interp<'a> {
                     self.b.clip(page, rule);
                     self.tile(&t, area, depth);
                     self.close_to(d);
+                }
+                Fill::Shading(sf) => {
+                    let page = ctm * path.clone();
+                    let d = self.b.depth();
+                    let mut sk = vec![];
+                    let img = crate::shading::shading_image(self.file, &sf.sh, sf.space, self.page_box, &mut sk);
+                    for s in sk {
+                        self.b.skip(&s);
+                    }
+                    if let Some(mut img) = img {
+                        img.opacity = self.gs.fill_alpha;
+                        self.b.clip(page, rule);
+                        self.b.push(Node::Image(img));
+                        self.close_to(d);
+                    }
                 }
                 f => fill_paint = self.paint_of(&f).map(|p| (p, self.gs.fill_alpha, rule)),
             }
@@ -811,7 +839,11 @@ impl<'a> Interp<'a> {
         let m = f.get(p, "Matrix").map(|m| affine(&f.nums(m))).unwrap_or(Affine::IDENTITY);
         match f.get_num(p, "PatternType").unwrap_or(0.0) as i32 {
             2 => {
-                let Some(sh) = f.get(p, "Shading").and_then(Obj::dict) else { return Fill::None };
+                let Some(sh_obj) = f.get(p, "Shading") else { return Fill::None };
+                let Some(sh) = sh_obj.dict() else { return Fill::None };
+                if !matches!(f.get_num(sh, "ShadingType").unwrap_or(0.0) as i32, 2 | 3) {
+                    return Fill::Shading(Rc::new(ShadingFill { sh: sh_obj.clone(), space: base * m }));
+                }
                 let sh = sh.clone();
                 match self.shading_gradient(&sh) {
                     // Gradient space → shape user space (shapes carry the CTM).
@@ -848,7 +880,21 @@ impl<'a> Interp<'a> {
 
     fn shade(&mut self, res: &Dict, name: &str) {
         let f = self.file;
-        let Some(sh) = f.get_dict(res, "Shading").and_then(|s| f.get_dict(s, name)).cloned() else { return };
+        let Some(sh_obj) = f.get_dict(res, "Shading").and_then(|s| f.get(s, name)) else { return };
+        let Some(sh) = sh_obj.dict().cloned() else { return };
+        if !matches!(f.get_num(&sh, "ShadingType").unwrap_or(0.0) as i32, 2 | 3) {
+            // Function-based and mesh shadings paint only their own extent.
+            let mut sk = vec![];
+            let img = crate::shading::shading_image(f, sh_obj, self.gs.ctm, self.page_box, &mut sk);
+            for s in sk {
+                self.b.skip(&s);
+            }
+            if let Some(mut img) = img {
+                img.opacity = self.gs.fill_alpha;
+                self.b.push(Node::Image(img));
+            }
+            return;
+        }
         let Some(g) = self.shading_gradient(&sh) else { return };
         // Fill everything (the current clip limits it): the page box in user space.
         let inv = self.gs.ctm.inverse();
