@@ -14,6 +14,7 @@ effectcraft-time = { workspace = true }
 effectcraft-project = { workspace = true }
 effectcraft-raster = { workspace = true }
 effectcraft-render = { workspace = true }
+effectcraft-model = { workspace = true }
 filmcraft-codecs = { workspace = true }
 filmcraft-media = { workspace = true }
 filmcraft-frame = { workspace = true }

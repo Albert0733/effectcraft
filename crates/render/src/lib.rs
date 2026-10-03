@@ -45,6 +45,10 @@ pub trait FootageSource: Send + Sync {
     fn aux(&self, _item: ItemId, _footage: &Footage, _t: Tick) -> Option<Arc<effectcraft_raster::AuxChannels>> {
         None
     }
+    /// The parsed 3D model of a [`effectcraft_project::FootageKind::Model`] item (Advanced 3D).
+    fn model(&self, _item: ItemId, _footage: &Footage) -> Option<Arc<effectcraft_model::Model>> {
+        None
+    }
     /// Set the decoded-frame cache budget in bytes (Settings ▸ Memory & CPU); sources without
     /// a cache ignore it.
     fn set_cache_budget(&self, _bytes: usize) {}
@@ -203,6 +207,12 @@ pub trait Accelerator: Send + Sync {
     /// Run a chain of supported effects on `buf`, clamping and quantising to `levels` after
     /// every effect when set (8/16 bpc). `None` = not handled.
     fn effects(&self, chain: &[FxStep], buf: &Buf, levels: Option<f32>) -> Option<Buf>;
+    /// Rasterise and shade an Advanced 3D scene at its raster size (depth buffer, PBR, image
+    /// based light, shadow maps), with the CPU rasteriser's semantics
+    /// ([`three_d::adv::raster::render`]). `None` = not handled (the CPU renders it).
+    fn raster_3d(&self, _scene: &three_d::adv::Scene) -> Option<three_d::adv::Target> {
+        None
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1224,7 +1234,7 @@ impl<'a> Renderer<'a> {
         comp.layers
             .iter()
             .rev()
-            .filter(|l| l.is_active_at(t) && l.has_video() && (!any_solo || l.switches.solo) && (self.opts.guides || !l.switches.guide))
+            .filter(|l| l.is_active_at(t) && l.has_video() && !l.environment && (!any_solo || l.switches.solo) && (self.opts.guides || !l.switches.guide))
             .collect()
     }
 

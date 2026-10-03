@@ -81,6 +81,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: PanelKind, rect: Rec
         PanelKind::Audio => misc::audio(app, ui, rect),
         PanelKind::History => misc::history(app, ui, rect),
         PanelKind::Markers => misc::markers(app, ui, rect),
+        PanelKind::MaskInterpolation => anim_tools::mask_interpolation(app, ui, rect),
         PanelKind::Wiggler => anim_tools::wiggler(app, ui, rect),
         PanelKind::Smoother => anim_tools::smoother(app, ui, rect),
         PanelKind::MotionSketch => anim_tools::motion_sketch(app, ui, rect),

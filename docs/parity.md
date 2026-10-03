@@ -15,7 +15,7 @@ rendered, does not count as done.
 | P1 (professional daily use) | ≈ 38% |
 | P2 (long tail) | ≈ 17% |
 | Features done / partial / missing | 18 / 60 / 14 of 92 |
-| **Effects** | **296 of 298** After Effects 2026 effects by name (99%, after M9.11; was 257); the two left are Warp Stabilizer and the 3D Camera Tracker |
+| **Effects** | **297 of 298** After Effects 2026 effects by name (99.7%, after M9.11 and Warp Stabilizer; was 257); only the 3D Camera Tracker is left |
 | Remaining work | ≈ **167 agent-hours** (139 h of features + ≈ 20% for 1:1 polish against After Effects) |
 | Wall-clock estimate | ≈ **42–50 hours** with five agents working in parallel and one integrating; ≈ 31–35 h for P0 + P1 only |
 
@@ -74,7 +74,7 @@ library groundwork for mask tracking and Warp Stabilizer.
 | Wall clock, five parallel agents | 42–50 h | **≈ 8–10 h at today's measured pace; ≈ 25 h by the audit's conservative figures** |
 
 What is left is concentrated in large systems: Roto Brush and Refine Edge, the 3D camera tracker,
-Advanced 3D (models, PBR, image-based lighting), the Warp Stabilizer and mask-tracking UI on top of
+the Warp Stabilizer and mask-tracking UI on top of
 the new tracking library, a JavaScript scripting object model, SVG/PSD import, WebM, a disk cache,
 native macOS menus, and wasm threads. (The missing effect categories, 3D Channel, Immersive Video
 and OCIO, landed in M9.11.)
@@ -91,20 +91,20 @@ and OCIO, landed in M9.11.)
 | Shapes | 68% | 3.9 | taper and wave strokes (pen tool for shape paths and vertex editing landed in M6.5) |
 | Compositions | 67% | 7.4 | marker dialog, flowchart, Essential Graphics |
 | Animation | 65% | 10.4 | puppet, Wiggler/Smoother/Motion Sketch (motion-path handles and the graph editor transform box landed in M5.8) |
-| Text | ≈ 85% | 1.5 | vertical type is basic (upright characters, no tate-chu-yoko), no OpenType feature panel, no text on 3D bevels; per-character styles, paragraph settings, on-canvas editing and the `sourceText` style API landed (M9.9–M9.10) |
+| Text | ≈ 86% | 1.3 | vertical type is basic (upright characters, no tate-chu-yoko), no OpenType feature panel, no extruded strokes (extruded, bevelled text landed in M7.6); per-character styles, paragraph settings, on-canvas editing and the `sourceText` style API landed (M9.9–M9.10) |
 | Web | 60% | 2.5 | threads, browser storage, audio |
-| 3D | 58% | 20.5 | Advanced 3D (models, PBR, image-based light), 3D camera tracker, multi-view layouts |
-| Effects | ≈ 75% | 6.0 | GPU versions of more effects, Warp Stabilizer and the 3D Camera Tracker (all other After Effects effects exist since M9.11) |
+| 3D | 72% | 12.0 | 3D camera tracker, multi-view layouts, Advanced 3D motion blur and blend modes, cameras/lights from models; Advanced 3D (glTF/OBJ models, primitives, extruded text and shapes, PBR, image-based light, shadow maps, GPU rasteriser) landed in M7.4–M7.6 |
+| Effects | ≈ 75% | 5.0 | GPU versions of more effects and the 3D Camera Tracker (every other After Effects effect exists since M9.11 and M12.5) |
 | Interface | 55% | 10.4 | drag-to-dock and floating panels, preferences, native macOS menus (viewer rulers/snapping/channels/snapshots landed in M0.13) |
 | Project | 53% | 8.1 | 8/16/32-bit pipeline and colour management, auto-save, proxies, folder moves |
-| Masks & roto | 44% | 13.0 | mask tracking, Roto Brush, variable-width mask feather points |
+| Masks & roto | 52% | 10.0 | Roto Brush, variable-width mask feather points (mask tracking and Mask Interpolation landed in M6.6) |
 | Preview | 55% | 6.1 | GPU 3D and adjustment layers, disk cache (region of interest, snapshots, exposure and Fast Previews landed in M0.13) |
-| Tracking | 0% | 13.0 | point tracker, Warp Stabilizer, mask and face tracking |
+| Tracking | ≈ 70% | 4.0 | 3D camera tracker, face tracking and Subspace Warp's mesh warp (Rolling Shutter Repair landed in M9.11; point tracker, mask tracking and Warp Stabilizer landed in M6.x / M12.5) |
 | Paint | 0% | 4.0 | Brush, Clone Stamp, Eraser |
 
 ## Effects still missing
 
-Warp Stabilizer and the 3D Camera Tracker (built on the tracking library by other work). Boris FX
+The 3D Camera Tracker (built on the tracking library by other work). Boris FX
 Mocha and Cineware are third-party and not counted.
 
 ### Added in M9.11 (39 effects)
@@ -144,4 +144,4 @@ Mocha and Cineware are third-party and not counted.
 The engine underneath (keyframes, expressions, shape operators, text animators, Classic 3D, all
 38 blend modes, the render queue) is deep. Most of what is missing is interactive tooling in the
 viewer, settings that are stored but not yet rendered, about 69 menu entries that are still
-disabled, and the large systems: tracking, puppet, paint, roto, Advanced 3D and GPU rendering.
+disabled, and the large systems: tracking, puppet, paint and roto (Advanced 3D landed in M7.4–M7.6).

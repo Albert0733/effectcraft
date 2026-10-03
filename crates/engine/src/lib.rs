@@ -13,6 +13,7 @@ pub mod commands;
 pub mod config;
 pub mod demo;
 pub mod links;
+pub mod mask_track;
 pub mod menus;
 pub mod prefs;
 pub mod render_queue;
@@ -20,6 +21,7 @@ mod session_settings;
 pub mod shortcuts;
 pub mod tracking;
 pub mod viewer;
+pub mod warp;
 
 use std::sync::Arc;
 
@@ -165,6 +167,12 @@ pub struct EditorState {
     /// Tracker panel ▸ Current Track: (tracked layer, tracker group uid) in the active comp.
     #[serde(default)]
     pub current_track: Option<(LayerId, Uid)>,
+    /// Tracker panel ▸ Method in mask mode (Track Mask).
+    #[serde(default)]
+    pub mask_track_method: mask_track::MaskMethod,
+    /// Mask Interpolation panel options.
+    #[serde(default)]
+    pub mask_interp: commands::mask_interp::MaskInterpOptions,
     /// Paint and Brushes panel options (Brush, Clone Stamp and Eraser tools).
     #[serde(default)]
     pub paint: commands::paint::PaintOptions,
@@ -249,6 +257,12 @@ pub struct Session {
     pub render_job: Option<render_queue::RenderJob>,
     /// The running (or finished, not yet polled) track analysis.
     pub track_job: Option<tracking::TrackJob>,
+    /// The running (or finished, not yet polled) mask track.
+    pub mask_job: Option<mask_track::MaskTrackJob>,
+    /// The running (or finished, not yet polled) Warp Stabilizer analysis.
+    pub warp_job: Option<warp::WarpJob>,
+    /// Warp Stabilizers waiting for (re-)analysis: (comp, layer, effect uid).
+    pub warp_pending: Vec<(ItemId, LayerId, Uid)>,
     pub events: Vec<Event>,
     /// Commands executed: (id, params).
     pub journal: Vec<(String, Value)>,
@@ -291,6 +305,9 @@ impl Default for Session {
             exporter: None,
             render_job: None,
             track_job: None,
+            mask_job: None,
+            warp_job: None,
+            warp_pending: vec![],
             events: vec![],
             journal: vec![],
             layer_cache: Arc::new(LayerCache::default()),
@@ -351,6 +368,12 @@ impl Session {
         let r = f(&mut p, &mut st)?;
         // Layer styles: one Global Light per comp, whichever layer edited it.
         effectcraft_project::styles::sync_global_light(&before, &mut p);
+        // Warp Stabilizer analyses made from other frames are cleared (and queued again).
+        for w in warp::invalidate(&before, &mut p) {
+            if !self.warp_pending.contains(&w) {
+                self.warp_pending.push(w);
+            }
+        }
         let same = merge.is_some() && merge.map(str::to_string) == self.history.merge_key;
         if !same {
             self.history.undo.push((label.to_string(), before));
@@ -523,6 +546,11 @@ impl Session {
         self.render_job = None;
         self.stop_track();
         self.track_job = None;
+        self.stop_mask_track();
+        self.mask_job = None;
+        self.stop_warp();
+        self.warp_job = None;
+        self.warp_pending.clear();
         p.fix_next_id();
         self.project = Arc::new(p);
         self.history = History::default();
@@ -554,7 +582,11 @@ mod tests_lottie;
 #[cfg(test)]
 mod tests_markers;
 #[cfg(test)]
+mod tests_mask_warp;
+#[cfg(test)]
 mod tests_menu_cmds;
+#[cfg(test)]
+mod tests_model3d;
 #[cfg(test)]
 mod tests_project_items;
 #[cfg(test)]

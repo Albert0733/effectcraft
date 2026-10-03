@@ -323,6 +323,12 @@ pub(crate) fn draw_run(r: &Renderer, ctx: &EvalCtx, run: &[&Layer], canvas: &mut
     if run.is_empty() {
         return;
     }
+    // Advanced 3D comps: meshes, physically based lights, shadow maps (collapsed precomps keep
+    // the parent's Classic 3D planes).
+    if ctx.comp.renderer == effectcraft_project::Renderer::Advanced3D && r.collapse3d.is_none() {
+        super::adv::draw_run(r, ctx, run, canvas);
+        return;
+    }
     let out = (canvas.width, canvas.height);
     // A collapsed precomp's 3D layers are lit by the outer comp's lights.
     let lights = scene_lights(&r.collapse3d.map_or(*ctx, |c| c.parent));

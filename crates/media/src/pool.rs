@@ -122,6 +122,8 @@ struct Inner {
     sources: Mutex<HashMap<Arc<str>, Option<SharedSource>>>,
     /// In-memory files registered with `add_bytes` (web builds, tests).
     files: Mutex<HashMap<String, Arc<[u8]>>>,
+    /// Parsed 3D models by path (`None`: failed to load; not retried until `forget`).
+    models: Mutex<HashMap<String, Option<Arc<effectcraft_model::Model>>>>,
     cache: Mutex<CacheState>,
     done: Condvar,
     budget: AtomicU64,
@@ -183,6 +185,7 @@ impl MediaPool {
             inner: Arc::new(Inner {
                 sources: Mutex::default(),
                 files: Mutex::default(),
+                models: Mutex::default(),
                 cache: Mutex::default(),
                 done: Condvar::new(),
                 budget: AtomicU64::new(bytes as u64),
@@ -234,6 +237,7 @@ impl MediaPool {
     /// Forget a file (after it changed on disk, or to retry a file that failed to open).
     pub fn forget(&self, path: &str) {
         lock(&self.inner.sources).remove(path);
+        lock(&self.inner.models).remove(path);
         let mut c = lock(&self.inner.cache);
         let keys: Vec<Key> = c.lru.map.keys().filter(|k| &*k.path == path).cloned().collect();
         for k in keys {
@@ -305,6 +309,29 @@ impl Inner {
         self.budget.load(Ordering::Relaxed) as usize
     }
 
+    /// A 3D model file and its sibling resources (buffers, textures, MTL files), parsed once.
+    fn model(&self, path: &str) -> Option<Arc<effectcraft_model::Model>> {
+        if let Some(m) = lock(&self.models).get(path) {
+            return m.clone();
+        }
+        let loaded = self.read(path).map_err(|e| e.to_string()).and_then(|bytes| {
+            let dir = std::path::Path::new(path).parent().map(|d| d.to_path_buf()).unwrap_or_default();
+            let resolve = |uri: &str| -> Option<Vec<u8>> {
+                let p = dir.join(uri);
+                self.read(&p.to_string_lossy()).ok().map(|b| b.to_vec())
+            };
+            effectcraft_model::load(path, &bytes, &resolve).map_err(|e| e.to_string())
+        });
+        let m = match loaded {
+            Ok(m) => Some(Arc::new(m)),
+            Err(e) => {
+                log::warn!("media: cannot load model {path}: {e}");
+                None
+            }
+        };
+        lock(&self.models).entry(path.to_string()).or_insert(m).clone()
+    }
+
     fn read(&self, path: &str) -> Result<Arc<[u8]>> {
         if let Some(b) = lock(&self.files).get(path) {
             return Ok(b.clone());
@@ -359,7 +386,7 @@ impl Inner {
                 let i = Self::frame_index(footage.frame_rate, t, footage.sequence.len() as i64, footage.loop_count);
                 Loc { key: key(&footage.sequence[i as usize], 0), media_t: None }
             }
-            FootageKind::Still | FootageKind::Sequence => Loc { key: key(&footage.path, 0), media_t: None },
+            FootageKind::Still | FootageKind::Sequence | FootageKind::Model => Loc { key: key(&footage.path, 0), media_t: None },
             FootageKind::Video | FootageKind::Audio => {
                 let rate = footage.frame_rate;
                 let n = Self::frame_count(rate, footage.duration);
@@ -451,6 +478,12 @@ impl Inner {
 }
 
 impl FootageSource for MediaPool {
+    fn model(&self, _item: ItemId, footage: &Footage) -> Option<Arc<effectcraft_model::Model>> {
+        if footage.missing || footage.kind != FootageKind::Model {
+            return None;
+        }
+        self.inner.model(&footage.path)
+    }
     fn set_cache_budget(&self, bytes: usize) {
         self.set_budget(bytes);
     }

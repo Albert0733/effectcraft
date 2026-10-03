@@ -524,6 +524,7 @@ Layer
     Reset Mask | layer.mask.reset
     Remove Mask | layer.mask.remove
     Remove All Masks | layer.mask.removeAll
+    Track Mask | track.mask
     Mode
       None | layer.mask.mode {"mode":"None"}
       Add | layer.mask.mode {"mode":"Add"}
@@ -932,7 +933,7 @@ Window
   Effects & Presets | window.panel {"panel":"effectsPresets"} | Cmd+5
   Info | window.panel {"panel":"info"} | Cmd+2
   Lumetri Scopes | window.unavailablePanel {"panel":"lumetriScopes"}
-  Mask Interpolation | window.unavailablePanel {"panel":"maskInterpolation"}
+  Mask Interpolation | window.panel {"panel":"maskInterpolation"}
   Media Browser | window.unavailablePanel {"panel":"mediaBrowser"}
   Metadata | window.unavailablePanel {"panel":"metadata"}
   Motion Sketch | window.panel {"panel":"motionSketch"}

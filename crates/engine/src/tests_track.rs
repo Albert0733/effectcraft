@@ -17,11 +17,11 @@ use serde_json::json;
 
 use crate::Session;
 
-const W: u32 = 320;
-const H: u32 = 240;
-const FPS: u32 = 25;
+pub(crate) const W: u32 = 320;
+pub(crate) const H: u32 = 240;
+pub(crate) const FPS: u32 = 25;
 
-fn texture(x: f64, y: f64, seed: u32) -> f32 {
+pub(crate) fn texture(x: f64, y: f64, seed: u32) -> f32 {
     let mut v = 0.0f64;
     let mut s = seed.wrapping_mul(2654435761).wrapping_add(12345);
     let mut rnd = || {
@@ -41,7 +41,7 @@ fn texture(x: f64, y: f64, seed: u32) -> f32 {
 }
 
 /// Footage computed per frame (cached).
-struct Synth {
+pub(crate) struct Synth {
     make: Box<dyn Fn(u32) -> Image + Send + Sync>,
     cache: Mutex<HashMap<u32, Arc<Image>>>,
 }
@@ -55,9 +55,9 @@ impl FootageSource for Synth {
 }
 
 /// Patch pose on frame `f`: centre, rotation (degrees), scale.
-type Pose = fn(u32) -> ([f64; 2], f64, f64);
+pub(crate) type Pose = fn(u32) -> ([f64; 2], f64, f64);
 
-fn patch_frames(pose: Pose) -> impl Fn(u32) -> Image + Send + Sync {
+pub(crate) fn patch_frames(pose: Pose) -> impl Fn(u32) -> Image + Send + Sync {
     move |f| {
         let (c, rot, sc) = pose(f);
         let (sn, cs) = rot.to_radians().sin_cos();
@@ -76,7 +76,7 @@ fn patch_frames(pose: Pose) -> impl Fn(u32) -> Image + Send + Sync {
 }
 
 /// A comp with the synthetic clip (layer `clip`) and a 100 × 100 solid above it (layer `solid`).
-fn setup(make: impl Fn(u32) -> Image + Send + Sync + 'static) -> (Session, LayerId, LayerId) {
+pub(crate) fn setup(make: impl Fn(u32) -> Image + Send + Sync + 'static) -> (Session, LayerId, LayerId) {
     let mut s = Session::default();
     s.execute("comp.new", json!({"name": "Track", "width": W, "height": H, "frameRate": FPS, "duration": 1})).unwrap();
     let cid = s.active_comp_id().unwrap();
@@ -121,7 +121,7 @@ fn tracker_points(s: &Session, layer: LayerId) -> Vec<effectcraft_project::PropG
     l.trackers().next().unwrap().0.track_points().cloned().collect()
 }
 
-fn frame_time(f: u32) -> Tick {
+pub(crate) fn frame_time(f: u32) -> Tick {
     FrameRate::new(FPS as i64, 1).tick_of(f as i64)
 }
 
@@ -220,7 +220,7 @@ fn stabilize_keeps_the_feature_fixed() {
     assert!(worst < 0.25, "feature drifts by {worst} px");
 }
 
-fn rotating_pose(f: u32) -> ([f64; 2], f64, f64) {
+pub(crate) fn rotating_pose(f: u32) -> ([f64; 2], f64, f64) {
     let t = f as f64;
     ([160.0 + 1.2 * t, 120.0 - 0.7 * t], 1.5 * t, 1.0 + 0.008 * t)
 }

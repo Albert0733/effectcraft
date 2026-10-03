@@ -584,6 +584,13 @@ pub fn light_options(ids: &mut Ids, kind: LightKind) -> PropGroup {
             .with(ids.prop("coneAngle", "Cone Angle", Value::Scalar(90.0)).with_ui(ParamUi::Angle))
             .with(ids.prop("coneFeather", "Cone Feather", Value::Scalar(50.0)).with_ui(ParamUi::Percent));
     }
+    if kind == LightKind::Environment {
+        // The environment image: a layer (footage, comp…) mapped as an equirectangular panorama;
+        // none = the comp's Environment Layer.
+        return g
+            .with(ids.prop("source", "Source", Value::Layer(None)).with_ui(ParamUi::Layer))
+            .with(ids.prop("rotation", "Environment Rotation", Value::Scalar(0.0)).with_ui(ParamUi::Angle));
+    }
     if kind != LightKind::Ambient {
         g = g
             .with(ids.prop("falloff", "Falloff", Value::Enum(0)).with_ui(popup(&["None", "Smooth", "Inverse Square Clamped"])))
@@ -609,6 +616,70 @@ pub fn material_options(ids: &mut Ids) -> PropGroup {
         .with(ids.prop("metal", "Metal", Value::Scalar(100.0)).with_ui(ParamUi::Percent))
 }
 
+/// Material Options of a 3D model or primitive layer (Advanced 3D): shadows and lights, plus
+/// the primitive's own metallic-roughness material (models keep their file's materials).
+pub fn model_material_options(ids: &mut Ids, primitive: bool) -> PropGroup {
+    let mut g = ids
+        .group("materialOptions", "Material Options")
+        .with(ids.prop("castsShadows", "Casts Shadows", Value::Enum(0)).with_ui(popup(&["Off", "On", "Only"])))
+        .with(ids.prop("acceptsShadows", "Accepts Shadows", Value::Enum(1)).with_ui(popup(&["Off", "On", "Only"])))
+        .with(ids.prop("acceptsLights", "Accepts Lights", Value::Bool(true)).with_ui(ParamUi::Checkbox))
+        .with(ids.prop("appearsInReflections", "Appears in Reflections", Value::Bool(true)).with_ui(ParamUi::Checkbox));
+    if primitive {
+        g = g
+            .with(ids.prop("baseColor", "Base Color", Value::Color([0.8, 0.8, 0.8, 1.0])).with_ui(ParamUi::Color))
+            .with(ids.prop("metallic", "Metallic", Value::Scalar(0.0)).with_ui(slider(0.0, 100.0, 0.0, 100.0, 1)))
+            .with(ids.prop("roughness", "Roughness", Value::Scalar(50.0)).with_ui(slider(0.0, 100.0, 0.0, 100.0, 1)))
+            .with(ids.prop("emissive", "Emissive", Value::Color([0.0, 0.0, 0.0, 1.0])).with_ui(ParamUi::Color));
+    }
+    g
+}
+
+/// Geometry Options of an imported model layer: model units → pixels, and the animation clip
+/// played along layer time.
+pub fn model_geometry_options(ids: &mut Ids, unit_scale: f64, clips: &[String]) -> PropGroup {
+    let mut opts: Vec<&str> = vec!["None"];
+    opts.extend(clips.iter().map(String::as_str));
+    ids.group("geometryOptions", "Geometry Options")
+        .with(ids.prop("unitScale", "Model Scale", Value::Scalar(unit_scale)).with_ui(slider(0.0, 1.0e6, 0.0, 1000.0, 2)))
+        .with(ids.prop("animation", "Animation", Value::Enum(if clips.is_empty() { 0 } else { 1 })).with_ui(popup(&opts)))
+        .with(ids.prop("loopAnimation", "Loop Animation", Value::Bool(true)).with_ui(ParamUi::Checkbox))
+        .with(ids.prop("animationSpeed", "Animation Speed", Value::Scalar(100.0)).with_ui(ParamUi::Percent))
+}
+
+/// Geometry Options of a primitive layer (pixels).
+pub fn primitive_geometry_options(ids: &mut Ids, kind: crate::PrimitiveKind) -> PropGroup {
+    use crate::PrimitiveKind as K;
+    let px = |ids: &mut Ids, m: &str, n: &str, v: f64| ids.prop(m, n, Value::Scalar(v)).with_ui(slider(0.0, 100_000.0, 0.0, 2000.0, 1));
+    let count = |ids: &mut Ids, m: &str, n: &str, v: f64| ids.prop(m, n, Value::Scalar(v)).with_ui(slider(3.0, 512.0, 3.0, 128.0, 0));
+    let mut g = ids.group("geometryOptions", "Geometry Options");
+    let props = match kind {
+        K::Cube => vec![px(ids, "width", "Width", 300.0), px(ids, "height", "Height", 300.0), px(ids, "depth", "Depth", 300.0)],
+        K::Plane => vec![px(ids, "width", "Width", 400.0), px(ids, "height", "Height", 400.0)],
+        K::Sphere => vec![px(ids, "radius", "Radius", 150.0), count(ids, "segments", "Segments", 48.0), count(ids, "rings", "Rings", 24.0)],
+        K::Torus => vec![
+            px(ids, "radius", "Radius", 150.0),
+            px(ids, "tubeRadius", "Tube Radius", 50.0),
+            count(ids, "segments", "Segments", 48.0),
+            count(ids, "rings", "Sides", 24.0),
+        ],
+        K::Cone | K::Cylinder => vec![px(ids, "radius", "Radius", 150.0), px(ids, "height", "Height", 300.0), count(ids, "segments", "Segments", 48.0)],
+    };
+    for p in props {
+        g = g.with(p);
+    }
+    g
+}
+
+/// Geometry Options of a text or shape layer in an Advanced 3D comp (extrusion and bevels).
+pub fn extrusion_geometry_options(ids: &mut Ids) -> PropGroup {
+    ids.group("geometryOptions", "Geometry Options")
+        .with(ids.prop("bevelStyle", "Bevel Style", Value::Enum(0)).with_ui(popup(&["None", "Angular", "Concave", "Convex"])))
+        .with(ids.prop("bevelDepth", "Bevel Depth", Value::Scalar(2.0)).with_ui(slider(0.0, 1000.0, 0.0, 100.0, 1)))
+        .with(ids.prop("holeBevelDepth", "Hole Bevel Depth", Value::Scalar(100.0)).with_ui(slider(0.0, 100.0, 0.0, 100.0, 1)))
+        .with(ids.prop("extrusionDepth", "Extrusion Depth", Value::Scalar(0.0)).with_ui(slider(0.0, 10_000.0, 0.0, 1000.0, 1)))
+}
+
 pub fn audio(ids: &mut Ids) -> PropGroup {
     ids.group("audio", "Audio").with(ids.prop("levels", "Audio Levels", Value::Vec2([0.0, 0.0])))
 }
@@ -629,6 +700,7 @@ pub fn default_label(src: &LayerSource, project: &Project) -> Label {
         LayerSource::Shape => Label::Blue,
         LayerSource::Null => Label::Red,
         LayerSource::Camera | LayerSource::Light { .. } => Label::Pink,
+        LayerSource::Model { .. } | LayerSource::Primitive { .. } => Label::Aqua,
     }
 }
 
@@ -640,7 +712,12 @@ pub fn layer(project: &mut Project, comp: &Comp, name: &str, source: LayerSource
     let (w, h) = (size.0 as f64, size.1 as f64);
     let (cw, ch) = (comp.width as f64, comp.height as f64);
     let anchor = match source {
-        LayerSource::Text | LayerSource::Shape | LayerSource::Camera | LayerSource::Light { .. } => [0.0, 0.0],
+        LayerSource::Text
+        | LayerSource::Shape
+        | LayerSource::Camera
+        | LayerSource::Light { .. }
+        | LayerSource::Model { .. }
+        | LayerSource::Primitive { .. } => [0.0, 0.0],
         LayerSource::Null => [50.0, 50.0],
         _ => [w / 2.0, h / 2.0],
     };
@@ -654,7 +731,9 @@ pub fn layer(project: &mut Project, comp: &Comp, name: &str, source: LayerSource
         }
         _ => {}
     }
-    if source.is_av() {
+    if source.is_model() {
+        // Model layers have no masks or effects (as in After Effects).
+    } else if source.is_av() {
         root.children.push(masks(&mut ids).into());
         root.children.push(effects(&mut ids).into());
     } else if matches!(source, LayerSource::Null) {
@@ -694,8 +773,17 @@ pub fn layer(project: &mut Project, comp: &Comp, name: &str, source: LayerSource
             // Nulls are 100×100.
         }
         root.children.push(std::mem::replace(&mut tr, PropGroup::new(0, "", "")).into());
-        if source.is_av() {
-            root.children.push(material_options(&mut ids).into());
+        match source {
+            LayerSource::Primitive { kind } => {
+                root.children.push(primitive_geometry_options(&mut ids, kind).into());
+                root.children.push(model_material_options(&mut ids, true).into());
+            }
+            LayerSource::Model { .. } => {
+                root.children.push(model_geometry_options(&mut ids, 1.0, &[]).into());
+                root.children.push(model_material_options(&mut ids, false).into());
+            }
+            _ if source.is_av() => root.children.push(material_options(&mut ids).into()),
+            _ => {}
         }
     }
     let has_audio = matches!(&source, LayerSource::Footage { item } if matches!(project.item(*item).map(|i| &i.kind), Some(crate::ItemKind::Footage(f)) if f.has_audio))
@@ -711,6 +799,7 @@ pub fn layer(project: &mut Project, comp: &Comp, name: &str, source: LayerSource
     } else {
         crate::AutoOrient::Off
     };
+    let switches = Switches { three_d: source.is_model(), ..Switches::default() };
     Layer {
         id,
         name: comp.unique_layer_name(name),
@@ -721,13 +810,14 @@ pub fn layer(project: &mut Project, comp: &Comp, name: &str, source: LayerSource
         in_point: Tick::ZERO,
         out_point: out,
         stretch: 100.0,
-        switches: Switches::default(),
+        switches,
         blend_mode: BlendMode::Normal,
         preserve_transparency: false,
         track_matte: None,
         parent: None,
         markers: vec![],
         markers_locked: false,
+        environment: false,
         auto_orient,
         props: root,
     }

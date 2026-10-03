@@ -133,12 +133,15 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     // Track Camera / Warp Stabilizer (not available) and Track Motion / Stabilize Motion.
     let r1 = Rect::from_min_size(pos2(x0, y), vec2(half, 22.0));
     let r2 = Rect::from_min_size(pos2(x0 + half + 6.0, y), vec2(half, 22.0));
+    let src_p = source.map(|l| json!({"layer": l.0})).unwrap_or_else(|| json!({}));
     button(app, ui, r1, "Track Camera", false, "tracker.trackCamera");
-    button(app, ui, r2, "Warp Stabilizer", false, "tracker.warpStabilizer");
+    let can_warp = app.session.is_enabled("track.warpStabilizer") && !app.session.is_warp_analyzing();
+    if button(app, ui, r2, "Warp Stabilizer", can_warp, "tracker.warpStabilizer") {
+        run(app, &ctx, "track.warpStabilizer", json!({}));
+    }
     y += 28.0;
     let r1 = Rect::from_min_size(pos2(x0, y), vec2(half, 22.0));
     let r2 = Rect::from_min_size(pos2(x0 + half + 6.0, y), vec2(half, 22.0));
-    let src_p = source.map(|l| json!({"layer": l.0})).unwrap_or_else(|| json!({}));
     if button(app, ui, r1, "Track Motion", can_track, "tracker.trackMotion") {
         run(app, &ctx, "track.motion", src_p.clone());
     }
@@ -150,6 +153,11 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         p.text(pos2(x0, y + 8.0), Align2::LEFT_CENTER, "Open a composition to track motion.", Tokens::ui(12.0), t.text_faint);
         return;
     };
+    // A selected mask switches the panel to mask tracking.
+    if let Some((ml, mu)) = effectcraft_engine::commands::mask_interp::selected_mask(&app.session) {
+        mask_mode(app, ui, &ctx, &p, rect, y, ml, mu);
+        return;
+    }
     let field_x = x0 + 100.0;
     let field_w = (w - 100.0).max(80.0);
 
@@ -331,6 +339,84 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
             Tokens::ui(11.0),
             t.text_dim,
         );
+    }
+}
+
+/// The Tracker panel in mask mode: Method and the four track buttons (◀| ◀ ▶ |▶).
+#[allow(clippy::too_many_arguments)]
+fn mask_mode(app: &mut EffectcraftApp, ui: &mut egui::Ui, ctx: &egui::Context, p: &egui::Painter, rect: Rect, mut y: f32, layer: LayerId, mask: Uid) {
+    use effectcraft_engine::mask_track::MaskMethod;
+    let t = app.tokens;
+    let x0 = rect.min.x + 10.0;
+    let w = (rect.width() - 20.0).max(120.0);
+    let field_x = x0 + 100.0;
+    let field_w = (w - 100.0).max(80.0);
+    let name = app
+        .session
+        .active_comp()
+        .and_then(|c| c.layer(layer))
+        .and_then(|l| l.props.find_group(mask).map(|g| format!("{} ({})", g.name, l.name)))
+        .unwrap_or_default();
+    label(p, pos2(x0, y + 10.0), "Track Mask:", &t);
+    p.text(pos2(field_x, y + 10.0), Align2::LEFT_CENTER, name, Tokens::ui(12.0), t.text);
+    y += ROW;
+    label(p, pos2(x0, y + 10.0), "Method:", &t);
+    let method = app.session.state.mask_track_method;
+    let dd = Rect::from_min_size(pos2(field_x, y), vec2(field_w, 20.0));
+    let did = egui::Id::new("tracker-mask-method-dd");
+    if widgets::dropdown(ui, dd, method.label(), &t, did).clicked() {
+        widgets::open_popup(ui, did);
+    }
+    app.auto.add("tracker.mask.method", dd, "Method");
+    let labels: Vec<String> = MaskMethod::ALL.iter().map(|m| m.label().to_string()).collect();
+    if let Some(i) = widgets::popup_menu(ui, did, dd.left_bottom(), &labels, MaskMethod::ALL.iter().position(|m| *m == method)) {
+        run(app, ctx, "track.maskMethod", json!({"method": MaskMethod::ALL[i].id()}));
+    }
+    y += ROW + 6.0;
+    label(p, pos2(x0, y + 11.0), "Track:", &t);
+    let running = app.session.is_mask_tracking();
+    let running_dir = app.session.mask_job.as_ref().map(|j| j.direction);
+    let mut bx = field_x;
+    for (dir, fwd, frame, id, tip) in [
+        (effectcraft_engine::tracking::Direction::FrameBackward, false, true, "frameBackward", "Track selected masks 1 frame backward"),
+        (effectcraft_engine::tracking::Direction::Backward, false, false, "backward", "Track selected masks backward"),
+        (effectcraft_engine::tracking::Direction::Forward, true, false, "forward", "Track selected masks forward"),
+        (effectcraft_engine::tracking::Direction::FrameForward, true, true, "frameForward", "Track selected masks 1 frame forward"),
+    ] {
+        let r = Rect::from_min_size(pos2(bx, y), vec2(30.0, 22.0));
+        let resp = ui.interact(r, egui::Id::new(("tracker-mask-track", id)), Sense::click()).on_hover_text(tip);
+        let stop = running && running_dir == Some(dir) && !frame;
+        let on = !running || stop;
+        p.rect_filled(r, 4.0, if resp.hovered() && on { t.hover } else { t.field_bg });
+        p.rect_stroke(r, 4.0, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
+        analyze_glyph(p, r, fwd, frame, stop, if on { t.text } else { t.text_faint });
+        app.auto.add(&format!("tracker.mask.track.{id}"), r, tip);
+        if resp.clicked() && on {
+            if stop {
+                run(app, ctx, "track.stop", json!({}));
+            } else {
+                run(app, ctx, "track.mask", json!({"layer": layer.0, "mask": mask, "direction": id}));
+            }
+        }
+        bx += 34.0;
+    }
+    y += 34.0;
+    if let Some(pr) = app.session.mask_track_progress() {
+        let bar = Rect::from_min_size(pos2(x0, y), vec2(w, 6.0));
+        p.rect_filled(bar, 3.0, t.field_bg);
+        let f = if pr.total > 0 { pr.done as f32 / pr.total as f32 } else { 0.0 };
+        p.rect_filled(Rect::from_min_size(bar.min, vec2(bar.width() * f.clamp(0.0, 1.0), 6.0)), 3.0, t.accent);
+        app.auto.add("tracker.mask.progress", bar, "Mask tracking progress");
+        p.text(
+            pos2(x0, y + 18.0),
+            Align2::LEFT_CENTER,
+            format!("Tracking {} / {} frames  ({:.0} fps)", pr.done, pr.total, pr.fps),
+            Tokens::ui(11.0),
+            t.text_dim,
+        );
+        ctx.request_repaint_after(std::time::Duration::from_millis(50));
+    } else {
+        p.text(pos2(x0, y + 8.0), Align2::LEFT_CENTER, "Tracks the pixels inside the mask and keys its Mask Path.", Tokens::ui(11.0), t.text_faint);
     }
 }
 
