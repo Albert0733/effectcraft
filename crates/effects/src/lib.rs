@@ -85,6 +85,10 @@ pub use generate::gen_mode;
 pub use generate2::pattern_kind as cell_pattern_kind;
 pub use noise::GrainLook;
 pub use transition::place_layer;
+// effectcraft-gpu fx_noise.
+pub use noise::remove_grain_level;
+pub use noise3::{FractalGpu, fractal_gpu};
+pub use time_fx::{posterized_time, time_frames};
 
 /// Effect categories in Effects & Presets order.
 pub const CATEGORIES: &[&str] = &[
@@ -811,6 +815,23 @@ pub const GPU_EFFECTS: &[&str] = &[
     // effectcraft-gpu fx_stylize (stylize, distort)
     //
     // effectcraft-gpu fx_noise (noise, blur, time)
+    "ec.noise.turbulent",
+    "ec.noise.median",
+    "ec.noise.medianlegacy",
+    "ec.noise.dustscratches",
+    "ec.noise.removegrain",
+    "ec.noise.noisealpha",
+    "ec.noise.noisehls",
+    "ec.noise.noisehlsauto",
+    "ec.blur.smart",
+    "ec.blur.bilateral",
+    "ec.blur.sharpen",
+    "ec.blur.unsharp",
+    "ec.blur.compound",
+    "ec.blur.channel",
+    "ec.channel.minimax",
+    "ec.time.echo",
+    "ec.time.posterizetime",
     //
 ];
 

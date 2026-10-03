@@ -219,6 +219,12 @@ fn fetch(ctx: &EffectCtx, times: &[f64]) -> Option<Frames> {
     Some(Frames { grid, imgs })
 }
 
+/// The layer's frames at layer times `times` placed on one grid (the GPU Echo / Posterize Time,
+/// effectcraft-gpu `fx_noise`): (grid buffer, one image per time). `None` without a host.
+pub fn time_frames(ctx: &EffectCtx, times: &[f64]) -> Option<(Buf, Vec<Image>)> {
+    fetch(ctx, times).map(|f| (f.grid, f.imgs))
+}
+
 fn with_img(grid: Buf, img: Image) -> Buf {
     Buf { img, ..grid }
 }

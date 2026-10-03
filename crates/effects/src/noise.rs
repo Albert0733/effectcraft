@@ -477,6 +477,28 @@ pub(crate) fn sampling_boxes(ctx: &EffectCtx, img: &Image, scale: f64) -> Vec<(u
     sample_boxes(img, n, s)
 }
 
+/// The grain level (0.5..2) measured in the sample boxes of `img`.
+fn grain_level(img: &Image, boxes: &[(usize, usize, usize)]) -> f32 {
+    let mut m = vec![false; img.data.len()];
+    let w = img.width as usize;
+    for &(x, y, s) in boxes {
+        for yy in y..y + s {
+            for xx in x..x + s {
+                m[yy * w + xx] = true;
+            }
+        }
+    }
+    let st = crate::noise2::grain_stats_masked(img, Some(&m));
+    let s = (st.std[0] + st.std[1] + st.std[2]) / 3.0;
+    if boxes.is_empty() { 1.0 } else { (s / 0.02).clamp(0.5, 2.0) }
+}
+
+/// Remove Grain's measured grain level for buffer `b` without Temporal Filtering (the GPU
+/// kernels' spatial pass, effectcraft-gpu `fx_noise`).
+pub fn remove_grain_level(ctx: &EffectCtx, b: &Buf) -> f32 {
+    grain_level(&b.img, &sampling_boxes(ctx, &b.img, b.scale))
+}
+
 fn remove_grain(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let pr = ctx.params;
     let amt = pr.f("noiseReductionSettings/noiseReduction") as f32;
@@ -535,20 +557,7 @@ fn remove_grain(ctx: &EffectCtx, mut b: Buf) -> Buf {
         }
     }
     // The grain level measured in the sample boxes scales the smoothing.
-    let level = {
-        let mut m = vec![false; b.img.data.len()];
-        let w = b.img.width as usize;
-        for &(x, y, s) in &boxes {
-            for yy in y..y + s {
-                for xx in x..x + s {
-                    m[yy * w + xx] = true;
-                }
-            }
-        }
-        let st = crate::noise2::grain_stats_masked(&b.img, Some(&m));
-        let s = (st.std[0] + st.std[1] + st.std[2]) / 3.0;
-        if boxes.is_empty() { 1.0 } else { (s / 0.02).clamp(0.5, 2.0) }
-    };
+    let level = grain_level(&b.img, &boxes);
     let passes = pr.f("noiseReductionSettings/passes").round().clamp(1.0, 8.0) as usize;
     let multichannel = pr.e("noiseReductionSettings/mode") == 0;
     let texture = (pr.f("fineTuning/texture") as f32).clamp(0.0, 1.0);

@@ -5,7 +5,7 @@
 
 EffectCraft ships 306 effects with 3009 parameters in total, grouped into the same categories as the Effects & Presets panel. Every effect is our own implementation, written from public behaviour descriptions and standard image-processing literature. Parameter names, order, popup options, units, defaults and ranges follow the reference application so that projects, expressions and muscle memory carry over.
 
-- **GPU**: 59 effects also run on the GPU compositor with identical results.
+- **GPU**: 76 effects also run on the GPU compositor with identical results.
 - **32**: 306 effects process 32-bit float (HDR, overbright) pixels without clamping.
 - **Status**: 306 implemented in full, 0 partial (what is missing is listed).
 
@@ -46,22 +46,22 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 
 | Effect | Id | Params | GPU | 32 | Status |
 |---|---|---:|:-:|:-:|---|
-| Bilateral Blur | `ec.blur.bilateral` | 3 |  | 32 | Implemented |
+| Bilateral Blur | `ec.blur.bilateral` | 3 | GPU | 32 | Implemented |
 | CC Cross Blur | `ec.blur.cccross` | 3 |  | 32 | Implemented |
 | CC Radial Blur | `ec.blur.ccradial` | 4 |  | 32 | Implemented |
 | CC Radial Fast Blur | `ec.blur.ccradialfast` | 3 | GPU | 32 | Implemented |
 | CC Vector Blur | `ec.blur.ccvector` | 4 |  | 32 | Implemented |
 | Camera Lens Blur | `ec.blur.cameralens` | 16 | GPU | 32 | Implemented |
 | Camera-Shake Deblur | `ec.blur.camerashakedeblur` | 8 |  | 32 | Implemented |
-| Channel Blur | `ec.blur.channel` | 6 |  | 32 | Implemented |
-| Compound Blur | `ec.blur.compound` | 4 |  | 32 | Implemented |
+| Channel Blur | `ec.blur.channel` | 6 | GPU | 32 | Implemented |
+| Compound Blur | `ec.blur.compound` | 4 | GPU | 32 | Implemented |
 | Directional Blur | `ec.blur.directional` | 2 | GPU | 32 | Implemented |
 | Fast Box Blur | `ec.blur.fastbox` | 4 | GPU | 32 | Implemented |
 | Gaussian Blur | `ec.blur.gaussian` | 3 | GPU | 32 | Implemented |
 | Radial Blur | `ec.blur.radial` | 4 | GPU | 32 | Implemented |
-| Sharpen | `ec.blur.sharpen` | 1 |  | 32 | Implemented |
-| Smart Blur | `ec.blur.smart` | 3 |  | 32 | Implemented |
-| Unsharp Mask | `ec.blur.unsharp` | 3 |  | 32 | Implemented |
+| Sharpen | `ec.blur.sharpen` | 1 | GPU | 32 | Implemented |
+| Smart Blur | `ec.blur.smart` | 3 | GPU | 32 | Implemented |
+| Unsharp Mask | `ec.blur.unsharp` | 3 | GPU | 32 | Implemented |
 
 ## Channel
 
@@ -74,7 +74,7 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 | Channel Combiner | `ec.channel.combiner` | 6 |  | 32 | Implemented |
 | Compound Arithmetic | `ec.channel.compoundarithmetic` | 6 |  | 32 | Implemented |
 | Invert | `ec.channel.invert` | 2 | GPU | 32 | Implemented |
-| Minimax | `ec.channel.minimax` | 5 |  | 32 | Implemented |
+| Minimax | `ec.channel.minimax` | 5 | GPU | 32 | Implemented |
 | Remove Color Matting | `ec.channel.removecolormatting` | 2 |  | 32 | Implemented |
 | Set Channels | `ec.channel.setchannels` | 9 |  | 32 | Implemented |
 | Set Matte | `ec.channel.setmatte` | 6 |  | 32 | Implemented |
@@ -266,17 +266,17 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 |---|---|---:|:-:|:-:|---|
 | Add Grain | `ec.noise.addgrain` | 32 | GPU | 32 | Implemented |
 | Curl Noise | `ec.noise.curlnoise` | 10 |  | 32 | Implemented |
-| Dust & Scratches | `ec.noise.dustscratches` | 3 |  | 32 | Implemented |
+| Dust & Scratches | `ec.noise.dustscratches` | 3 | GPU | 32 | Implemented |
 | Fractal Noise | `ec.noise.fractal` | 26 | GPU | 32 | Implemented |
 | Match Grain | `ec.noise.matchgrain` | 37 |  | 32 | Implemented |
-| Median | `ec.noise.median` | 2 |  | 32 | Implemented |
-| Median (Legacy) | `ec.noise.medianlegacy` | 2 |  | 32 | Implemented |
+| Median | `ec.noise.median` | 2 | GPU | 32 | Implemented |
+| Median (Legacy) | `ec.noise.medianlegacy` | 2 | GPU | 32 | Implemented |
 | Noise | `ec.noise.noise` | 3 | GPU | 32 | Implemented |
-| Noise Alpha | `ec.noise.noisealpha` | 8 |  | 32 | Implemented |
-| Noise HLS | `ec.noise.noisehls` | 6 |  | 32 | Implemented |
-| Noise HLS Auto | `ec.noise.noisehlsauto` | 6 |  | 32 | Implemented |
-| Remove Grain | `ec.noise.removegrain` | 20 |  | 32 | Implemented |
-| Turbulent Noise | `ec.noise.turbulent` | 22 |  | 32 | Implemented |
+| Noise Alpha | `ec.noise.noisealpha` | 8 | GPU | 32 | Implemented |
+| Noise HLS | `ec.noise.noisehls` | 6 | GPU | 32 | Implemented |
+| Noise HLS Auto | `ec.noise.noisehlsauto` | 6 | GPU | 32 | Implemented |
+| Remove Grain | `ec.noise.removegrain` | 20 | GPU | 32 | Implemented |
+| Turbulent Noise | `ec.noise.turbulent` | 22 | GPU | 32 | Implemented |
 
 ## Obsolete
 
@@ -379,9 +379,9 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 |---|---|---:|:-:|:-:|---|
 | CC Force Motion Blur | `ec.time.ccforcemotionblur` | 4 |  | 32 | Implemented |
 | CC Wide Time | `ec.time.ccwidetime` | 3 |  | 32 | Implemented |
-| Echo | `ec.time.echo` | 5 |  | 32 | Implemented |
+| Echo | `ec.time.echo` | 5 | GPU | 32 | Implemented |
 | Pixel Motion Blur | `ec.time.pixelmotionblur` | 4 |  | 32 | Implemented |
-| Posterize Time | `ec.time.posterizetime` | 1 |  | 32 | Implemented |
+| Posterize Time | `ec.time.posterizetime` | 1 | GPU | 32 | Implemented |
 | Time Difference | `ec.time.timedifference` | 5 |  | 32 | Implemented |
 | Time Displacement | `ec.time.timedisplacement` | 4 |  | 32 | Implemented |
 | Timewarp | `ec.time.timewarp` | 28 |  | 32 | Implemented |

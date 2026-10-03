@@ -117,6 +117,7 @@ fn apply(e: &mut Enc, id: &str, ctx: &EffectCtx, b: GBuf) -> Option<GBuf> {
         "ec.perspective.dropshadow" => drop_shadow(e, ctx, b),
         "ec.distort.transform" => transform(e, ctx, b),
         "ec.color.curves" => curves(e, ctx, b),
+        "ec.noise.fractal" if crate::fx_noise::fractal_extra(ctx) => crate::fx_noise::fractal(e, ctx, b, false),
         _ if id.starts_with("ec.control.") => Some(b),
         _ if crate::fx_color::IDS.contains(&id) => crate::fx_color::apply(e, id, ctx, b),
         _ if crate::fx_distort::IDS.contains(&id) => crate::fx_distort::apply(e, id, ctx, b),
