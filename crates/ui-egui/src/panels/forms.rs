@@ -17,6 +17,11 @@ pub enum FieldKind {
         speed: f64,
     },
     Text(String),
+    /// A file path with a Browse… button (the host's open dialog, these extensions).
+    Path {
+        value: String,
+        exts: Vec<String>,
+    },
     Bool(bool),
     /// Options as (label, value); `sel` is the chosen index.
     Choice {
@@ -39,6 +44,9 @@ impl Field {
     }
     pub fn text(key: &str, label: &str, value: &str) -> Field {
         Field { key: key.into(), label: label.into(), kind: FieldKind::Text(value.into()) }
+    }
+    pub fn path(key: &str, label: &str, value: &str, exts: &[&str]) -> Field {
+        Field { key: key.into(), label: label.into(), kind: FieldKind::Path { value: value.into(), exts: exts.iter().map(|e| e.to_string()).collect() } }
     }
     pub fn bool(key: &str, label: &str, value: bool) -> Field {
         Field { key: key.into(), label: label.into(), kind: FieldKind::Bool(value) }
@@ -67,7 +75,7 @@ impl Form {
         for f in &self.fields {
             let v = match &f.kind {
                 FieldKind::Number { value, .. } => json!(value),
-                FieldKind::Text(s) => json!(s),
+                FieldKind::Text(s) | FieldKind::Path { value: s, .. } => json!(s),
                 FieldKind::Bool(b) => json!(b),
                 FieldKind::Choice { options, sel } => options.get(*sel).map(|o| o.1.clone()).unwrap_or(Value::Null),
             };
@@ -513,6 +521,46 @@ pub fn open_form(app: &mut EffectcraftApp, id: &str, p: &Value) -> bool {
                 ],
             )
         }
+        // File ▸ Save as Template…
+        "templates.saveAs" if !has(p, &["name"]) => {
+            let name = s
+                .path
+                .as_deref()
+                .and_then(|p| std::path::Path::new(p).file_stem().map(|n| n.to_string_lossy().to_string()))
+                .or_else(|| s.active_comp_id().and_then(|c| s.project.item(c)).map(|i| i.name.clone()))
+                .unwrap_or_else(|| "My Template".into());
+            (
+                "Save as Template".into(),
+                vec![
+                    Field::text("name", "Template name", &name),
+                    Field::text("description", "Description", ""),
+                    Field::text("category", "Category", "My Templates"),
+                ],
+            )
+        }
+        // View ▸ Simulate Output ▸ My Custom RGB…
+        "view.customRgb" if p.as_object().is_none_or(|m| m.is_empty()) => {
+            let c = &s.prefs.custom_rgb;
+            let num = |k: &str, l: &str, v: f64| Field { key: k.into(), label: l.into(), kind: FieldKind::Number { value: v, speed: 0.001 } };
+            (
+                "My Custom RGB".into(),
+                vec![
+                    Field::text("name", "Name", &c.name),
+                    num("red[0]", "Red x", c.red[0]),
+                    num("red[1]", "Red y", c.red[1]),
+                    num("green[0]", "Green x", c.green[0]),
+                    num("green[1]", "Green y", c.green[1]),
+                    num("blue[0]", "Blue x", c.blue[0]),
+                    num("blue[1]", "Blue y", c.blue[1]),
+                    num("white[0]", "White point x", c.white[0]),
+                    num("white[1]", "White point y", c.white[1]),
+                    num("gamma", "Gamma", c.gamma),
+                    Field::bool("srgbCurve", "Use the sRGB curve (ignore Gamma)", c.srgb_curve),
+                    Field::path("icc", "ICC profile (replaces the numbers)", &c.icc, &["icc", "icm"]),
+                    Field::bool("preserveRgb", "Preserve RGB", s.state.viewer.simulation.preserve_rgb),
+                ],
+            )
+        }
         _ => return false,
     };
     form(app, &title, id, base, fields);
@@ -523,42 +571,79 @@ pub fn show_form(app: &mut EffectcraftApp, ctx: &egui::Context, t: &Tokens) {
     let mut f = app.dialog_state.form.clone();
     let (mut ok, mut close) = (false, false);
     let h = 120.0 + f.fields.len() as f32 * 30.0;
+    let mut regs: Vec<(String, egui::Rect, String)> = vec![];
+    let mut browse: Option<usize> = None;
     super::dialogs::modal(ctx, &f.title.clone(), vec2(440.0, h), t, |ui| {
         egui::Grid::new("form-grid").num_columns(2).spacing([14.0, 10.0]).show(ui, |ui| {
-            for fl in &mut f.fields {
+            for (i, fl) in f.fields.iter_mut().enumerate() {
                 ui.label(&fl.label);
-                match &mut fl.kind {
+                let r = match &mut fl.kind {
                     FieldKind::Number { value, speed } => {
-                        ui.add(egui::DragValue::new(value).speed(*speed).max_decimals(3));
+                        let dec = if *speed < 0.01 { 5 } else { 3 };
+                        ui.add(egui::DragValue::new(value).speed(*speed).max_decimals(dec)).rect
                     }
-                    FieldKind::Text(s) => {
-                        ui.add(egui::TextEdit::singleline(s).desired_width(220.0));
+                    FieldKind::Text(s) => ui.add(egui::TextEdit::singleline(s).desired_width(220.0)).rect,
+                    FieldKind::Path { value, .. } => {
+                        ui.horizontal(|ui| {
+                            let r = ui.add(egui::TextEdit::singleline(value).desired_width(150.0)).rect;
+                            let b = ui.button("Browse…");
+                            regs.push((format!("form.field.{}.browse", fl.key), b.rect, "Browse…".into()));
+                            if b.clicked() {
+                                browse = Some(i);
+                            }
+                            r
+                        })
+                        .inner
                     }
-                    FieldKind::Bool(b) => {
-                        ui.checkbox(b, "");
-                    }
+                    FieldKind::Bool(b) => ui.checkbox(b, "").rect,
                     FieldKind::Choice { options, sel } => {
                         let cur = options.get(*sel).map(|o| o.0.clone()).unwrap_or_default();
-                        egui::ComboBox::from_id_salt(("form", fl.key.as_str())).selected_text(cur).width(240.0).show_ui(ui, |ui| {
-                            for (i, (l, _)) in options.iter().enumerate() {
-                                ui.selectable_value(sel, i, l);
-                            }
-                        });
+                        egui::ComboBox::from_id_salt(("form", fl.key.as_str()))
+                            .selected_text(cur)
+                            .width(240.0)
+                            .show_ui(ui, |ui| {
+                                for (i, (l, _)) in options.iter().enumerate() {
+                                    ui.selectable_value(sel, i, l);
+                                }
+                            })
+                            .response
+                            .rect
                     }
-                }
+                };
+                regs.push((format!("form.field.{}", fl.key), r, fl.label.clone()));
                 ui.end_row();
             }
         });
         ui.add_space(14.0);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.add(egui::Button::new(egui::RichText::new("   OK   ").color(Color32::WHITE)).fill(t.accent)).clicked() {
+            let b = ui.add(egui::Button::new(egui::RichText::new("   OK   ").color(Color32::WHITE)).fill(t.accent));
+            regs.push(("form.ok".into(), b.rect, "OK".into()));
+            if b.clicked() {
                 ok = true;
             }
-            if ui.button("Cancel").clicked() {
+            let c = ui.button("Cancel");
+            regs.push(("form.cancel".into(), c.rect, "Cancel".into()));
+            if c.clicked() {
                 close = true;
             }
         });
     });
+    for (id, r, l) in regs {
+        app.auto.add(&id, r, &l);
+    }
+    if let Some(i) = browse
+        && let Some(FieldKind::Path { value, exts }) = f.fields.get_mut(i).map(|f| &mut f.kind)
+    {
+        let exts: Vec<&str> = exts.iter().map(String::as_str).collect();
+        match app.hooks.pick_files.as_ref() {
+            Some(pick) => {
+                if let Some(path) = pick(&exts).into_iter().next() {
+                    *value = path;
+                }
+            }
+            None => app.ui.status = "no file dialog available: type the path".into(),
+        }
+    }
     let enter = !ctx.egui_wants_keyboard_input() && ctx.input(|i| i.key_pressed(egui::Key::Enter));
     app.dialog_state.form = f.clone();
     if ok || enter {

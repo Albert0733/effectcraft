@@ -42,6 +42,7 @@ pub mod script_console;
 pub mod scriptui_view;
 pub mod settings;
 pub mod shortcut_editor;
+pub mod templates;
 pub mod text_panels;
 pub mod timeline;
 pub mod tracker;

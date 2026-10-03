@@ -348,7 +348,8 @@ pub(crate) fn draw_frame(app: &mut EffectcraftApp, ctx: &egui::Context, painter:
     }
     let dc = vw::DisplayColor::of(&app.session);
     // The display conversion's inputs, for the texture caches.
-    let dc_key = format!("{:?}{:?}{}", dc.is_some(), opts.simulation, app.session.prefs.previews.display_profile)
+    let custom = if opts.simulation.profile == vw::SimProfile::MyCustom { format!("{:?}", app.session.prefs.custom_rgb) } else { String::new() };
+    let dc_key = format!("{:?}{:?}{}{custom}", dc.is_some(), opts.simulation, app.session.prefs.previews.display_profile)
         + &format!("{:?}{:?}{}", app.session.project.settings.working_space, app.session.project.settings.output_space, opts.display_color_management);
     let plain = opts.channel == Channel::Rgb && opts.exposure == 0.0 && dc.is_none();
     let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
