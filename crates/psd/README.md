@@ -16,6 +16,12 @@ Bitmap, Grayscale, Indexed, RGB, CMYK (naive conversion) and Lab colour modes.
 Text engine data (`EngineData`) is read best-effort for the font, size, fill colour and
 justification of the first style run. Smart objects import as footage of their embedded file
 (a Photoshop document's merged image, or an image) placed by the smart object's corner quad
-(position, scale, rotation; perspective and warps are not applied). Externally linked files
+(position, scale, rotation). A non-affine quad (`nonAffineTransform`: perspective) or a placed
+layer warp (`warp`: the named styles with bend and horizontal / vertical distortion, and custom
+envelope warps whose quilt mesh of bicubic Bezier patches is read from `meshPoints` (`ObAr`)
+and `quiltSliceX` / `quiltSliceY`) is baked as placed over the placed bounds, at up to 4x the
+document resolution ([`placed`](src/placed.rs)). Custom meshes are evaluated exactly; the
+named styles' curves are not published, so they are clean-room geometric definitions matching
+each style by behaviour. Externally linked files
 fall back to the layer's rendered pixels. No Adobe code, sample files or assets were used; test
 fixtures are generated in-test by the writer in this crate ([`write`](src/write.rs)).

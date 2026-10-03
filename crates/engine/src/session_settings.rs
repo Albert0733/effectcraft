@@ -48,8 +48,12 @@ impl Session {
         if !s.is_empty() {
             return Some(std::path::PathBuf::from(s));
         }
+        // (the browser has no file system: no default folder there)
+        if self.config.is_none() || cfg!(target_arch = "wasm32") {
+            return None;
+        }
         let base = effectcraft_render::disk_cache::default_folder();
-        self.config.is_some().then(|| base.parent().map(|p| p.join(name)).unwrap_or_else(|| base.join(name)))
+        Some(base.parent().map(|p| p.join(name)).unwrap_or_else(|| base.join(name)))
     }
 
     /// Settings ▸ Disk ▸ Database and Cache Folder (media cache: audio waveform summaries).

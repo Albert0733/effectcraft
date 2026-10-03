@@ -33,7 +33,7 @@ fn create(s: &mut Session, p: &Value) -> Result<Value> {
                     continue;
                 };
                 let bytes = s.services.read_file(&f.path).map_err(|e| EngineError::Other(format!("cannot read {}: {e}", f.path)))?;
-                let doc = crate::vector::vector_doc(&f.path, &bytes, f.layer.as_ref())
+                let doc = crate::vector::vector_doc(&f.path, &bytes, f.layer.as_ref(), f.page)
                     .unwrap_or_else(|| Err(format!("{}: not a vector file", f.path)))
                     .map_err(EngineError::Other)?;
                 let id = s.edit("Create Shapes from Vector Layer", None, |proj, st| {

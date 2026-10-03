@@ -354,7 +354,7 @@ fn magnify(ctx: &EffectCtx, mut b: Buf) -> Buf {
 }
 
 /// Magnify's Blending Mode choices after "None".
-const MAGNIFY_MODES: [BlendMode; 17] = [
+pub const MAGNIFY_MODES: [BlendMode; 17] = [
     BlendMode::Normal,
     BlendMode::Add,
     BlendMode::Multiply,

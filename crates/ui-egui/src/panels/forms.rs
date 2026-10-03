@@ -118,6 +118,16 @@ fn is_layered(p: &Value) -> bool {
     }
 }
 
+/// The import includes a PDF or Illustrator file (which may have several pages).
+fn is_pdf(p: &Value) -> bool {
+    let pdf = |v: &Value| v.as_str().is_some_and(|s| matches!(s.rsplit('.').next().map(str::to_ascii_lowercase).as_deref(), Some("pdf" | "ai")));
+    match p.get("paths").or(p.get("path")) {
+        Some(Value::Array(a)) => a.iter().any(pdf),
+        Some(v) => pdf(v),
+        None => false,
+    }
+}
+
 pub fn open_form(app: &mut EffectcraftApp, id: &str, p: &Value) -> bool {
     let s = &app.session;
     let comp = s.active_comp();
@@ -135,6 +145,14 @@ pub fn open_form(app: &mut EffectcraftApp, id: &str, p: &Value) -> bool {
                 &[("Footage", json!("footage")), ("Composition", json!("composition")), ("Composition - Retain Layer Sizes", json!("compositionLayerSizes"))],
                 1,
             )],
+        ),
+        // PDF / Illustrator files: Import Kind and the page.
+        "file.import" if !has(p, &["importAs", "page"]) && is_pdf(p) => (
+            "Import PDF / Illustrator File".into(),
+            vec![
+                Field::choice("importAs", "Import Kind", &[("Footage", json!("footage")), ("Composition", json!("composition"))], 0),
+                Field::num("page", "Page", 1.0),
+            ],
         ),
         // Puppet tool ▸ Record Options.
         "puppet.recordOptions" if !has(p, &["speed", "smoothing", "useDraftDeformation", "showMesh"]) => {

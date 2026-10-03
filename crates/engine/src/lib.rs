@@ -26,6 +26,7 @@ pub mod offload;
 pub mod prefs;
 pub mod preview;
 pub mod psd_import;
+pub mod remote;
 pub mod render_queue;
 pub mod roto;
 pub mod scriptui;
@@ -219,6 +220,10 @@ pub struct EditorState {
     /// Essential Graphics can expose).
     #[serde(default)]
     pub essential_solo: bool,
+    /// File ▸ Watch Folder: the folder being watched for projects to render (frontends call
+    /// `file.watchFolder.poll` periodically while it is set).
+    #[serde(default)]
+    pub watch_folder: Option<String>,
     /// The Footage panel: the footage shown, its time and In/Out marks (source time).
     #[serde(default)]
     pub footage_panel: Option<commands::footage_panel::FootageView>,
@@ -349,6 +354,11 @@ pub struct Session {
     pub offload: Option<Arc<dyn offload::Offload>>,
     /// Analyses running in the [`Session::offload`] worker.
     pub offloaded: Vec<offload::OffloadedJob>,
+    /// What the Media Browser browses (`None`: the local file system where there is one).
+    pub browser: Option<Arc<dyn media_browser::Browser>>,
+    /// Offloaded jobs that ended, newest last (kind, error): how a caller waiting for one
+    /// (`wait: true` over the control channel in the browser) learns its outcome.
+    pub offload_log: Vec<(offload::JobKind, Option<String>)>,
     /// Generic background tasks (Content-Aware Fill, Scene Edit Detection), see [`jobs`].
     pub tasks: Vec<jobs::Task>,
     /// Finished tasks, newest last (Progress panel, `jobs.list`).
@@ -421,6 +431,8 @@ impl Default for Session {
             applied_nested_switches: None,
             offload: None,
             offloaded: vec![],
+            offload_log: vec![],
+            browser: None,
             tasks: vec![],
             job_log: vec![],
             next_task_id: 1,
@@ -786,11 +798,17 @@ mod tests_effects;
 #[cfg(test)]
 mod tests_essential;
 #[cfg(test)]
+mod tests_essential_more;
+#[cfg(test)]
 mod tests_face;
 #[cfg(test)]
 mod tests_fidelity;
 #[cfg(test)]
+mod tests_frame_export;
+#[cfg(test)]
 mod tests_lottie;
+#[cfg(test)]
+mod tests_m137;
 #[cfg(test)]
 mod tests_m145;
 #[cfg(test)]

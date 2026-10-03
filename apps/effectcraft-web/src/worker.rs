@@ -5,6 +5,9 @@
 //! `workerRun`), and turns the worker's messages back into [`WorkerReply`]s in the job's
 //! [`Inbox`]. Rendered files come back as their bytes and download like any render.
 //!
+//! Viewer frames use separate, long-lived workers ([`crate::frames`]); Roto Brush
+//! segmentations a propagation job sends back are relayed to them.
+//!
 //! **Worker side** — `web/worker.js` instantiates the same wasm module (the page's compiled
 //! `WebAssembly.Module`, so nothing is compiled twice) and calls [`worker_init`], then
 //! [`worker_file`] per footage file and [`worker_job`] per job: a plain engine session (footage
@@ -60,6 +63,9 @@ impl Offload for WorkerOffload {
                     let Some(t) = json.as_string() else { return };
                     match serde_json::from_str::<WorkerReply>(&t) {
                         Ok(r) => {
+                            if let WorkerReply::Segs { segs } = &r {
+                                crate::frames::relay_segs(segs);
+                            }
                             let done = matches!(r, WorkerReply::Done);
                             inbox.push(r);
                             if done {
@@ -144,6 +150,11 @@ pub fn worker_init() {
         ..Default::default()
     };
     SESSION.with(|c| *c.borrow_mut() = Some(s));
+}
+
+/// The worker's media pool (footage files sent by the page).
+pub fn pool() -> Arc<effectcraft_media::MediaPool> {
+    POOL.with(|p| p.borrow().clone()).unwrap_or_else(|| Arc::new(effectcraft_media::MediaPool::new()))
 }
 
 /// A footage file for the jobs that follow.

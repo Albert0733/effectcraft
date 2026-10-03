@@ -326,7 +326,8 @@ impl FxTarget for CpuFx<'_> {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(default, rename_all = "camelCase")]
 pub struct RenderOpts {
     /// Output scale relative to comp pixels (1 = Full, 0.5 = Half…).
     pub scale: f64,
@@ -401,6 +402,8 @@ pub struct Renderer<'a> {
     /// Switches inherited from the precomp layers this comp is rendered through (see
     /// [`RenderOpts::nested_switches`]): the worst quality and whether motion blur is allowed.
     pub(crate) inherited: Option<(Quality, bool)>,
+    /// Classic 3D depth of field is left to an accelerator ([`three_d::Plane3d::dof`]).
+    pub(crate) defer_dof: bool,
     /// This renderer draws into the top-level frame's canvas (the top comp, or a collapsed
     /// precomp drawn straight into it): the region of interest's offset applies.
     top: bool,
@@ -448,6 +451,7 @@ impl<'a> Renderer<'a> {
             opacity_mul: 1.0,
             collapse3d: None,
             inherited: None,
+            defer_dof: false,
             top: true,
         }
     }
@@ -483,7 +487,7 @@ impl<'a> Renderer<'a> {
 
     /// A renderer for nested work (precomps, layers read by effects): one level deeper.
     fn nested(&self) -> Renderer<'a> {
-        Renderer { depth: self.depth + 1, outer: None, opacity_mul: 1.0, collapse3d: None, top: false, ..*self }
+        Renderer { depth: self.depth + 1, outer: None, opacity_mul: 1.0, collapse3d: None, defer_dof: false, top: false, ..*self }
     }
 
     /// The nested comp of a precomp layer whose transformations collapse into this comp: the

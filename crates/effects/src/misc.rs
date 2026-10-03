@@ -103,7 +103,7 @@ fn unsharp(ctx: &EffectCtx, mut b: Buf) -> Buf {
 /// Position (0 = Color A, 1 = Color B) in Glow's A & B gradient for brightness `l`: `loops`
 /// cycles starting at `phase` (revolutions), shaped by Color Looping (0 Sawtooth A>B,
 /// 1 Sawtooth B>A, 2 Triangle A>B>A, 3 Triangle B>A>B) and biased so `mid` maps to the middle.
-pub(crate) fn glow_ab_t(l: f32, looping: u32, loops: f32, phase: f32, mid: f32) -> f32 {
+pub fn glow_ab_t(l: f32, looping: u32, loops: f32, phase: f32, mid: f32) -> f32 {
     let u = l.clamp(0.0, 1.0) * loops.max(0.0) + phase;
     let mut t = u - u.floor();
     if u > 0.0 && t <= 0.0 {

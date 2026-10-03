@@ -3,7 +3,8 @@
 //! Effects' Master Properties).
 //!
 //! - A comp's [`EssentialGraphics`] lists controls: properties of its layers (shown as text,
-//!   colour, slider, checkbox, point, angle or dropdown controls), Media Replacement slots for
+//!   colour, slider, checkbox, point, angle or dropdown controls; Source Text also as a font
+//!   control and Scale as one uniform slider), Media Replacement slots for
 //!   footage layers, comments and groups.
 //! - Every layer that nests such a comp gets an **Essential Properties** group (match id
 //!   `essential`, [`GroupKind::Essential`]) mirroring the controls, one child per control with
@@ -36,6 +37,11 @@ pub struct EgControl {
     /// Display name (renamable; defaults to the property's name).
     pub name: String,
     pub kind: EgKind,
+    /// The control a property is shown as when not its natural one ([`control_type`]): a
+    /// Source Text property as a [`ControlType::Font`] control, a Scale as a uniform
+    /// [`ControlType::Scale`] slider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub as_type: Option<ControlType>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -83,11 +89,34 @@ pub enum ControlType {
     Angle,
     Dropdown,
     Media,
+    /// The font family, style and size of a Source Text property (the text itself stays).
+    Font,
+    /// One uniform percentage for a Scale property (every axis the same).
+    Scale,
 }
 
 impl ControlType {
+    /// By label or serde name, case-insensitively (`"font"`, `"Scale"`…).
+    pub fn parse(s: &str) -> Option<ControlType> {
+        [
+            ControlType::Text,
+            ControlType::Color,
+            ControlType::Slider,
+            ControlType::Checkbox,
+            ControlType::Point,
+            ControlType::Angle,
+            ControlType::Dropdown,
+            ControlType::Media,
+            ControlType::Font,
+            ControlType::Scale,
+        ]
+        .into_iter()
+        .find(|t| t.label().eq_ignore_ascii_case(s.trim()))
+    }
     pub fn label(self) -> &'static str {
         match self {
+            ControlType::Font => "Font",
+            ControlType::Scale => "Scale",
             ControlType::Text => "Text",
             ControlType::Color => "Color",
             ControlType::Slider => "Slider",
@@ -116,6 +145,35 @@ pub fn control_type(p: &Property) -> Option<ControlType> {
         (Value::Scalar(_), _) => ControlType::Slider,
         _ => return None,
     })
+}
+
+/// Whether property `p` can be shown as a `ty` control: its natural control, a Source Text
+/// property as Font, a two- or three-dimensional property as uniform Scale.
+pub fn can_show_as(p: &Property, ty: ControlType) -> bool {
+    if matches!(p.ui, ParamUi::Hidden) {
+        return false;
+    }
+    match ty {
+        ControlType::Font => matches!(p.value, Value::Text(_)),
+        ControlType::Scale => matches!(p.value, Value::Vec2(_) | Value::Vec3(_)) && !matches!(p.ui, ParamUi::Angle),
+        ControlType::Media => false,
+        t => control_type(p) == Some(t),
+    }
+}
+
+/// The control `c` shows for its property `p` (its `as_type`, else the natural one).
+pub fn effective_type(c: &EgControl, p: &Property) -> Option<ControlType> {
+    c.as_type.filter(|t| can_show_as(p, *t)).or_else(|| control_type(p))
+}
+
+/// Apply a Font control's value: the font family, style and size of `from` onto `to` (the text,
+/// colours and every other attribute stay).
+pub fn merge_font(to: &mut Value, from: &Value) {
+    if let (Value::Text(t), Value::Text(f)) = (to, from) {
+        t.font = f.font.clone();
+        t.style = f.style.clone();
+        t.size = f.size;
+    }
 }
 
 impl EssentialGraphics {
@@ -172,9 +230,14 @@ impl EssentialGraphics {
             },
         }
     }
-    /// The control exposing property `prop` of `layer` (its main property), if any.
+    /// The control exposing property `prop` of `layer`, if any.
     pub fn control_for(&self, layer: LayerId, prop: Uid) -> Option<&EgControl> {
         self.flat().into_iter().find(|c| matches!(c.kind, EgKind::Property { layer: l, prop: p, .. } if l == layer && p == prop))
+    }
+    /// The control exposing property `prop` of `layer` as `as_type` (`None` = its natural
+    /// control): a property can have one control of each kind (Source Text as Text and Font).
+    pub fn control_for_as(&self, layer: LayerId, prop: Uid, as_type: Option<ControlType>) -> Option<&EgControl> {
+        self.flat().into_iter().find(|c| c.as_type == as_type && matches!(c.kind, EgKind::Property { layer: l, prop: p, .. } if l == layer && p == prop))
     }
     /// The property control a property drives: its main property or one of its links.
     pub fn driver_of(&self, layer: LayerId, prop: Uid) -> Option<&EgControl> {
@@ -279,7 +342,8 @@ fn sync_links(before: &Project, p: &mut Project) {
         let mut writes: Vec<(LayerId, Uid, Value, Vec<crate::Keyframe>)> = vec![];
         for c in eg.flat() {
             let targets = c.kind.targets();
-            if targets.len() < 2 {
+            // Font controls take only the font: they never drive whole values.
+            if targets.len() < 2 || c.as_type == Some(ControlType::Font) {
                 continue;
             }
             let get = |cm: &crate::Comp, (l, u): (LayerId, Uid)| cm.layer(l).and_then(|l| l.props.find(u).cloned());
@@ -590,10 +654,24 @@ pub fn with_overrides(project: &Project, comp: ItemId, overrides: &[Override]) -
     let mut p = project.clone();
     let c = p.comp_mut(comp)?;
     let mut any = false;
-    for o in overrides {
-        // A mirror's value is its master's.
+    // Whole values first, then Font controls (which change only the font of whatever text the
+    // instance shows). A mirror acts as its master control.
+    let is_font = |o: &&Override| eg.resolve(o.control).is_some_and(|c| c.as_type == Some(ControlType::Font));
+    let ordered = overrides.iter().filter(|o| !is_font(o)).chain(overrides.iter().filter(is_font));
+    for o in ordered {
         let Some(ctl) = eg.resolve(o.control) else { continue };
         match &ctl.kind {
+            EgKind::Property { .. } if ctl.as_type == Some(ControlType::Font) => {
+                for (layer, prop) in ctl.kind.targets() {
+                    if let Some(pr) = c.layer_mut(layer).and_then(|l| l.props.find_mut(prop)) {
+                        merge_font(&mut pr.value, &o.value);
+                        for k in &mut pr.keys {
+                            merge_font(&mut k.value, &o.value);
+                        }
+                        any = true;
+                    }
+                }
+            }
             EgKind::Property { .. } => {
                 for (layer, prop) in ctl.kind.targets() {
                     if let Some(pr) = c.layer_mut(layer).and_then(|l| l.props.find_mut(prop)) {

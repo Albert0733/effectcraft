@@ -299,6 +299,10 @@ pub struct CharStyle {
     /// OpenType features (stylistic sets, figures, fractions…).
     #[serde(skip_serializing_if = "OpenType::is_default")]
     pub opentype: OpenType,
+    /// Variable font axis values (tag, user units; axes not listed stay at their defaults):
+    /// the Character panel's Variable Font Axes.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub variations: Vec<(String, f32)>,
 }
 
 impl Default for CharStyle {
@@ -383,6 +387,9 @@ pub struct TextDoc {
     /// Base OpenType features (see [`CharStyle::opentype`]).
     #[serde(skip_serializing_if = "OpenType::is_default")]
     pub opentype: OpenType,
+    /// Base variable font axis values (see [`CharStyle::variations`]).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub variations: Vec<(String, f32)>,
     pub indent_left: f64,
     pub indent_right: f64,
     pub indent_first: f64,
@@ -435,6 +442,7 @@ impl Default for TextDoc {
             tate_chu_yoko: false,
             vertical_roman_upright: false,
             opentype: OpenType::default(),
+            variations: vec![],
             indent_left: 0.0,
             indent_right: 0.0,
             indent_first: 0.0,
@@ -522,6 +530,7 @@ impl TextDoc {
             tate_chu_yoko: self.tate_chu_yoko,
             vertical_roman_upright: self.vertical_roman_upright,
             opentype: self.opentype,
+            variations: self.variations.clone(),
         }
     }
 
@@ -550,6 +559,7 @@ impl TextDoc {
         self.tate_chu_yoko = s.tate_chu_yoko;
         self.vertical_roman_upright = s.vertical_roman_upright;
         self.opentype = s.opentype;
+        self.variations = s.variations.clone();
     }
 
     /// The base (first paragraph's) settings.
@@ -951,6 +961,7 @@ pub const CHAR_ATTRS: &[&str] = &[
     "figureStyle",
     "figureWidth",
     "figures",
+    "variations",
 ];
 
 /// Paragraph attribute keys of `layer.setText`.
@@ -1068,6 +1079,28 @@ pub fn apply_char_attr(s: &mut CharStyle, key: &str, v: &J) -> Result<bool, Stri
             s.opentype.figure_style = st;
             s.opentype.figure_width = w;
         }
+        // Variable font axes: `{wght: 650, wdth: 90}` (null removes an axis), or `{}` / null to
+        // reset every axis to its default.
+        "variations" => match v {
+            J::Null => s.variations.clear(),
+            J::Object(m) => {
+                if m.is_empty() {
+                    s.variations.clear();
+                }
+                for (tag, val) in m {
+                    if tag.is_empty() || tag.len() > 4 {
+                        return Err(format!("variations: `{tag}` is not an axis tag"));
+                    }
+                    s.variations.retain(|(t, _)| t != tag);
+                    match val {
+                        J::Null => {}
+                        _ => s.variations.push((tag.clone(), val.as_f64().ok_or("variations: expected {tag: number}")? as f32)),
+                    }
+                }
+                s.variations.sort_by(|a, b| a.0.cmp(&b.0));
+            }
+            _ => return Err("variations: expected {tag: number, …}".into()),
+        },
         k if k.len() == 4 && k.starts_with("ss") && k[2..].parse::<u32>().is_ok_and(|n| (1..=20).contains(&n)) => {
             let n = k[2..].parse::<u32>().unwrap_or(0);
             s.opentype.set_stylistic_set(n, flag(key, v)?);
@@ -1123,6 +1156,7 @@ pub fn char_style_json(s: &CharStyle) -> J {
         "stylisticSets": (1..=20u32).filter(|n| s.opentype.stylistic_set(*n)).collect::<Vec<_>>(),
         "swash": s.opentype.swash, "titling": s.opentype.titling, "ordinals": s.opentype.ordinals, "fractions": s.opentype.fractions,
         "allSmallCaps": s.opentype.all_small_caps,
+        "variations": s.variations.iter().map(|(t, v)| (t.clone(), J::from(*v as f64))).collect::<serde_json::Map<String, J>>(),
         "figureStyle": match s.opentype.figure_style { FigureStyle::Default => "default", FigureStyle::Lining => "lining", FigureStyle::OldStyle => "oldStyle" },
         "figureWidth": match s.opentype.figure_width { FigureWidth::Default => "default", FigureWidth::Proportional => "proportional", FigureWidth::Tabular => "tabular" },
     })

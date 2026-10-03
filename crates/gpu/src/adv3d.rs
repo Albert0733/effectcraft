@@ -625,12 +625,12 @@ fn depth_of_field(e: &mut Enc, acc: &wgpu::Buffer, depth: &wgpu::Buffer, (w, h):
     if hi < 0.5 {
         return Some(());
     }
-    let Some(levels) = bokeh::progressive_levels(lo, hi) else { return Some(()) };
+    let Some(levels) = bokeh::blur_levels(&[lo, hi]) else { return Some(()) };
     // Level headers, then every level's weighted spans.
     let mut heads: Vec<[f32; 4]> = vec![];
     let mut spans: Vec<[f32; 4]> = vec![];
     for &r in &levels {
-        match bokeh::kernel(&dof.iris, r as f64) {
+        match bokeh::kernel_spans(&dof.iris, r as f64) {
             Some((kernels, norm)) => {
                 let first = levels.len() + spans.len();
                 for (wt, sp) in &kernels {

@@ -770,6 +770,9 @@ pub struct Footage {
     /// project so expressions read it everywhere (and on the web).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data: Option<String>,
+    /// PDF / Illustrator footage: the page shown (0-based; File ▸ Import ▸ Page).
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub page: u32,
 }
 
 fn is_default<T: Default + PartialEq>(v: &T) -> bool {
@@ -801,6 +804,7 @@ impl Default for Footage {
             linear_light: false,
             data: None,
             layer: None,
+            page: 0,
         }
     }
 }
@@ -845,6 +849,10 @@ pub struct SourceLayer {
     /// is the footage instead of the layer's pixels.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub embedded: Option<String>,
+    /// A smart object with a perspective quad or a warp: the footage is its embedded file baked
+    /// as placed (warped and pinned to its corners) over the placed bounds in document space.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub placed: bool,
 }
 
 fn one() -> u32 {

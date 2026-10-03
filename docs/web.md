@@ -41,14 +41,15 @@ with every L0–L4 crate and `effectcraft-ui-egui`, for `wasm32-unknown-unknown`
 
 URL flags: `?empty` (a blank project; the session is not restored or recorded), `?demo` (the demo
 project instead of the last session), `?home` (show the start screen), `?storage=indexeddb` /
-`?storage=memory` (force a storage backend), `?noworkers` (render and analyse on the page's
-thread), `?nosw` (don't register the service worker).
+`?storage=memory` (force a storage backend), `?noworkers` (render, analyse and draw viewer
+frames on the page's thread), `?frameworkers=N` (frame workers, default 2; 0 = viewer frames on
+the page's thread), `?nosw` (don't register the service worker).
 
 ## How the desktop pieces map to the browser
 
 | Desktop | Web |
 |---|---|
-| frame render thread pool (`ui-egui/src/frames.rs`) | `Frames::pump`: queued frames render on the UI thread after each egui frame, most important first (the viewer's frame, then prefetch), within 40 ms (24 ms while playing) |
+| frame render thread pool (`ui-egui/src/frames.rs`) | frame workers (below): `Frames::pump` hands queued frames to them, most important first (the viewer's frame, then prefetch); frames the GPU compositor can keep on the GPU render on the page. Without workers, queued frames render on the UI thread after each egui frame within 40 ms (24 ms while playing) |
 | Render Queue on a background thread | a Web Worker running a second engine instance (below); progress streams back, the page never waits |
 | tracker / mask tracker / Warp Stabilizer / 3D Camera Tracker / Roto Brush Freeze threads | the same workers; the analysed property group comes back as one undo step |
 | `rayon` parallel loops (raster, effects, export batches) | rayon's global pool falls back to the calling thread when threads are unavailable: same code, serial |
@@ -59,6 +60,7 @@ thread), `?nosw` (don't register the service worker).
 | media reads (`MediaPool`, `probe`) | `files::WebImporter`: bytes from the file table, handed to `MediaPool::add_bytes` / `probe_bytes` |
 | export writes (`effectcraft-export`) | the job's `sink` (`effectcraft_host::FileExporter { sink }`): files land in the table and download after the render; several files (an image sequence) download as one stored `.zip` |
 | rfd file dialogs | `<input type=file>` for File ▸ Open / Import; drop files anywhere on the page (`.ecproj` opens, everything else imports); "Save As" / "Output To" pick a download name |
+| Media Browser on the file system | browser storage and folders opened with the File System Access API (below) |
 | system fonts | not scanned; the bundled fonts (Inter, Noto Serif, JetBrains Mono) are always there |
 | TCP control channel / MCP | `window.effectcraft` (below) |
 | cpal audio output | Web Audio (below) |
@@ -109,10 +111,65 @@ compiled twice) and its own memory (`crates/engine/src/offload.rs`, `src/worker.
    tracker / mask group is replaced; other edits made meanwhile are kept) and the downloads start.
 
 Stopping a job terminates its worker (a worker can't be interrupted mid-frame): the item being
-rendered becomes "User Stopped", an analysis writes nothing. `renderQueue.render {wait: true}` (the
-default for agents) and analysis commands with `wait: true` still run on the page's thread and
-return when done. Roto Brush propagation fills the session's segmentation cache rather than the
-project, so it runs on the page's thread too, as do viewer frames (`Frames::pump`).
+rendered becomes "User Stopped", an analysis writes nothing. Every job shows in Window ▸ Progress
+(`jobs.list`) with its progress and a cancel button (`jobs.cancel`).
+
+**Roto Brush propagation** runs in a job worker too (`WorkerJob::RotoPropagate`): the worker
+streams the segmentations it computes back at most every 250 ms (`WorkerReply::Segs`: each
+`FrameSeg` in a compact binary form, run-length coded planes, base64), the page puts them into its
+segmentation cache and relays them to the frame workers. Stopping it keeps the frames propagated
+so far.
+
+**`wait: true`** (the default of `renderQueue.render` for agents, and an option of the analysis
+and Roto Brush commands) no longer blocks the page: over `window.effectcraft` (the control
+channel) such a command runs with `wait: false`, and the promise resolves when the job it started
+ends, with what the blocking command returns (final render item statuses, the analysis status)
+or rejects with the job's error (`ui-egui/src/control.rs`, `JobWaiter`). Engine commands executed
+directly on the session (scripts) still block.
+
+### Viewer frames: frame workers
+
+Viewer frames (the frame on screen, RAM preview and prefetch) render in long-lived **frame
+workers** (`src/frames.rs`, `crates/engine/src/remote.rs`), two by default. Each holds a replica
+of the project:
+
+1. Before a render, the page sends a worker the footage files it lacks, then a sync: the whole
+   project the first time, afterwards a **diff** of the serialized project from the revision the
+   worker holds (`remote::diff`: object members added / changed / removed, arrays element-wise
+   when their length is unchanged; a slider drag sends a few hundred bytes, not the project).
+2. Then the render request (`FrameMsg::Render`: revision, comp, time, render options). The worker
+   renders on its CPU renderer and posts the frame back as premultiplied RGBA8 in a transferred
+   buffer (`FrameReply::Frame`); the page puts it in the frame cache.
+3. One frame per worker at a time, so the page always picks what renders next (the viewer's frame
+   before prefetch); a request for a revision the worker does not hold is refused, a worker that
+   lost its replica asks for the whole project again (`FrameReply::Resync`).
+
+Frames the WebGPU compositor can finish alone still render on the page (they stay on the GPU, no
+readback); everything else (CPU-only effects, 3D runs, the Software Only renderer, WebGL2) goes to
+the workers. If no worker is usable, frames render on the page's thread as before.
+`effectcraft.info().frameWorkers` reports `{workers, alive, busy, rendered, failed, lastMs,
+syncs, syncBytes}`.
+
+**Why workers and not wasm threads:** shared-memory threads (SharedArrayBuffer + atomics, a
+`wasm-bindgen-rayon`-style pool) need the standard library rebuilt with atomics (`build-std`,
+nightly Rust); the repository builds on stable, so each worker runs its own engine instance with
+its own memory. The page is still cross-origin isolated (`--serve` and the service worker send
+COOP / COEP), so a threaded build can be added later without changing the deployment.
+
+### Media Browser
+
+Window ▸ Media Browser browses a virtual tree (`src/browse.rs`):
+
+- **Browser Storage**: every file in browser storage (imported media, saved projects, files added
+  with **Add Files…** or **Upload Folder…**, plain file inputs that work in every browser). This is
+  the persistent recent list where folders can't be opened.
+- **Folders**: **Open Folder…** (File System Access API, `showDirectoryPicker`, Chromium) lists a
+  folder from the user's disk; only the listing is read, and a file's bytes are read when it is
+  imported (then kept in browser storage). The folder handles are remembered in IndexedDB; after
+  a reload the folders come back if the browser still grants access, else **Reconnect <name>**
+  asks again.
+
+`mediaBrowser.list` reports the places and these actions; `mediaBrowser.action {action}` runs one.
 
 ### Audio
 
@@ -192,15 +249,24 @@ cargo xtask web --serve 8765 &
 node apps/effectcraft-web/tests/smoke.mjs --url http://127.0.0.1:8765/ --out target/web/smoke
 ```
 
+It also checks the M13.10 paths: viewer frames rendered in frame workers while scrubbing with the
+CPU renderer (project synced as diffs, event-loop gaps under 400 ms), a `wait: true` render that
+replies when done while the page keeps running, and the Media Browser over browser storage.
+
 Native unit tests cover the storage model (`apps/effectcraft-web/src/store.rs`: write
 coalescing, file table, `ConfigStore` / `FileOps`, auto-save and crash recovery through the
 browser store) and the worker protocol (`crates/engine/src/offload.rs`: serde round trips of
-every request and reply, a render through an in-process offload).
+every request and reply, a render through an in-process offload; `tests_roto.rs`: Roto Brush
+propagation through an offload streaming segmentations), the frame-worker protocol
+(`crates/engine/src/remote.rs`: diff / patch, a replica following edits renders the same pixels;
+`crates/ui-egui/tests/ui_web_offload.rs`: the frame cache through a remote renderer, `wait: true`
+deferred until the offloaded job ends) and the Media Browser's virtual tree (`media_browser.rs`,
+`tests_panels.rs`).
 
 ## Gaps
 
-- Viewer frames, RAM preview and Roto Brush propagation still render on the page's thread (one
-  frame at a time between UI frames).
+- No shared-memory threads: each worker is a separate engine instance (memory per worker: the
+  project replica and the footage it reads).
 - GPU effects run only in the desktop GPU path: in the browser, effects run on the CPU (inside
   workers for renders) because the page's thread can't wait for mid-render readbacks.
 - No disk cache (Settings ▸ Media & Disk Cache) in the browser: the layer cache stays in memory.

@@ -8,10 +8,15 @@
 //! (Illustrator layers), with content outside them gathered into groups of its own.
 
 mod build;
+mod cff;
 mod color;
+mod encoding;
+mod font;
+mod image;
 mod object;
 mod page;
 mod ps;
+mod type1;
 pub mod write;
 
 pub use effectcraft_svg::Doc;
@@ -124,7 +129,10 @@ fn finish(nodes: Vec<Node>, flags: Vec<bool>, skipped: Vec<String>, width: f64, 
             g.name = format!("Layer {}", i + 1);
         }
     }
-    Doc { width, height, root: Group { name: "page".into(), transform: to_doc, opacity: 1.0, children: layers, clip: vec![] }, skipped }
+    let mut root = Group::new("page");
+    root.transform = to_doc;
+    root.children = layers;
+    Doc { width, height, root, skipped }
 }
 
 fn parse_pdf(bytes: &[u8], index: usize) -> Result<Doc, Error> {
@@ -170,6 +178,7 @@ pub fn layer_names(doc: &Doc) -> Vec<String> {
         .map(|n| match n {
             Node::Group(g) => g.name.clone(),
             Node::Shape(s) => s.name.clone(),
+            Node::Image(i) => i.name.clone(),
         })
         .collect()
 }

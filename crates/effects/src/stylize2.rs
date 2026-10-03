@@ -223,7 +223,8 @@ fn scatter(ctx: &EffectCtx, mut b: Buf) -> Buf {
 
 // ---- Strobe Light ----
 
-pub(crate) fn strobe_on(time: f64, duration: f64, period: f64, prob: f64, seed: u32) -> bool {
+/// Whether Strobe Light flashes at `time` (also used by the GPU kernels).
+pub fn strobe_on(time: f64, duration: f64, period: f64, prob: f64, seed: u32) -> bool {
     if period <= 0.0 {
         return false;
     }
