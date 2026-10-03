@@ -8,6 +8,10 @@
 //!   control, Scale as one uniform slider); rename by double-clicking the name;
 //!   reorder with ▲▼, remove with ✕; groups and comments from Add Formatting; Media
 //!   Replacement for the selected footage layer.
+//! - **Mirrors and links**: adding a property that is already in the panel adds a *mirror*
+//!   (same value, its own name and place); a control's ⋯ menu adds a mirror, links the selected
+//!   timeline property (the control then drives both) or unlinks one. Mirrors and linked
+//!   controls are badged (`essential.control.<id>.badge`, `.menu`).
 //! - **Export Template…** writes an open `.ectemplate`.
 //! - With a precomp layer that has Essential Properties selected, its instance values: edit them
 //!   (overrides), Revert or Push to Comp.
@@ -192,13 +196,37 @@ fn controls(app: &mut EffectcraftApp, ui: &mut egui::Ui, cid: ItemId, list: &[Eg
                     let shown = EgControl { name: text.clone(), ..c.clone() };
                     name_label(app, ui, cid, &shown, RichText::new(text).italics().color(t.text_dim), actions);
                 }
-                EgKind::Property { .. } => {
+                EgKind::Property { .. } | EgKind::Mirror { .. } => {
                     name_label(app, ui, cid, c, RichText::new(&c.name), actions);
+                    // Mirrors and linked properties are marked (hover: what they share).
+                    let eg = app.session.project.comp(cid).and_then(|x| x.essential.clone()).unwrap_or_default();
+                    let badge = match &c.kind {
+                        EgKind::Mirror { of } => Some(("mirror".to_string(), format!("Mirror of {}", eg.find(*of).map(|m| m.name.as_str()).unwrap_or("?")))),
+                        EgKind::Property { links, .. } if !links.is_empty() => {
+                            let names: Vec<String> = essential::linked_props(&app.session.project, cid, c)
+                                .into_iter()
+                                .map(|(l, p)| format!("{} › {}", l.name, l.props.name_path_of(p.uid).unwrap_or_else(|| p.name.clone())))
+                                .collect();
+                            Some((format!("+{} linked", links.len()), format!("Also drives:\n{}", names.join("\n"))))
+                        }
+                        _ => None,
+                    };
+                    if let Some((text, tip)) = badge {
+                        let r = ui.label(RichText::new(text).color(t.accent).size(10.0)).on_hover_text(&tip);
+                        app.auto.add(&format!("essential.control.{}.badge", c.id), r.rect, &tip);
+                    }
                     let src = essential::source_prop(&app.session.project, cid, c).map(|(l, p)| (l.id.0, l.layer_time(app.session.time()), p.clone()));
                     match src {
                         Some((layer, lt, p)) => {
                             let v = p.value_at(lt);
-                            if let Some(nv) = value_widget(app, ui, &format!("essential.control.{}.value", c.id), essential::effective_type(c, &p), &p, &v) {
+                            if let Some(nv) = value_widget(
+                                app,
+                                ui,
+                                &format!("essential.control.{}.value", c.id),
+                                essential::effective_type(eg.resolve(c.id).unwrap_or(c), &p),
+                                &p,
+                                &v,
+                            ) {
                                 actions.push((
                                     "prop.set".into(),
                                     json!({"comp": cid.0, "layer": layer, "prop": p.uid, "value": nv, "merge": format!("eg-{}", c.id)}),
@@ -209,6 +237,7 @@ fn controls(app: &mut EffectcraftApp, ui: &mut egui::Ui, cid: ItemId, list: &[Eg
                             ui.label(RichText::new("(missing)").color(t.danger));
                         }
                     }
+                    link_menu(app, ui, cid, c, group, actions);
                 }
                 EgKind::Media { .. } => {
                     name_label(app, ui, cid, c, RichText::new(&c.name), actions);
@@ -228,6 +257,35 @@ fn controls(app: &mut EffectcraftApp, ui: &mut egui::Ui, cid: ItemId, list: &[Eg
             ui.indent(("eg-group", c.id), |ui| controls(app, ui, cid, children, Some(c.id), actions));
         }
     }
+}
+
+/// A property control's "⋯" menu: Add Mirror, Link Selected Property, Unlink.
+fn link_menu(app: &mut EffectcraftApp, ui: &mut egui::Ui, cid: ItemId, c: &EgControl, group: Option<u64>, actions: &mut Actions) {
+    let links: Vec<(u64, u64, String)> = match &c.kind {
+        EgKind::Property { .. } => essential::linked_props(&app.session.project, cid, c)
+            .into_iter()
+            .map(|(l, p)| (l.id.0, p.uid, format!("{} › {}", l.name, l.props.name_path_of(p.uid).unwrap_or_else(|| p.name.clone()))))
+            .collect(),
+        _ => vec![],
+    };
+    let has_sel = !app.session.state.selected_props.is_empty();
+    let r = ui.menu_button(RichText::new("⋯").size(10.0), |ui| {
+        if ui.button("Add Mirror").clicked() {
+            actions.push(("essential.addMirror".into(), json!({"comp": cid.0, "control": c.id, "group": group})));
+            ui.close();
+        }
+        if ui.add_enabled(has_sel, egui::Button::new("Link Selected Property")).clicked() {
+            actions.push(("essential.linkProperty".into(), json!({"comp": cid.0, "control": c.id})));
+            ui.close();
+        }
+        for (layer, prop, name) in &links {
+            if ui.button(format!("Unlink {name}")).clicked() {
+                actions.push(("essential.unlinkProperty".into(), json!({"comp": cid.0, "control": c.id, "layer": layer, "prop": prop})));
+                ui.close();
+            }
+        }
+    });
+    app.auto.add(&format!("essential.control.{}.menu", c.id), r.response.rect, "Mirror and link");
 }
 
 /// A control's name; double-click to rename (comments: edit the text).
@@ -445,7 +503,7 @@ fn instance(app: &mut EffectcraftApp, ui: &mut egui::Ui, actions: &mut Actions) 
                 }
                 _ => {
                     let v = p.value_at(lt);
-                    if let Some(nv) = value_widget(app, ui, &auto, essential::effective_type(c, &p), &p, &v) {
+                    if let Some(nv) = value_widget(app, ui, &auto, essential::effective_type(eg.resolve(c.id).unwrap_or(c), &p), &p, &v) {
                         actions.push((
                             "essential.set".into(),
                             json!({"layer": layer.id.0, "control": c.id, "value": nv, "merge": format!("egi-{}-{}", layer.id.0, c.id)}),

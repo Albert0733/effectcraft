@@ -461,3 +461,64 @@ fn psd_smart_objects_with_perspective_and_warp_bake_as_placed() {
     assert!(top[0] > 0.5 || top[1] > 0.5, "top centre covered {top:?}");
     assert!(img.get(21, 11)[0] < 0.05 && img.get(21, 11)[1] < 0.05, "corner region empty {:?}", img.get(21, 11));
 }
+
+/// A PDF with two placed images (one turned a quarter) between a background and a shape.
+fn image_pdf() -> Vec<u8> {
+    let content = "0.9 0.9 0.9 rg 0 0 120 80 re f\nq 60 0 0 30 10 40 cm /Im Do Q\nq 0 40 -20 0 110 10 cm /Im Do Q\n0 0 1 rg 20 5 30 20 re f\n";
+    // 8×8 pixels in quadrants: red, green / white, black.
+    let quad = |x: usize, y: usize| -> [u8; 3] { [[[255, 0, 0], [0, 255, 0]], [[255, 255, 255], [0, 0, 0]]][y / 4][x / 4] };
+    let px: Vec<u8> = (0..64).flat_map(|i| quad(i % 8, i / 8)).collect();
+    effectcraft_pdf::write::pdf(
+        &[
+            (1, "<< /Type /Catalog /Pages 2 0 R >>".into(), None),
+            (2, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into(), None),
+            (3, "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 120 80] /Resources << /XObject << /Im 5 0 R >> >> /Contents 4 0 R >>".into(), None),
+            (4, "<< >>".into(), Some(content.as_bytes().to_vec())),
+            (5, "<< /Type /XObject /Subtype /Image /Width 8 /Height 8 /ColorSpace /DeviceRGB /BitsPerComponent 8 >>".into(), Some(px)),
+        ],
+        1,
+    )
+}
+
+#[test]
+fn shapes_from_vector_layer_keeps_images_as_footage_layers() {
+    let bytes = image_pdf();
+    let doc = effectcraft_pdf::parse(&bytes).unwrap();
+    let (w, h) = doc.pixel_size();
+    let direct = effectcraft_svg::rasterize(&doc, w, h, 1.0);
+    let path = tmp("images.pdf");
+    std::fs::write(&path, &bytes).unwrap();
+    let mut s = effectcraft_host::session();
+    let item = s.execute_checked("file.import", json!({"paths": [path]})).unwrap()["items"][0].as_u64().unwrap();
+    s.execute("comp.new", json!({"name": "I", "width": w, "height": h, "frameRate": 30, "duration": 1})).unwrap();
+    let lid = s.execute_checked("layer.addItem", json!({"item": item})).unwrap()["layer"].as_u64().unwrap();
+    let cid = s.active_comp_id().unwrap();
+    let t = effectcraft_time::Tick::ZERO;
+    let foot = s.render(cid, t, RenderOpts::default());
+    assert!(mean_diff(&foot, &direct) < 1.0 / 255.0);
+    s.execute("layer.select", json!({"layers": [lid]})).unwrap();
+    let r = s.execute_checked("layer.create", json!({"op": "shapesFromVector"})).unwrap();
+    assert_eq!(r["skipped"], json!([]), "{r}");
+    let sid = r["layers"][0].as_u64().unwrap();
+    let c = s.active_comp().unwrap();
+    // In the document's paint order: the shape drawn last, the two images (the later one
+    // higher), the background drawn first, then the hidden source.
+    let names: Vec<&str> = c.layers.iter().map(|l| l.name.as_str()).collect();
+    assert_eq!(names, ["images.pdf Outlines", "Image", "Image", "images.pdf Outlines 1", "images.pdf"]);
+    assert_eq!(c.layers[0].id.0, sid);
+    assert_eq!(r["layers"].as_array().unwrap().len(), 2);
+    for l in &c.layers[1..3] {
+        assert_eq!(l.parent.map(|p| p.0), Some(sid), "{}", l.name);
+        assert!(matches!(l.source, effectcraft_project::LayerSource::Footage { .. }));
+    }
+    assert!(!c.layers[4].switches.video);
+    let shapes = s.render(cid, t, RenderOpts::default());
+    let d = mean_diff(&shapes, &direct);
+    assert!(d < 0.02, "converted vs page: mean diff {d}");
+    // Image pixels in place: quarters of the upright image and of the turned one, and the
+    // shape over the background.
+    for (x, y) in [(25, 17), (55, 17), (25, 32), (55, 32), (95, 60), (95, 40), (105, 40), (30, 65)] {
+        let (a, b) = (shapes.get(x, y), direct.get(x, y));
+        assert!((0..3).all(|k| (a[k] - b[k]).abs() < 0.05), "({x}, {y}): {a:?} vs {b:?}");
+    }
+}

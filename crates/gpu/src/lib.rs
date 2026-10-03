@@ -8,11 +8,14 @@
 //! mattes, Preserve Transparency, layer styles' passes, all 38 blend modes and the 8/16 bpc
 //! clamping and quantisation, and converts colour spaces. Classic 3D runs composite here too
 //! (`classic3d`: per-pixel fragment sort, lights, ray-cast shadows), and adjustment layers run
-//! their effect stacks on the GPU-resident comp. Advanced 3D compositing and wireframes run on
-//! the CPU between GPU steps (read back, draw, upload).
+//! their effect stacks on the GPU-resident comp. Wireframe-quality outlines are drawn here too.
 //!
 //! Advanced 3D comps rasterise on a render pipeline (`advanced3d.wgsl`: depth buffer, PBR,
-//! image-based light, shadow maps), see [`Accelerator::raster_3d`].
+//! image-based light, shadow maps) and finish in compute kernels (`adv3d.wgsl`: supersampling
+//! resolve, motion-blur sub-samples, iris depth of field, encoding, compositing), see
+//! [`Accelerator::render_3d`] and `Renderer::prepare_adv_run`. Advanced 3D layers with blend
+//! modes, track mattes or Preserve Transparency still composite on the CPU (their scenes
+//! render here through [`Accelerator::render_3d`]).
 //!
 //! GPU effects ([`effectcraft_effects::GPU_EFFECTS`]) run as compute kernels with the CPU
 //! effect's exact steps (padding, box-blur radii, parameter conversions); chains of them are
@@ -153,6 +156,10 @@ impl Accelerator for Gpu {
 
     fn raster_3d(&self, scene: &effectcraft_render::three_d::adv::Scene) -> Option<effectcraft_render::three_d::adv::Target> {
         adv3d::render(&self.ctx, scene)
+    }
+
+    fn render_3d(&self, run: &effectcraft_render::three_d::adv::Prepared) -> Option<effectcraft_render::three_d::adv::Rendered> {
+        adv3d::render_prepared(&self.ctx, run)
     }
 
     fn particles(&self) -> Option<&dyn effectcraft_effects::psim::ParticleSim> {

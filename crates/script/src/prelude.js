@@ -1439,7 +1439,7 @@ CompItem.prototype.constructor = CompItem;
     var out = [];
     (function walk(list) {
       for (var i = 0; i < list.length; i++) {
-        if (list[i].kind === "property" || list[i].kind === "media") out.push(list[i]);
+        if (list[i].kind === "property" || list[i].kind === "mirror" || list[i].kind === "media") out.push(list[i]);
         if (list[i].children) walk(list[i].children);
       }
     })(this.__eg().controls);

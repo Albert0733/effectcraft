@@ -47,8 +47,18 @@ pub struct EgControl {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum EgKind {
-    /// A property of a layer of the comp.
-    Property { layer: LayerId, prop: Uid },
+    /// A property of a layer of the comp. `links`: further properties the control drives
+    /// (they follow the main property in the comp and take the instance's value in every
+    /// instance).
+    Property {
+        layer: LayerId,
+        prop: Uid,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        links: Vec<EgLink>,
+    },
+    /// A mirror: the property of control `of` shown again (its own name and place in the
+    /// panel; one value, editing either edits both, in the comp and in every instance).
+    Mirror { of: u64 },
     /// Media Replacement: the footage of a footage layer can be swapped per instance.
     Media { layer: LayerId },
     /// A text note shown in the panel.
@@ -58,6 +68,13 @@ pub enum EgKind {
         #[serde(default)]
         children: Vec<EgControl>,
     },
+}
+
+/// A further property driven by a property control.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EgLink {
+    pub layer: LayerId,
+    pub prop: Uid,
 }
 
 /// The kind of control a property becomes.
@@ -215,16 +232,49 @@ impl EssentialGraphics {
     }
     /// The control exposing property `prop` of `layer`, if any.
     pub fn control_for(&self, layer: LayerId, prop: Uid) -> Option<&EgControl> {
-        self.flat().into_iter().find(|c| matches!(c.kind, EgKind::Property { layer: l, prop: p } if l == layer && p == prop))
+        self.flat().into_iter().find(|c| matches!(c.kind, EgKind::Property { layer: l, prop: p, .. } if l == layer && p == prop))
     }
     /// The control exposing property `prop` of `layer` as `as_type` (`None` = its natural
     /// control): a property can have one control of each kind (Source Text as Text and Font).
     pub fn control_for_as(&self, layer: LayerId, prop: Uid, as_type: Option<ControlType>) -> Option<&EgControl> {
-        self.flat().into_iter().find(|c| c.as_type == as_type && matches!(c.kind, EgKind::Property { layer: l, prop: p } if l == layer && p == prop))
+        self.flat().into_iter().find(|c| c.as_type == as_type && matches!(c.kind, EgKind::Property { layer: l, prop: p, .. } if l == layer && p == prop))
     }
-    /// Controls an instance can override (properties and media; not comments or groups).
+    /// The property control a property drives: its main property or one of its links.
+    pub fn driver_of(&self, layer: LayerId, prop: Uid) -> Option<&EgControl> {
+        self.flat().into_iter().find(|c| match &c.kind {
+            EgKind::Property { layer: l, prop: p, links } => (*l == layer && *p == prop) || links.iter().any(|k| k.layer == layer && k.prop == prop),
+            _ => false,
+        })
+    }
+    /// The control a mirror shows (following mirrors of mirrors); the control itself otherwise.
+    pub fn resolve(&self, id: u64) -> Option<&EgControl> {
+        let mut c = self.find(id)?;
+        for _ in 0..8 {
+            match c.kind {
+                EgKind::Mirror { of } => c = self.find(of)?,
+                _ => return Some(c),
+            }
+        }
+        None
+    }
+    /// Mirrors of control `id`.
+    pub fn mirrors_of(&self, id: u64) -> Vec<u64> {
+        self.flat().into_iter().filter(|c| matches!(c.kind, EgKind::Mirror { .. }) && self.resolve(c.id).is_some_and(|m| m.id == id)).map(|c| c.id).collect()
+    }
+    /// Controls an instance can override (properties, mirrors and media; not comments or
+    /// groups).
     pub fn has_instance_controls(&self) -> bool {
-        self.flat().iter().any(|c| matches!(c.kind, EgKind::Property { .. } | EgKind::Media { .. }))
+        self.flat().iter().any(|c| matches!(c.kind, EgKind::Property { .. } | EgKind::Mirror { .. } | EgKind::Media { .. }))
+    }
+}
+
+impl EgKind {
+    /// Every property a property control drives: the main one, then the links.
+    pub fn targets(&self) -> Vec<(LayerId, Uid)> {
+        match self {
+            EgKind::Property { layer, prop, links } => std::iter::once((*layer, *prop)).chain(links.iter().map(|k| (k.layer, k.prop))).collect(),
+            _ => vec![],
+        }
     }
 }
 
@@ -251,11 +301,91 @@ pub fn overridden(layer: &Layer) -> Vec<Uid> {
     }
 }
 
-/// The source property a control exposes, in `project`.
+/// The source property a control exposes, in `project` (a mirror's: its master's main
+/// property).
 pub fn source_prop<'a>(project: &'a Project, comp: ItemId, c: &EgControl) -> Option<(&'a Layer, &'a Property)> {
-    let EgKind::Property { layer, prop } = c.kind else { return None };
+    let (layer, prop) = match c.kind {
+        EgKind::Property { layer, prop, .. } => (layer, prop),
+        EgKind::Mirror { .. } => match project.comp(comp)?.essential.as_ref()?.resolve(c.id)?.kind {
+            EgKind::Property { layer, prop, .. } => (layer, prop),
+            _ => return None,
+        },
+        _ => return None,
+    };
     let l = project.comp(comp)?.layer(layer)?;
     Some((l, l.props.find(prop)?))
+}
+
+/// The linked properties of a property control that exist in `project`: (layer, property).
+pub fn linked_props<'a>(project: &'a Project, comp: ItemId, c: &EgControl) -> Vec<(&'a Layer, &'a Property)> {
+    let Some(cm) = project.comp(comp) else { return vec![] };
+    match &c.kind {
+        EgKind::Property { links, .. } => links.iter().filter_map(|k| cm.layer(k.layer).and_then(|l| l.props.find(k.prop).map(|p| (l, p)))).collect(),
+        _ => vec![],
+    }
+}
+
+/// Whether property `b` can be driven by a control showing `a` (the same kind of value).
+pub fn linkable(a: &Property, b: &Property) -> bool {
+    control_type(a).is_some() && control_type(a) == control_type(b) && std::mem::discriminant(&a.value) == std::mem::discriminant(&b.value)
+}
+
+/// The properties a control drives stay equal: when this edit (`before` → `p`) changed one of
+/// them, its value and keyframes (moved to each layer's time) go to all the others; otherwise
+/// the main property's do.
+fn sync_links(before: &Project, p: &mut Project) {
+    let ids: Vec<ItemId> = p.comps().map(|(i, _)| *i).collect();
+    for cid in ids {
+        let Some(comp) = p.comp(cid) else { continue };
+        let Some(eg) = &comp.essential else { continue };
+        let old = before.comp(cid);
+        let mut writes: Vec<(LayerId, Uid, Value, Vec<crate::Keyframe>)> = vec![];
+        for c in eg.flat() {
+            let targets = c.kind.targets();
+            // Font controls take only the font: they never drive whole values.
+            if targets.len() < 2 || c.as_type == Some(ControlType::Font) {
+                continue;
+            }
+            let get = |cm: &crate::Comp, (l, u): (LayerId, Uid)| cm.layer(l).and_then(|l| l.props.find(u).cloned());
+            let changed = |t: (LayerId, Uid)| match (get(comp, t), old.and_then(|o| get(o, t))) {
+                (Some(a), Some(b)) => a.value != b.value || a.keys != b.keys,
+                _ => false,
+            };
+            // The edited property leads (the main one when several changed).
+            let lead = targets.iter().copied().find(|t| changed(*t)).filter(|t| !changed(targets[0]) || *t == targets[0]).unwrap_or(targets[0]);
+            let Some(src_l) = comp.layer(lead.0) else { continue };
+            let Some(src) = src_l.props.find(lead.1) else { continue };
+            for k in targets.iter().filter(|t| **t != lead) {
+                let Some(l) = comp.layer(k.0) else { continue };
+                let Some(dst) = l.props.find(k.1) else { continue };
+                if !linkable(src, dst) {
+                    continue;
+                }
+                let keys: Vec<_> = src
+                    .keys
+                    .iter()
+                    .map(|kf| {
+                        let mut kf = kf.clone();
+                        kf.time = l.layer_time(src_l.comp_time(kf.time));
+                        kf
+                    })
+                    .collect();
+                if dst.value != src.value || dst.keys != keys {
+                    writes.push((k.0, k.1, src.value.clone(), keys));
+                }
+            }
+        }
+        if writes.is_empty() {
+            continue;
+        }
+        let Some(c) = p.comp_mut(cid) else { continue };
+        for (lid, uid, v, keys) in writes {
+            if let Some(pr) = c.layer_mut(lid).and_then(|l| l.props.find_mut(uid)) {
+                pr.value = v;
+                pr.keys = keys;
+            }
+        }
+    }
 }
 
 /// The footage item a media control shows by default (the layer's own source).
@@ -304,7 +434,7 @@ fn build_group(project: &Project, comp: ItemId, eg: &EssentialGraphics, old: Opt
                     g.children = build(project, comp, children, old, over, alloc, keep);
                     out.push(Node::Group(g));
                 }
-                EgKind::Property { .. } => {
+                EgKind::Property { .. } | EgKind::Mirror { .. } => {
                     let Some((_, src)) = source_prop(project, comp, c) else { continue };
                     let prev = prev.and_then(Node::as_prop);
                     let uid = prev.map(|p| p.uid).unwrap_or_else(&mut *alloc);
@@ -339,8 +469,82 @@ fn build_group(project: &Project, comp: ItemId, eg: &EssentialGraphics, old: Opt
     }
     let uid = old.map(|g| g.uid).unwrap_or_else(&mut alloc);
     let mut keep = vec![];
-    let children = build(project, comp, &eg.controls, old, &over, &mut alloc, &mut keep);
+    let mut children = build(project, comp, &eg.controls, old, &over, &mut alloc, &mut keep);
+    // Mirrors show their master's instance value (and override state).
+    for c in eg.flat() {
+        if !matches!(c.kind, EgKind::Mirror { .. }) {
+            continue;
+        }
+        let Some(master) = eg.resolve(c.id) else { continue };
+        let Some(src) = find_prop(&children, &match_id(master.id)).cloned() else { continue };
+        if let Some(dst) = find_prop_mut(&mut children, &match_id(c.id)) {
+            dst.value = src.value.clone();
+            dst.keys = src.keys.clone();
+            dst.expr = src.expr.clone();
+            keep.retain(|u| *u != dst.uid);
+            if keep.contains(&src.uid) {
+                keep.push(dst.uid);
+            }
+        }
+    }
     PropGroup { uid, match_id: GROUP.into(), name: "Essential Properties".into(), kind: GroupKind::Essential { overridden: keep }, enabled: true, children }
+}
+
+fn find_prop<'a>(nodes: &'a [Node], m: &str) -> Option<&'a Property> {
+    nodes.iter().find_map(|n| match n {
+        Node::Prop(p) if p.match_id == m => Some(p),
+        Node::Group(g) => find_prop(&g.children, m),
+        _ => None,
+    })
+}
+
+fn find_prop_mut<'a>(nodes: &'a mut [Node], m: &str) -> Option<&'a mut Property> {
+    nodes.iter_mut().find_map(|n| match n {
+        Node::Prop(p) if p.match_id == m => Some(p),
+        Node::Group(g) => find_prop_mut(&mut g.children, m),
+        _ => None,
+    })
+}
+
+/// An instance's mirror property edited in this edit passes its value to its master (the
+/// group build then copies the master back to every mirror).
+fn propagate_mirrors(before: &Project, after: &mut Project) {
+    let ids: Vec<ItemId> = after.comps().map(|(i, _)| *i).collect();
+    for cid in ids {
+        let (Some(comp), Some(old_comp)) = (after.comp(cid), before.comp(cid)) else { continue };
+        let mut writes: Vec<(usize, String, Property)> = vec![];
+        for (i, l) in comp.layers.iter().enumerate() {
+            let LayerSource::Comp { item } = l.source else { continue };
+            let Some(eg) = after.comp(item).and_then(|c| c.essential.as_ref()) else { continue };
+            let (Some(g), Some(og)) = (group(l), old_comp.layer(l.id).and_then(group)) else { continue };
+            for c in eg.flat() {
+                if !matches!(c.kind, EgKind::Mirror { .. }) {
+                    continue;
+                }
+                let Some(master) = eg.resolve(c.id) else { continue };
+                let (mm, cm) = (match_id(master.id), match_id(c.id));
+                let (Some(mp), Some(cp)) = (find_prop(&g.children, &mm), find_prop(&g.children, &cm)) else { continue };
+                let (Some(omp), Some(ocp)) = (find_prop(&og.children, &mm), find_prop(&og.children, &cm)) else { continue };
+                let changed = |a: &Property, b: &Property| a.value != b.value || a.keys != b.keys || a.expr != b.expr;
+                if changed(cp, ocp) && !changed(mp, omp) {
+                    writes.push((i, mm, cp.clone()));
+                }
+            }
+        }
+        if writes.is_empty() {
+            continue;
+        }
+        let Some(c) = after.comp_mut(cid) else { continue };
+        for (i, mm, src) in writes {
+            if let Some(g) = c.layers[i].props.sub_mut(GROUP)
+                && let Some(dst) = find_prop_mut(&mut g.children, &mm)
+            {
+                dst.value = src.value;
+                dst.keys = src.keys;
+                dst.expr = src.expr;
+            }
+        }
+    }
 }
 
 /// Master properties the user changed in this edit (`before` → `after`) become overridden.
@@ -390,6 +594,8 @@ fn mark_overrides(before: &Project, after: &mut Project) {
 /// After an edit: mark changed master properties as overridden, then add, update or remove the
 /// Essential Properties groups of every precomp layer so they match their comp's controls.
 pub fn sync_project(before: &Project, after: &mut Project) {
+    sync_links(before, after);
+    propagate_mirrors(before, after);
     mark_overrides(before, after);
     let ids: Vec<ItemId> = after.comps().map(|(i, _)| *i).collect();
     let mut next = after.next_id;
@@ -449,26 +655,30 @@ pub fn with_overrides(project: &Project, comp: ItemId, overrides: &[Override]) -
     let c = p.comp_mut(comp)?;
     let mut any = false;
     // Whole values first, then Font controls (which change only the font of whatever text the
-    // instance shows).
-    let is_font = |o: &&Override| eg.find(o.control).is_some_and(|c| c.as_type == Some(ControlType::Font));
+    // instance shows). A mirror acts as its master control.
+    let is_font = |o: &&Override| eg.resolve(o.control).is_some_and(|c| c.as_type == Some(ControlType::Font));
     let ordered = overrides.iter().filter(|o| !is_font(o)).chain(overrides.iter().filter(is_font));
     for o in ordered {
-        let Some(ctl) = eg.find(o.control) else { continue };
-        match ctl.kind {
-            EgKind::Property { layer, prop } if ctl.as_type == Some(ControlType::Font) => {
-                if let Some(pr) = c.layer_mut(layer).and_then(|l| l.props.find_mut(prop)) {
-                    merge_font(&mut pr.value, &o.value);
-                    for k in &mut pr.keys {
-                        merge_font(&mut k.value, &o.value);
+        let Some(ctl) = eg.resolve(o.control) else { continue };
+        match &ctl.kind {
+            EgKind::Property { .. } if ctl.as_type == Some(ControlType::Font) => {
+                for (layer, prop) in ctl.kind.targets() {
+                    if let Some(pr) = c.layer_mut(layer).and_then(|l| l.props.find_mut(prop)) {
+                        merge_font(&mut pr.value, &o.value);
+                        for k in &mut pr.keys {
+                            merge_font(&mut k.value, &o.value);
+                        }
+                        any = true;
                     }
-                    any = true;
                 }
             }
-            EgKind::Property { layer, prop } => {
-                if let Some(pr) = c.layer_mut(layer).and_then(|l| l.props.find_mut(prop)) {
-                    pr.keys.clear();
-                    pr.value = o.value.clone();
-                    any = true;
+            EgKind::Property { .. } => {
+                for (layer, prop) in ctl.kind.targets() {
+                    if let Some(pr) = c.layer_mut(layer).and_then(|l| l.props.find_mut(prop)) {
+                        pr.keys.clear();
+                        pr.value = o.value.clone();
+                        any = true;
+                    }
                 }
             }
             EgKind::Media { layer } => {
@@ -477,7 +687,7 @@ pub fn with_overrides(project: &Project, comp: ItemId, overrides: &[Override]) -
                 if !matches!(project.item(item).map(|i| &i.kind), Some(ItemKind::Footage(_))) {
                     continue;
                 }
-                if let Some(l) = c.layer_mut(layer) {
+                if let Some(l) = c.layer_mut(*layer) {
                     l.source = LayerSource::Footage { item };
                     any = true;
                 }
@@ -508,10 +718,15 @@ pub fn offset_ids(p: &mut Project, offset: u64) {
                     for c in v {
                         c.id += o;
                         match &mut c.kind {
-                            EgKind::Property { layer, prop } => {
+                            EgKind::Property { layer, prop, links } => {
                                 *layer = LayerId(layer.0 + o);
                                 *prop += o;
+                                for k in links {
+                                    k.layer = LayerId(k.layer.0 + o);
+                                    k.prop += o;
+                                }
                             }
+                            EgKind::Mirror { of } => *of += o,
                             EgKind::Media { layer } => *layer = LayerId(layer.0 + o),
                             EgKind::Group { children } => go(children, o),
                             EgKind::Comment { .. } => {}

@@ -856,6 +856,8 @@ mod tests_anim_tools;
 #[cfg(test)]
 mod tests_camera_track;
 #[cfg(test)]
+mod tests_codec_options;
+#[cfg(test)]
 mod tests_color_view;
 #[cfg(test)]
 mod tests_disk_cache;

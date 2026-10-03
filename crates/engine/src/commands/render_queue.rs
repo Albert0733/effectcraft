@@ -213,7 +213,7 @@ fn apply_output(om: &mut OutputModule, templates: &RenderTemplates, roi: Option<
     }
     let before = om.clone();
     if let Some(f) = str_p(p, "format") {
-        let f = OutputFormat::from_name(f).ok_or_else(|| bad(cmd, "format: h264|prores|webm|png|jpeg|tiff|exr|gif|wav|aiff"))?;
+        let f = OutputFormat::from_name(f).ok_or_else(|| bad(cmd, "format: h264|hevc|av1|prores|webm|png|jpeg|tiff|exr|gif|wav|aiff"))?;
         om.set_format(f);
     }
     if let Some(c) = str_p(p, "channels") {
@@ -223,7 +223,7 @@ fn apply_output(om: &mut OutputModule, templates: &RenderTemplates, roi: Option<
             "alpha" | "alphaonly" => Channels::Alpha,
             _ => return Err(bad(cmd, "channels: rgb|rgba|alpha")),
         };
-        if om.channels == Channels::Rgba && !om.format.supports_alpha() {
+        if om.channels == Channels::Rgba && !om.supports_alpha() {
             return Err(bad(cmd, format!("{} has no alpha channel", om.format.label())));
         }
     }
@@ -234,6 +234,7 @@ fn apply_output(om: &mut OutputModule, templates: &RenderTemplates, roi: Option<
             _ => return Err(bad(cmd, "color: straight|premultiplied")),
         };
     }
+    any |= apply_codec_options(om, p, cmd)?;
     if let Some(q) = f_p(p, "quality") {
         om.quality = q.clamp(1.0, 100.0) as u8;
     }
@@ -372,6 +373,62 @@ fn apply_output(om: &mut OutputModule, templates: &RenderTemplates, roi: Option<
         if o != before {
             om.name = "Custom".into();
         }
+        any = true;
+    }
+    Ok(any)
+}
+
+/// HEVC / AV1 codec options, the WebM video codec and the Opus audio options.
+fn apply_codec_options(om: &mut OutputModule, p: &Value, cmd: &str) -> Result<bool> {
+    use effectcraft_project::render_queue::{CodecProfile, OpusApplication, RateControlMode, VideoCodecOptions, WebmVideoCodec};
+    let mut any = false;
+    if let Some(c) = str_p(p, "webmCodec") {
+        om.webm_codec = match c.to_ascii_lowercase().as_str() {
+            "vp9" => WebmVideoCodec::Vp9,
+            "av1" => WebmVideoCodec::Av1,
+            _ => return Err(bad(cmd, "webmCodec: vp9|av1")),
+        };
+        if !om.supports_alpha() {
+            om.channels = Channels::Rgb;
+        }
+        any = true;
+    }
+    if let Some(v) = str_p(p, "profile") {
+        om.codec.profile = CodecProfile::from_name(v).ok_or_else(|| bad(cmd, "profile: main|main10"))?;
+        any = true;
+    }
+    match p.get("level") {
+        Some(Value::Null) => {
+            om.codec.level = None;
+            any = true;
+        }
+        Some(v) => {
+            let s = match v {
+                Value::String(s) => s.clone(),
+                other => other.to_string(),
+            };
+            om.codec.level = VideoCodecOptions::parse_level(&s).ok_or_else(|| bad(cmd, "level: auto|null or a level like 4.1"))?;
+            any = true;
+        }
+        None => {}
+    }
+    if let Some(v) = str_p(p, "rateControl") {
+        om.codec.rate_control = RateControlMode::from_name(v).ok_or_else(|| bad(cmd, "rateControl: bitrate|quality"))?;
+        any = true;
+    }
+    if let Some(q) = f_p(p, "quality") {
+        om.codec.quality = q.clamp(1.0, 100.0) as u8;
+    }
+    if let Some(b) = f_p(p, "audioBitrate") {
+        om.opus_bitrate_kbps = b.clamp(6.0, 510.0) as u32;
+        any = true;
+    }
+    if let Some(a) = str_p(p, "opusApplication") {
+        om.opus_application = match a.to_ascii_lowercase().as_str() {
+            "audio" | "music" => OpusApplication::Audio,
+            "voip" | "voice" | "speech" => OpusApplication::Voip,
+            _ => return Err(bad(cmd, "opusApplication: audio|voice")),
+        };
         any = true;
     }
     Ok(any)
@@ -618,7 +675,17 @@ fn formats(s: &mut Session, _: &Value) -> Result<Value> {
             })
         })
         .collect();
-    Ok(json!({"formats": v, "proresProfiles": ProResProfile::ALL.iter().map(|p| p.label()).collect::<Vec<_>>()}))
+    use effectcraft_project::render_queue::{CodecProfile, VideoCodecOptions};
+    let level = |l: &u8| format!("{}.{}", l / 10, l % 10);
+    Ok(json!({
+        "formats": v,
+        "proresProfiles": ProResProfile::ALL.iter().map(|p| p.label()).collect::<Vec<_>>(),
+        "codecProfiles": CodecProfile::ALL.iter().map(|p| p.label()).collect::<Vec<_>>(),
+        "hevcLevels": VideoCodecOptions::HEVC_LEVELS.iter().map(level).collect::<Vec<_>>(),
+        "av1Levels": VideoCodecOptions::AV1_LEVELS.iter().map(level).collect::<Vec<_>>(),
+        "webmCodecs": ["vp9", "av1"],
+        "opusApplications": ["audio", "voice"],
+    }))
 }
 
 /// `item?|index?`, else the last item (the queue's newest entry).
@@ -902,7 +969,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Add to Render Queue",
             ["Composition"],
             Some("Cmd+M"),
-            "{comp?: id|name, template?: Render Settings template, format?: h264|prores|webm|png|jpeg|tiff|exr|gif|wav|aiff, output?: path|template, log?: errorsOnly|plusSettings|plusPerFrameInfo, quality?: best|draft|1-100 (jpeg, webm), resolution?: full|half|third|quarter|scale, proxyUse?, effects?, solo?, guideLayers?, colorDepth?, frameBlending?, fieldRender?, pulldown?, motionBlur?, timeSpan?: workArea|comp|custom, start?: s, end?: s, duration?: s, frameRate?: fps|null, skipExisting?: bool, storageOverflow?: bool, channels?: rgb|rgba|alpha, color?, bitrate?: kbps, webmBitrate?, keyframeInterval?, proresProfile?, crop?, resize?, includeProjectLink?, audio?: auto|on|off, sampleRate?, audioChannels?, audioFormat?, loop?: bool (values as in setRenderSettings / setOutputModule)}",
+            "{comp?: id|name, template?: Render Settings template, format?: h264|hevc|av1|prores|webm|png|jpeg|tiff|exr|gif|wav|aiff, output?: path|template, log?: errorsOnly|plusSettings|plusPerFrameInfo, quality?: best|draft|1-100 (jpeg, webm), resolution?: full|half|third|quarter|scale, proxyUse?, effects?, solo?, guideLayers?, colorDepth?, frameBlending?, fieldRender?, pulldown?, motionBlur?, timeSpan?: workArea|comp|custom, start?: s, end?: s, duration?: s, frameRate?: fps|null, skipExisting?: bool, storageOverflow?: bool, channels?: rgb|rgba|alpha, color?, bitrate?: kbps, webmBitrate?, keyframeInterval?, proresProfile?, profile?, level?, rateControl?, webmCodec?, audioBitrate?, opusApplication?, crop?, resize?, includeProjectLink?, audio?: auto|on|off, sampleRate?, audioChannels?, audioFormat?, loop?: bool (values as in setRenderSettings / setOutputModule)}",
             can_add,
             add
         ),
@@ -922,7 +989,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Output Module Settings...",
             [],
             None,
-            "{item?|index?, module?: n (1 = first), template?: name, format?, channels?: rgb|rgba|alpha, color?: straight|premultiplied, quality?: 1-100, bitrate?: kbps, webmBitrate?: bool, keyframeInterval?: frames, proresProfile?: proxy|lt|standard|hq|4444|4444xq, crop?: bool|{useRoi?, roi?, top?, left?, bottom?, right?}, cropTop?, cropLeft?, cropBottom?, cropRight?, resize?: bool|{preset?, width?, height?, lockAspect?, quality?: low|high}, resizeWidth?, resizeHeight?, postRenderAction?: none|import|importAndReplace|setProxy, includeProjectLink?: bool, audio?: auto|on|off, sampleRate?, audioChannels?: mono|stereo, audioFormat?: 16|24|32, loop?: bool, output?}",
+            "{item?|index?, module?: n (1 = first), template?: name, format?: h264|hevc|av1|prores|webm|png|jpeg|tiff|exr|gif|wav|aiff, channels?: rgb|rgba|alpha, color?: straight|premultiplied, quality?: 1-100, bitrate?: kbps, webmBitrate?: bool, keyframeInterval?: frames (0 = auto), proresProfile?: proxy|lt|standard|hq|4444|4444xq, profile?: main|main10 (HEVC/AV1), level?: auto|4.1, rateControl?: bitrate|quality, webmCodec?: vp9|av1, audioBitrate?: Opus kbps, opusApplication?: audio|voice, crop?: bool|{useRoi?, roi?, top?, left?, bottom?, right?}, cropTop?, cropLeft?, cropBottom?, cropRight?, resize?: bool|{preset?, width?, height?, lockAspect?, quality?: low|high}, resizeWidth?, resizeHeight?, postRenderAction?: none|import|importAndReplace|setProxy, includeProjectLink?: bool, audio?: auto|on|off, sampleRate?, audioChannels?: mono|stereo, audioFormat?: 16|24|32, loop?: bool, output?}",
             has_items,
             set_output_module
         ),

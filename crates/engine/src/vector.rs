@@ -162,7 +162,8 @@ fn clipped_items(ids: &mut Ids, s: &effectcraft_svg::Shape, m: Affine, clips: &[
 /// Clipping groups (PDF / Illustrator clipping masks): shapes inside them are intersected with
 /// the clip paths through Merge Paths ▸ Intersect (see [`clipped_items`]). Clips enclosing the
 /// whole document are layer masks instead ([`vector_clip_masks`], used by
-/// [`shapes_from_vector`]). Images and soft masks are not converted.
+/// [`shapes_from_vector`]). Images are skipped (Layer ▸ Create makes them footage layers, see
+/// [`split_at_images`]); soft masks are not converted.
 pub fn svg_contents(ids: &mut Ids, doc: &Doc) -> Vec<PropGroup> {
     fn walk(ids: &mut Ids, nodes: &[Node], m: Affine, clips: &[BezPath]) -> Vec<PropGroup> {
         let mut out = vec![];
@@ -338,6 +339,131 @@ fn like_source(dst: &mut Layer, src: &Layer) {
     dst.stretch = src.stretch;
     dst.parent = src.parent;
     dst.switches.three_d = src.switches.three_d;
+}
+
+/// A raster image of a vector document (Create Shapes from Vector Layer makes it a footage
+/// layer: shape layers have no images).
+pub struct VectorImage {
+    pub name: String,
+    pub width: u32,
+    pub height: u32,
+    /// Straight RGBA8.
+    pub rgba: std::sync::Arc<Vec<u8>>,
+    /// Image pixels → document pixels.
+    pub transform: Affine,
+    pub opacity: f64,
+    /// Inside a clipping group or under a soft mask (not carried over).
+    pub clipped: bool,
+}
+
+/// The document's images, bottom first, and how many soft-masked groups it has.
+pub fn vector_images(doc: &Doc) -> (Vec<VectorImage>, usize) {
+    fn walk(g: &effectcraft_svg::Group, m: Affine, opacity: f64, clipped: bool, out: &mut Vec<VectorImage>, masks: &mut usize) {
+        let m = m * g.transform;
+        let opacity = opacity * g.opacity;
+        let clipped = clipped || !g.clip.is_empty() || g.mask.is_some();
+        if g.mask.is_some() {
+            *masks += 1;
+        }
+        for c in &g.children {
+            match c {
+                Node::Group(sub) => walk(sub, m, opacity, clipped, out, masks),
+                Node::Image(im) => out.push(VectorImage {
+                    name: im.name.clone(),
+                    width: im.width,
+                    height: im.height,
+                    rgba: im.rgba.clone(),
+                    transform: m * im.transform,
+                    opacity: opacity * im.opacity,
+                    clipped,
+                }),
+                Node::Shape(_) => {}
+            }
+        }
+    }
+    let (_, doc) = vector_clip_masks(doc);
+    let mut out = vec![];
+    let mut masks = 0;
+    walk(&doc.root, Affine::IDENTITY, 1.0, false, &mut out, &mut masks);
+    (out, masks)
+}
+
+/// The document split at its images (paint order): segment `k` keeps the shapes drawn between
+/// image `k − 1` and image `k` (groups, clips and blend modes kept, images dropped), so shape
+/// layers and image footage layers can stack in the document's order. One more segment than
+/// images.
+pub fn split_at_images(doc: &Doc) -> Vec<Doc> {
+    fn count(g: &effectcraft_svg::Group) -> usize {
+        g.children
+            .iter()
+            .map(|c| match c {
+                Node::Group(s) => count(s),
+                Node::Image(_) => 1,
+                Node::Shape(_) => 0,
+            })
+            .sum()
+    }
+    /// Keep the shapes between images `seg − 1` and `seg`; `seen` counts images passed.
+    fn prune(g: &effectcraft_svg::Group, seg: usize, seen: &mut usize) -> effectcraft_svg::Group {
+        let mut out = g.clone();
+        out.children = vec![];
+        for c in &g.children {
+            match c {
+                Node::Image(_) => *seen += 1,
+                Node::Shape(_) => {
+                    if *seen == seg {
+                        out.children.push(c.clone());
+                    }
+                }
+                Node::Group(s) => {
+                    let p = prune(s, seg, seen);
+                    if !p.children.is_empty() {
+                        out.children.push(Node::Group(p));
+                    }
+                }
+            }
+        }
+        out
+    }
+    let n = count(&doc.root);
+    (0..=n)
+        .map(|seg| {
+            let mut d = doc.clone();
+            d.root = prune(&doc.root, seg, &mut 0);
+            d
+        })
+        .collect()
+}
+
+/// A footage layer for an image of a vector document, parented to `parent` (the shape layer,
+/// whose layer space is document pixels) and placed by the image's transform (anchor at its
+/// top-left corner; position, rotation and scale from the matrix). Returns a note when the
+/// placement has a skew, which layer transforms cannot express.
+pub fn image_layer(proj: &mut Project, comp: &Comp, item: ItemId, img: &VectorImage, parent: &Layer) -> (Layer, Option<String>) {
+    let mut l = build::layer(proj, comp, &img.name, LayerSource::Footage { item }, (img.width, img.height), None);
+    let c = img.transform.as_coeffs();
+    let theta = c[1].atan2(c[0]);
+    let (sn, cs) = theta.sin_cos();
+    let sx = (c[0] * c[0] + c[1] * c[1]).sqrt();
+    let sy = -c[2] * sn + c[3] * cs;
+    let skew = c[2] * cs + c[3] * sn;
+    let set = |l: &mut Layer, path: &str, v: Value| {
+        if let Some(p) = l.props.prop_mut(path) {
+            p.value = v;
+        }
+    };
+    set(&mut l, "transform/anchor", Value::Vec3([0.0, 0.0, 0.0]));
+    set(&mut l, "transform/position", Value::Vec3([c[4], c[5], 0.0]));
+    set(&mut l, "transform/scale", Value::Vec3([sx * 100.0, sy * 100.0, 100.0]));
+    set(&mut l, "transform/rotation", Value::Scalar(theta.to_degrees()));
+    set(&mut l, "transform/opacity", Value::Scalar((img.opacity * 100.0).clamp(0.0, 100.0)));
+    l.start_time = parent.start_time;
+    l.in_point = parent.in_point;
+    l.out_point = parent.out_point;
+    l.stretch = parent.stretch;
+    l.parent = Some(parent.id);
+    let note = (skew.abs() > 1e-3 * sy.abs().max(1e-9)).then(|| format!("{}: skewed image placed without its skew", img.name));
+    (l, note)
 }
 
 /// Layer ▸ Create ▸ Create Shapes from Vector Layer: `doc` is the SVG shown by `src`. A clip

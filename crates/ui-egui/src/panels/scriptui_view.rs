@@ -6,7 +6,8 @@
 //! named it). Controls with an `onDraw` handler are painted from their draw list; edit texts and
 //! sliders send live `changing` updates (onChanging) while typing / dragging.
 
-use effectcraft_engine::scriptui::{DrawOp, PathSeg, ScriptWindow, Widget, WidgetKind, WindowKind, layout};
+use effectcraft_engine::Services;
+use effectcraft_engine::scriptui::{DrawOp, ImageRef, PathSeg, ScriptWindow, Widget, WidgetKind, WindowKind, layout};
 use egui::{Align2, Color32, Rect, Sense, Stroke, StrokeKind, UiBuilder, pos2, vec2};
 use serde_json::{Value, json};
 
@@ -77,6 +78,7 @@ fn draw_children(app: &mut EffectcraftApp, ui: &mut egui::Ui, origin: egui::Pos2
 
 fn draw_widget(app: &mut EffectcraftApp, ui: &mut egui::Ui, origin: egui::Pos2, win: u32, w: &Widget, acts: &mut Vec<Act>) {
     let t = app.tokens;
+    let services = app.session.services.clone();
     let rect = rect_of(origin, w.bounds);
     register(app, win, w, rect);
     let id = egui::Id::new(("sui", win, w.id));
@@ -87,20 +89,20 @@ fn draw_widget(app: &mut EffectcraftApp, ui: &mut egui::Ui, origin: egui::Pos2, 
     let os = w.draw.iter().any(|d| matches!(d, DrawOp::Os));
     if custom && !os {
         if w.kind.is_container() {
-            paint_draw(ui, rect, &w.draw, &t);
+            paint_draw(ui, rect, &w.draw, &t, &*services);
             draw_children(app, ui, origin, win, w, acts);
             return;
         }
         let clickable = matches!(w.kind, WidgetKind::Button | WidgetKind::IconButton | WidgetKind::Checkbox | WidgetKind::RadioButton);
         let r = ui.interact(rect, id, if clickable && w.enabled { Sense::click() } else { Sense::hover() });
-        paint_draw(ui, rect, &w.draw, &t);
+        paint_draw(ui, rect, &w.draw, &t, &*services);
         if tip(r).clicked() && clickable {
             acts.push(Act::Click(win, w.id));
         }
         return;
     }
     if custom && w.kind.is_container() {
-        paint_draw(ui, rect, &w.draw, &t);
+        paint_draw(ui, rect, &w.draw, &t, &*services);
     }
     match w.kind {
         WidgetKind::Group | WidgetKind::Tab | WidgetKind::Window | WidgetKind::TabbedPanel => draw_children(app, ui, origin, win, w, acts),
@@ -117,6 +119,9 @@ fn draw_widget(app: &mut EffectcraftApp, ui: &mut egui::Ui, origin: egui::Pos2, 
         }
         WidgetKind::Button | WidgetKind::IconButton => {
             let r = ui.add_enabled_ui(w.enabled, |ui| ui.put(rect, egui::Button::new(&w.text))).inner;
+            if let Some(img) = &w.image {
+                paint_image(ui, rect.shrink(3.0), img, &*services);
+            }
             if tip(r).clicked() {
                 acts.push(Act::Click(win, w.id));
             }
@@ -236,16 +241,18 @@ fn draw_widget(app: &mut EffectcraftApp, ui: &mut egui::Ui, origin: egui::Pos2, 
             }
         }
         WidgetKind::Image | WidgetKind::Unknown => {
-            ui.painter().rect_stroke(rect, 2.0, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
+            if !w.image.as_ref().is_some_and(|img| paint_image(ui, rect, img, &*services)) {
+                ui.painter().rect_stroke(rect, 2.0, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
+            }
         }
     }
     if custom && !w.kind.is_container() {
-        paint_draw(ui, rect, &w.draw, &t);
+        paint_draw(ui, rect, &w.draw, &t, &*services);
     }
 }
 
 /// Paint an onDraw draw list in `rect` (control coordinates → screen).
-fn paint_draw(ui: &egui::Ui, rect: Rect, ops: &[DrawOp], t: &Tokens) {
+fn paint_draw(ui: &egui::Ui, rect: Rect, ops: &[DrawOp], t: &Tokens, services: &dyn Services) {
     let p = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
     let col = |c: &Option<[f32; 4]>, theme: Color32| match c {
         Some(c) => egui::Rgba::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]).into(),
@@ -255,10 +262,19 @@ fn paint_draw(ui: &egui::Ui, rect: Rect, ops: &[DrawOp], t: &Tokens) {
     for op in ops {
         match op {
             DrawOp::Fill { color, path } => {
+                // Any path shape (concave, self-intersecting, with holes): non-zero winding
+                // triangles, not egui's convex-only polygon fill.
                 let c = col(color, t.field_bg);
-                for (pts, _) in PathSeg::polylines(path, 48) {
-                    let pts: Vec<egui::Pos2> = pts.iter().map(|q| at(q[0], q[1])).collect();
-                    p.add(egui::Shape::convex_polygon(pts, c, Stroke::NONE));
+                let mut mesh = egui::Mesh::default();
+                for tri in PathSeg::fill_triangles(path, 48, false) {
+                    let base = mesh.vertices.len() as u32;
+                    for q in tri {
+                        mesh.colored_vertex(at(q[0], q[1]), c);
+                    }
+                    mesh.add_triangle(base, base + 1, base + 2);
+                }
+                if !mesh.is_empty() {
+                    p.add(egui::Shape::mesh(mesh));
                 }
             }
             DrawOp::Stroke { color, width, path } => {
@@ -271,13 +287,51 @@ fn paint_draw(ui: &egui::Ui, rect: Rect, ops: &[DrawOp], t: &Tokens) {
             DrawOp::Text { text, color, x, y, size, .. } => {
                 p.text(at(*x, *y), Align2::LEFT_TOP, text, Tokens::ui(*size as f32), col(color, t.text));
             }
-            DrawOp::Image { x, y, w, h } => {
-                let r = Rect::from_min_size(at(*x, *y), vec2(*w as f32, *h as f32));
-                p.rect_stroke(r, 0.0, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
+            DrawOp::Image { image, x, y, w, h } => {
+                let tex = image.as_ref().and_then(|i| image_texture(ui.ctx(), i, services));
+                let size = match &tex {
+                    Some(tx) if *w <= 0.0 || *h <= 0.0 => tx.size_vec2(),
+                    _ => vec2(*w as f32, *h as f32),
+                };
+                let r = Rect::from_min_size(at(*x, *y), size);
+                match tex {
+                    Some(tx) => {
+                        p.image(tx.id(), r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+                    }
+                    None => {
+                        p.rect_stroke(r, 0.0, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
+                    }
+                }
             }
             DrawOp::Os => {}
         }
     }
+}
+
+/// A ScriptUIImage as a texture (decoded once and kept; `None` when it can't be read or
+/// decoded).
+fn image_texture(ctx: &egui::Context, img: &ImageRef, services: &dyn Services) -> Option<egui::TextureHandle> {
+    let id = egui::Id::new(("scriptui-image", img));
+    if let Some(cached) = ctx.data(|d| d.get_temp::<Option<egui::TextureHandle>>(id)) {
+        return cached;
+    }
+    let tex = img.bytes(services).and_then(|b| image::load_from_memory(&b).ok()).map(|d| {
+        let rgba = d.to_rgba8();
+        let ci = egui::ColorImage::from_rgba_unmultiplied([rgba.width() as usize, rgba.height() as usize], rgba.as_raw());
+        ctx.load_texture(format!("scriptui-image-{}", img.name), ci, egui::TextureOptions::LINEAR)
+    });
+    ctx.data_mut(|d| d.insert_temp(id, tex.clone()));
+    tex
+}
+
+/// An image control's or icon button's image, fitted (aspect kept) and centred in `r`.
+fn paint_image(ui: &egui::Ui, r: Rect, img: &ImageRef, services: &dyn Services) -> bool {
+    let Some(tex) = image_texture(ui.ctx(), img, services) else { return false };
+    let s = tex.size_vec2();
+    let k = (r.width() / s.x.max(1.0)).min(r.height() / s.y.max(1.0)).min(1.0);
+    let dst = Rect::from_center_size(r.center(), s * k);
+    ui.painter().with_clip_rect(r.intersect(ui.clip_rect())).image(tex.id(), dst, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+    true
 }
 
 /// Checkboxes and radio buttons sit at the left of their (possibly filled) bounds.

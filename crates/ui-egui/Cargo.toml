@@ -28,9 +28,9 @@ log = { workspace = true }
 rayon = { workspace = true }
 web-time = { workspace = true }
 kurbo = { workspace = true }
+image = { workspace = true }
 
 [dev-dependencies]
 egui_kittest = { workspace = true, features = ["eframe", "wgpu"] }
-image = { workspace = true }
 pollster = "0.4"
 effectcraft-host = { workspace = true }

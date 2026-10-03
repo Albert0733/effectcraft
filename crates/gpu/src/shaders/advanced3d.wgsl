@@ -167,7 +167,12 @@ fn env_brdf(n_v: f32, rough: f32) -> vec2<f32> {
 }
 
 fn equirect_uv(d: vec3<f32>, rot: f32) -> vec2<f32> {
-    let u = 0.5 + (atan2(d.x, d.z) + rot) / (2.0 * PI);
+    // atan2(0, 0) is 0 on the CPU but may be NaN on GPUs (straight up / down normals).
+    var a = 0.0;
+    if (d.x != 0.0 || d.z != 0.0) {
+        a = atan2(d.x, d.z);
+    }
+    let u = 0.5 + (a + rot) / (2.0 * PI);
     let v = acos(clamp(-d.y, -1.0, 1.0)) / PI;
     return vec2<f32>(u - floor(u), v);
 }

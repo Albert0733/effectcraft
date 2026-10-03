@@ -240,3 +240,137 @@ fn sockets_talk_tcp_behind_the_network_preference() {
     let o = run_code(&mut s, "var l = new Socket(); l.listen(0); var r = [l.port > 0, l.poll() === null].join('|'); l.close(); r", "net.jsx");
     assert_eq!(o.result, json!("true|true"));
 }
+
+/// `__uiParseRes(src)` as JSON, or the error message.
+fn parse_res(s: &mut Session, src: &str) -> Result<serde_json::Value, String> {
+    let code = format!("JSON.stringify(__uiParseRes({}))", serde_json::to_string(src).unwrap());
+    let o = run_code(s, &code, "res.jsx");
+    match o.error {
+        Some(e) => Err(e.message),
+        None => Ok(serde_json::from_str(o.result.as_str().unwrap_or("null")).unwrap_or_default()),
+    }
+}
+
+#[test]
+fn resource_string_parser_edge_cases() {
+    let mut s = session();
+    // Accepted: trailing commas, quoted keys, number forms, escapes, comments, empty bodies,
+    // null / undefined, bare words, nested arrays and object literals.
+    let ok = parse_res(
+        &mut s,
+        "group { 'quoted key': 1, \"dq\": -.5, n: +3, e: 1e2, arr: [[1, [2]], 'x', ], \
+         esc: 'it\\'s\\n\\\\', /* block */ nul: null, u: undefined, w: fill, // line\n \
+         obj: { a: { b: true } }, kid: Button {}, }",
+    )
+    .unwrap();
+    assert_eq!(ok["type"], "group");
+    let list = ok["list"].as_array().unwrap();
+    let get = |k: &str| list.iter().find(|e| e[0] == k).map(|e| e[1].clone()).unwrap();
+    assert_eq!(get("quoted key"), json!(1));
+    assert_eq!(get("dq"), json!(-0.5));
+    assert_eq!(get("n"), json!(3));
+    assert_eq!(get("e"), json!(100));
+    assert_eq!(get("arr"), json!([[1, [2]], "x"]));
+    assert_eq!(get("esc"), json!("it's\n\\"));
+    assert_eq!(get("nul"), json!(null));
+    assert_eq!(get("w"), json!("fill"));
+    assert_eq!(get("kid"), json!({"__element": "Button", "list": []}));
+    // Rejected with a located message (never a crash).
+    for bad in [
+        "",
+        "   ",
+        "dialog",
+        "dialog {",
+        "dialog { text: 'unterminated }",
+        "dialog { text 'x' }",
+        "dialog { a: [1, 2 }",
+        "dialog { a: 1 } trailing",
+        "dialog { /* unterminated comment",
+        "dialog { a: 'x\\",
+        "{ }",
+        "123 { }",
+        "dialog { a: 1 b: 2 }",
+        "dialog { : 1 }",
+        "dialog { a: }",
+        "dialog { a: Button { }",
+    ] {
+        let e = parse_res(&mut s, bad).expect_err(bad);
+        assert!(e.contains("resource string"), "{bad:?}: {e}");
+        assert!(e.contains("offset"), "{bad:?}: {e}");
+    }
+    // Deep nesting builds; absurd nesting fails cleanly (the script engine's recursion limit).
+    let deep = |n: usize| format!("group {{ {}{} }}", "g: Group { ".repeat(n), "}".repeat(n));
+    let d = parse_res(&mut s, &deep(40)).unwrap();
+    assert_eq!(d["list"][0][1]["__element"], "Group");
+    let _ = parse_res(&mut s, &deep(5000));
+    // A window from a deep resource.
+    let o = run_code(
+        &mut s,
+        &format!(
+            "var w = new Window({}); w.children.length",
+            serde_json::to_string(&format!("palette {{ {}{} }}", "g: Group { ".repeat(20), "}".repeat(20))).unwrap()
+        ),
+        "deep.jsx",
+    );
+    assert_eq!(o.result, json!(1), "{:?}", o.error);
+}
+
+#[test]
+fn socket_edge_cases() {
+    let mut s = session();
+    s.prefs.scripting.allow_scripts_write_files = true;
+    // Bad addresses and ports: false with an error, never a throw or crash.
+    for host in ["", "nohostport", "127.0.0.1", "127.0.0.1:99999", "[::1", "a:b:c", "127.0.0.1:-5"] {
+        let code = format!(
+            "var s = new Socket(); s.timeout = 1; var ok = s.open({}); [ok, s.error.length > 0, s.connected, s.eof].join('|')",
+            serde_json::to_string(host).unwrap()
+        );
+        let o = run_code(&mut s, &code, "net.jsx");
+        assert_eq!(o.result, json!("false|true|false|true"), "{host:?}: {:?}", o.error);
+    }
+    for port in ["70000", "-1", "1.5"] {
+        let o = run_code(&mut s, &format!("var l = new Socket(); [l.listen({port}), l.error.length > 0].join('|')"), "net.jsx");
+        assert_eq!(o.result, json!("false|true"), "{port}: {:?}", o.error);
+    }
+    // Never opened or closed: reads are empty, writes fail, close is idempotent.
+    let o = run_code(
+        &mut s,
+        "var s = new Socket(); var r = [s.read(), s.read(5), s.readln(), s.write('x'), s.connected, s.eof, s.poll(), s.close(), s.close()]; r.join('|')",
+        "net.jsx",
+    );
+    assert_eq!(o.result, json!("|||false|false|true||true|true"), "{:?}", o.error);
+    // Binary bytes round trip in BINARY encoding; invalid UTF-8 is replaced in UTF-8; partial
+    // and zero-length reads; read stops at the timeout without data.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        use std::io::Write;
+        for _ in 0..2 {
+            let (mut c, _) = listener.accept().unwrap();
+            let bytes: Vec<u8> = (0..=255u8).collect();
+            c.write_all(&bytes).unwrap();
+        }
+    });
+    let code = format!(
+        "var s = new Socket(); s.open('127.0.0.1:{port}', 'BINARY'); var z = s.read(0); var a = s.read(10); var b = s.read(); s.close(); \
+         var ok = true; for (var i = 0; i < 10; i++) ok = ok && a.charCodeAt(i) === i; for (var j = 0; j < 246; j++) ok = ok && b.charCodeAt(j) === j + 10; \
+         [z.length, a.length, b.length, ok].join('|')"
+    );
+    let o = run_code(&mut s, &code, "net.jsx");
+    assert_eq!(o.result, json!("0|10|246|true"), "{:?}", o.error);
+    let code = format!(
+        "var s = new Socket(); s.open('127.0.0.1:{port}', 'UTF-8'); var d = s.read(); s.close(); [d.charCodeAt(0), d.charCodeAt(127), d.indexOf('\\ufffd') > 0].join('|')"
+    );
+    let o = run_code(&mut s, &code, "net.jsx");
+    assert_eq!(o.result, json!("0|127|true"), "{:?}", o.error);
+    server.join().unwrap();
+    // A listener with nobody connecting: a short read timeout returns quickly.
+    let t = std::time::Instant::now();
+    let o = run_code(
+        &mut s,
+        "var l = new Socket(); l.listen(0); l.timeout = 0; var c = new Socket(); c.timeout = 0.2; c.open(l.host); var x = c.read(); c.close(); l.close(); x.length",
+        "net.jsx",
+    );
+    assert_eq!(o.result, json!(0), "{:?}", o.error);
+    assert!(t.elapsed().as_secs_f64() < 5.0);
+}

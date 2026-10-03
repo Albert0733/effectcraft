@@ -328,6 +328,7 @@ pub fn decode_stream(file: &File, d: &Dict, raw: &[u8]) -> Option<Vec<u8>> {
                 lzw(&data, parms.get(i).and_then(|p| p.as_ref()).and_then(|p| p.get("EarlyChange")).and_then(Obj::num).unwrap_or(1.0) != 0.0)
             }
             "RunLengthDecode" | "RL" => run_length(&data),
+            "CCITTFaxDecode" | "CCF" => crate::ccitt::decode(&data, &ccitt_params(file, parms.get(i).and_then(|p| p.as_ref())))?,
             _ => return None,
         };
         if let Some(Some(p)) = parms.get(i)
@@ -337,6 +338,24 @@ pub fn decode_stream(file: &File, d: &Dict, raw: &[u8]) -> Option<Vec<u8>> {
         }
     }
     Some(data)
+}
+
+/// `/DecodeParms` of a `CCITTFaxDecode` filter.
+fn ccitt_params(file: &File, d: Option<&Dict>) -> crate::ccitt::Params {
+    let mut p = crate::ccitt::Params::default();
+    let Some(d) = d else { return p };
+    let flag = |k: &str, default: bool| match file.get(d, k) {
+        Some(Obj::Bool(b)) => *b,
+        _ => default,
+    };
+    p.k = file.get_num(d, "K").unwrap_or(0.0) as i64;
+    p.columns = file.get_num(d, "Columns").map(|c| c.max(1.0) as usize).unwrap_or(1728);
+    p.rows = file.get_num(d, "Rows").map(|r| r.max(0.0) as usize).unwrap_or(0);
+    p.end_of_line = flag("EndOfLine", false);
+    p.byte_align = flag("EncodedByteAlign", false);
+    p.end_of_block = flag("EndOfBlock", true);
+    p.black_is_1 = flag("BlackIs1", false);
+    p
 }
 
 pub fn inflate(data: &[u8]) -> Option<Vec<u8>> {
@@ -569,7 +588,7 @@ impl File {
                 Obj::Dict(d) => {
                     let save = lx.pos;
                     lx.skip_ws();
-                    if data[lx.pos..].starts_with(b"stream") {
+                    if data.get(lx.pos..).is_some_and(|d| d.starts_with(b"stream")) {
                         let mut s = lx.pos + 6;
                         if data.get(s) == Some(&b'\r') {
                             s += 1;
@@ -578,8 +597,9 @@ impl File {
                             s += 1;
                         }
                         let declared = d.get("Length").and_then(Obj::num).map(|l| l as usize);
+                        let s = s.min(data.len());
                         let end = match declared.filter(|l| {
-                            s + l <= data.len() && {
+                            s.checked_add(*l).is_some_and(|e| e <= data.len()) && {
                                 let mut k = s + l;
                                 while k < data.len() && is_white(data[k]) {
                                     k += 1;
@@ -599,6 +619,7 @@ impl File {
                                 e
                             }
                         };
+                        let end = end.max(s);
                         i = end;
                         Obj::Stream(d, data[s..end].to_vec())
                     } else {

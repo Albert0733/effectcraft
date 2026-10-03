@@ -123,6 +123,37 @@ pub fn char_outline_varied(g: &CharGlyph, deltas: &[(String, f32)]) -> Option<Be
     Some(g.outline_xf * (*units).clone())
 }
 
+/// A glyph's advance in font units at the given axis values (user units, unspecified axes at
+/// their defaults).
+pub fn advance_units_at(face: FaceId, gid: u32, coords: &[(String, f32)]) -> Option<f32> {
+    let f = fonts::face(face);
+    let font = f.font()?;
+    let loc = font.axes().location(coords.iter().map(|(t, v)| (tag_of(t), *v)));
+    font.glyph_metrics(Size::unscaled(), LocationRef::from(&loc)).advance_width(GlyphId::new(gid))
+}
+
+/// The change of a laid-out character's advance (layout units) when its face's axes move by
+/// `deltas` (as [`char_outline_varied`]): Variable Font Axes animators re-space the text.
+pub fn char_advance_delta(g: &CharGlyph, deltas: &[(String, f32)]) -> Option<f64> {
+    let axes = font_axes(g.face);
+    let base = |t: &str, d: f32| g.variations.iter().find(|(x, _)| x.trim_end() == t.trim_end()).map(|(_, v)| *v).unwrap_or(d);
+    let mut coords: Vec<(String, f32)> =
+        deltas.iter().filter_map(|(t, d)| axes.iter().find(|a| a.tag == *t).map(|a| (t.clone(), (base(&a.tag, a.default) + d).clamp(a.min, a.max)))).collect();
+    if coords.is_empty() {
+        return None;
+    }
+    for (t, v) in &g.variations {
+        if !coords.iter().any(|(c, _)| c == t) {
+            coords.push((t.clone(), *v));
+        }
+    }
+    let varied = advance_units_at(g.face, g.gid, &coords)?;
+    let own = advance_units_at(g.face, g.gid, &g.variations)?;
+    // Font units → layout units: the outline transform's horizontal scale.
+    let sx = g.outline_xf.as_coeffs()[0];
+    Some((varied - own) as f64 * sx)
+}
+
 /// The first installed face with variation axes (system fonts are scanned), for tests and
 /// demos: (face, its axes).
 pub fn find_variable_face() -> Option<(FaceId, Vec<FontAxis>)> {
