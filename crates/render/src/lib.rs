@@ -157,6 +157,38 @@ impl EffectHost for FxHost<'_, '_, '_> {
         }
     }
 
+    fn params_at(&self, layer_time: f64) -> Option<Params> {
+        let i = self.index.load(std::sync::atomic::Ordering::Relaxed);
+        let g = self.layer.effects()?.groups().nth(i)?;
+        let ctx = self.ctx.at(self.layer.comp_time(Tick::from_seconds_f64(layer_time)));
+        Some(effectcraft_effects::flatten_params(g, &mut |pr| ctx.value(self.layer, pr)))
+    }
+
+    fn comp_scene(&self) -> Option<effectcraft_effects::CompScene> {
+        // The comp camera's view of the layer (as if 3D at its transform), brought back into the
+        // layer's own pixel grid through the inverse of how the layer itself composites.
+        let world = self.ctx.world_matrix(self.layer);
+        let (cam, _, _) = self.ctx.camera();
+        let p = (cam * world).0;
+        let back = self.ctx.layer_to_comp(self.layer).0.inverse()?.0;
+        let rows = [p[0], p[1], p[3]];
+        let camera: [[f64; 4]; 3] = std::array::from_fn(|i| std::array::from_fn(|j| (0..3).map(|k| back[i][k] * rows[k][j]).sum()));
+        let inv = world.inverse();
+        let light = three_d::light::lights_at(self.ctx).first().and_then(|l| {
+            let inv = inv.as_ref()?;
+            let pos = inv.apply(l.pos);
+            let dir = inv.apply_vec(l.dir);
+            let len = (dir.x * dir.x + dir.y * dir.y + dir.z * dir.z).sqrt().max(1e-12);
+            let kind = match l.kind {
+                effectcraft_project::LightKind::Parallel => 0,
+                effectcraft_project::LightKind::Ambient => 2,
+                _ => 1,
+            };
+            Some(effectcraft_effects::CompLight { pos: [pos.x, pos.y, pos.z], dir: [dir.x / len, dir.y / len, dir.z / len], color: l.color, kind })
+        });
+        Some(effectcraft_effects::CompScene { camera: Some(camera), light })
+    }
+
     fn layer_at(&self, id: u64, comp_time: f64, masks_and_effects: bool) -> Option<LayerPixels> {
         let other = self.ctx.layer(effectcraft_project::LayerId(id))?;
         if other.id == self.layer.id || self.r.depth > MAX_FX_DEPTH {
@@ -288,7 +320,8 @@ impl FxTarget for CpuFx<'_> {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(default, rename_all = "camelCase")]
 pub struct RenderOpts {
     /// Output scale relative to comp pixels (1 = Full, 0.5 = Half…).
     pub scale: f64,
@@ -363,6 +396,8 @@ pub struct Renderer<'a> {
     /// Switches inherited from the precomp layers this comp is rendered through (see
     /// [`RenderOpts::nested_switches`]): the worst quality and whether motion blur is allowed.
     pub(crate) inherited: Option<(Quality, bool)>,
+    /// Classic 3D depth of field is left to an accelerator ([`three_d::Plane3d::dof`]).
+    pub(crate) defer_dof: bool,
     /// This renderer draws into the top-level frame's canvas (the top comp, or a collapsed
     /// precomp drawn straight into it): the region of interest's offset applies.
     top: bool,
@@ -410,6 +445,7 @@ impl<'a> Renderer<'a> {
             opacity_mul: 1.0,
             collapse3d: None,
             inherited: None,
+            defer_dof: false,
             top: true,
         }
     }
@@ -445,7 +481,7 @@ impl<'a> Renderer<'a> {
 
     /// A renderer for nested work (precomps, layers read by effects): one level deeper.
     fn nested(&self) -> Renderer<'a> {
-        Renderer { depth: self.depth + 1, outer: None, opacity_mul: 1.0, collapse3d: None, top: false, ..*self }
+        Renderer { depth: self.depth + 1, outer: None, opacity_mul: 1.0, collapse3d: None, defer_dof: false, top: false, ..*self }
     }
 
     /// The nested comp of a precomp layer whose transformations collapse into this comp: the
@@ -741,6 +777,11 @@ impl<'a> Renderer<'a> {
             effect_index: 0,
             working_space: self.pipe.space,
             working_linear: self.pipe.linear,
+            shutter: (ctx.comp.enable_motion_blur && layer.switches.motion_blur).then_some((
+                ctx.comp.shutter_angle,
+                ctx.comp.shutter_phase,
+                ctx.comp.motion_blur_samples,
+            )),
         };
         // Video effects in stack order (index, group, spec); disabled and audio effects skipped.
         let stack: Vec<(usize, &effectcraft_project::PropGroup, &'static effectcraft_effects::EffectSpec)> = fx

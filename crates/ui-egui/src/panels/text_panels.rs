@@ -7,7 +7,6 @@ use effectcraft_engine::render::EvalCtx;
 use egui::{Align2, Rect, Sense, pos2, vec2};
 use serde_json::json;
 
-use crate::icons::{self, Icon};
 use crate::theme::Tokens;
 use crate::{EffectcraftApp, widgets};
 
@@ -255,6 +254,29 @@ pub fn character(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
             }
             app.auto.add(&format!("character.{key}"), cr, label);
             p.text(pos2(cr.max.x + 6.0, y + 7.0), Align2::LEFT_CENTER, label, Tokens::ui(11.0), t.text_dim);
+        }
+    }
+    // Variable Font Axes: one value per axis of a variable font (`character.axis.<tag>`).
+    let face = effectcraft_engine::text::resolve(&doc.font, &doc.style).face;
+    let axes = effectcraft_engine::text::variable::font_axes(face);
+    if !axes.is_empty() {
+        y += 26.0;
+        p.text(pos2(x0, y + 7.0), Align2::LEFT_CENTER, "Variable Font Axes", Tokens::semibold(11.0), t.text_dim);
+        for (i, a) in axes.iter().enumerate() {
+            let (col, row) = (i % 2, i / 2);
+            let fx = x0 + col as f32 * (w / 2.0);
+            let fy = y + 20.0 + row as f32 * 24.0;
+            let tag = a.tag.trim_end().to_string();
+            let v = doc.variations.iter().find(|(t2, _)| t2.trim_end() == tag).map(|(_, v)| *v).unwrap_or(a.default);
+            p.text(pos2(fx, fy + 9.0), Align2::LEFT_CENTER, &tag, Tokens::semibold(10.5), t.text_dim);
+            let (r, nv, _) =
+                widgets::hot_number_at(ui, pos2(fx + 34.0, fy), egui::Id::new(("char-axis", &tag)), v as f64, 1.0, (a.min as f64, a.max as f64), 0, "", &t);
+            app.auto.add(&format!("character.axis.{tag}"), r, &a.name);
+            if let Some(nv) = nv
+                && enabled
+            {
+                actions.push(json!({"variations": {tag.clone(): nv}, "merge": format!("char-axis-{tag}")}));
+            }
         }
     }
     match &target {
@@ -568,90 +590,131 @@ fn font_popup(app: &EffectcraftApp, ui: &mut egui::Ui, id: egui::Id, pos: egui::
     chosen
 }
 
-/// Align panel: align selected layers to the composition (or to the selection).
+/// Align panel: Align Layers to Selection / Composition, the six align buttons and the six
+/// Distribute Layers buttons. Buttons run `layer.align {edge, to}` and `layer.distribute
+/// {mode}` on the selected layers.
 pub fn align(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let p = ui.painter().with_clip_rect(rect);
     let x0 = rect.min.x + 10.0;
-    let y = rect.min.y + 10.0;
-    p.text(pos2(x0, y + 8.0), Align2::LEFT_CENTER, "Align Layers to: Composition", Tokens::ui(11.5), t.text_dim);
+    let mut y = rect.min.y + 10.0;
+    p.text(pos2(x0, y + 10.0), Align2::LEFT_CENTER, "Align Layers to:", Tokens::ui(11.5), t.text_dim);
+    let dr = Rect::from_min_size(pos2(x0 + 100.0, y), vec2(110.0, 20.0));
+    let to_sel = app.ui.align_to_selection;
+    let pid = egui::Id::new("align-to-pop");
+    if widgets::dropdown(ui, dr, if to_sel { "Selection" } else { "Composition" }, &t, pid.with("btn")).clicked() {
+        widgets::open_popup(ui, pid);
+    }
+    app.auto.add("align.to", dr, if to_sel { "Selection" } else { "Composition" });
+    if let Some(i) =
+        widgets::popup_menu(ui, pid, dr.left_bottom() + vec2(0.0, 2.0), &["Selection".to_string(), "Composition".to_string()], Some(if to_sel { 0 } else { 1 }))
+    {
+        app.ui.align_to_selection = i == 0;
+    }
+    y += 28.0;
     let ops = ["left", "hcenter", "right", "top", "vcenter", "bottom"];
-    for (i, op) in ops.iter().enumerate() {
-        let r = Rect::from_min_size(pos2(x0 + i as f32 * 34.0 + if i >= 3 { 12.0 } else { 0.0 }, y + 24.0), vec2(30.0, 28.0));
-        let resp = ui.interact(r, egui::Id::new(("align", *op)), Sense::click());
-        p.rect_filled(r, 3.0, if resp.hovered() { t.hover } else { t.field_bg });
-        // Glyph: a bar (alignment edge) and two boxes.
-        let c = r.center();
-        let st = egui::Stroke::new(1.3, t.text);
-        match *op {
-            "left" | "hcenter" | "right" => {
-                let ex = match *op {
-                    "left" => r.min.x + 7.0,
-                    "right" => r.max.x - 7.0,
-                    _ => c.x,
-                };
-                p.line_segment([pos2(ex, r.min.y + 5.0), pos2(ex, r.max.y - 5.0)], st);
-                let off = |w: f32| match *op {
-                    "left" => ex,
-                    "right" => ex - w,
-                    _ => ex - w / 2.0,
-                };
-                p.rect_filled(Rect::from_min_size(pos2(off(14.0), c.y - 7.0), vec2(14.0, 5.0)), 1.0, t.text_dim);
-                p.rect_filled(Rect::from_min_size(pos2(off(9.0), c.y + 2.0), vec2(9.0, 5.0)), 1.0, t.text_dim);
-            }
-            _ => {
-                let ey = match *op {
-                    "top" => r.min.y + 6.0,
-                    "bottom" => r.max.y - 6.0,
-                    _ => c.y,
-                };
-                p.line_segment([pos2(r.min.x + 5.0, ey), pos2(r.max.x - 5.0, ey)], st);
-                let off = |h: f32| match *op {
-                    "top" => ey,
-                    "bottom" => ey - h,
-                    _ => ey - h / 2.0,
-                };
-                p.rect_filled(Rect::from_min_size(pos2(c.x - 8.0, off(14.0)), vec2(5.0, 14.0)), 1.0, t.text_dim);
-                p.rect_filled(Rect::from_min_size(pos2(c.x + 3.0, off(9.0)), vec2(5.0, 9.0)), 1.0, t.text_dim);
+    let mut run: Option<(&str, &str)> = None;
+    for (row, kind) in ["align", "distribute"].into_iter().enumerate() {
+        if row == 1 {
+            p.text(pos2(x0, y + 8.0), Align2::LEFT_CENTER, "Distribute Layers:", Tokens::ui(11.5), t.text_dim);
+            y += 20.0;
+        }
+        for (i, op) in ops.iter().enumerate() {
+            let r = Rect::from_min_size(pos2(x0 + i as f32 * 34.0 + if i >= 3 { 12.0 } else { 0.0 }, y), vec2(30.0, 28.0));
+            let resp = ui.interact(r, egui::Id::new((kind, *op)), Sense::click());
+            p.rect_filled(r, 3.0, if resp.hovered() { t.hover } else { t.field_bg });
+            align_glyph(&p, r, op, row == 1, &t);
+            let tip = align_tip(kind, op);
+            app.auto.add(&format!("{kind}.{op}"), r, &tip);
+            if resp.on_hover_text(tip).clicked() {
+                run = Some((kind, op));
             }
         }
-        app.auto.add(&format!("align.{op}"), r, op);
-        if resp.clicked() {
-            align_layers(app, op);
+        y += 34.0;
+    }
+    if let Some((kind, op)) = run {
+        let r = if kind == "align" {
+            let to = if app.ui.align_to_selection { "selection" } else { "composition" };
+            app.session.execute("layer.align", json!({"edge": op, "to": to}))
+        } else {
+            app.session.execute("layer.distribute", json!({"mode": op}))
+        };
+        if let Err(e) = r {
+            app.ui.status = e.to_string();
         }
     }
-    let _ = icons::paint;
-    let _ = Icon::Grid;
 }
 
-/// Move selected layers so their content bounds align to the comp.
-pub fn align_layers(app: &mut EffectcraftApp, op: &str) {
-    let Some(cid) = app.session.active_comp_id() else { return };
-    let Some(comp) = app.session.project.comp(cid).cloned() else { return };
-    let time = app.session.time();
-    let mut moves = vec![];
-    {
-        let ectx = EvalCtx { project: &app.session.project, comp_id: cid, comp: &comp, time, expr: app.session.expr.as_deref(), footage: None };
-        for l in comp.layers.iter().filter(|l| app.session.state.selected_layers.contains(&l.id)) {
-            let Some(b) = effectcraft_engine::render::content_bounds(&ectx, l) else { continue };
-            let (m, _) = ectx.layer_to_comp(l);
-            let pts = [[b[0], b[1]], [b[2], b[1]], [b[2], b[3]], [b[0], b[3]]].map(|p| m.apply(effectcraft_engine::geom::vec2(p[0], p[1])));
-            let (x0, x1) = (pts.iter().map(|p| p.x).fold(f64::INFINITY, f64::min), pts.iter().map(|p| p.x).fold(f64::NEG_INFINITY, f64::max));
-            let (y0, y1) = (pts.iter().map(|p| p.y).fold(f64::INFINITY, f64::min), pts.iter().map(|p| p.y).fold(f64::NEG_INFINITY, f64::max));
-            let (cw, ch) = (comp.width as f64, comp.height as f64);
-            let (dx, dy) = match op {
-                "left" => (-x0, 0.0),
-                "right" => (cw - x1, 0.0),
-                "hcenter" => (cw / 2.0 - (x0 + x1) / 2.0, 0.0),
-                "top" => (0.0, -y0),
-                "bottom" => (0.0, ch - y1),
-                _ => (0.0, ch / 2.0 - (y0 + y1) / 2.0),
-            };
-            let pos = l.transform().map(|tr| ectx.v3(l, tr, "position", [0.0; 3])).unwrap_or([0.0; 3]);
-            moves.push((l.id.0, [pos[0] + dx, pos[1] + dy, pos[2]]));
+fn align_tip(kind: &str, op: &str) -> String {
+    let what = match op {
+        "left" => "Left",
+        "hcenter" => "Horizontal Center",
+        "right" => "Right",
+        "top" => "Top",
+        "vcenter" => "Vertical Center",
+        _ => "Bottom",
+    };
+    if kind == "align" { format!("Align {what}") } else { format!("Distribute {what}") }
+}
+
+/// Button glyph: the alignment edge as a line and two boxes (distribute: three boxes spread,
+/// the line through each).
+fn align_glyph(p: &egui::Painter, r: Rect, op: &str, distribute: bool, t: &Tokens) {
+    let c = r.center();
+    let st = egui::Stroke::new(1.3, t.text);
+    let horizontal = matches!(op, "left" | "hcenter" | "right");
+    if distribute {
+        for k in 0..3 {
+            let f = (k as f32 - 1.0) * 7.0;
+            if horizontal {
+                let bx = c.x + f;
+                let ex = match op {
+                    "left" => bx - 2.5,
+                    "right" => bx + 2.5,
+                    _ => bx,
+                };
+                p.rect_filled(Rect::from_center_size(pos2(bx, c.y), vec2(5.0, 10.0 + k as f32 * 2.0)), 1.0, t.text_dim);
+                p.line_segment([pos2(ex, r.min.y + 5.0), pos2(ex, r.max.y - 5.0)], st);
+            } else {
+                let by = c.y + f;
+                let ey = match op {
+                    "top" => by - 2.5,
+                    "bottom" => by + 2.5,
+                    _ => by,
+                };
+                p.rect_filled(Rect::from_center_size(pos2(c.x, by), vec2(10.0 + k as f32 * 2.0, 5.0)), 1.0, t.text_dim);
+                p.line_segment([pos2(r.min.x + 5.0, ey), pos2(r.max.x - 5.0, ey)], st);
+            }
         }
+        return;
     }
-    for (id, v) in moves {
-        let _ = app.session.execute("prop.set", json!({"layer": id, "path": "transform/position", "value": v}));
+    if horizontal {
+        let ex = match op {
+            "left" => r.min.x + 7.0,
+            "right" => r.max.x - 7.0,
+            _ => c.x,
+        };
+        p.line_segment([pos2(ex, r.min.y + 5.0), pos2(ex, r.max.y - 5.0)], st);
+        let off = |w: f32| match op {
+            "left" => ex,
+            "right" => ex - w,
+            _ => ex - w / 2.0,
+        };
+        p.rect_filled(Rect::from_min_size(pos2(off(14.0), c.y - 7.0), vec2(14.0, 5.0)), 1.0, t.text_dim);
+        p.rect_filled(Rect::from_min_size(pos2(off(9.0), c.y + 2.0), vec2(9.0, 5.0)), 1.0, t.text_dim);
+    } else {
+        let ey = match op {
+            "top" => r.min.y + 6.0,
+            "bottom" => r.max.y - 6.0,
+            _ => c.y,
+        };
+        p.line_segment([pos2(r.min.x + 5.0, ey), pos2(r.max.x - 5.0, ey)], st);
+        let off = |h: f32| match op {
+            "top" => ey,
+            "bottom" => ey - h,
+            _ => ey - h / 2.0,
+        };
+        p.rect_filled(Rect::from_min_size(pos2(c.x - 8.0, off(14.0)), vec2(5.0, 14.0)), 1.0, t.text_dim);
+        p.rect_filled(Rect::from_min_size(pos2(c.x + 3.0, off(9.0)), vec2(5.0, 9.0)), 1.0, t.text_dim);
     }
 }

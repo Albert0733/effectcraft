@@ -281,6 +281,8 @@ pub struct Prefs {
     pub recent_presets: Vec<String>,
     /// Character panel: recently used font families, newest first.
     pub recent_fonts: Vec<String>,
+    /// Preview panel: every shortcut's options.
+    pub preview: crate::preview::PreviewSettings,
     /// Top-level keys this version doesn't know (kept for newer versions).
     #[serde(flatten)]
     pub extra: Extra,
@@ -312,6 +314,7 @@ impl Default for Prefs {
             recent_footage: vec![],
             recent_presets: vec![],
             recent_fonts: vec![],
+            preview: crate::preview::PreviewSettings::default(),
             extra: Extra::new(),
         }
     }
@@ -446,6 +449,7 @@ impl Prefs {
                 recent_footage: std::mem::take(&mut self.recent_footage),
                 recent_presets: std::mem::take(&mut self.recent_presets),
                 recent_fonts: std::mem::take(&mut self.recent_fonts),
+                preview: std::mem::take(&mut self.preview),
                 ..d
             };
             return Ok(());

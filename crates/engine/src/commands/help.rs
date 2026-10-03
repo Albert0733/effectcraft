@@ -35,6 +35,12 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!("help.website", "ArtCraft Website", ["Help"], None, "{}", always, |s, _| open(s, links::WEBSITE.into())),
         cmd!("help.appPage", "EffectCraft Home Page", ["Help"], None, "{}", always, |s, _| open(s, links::APP_PAGE.into())),
         cmd!("help.github", "EffectCraft on GitHub", ["Help"], None, "{}", always, |s, _| open(s, links::GITHUB.into())),
+        cmd!("help.onlineTutorials", "Online Tutorials...", ["Help"], None, "{}", always, |s, _| open(s, links::APP_PAGE.into())),
+        cmd!("help.inAppTutorials", "In-App Tutorials...", ["Help"], None, "{} → the Home screen's Learn tab", always, |s, p| super::frontend(
+            s,
+            "help.inAppTutorials",
+            p
+        )),
         cmd!("help.reportIssue", "Provide Feedback...", ["Help"], None, "{}", always, |s, _| open(s, links::ISSUES.into())),
         cmd!(
             "help.sibling",

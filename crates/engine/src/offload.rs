@@ -16,10 +16,11 @@
 //! | Track Motion / Stabilize Motion | the tracker analysis | the tracker group |
 //! | Mask tracking | the mask track | the mask group |
 //! | Roto Brush Freeze | the freeze | the effect group |
+//! | Roto Brush propagation | the propagation | segmentations ([`WorkerReply::Segs`], streamed while it runs) go into the page's segmentation cache |
 //! | 3D Camera Tracker analysis | [`Session::start_camera`] | the effect's property group |
 //!
-//! Roto Brush propagation fills the session's segmentation cache rather than the project, so it
-//! keeps running on the UI thread.
+//! Viewer frames go to a separate, long-lived frame worker fed with project diffs
+//! ([`crate::remote`]).
 //!
 //! Cancelling terminates the worker: what an analysis tracked so far is dropped and the Render
 //! Queue item being rendered becomes "User Stopped".
@@ -76,6 +77,13 @@ pub enum WorkerJob {
         layer: LayerId,
         effect: Uid,
     },
+    /// Roto Brush propagation: the segmentations come back as [`WorkerReply::Segs`].
+    RotoPropagate {
+        comp: ItemId,
+        layer: LayerId,
+        effect: Uid,
+        direction: crate::roto::Direction,
+    },
     Track {
         comp: ItemId,
         layer: LayerId,
@@ -103,6 +111,7 @@ impl WorkerJob {
             WorkerJob::Warp { .. } => JobKind::Warp,
             WorkerJob::Camera { .. } => JobKind::Camera,
             WorkerJob::RotoFreeze { .. } => JobKind::RotoFreeze,
+            WorkerJob::RotoPropagate { .. } => JobKind::RotoPropagate,
             WorkerJob::Track { .. } => JobKind::Track,
             WorkerJob::MaskTrack { .. } => JobKind::MaskTrack,
         }
@@ -112,9 +121,10 @@ impl WorkerJob {
     pub fn target(&self) -> Option<(ItemId, LayerId, Uid)> {
         match *self {
             WorkerJob::Render { .. } => None,
-            WorkerJob::Warp { comp, layer, effect } | WorkerJob::Camera { comp, layer, effect } | WorkerJob::RotoFreeze { comp, layer, effect } => {
-                Some((comp, layer, effect))
-            }
+            WorkerJob::Warp { comp, layer, effect }
+            | WorkerJob::Camera { comp, layer, effect }
+            | WorkerJob::RotoFreeze { comp, layer, effect }
+            | WorkerJob::RotoPropagate { comp, layer, effect, .. } => Some((comp, layer, effect)),
             WorkerJob::Track { comp, layer, tracker, .. } => Some((comp, layer, tracker)),
             WorkerJob::MaskTrack { comp, layer, mask, .. } => Some((comp, layer, mask)),
         }
@@ -128,6 +138,7 @@ pub enum JobKind {
     Warp,
     Camera,
     RotoFreeze,
+    RotoPropagate,
     Track,
     MaskTrack,
 }
@@ -140,6 +151,7 @@ impl JobKind {
             JobKind::Warp => "Warp Stabilizer Analysis",
             JobKind::Camera => "3D Camera Tracker Analysis",
             JobKind::RotoFreeze => "Freeze",
+            JobKind::RotoPropagate => "Roto Brush Propagation",
             JobKind::Track => "Analyze Track",
             JobKind::MaskTrack => "Track Mask",
         }
@@ -170,11 +182,50 @@ pub enum WorkerReply {
         group: Box<PropGroup>,
         message: String,
     },
+    /// Roto Brush segmentations computed so far (propagation), not sent before.
+    Segs {
+        segs: Vec<SegData>,
+    },
     Failed {
         error: String,
     },
     /// The job ended (always the last reply).
     Done,
+}
+
+/// One full-resolution Roto Brush segmentation: its chain key and the base64 of
+/// [`effectcraft_track::roto::FrameSeg::to_bytes`].
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SegData {
+    pub key: u64,
+    pub data: String,
+}
+
+impl SegData {
+    pub fn new(key: u64, seg: &effectcraft_track::roto::FrameSeg) -> SegData {
+        SegData { key, data: effectcraft_track::roto::rle::base64_encode(&seg.to_bytes()) }
+    }
+
+    /// Put the segmentation into this instance's cache (what the Roto Brush effect renders from).
+    pub fn store(&self) -> bool {
+        let Some(seg) = effectcraft_track::roto::rle::base64_decode(&self.data).and_then(|b| effectcraft_track::roto::FrameSeg::from_bytes(&b)) else {
+            return false;
+        };
+        effectcraft_effects::roto::store(self.key, 1.0, Arc::new(seg));
+        true
+    }
+}
+
+/// The full-resolution segmentations of `keys` that are cached here and not in `sent` yet.
+pub fn segs_to_send(keys: &[u64], sent: &mut std::collections::HashSet<u64>) -> Vec<SegData> {
+    let new: Vec<(u64, Arc<effectcraft_track::roto::FrameSeg>)> =
+        keys.iter().filter(|k| !sent.contains(k)).filter_map(|k| effectcraft_effects::roto::cached(*k, 1.0).map(|s| (*k, s))).collect();
+    new.into_iter()
+        .map(|(k, s)| {
+            sent.insert(k);
+            SegData::new(k, &s)
+        })
+        .collect()
 }
 
 /// Replies waiting for the UI thread.
@@ -292,6 +343,7 @@ fn run_job(s: &mut Session, job: WorkerJob, post: Post) -> Result<(), String> {
         WorkerJob::RotoFreeze { comp, layer, effect } => analysis(s, kind, target, post, |s| {
             s.start_roto(comp, layer, effect, crate::roto::RotoTask::Freeze, crate::roto::Direction::Both, true).map(|_| ())
         }),
+        WorkerJob::RotoPropagate { comp, layer, effect, direction } => propagate(s, comp, layer, effect, direction, post),
         WorkerJob::Track { comp, layer, tracker, direction, settings, points, times } => analysis(s, kind, target, post, |s| {
             let work = crate::tracking::Work {
                 project: s.project.clone(),
@@ -321,6 +373,38 @@ fn run_job(s: &mut Session, job: WorkerJob, post: Post) -> Result<(), String> {
             s.start_mask_track(work, mask, direction, true)
         }),
     }
+}
+
+/// Roto Brush propagation in a worker: the segmentations stream back (at most every 250 ms)
+/// as they are computed, so stopping the job keeps what was propagated.
+fn propagate(s: &mut Session, comp: ItemId, layer: LayerId, effect: Uid, dir: crate::roto::Direction, post: Post) -> Result<(), String> {
+    let keys: Vec<u64> = s.roto_chain(comp, layer, effect).map(|c| c.keys.values().copied().collect()).ok_or("no Roto Brush strokes")?;
+    let sent = Rc::new(RefCell::new(std::collections::HashSet::new()));
+    let (p, k2, s2) = (post.clone(), keys.clone(), sent.clone());
+    let mut last = None::<web_time::Instant>;
+    let hook = Box::new(move |done: u64, total: u64| {
+        if last.is_none_or(|t: web_time::Instant| t.elapsed().as_millis() >= 250) {
+            last = Some(web_time::Instant::now());
+            let segs = segs_to_send(&k2, &mut s2.borrow_mut());
+            if !segs.is_empty() {
+                p(WorkerReply::Segs { segs });
+            }
+            p(WorkerReply::Progress { done, total });
+        }
+    });
+    s.events.clear();
+    with_hook(hook, || s.start_roto(comp, layer, effect, crate::roto::RotoTask::Propagate, dir, true))?;
+    let segs = segs_to_send(&keys, &mut sent.borrow_mut());
+    if !segs.is_empty() {
+        post(WorkerReply::Segs { segs });
+    }
+    if let Some(e) = s.events.iter().find_map(|e| match e {
+        Event::Toast { message, error: true } => Some(message.clone()),
+        _ => None,
+    }) {
+        return Err(e);
+    }
+    Ok(())
 }
 
 fn analysis(
@@ -398,6 +482,8 @@ pub struct OffloadedJob {
     pub uid: Uid,
     pub inbox: Arc<Inbox>,
     pub progress: OffloadProgress,
+    /// Segmentations received (Roto Brush propagation).
+    pub segs: u64,
     started: web_time::Instant,
 }
 
@@ -432,7 +518,17 @@ impl Session {
         let inbox = Arc::new(Inbox::default());
         let req = WorkerRequest { id, project: self.project.to_json(), files: footage_files(&self.project), job };
         off.start(req, inbox.clone())?;
-        self.offloaded.push(OffloadedJob { id, kind, comp, layer, uid, inbox, progress: OffloadProgress::default(), started: web_time::Instant::now() });
+        self.offloaded.push(OffloadedJob {
+            id,
+            kind,
+            comp,
+            layer,
+            uid,
+            inbox,
+            progress: OffloadProgress::default(),
+            segs: 0,
+            started: web_time::Instant::now(),
+        });
         self.events.push(Event::ProjectChanged { revision: self.revision });
         Ok(())
     }
@@ -469,6 +565,12 @@ impl Session {
                         j.progress.total = total;
                     }
                     WorkerReply::Group { comp, layer, group, message } => results.push((j.kind, comp, layer, group, message)),
+                    WorkerReply::Segs { segs } => {
+                        for sd in &segs {
+                            sd.store();
+                        }
+                        j.segs += segs.len() as u64;
+                    }
                     WorkerReply::Failed { error } => j.progress.error = Some(error),
                     WorkerReply::Done => j.progress.finished = true,
                     WorkerReply::Render { .. } | WorkerReply::Item { .. } => {}
@@ -495,17 +597,25 @@ impl Session {
         let mut done = vec![];
         self.offloaded.retain(|j| {
             if j.progress.finished {
-                done.push((j.kind, j.progress.clone()));
+                done.push((j.kind, j.progress.clone(), j.segs));
             }
             !j.progress.finished
         });
-        for (kind, p) in done {
+        for (kind, p, segs) in done {
             changed = true;
+            self.offload_log.push((kind, p.error.clone().or_else(|| p.cancelled.then(|| "stopped".to_string()))));
+            if self.offload_log.len() > 32 {
+                self.offload_log.remove(0);
+            }
             if let Some(e) = p.error {
                 self.events.push(Event::Toast { message: format!("{}: {e}", kind.label()), error: true });
             } else if p.cancelled {
-                self.events.push(Event::Toast { message: format!("{} stopped", kind.label()), error: false });
+                let kept = if segs > 0 { format!(" ({segs} frame(s) kept)") } else { String::new() };
+                self.events.push(Event::Toast { message: format!("{} stopped{kept}", kind.label()), error: false });
+            } else if kind == JobKind::RotoPropagate {
+                self.events.push(Event::Toast { message: format!("Roto Brush: propagated {} frame(s) in {:.1} s", segs, p.elapsed), error: false });
             }
+            // Rendered frames depend on the result (an analysis' group, the segmentation cache).
             self.bump();
         }
         changed
@@ -567,6 +677,7 @@ mod tests {
             WorkerJob::Warp { comp, layer: LayerId(3), effect: 9 },
             WorkerJob::RotoFreeze { comp, layer: LayerId(3), effect: 9 },
             WorkerJob::Camera { comp, layer: LayerId(3), effect: 9 },
+            WorkerJob::RotoPropagate { comp, layer: LayerId(3), effect: 9, direction: crate::roto::Direction::Forward },
             WorkerJob::Track {
                 comp,
                 layer: LayerId(1),
@@ -606,6 +717,7 @@ mod tests {
             WorkerReply::Item { update: ItemUpdate::Finished { id: 3, status: RenderStatus::Failed("x".into()), seconds: 1.5, output: Some("/a.gif".into()) } },
             WorkerReply::Progress { done: 1, total: 2 },
             WorkerReply::Group { comp, layer: LayerId(1), group: Box::new(g), message: "ok".into() },
+            WorkerReply::Segs { segs: vec![SegData::new(5, &effectcraft_track::roto::FrameSeg::empty(4, 3))] },
             WorkerReply::Failed { error: "boom".into() },
             WorkerReply::Done,
         ] {

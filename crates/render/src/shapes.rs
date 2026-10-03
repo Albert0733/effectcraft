@@ -586,7 +586,7 @@ pub fn render(ctx: &EvalCtx, layer: &Layer, contents: &PropGroup, s: f64) -> Buf
 mod tests;
 
 /// The filled outlines of a shape layer in layer space with their straight colours (gradient
-/// fills: the colour half way along), for Advanced 3D extrusion. Strokes are not extruded.
+/// fills: the colour half way along), without strokes (see [`extrusion_outlines`]).
 pub fn fill_outlines(ctx: &EvalCtx, layer: &Layer, contents: &PropGroup) -> Vec<(Vec<BezPath>, [f32; 4])> {
     let mut arena = Vec::new();
     let (draws, _) = collect(ctx, layer, contents, &mut arena);
@@ -604,6 +604,39 @@ pub fn fill_outlines(ctx: &EvalCtx, layer: &Layer, contents: &PropGroup) -> Vec<
             (!paths.is_empty()).then_some((paths, [c[0], c[1], c[2], c[3] * d.opacity]))
         })
         .collect()
+}
+
+/// The painted regions of a shape layer for Advanced 3D extrusion, bottom paint first: fills
+/// (gradient fills: the colour half way along) and strokes, each stroke turned into the region
+/// it covers (outline of the stroke with its width, joins, caps and dashes, overlaps resolved).
+pub fn extrusion_outlines(ctx: &EvalCtx, layer: &Layer, contents: &PropGroup) -> Vec<(Vec<BezPath>, [f32; 4])> {
+    let mut arena = Vec::new();
+    let (draws, _) = collect(ctx, layer, contents, &mut arena);
+    draws
+        .iter()
+        .rev()
+        .filter(|d| d.opacity > 0.0)
+        .filter_map(|d| {
+            let paths: Vec<BezPath> = d.slots.iter().map(|&i| arena[i].clone()).filter(|p| !p.elements().is_empty()).collect();
+            if paths.is_empty() {
+                return None;
+            }
+            let (c, region) = match &d.paint {
+                Paint::Fill { color, .. } => (*color, paths),
+                Paint::Gradient { g, stroke: None, .. } => (g.sample(0.5), paths),
+                Paint::Stroke { color, style } => (*color, vec![stroke_region(&paths, style)?]),
+                Paint::Gradient { g, stroke: Some(style), .. } => (g.sample(0.5), vec![stroke_region(&paths, style)?]),
+            };
+            Some((region, [c[0], c[1], c[2], c[3] * d.opacity]))
+        })
+        .collect()
+}
+
+/// The filled region a stroke covers: its outline with self-overlaps resolved (non-zero).
+pub fn stroke_region(paths: &[BezPath], style: &StrokeStyle) -> Option<BezPath> {
+    let o = effectcraft_path::stroke_outline(paths, style, 1.0)?;
+    let r = effectcraft_path::boolean::normalize(&o, FillRule::NonZero);
+    (!r.elements().is_empty()).then_some(r)
 }
 
 /// Layer-space bounds of a shape layer's painted contents (strokes included), without

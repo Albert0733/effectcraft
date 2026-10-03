@@ -249,8 +249,193 @@ fn tint_offset(c: [f32; 4]) -> [f32; 3] {
     [c[0] - l, c[1] - l, c[2] - l]
 }
 
+/// Control points `x,y x,y …` (0..1, whitespace or `;` separated), sorted by x.
+fn parse_points(s: &str) -> Vec<(f32, f32)> {
+    let mut pts: Vec<(f32, f32)> = s
+        .split(|c: char| c.is_whitespace() || c == ';')
+        .filter_map(|t| {
+            let (x, y) = t.split_once(',')?;
+            let (x, y) = (x.trim().parse::<f32>().ok()?, y.trim().parse::<f32>().ok()?);
+            (x.is_finite() && y.is_finite()).then_some((x, y))
+        })
+        .collect();
+    pts.sort_by(|a, b| a.0.total_cmp(&b.0));
+    pts.dedup_by(|a, b| (a.0 - b.0).abs() < 1e-6);
+    pts
+}
+
+/// A Lumetri hue / saturation curve: control points `x,y` in 0..1 where y = 0.5 is neutral,
+/// interpolated with a cardinal (Catmull-Rom) spline through the points. Hue curves wrap
+/// around (x = 0 and x = 1 are the same hue); the others are flat beyond their end points.
+/// Tabulated as offsets `y − 0.5`.
+#[derive(Clone, Debug)]
+pub struct OffsetCurve {
+    lut: Vec<f32>,
+}
+
+impl OffsetCurve {
+    const N: usize = 512;
+
+    /// `None` for an empty or flat-neutral curve.
+    pub fn parse(s: &str, periodic: bool) -> Option<OffsetCurve> {
+        let pts = parse_points(s);
+        if pts.is_empty() || pts.iter().all(|p| (p.1 - 0.5).abs() < 1e-6) {
+            return None;
+        }
+        let mut ext: Vec<(f32, f32)> = vec![];
+        if periodic {
+            let wrapped: Vec<(f32, f32)> = pts.iter().map(|&(x, y)| (x.rem_euclid(1.0), y)).collect();
+            let mut w = wrapped;
+            w.sort_by(|a, b| a.0.total_cmp(&b.0));
+            for k in -1..=1 {
+                ext.extend(w.iter().map(|&(x, y)| (x + k as f32, y)));
+            }
+        } else {
+            let (x0, y0) = pts[0];
+            let (x1, y1) = pts[pts.len() - 1];
+            ext.push((x0.min(0.0) - 2.0, y0));
+            ext.push((x0.min(0.0) - 1.0, y0));
+            ext.extend(pts.iter().copied());
+            ext.push((x1.max(1.0) + 1.0, y1));
+            ext.push((x1.max(1.0) + 2.0, y1));
+        }
+        let n = ext.len();
+        // Tangents: the mean of the neighbouring slopes, flat at local extrema and next to flat
+        // segments so the curve never overshoots its points.
+        let slope = |k: usize| (ext[k + 1].1 - ext[k].1) / (ext[k + 1].0 - ext[k].0).max(1e-6);
+        let m: Vec<f32> = (0..n)
+            .map(|k| {
+                if k == 0 || k == n - 1 {
+                    return 0.0;
+                }
+                let (a, b) = (slope(k - 1), slope(k));
+                if a * b <= 0.0 { 0.0 } else { (a + b) * 0.5 }
+            })
+            .collect();
+        let eval = |x: f32| -> f32 {
+            let k = ext.partition_point(|p| p.0 <= x).saturating_sub(1).min(n - 2);
+            let (xa, ya) = ext[k];
+            let (xb, yb) = ext[k + 1];
+            let h = (xb - xa).max(1e-6);
+            let t = ((x - xa) / h).clamp(0.0, 1.0);
+            let (t2, t3) = (t * t, t * t * t);
+            (2.0 * t3 - 3.0 * t2 + 1.0) * ya + (t3 - 2.0 * t2 + t) * h * m[k] + (-2.0 * t3 + 3.0 * t2) * yb + (t3 - t2) * h * m[k + 1]
+        };
+        let single = pts.len() == 1;
+        let lut = (0..=Self::N).map(|i| if single { pts[0].1 - 0.5 } else { eval(i as f32 / Self::N as f32) - 0.5 }).collect();
+        Some(OffsetCurve { lut })
+    }
+
+    /// Offset from neutral at `x` (clamped to 0..1).
+    pub fn at(&self, x: f32) -> f32 {
+        let f = x.clamp(0.0, 1.0) * Self::N as f32;
+        let i = (f as usize).min(Self::N - 1);
+        let t = f - i as f32;
+        self.lut[i] + (self.lut[i + 1] - self.lut[i]) * t
+    }
+}
+
+/// Lumetri's built-in creative looks (our own formulas; Custom loads a `.cube` file).
+pub const LUMETRI_LOOKS: [&str; 8] =
+    ["None", "Custom", "EC Warm Film", "EC Cool Night", "EC Bleach Bypass", "EC Teal & Orange", "EC Faded Matte", "EC Monochrome"];
+
+fn builtin_look(look: u32, c: [f32; 3]) -> [f32; 3] {
+    let l = luminance(c[0], c[1], c[2]);
+    match look {
+        2 => [c[0] * 1.06 + 0.015, c[1] * 1.01 + 0.01, c[2] * 0.88],
+        3 => [c[0] * 0.82, c[1] * 0.92, c[2] * 1.08 + 0.02].map(|v| v * 0.92),
+        4 => {
+            // Silver retained: half the saturation, a luminance overlay for contrast.
+            let d = c.map(|v| l + (v - l) * 0.45);
+            let o = |v: f32| if l < 0.5 { 2.0 * v * l } else { 1.0 - 2.0 * (1.0 - v) * (1.0 - l) };
+            d.map(|v| v * 0.5 + o(v) * 0.5)
+        }
+        5 => {
+            let t = (l - 0.5).clamp(-0.5, 0.5);
+            [c[0] + 0.18 * t, c[1] + 0.03 * t, c[2] - 0.16 * t]
+        }
+        6 => c.map(|v| 0.08 + v * 0.84).map(|v| l + (v - l) * 0.8),
+        7 => [l; 3],
+        _ => c,
+    }
+}
+
+/// HSL Secondary's Show Mask styles.
+const HSL_MASK_STYLES: [&str; 3] = ["Color/Gray", "Color/Black", "White/Black"];
+
+/// HSL Secondary key: membership (0..1) of an HSL colour (h, s, l in 0..1).
+struct HslKey {
+    hue: Option<(f32, f32, f32)>,
+    sat: Option<(f32, f32, f32)>,
+    luma: Option<(f32, f32, f32)>,
+}
+
+impl HslKey {
+    fn from(ctx: &EffectCtx) -> HslKey {
+        let pr = ctx.params;
+        let k = |id: &str| pr.f(&format!("hslSecondary/key/{id}")) as f32;
+        let on = |id: &str| pr.get(&format!("hslSecondary/key/{id}")).is_none_or(|v| v.as_bool());
+        let band = |lo: &str, hi: &str, soft: &str| (k(lo) / 100.0, k(hi) / 100.0, k(soft) / 100.0);
+        HslKey {
+            hue: on("hueEnabled").then(|| (k("hueCenter"), k("hueRange"), k("hueSoftness"))),
+            sat: on("saturationEnabled").then(|| band("saturationLow", "saturationHigh", "saturationSoftness")),
+            luma: on("lightnessEnabled").then(|| band("lightnessLow", "lightnessHigh", "lightnessSoftness")),
+        }
+    }
+    fn band(v: f32, (lo, hi, soft): (f32, f32, f32)) -> f32 {
+        let (lo, hi) = (lo.min(hi), lo.max(hi));
+        let d = if v < lo {
+            lo - v
+        } else if v > hi {
+            v - hi
+        } else {
+            0.0
+        };
+        if d <= 0.0 {
+            1.0
+        } else if soft > 0.0 {
+            (1.0 - d / soft).max(0.0)
+        } else {
+            0.0
+        }
+    }
+    fn weight(&self, h: f32, s: f32, l: f32) -> f32 {
+        let mut w = 1.0;
+        if let Some((centre, range, soft)) = self.hue
+            && range < 180.0
+        {
+            let d = ((h * 360.0 - centre).rem_euclid(360.0)).min((centre - h * 360.0).rem_euclid(360.0));
+            let hw = if d <= range {
+                1.0
+            } else if soft > 0.0 {
+                (1.0 - (d - range) / soft).max(0.0)
+            } else {
+                0.0
+            };
+            // Greys have no hue: they belong to a hue key only as far as they are saturated.
+            w *= hw * (s * 20.0).min(1.0);
+        }
+        if let Some(b) = self.sat {
+            w *= Self::band(s, b);
+        }
+        if let Some(b) = self.luma {
+            w *= Self::band(l, b);
+        }
+        w
+    }
+}
+
+/// Lumetri Color: Basic Correction (input LUT, white balance, HDR range, tone, saturation),
+/// Creative (look, adjustments), Curves (tone sliders, RGB curves, hue/saturation curves),
+/// Color Wheels, HSL Secondary (key, refine, correction), Vignette, in that order.
 fn lumetri(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let pr = ctx.params;
+    let hdr = pr.b("highDynamicRange");
+    let hdr_white = if hdr { (pr.get("basicCorrection/tone/hdrWhite").map(Value::as_f64).unwrap_or(100.0) / 100.0).max(0.01) as f32 } else { 1.0 };
+    let hdr_spec = if hdr { (pr.f("basicCorrection/tone/hdrSpecular") / 100.0) as f32 } else { 0.0 };
+    let input_lut = if pr.e("basicCorrection/inputLut") == 1 { crate::utility::load_lut(pr.s("basicCorrection/inputLutFile")) } else { None };
+    let look = pr.e("creative/look");
+    let look_lut = if look == 1 { crate::utility::load_lut(pr.s("creative/lookFile")) } else { None };
     let temp = (pr.f("basicCorrection/whiteBalance/temperature") / 100.0) as f32;
     let tint = (pr.f("basicCorrection/whiteBalance/tint") / 100.0) as f32;
     let expo = 2f32.powf(pr.f("basicCorrection/tone/exposure") as f32);
@@ -277,6 +462,12 @@ fn lumetri(ctx: &EffectCtx, mut b: Buf) -> Buf {
         ]
     };
     let (cm, cr, cg, cb) = (curve("curveMaster"), curve("curveRed"), curve("curveGreen"), curve("curveBlue"));
+    let rgb_curves =
+        ["curves/rgbCurves/master", "curves/rgbCurves/red", "curves/rgbCurves/green", "curves/rgbCurves/blue"].map(|id| crate::color2::Curve::parse(pr.s(id)));
+    let hs = |id: &str, periodic: bool| OffsetCurve::parse(pr.s(&format!("curves/hueSaturationCurves/{id}")), periodic);
+    let (hue_sat, hue_hue, hue_luma, luma_sat, sat_sat) =
+        (hs("hueVsSat", true), hs("hueVsHue", true), hs("hueVsLuma", true), hs("lumaVsSat", false), hs("satVsSat", false));
+    let any_hs = hue_sat.is_some() || hue_hue.is_some() || hue_luma.is_some() || luma_sat.is_some() || sat_sat.is_some();
     let ws = tint_offset(pr.color("colorWheels/shadowsWheel"));
     let wm = tint_offset(pr.color("colorWheels/midtonesWheel"));
     let wh_ = tint_offset(pr.color("colorWheels/highlightsWheel"));
@@ -285,12 +476,29 @@ fn lumetri(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let vround = (pr.f("vignette/vignetteRoundness") / 100.0) as f32;
     let vfeather = (pr.f("vignette/vignetteFeather") / 100.0) as f32;
     let sharpen = (pr.f("creative/adjustments/sharpen") / 100.0) as f32;
+    // HSL Secondary.
+    let sec = |id: &str, d: f64| pr.get(&format!("hslSecondary/{id}")).map(Value::as_f64).unwrap_or(d) as f32;
+    let s_temp = sec("correction/temperature", 0.0) / 100.0;
+    let s_tint = sec("correction/tint", 0.0) / 100.0;
+    let s_contrast = sec("correction/contrast", 0.0) / 100.0;
+    let s_sharpen = sec("correction/sharpen", 0.0) / 100.0;
+    let s_sat = sec("correction/saturation", 100.0) / 100.0;
+    let s_wheel = pr.get("hslSecondary/correction/correctionWheel").map(|v| tint_offset(v.as_color())).unwrap_or([0.0; 3]);
+    let show_mask = pr.b("hslSecondary/key/showMask");
+    let sec_active = show_mask || s_temp != 0.0 || s_tint != 0.0 || s_contrast != 0.0 || s_sharpen != 0.0 || s_sat != 1.0 || s_wheel != [0.0; 3];
     let (lx, ly, lw, lh) = layer_rect(ctx, &b);
     let w = b.img.width as usize;
     let (cx, cy) = (lx + lw * 0.5, ly + lh * 0.5);
-    map_colour(&mut b, |i, c| {
+    map_colour(&mut b, |_, c| {
         let mut c = c;
-        // Basic Correction: white balance, exposure, contrast, tone, saturation.
+        if let Some(l) = &input_lut {
+            c = l.apply(c);
+        }
+        // Basic Correction: white balance, exposure, contrast, tone, saturation. With High
+        // Dynamic Range the tone controls work on a range whose white is HDR White.
+        if hdr_white != 1.0 {
+            c = c.map(|v| v / hdr_white);
+        }
         if temp != 0.0 || tint != 0.0 {
             c = [c[0] * (1.0 + 0.25 * temp), c[1] * (1.0 - 0.25 * tint), c[2] * (1.0 - 0.25 * temp)];
         }
@@ -306,13 +514,24 @@ fn lumetri(ctx: &EffectCtx, mut b: Buf) -> Buf {
             let d = 0.25 * hi * smoothstep(0.5, 1.0, lt) + 0.25 * sh * (1.0 - smoothstep(0.0, 0.5, lt)) + 0.2 * wh * lt * lt + 0.2 * bl * (1.0 - lt).powi(2);
             c = c.map(|v| v + d);
         }
+        if hdr_spec != 0.0 {
+            // HDR Specular scales what lies above white.
+            c = c.map(|v| if v > 1.0 { 1.0 + (v - 1.0) * (1.0 + hdr_spec).max(0.0) } else { v });
+        }
+        if hdr_white != 1.0 {
+            c = c.map(|v| v * hdr_white);
+        }
         let l = luminance(c[0], c[1], c[2]);
         if sat != 1.0 {
             c = c.map(|v| l + (v - l) * sat);
         }
-        // Creative.
-        if intensity != 0.0 && (faded != 0.0 || vib != 0.0 || csat != 1.0 || st != [0.0; 3] || ht != [0.0; 3]) {
-            let mut d = c;
+        // Creative: the look, then the adjustments, all at Intensity.
+        let has_look = look >= 2 || look_lut.is_some();
+        if intensity != 0.0 && (has_look || faded != 0.0 || vib != 0.0 || csat != 1.0 || st != [0.0; 3] || ht != [0.0; 3]) {
+            let mut d = match &look_lut {
+                Some(lut) => lut.apply(c),
+                None => builtin_look(look, c),
+            };
             if faded != 0.0 {
                 d = d.map(|v| v * (1.0 - 0.25 * faded) + 0.12 * faded);
             }
@@ -336,9 +555,40 @@ fn lumetri(ctx: &EffectCtx, mut b: Buf) -> Buf {
             }
             c = [lerp(c[0], d[0], intensity), lerp(c[1], d[1], intensity), lerp(c[2], d[2], intensity)];
         }
-        // Curves.
+        // Curves: tone sliders, RGB curves (master, then each channel), hue/saturation curves.
         c = c.map(|v| tone_curve(v, cm[0], cm[1], cm[2]));
         c = [tone_curve(c[0], cr[0], cr[1], cr[2]), tone_curve(c[1], cg[0], cg[1], cg[2]), tone_curve(c[2], cb[0], cb[1], cb[2])];
+        if let Some(m) = &rgb_curves[0] {
+            c = c.map(|v| m.eval(v));
+        }
+        for k in 0..3 {
+            if let Some(cv) = &rgb_curves[k + 1] {
+                c[k] = cv.eval(c[k]);
+            }
+        }
+        if any_hs {
+            let (h, s, l) = rgb_to_hsl(c[0].clamp(0.0, 1.0), c[1].clamp(0.0, 1.0), c[2].clamp(0.0, 1.0));
+            let chroma = (s * 20.0).min(1.0);
+            let off = |cv: &Option<OffsetCurve>, x: f32| cv.as_ref().map(|cv| cv.at(x)).unwrap_or(0.0);
+            // y = 1 doubles saturation, y = 0 removes it.
+            let mut ms = (1.0 + 2.0 * off(&hue_sat, h) * chroma) * (1.0 + 2.0 * off(&luma_sat, l)) * (1.0 + 2.0 * off(&sat_sat, s));
+            ms = ms.max(0.0);
+            let dh = off(&hue_hue, h) * chroma;
+            let dl = off(&hue_luma, h) * chroma;
+            let luma = luminance(c[0], c[1], c[2]);
+            if dh != 0.0 {
+                let (r, g, b2) = hsl_to_rgb((h + dh).rem_euclid(1.0), s, l);
+                // Keep values outside 0..1 (HDR) by moving only the in-range part.
+                let base = [c[0].clamp(0.0, 1.0), c[1].clamp(0.0, 1.0), c[2].clamp(0.0, 1.0)];
+                c = [c[0] + r - base[0], c[1] + g - base[1], c[2] + b2 - base[2]];
+            }
+            if ms != 1.0 {
+                c = c.map(|v| luma + (v - luma) * ms);
+            }
+            if dl != 0.0 {
+                c = c.map(|v| v + dl);
+            }
+        }
         // Color wheels.
         if ws != [0.0; 3] || wm != [0.0; 3] || wh_ != [0.0; 3] {
             let lt = luminance(c[0], c[1], c[2]).clamp(0.0, 1.0);
@@ -347,6 +597,70 @@ fn lumetri(ctx: &EffectCtx, mut b: Buf) -> Buf {
             let m = 1.0 - a - z;
             for k in 0..3 {
                 c[k] += 0.5 * (ws[k] * a + wm[k] * m + wh_[k] * z);
+            }
+        }
+        c
+    });
+    // HSL Secondary: key the graded colour, refine the matte, apply the correction through it.
+    let mask = sec_active.then(|| {
+        let key = HslKey::from(ctx);
+        let mut m = Plane::from_image(&b.img, |px| {
+            let (c, a) = unpremul(px);
+            if a <= 0.0 {
+                return 0.0;
+            }
+            let (h, s, l) = rgb_to_hsl(c[0].clamp(0.0, 1.0), c[1].clamp(0.0, 1.0), c[2].clamp(0.0, 1.0));
+            key.weight(h, s, l)
+        });
+        let denoise = sec("refine/denoise", 0.0) / 100.0;
+        if denoise > 0.0 {
+            // Smooth speckle, then restore the matte's edge contrast.
+            let s = (denoise * 3.0) as f64 * b.scale;
+            m = gauss_plane(&m, s, s);
+            let k = 1.0 + denoise * 2.0;
+            m.data.iter_mut().for_each(|v| *v = ((*v - 0.5) * k + 0.5).clamp(0.0, 1.0));
+        }
+        let blur = sec("refine/blur", 0.0) / 100.0;
+        if blur > 0.0 {
+            let s = (blur * 10.0) as f64 * b.scale;
+            m = gauss_plane(&m, s, s);
+        }
+        if pr.b("hslSecondary/key/invertMask") {
+            m.data.iter_mut().for_each(|v| *v = 1.0 - *v);
+        }
+        m
+    });
+    let style = pr.e("hslSecondary/key/maskStyle");
+    map_colour(&mut b, |i, c| {
+        let mut c = c;
+        if let Some(m) = &mask {
+            let k = m.data[i];
+            if show_mask {
+                return match style {
+                    0 => {
+                        let g = luminance(c[0], c[1], c[2]).clamp(0.0, 1.0) * 0.2 + 0.4;
+                        [lerp(g, c[0], k), lerp(g, c[1], k), lerp(g, c[2], k)]
+                    }
+                    1 => c.map(|v| v * k),
+                    _ => [k; 3],
+                };
+            }
+            if k > 0.0 {
+                let mut d = c;
+                if s_temp != 0.0 || s_tint != 0.0 {
+                    d = [d[0] * (1.0 + 0.25 * s_temp), d[1] * (1.0 - 0.25 * s_tint), d[2] * (1.0 - 0.25 * s_temp)];
+                }
+                if s_contrast != 0.0 {
+                    d = d.map(|v| 0.5 + (v - 0.5) * (1.0 + s_contrast));
+                }
+                let l = luminance(d[0], d[1], d[2]);
+                if s_sat != 1.0 {
+                    d = d.map(|v| l + (v - l) * s_sat);
+                }
+                for j in 0..3 {
+                    d[j] += 0.5 * s_wheel[j];
+                }
+                c = [lerp(c[0], d[0], k), lerp(c[1], d[1], k), lerp(c[2], d[2], k)];
             }
         }
         // Vignette.
@@ -366,7 +680,8 @@ fn lumetri(ctx: &EffectCtx, mut b: Buf) -> Buf {
         }
         c.map(|v| v.max(0.0))
     });
-    if sharpen != 0.0 {
+    let sec_sharpen = if show_mask { 0.0 } else { s_sharpen };
+    if sharpen != 0.0 || (sec_sharpen != 0.0 && mask.is_some()) {
         let luma = Plane::luma(&b.img);
         let blur = gauss_plane(&luma, 1.0 * b.scale, 1.0 * b.scale);
         b.img.data.par_iter_mut().enumerate().for_each(|(i, px)| {
@@ -374,7 +689,8 @@ fn lumetri(ctx: &EffectCtx, mut b: Buf) -> Buf {
             if a <= 0.0 {
                 return;
             }
-            let d = (luma.data[i] - blur.data[i]) * sharpen * 2.0;
+            let amount = sharpen + sec_sharpen * mask.as_ref().map(|m| m.data[i]).unwrap_or(0.0);
+            let d = (luma.data[i] - blur.data[i]) * amount * 2.0;
             *px = premul(c.map(|v| (v + d).max(0.0)), a);
         });
     }
@@ -384,7 +700,10 @@ fn lumetri(ctx: &EffectCtx, mut b: Buf) -> Buf {
 pub fn specs() -> Vec<EffectSpec> {
     let grey = || col(0.5, 0.5, 0.5);
     let mut lum = vec![
-        p("basicCorrection/inputLut", "Input LUT", Value::Enum(0), popup(&["None"])),
+        p("highDynamicRange", "High Dynamic Range", Value::Bool(false), ParamUi::Checkbox),
+        p("basicCorrection/inputLut", "Input LUT", Value::Enum(0), popup(&["None", "Custom"])),
+        // A .cube file path (or the file's text) for Input LUT = Custom.
+        p("basicCorrection/inputLutFile", "Input LUT File", Value::Str(String::new()), ParamUi::Text),
         p("basicCorrection/whiteBalance/temperature", "Temperature", num(0.0), bipolar()),
         p("basicCorrection/whiteBalance/tint", "Tint", num(0.0), bipolar()),
         p("basicCorrection/tone/exposure", "Exposure", num(0.0), slider(-5.0, 5.0, -5.0, 5.0, 2)),
@@ -393,8 +712,11 @@ pub fn specs() -> Vec<EffectSpec> {
         p("basicCorrection/tone/shadows", "Shadows", num(0.0), bipolar()),
         p("basicCorrection/tone/whites", "Whites", num(0.0), bipolar()),
         p("basicCorrection/tone/blacks", "Blacks", num(0.0), bipolar()),
+        p("basicCorrection/tone/hdrWhite", "HDR White", num(100.0), slider(100.0, 10000.0, 100.0, 4000.0, 0)),
+        p("basicCorrection/tone/hdrSpecular", "HDR Specular", num(0.0), bipolar()),
         p("basicCorrection/saturation", "Saturation", num(100.0), slider(0.0, 200.0, 0.0, 200.0, 1)),
-        p("creative/look", "Look", Value::Enum(0), popup(&["None"])),
+        p("creative/look", "Look", Value::Enum(0), popup(&LUMETRI_LOOKS)),
+        p("creative/lookFile", "Look File", Value::Str(String::new()), ParamUi::Text),
         p("creative/lookIntensity", "Intensity", num(100.0), slider(0.0, 200.0, 0.0, 200.0, 1)),
         p("creative/adjustments/fadedFilm", "Faded Film", num(0.0), pct()),
         p("creative/adjustments/sharpen", "Sharpen", num(0.0), bipolar()),
@@ -421,10 +743,50 @@ pub fn specs() -> Vec<EffectSpec> {
     for (id, name) in CURVES {
         lum.push(p(id, name, num(0.0), bipolar()));
     }
+    // Curve graphs: control points "x,y x,y …" in 0..1 (like Curves). RGB curves default to
+    // the identity diagonal; hue/saturation curves are flat at y = 0.5 (no change) and empty
+    // means flat.
+    let pts = |id: &'static str, name: &'static str, d: &str| p(id, name, Value::Str(d.into()), ParamUi::Hidden);
+    lum.extend([
+        pts("curves/rgbCurves/master", "RGB Curve", "0,0 1,1"),
+        pts("curves/rgbCurves/red", "Red Curve", "0,0 1,1"),
+        pts("curves/rgbCurves/green", "Green Curve", "0,0 1,1"),
+        pts("curves/rgbCurves/blue", "Blue Curve", "0,0 1,1"),
+        pts("curves/hueSaturationCurves/hueVsSat", "Hue vs Sat", ""),
+        pts("curves/hueSaturationCurves/hueVsHue", "Hue vs Hue", ""),
+        pts("curves/hueSaturationCurves/hueVsLuma", "Hue vs Luma", ""),
+        pts("curves/hueSaturationCurves/lumaVsSat", "Luma vs Sat", ""),
+        pts("curves/hueSaturationCurves/satVsSat", "Sat vs Sat", ""),
+    ]);
     lum.extend([
         p("colorWheels/shadowsWheel", "Shadows", grey(), ParamUi::Color),
         p("colorWheels/midtonesWheel", "Midtones", grey(), ParamUi::Color),
         p("colorWheels/highlightsWheel", "Highlights", grey(), ParamUi::Color),
+        // HSL Secondary: key (hue centre / range / softness in degrees, saturation and
+        // lightness bands in %), refine, correction.
+        p("hslSecondary/key/hueEnabled", "H", Value::Bool(true), ParamUi::Checkbox),
+        p("hslSecondary/key/hueCenter", "Hue Center", num(0.0), ParamUi::Angle),
+        p("hslSecondary/key/hueRange", "Hue Range", num(180.0), slider(0.0, 180.0, 0.0, 180.0, 1)),
+        p("hslSecondary/key/hueSoftness", "Hue Softness", num(0.0), slider(0.0, 180.0, 0.0, 90.0, 1)),
+        p("hslSecondary/key/saturationEnabled", "S", Value::Bool(true), ParamUi::Checkbox),
+        p("hslSecondary/key/saturationLow", "Saturation Low", num(0.0), pct()),
+        p("hslSecondary/key/saturationHigh", "Saturation High", num(100.0), pct()),
+        p("hslSecondary/key/saturationSoftness", "Saturation Softness", num(0.0), pct()),
+        p("hslSecondary/key/lightnessEnabled", "L", Value::Bool(true), ParamUi::Checkbox),
+        p("hslSecondary/key/lightnessLow", "Lightness Low", num(0.0), pct()),
+        p("hslSecondary/key/lightnessHigh", "Lightness High", num(100.0), pct()),
+        p("hslSecondary/key/lightnessSoftness", "Lightness Softness", num(0.0), pct()),
+        p("hslSecondary/key/showMask", "Show Mask", Value::Bool(false), ParamUi::Checkbox),
+        p("hslSecondary/key/maskStyle", "Mask Style", Value::Enum(0), popup(&HSL_MASK_STYLES)),
+        p("hslSecondary/key/invertMask", "Invert Mask", Value::Bool(false), ParamUi::Checkbox),
+        p("hslSecondary/refine/denoise", "Denoise", num(0.0), pct()),
+        p("hslSecondary/refine/blur", "Blur", num(0.0), pct()),
+        p("hslSecondary/correction/correctionWheel", "Correction", grey(), ParamUi::Color),
+        p("hslSecondary/correction/temperature", "Temperature", num(0.0), bipolar()),
+        p("hslSecondary/correction/tint", "Tint", num(0.0), bipolar()),
+        p("hslSecondary/correction/contrast", "Contrast", num(0.0), bipolar()),
+        p("hslSecondary/correction/sharpen", "Sharpen", num(0.0), bipolar()),
+        p("hslSecondary/correction/saturation", "Saturation", num(100.0), slider(0.0, 200.0, 0.0, 200.0, 1)),
         p("vignette/vignetteAmount", "Amount", num(0.0), slider(-5.0, 5.0, -5.0, 5.0, 2)),
         p("vignette/vignetteMidpoint", "Midpoint", num(50.0), pct()),
         p("vignette/vignetteRoundness", "Roundness", num(0.0), bipolar()),
@@ -579,5 +941,134 @@ mod tests {
         let c = run("ec.color.lumetri", &[("curves/curveMasterMidtones", num(50.0))], g.clone());
         assert!(c.get(0, 0)[0] > 0.4);
         assert_eq!(c.data, run("ec.color.lumetri", &[("curves/curveMasterMidtones", num(50.0))], g).data);
+    }
+
+    fn s(v: &str) -> Value {
+        Value::Str(v.into())
+    }
+
+    /// Red, green and grey swatches side by side.
+    fn swatches() -> Image {
+        let mut img = Image::new(3, 1);
+        img.set(0, 0, [0.8, 0.1, 0.1, 1.0]);
+        img.set(1, 0, [0.1, 0.8, 0.1, 1.0]);
+        img.set(2, 0, [0.5, 0.5, 0.5, 1.0]);
+        img
+    }
+
+    #[test]
+    fn lumetri_rgb_curves_per_channel() {
+        let g = Image::filled(2, 2, [0.5, 0.5, 0.5, 1.0]);
+        let m = run("ec.color.lumetri", &[("curves/rgbCurves/master", s("0,0 0.5,0.75 1,1"))], g.clone()).get(0, 0);
+        assert!((m[0] - 0.75).abs() < 1e-3 && (m[2] - 0.75).abs() < 1e-3);
+        let r = run("ec.color.lumetri", &[("curves/rgbCurves/red", s("0,0 0.5,0.25 1,1"))], g).get(0, 0);
+        assert!((r[0] - 0.25).abs() < 1e-3 && (r[1] - 0.5).abs() < 1e-4);
+    }
+
+    #[test]
+    fn lumetri_hue_saturation_curves_target_hues() {
+        let img = swatches();
+        // Hue vs Sat: desaturate reds only (a dip to 0 at hue 0, neutral from 0.2 to 0.8).
+        let out = run("ec.color.lumetri", &[("curves/hueSaturationCurves/hueVsSat", s("0,0 0.2,0.5 0.8,0.5"))], img.clone());
+        let red = out.get(0, 0);
+        assert!((red[0] - red[1]).abs() < 0.02, "red desaturated: {red:?}");
+        assert!(close_px(out.get(1, 0), img.get(1, 0), 1e-3), "green untouched");
+        assert!(close_px(out.get(2, 0), img.get(2, 0), 1e-4), "grey untouched");
+        // Hue vs Hue: shift reds by +1/6 turn (y = 0.5 + 60/360) towards yellow.
+        let out = run("ec.color.lumetri", &[("curves/hueSaturationCurves/hueVsHue", s("0,0.6667 0.2,0.5 0.8,0.5"))], img.clone());
+        let p = out.get(0, 0);
+        assert!(p[1] > 0.6 && p[0] > 0.6 && p[2] < 0.2, "red became yellow: {p:?}");
+        // Hue vs Luma brightens greens only.
+        let out = run("ec.color.lumetri", &[("curves/hueSaturationCurves/hueVsLuma", s("0.333,0.7 0.1,0.5 0.6,0.5"))], img.clone());
+        assert!(out.get(1, 0)[1] > 0.85 && close_px(out.get(0, 0), img.get(0, 0), 1e-3));
+        // Luma vs Sat / Sat vs Sat: y = 0 everywhere removes all saturation.
+        for id in ["lumaVsSat", "satVsSat"] {
+            let out = run("ec.color.lumetri", &[(&format!("curves/hueSaturationCurves/{id}"), s("0,0 1,0"))], img.clone());
+            let p = out.get(0, 0);
+            assert!((p[0] - p[1]).abs() < 1e-3 && (p[1] - p[2]).abs() < 1e-3, "{id}: {p:?}");
+        }
+    }
+
+    fn close_px(a: [f32; 4], b: [f32; 4], eps: f32) -> bool {
+        a.iter().zip(b).all(|(x, y)| (x - y).abs() <= eps)
+    }
+
+    #[test]
+    fn lumetri_hsl_secondary_keys_and_corrects() {
+        let img = swatches();
+        let key_red = [("hslSecondary/key/hueCenter", num(0.0)), ("hslSecondary/key/hueRange", num(20.0)), ("hslSecondary/key/hueSoftness", num(10.0))];
+        let mut vals: Vec<(&str, Value)> = key_red.to_vec();
+        vals.push(("hslSecondary/correction/saturation", num(0.0)));
+        let out = run("ec.color.lumetri", &vals, img.clone());
+        let r = out.get(0, 0);
+        assert!((r[0] - r[1]).abs() < 1e-3, "red desaturated through the key: {r:?}");
+        assert!(close_px(out.get(1, 0), img.get(1, 0), 1e-5) && close_px(out.get(2, 0), img.get(2, 0), 1e-5));
+        // Show Mask (White/Black) shows the key; Invert Mask flips it.
+        let mut vals: Vec<(&str, Value)> = key_red.to_vec();
+        vals.extend([("hslSecondary/key/showMask", Value::Bool(true)), ("hslSecondary/key/maskStyle", Value::Enum(2))]);
+        let m = run("ec.color.lumetri", &vals, img.clone());
+        assert_eq!([m.get(0, 0)[0], m.get(1, 0)[0], m.get(2, 0)[0]], [1.0, 0.0, 0.0]);
+        vals.push(("hslSecondary/key/invertMask", Value::Bool(true)));
+        let m = run("ec.color.lumetri", &vals, img.clone());
+        assert_eq!([m.get(0, 0)[0], m.get(1, 0)[0], m.get(2, 0)[0]], [0.0, 1.0, 1.0]);
+        // Lightness band keys only the bright grey; Blur softens the matte across pixels.
+        let vals = [
+            ("hslSecondary/key/lightnessLow", num(40.0)),
+            ("hslSecondary/key/lightnessHigh", num(60.0)),
+            ("hslSecondary/key/showMask", Value::Bool(true)),
+            ("hslSecondary/key/maskStyle", Value::Enum(2)),
+        ];
+        let m = run("ec.color.lumetri", &vals, img.clone());
+        assert_eq!(m.get(2, 0)[0], 1.0);
+        let mut wide = Image::new(32, 1);
+        for x in 0..32 {
+            wide.set(x, 0, if x < 16 { [0.8, 0.1, 0.1, 1.0] } else { [0.1, 0.8, 0.1, 1.0] });
+        }
+        let mut vals: Vec<(&str, Value)> = key_red.to_vec();
+        vals.extend([
+            ("hslSecondary/key/showMask", Value::Bool(true)),
+            ("hslSecondary/key/maskStyle", Value::Enum(2)),
+            ("hslSecondary/refine/blur", num(50.0)),
+        ]);
+        let m = run("ec.color.lumetri", &vals, wide);
+        let v = m.get(16, 0)[0];
+        assert!(v > 0.05 && v < 0.95, "blurred matte edge {v}");
+    }
+
+    #[test]
+    fn lumetri_hdr_range_and_looks() {
+        // HDR White 200 nits: the tone controls see 1.6 as 0.8, so Highlights act on it.
+        let bright = Image::filled(2, 2, [1.6, 1.6, 1.6, 1.0]);
+        let sdr = run("ec.color.lumetri", &[("basicCorrection/tone/highlights", num(-100.0))], bright.clone()).get(0, 0)[0];
+        let hdr = run(
+            "ec.color.lumetri",
+            &[("highDynamicRange", Value::Bool(true)), ("basicCorrection/tone/hdrWhite", num(200.0)), ("basicCorrection/tone/highlights", num(-100.0))],
+            bright.clone(),
+        )
+        .get(0, 0)[0];
+        assert!(hdr < 1.6 - 0.05 && sdr < 1.6, "{sdr} {hdr}");
+        let spec = run("ec.color.lumetri", &[("highDynamicRange", Value::Bool(true)), ("basicCorrection/tone/hdrSpecular", num(100.0))], bright).get(0, 0)[0];
+        assert!((spec - 2.2).abs() < 1e-4, "{spec}");
+        // Built-in looks change the image at Intensity; 0 % leaves it.
+        let img = ramp();
+        let mono = run("ec.color.lumetri", &[("creative/look", Value::Enum(7))], img.clone());
+        let p = mono.get(9, 3);
+        assert!((p[0] - p[1]).abs() < 1e-5 && (p[1] - p[2]).abs() < 1e-5);
+        let none = run("ec.color.lumetri", &[("creative/look", Value::Enum(7)), ("creative/lookIntensity", num(0.0))], img.clone());
+        assert!(close(&none, &img, 1e-5));
+        // A Custom look from inline .cube text (swap red and blue).
+        let mut cube = String::from("LUT_3D_SIZE 2\n");
+        for bb in 0..2 {
+            for g in 0..2 {
+                for r in 0..2 {
+                    cube += &format!("{bb} {g} {r}\n");
+                }
+            }
+        }
+        let g = Image::filled(1, 1, [0.9, 0.2, 0.1, 1.0]);
+        let o = run("ec.color.lumetri", &[("creative/look", Value::Enum(1)), ("creative/lookFile", Value::Str(cube.clone()))], g.clone()).get(0, 0);
+        assert!((o[0] - 0.1).abs() < 1e-3 && (o[2] - 0.9).abs() < 1e-3, "{o:?}");
+        let o = run("ec.color.lumetri", &[("basicCorrection/inputLut", Value::Enum(1)), ("basicCorrection/inputLutFile", Value::Str(cube))], g).get(0, 0);
+        assert!((o[0] - 0.1).abs() < 1e-3, "{o:?}");
     }
 }

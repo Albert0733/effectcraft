@@ -299,3 +299,19 @@ pub fn extrude(outlines: &[Outline], p: &ExtrudeParams) -> Primitive {
     }
     prim
 }
+
+/// Gap (pixels) between stacked extrusions of one layer: paint drawn later (a stroke over its
+/// fill, an upper shape group) sits this much nearer the camera per level, so coplanar front
+/// caps never fight in the depth buffer and the stacking order of the 2D layer is kept.
+pub const STACK_GAP: f64 = 0.02;
+
+/// [`extrude`] at stacking level `level` (0 = bottom paint of the layer): the mesh moves
+/// `level × STACK_GAP` towards the camera (−z).
+pub fn extrude_stacked(outlines: &[Outline], p: &ExtrudeParams, level: usize) -> Primitive {
+    let mut prim = extrude(outlines, p);
+    let dz = (level as f64 * STACK_GAP) as f32;
+    for v in &mut prim.positions {
+        v[2] -= dz;
+    }
+    prim
+}

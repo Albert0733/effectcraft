@@ -10,6 +10,7 @@ pub mod audio_fx;
 mod blur2;
 mod blur3;
 pub mod camera_tracker;
+mod card3d;
 pub mod catalog;
 mod channel;
 mod channel2;
@@ -64,22 +65,37 @@ pub mod warp_stab;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-pub use color_fx::{exposure_settings, levels_clip};
-pub use color2::Curve;
-pub use distort2::parse_mesh;
+pub use card3d::{CompLight, CompScene};
+pub use color_fx::{COLORAMA_PRESETS, ColoramaPalette};
+pub use color_fx::{
+    HUESAT_CHANNELS, HUESAT_RANGES, LEVELS_CHANNELS, PHOTO_FILTER_CUSTOM, PHOTO_FILTERS, exposure_settings, fill_uses_masks, huesat_ranges_identity,
+    levels_channel_ids, levels_channel_settings, levels_channels_identity, levels_clip,
+};
+pub use color2::{Curve, auto_correct_settings, equalize_tables, luma_clip_points, shadow_highlight_amounts};
+pub use color3::OffsetCurve;
+pub use distort::transform_shutter;
+pub use distort2::{MAGNIFY_MODES, parse_mesh};
+pub use distort4::liquify_mesh;
 use effectcraft_keyframe::Value;
 use effectcraft_project::build::Ids;
 use effectcraft_project::{GroupKind, ParamUi, PropGroup, Property};
 pub use effectcraft_raster::{AuxChannels, Image};
-pub use misc::{INVERT_ALPHA, INVERT_CHANNELS};
+pub use misc::{INVERT_ALPHA, INVERT_CHANNELS, glow_ab_t, glow_operation};
 pub use sim::particle_state;
 pub use sim3::playground_state;
+pub use stylize2::strobe_on;
 // CPU helpers the GPU kernels share (effectcraft-gpu).
-pub use blur2::camera_lens_spans;
+pub use blur2::{camera_lens_plain, camera_lens_spans};
 pub use generate::gen_mode;
 pub use generate2::pattern_kind as cell_pattern_kind;
 pub use noise::GrainLook;
 pub use transition::place_layer;
+// effectcraft-gpu fx_noise.
+pub use noise::remove_grain_level;
+pub use noise3::{FractalGpu, fractal_gpu};
+pub use time_fx::{posterized_time, time_frames};
+// effectcraft-gpu fx_tone.
+pub use ocio::color_stabilizer_maps;
 
 /// Effect categories in Effects & Presets order.
 pub const CATEGORIES: &[&str] = &[
@@ -273,6 +289,16 @@ pub trait EffectHost: Sync {
     fn aux(&self) -> Option<std::sync::Arc<AuxChannels>> {
         None
     }
+    /// The composition's camera and first light relative to the effect's layer (Card
+    /// Dance / Shatter / Card Wipe's Comp Camera and First Comp Light). `None` when unknown.
+    fn comp_scene(&self) -> Option<CompScene> {
+        None
+    }
+    /// The running effect's own parameters evaluated at another **layer time** (Radio Waves'
+    /// Parameters Are Set At: Birth). `None` when unavailable.
+    fn params_at(&self, _layer_time: f64) -> Option<Params> {
+        None
+    }
     /// A particle simulation backend (GPU particles; see [`psim`]). `None` = simulate on the
     /// CPU.
     fn particles(&self) -> Option<&dyn psim::ParticleSim> {
@@ -296,6 +322,10 @@ pub struct EffectEnv<'a> {
     pub working_space: Option<effectcraft_color::ColorSpace>,
     /// Working-space pixels are linear light (Linearize Working Space).
     pub working_linear: bool,
+    /// The composition's shutter (angle and phase in degrees, samples per frame) when both the
+    /// comp's and the layer's motion blur switches are on (Transform's Use Composition's
+    /// Shutter Angle).
+    pub shutter: Option<(f64, f64, u32)>,
 }
 
 /// What an effect gets to render with.
@@ -537,6 +567,19 @@ pub const PARAM_GROUPS: &[(&str, &str)] = &[
     ("toleranceGroup", "Tolerance"),
     ("inputPhase", "Input Phase"),
     ("outputCycle", "Output Cycle"),
+    ("modify", "Modify"),
+    ("pixelSelection", "Pixel Selection"),
+    ("masking", "Masking"),
+    ("details", "Details"),
+    ("reds", "Reds"),
+    ("yellows", "Yellows"),
+    ("greens", "Greens"),
+    ("cyans", "Cyans"),
+    ("blues", "Blues"),
+    ("magentas", "Magentas"),
+    ("whites", "Whites"),
+    ("neutrals", "Neutrals"),
+    ("blacks", "Blacks"),
     ("moreOptions", "More Options"),
     ("basicCorrection", "Basic Correction"),
     ("whiteBalance", "White Balance"),
@@ -546,9 +589,16 @@ pub const PARAM_GROUPS: &[(&str, &str)] = &[
     ("curves", "Curves"),
     ("colorWheels", "Color Wheels"),
     ("vignette", "Vignette"),
+    ("rgbCurves", "RGB Curves"),
+    ("hueSaturationCurves", "Hue Saturation Curves"),
+    ("hslSecondary", "HSL Secondary"),
+    ("key", "Key"),
+    ("refine", "Refine"),
+    ("correction", "Correction"),
     // Camera Lens Blur.
     ("irisProperties", "Iris Properties"),
     ("highlight", "Highlight"),
+    ("blurMap", "Blur Map"),
     // Numbers.
     ("format", "Format"),
     ("fillAndStroke", "Fill and Stroke"),
@@ -569,9 +619,15 @@ pub const PARAM_GROUPS: &[(&str, &str)] = &[
     ("fineTuning", "Fine Tuning"),
     ("unsharpMask", "Unsharp Mask"),
     ("noiseOptions", "Noise Options (Animation)"),
+    ("previewRegion", "Preview Region"),
+    ("sampling", "Sampling"),
+    ("temporalFiltering", "Temporal Filtering"),
     // Time: Timewarp.
     ("tuning", "Tuning"),
     ("motionBlur", "Motion Blur"),
+    ("smoothing", "Smoothing"),
+    ("weighting", "Weighting"),
+    ("sourceCrops", "Source Crops"),
     // Simulation.
     ("extras", "Extras"),
     ("wiggle", "Wiggle"),
@@ -586,6 +642,7 @@ pub const PARAM_GROUPS: &[(&str, &str)] = &[
     ("hairColor", "Hair Color"),
     ("bottom", "Bottom"),
     ("water", "Water"),
+    ("sky", "Sky"),
     ("lighting", "Lighting"),
     ("material", "Material"),
     ("shape", "Shape"),
@@ -593,7 +650,12 @@ pub const PARAM_GROUPS: &[(&str, &str)] = &[
     ("force2", "Force 2"),
     ("bubbles", "Bubbles"),
     ("rendering", "Rendering"),
+    ("flowMap", "Flow Map"),
     ("heightMapControls", "Height Map Controls"),
+    ("wireframeControls", "Wireframe Controls"),
+    ("ground", "Ground"),
+    ("geometric", "Geometric Distortion"),
+    ("target", "Target Point"),
     ("simulation", "Simulation"),
     ("producer1", "Producer 1"),
     ("producer2", "Producer 2"),
@@ -606,6 +668,11 @@ pub const PARAM_GROUPS: &[(&str, &str)] = &[
     ("xScale", "X Scale"),
     ("yScale", "Y Scale"),
     ("cameraPosition", "Camera Position"),
+    ("cornerPins", "Corner Pins"),
+    ("positionJitter", "Position Jitter"),
+    ("rotationJitter", "Rotation Jitter"),
+    ("textures", "Textures"),
+    ("gradient", "Gradient"),
     ("cannon", "Cannon"),
     ("grid", "Grid"),
     ("layerExploder", "Layer Exploder"),
@@ -614,8 +681,36 @@ pub const PARAM_GROUPS: &[(&str, &str)] = &[
     ("repel", "Repel"),
     ("wall", "Wall"),
     ("persistentPropertyMapper", "Persistent Property Mapper"),
+    ("ephemeralPropertyMapper", "Ephemeral Property Mapper"),
+    ("particleExploder", "Particle Exploder"),
+    ("affects", "Affects"),
+    ("options", "Options"),
     // Keying, Matte, Obsolete (Key Light's groups are in `keylight::GROUPS`).
     ("ultraSettings", "Ultra Settings"),
+    ("additionalForeground", "Additional Foreground"),
+    ("additionalBackground", "Additional Background"),
+    ("cleanupForeground", "Cleanup Foreground"),
+    ("cleanupBackground", "Cleanup Background"),
+    ("cleanupForeground1", "Cleanup Foreground 1"),
+    ("cleanupForeground2", "Cleanup Foreground 2"),
+    ("cleanupForeground3", "Cleanup Foreground 3"),
+    ("cleanupForeground4", "Cleanup Foreground 4"),
+    ("cleanupForeground5", "Cleanup Foreground 5"),
+    ("cleanupForeground6", "Cleanup Foreground 6"),
+    ("cleanupForeground7", "Cleanup Foreground 7"),
+    ("cleanupForeground8", "Cleanup Foreground 8"),
+    ("cleanupForeground9", "Cleanup Foreground 9"),
+    ("cleanupForeground10", "Cleanup Foreground 10"),
+    ("cleanupBackground1", "Cleanup Background 1"),
+    ("cleanupBackground2", "Cleanup Background 2"),
+    ("cleanupBackground3", "Cleanup Background 3"),
+    ("cleanupBackground4", "Cleanup Background 4"),
+    ("cleanupBackground5", "Cleanup Background 5"),
+    ("cleanupBackground6", "Cleanup Background 6"),
+    ("cleanupBackground7", "Cleanup Background 7"),
+    ("cleanupBackground8", "Cleanup Background 8"),
+    ("cleanupBackground9", "Cleanup Background 9"),
+    ("cleanupBackground10", "Cleanup Background 10"),
     ("fillAndStroke", "Fill and Stroke"),
     ("pathOptions", "Path Options"),
     ("controlPoints", "Control Points"),
@@ -623,6 +718,7 @@ pub const PARAM_GROUPS: &[(&str, &str)] = &[
     ("orientation", "Orientation"),
     ("paragraph", "Paragraph"),
     ("preview", "Preview"),
+    ("jitterSettings", "Jitter Settings"),
     // Generate.
     ("positionsColors", "Positions & Colors"),
     ("feather", "Feather"),
@@ -630,6 +726,8 @@ pub const PARAM_GROUPS: &[(&str, &str)] = &[
     ("polygon", "Polygon"),
     ("waveMotion", "Wave Motion"),
     ("waveStroke", "Stroke"),
+    ("imageContour", "Image Contour"),
+    ("waveMask", "Mask"),
     ("coreSettings", "Core Settings"),
     ("glowSettings", "Glow Settings"),
     ("expertSettings", "Expert Settings"),
@@ -719,6 +817,103 @@ pub const GPU_EFFECTS: &[&str] = &[
     "ec.color.selectivecolor",
     "ec.key.linearcolor",
     "ec.keying.keylight",
+    // effectcraft-gpu fx_key (keying, matte, channel)
+    "ec.key.colorkey",
+    "ec.key.luma",
+    "ec.key.colorrange",
+    "ec.key.extract",
+    "ec.key.differencematte",
+    "ec.key.colordifference",
+    "ec.key.screen",
+    "ec.key.spill",
+    "ec.key.advancedspill",
+    "ec.key.keycleaner",
+    "ec.key.unmult",
+    "ec.matte.simplechoker",
+    "ec.matte.mattechoker",
+    "ec.matte.refinesoft",
+    "ec.matte.refinehard",
+    "ec.channel.setmatte",
+    "ec.channel.setchannels",
+    "ec.channel.shiftchannels",
+    "ec.channel.removecolormatting",
+    "ec.channel.arithmetic",
+    "ec.channel.solidcomposite",
+    "ec.channel.combiner",
+    "ec.channel.blend",
+    "ec.channel.calculations",
+    "ec.channel.compoundarithmetic",
+    // effectcraft-gpu fx_tone (colour correction)
+    "ec.color.levelsic",
+    "ec.color.gammapedestalgain",
+    "ec.color.photofilter",
+    "ec.color.changecolor",
+    "ec.color.changetocolor",
+    "ec.color.leavecolor",
+    "ec.color.broadcast",
+    "ec.color.colorbalancehls",
+    "ec.color.videolimiter",
+    "ec.color.psarbitrarymap",
+    "ec.color.cctoner",
+    "ec.color.cccoloroffset",
+    "ec.color.cckernel",
+    "ec.color.autolevels",
+    "ec.color.autocontrast",
+    "ec.color.autocolor",
+    "ec.color.equalize",
+    "ec.color.shadowhighlight",
+    "ec.color.cccolorneutralizer",
+    "ec.color.colorstabilizer",
+    // effectcraft-gpu fx_stylize (stylize, distort)
+    "ec.stylize.posterize",
+    "ec.stylize.threshold",
+    "ec.stylize.ccthreshold",
+    "ec.stylize.ccthresholdrgb",
+    "ec.stylize.strobe",
+    "ec.stylize.ccvignette",
+    "ec.stylize.scatter",
+    "ec.stylize.brushstrokes",
+    "ec.stylize.roughenedges",
+    "ec.stylize.texturize",
+    "ec.stylize.motiontile",
+    "ec.stylize.cckaleida",
+    "ec.stylize.ccrepetile",
+    "ec.distort.mirror",
+    "ec.distort.offset",
+    "ec.distort.polar",
+    "ec.distort.spherize",
+    "ec.distort.cornerpin",
+    "ec.distort.opticscompensation",
+    "ec.distort.magnify",
+    "ec.distort.ccslant",
+    "ec.distort.ccsmear",
+    "ec.distort.ccsplit",
+    "ec.distort.ccsplit2",
+    "ec.distort.cctiler",
+    "ec.distort.ccgriddler",
+    "ec.distort.liquify",
+    "ec.distort.twirllegacy",
+    "ec.distort.ccripplepulse",
+    "ec.distort.ccpowerpin",
+    "ec.distort.ccflomotion",
+    // effectcraft-gpu fx_noise (noise, blur, time)
+    "ec.noise.turbulent",
+    "ec.noise.median",
+    "ec.noise.medianlegacy",
+    "ec.noise.dustscratches",
+    "ec.noise.removegrain",
+    "ec.noise.noisealpha",
+    "ec.noise.noisehls",
+    "ec.noise.noisehlsauto",
+    "ec.blur.smart",
+    "ec.blur.bilateral",
+    "ec.blur.sharpen",
+    "ec.blur.unsharp",
+    "ec.blur.compound",
+    "ec.blur.channel",
+    "ec.channel.minimax",
+    "ec.time.echo",
+    "ec.time.posterizetime",
 ];
 
 /// Effects whose output depends on [`EffectCtx::time`] directly (not only through animated
@@ -732,11 +927,15 @@ pub const TIME_DEPENDENT: &[&str] = &[
     "ec.stylize.strobe",
     "ec.noise.noise",
     "ec.noise.addgrain",
+    // Remove Grain's temporal filtering reads neighbouring frames.
+    "ec.noise.removegrain",
     "ec.noise.noisealpha",
     "ec.noise.noisehlsauto",
     "ec.obsolete.lightning",
     "ec.text.timecode",
     "ec.text.numbers",
+    // Path Text's jitter changes every frame.
+    "ec.obsolete.pathtext",
     // Time effects read neighbouring frames of the layer.
     "ec.time.echo",
     "ec.time.posterizetime",
@@ -746,6 +945,14 @@ pub const TIME_DEPENDENT: &[&str] = &[
     "ec.time.ccforcemotionblur",
     "ec.time.ccwidetime",
     "ec.time.pixelmotionblur",
+    // Refine mattes' Reduce Chatter / motion blur read neighbouring frames.
+    "ec.matte.refinesoft",
+    "ec.matte.refinehard",
+    // Card Wipe's position / rotation jitter moves with time.
+    "ec.transition.cardwipe",
+    // Transform's motion blur and Radio Waves' birth parameters read the parameters at
+    // other times.
+    "ec.distort.transform",
     // Temporal Smoothing reads neighbouring frames.
     "ec.color.autolevels",
     "ec.color.autocontrast",
@@ -780,7 +987,8 @@ pub fn apply(spec: &EffectSpec, ctx: &EffectCtx, buf: Buf) -> Buf {
 #[cfg(test)]
 pub(crate) fn run_fx(id: &str, vals: &[(&str, Value)], img: Image, time: f64, env: EffectEnv) -> Buf {
     let s = find(id).unwrap_or_else(|| panic!("no effect {id}"));
-    let mut params = Params { values: s.params.iter().map(|p| (p.id.to_string(), p.default.clone())).collect() };
+    let size = [img.width as f64, img.height as f64];
+    let mut params = Params { values: s.params.iter().map(|p| (p.id.to_string(), default_value(p, size))).collect() };
     for (k, v) in vals {
         assert!(params.values.contains_key(*k), "{id}: unknown param {k}");
         params.values.insert(k.to_string(), v.clone());

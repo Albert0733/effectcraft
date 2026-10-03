@@ -425,3 +425,113 @@ fn track_mattes_in_advanced_3d() {
     let img = render(&p, cid);
     assert!(img.data[30 * 120 + 30][3] < 0.01 && img.data[70 * 120 + 100][3] > 0.99);
 }
+
+#[test]
+fn collapsed_precomps_join_the_advanced_3d_scene() {
+    // A cube in a nested (Classic 3D) comp, collapsed into an Advanced 3D comp: the cube is
+    // real geometry lit by the parent's light, not a flat card of the nested comp (which, being
+    // Classic 3D, draws no meshes at all).
+    let (mut p, cid) = project(160, 120);
+    let mut nc = Comp::new(160, 120, FrameRate::FPS_30, Tick::from_seconds_f64(1.0));
+    nc.renderer = R3::Classic3D;
+    let nid = p.add_item("N", Default::default(), None, ItemKind::Comp(nc.into()));
+    add(&mut p, nid, LayerSource::Primitive { kind: PrimitiveKind::Cube }, |l| {
+        set(l, "geometryOptions/width", Value::Scalar(60.0));
+        set(l, "geometryOptions/height", Value::Scalar(60.0));
+        set(l, "geometryOptions/depth", Value::Scalar(60.0));
+        set(l, "transform/rotationY", Value::Scalar(35.0));
+        set(l, "transform/rotationX", Value::Scalar(-25.0));
+        set(l, "materialOptions/baseColor", Value::Color([1.0, 1.0, 1.0, 1.0]));
+    });
+    add(&mut p, cid, LayerSource::Light { kind: LightKind::Parallel }, |_| {});
+    add(&mut p, cid, LayerSource::Comp { item: nid }, |l| {
+        l.switches.three_d = true;
+        l.switches.collapse = true;
+    });
+    let shades = |img: &crate::Image| {
+        let mut s: Vec<i32> = img.data.iter().filter(|q| q[3] > 0.99).map(|q| (q[0] * 20.0) as i32).collect();
+        s.sort();
+        s.dedup();
+        s
+    };
+    let img = render(&p, cid);
+    assert!(img.data[60 * 160 + 80][3] > 0.99, "the nested cube covers the centre");
+    assert!(shades(&img).len() >= 3, "faces lit by the parent's light: {:?}", shades(&img));
+    // The scene holds the cube's triangles (a card would be two).
+    let r = Renderer::new(&p, &NoFootage, RenderOpts::default());
+    let comp = p.comp(cid).unwrap();
+    let ctx = crate::EvalCtx::new(&p, cid, comp, Tick::ZERO);
+    let run: Vec<&effectcraft_project::Layer> = comp.layers.iter().filter(|l| l.is_3d() && !l.is_light()).collect();
+    let s = scene_of(&r, &ctx, &run, (160, 120));
+    assert!(s.indices.len() / 3 >= 12, "{} triangles", s.indices.len() / 3);
+    // A 2D collapsed precomp draws its 3D layers through the parent's Advanced 3D renderer too.
+    p.comp_mut(cid).unwrap().layers[0].switches.three_d = false;
+    let flat = render(&p, cid);
+    assert!(flat.data[60 * 160 + 80][3] > 0.99);
+    assert!(shades(&flat).len() >= 3, "{:?}", shades(&flat));
+    // Collapse off: the nested comp renders on its own (Classic 3D: no meshes).
+    p.comp_mut(cid).unwrap().layers[0].switches.collapse = false;
+    p.comp_mut(cid).unwrap().layers[0].switches.three_d = true;
+    assert!(render(&p, cid).data.iter().all(|q| q[3] == 0.0));
+}
+
+#[test]
+fn extruded_strokes_render_as_bevelled_meshes() {
+    let (mut p, cid) = project(200, 120);
+    add(&mut p, cid, LayerSource::Text, |l| {
+        l.switches.three_d = true;
+        let doc = effectcraft_keyframe::TextDoc {
+            text: "I".into(),
+            size: 80.0,
+            fill: [1.0, 1.0, 1.0, 1.0],
+            apply_fill: true,
+            stroke: [1.0, 0.0, 0.0, 1.0],
+            apply_stroke: true,
+            stroke_width: 8.0,
+            stroke_over_fill: false,
+            ..Default::default()
+        };
+        set(l, "text/sourceText", Value::Text(Box::new(doc)));
+        let mut next = 10_000u64;
+        l.props.children.push(build::extrusion_geometry_options(&mut build::Ids(&mut next)).into());
+        set(l, "geometryOptions/extrusionDepth", Value::Scalar(20.0));
+        set(l, "geometryOptions/bevelStyle", Value::Enum(1));
+    });
+    let ctx = crate::EvalCtx { project: &p, comp_id: cid, comp: p.comp(cid).unwrap(), time: Tick::ZERO, expr: None, footage: None };
+    let l = &ctx.comp.layers[0];
+    let params = scene::extrusion_params(&ctx, l).unwrap();
+    let meshes = scene::extruded_meshes(&ctx, l, &params);
+    assert_eq!(meshes.len(), 2, "fill and stroke");
+    let width = |m: &effectcraft_model::Primitive| {
+        let (a, b) = m.positions.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(a, b), q| (a.min(q[0]), b.max(q[0])));
+        b - a
+    };
+    let (fill, stroke) = (&meshes[0], &meshes[1]);
+    assert_eq!(fill.1, [1.0, 1.0, 1.0, 1.0]);
+    assert_eq!(stroke.1, [1.0, 0.0, 0.0, 1.0]);
+    // The stroke reaches half its width beyond the fill on each side, and is extruded too.
+    assert!((width(&stroke.0) - width(&fill.0) - 8.0).abs() < 1.0, "{} vs {}", width(&stroke.0), width(&fill.0));
+    assert!(stroke.0.positions.iter().any(|q| q[2] > 19.0));
+    // Fill Over Stroke: the fill's front cap sits in front of the stroke's.
+    let front = |m: &effectcraft_model::Primitive| m.positions.iter().fold(f32::INFINITY, |a, q| a.min(q[2]));
+    assert!(front(&fill.0) < front(&stroke.0));
+    // Rendered (unlit: base colours): a red rim around the white face.
+    let img = render(&p, cid);
+    let red = img.data.iter().filter(|q| q[3] > 0.99 && q[0] > 0.9 && q[1] < 0.1).count();
+    let white = img.data.iter().filter(|q| q[3] > 0.99 && q[1] > 0.9).count();
+    assert!(red > 50 && white > 50, "red {red}, white {white}");
+}
+
+#[test]
+fn stroke_regions_are_rings() {
+    // A closed path's stroke covers a ring (the inside stays open), so an extruded stroke is a
+    // hollow frame around its fill.
+    let sq = effectcraft_path::rect([100.0, 100.0], [0.0, 0.0], 0.0);
+    let st = effectcraft_path::StrokeStyle { width: 10.0, ..Default::default() };
+    let r = crate::shapes::stroke_region(std::slice::from_ref(&sq), &st).unwrap();
+    let a = effectcraft_path::boolean::filled_area(&r, effectcraft_path::FillRule::NonZero);
+    assert!((a - (110.0 * 110.0 - 90.0 * 90.0)).abs() < 20.0, "{a}");
+    let outlines = effectcraft_model::extrude::group_contours(scene::contours(&r, 0.25));
+    assert_eq!(outlines.len(), 1);
+    assert_eq!(outlines[0].holes.len(), 1);
+}

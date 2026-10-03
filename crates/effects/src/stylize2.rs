@@ -61,6 +61,41 @@ fn cartoon(ctx: &EffectCtx, mut b: Buf) -> Buf {
     } else {
         b.img.clone()
     };
+    // Advanced ▸ Edge Enhancement: one shock-filter step. Each pixel samples from the side of
+    // the nearest edge it belongs to (along the luma gradient, by the sign of the Laplacian):
+    // positive values sharpen the transitions, negative ones soften them.
+    let enh = ctx.params.f("advanced/edgeEnhancement") / 100.0;
+    let smoothed = if enh < 0.0 {
+        // Softening: blend towards a blur of the picture.
+        let s = 1.5 * b.scale;
+        let blur = effectcraft_raster::gaussian_blur(&smoothed, s, s, true);
+        let k = (-enh) as f32;
+        let mut out = smoothed;
+        out.data.par_iter_mut().zip(blur.data.par_iter()).for_each(|(p, q)| (0..4).for_each(|c| p[c] += (q[c] - p[c]) * k));
+        out
+    } else if enh > 0.0 {
+        let l = Plane::luma(&smoothed);
+        let (w, h) = (l.w as i64, l.h as i64);
+        let s = enh * 2.0 * b.scale;
+        let src = smoothed.clone();
+        let mut out = smoothed;
+        out.data.par_iter_mut().enumerate().for_each(|(i, px)| {
+            let (x, y) = ((i as i64) % w, (i as i64) / w);
+            let g = |dx: i64, dy: i64| l.get_clamped(x + dx, y + dy);
+            let (gx, gy) = ((g(1, 0) - g(-1, 0)) * 0.5, (g(0, 1) - g(0, -1)) * 0.5);
+            let lap = g(1, 0) + g(-1, 0) + g(0, 1) + g(0, -1) - 4.0 * g(0, 0);
+            let m = (gx * gx + gy * gy).sqrt();
+            if m < 1e-4 || lap.abs() < 1e-5 || y >= h {
+                return;
+            }
+            let k = -lap.signum() as f64 * s / m as f64;
+            let (sx, sy) = (x as f64 + 0.5 + gx as f64 * k, y as f64 + 0.5 + gy as f64 * k);
+            *px = src.sample_bilinear_clamped(sx, sy);
+        });
+        out
+    } else {
+        smoothed
+    };
     let luma = Plane::luma(&smoothed);
     let edges = if render >= 1 {
         let mag = sobel(&luma);
@@ -188,7 +223,8 @@ fn scatter(ctx: &EffectCtx, mut b: Buf) -> Buf {
 
 // ---- Strobe Light ----
 
-pub(crate) fn strobe_on(time: f64, duration: f64, period: f64, prob: f64, seed: u32) -> bool {
+/// Whether Strobe Light flashes at `time` (also used by the GPU kernels).
+pub fn strobe_on(time: f64, duration: f64, period: f64, prob: f64, seed: u32) -> bool {
     if period <= 0.0 {
         return false;
     }
@@ -543,6 +579,7 @@ pub fn specs() -> Vec<EffectSpec> {
                 p("edge/edgeWidth", "Width", num(1.5), slider(0.0, 10.0, 0.0, 5.0, 2)),
                 p("edge/edgeSoftness", "Softness", num(60.0), pct()),
                 p("edge/edgeOpacity", "Opacity", num(100.0), pct()),
+                p("advanced/edgeEnhancement", "Edge Enhancement", num(0.0), slider(-100.0, 100.0, -100.0, 100.0, 1)),
                 p("advanced/edgeBlackLevel", "Edge Black Level", num(0.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
                 p("advanced/edgeContrast", "Edge Contrast", num(0.5), slider(0.0, 1.0, 0.0, 1.0, 2)),
             ],
@@ -992,5 +1029,31 @@ mod tests {
         let cyc = |e: f64| run(&[("evolutionOptions/cycleEvolution", Value::Bool(true)), ("evolution", num(e))]);
         assert_eq!(cyc(0.0), cyc(360.0));
         assert_ne!(cyc(0.0), cyc(180.0));
+    }
+
+    #[test]
+    fn cartoon_edge_enhancement_sharpens_or_softens() {
+        // A soft 8-pixel ramp from black to white.
+        let mut img = Image::new(32, 4);
+        for y in 0..4 {
+            for x in 0..32 {
+                let v = 0.5 + 0.5 * ((x as f32 - 15.5) / 4.0).tanh();
+                img.set(x, y, [v, v, v, 1.0]);
+            }
+        }
+        let fill = |e: f64| {
+            let v = [
+                ("render", Value::Enum(0)),
+                ("detailRadius", num(0.0)),
+                ("fill/shadingSteps", num(64.0)),
+                ("fill/shadingSmoothness", num(100.0)),
+                ("advanced/edgeEnhancement", num(e)),
+            ];
+            run_at("ec.stylize.cartoon", &v, img.clone(), 0.0).img
+        };
+        let steep = |o: &Image| (0..31).map(|x| (o.get(x + 1, 2)[0] - o.get(x, 2)[0]).abs()).fold(0.0f32, f32::max);
+        let (base, sharp, soft) = (fill(0.0), fill(100.0), fill(-100.0));
+        assert!(steep(&sharp) > steep(&base) + 0.02, "{} vs {}", steep(&sharp), steep(&base));
+        assert!(steep(&soft) < steep(&base) + 1e-4, "{} vs {}", steep(&soft), steep(&base));
     }
 }

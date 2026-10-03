@@ -4,8 +4,10 @@
 //! never waits for the compositor. Results land in a memory-budgeted cache keyed by (project
 //! revision, comp, frame, scale); the timeline draws the cached range as the green cache bar.
 //!
-//! wasm32 has no threads: jobs wait in the same priority queue and [`Frames::pump`] renders them
-//! on the UI thread between egui frames, within a time budget.
+//! wasm32 has no threads: jobs wait in the same priority queue and [`Frames::pump`] hands them
+//! to a [`RemoteFrames`] (the browser's frame worker, a second engine instance fed with project
+//! diffs, `effectcraft_engine::remote`) or, without one, renders them on the UI thread between
+//! egui frames, within a time budget.
 //!
 //! With the disk cache on (Settings ▸ Media & Disk Cache), every CPU-rendered frame is also
 //! written to disk under a content key (the comp's content hash, frame, scale, view and render
@@ -163,6 +165,38 @@ fn frame_disk_key(keys: &ContentKeys, project: &Project, key: &FrameKey, opts_ha
     disk_cache::frame_key(content, key.frame, key.scale, key.view ^ opts_hash)
 }
 
+/// A frame for a [`RemoteFrames`] renderer.
+pub struct RemoteJob {
+    pub project: Arc<Project>,
+    pub revision: u64,
+    pub comp: ItemId,
+    pub t: Tick,
+    pub opts: RenderOpts,
+}
+
+/// Premultiplied RGBA8 pixels from a [`RemoteFrames`] renderer.
+pub struct RemoteFrame {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+    /// Render time (ms).
+    pub ms: f64,
+}
+
+/// Called once with a remote frame (or why there is none).
+pub type RemoteDone = Box<dyn FnOnce(Result<RemoteFrame, String>) + Send>;
+
+/// Renders viewer frames elsewhere (the browser's frame worker), so the UI thread never does.
+pub trait RemoteFrames: Send + Sync {
+    /// Frames it can render at the same time (0 when it is not usable: frames then render on
+    /// the UI thread again).
+    fn slots(&self) -> usize;
+    /// Start rendering `job`; `done` runs when the frame arrives.
+    fn start(&self, job: RemoteJob, done: RemoteDone);
+    /// Drop cached intermediate results (Edit ▸ Purge).
+    fn purge(&self) {}
+}
+
 pub struct Frames {
     cache: Arc<Mutex<Cache>>,
     /// Keys queued or rendering.
@@ -175,6 +209,9 @@ pub struct Frames {
     /// Render time of the last viewer (urgent) frame in ms, for the Info panel / perf readout.
     pub last_ms: Arc<Mutex<f64>>,
     content_keys: ContentKeys,
+    /// Where frames render instead of the UI thread (wasm32), and how many it is rendering.
+    remote: Option<Arc<dyn RemoteFrames>>,
+    remote_busy: Arc<Mutex<usize>>,
 }
 
 impl Default for Frames {
@@ -190,6 +227,8 @@ impl Default for Frames {
             ctx: None,
             last_ms: Arc::new(Mutex::new(0.0)),
             content_keys: Arc::default(),
+            remote: None,
+            remote_busy: Arc::default(),
         }
     }
 }
@@ -270,6 +309,9 @@ impl Frames {
     }
 
     pub fn clear(&self) {
+        if let Some(r) = &self.remote {
+            r.purge();
+        }
         if let Ok(mut c) = self.cache.lock() {
             c.map.clear();
             c.order.clear();
@@ -324,7 +366,7 @@ impl Frames {
         q.jobs.push(Job { key, src: src.clone(), comp, t, opts, urgent, seq });
         drop(q);
         #[cfg(not(target_arch = "wasm32"))]
-        {
+        if self.remote.is_none() {
             let w = self.worker();
             // One spawn per job; each spawn renders whichever queued job matters most right now.
             self.pool.spawn(move || {
@@ -349,12 +391,101 @@ impl Frames {
         }
     }
 
-    /// Render queued frames on this thread, most important first, until the queue is empty or
-    /// `budget` has passed (at least one frame). Returns whether frames are still queued. Only
-    /// wasm32 needs this (native frames render on the pool); elsewhere it does nothing.
+    /// Render frames with `remote` from now on (`None`: on this thread again).
+    pub fn set_remote(&mut self, remote: Option<Arc<dyn RemoteFrames>>) {
+        self.remote = remote;
+    }
+
+    /// Whether frames go to a usable [`RemoteFrames`].
+    pub fn remote_active(&self) -> bool {
+        self.remote.as_ref().is_some_and(|r| r.slots() > 0)
+    }
+
+    /// Frames the remote renderer renders at once (0 without one).
+    pub fn remote_slots(&self) -> usize {
+        self.remote.as_ref().map(|r| r.slots()).unwrap_or(0)
+    }
+
+    /// Frames being rendered remotely.
+    pub fn remote_busy(&self) -> usize {
+        self.remote_busy.lock().map(|b| *b).unwrap_or(0)
+    }
+
+    /// Hand queued frames to the remote renderer while it has free slots, most important first
+    /// (the viewer's frame, then prefetch in request order; a viewer frame requested while every
+    /// slot is busy goes to the first one that frees up). Frames that the GPU compositor can keep
+    /// on the GPU render here instead (no readback). Returns how many were started.
+    pub fn dispatch_remote(&self) -> usize {
+        let Some(remote) = self.remote.clone() else { return 0 };
+        let slots = remote.slots();
+        let w = self.worker();
+        let mut started = 0;
+        loop {
+            let busy = self.remote_busy();
+            if busy >= slots {
+                break;
+            }
+            let job = {
+                let Ok(mut q) = self.queue.lock() else { break };
+                let Some(i) = Queue::best(&q.jobs) else { break };
+                let job = q.jobs.swap_remove(i);
+                q.running.insert(job.key);
+                if job.urgent {
+                    q.urgent_running += 1;
+                }
+                job
+            };
+            if job.src.gpu.is_some() && job.src.gpu_display {
+                let t0 = web_time::Instant::now();
+                if let Some(img) = w.render_gpu(&job) {
+                    w.finish(&job, img, t0);
+                    continue;
+                }
+            }
+            if let Ok(mut b) = self.remote_busy.lock() {
+                *b += 1;
+            }
+            started += 1;
+            let (key, urgent) = (job.key, job.urgent);
+            let fw = self.worker();
+            let busy = self.remote_busy.clone();
+            let t0 = web_time::Instant::now();
+            let rj = RemoteJob { project: job.src.project.clone(), revision: key.revision, comp: job.comp, t: job.t, opts: job.opts };
+            remote.start(
+                rj,
+                Box::new(move |r: Result<RemoteFrame, String>| {
+                    if let Ok(mut b) = busy.lock() {
+                        *b = b.saturating_sub(1);
+                    }
+                    match r {
+                        Ok(f) => {
+                            let img = egui::ColorImage::from_rgba_premultiplied([f.width as usize, f.height as usize], &f.rgba);
+                            fw.finish_key(key, urgent, FrameImage::Cpu(Arc::new(img)), t0);
+                        }
+                        Err(e) => {
+                            // Not rendered (a stale revision, a lost worker): the viewer asks again.
+                            log::debug!("remote frame: {e}");
+                            fw.release(key, urgent);
+                        }
+                    }
+                }),
+            );
+        }
+        started
+    }
+
+    /// Render queued frames, most important first. With a usable [`RemoteFrames`] they are only
+    /// handed over ([`Frames::dispatch_remote`]); otherwise they render on this thread until the
+    /// queue is empty or `budget` has passed (at least one frame). Returns whether frames are
+    /// still queued or rendering remotely. Only wasm32 needs this (native frames render on the
+    /// pool); elsewhere it does nothing.
     pub fn pump(&self, budget: std::time::Duration) -> bool {
         if cfg!(not(target_arch = "wasm32")) {
             return false;
+        }
+        if self.remote_active() {
+            self.dispatch_remote();
+            return self.queue.lock().map(|q| !q.jobs.is_empty()).unwrap_or(false) || self.remote_busy() > 0;
         }
         let t0 = web_time::Instant::now();
         let w = self.worker();
@@ -380,12 +511,10 @@ struct Worker {
 impl Worker {
     /// Render the queued job that matters most right now. `false` when the queue was empty.
     fn run_next(&self) -> bool {
-        let Worker { queue, cache, inflight, ctx, last, content_keys } = self;
+        let Worker { queue, content_keys, .. } = self;
         let job = {
             let Ok(mut q) = queue.lock() else { return false };
-            // Urgent first (newest), then prefetch in request order.
-            let best = q.jobs.iter().enumerate().max_by_key(|(_, j)| (j.urgent, if j.urgent { j.seq as i64 } else { -(j.seq as i64) })).map(|(i, _)| i);
-            let Some(i) = best else { return false };
+            let Some(i) = Queue::best(&q.jobs) else { return false };
             let job = q.jobs.swap_remove(i);
             q.running.insert(job.key);
             if job.urgent {
@@ -407,27 +536,50 @@ impl Worker {
                 ci
             }
         };
-        if job.urgent
-            && let Ok(mut l) = last.lock()
-        {
+        self.finish(&job, ci, t0);
+        true
+    }
+
+    /// Store a finished frame and release its job.
+    fn finish(&self, job: &Job, img: FrameImage, t0: web_time::Instant) {
+        self.finish_key(job.key, job.urgent, img, t0);
+    }
+
+    fn finish_key(&self, key: FrameKey, urgent: bool, img: FrameImage, t0: web_time::Instant) {
+        if urgent && let Ok(mut l) = self.last.lock() {
             *l = t0.elapsed().as_secs_f64() * 1000.0;
         }
-        if let Ok(mut c) = cache.lock() {
-            c.insert(job.key, ci);
+        if let Ok(mut c) = self.cache.lock() {
+            c.insert(key, img);
         }
-        if let Ok(mut inf) = inflight.lock() {
-            inf.remove(&job.key);
+        self.release(key, urgent);
+    }
+
+    /// The job of `key` is no longer queued or running (rendered or dropped).
+    fn release(&self, key: FrameKey, urgent: bool) {
+        if let Ok(mut inf) = self.inflight.lock() {
+            inf.remove(&key);
         }
-        if let Ok(mut q) = queue.lock() {
-            q.running.remove(&job.key);
-            if job.urgent {
-                q.urgent_running -= 1;
+        if let Ok(mut q) = self.queue.lock() {
+            q.running.remove(&key);
+            if urgent {
+                q.urgent_running = q.urgent_running.saturating_sub(1);
             }
         }
-        if let Some(ctx) = ctx {
+        if let Some(ctx) = &self.ctx {
             ctx.request_repaint();
         }
-        true
+    }
+
+    /// The frame on the GPU, kept there for the viewer, if the compositor can do it alone.
+    fn render_gpu(&self, job: &Job) -> Option<FrameImage> {
+        let g = job.src.gpu.as_ref()?;
+        let mut r = Renderer::new(&job.src.project, job.src.footage.as_ref(), job.opts);
+        r.expr = job.src.expr.as_deref();
+        r.cache = Some(&job.src.layer_cache);
+        r.accel = Some(g as &dyn effectcraft_engine::render::Accelerator);
+        r.active_accel()?;
+        g.render_display(&r, job.comp, job.t).map(|f| FrameImage::Gpu(Arc::new(f)))
     }
 
     fn render_job(&self, job: &Job) -> FrameImage {
@@ -464,4 +616,11 @@ struct Queue {
     running: HashSet<FrameKey>,
     urgent_running: usize,
     seq: u64,
+}
+
+impl Queue {
+    /// The job that matters most: urgent first (newest), then prefetch in request order.
+    fn best(jobs: &[Job]) -> Option<usize> {
+        jobs.iter().enumerate().max_by_key(|(_, j)| (j.urgent, if j.urgent { j.seq as i64 } else { -(j.seq as i64) })).map(|(i, _)| i)
+    }
 }

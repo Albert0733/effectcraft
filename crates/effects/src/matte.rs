@@ -93,38 +93,91 @@ fn refine(ctx: &EffectCtx, mut b: Buf, hard: bool) -> Buf {
     let hi = morph_plane(&a, r, r, true);
     let lo = morph_plane(&a, r, r, false);
     let band = |i: usize| hi.data[i] - lo.data[i] > 1e-3;
-    let mut na = Plane::new(a.w, a.h);
-    if edge_details {
-        let guide = Plane::from_image(&b.img, |px| effectcraft_color::luminance(px[0], px[1], px[2]));
-        let eps = 1e-4 + smooth * smooth * 0.05;
-        let filtered = guided_filter(&guide, &a, r, eps);
-        na.data.par_iter_mut().enumerate().for_each(|(i, v)| {
-            *v = if band(i) { filtered.data[i].clamp(0.0, 1.0) } else { a.data[i] };
-        });
-    } else {
-        na = a.clone();
-        if smooth > 0.0 {
-            let s = smooth as f64 * r as f64 * 0.5;
-            na = gauss_plane(&na, s, s);
-        }
-    }
-    if feather > 0.0 {
-        na = gauss_plane(&na, feather, feather);
-    }
-    na = na.map(|v| {
-        let mut v = if choke > 0.0 {
-            (v - choke) / (1.0 - choke)
-        } else if choke < 0.0 {
-            v / (1.0 + choke)
+    // The refined matte of a frame.
+    let refine_alpha = |img: &effectcraft_raster::Image| -> Plane {
+        let a = Plane::alpha(img);
+        let hi = morph_plane(&a, r, r, true);
+        let lo = morph_plane(&a, r, r, false);
+        let mut na = Plane::new(a.w, a.h);
+        if edge_details {
+            let guide = Plane::from_image(img, |px| effectcraft_color::luminance(px[0], px[1], px[2]));
+            let eps = 1e-4 + smooth * smooth * 0.05;
+            let filtered = guided_filter(&guide, &a, r, eps);
+            na.data.par_iter_mut().enumerate().for_each(|(i, v)| {
+                *v = if hi.data[i] - lo.data[i] > 1e-3 { filtered.data[i].clamp(0.0, 1.0) } else { a.data[i] };
+            });
         } else {
-            v
-        };
-        if (contrast - 1.0).abs() > 1e-6 {
-            v = (v - 0.5) * contrast + 0.5;
+            na = a.clone();
+            if smooth > 0.0 {
+                let s = smooth as f64 * r as f64 * 0.5;
+                na = gauss_plane(&na, s, s);
+            }
         }
-        let v = v.clamp(0.0, 1.0);
-        if invert { 1.0 - v } else { v }
-    });
+        if feather > 0.0 {
+            na = gauss_plane(&na, feather, feather);
+        }
+        na.map(|v| {
+            let mut v = if choke > 0.0 {
+                (v - choke) / (1.0 - choke)
+            } else if choke < 0.0 {
+                v / (1.0 + choke)
+            } else {
+                v
+            };
+            if (contrast - 1.0).abs() > 1e-6 {
+                v = (v - 0.5) * contrast + 0.5;
+            }
+            let v = v.clamp(0.0, 1.0);
+            if invert { 1.0 - v } else { v }
+        })
+    };
+    let mut na = refine_alpha(&b.img);
+    // Neighbouring frames of this effect's input (same pixel grid), refined the same way.
+    let fps = ctx.fps();
+    let frame_at = |t: f64| -> Option<Plane> {
+        let o = ctx.env.host?.self_at(t, ctx.env.effect_index)?;
+        (o.img.width == b.img.width && o.img.height == b.img.height && (o.offset[0] - b.offset[0]).abs() < 1e-6 && (o.offset[1] - b.offset[1]).abs() < 1e-6)
+            .then(|| refine_alpha(&o.img))
+    };
+    // Reduce Chatter: where the previous and next frames agree but this one differs, the matte
+    // is chattering; average the three there. Where they disagree (motion) it is left alone.
+    let chatter = (pr.f("reduceChatter") / 100.0).clamp(0.0, 1.0) as f32;
+    if chatter > 0.0 {
+        let prev = frame_at(ctx.time - 1.0 / fps);
+        let next = frame_at(ctx.time + 1.0 / fps);
+        if let (Some(p), Some(n)) = (&prev, &next) {
+            na.data.par_iter_mut().enumerate().for_each(|(i, v)| {
+                let (c, a, z) = (*v, p.data[i], n.data[i]);
+                let steady = (1.0 - (a - z).abs() / 0.5).clamp(0.0, 1.0);
+                *v = c + ((a + c + z) / 3.0 - c) * chatter * steady;
+            });
+        }
+    }
+    // Motion blur: the matte averaged over the shutter (centred on the frame).
+    if pr.b("useMotionBlur") {
+        let g = |id: &str| pr.get(&format!("motionBlur/{id}")).map(Value::as_f64);
+        let samples = g("motionBlurSamples").unwrap_or(16.0).clamp(1.0, 64.0) as usize;
+        let samples = if pr.b("motionBlur/higherQuality") { samples * 2 } else { samples }.min(64);
+        let span = g("shutterAngle").unwrap_or(180.0).clamp(0.0, 720.0) / 360.0 / fps;
+        if samples > 1 && span > 0.0 {
+            let mut acc = na.clone();
+            let mut n = 1.0f32;
+            for k in 0..samples {
+                let t = ctx.time - span * 0.5 + span * k as f64 / (samples - 1) as f64;
+                if (t - ctx.time).abs() < 1e-9 {
+                    continue;
+                }
+                if let Some(p) = frame_at(t) {
+                    acc.data.iter_mut().zip(&p.data).for_each(|(a, q)| *a += q);
+                    n += 1.0;
+                }
+            }
+            if n > 1.0 {
+                acc.data.iter_mut().for_each(|a| *a /= n);
+                na = acc;
+            }
+        }
+    }
     if view_edges {
         // The refined matte in grey with the analysed edge band tinted.
         b.img.data.par_iter_mut().enumerate().for_each(|(i, px)| {
@@ -190,6 +243,16 @@ pub fn specs() -> Vec<EffectSpec> {
             check(pre[3], "View Decontamination Map", false),
         ]
     };
+    // Reduce Chatter and the motion-blur settings.
+    let temporal = || {
+        vec![
+            p("reduceChatter", "Reduce Chatter", num(0.0), pct0()),
+            check("useMotionBlur", "Use Motion Blur", false),
+            p("motionBlur/motionBlurSamples", "Motion Blur Samples", num(16.0), slider(1.0, 64.0, 1.0, 64.0, 0)),
+            p("motionBlur/shutterAngle", "Shutter Angle", num(180.0), slider(0.0, 720.0, 0.0, 360.0, 1)),
+            check("motionBlur/higherQuality", "Higher Quality", false),
+        ]
+    };
     let radius = |d: f64| p("radius", "Additional Edge Radius", num(d), slider(1.0, 200.0, 1.0, 50.0, 1));
     let mut soft_params = vec![
         check("calculateEdgeDetails", "Calculate Edge Details", true),
@@ -199,8 +262,9 @@ pub fn specs() -> Vec<EffectSpec> {
         p("feather", "Feather", num(10.0), pct0()),
         p("contrast", "Contrast", num(0.0), pct0()),
         p("shiftEdge", "Shift Edge", num(0.0), slider(-100.0, 100.0, -100.0, 100.0, 0)),
-        check("decontaminate", "Decontaminate Edge Colors", true),
     ];
+    soft_params.extend(temporal());
+    soft_params.push(check("decontaminate", "Decontaminate Edge Colors", true));
     soft_params.extend(decon(&[
         "decontamination/decontaminationAmount",
         "decontamination/extendWhereSmoothed",
@@ -214,8 +278,9 @@ pub fn specs() -> Vec<EffectSpec> {
         p("smooth", "Smooth", num(20.0), pct0()),
         p("feather", "Feather", num(0.0), pct0()),
         p("choke", "Choke", num(0.0), slider(-100.0, 100.0, -100.0, 100.0, 0)),
-        check("decontaminate", "Decontaminate Edge Colors", true),
     ];
+    hard_params.extend(temporal());
+    hard_params.push(check("decontaminate", "Decontaminate Edge Colors", true));
     hard_params.extend(decon(&["decontaminationAmount", "extendWhereSmoothed", "increaseDecontaminationRadius", "viewDecontaminationMap"]));
     // Our extras: the analysed edge band's radius, alpha contrast and inversion.
     hard_params.push(radius(3.0));
@@ -344,5 +409,64 @@ mod tests {
         assert!(out.get(12, 12)[3] > 0.99);
         assert!(out.get(0, 0)[3] < 0.01);
         assert!(out.data.iter().all(|p| (0.0..=1.0).contains(&p[3])));
+    }
+
+    /// A white square whose left edge sits at x = 10 + `jitter` × (frame parity) + `speed` × frame.
+    struct Edge {
+        jitter: i64,
+        speed: i64,
+    }
+    fn edge(x0: i64) -> Image {
+        let mut img = Image::new(40, 20);
+        for y in 4..16 {
+            for x in x0.max(0)..(x0 + 16).min(40) {
+                img.set(x as u32, y, [1.0, 1.0, 1.0, 1.0]);
+            }
+        }
+        img
+    }
+    impl crate::EffectHost for Edge {
+        fn layer(&self, _: u64, _: bool) -> Option<crate::LayerPixels> {
+            None
+        }
+        fn audio(&self, _: u64, _: f64, _: usize, _: u32) -> Option<Vec<f32>> {
+            None
+        }
+        fn self_at(&self, t: f64, _: usize) -> Option<Buf> {
+            let f = (t * 10.0).round() as i64;
+            Some(Buf { img: edge(10 + self.jitter * (f & 1) + self.speed * f), offset: [0.0; 2], scale: 1.0 })
+        }
+    }
+
+    fn run_t(id: &str, over: &[(&str, Value)], t: f64, host: &Edge) -> Image {
+        let f = (t * 10.0).round() as i64;
+        let img = edge(10 + host.jitter * (f & 1) + host.speed * f);
+        let env = crate::EffectEnv { host: Some(host), frame_rate: 10.0, ..Default::default() };
+        crate::run_fx(id, over, img, t, env).img
+    }
+
+    #[test]
+    fn refine_mattes_reduce_chatter_and_motion_blur() {
+        for id in ["ec.matte.refinesoft", "ec.matte.refinehard"] {
+            let jitter = Edge { jitter: 1, speed: 0 };
+            let base = [("feather", num(0.0)), ("smooth", num(0.0)), ("decontaminate", Value::Bool(false))];
+            let with = |extra: &[(&str, Value)], t: f64, h: &Edge| {
+                let mut v: Vec<(&str, Value)> = base.to_vec();
+                v.extend_from_slice(extra);
+                run_t(id, &v, t, h)
+            };
+            let diff = |a: &Image, b: &Image| a.data.iter().zip(&b.data).map(|(p, q)| (p[3] - q[3]).abs()).sum::<f32>();
+            let (a0, a1) = (with(&[], 1.0, &jitter), with(&[], 1.1, &jitter));
+            let (c0, c1) = (with(&[("reduceChatter", num(100.0))], 1.0, &jitter), with(&[("reduceChatter", num(100.0))], 1.1, &jitter));
+            assert!(diff(&c0, &c1) < diff(&a0, &a1) * 0.7, "{id}: chatter {} vs {}", diff(&c0, &c1), diff(&a0, &a1));
+            // Motion blur smears a moving matte edge along the motion.
+            let moving = Edge { jitter: 0, speed: 4 };
+            let mb = with(&[("useMotionBlur", Value::Bool(true)), ("motionBlur/shutterAngle", num(360.0))], 0.3, &moving);
+            let sharp = with(&[], 0.3, &moving);
+            let partial = |img: &Image| img.data.iter().filter(|p| p[3] > 0.05 && p[3] < 0.95).count();
+            assert!(partial(&mb) > partial(&sharp) + 10, "{id}: {} vs {}", partial(&mb), partial(&sharp));
+            // Without a host both are inert.
+            assert_eq!(run(id, &[("reduceChatter", num(100.0)), ("useMotionBlur", Value::Bool(true))], edge(10)), run(id, &[], edge(10)));
+        }
     }
 }

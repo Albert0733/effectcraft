@@ -533,6 +533,10 @@ pub struct UiState {
     /// The panel maximized to fill the dock area (`~`), if any.
     #[serde(default)]
     pub maximized: Option<PanelKind>,
+    /// Locked Composition / Timeline tabs (panel ids): opening another composition does not
+    /// bring a locked panel forward (the tab's lock icon, as After Effects' viewer lock).
+    #[serde(default)]
+    pub locked_tabs: BTreeSet<String>,
     pub focused: PanelKind,
     pub viewer: ViewerState,
     pub timeline: TimelineState,
@@ -590,16 +594,13 @@ pub struct UiState {
     pub snapping: bool,
     /// Tool creates shape (true) or mask (false) when a layer is selected.
     pub tool_creates_shape: bool,
-    /// Preview panel options.
-    pub preview_loop: bool,
-    pub preview_cache_first: bool,
-    /// Preview panel "Include Audio" (Mute Audio off).
-    #[serde(default = "yes")]
-    pub preview_audio: bool,
     pub start_screen: bool,
     /// The Home screen shows its Learn tab (tutorials) instead of the recent projects.
     #[serde(default)]
     pub home_learn: bool,
+    /// Align panel: Align Layers to Selection (off: to the composition).
+    #[serde(default)]
+    pub align_to_selection: bool,
     /// Composition ▸ Preview ▸ Cache Frames When Idle.
     pub cache_when_idle: bool,
     /// Tracker panel ▸ Motion Source chosen without a tracker yet (layer id).
@@ -637,6 +638,7 @@ impl Default for UiState {
             floating: vec![],
             saved_floating: Default::default(),
             maximized: None,
+            locked_tabs: BTreeSet::new(),
             focused: PanelKind::Composition,
             viewer: ViewerState::default(),
             timeline: TimelineState::default(),
@@ -665,11 +667,9 @@ impl Default for UiState {
             stroke_width: 0.0,
             snapping: true,
             tool_creates_shape: true,
-            preview_loop: true,
-            preview_cache_first: false,
-            preview_audio: true,
             start_screen: false,
             home_learn: false,
+            align_to_selection: false,
             cache_when_idle: false,
             tracker_source: None,
             layer_panel: None,

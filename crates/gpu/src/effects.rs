@@ -105,18 +105,32 @@ impl effectcraft_render::FxTarget for GpuFx<'_, '_> {
 }
 
 fn apply(e: &mut Enc, id: &str, ctx: &EffectCtx, b: GBuf) -> Option<GBuf> {
+    // Controls the kernels do not implement render on the CPU.
+    if !effectcraft_effects::catalog::gpu_supported(id, ctx) {
+        return None;
+    }
     match id {
         "ec.blur.gaussian" => gaussian(e, ctx, b),
         "ec.blur.fastbox" => box_blur(e, ctx, b),
         "ec.blur.directional" => directional(e, ctx, b),
+        "ec.stylize.glow" if crate::fx_stylize::glow_extra(ctx) => crate::fx_stylize::glow(e, ctx, b),
+        "ec.distort.transform" if crate::fx_stylize::transform_blur(ctx) => crate::fx_stylize::transform(e, ctx, b),
         "ec.stylize.glow" => glow(e, ctx, b),
         "ec.perspective.dropshadow" => drop_shadow(e, ctx, b),
         "ec.distort.transform" => transform(e, ctx, b),
         "ec.color.curves" => curves(e, ctx, b),
+        "ec.color.huesaturation" if !effectcraft_effects::huesat_ranges_identity(ctx) => crate::fx_tone::hue_saturation(e, ctx, b),
+        "ec.color.levels" if !effectcraft_effects::levels_channels_identity(ctx) => crate::fx_tone::levels(e, ctx, b),
+        "ec.channel.invert" if (4..=11).contains(&ctx.params.e("channel")) => crate::fx_tone::invert(e, ctx, b),
+        "ec.noise.fractal" if crate::fx_noise::fractal_extra(ctx) => crate::fx_noise::fractal(e, ctx, b, false),
         _ if id.starts_with("ec.control.") => Some(b),
         _ if crate::fx_color::IDS.contains(&id) => crate::fx_color::apply(e, id, ctx, b),
         _ if crate::fx_distort::IDS.contains(&id) => crate::fx_distort::apply(e, id, ctx, b),
         _ if crate::fx_generate::IDS.contains(&id) => crate::fx_generate::apply(e, id, ctx, b),
+        _ if crate::fx_key::IDS.contains(&id) => crate::fx_key::apply(e, id, ctx, b),
+        _ if crate::fx_stylize::IDS.contains(&id) => crate::fx_stylize::apply(e, id, ctx, b),
+        _ if crate::fx_noise::IDS.contains(&id) => crate::fx_noise::apply(e, id, ctx, b),
+        _ if crate::fx_tone::IDS.contains(&id) => crate::fx_tone::apply(e, id, ctx, b),
         _ => pointwise(e, id, ctx, b),
     }
 }
@@ -218,6 +232,10 @@ fn directional(e: &mut Enc, ctx: &EffectCtx, mut b: GBuf) -> Option<GBuf> {
 }
 
 fn glow(e: &mut Enc, ctx: &EffectCtx, mut b: GBuf) -> Option<GBuf> {
+    // Other Glow Operations and the Arbitrary Map render on the CPU.
+    if ctx.params.e("colors") == 2 || effectcraft_effects::glow_operation(ctx) != effectcraft_color::BlendMode::Add {
+        return None;
+    }
     let thr = ctx.params.f("threshold") as f32 / 100.0;
     let radius = ctx.params.f("radius") * b.scale;
     let intensity = ctx.params.f("intensity") as f32;
@@ -276,6 +294,10 @@ fn drop_shadow(e: &mut Enc, ctx: &EffectCtx, mut b: GBuf) -> Option<GBuf> {
 }
 
 fn transform(e: &mut Enc, ctx: &EffectCtx, mut b: GBuf) -> Option<GBuf> {
+    // Motion blur (shutter angle) renders on the CPU.
+    if ctx.env.host.is_some() && effectcraft_effects::transform_shutter(ctx).is_some() {
+        return None;
+    }
     let anchor = b.to_px(ctx.params.v2("anchor"));
     let pos = b.to_px(ctx.params.v2("position"));
     let sh = ctx.params.f("scaleHeight");
@@ -352,11 +374,19 @@ fn pointwise(e: &mut Enc, id: &str, ctx: &EffectCtx, b: GBuf) -> Option<GBuf> {
             p.f[0] = [br, k, ct, 0.0];
         }
         "ec.color.huesaturation" => {
+            // Colour ranges (Channel Control) render on the CPU.
+            if !effectcraft_effects::huesat_ranges_identity(ctx) {
+                return None;
+            }
             p.u[0] = [3, ctx.params.b("colorize") as u32, 0, 0];
             p.f[0] = [f("hue") as f32 / 360.0, f("saturation") as f32 / 100.0, f("lightness") as f32 / 100.0, 0.0];
             p.f[1] = [f("colorizeHue") as f32 / 360.0, f("colorizeSaturation") as f32 / 100.0, f("colorizeLightness") as f32 / 100.0, 0.0];
         }
         "ec.color.levels" => {
+            // Red / Green / Blue / Alpha controls render on the CPU.
+            if !effectcraft_effects::levels_channels_identity(ctx) {
+                return None;
+            }
             let (clip_b, clip_w) = effectcraft_effects::levels_clip(ctx);
             p.u[0] = [4, clip_b as u32, clip_w as u32, 0];
             p.f[0] = [f("inBlack") as f32, f("inWhite") as f32, f("gamma").max(0.01) as f32, f("outBlack") as f32];
@@ -382,6 +412,10 @@ fn pointwise(e: &mut Enc, id: &str, ctx: &EffectCtx, b: GBuf) -> Option<GBuf> {
             p.f[0][0] = 1.0 - f("blend") as f32 / 100.0;
         }
         "ec.generate.fill" => {
+            // Fill Mask / All Masks render on the CPU.
+            if effectcraft_effects::fill_uses_masks(ctx) {
+                return None;
+            }
             p.u[0] = [7, ctx.params.b("invert") as u32, 0, 0];
             p.f[0] = ctx.params.color("color");
             p.f[1][0] = f("opacity") as f32 / 100.0;

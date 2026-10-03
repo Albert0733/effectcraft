@@ -59,15 +59,15 @@ fn rgb(c: [f32; 4]) -> [f32; 4] {
 
 /// Same selective colour ids as `color2::SC_IDS`.
 const SC_IDS: [[&str; 4]; 9] = [
-    ["redsCyan", "redsMagenta", "redsYellow", "redsBlack"],
-    ["yellowsCyan", "yellowsMagenta", "yellowsYellow", "yellowsBlack"],
-    ["greensCyan", "greensMagenta", "greensYellow", "greensBlack"],
-    ["cyansCyan", "cyansMagenta", "cyansYellow", "cyansBlack"],
-    ["bluesCyan", "bluesMagenta", "bluesYellow", "bluesBlack"],
-    ["magentasCyan", "magentasMagenta", "magentasYellow", "magentasBlack"],
-    ["whitesCyan", "whitesMagenta", "whitesYellow", "whitesBlack"],
-    ["neutralsCyan", "neutralsMagenta", "neutralsYellow", "neutralsBlack"],
-    ["blacksCyan", "blacksMagenta", "blacksYellow", "blacksBlack"],
+    ["details/reds/redsCyan", "details/reds/redsMagenta", "details/reds/redsYellow", "details/reds/redsBlack"],
+    ["details/yellows/yellowsCyan", "details/yellows/yellowsMagenta", "details/yellows/yellowsYellow", "details/yellows/yellowsBlack"],
+    ["details/greens/greensCyan", "details/greens/greensMagenta", "details/greens/greensYellow", "details/greens/greensBlack"],
+    ["details/cyans/cyansCyan", "details/cyans/cyansMagenta", "details/cyans/cyansYellow", "details/cyans/cyansBlack"],
+    ["details/blues/bluesCyan", "details/blues/bluesMagenta", "details/blues/bluesYellow", "details/blues/bluesBlack"],
+    ["details/magentas/magentasCyan", "details/magentas/magentasMagenta", "details/magentas/magentasYellow", "details/magentas/magentasBlack"],
+    ["details/whites/whitesCyan", "details/whites/whitesMagenta", "details/whites/whitesYellow", "details/whites/whitesBlack"],
+    ["details/neutrals/neutralsCyan", "details/neutrals/neutralsMagenta", "details/neutrals/neutralsYellow", "details/neutrals/neutralsBlack"],
+    ["details/blacks/blacksCyan", "details/blacks/blacksMagenta", "details/blacks/blacksYellow", "details/blacks/blacksBlack"],
 ];
 
 fn point(e: &mut Enc, id: &str, ctx: &EffectCtx, b: GBuf) -> Option<GBuf> {
@@ -235,7 +235,7 @@ fn morph(e: &mut Enc, img: &GpuImage, r: u32, modes: [u32; 4]) -> GpuImage {
 }
 
 /// util::morph_frac (blend between the two nearest integer radii).
-fn morph_frac(e: &mut Enc, img: &GpuImage, radius: f64, modes: [u32; 4]) -> GpuImage {
+pub(crate) fn morph_frac(e: &mut Enc, img: &GpuImage, radius: f64, modes: [u32; 4]) -> GpuImage {
     if radius <= 0.0 {
         return img.clone();
     }
@@ -253,8 +253,8 @@ fn morph_frac(e: &mut Enc, img: &GpuImage, radius: f64, modes: [u32; 4]) -> GpuI
     out
 }
 
-const ERODE_X: [u32; 4] = [0, 2, 2, 2];
-const DILATE_X: [u32; 4] = [1, 2, 2, 2];
+pub(crate) const ERODE_X: [u32; 4] = [0, 2, 2, 2];
+pub(crate) const DILATE_X: [u32; 4] = [1, 2, 2, 2];
 
 // ---------------------------------------------------------------- Key Light
 

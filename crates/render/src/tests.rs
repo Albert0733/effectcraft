@@ -163,6 +163,19 @@ fn effects_run_in_pipeline() {
     assert!(c[1] > 0.99 && c[0] < 0.01, "{c:?}");
 }
 
+/// Card Dance's Comp Camera through the default comp camera reproduces a 2D layer in place.
+#[test]
+fn card_dance_comp_camera_matches_the_default_view() {
+    let (mut p, cid, comp) = setup();
+    let mut l = solid(&mut p, &comp, [0.2, 0.6, 1.0], 50, 50);
+    add_effect(&mut p, &mut l, "ec.sim.carddance", [50.0, 50.0], &[("cameraSystem", Value::Enum(2))]);
+    p.comp_mut(cid).unwrap().layers.push(l);
+    let img = render_frame(&p, cid, Tick::ZERO, 1.0);
+    let c = img.get(100, 50);
+    assert!((c[0] - 0.2).abs() < 0.02 && (c[2] - 1.0).abs() < 0.02 && c[3] > 0.99, "{c:?}");
+    assert!(img.get(10, 50)[3] < 0.01);
+}
+
 // ------------------------------------------------------------------------------ layer cache
 
 fn render_cached(p: &Project, cid: ItemId, t: Tick, cache: Option<&crate::LayerCache>) -> crate::Image {

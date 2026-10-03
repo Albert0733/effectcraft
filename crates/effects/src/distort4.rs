@@ -325,7 +325,9 @@ pub fn build_mesh(strokes: &[LiquifyStroke], w: f64, h: f64, frozen: &(dyn Fn(f6
 
 type MeshCache = Mutex<HashMap<u64, Arc<Mesh>>>;
 
-fn cached_mesh(ctx: &EffectCtx) -> Arc<Mesh> {
+/// Liquify's displacement mesh for the instance (replayed strokes, cached; also used by the
+/// GPU kernels).
+pub fn liquify_mesh(ctx: &EffectCtx) -> Arc<Mesh> {
     use std::hash::{Hash, Hasher};
     let text = ctx.params.s("distortionMesh");
     let mask = ctx.params.f("freezeAreaMask").round() as usize;
@@ -369,7 +371,7 @@ fn liquify(ctx: &EffectCtx, mut b: Buf) -> Buf {
     if ctx.params.s("distortionMesh").trim().is_empty() && !show_freeze && !show_mesh {
         return b;
     }
-    let mesh = cached_mesh(ctx);
+    let mesh = liquify_mesh(ctx);
     let off = ctx.params.v2("distortionMeshOffset");
     let mesh_color = ctx.params.color("meshColor");
     let src = b.img.clone();
@@ -435,12 +437,15 @@ fn median(v: &mut [f64]) -> f64 {
 
 /// Measure motion around the current frame (`cur`) from `prev` to `next` (all in the same
 /// buffer grid). `per_row`: Warp method (one velocity per scanline band).
-fn measure(cur: &Image, prev: Option<&Image>, next: Option<&Image>, scale: f64, detailed: bool, per_row: bool) -> Option<Flow> {
+/// `detail` (Pixel Motion Detail, 0..1; 0.2 = the standard grid) scales the number of motion
+/// vectors the Pixel Motion method measures: more vectors follow finer local motion.
+fn measure(cur: &Image, prev: Option<&Image>, next: Option<&Image>, scale: f64, detailed: bool, per_row: bool, detail: f64) -> Option<Flow> {
     use effectcraft_track::klt::{GrayPyramid, LkOpts, analysis_factor, track};
     let factor = analysis_factor(cur.width, cur.height, if detailed { 640 } else { 320 });
     let pc = GrayPyramid::from_image(cur, [0.0; 2], factor, 4);
     let (w, h) = (pc.width(), pc.height());
-    let n = if detailed { 24 } else { 12 };
+    let base = if detailed { 24.0 } else { 12.0 };
+    let n = if per_row { base as usize } else { (base * (0.5 + detail.clamp(0.0, 1.0) * 2.5)).round().clamp(4.0, 96.0) as usize };
     let cell_w = w as f64 / n as f64;
     let rows = ((n as f64) * h as f64 / w.max(1) as f64).round().max(2.0) as usize;
     let cell_h = h as f64 / rows as f64;
@@ -520,7 +525,17 @@ fn rolling_shutter(ctx: &EffectCtx, mut b: Buf) -> Buf {
         return b;
     }
     let per_row = ctx.params.e("advanced/method") == 0;
-    let Some(flow) = measure(&b.img, prev.as_ref(), next.as_ref(), 1.0, ctx.params.b("advanced/detailedAnalysis"), per_row) else { return b };
+    let Some(flow) = measure(
+        &b.img,
+        prev.as_ref(),
+        next.as_ref(),
+        1.0,
+        ctx.params.b("advanced/detailedAnalysis"),
+        per_row,
+        ctx.params.f("advanced/pixelMotionDetail") / 100.0,
+    ) else {
+        return b;
+    };
     let dir = ctx.params.e("scanDirection");
     let src = b.img.clone();
     let (w, h) = (b.img.width as f64, b.img.height as f64);
@@ -740,6 +755,20 @@ mod tests {
             );
             assert_eq!(out.img.data, again.img.data);
         }
+        // Pixel Motion Detail changes how many vectors Pixel Motion measures (and still repairs).
+        let detail = |d: f64| {
+            run_fx(
+                "ec.distort.rollingshutterrepair",
+                &[("rollingShutterRate", num(100.0)), ("advanced/method", Value::Enum(1)), ("advanced/pixelMotionDetail", num(d))],
+                skewed.clone(),
+                t,
+                env,
+            )
+            .img
+        };
+        let (fine, coarse) = (detail(100.0), detail(0.0));
+        assert_ne!(fine.data, coarse.data);
+        assert!(err(&fine) < err(&skewed) * 0.5 && err(&coarse) < err(&skewed) * 0.5);
         let none = run_fx("ec.distort.rollingshutterrepair", &[], skewed.clone(), t, EffectEnv::default());
         assert_eq!(none.img.data, skewed.data);
     }

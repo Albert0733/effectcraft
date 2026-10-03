@@ -27,7 +27,10 @@ macro_rules! uic {
 
 /// UI-only commands (not in the AE menus; shortcuts and the command palette).
 pub const UI_COMMANDS: &[UiCommand] = &[
-    uic!("playback.ramPreview", "Play Current Preview", [], Some("Num0")),
+    uic!("playback.ramPreview", "Preview (Numpad 0)", [], Some("Num0")),
+    uic!("playback.preview.shiftSpacebar", "Preview (Shift+Spacebar)", [], Some("Shift+Space")),
+    uic!("playback.preview.shiftNumpad0", "Preview (Shift+Numpad 0)", [], Some("Shift+Num0")),
+    uic!("playback.preview.altNumpad0", "Preview (Alt+Numpad 0)", [], Some("Alt+Num0")),
     uic!("playback.stop", "Stop", [], None),
     uic!("view.fit", "Fit", [], Some("Shift+/")),
     uic!("view.actualSize", "100%", [], Some("/")),
@@ -290,7 +293,12 @@ pub fn invoke(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, params: V
     let timing = |app: &mut EffectcraftApp, op: &str| app.session.execute("layer.timing", json!({"op": op})).map_err(|e| e.to_string());
     match id {
         "playback.ramPreview" => {
-            app.toggle_play(now);
+            app.toggle_play_with(now, effectcraft_engine::preview::PreviewShortcut::Numpad0);
+            return Ok(json!({"playing": app.playback.playing}));
+        }
+        "playback.preview.shiftSpacebar" | "playback.preview.shiftNumpad0" | "playback.preview.altNumpad0" => {
+            let sc = effectcraft_engine::preview::PreviewShortcut::parse(id.trim_start_matches("playback.preview.")).ok_or("unknown preview shortcut")?;
+            app.toggle_play_with(now, sc);
             return Ok(json!({"playing": app.playback.playing}));
         }
         "playback.stop" => {
@@ -534,8 +542,14 @@ pub fn frontend(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, p: Valu
             Value::Null
         }
         "playback.toggle" => {
-            app.toggle_play(now);
-            json!({"playing": app.playback.playing})
+            // The play button and Spacebar: `{shortcut?}` picks which Preview panel shortcut's
+            // options to play with (default Spacebar).
+            let sc = match p.get("shortcut").and_then(Value::as_str) {
+                Some(k) => effectcraft_engine::preview::PreviewShortcut::parse(k).ok_or_else(|| format!("unknown preview shortcut `{k}`"))?,
+                None => effectcraft_engine::preview::PreviewShortcut::Spacebar,
+            };
+            app.toggle_play_with(now, sc);
+            json!({"playing": app.playback.playing, "shortcut": sc.id()})
         }
         "playback.cacheWhenIdle" => {
             let r = toggle(&mut app.ui.cache_when_idle, &p);
@@ -543,8 +557,11 @@ pub fn frontend(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, p: Valu
             r
         }
         "playback.audio" => {
-            let r = toggle(&mut app.ui.preview_audio, &p);
-            if !app.ui.preview_audio {
+            // Include Audio of the shortcut shown in the Preview panel.
+            let mut on = app.session.prefs.preview.active().include_audio;
+            let r = toggle(&mut on, &p);
+            app.session.execute("playback.settings.set", json!({"includeAudio": on})).map_err(|e| e.to_string())?;
+            if !on {
                 app.audio = None;
             }
             r
@@ -801,6 +818,12 @@ pub fn frontend(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, p: Valu
             crate::panels::dialogs::open_form(app, "file.interpretFootage", &json!({}));
             Value::Null
         }
+        // Help ▸ In-App Tutorials: the Home screen's Learn tab.
+        "help.inAppTutorials" => {
+            app.ui.start_screen = true;
+            app.ui.home_learn = true;
+            Value::Null
+        }
         "effect.manage" | "anim.browsePresets" => {
             app.show_panel(PanelKind::EffectsPresets);
             Value::Null
@@ -831,6 +854,9 @@ fn file_dialog(app: &mut EffectcraftApp, id: &str, params: &Value) -> Option<Res
         "file.save" if app.session.path.is_none() => ("path", Ask::Save("Untitled Project.ecproj")),
         "file.saveAs" | "file.saveCopy" => ("path", Ask::Save("Untitled Project.ecproj")),
         "comp.saveFrameAs" => ("path", Ask::Save("Frame.png")),
+        "comp.saveFrameAsPsd" => ("path", Ask::Save("Frame.psd")),
+        "comp.saveFrameAsExr" => ("path", Ask::Save("Frame.exr")),
+        "file.watchFolder" if params.get("stop").is_none() => ("folder", Ask::Save("Watch Folder")),
         "anim.savePreset" => ("path", Ask::Save("Preset.ecpreset")),
         "anim.applyPreset" => ("path", Ask::Open(&["ecpreset", "json"])),
         "view.exportGuides" => ("path", Ask::Save("Guides.json")),
@@ -955,7 +981,7 @@ pub(crate) fn entry_checked(app: &EffectcraftApp, e: &MenuEntry) -> Option<bool>
         "view.snapToGrid" => Some(v.snap_grid),
         "view.layerControls" => Some(v.show_layer_controls),
         "playback.cacheWhenIdle" => Some(app.ui.cache_when_idle),
-        "playback.audio" => Some(app.ui.preview_audio),
+        "playback.audio" => Some(app.session.prefs.preview.active().include_audio),
         "view.res.full" | "view.res.half" | "view.res.third" | "view.res.quarter" => {
             Some(v.res.label().eq_ignore_ascii_case(e.command.trim_start_matches("view.res.")))
         }

@@ -6,8 +6,8 @@
 //! masks and ignore effects applied before them (precompose to include those). Without a host
 //! (tests, thumbnails) they pass their input through.
 //!
-//! Pixel-motion based methods (Timewarp's Pixel Motion, Pixel Motion Blur) are approximated by
-//! frame mixing / sub-frame sampling; there is no optical-flow estimation yet.
+//! Timewarp's Pixel Motion estimates block-matching optical flow between neighbouring frames
+//! ([`effectcraft_raster::flow`]); Pixel Motion Blur averages sub-frame samples.
 //!
 //! [`EffectHost::self_at`]: crate::EffectHost::self_at
 
@@ -15,6 +15,8 @@ use effectcraft_keyframe::Value;
 use effectcraft_project::ParamUi;
 use effectcraft_raster::{Image, Px};
 use rayon::prelude::*;
+
+use effectcraft_raster::flow::Flow;
 
 use crate::util::{fit_layer, unpremul};
 use crate::{Buf, EffectCtx, EffectSpec, num, p, popup, slider};
@@ -90,11 +92,29 @@ pub fn specs() -> Vec<EffectSpec> {
                 p("speed", "Speed", num(50.0), slider(-10000.0, 10000.0, 0.0, 200.0, 1)),
                 p("sourceFrame", "Source Frame", num(0.0), slider(-100000.0, 100000.0, 0.0, 300.0, 1)),
                 p("tuning/vectorDetail", "Vector Detail", num(20.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
+                p("tuning/smoothing/globalSmoothness", "Global Smoothness", num(0.5), slider(0.0, 1.0, 0.0, 1.0, 2)),
+                p("tuning/smoothing/localSmoothness", "Local Smoothness", num(0.5), slider(0.0, 1.0, 0.0, 1.0, 2)),
+                p("tuning/smoothing/smoothingIterations", "Smoothing Iterations", num(20.0), slider(0.0, 200.0, 0.0, 100.0, 0)),
                 p("tuning/buildFromOneImage", "Build From One Image", Value::Bool(false), ParamUi::Checkbox),
+                p("tuning/correctLuminanceChanges", "Correct Luminance Changes", Value::Bool(false), ParamUi::Checkbox),
+                p("tuning/filtering", "Filtering", Value::Enum(0), popup(&["Normal", "Extreme"])),
+                p("tuning/errorThreshold", "Error Threshold", num(10.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
+                p("tuning/blockSize", "Block Size", num(8.0), slider(4.0, 64.0, 4.0, 32.0, 0)),
+                p("tuning/weighting/redWeighting", "Red Weighting", num(0.3), slider(0.0, 1.0, 0.0, 1.0, 2)),
+                p("tuning/weighting/greenWeighting", "Green Weighting", num(0.59), slider(0.0, 1.0, 0.0, 1.0, 2)),
+                p("tuning/weighting/blueWeighting", "Blue Weighting", num(0.11), slider(0.0, 1.0, 0.0, 1.0, 2)),
                 p("motionBlur/enableMotionBlur", "Enable Motion Blur", Value::Bool(false), ParamUi::Checkbox),
                 p("motionBlur/shutterControl", "Shutter Control", Value::Enum(0), popup(&["Automatic", "Manual"])),
                 p("motionBlur/shutterAngle", "Shutter Angle", num(180.0), slider(0.0, 720.0, 0.0, 360.0, 1)),
                 p("motionBlur/shutterSamples", "Shutter Samples", num(5.0), slider(1.0, 64.0, 1.0, 32.0, 0)),
+                p("matteLayer", "Matte Layer", Value::Layer(None), ParamUi::Layer),
+                p("matteChannel", "Matte Channel", Value::Enum(0), popup(&TW_MATTE_CHANNELS)),
+                p("warpLayer", "Warp Layer", Value::Layer(None), ParamUi::Layer),
+                p("show", "Show", Value::Enum(0), popup(&TW_SHOW)),
+                p("sourceCrops/leftCrop", "Left Crop", num(0.0), slider(0.0, 4000.0, 0.0, 100.0, 0)),
+                p("sourceCrops/rightCrop", "Right Crop", num(0.0), slider(0.0, 4000.0, 0.0, 100.0, 0)),
+                p("sourceCrops/bottomCrop", "Bottom Crop", num(0.0), slider(0.0, 4000.0, 0.0, 100.0, 0)),
+                p("sourceCrops/topCrop", "Top Crop", num(0.0), slider(0.0, 4000.0, 0.0, 100.0, 0)),
             ],
             timewarp,
         ),
@@ -197,6 +217,12 @@ fn fetch(ctx: &EffectCtx, times: &[f64]) -> Option<Frames> {
         })
         .collect();
     Some(Frames { grid, imgs })
+}
+
+/// The layer's frames at layer times `times` placed on one grid (the GPU Echo / Posterize Time,
+/// effectcraft-gpu `fx_noise`): (grid buffer, one image per time). `None` without a host.
+pub fn time_frames(ctx: &EffectCtx, times: &[f64]) -> Option<(Buf, Vec<Image>)> {
+    fetch(ctx, times).map(|f| (f.grid, f.imgs))
 }
 
 fn with_img(grid: Buf, img: Image) -> Buf {
@@ -428,6 +454,238 @@ pub fn timewarp_source_time(t: f64, by_frame: bool, speed: f64, source_frame: f6
     if by_frame { source_frame / fps } else { t * speed / 100.0 }
 }
 
+/// Timewarp's Pixel Motion settings (the Tuning group and Source Crops).
+#[derive(Clone, Copy, Debug)]
+pub struct PixelMotion {
+    /// Vector spacing in pixels (from Vector Detail).
+    pub tile: u32,
+    /// Matching block size in pixels.
+    pub window: u32,
+    pub global_smoothness: f32,
+    pub local_smoothness: f32,
+    pub iterations: u32,
+    pub build_from_one: bool,
+    pub correct_luminance: bool,
+    pub extreme: bool,
+    /// Error Threshold (0..1): pixels whose two warped frames disagree by more fall back to a
+    /// frame mix.
+    pub error_threshold: f32,
+    pub weights: [f32; 3],
+    /// Left, right, top, bottom crops in pixels.
+    pub crops: [u32; 4],
+}
+
+impl PixelMotion {
+    fn from(ctx: &EffectCtx, scale: f64) -> PixelMotion {
+        let pr = ctx.params;
+        let g = |id: &str, d: f64| pr.get(id).map(Value::as_f64).unwrap_or(d);
+        let detail = g("tuning/vectorDetail", 20.0).clamp(0.0, 100.0) / 100.0;
+        // Vector Detail 0 → one vector per 32 px, 100 → one per 2 px (exponential).
+        let tile = (32.0 * (1.0f64 / 16.0).powf(detail) * scale).round().max(2.0) as u32;
+        let px = |id: &str| (g(id, 0.0).max(0.0) * scale).round() as u32;
+        PixelMotion {
+            tile,
+            window: ((g("tuning/blockSize", 8.0).max(4.0)) * scale).round().max(4.0) as u32,
+            global_smoothness: g("tuning/smoothing/globalSmoothness", 0.5).clamp(0.0, 1.0) as f32,
+            local_smoothness: g("tuning/smoothing/localSmoothness", 0.5).clamp(0.0, 1.0) as f32,
+            iterations: g("tuning/smoothing/smoothingIterations", 20.0).clamp(0.0, 200.0) as u32,
+            build_from_one: pr.b("tuning/buildFromOneImage"),
+            correct_luminance: pr.b("tuning/correctLuminanceChanges"),
+            extreme: pr.e("tuning/filtering") == 1,
+            error_threshold: (g("tuning/errorThreshold", 10.0) / 100.0).clamp(0.0, 1.0) as f32,
+            weights: [g("tuning/weighting/redWeighting", 0.3), g("tuning/weighting/greenWeighting", 0.59), g("tuning/weighting/blueWeighting", 0.11)]
+                .map(|v| v.max(0.0) as f32),
+            crops: [px("sourceCrops/leftCrop"), px("sourceCrops/rightCrop"), px("sourceCrops/topCrop"), px("sourceCrops/bottomCrop")],
+        }
+    }
+}
+
+/// Replace the cropped edges of `img` with the nearest kept pixel (Source Crops: edge garbage
+/// must not drive or smear the motion).
+fn crop_edges(img: &Image, [l, r, t, b]: [u32; 4]) -> Image {
+    if l == 0 && r == 0 && t == 0 && b == 0 {
+        return img.clone();
+    }
+    let (w, h) = (img.width as i64, img.height as i64);
+    let (x0, x1) = ((l as i64).min(w - 1), (w - 1 - r as i64).max(0));
+    let (y0, y1) = ((t as i64).min(h - 1), (h - 1 - b as i64).max(0));
+    let mut out = img.clone();
+    out.rows_mut().for_each(|(y, row)| {
+        for (x, px) in row.iter_mut().enumerate() {
+            *px = img.get((x as i64).clamp(x0, x1.max(x0)), (y as i64).clamp(y0, y1.max(y0)));
+        }
+    });
+    out
+}
+
+/// Weighted grey (R·wr + G·wg + B·wb in every colour channel) that the motion is estimated on.
+fn motion_grey(img: &Image, wt: [f32; 3], gain: f32) -> Image {
+    let sum = (wt[0] + wt[1] + wt[2]).max(1e-6);
+    let mut out = img.clone();
+    out.data.par_iter_mut().for_each(|p| {
+        let g = (p[0] * wt[0] + p[1] * wt[1] + p[2] * wt[2]) / sum * gain;
+        *p = [g, g, g, p[3]];
+    });
+    out
+}
+
+fn mean_grey(img: &Image) -> f32 {
+    let n = img.data.len().max(1) as f32;
+    img.data.par_iter().map(|p| p[0]).sum::<f32>() / n
+}
+
+/// Smooth a motion field: `iterations` passes pulling each vector towards its 3×3 mean by
+/// Local Smoothness, then a blend towards a wide average by Global Smoothness.
+fn smooth_flow(flow: &mut Flow, pm: &PixelMotion) {
+    let (c, r) = (flow.cols, flow.rows);
+    if c * r <= 1 {
+        return;
+    }
+    let mean = |v: &[[f32; 2]], rad: i64| -> Vec<[f32; 2]> {
+        (0..c * r)
+            .into_par_iter()
+            .map(|i| {
+                let (x, y) = ((i % c) as i64, (i / c) as i64);
+                let mut s = [0.0f32; 2];
+                let mut n = 0.0;
+                for dy in -rad..=rad {
+                    for dx in -rad..=rad {
+                        let (nx, ny) = (x + dx, y + dy);
+                        if nx >= 0 && ny >= 0 && (nx as usize) < c && (ny as usize) < r {
+                            let q = v[ny as usize * c + nx as usize];
+                            s[0] += q[0];
+                            s[1] += q[1];
+                            n += 1.0;
+                        }
+                    }
+                }
+                [s[0] / n, s[1] / n]
+            })
+            .collect()
+    };
+    if pm.local_smoothness > 0.0 {
+        for _ in 0..pm.iterations {
+            let m = mean(&flow.v, 1);
+            for (v, q) in flow.v.iter_mut().zip(m) {
+                v[0] += (q[0] - v[0]) * pm.local_smoothness * 0.5;
+                v[1] += (q[1] - v[1]) * pm.local_smoothness * 0.5;
+            }
+        }
+    }
+    if pm.global_smoothness > 0.0 {
+        let m = mean(&flow.v, 3);
+        for (v, q) in flow.v.iter_mut().zip(m) {
+            v[0] += (q[0] - v[0]) * pm.global_smoothness * 0.5;
+            v[1] += (q[1] - v[1]) * pm.global_smoothness * 0.5;
+        }
+    }
+}
+
+/// The motion field from frame `a` to frame `b` (or from the warp layer's frames).
+pub fn timewarp_flow(a: &Image, b: &Image, pm: &PixelMotion) -> Flow {
+    let ga = motion_grey(&crop_edges(a, pm.crops), pm.weights, 1.0);
+    let gain = if pm.correct_luminance {
+        let (ma, mb) = (mean_grey(&ga), mean_grey(&motion_grey(b, pm.weights, 1.0)));
+        if mb > 1e-4 { ma / mb } else { 1.0 }
+    } else {
+        1.0
+    };
+    let gb = motion_grey(&crop_edges(b, pm.crops), pm.weights, gain);
+    let mut flow = effectcraft_raster::flow::block_flow_window(&ga, &gb, pm.tile, pm.window, 4);
+    smooth_flow(&mut flow, pm);
+    flow
+}
+
+/// Pixel Motion: the frame at fraction `w` between `a` and `b` built by warping along `flow`
+/// (Build From One Image: from the nearer frame only), falling back to a mix where the two
+/// warped frames disagree by more than the Error Threshold.
+pub fn timewarp_interpolate(a: &Image, b: &Image, w: f32, flow: &Flow, pm: &PixelMotion) -> Image {
+    let (a, b) = (crop_edges(a, pm.crops), crop_edges(b, pm.crops));
+    let mut out = Image::new(a.width, a.height);
+    let wd = w as f64;
+    let sample = |img: &Image, x: f64, y: f64| if pm.extreme { img.sample_bicubic(x, y) } else { img.sample_bilinear_clamped(x, y) };
+    out.rows_mut().for_each(|(y, row)| {
+        let cy = y as f64 + 0.5;
+        for (x, px) in row.iter_mut().enumerate() {
+            let cx = x as f64 + 0.5;
+            let f = flow.at(cx, cy);
+            let (fx, fy) = (f[0] as f64, f[1] as f64);
+            let pa = sample(&a, cx - wd * fx, cy - wd * fy);
+            let pb = sample(&b, cx + (1.0 - wd) * fx, cy + (1.0 - wd) * fy);
+            if pm.build_from_one {
+                *px = if w < 0.5 { pa } else { pb };
+                continue;
+            }
+            let err = (0..4).map(|c| (pa[c] - pb[c]).abs()).fold(0.0f32, f32::max);
+            let (pa, pb) = if pm.error_threshold > 0.0 && err > pm.error_threshold && pm.error_threshold < 1.0 {
+                (a.get(x as i64, y as i64), b.get(x as i64, y as i64))
+            } else {
+                (pa, pb)
+            };
+            for c in 0..4 {
+                px[c] = pa[c] + (pb[c] - pa[c]) * w;
+            }
+        }
+    });
+    out
+}
+
+/// Timewarp's Matte Channel options.
+const TW_MATTE_CHANNELS: [&str; 4] = ["Alpha", "Inverted Alpha", "Luminance", "Inverted Luminance"];
+/// Timewarp's Show options.
+const TW_SHOW: [&str; 4] = ["Normal", "Foreground Only", "Background Only", "Matte"];
+
+/// A matte plane (foreground = 1) from a matte layer frame.
+fn matte_of(img: &Image, channel: u32) -> Vec<f32> {
+    img.data
+        .par_iter()
+        .map(|p| {
+            let (c, a) = unpremul(*p);
+            let l = (0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]) * a;
+            match channel {
+                1 => 1.0 - a,
+                2 => l,
+                3 => 1.0 - l,
+                _ => a,
+            }
+            .clamp(0.0, 1.0)
+        })
+        .collect()
+}
+
+fn times_mask(img: &Image, m: &[f32], invert: bool) -> Image {
+    let mut out = img.clone();
+    out.data.par_iter_mut().zip(m.par_iter()).for_each(|(p, &k)| {
+        let k = if invert { 1.0 - k } else { k };
+        p.iter_mut().for_each(|v| *v *= k);
+    });
+    out
+}
+
+/// Another layer (layer parameter `id`) at the comp times matching source layer times `times`,
+/// fitted onto `grid`. `None` when no layer is chosen.
+fn fetch_layer(ctx: &EffectCtx, id: &str, times: &[f64], grid: &Buf) -> Option<Vec<Image>> {
+    let lid = ctx.params.get(id)?.as_layer()?;
+    let host = ctx.env.host?;
+    let me = ctx.params.get(&crate::layer_source_id(id)).is_none_or(|v| v.as_enum() != 0);
+    let shift = ctx.env.comp_time - ctx.time;
+    Some(
+        times
+            .iter()
+            .map(|t| match host.layer_at(lid, t + shift, me) {
+                Some(lp) => fit_layer(ctx, grid, &lp, false),
+                None => Image::new(grid.img.width, grid.img.height),
+            })
+            .collect(),
+    )
+}
+
+/// Timewarp. Whole Frames shows the nearest source frame, Frame Mix cross-fades the two
+/// neighbouring frames and Pixel Motion builds the in-between frame along estimated motion
+/// vectors (block-matching optical flow, [`effectcraft_raster::flow`]) tuned by the Tuning
+/// group. A Matte Layer splits foreground and background so each moves on its own vectors; a
+/// Warp Layer supplies the motion instead of the layer itself. Motion Blur averages Shutter
+/// Samples instants across the shutter.
 fn timewarp(ctx: &EffectCtx, b: Buf) -> Buf {
     if ctx.env.host.is_none() {
         return b;
@@ -437,36 +695,126 @@ fn timewarp(ctx: &EffectCtx, b: Buf) -> Buf {
     let speed = ctx.params.f("speed");
     let src = timewarp_source_time(ctx.time, by_frame, speed, ctx.params.f("sourceFrame"), fps);
     let method = ctx.params.e("method");
-    // Build From One Image: interpolated frames come from the nearest source frame alone.
     let one = method > 0 && ctx.params.b("tuning/buildFromOneImage");
-    // Sample times (with weights) for one instant of source time.
-    let instant = |s: f64| -> Vec<(f64, f32)> {
-        let f = s * fps;
-        let f0 = (f + 1e-6).floor();
-        let frac = (f - f0) as f32;
-        if one {
-            return vec![((f + 1e-6).round() / fps, 1.0)];
-        }
-        if method == 0 || frac < 1e-4 { vec![(f0 / fps, 1.0)] } else { vec![(f0 / fps, 1.0 - frac), ((f0 + 1.0) / fps, frac)] }
-    };
-    let mut samples: Vec<(f64, f32)> = Vec::new();
+    // Instants of source time (with weights) across the shutter.
+    let mut instants: Vec<(f64, f32)> = vec![];
     if ctx.params.b("motionBlur/enableMotionBlur") {
         let angle = if ctx.params.e("motionBlur/shutterControl") == 1 { ctx.params.f("motionBlur/shutterAngle") } else { 180.0 };
         let n = ctx.params.f("motionBlur/shutterSamples").round().clamp(1.0, 64.0) as usize;
         let rate = if by_frame { 1.0 } else { speed / 100.0 };
         let span = angle / 360.0 * rate / fps;
         for i in 0..n {
-            let s = src + if n > 1 { span * i as f64 / (n - 1) as f64 } else { 0.0 };
-            samples.extend(instant(s).into_iter().map(|(t, w)| (t, w / n as f32)));
+            instants.push((src + if n > 1 { span * i as f64 / (n - 1) as f64 } else { 0.0 }, 1.0 / n as f32));
         }
     } else {
-        samples = instant(src);
+        instants.push((src, 1.0));
     }
-    let times: Vec<f64> = samples.iter().map(|s| s.0).collect();
-    let weights: Vec<f32> = samples.iter().map(|s| s.1).collect();
+    // Each instant needs the frame at or before it and the next one.
+    let split = |s: f64| {
+        let f = s * fps;
+        let f0 = (f + 1e-6).floor();
+        (f0, ((f - f0) as f32).max(0.0))
+    };
+    let mut times: Vec<f64> = vec![];
+    for &(s, _) in &instants {
+        let (f0, _) = split(s);
+        times.push(f0 / fps);
+        times.push((f0 + 1.0) / fps);
+    }
     let Some(fr) = fetch(ctx, &times) else { return b };
-    let img = average(&fr.imgs, &weights);
-    with_img(fr.grid, img)
+    let grid = fr.grid.clone();
+    let frame = |t: f64| -> &Image {
+        let k = times.iter().position(|q| (q - t).abs() < 1e-9).unwrap_or(0);
+        &fr.imgs[k]
+    };
+    let pm = PixelMotion::from(ctx, grid.scale);
+    let mattes = fetch_layer(ctx, "matteLayer", &times, &grid);
+    let warps = fetch_layer(ctx, "warpLayer", &times, &grid);
+    let matte_ch = ctx.params.e("matteChannel");
+    let show = ctx.params.e("show");
+    let mut flows: Vec<((i64, bool), Flow)> = vec![];
+    let mut out_frames = vec![];
+    for &(s, wgt) in &instants {
+        let (f0, frac) = split(s);
+        let (t0, t1) = (f0 / fps, (f0 + 1.0) / fps);
+        let (a, bb) = (frame(t0), frame(t1));
+        let idx = |t: f64| times.iter().position(|q| (q - t).abs() < 1e-9).unwrap_or(0);
+        let ma = mattes.as_ref().map(|m| matte_of(&m[idx(t0)], matte_ch));
+        let mb = mattes.as_ref().map(|m| matte_of(&m[idx(t1)], matte_ch));
+        let img = if method == 0 || frac < 1e-4 || (one && method == 1) {
+            // Whole frames (Build From One Image with Frame Mix: the nearest frame).
+            let pick = if method == 0 || frac < 1e-4 { 0.0 } else { frac.round() };
+            let base = if pick < 0.5 { a } else { bb };
+            match (show, &ma, &mb) {
+                (1, Some(m), _) if pick < 0.5 => times_mask(base, m, false),
+                (2, Some(m), _) if pick < 0.5 => times_mask(base, m, true),
+                (1, _, Some(m)) => times_mask(base, m, false),
+                (2, _, Some(m)) => times_mask(base, m, true),
+                (3, Some(m), _) => matte_image(if pick < 0.5 { m } else { mb.as_ref().unwrap_or(m) }, base),
+                _ => base.clone(),
+            }
+        } else if method == 1 {
+            match (&ma, &mb, show) {
+                (Some(m0), Some(m1), 3) => effectcraft_raster::flow::mix(&matte_image(m0, a), &matte_image(m1, bb), frac),
+                (Some(m0), Some(m1), 1 | 2) => effectcraft_raster::flow::mix(&times_mask(a, m0, show == 2), &times_mask(bb, m1, show == 2), frac),
+                _ => effectcraft_raster::flow::mix(a, bb, frac),
+            }
+        } else {
+            // Pixel Motion: vectors from the warp layer if any, else from the layer.
+            let key = ((f0 as i64), false);
+            let flow_ab = |fa: &Image, fb: &Image| -> Flow { timewarp_flow(fa, fb, &pm) };
+            let flow = match flows.iter().find(|(k, _)| *k == key) {
+                Some((_, f)) => f.clone(),
+                None => {
+                    let f = match &warps {
+                        Some(w) => flow_ab(&w[idx(t0)], &w[idx(t1)]),
+                        None => flow_ab(a, bb),
+                    };
+                    flows.push((key, f.clone()));
+                    f
+                }
+            };
+            match (&ma, &mb) {
+                (Some(m0), Some(m1)) => {
+                    // Foreground and background each move on their own vectors.
+                    let (fa, fb) = (times_mask(a, m0, false), times_mask(bb, m1, false));
+                    let (ga, gb) = (times_mask(a, m0, true), times_mask(bb, m1, true));
+                    let fg_flow = if warps.is_some() { flow.clone() } else { flow_ab(&fa, &fb) };
+                    let bg_flow = if warps.is_some() { flow.clone() } else { flow_ab(&ga, &gb) };
+                    let fg = timewarp_interpolate(&fa, &fb, frac, &fg_flow, &pm);
+                    let bg = timewarp_interpolate(&ga, &gb, frac, &bg_flow, &pm);
+                    match show {
+                        1 => fg,
+                        2 => bg,
+                        3 => matte_image(&fg.data.iter().map(|p| p[3]).collect::<Vec<_>>(), &fg),
+                        _ => {
+                            let mut o = bg;
+                            o.data.par_iter_mut().zip(fg.data.par_iter()).for_each(|(p, q)| {
+                                let k = 1.0 - q[3];
+                                for c in 0..4 {
+                                    p[c] = q[c] + p[c] * k;
+                                }
+                            });
+                            o
+                        }
+                    }
+                }
+                _ => timewarp_interpolate(a, bb, frac, &flow, &pm),
+            }
+        };
+        out_frames.push((img, wgt));
+    }
+    let imgs: Vec<Image> = out_frames.iter().map(|(i, _)| i.clone()).collect();
+    let weights: Vec<f32> = out_frames.iter().map(|(_, w)| *w).collect();
+    let img = if imgs.len() == 1 { imgs.into_iter().next().unwrap_or_default() } else { average(&imgs, &weights) };
+    with_img(grid, img)
+}
+
+/// A matte shown as opaque grey.
+fn matte_image(m: &[f32], like: &Image) -> Image {
+    let mut out = Image::new(like.width, like.height);
+    out.data.par_iter_mut().zip(m.par_iter()).for_each(|(p, &k)| *p = [k, k, k, 1.0]);
+    out
 }
 
 // ---------------------------------------------------------------- CC Force Motion Blur / CC Wide Time / Pixel Motion Blur
@@ -561,6 +909,97 @@ mod tests {
         let h = Clock { static_layer: false };
         let out = run("ec.time.timedifference", &[("timeOffset", num(-0.5))], 1.0, &h);
         assert!((out.img.data[0][0] - 0.5).abs() < 1e-5, "{}", out.img.data[0][0]);
+    }
+
+    /// Texture `x − dx` (smooth, non-repeating).
+    fn texture(w: u32, h: u32, dx: f64) -> Image {
+        let mut img = Image::new(w, h);
+        for y in 0..h {
+            for x in 0..w {
+                let (u, v) = (x as f64 - dx, y as f64);
+                let s = (0.5 + 0.2 * (u * 0.21 + v * 0.07).sin() + 0.15 * (u * 0.05 - v * 0.19).cos() + 0.1 * (u * 0.031 + v * 0.017).sin()) as f32;
+                img.set(x, y, [s, s * 0.8, 1.0 - s, 1.0]);
+            }
+        }
+        img
+    }
+
+    /// A textured layer moving right 3 px per frame (10 fps); layer 7 (a "warp" / matte layer)
+    /// is the same texture standing still, layer 8 a matte that is white on the left half.
+    struct Moving;
+    impl EffectHost for Moving {
+        fn layer(&self, _: u64, _: bool) -> Option<LayerPixels> {
+            None
+        }
+        fn audio(&self, _: u64, _: f64, _: usize, _: u32) -> Option<Vec<f32>> {
+            None
+        }
+        fn self_at(&self, t: f64, _: usize) -> Option<Buf> {
+            Some(Buf { img: texture(96, 64, (t * 10.0).round() * 3.0), offset: [0.0; 2], scale: 1.0 })
+        }
+        fn layer_at(&self, id: u64, _: f64, _: bool) -> Option<LayerPixels> {
+            let img = match id {
+                7 => texture(96, 64, 0.0),
+                _ => {
+                    let mut m = Image::new(96, 64);
+                    for y in 0..64 {
+                        for x in 0..48 {
+                            m.set(x, y, [1.0, 1.0, 1.0, 1.0]);
+                        }
+                    }
+                    m
+                }
+            };
+            Some(LayerPixels { buf: Buf { img, offset: [0.0; 2], scale: 1.0 }, size: [96.0, 64.0] })
+        }
+    }
+
+    fn mae(a: &Image, b: &Image, margin: i64) -> f32 {
+        let (w, h) = (a.width as i64, a.height as i64);
+        let mut s = 0.0;
+        let mut n = 0.0;
+        for y in margin..h - margin {
+            for x in margin..w - margin {
+                let (p, q) = (a.get(x, y), b.get(x, y));
+                s += (0..3).map(|c| (p[c] - q[c]).abs()).sum::<f32>();
+                n += 3.0;
+            }
+        }
+        s / n
+    }
+
+    fn run_moving(vals: &[(&str, Value)], t: f64) -> Image {
+        let env = EffectEnv { host: Some(&Moving), frame_rate: 10.0, comp_time: t, ..Default::default() };
+        run_fx("ec.time.timewarp", vals, Image::new(96, 64), t, env).img
+    }
+
+    #[test]
+    fn timewarp_pixel_motion_follows_the_motion() {
+        // Speed 50 % at layer time 1.1 s: source 0.55 s, halfway between frames 5 and 6 (15 and
+        // 18 px), so the true in-between frame is the texture at 16.5 px.
+        let want = texture(96, 64, 16.5);
+        let pm = run_moving(&[("method", Value::Enum(2)), ("tuning/vectorDetail", num(60.0))], 1.1);
+        let mix = run_moving(&[("method", Value::Enum(1))], 1.1);
+        let (e_pm, e_mix) = (mae(&pm, &want, 8), mae(&mix, &want, 8));
+        assert!(e_pm < e_mix * 0.5, "pixel motion {e_pm} vs frame mix {e_mix}");
+        // Deterministic and seek-consistent (same time → same pixels).
+        assert_eq!(pm.data, run_moving(&[("method", Value::Enum(2)), ("tuning/vectorDetail", num(60.0))], 1.1).data);
+        // Build From One Image warps the nearer frame alone: still close to the truth.
+        let one = run_moving(&[("method", Value::Enum(2)), ("tuning/buildFromOneImage", Value::Bool(true)), ("tuning/vectorDetail", num(60.0))], 1.1);
+        assert!(mae(&one, &want, 8) < e_mix * 0.5);
+        // A Warp Layer standing still supplies zero motion: the result is a plain mix.
+        let warped = run_moving(&[("method", Value::Enum(2)), ("warpLayer", Value::Layer(Some(7))), ("tuning/errorThreshold", num(100.0))], 1.1);
+        assert!(mae(&warped, &mix, 0) < 1e-3, "{}", mae(&warped, &mix, 0));
+        // Show Matte displays the matte layer; Foreground Only keeps the matte's left half.
+        let m = run_moving(&[("method", Value::Enum(2)), ("matteLayer", Value::Layer(Some(8))), ("show", Value::Enum(3))], 1.1);
+        assert!(m.get(10, 10)[0] > 0.99 && m.get(80, 10)[0] < 0.01);
+        let fg = run_moving(&[("method", Value::Enum(2)), ("matteLayer", Value::Layer(Some(8))), ("show", Value::Enum(1))], 1.1);
+        assert!(fg.get(10, 30)[3] > 0.99 && fg.get(85, 30)[3] < 0.01);
+        let normal = run_moving(&[("method", Value::Enum(2)), ("matteLayer", Value::Layer(Some(8))), ("tuning/vectorDetail", num(60.0))], 1.1);
+        assert!(mae(&normal, &want, 12) < e_mix, "{} {e_mix}", mae(&normal, &want, 12));
+        // Source Crops: a crop replicates the kept edge into the cropped band.
+        let c = run_moving(&[("method", Value::Enum(2)), ("sourceCrops/leftCrop", num(10.0))], 1.1);
+        assert_eq!(c.get(0, 20), c.get(5, 20));
     }
 
     #[test]
