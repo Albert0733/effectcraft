@@ -749,6 +749,43 @@ fn time_ms(n: usize, mut f: impl FnMut()) -> f64 {
     median(&mut v)
 }
 
+/// `bench --gpu`'s adjustment-layer comp: a copy of the first comp with a full-frame adjustment
+/// layer on top running Gaussian Blur, Levels, Vibrance and Glow (all GPU effects).
+fn adjustment_bench_comp(p: &mut effectcraft_engine::project::Project) -> Option<ItemId> {
+    use effectcraft_engine::effects;
+    use effectcraft_engine::keyframe::Value;
+    use effectcraft_engine::project::build::{self, Ids};
+    use effectcraft_engine::project::{ItemKind, LayerSource, Solid};
+    let (_, base) = p.comps().next().map(|(id, c)| (*id, c.clone()))?;
+    let mut comp = base.clone();
+    let (w, h) = (comp.width, comp.height);
+    let sid = p.add_item(
+        "Adjustment (bench)",
+        effectcraft_engine::color::Label::None,
+        None,
+        ItemKind::Solid(Solid { color: [1.0; 3], width: w, height: h, pixel_aspect: 1.0 }),
+    );
+    let mut l = build::layer(p, &comp, "Adjustment (bench)", LayerSource::Solid { item: sid }, (w, h), None);
+    l.switches.adjustment = true;
+    for (id, vals) in [
+        ("ec.blur.gaussian", vec![("blurriness", Value::Scalar(12.0))]),
+        ("ec.color.levels", vec![("gamma", Value::Scalar(1.3))]),
+        ("ec.color.vibrance", vec![("vibrance", Value::Scalar(40.0))]),
+        ("ec.stylize.glow", vec![("threshold", Value::Scalar(55.0))]),
+    ] {
+        let spec = effects::find(id)?;
+        let mut next = p.next_id;
+        let mut g = effects::instantiate(spec, &mut Ids(&mut next), spec.name, [w as f64, h as f64]);
+        p.next_id = next;
+        for (k, v) in vals {
+            g.prop_mut(k)?.value = v;
+        }
+        l.props.sub_mut("effects")?.children.push(g.into());
+    }
+    comp.layers.insert(0, l);
+    Some(p.add_item("Adjustment Layers (bench)", effectcraft_engine::color::Label::None, None, ItemKind::Comp(comp.into())))
+}
+
 /// `bench --gpu`: CPU vs GPU ms/frame for every comp (or `--comp`) at Full and Half. "cold"
 /// renders everything (no layer cache); "warm" reuses the layer cache (playback / scrubbing of
 /// unchanged layers: compositing cost); "viewer" is the GPU display path without readback.
@@ -756,22 +793,30 @@ fn bench_gpu(s: &Session, args: &Args) -> Result<(), Failure> {
     use effectcraft_render::Backend;
     let gpu = effectcraft_gpu::Gpu::headless().ok_or_else(|| Failure::Error("--gpu: no usable GPU adapter".into()))?;
     let n = args.num("--n")?.unwrap_or(10.0).max(1.0) as usize;
+    // Every comp, plus an adjustment-layer comp built for the benchmark (the main comp under a
+    // full-frame adjustment layer with a GPU effect stack).
+    let mut project = (*s.project).clone();
     let comps: Vec<ItemId> = match args.opt("--comp") {
         Some(_) => s.active_comp_id().into_iter().collect(),
-        None => s.project.comps().map(|(id, _)| *id).collect(),
+        None => {
+            let mut v: Vec<ItemId> = s.project.comps().map(|(id, _)| *id).collect();
+            v.extend(adjustment_bench_comp(&mut project));
+            v
+        }
     };
+    let project = &project;
     eprintln!("GPU: {} — median of {n} runs (ms/frame)", effectcraft_render::Accelerator::name(&gpu));
     eprintln!(
         "{:<28} {:>5} {:>10} {:>9} {:>9} {:>9} {:>9} {:>9} {:>8} {:>9}",
         "comp", "res", "size", "cpu cold", "gpu cold", "cpu warm", "gpu warm", "gpu view", "speedup", "gpu≠cpu"
     );
     for cid in comps {
-        let Some(comp) = s.project.comp(cid) else { continue };
-        let name = s.project.item(cid).map(|i| i.name.clone()).unwrap_or_default();
+        let Some(comp) = project.comp(cid) else { continue };
+        let name = project.item(cid).map(|i| i.name.clone()).unwrap_or_default();
         let t = Tick::from_seconds_f64(args.num("--time")?.unwrap_or(3.0).min(comp.duration.seconds() * 0.5));
         for (label, scale) in [("Full", 1.0), ("Half", 0.5)] {
             let mk = |backend: Backend, cache: Option<&LayerCache>| {
-                let mut r = Renderer::new(&s.project, s.footage.as_ref(), RenderOpts { scale, backend, ..Default::default() });
+                let mut r = Renderer::new(project, s.footage.as_ref(), RenderOpts { scale, backend, ..Default::default() });
                 r.expr = s.expr.as_deref();
                 r.cache = cache;
                 r.accel = Some(&gpu);
@@ -792,7 +837,7 @@ fn bench_gpu(s: &Session, args: &Args) -> Result<(), Failure> {
                 std::hint::black_box(mk(Backend::Gpu, Some(&gcache)));
             });
             let view = time_ms(n, || {
-                let mut r = Renderer::new(&s.project, s.footage.as_ref(), RenderOpts { scale, backend: Backend::Gpu, ..Default::default() });
+                let mut r = Renderer::new(project, s.footage.as_ref(), RenderOpts { scale, backend: Backend::Gpu, ..Default::default() });
                 r.expr = s.expr.as_deref();
                 r.cache = Some(&gcache);
                 r.accel = Some(&gpu);
