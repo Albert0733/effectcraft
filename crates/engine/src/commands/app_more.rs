@@ -242,6 +242,7 @@ pub(crate) fn view_command(v: effectcraft_render::three_d::View3D) -> &'static s
     use effectcraft_render::three_d::View3D::*;
     match v {
         ActiveCamera => "view.3d.activeCamera",
+        Default => "view.3d.default",
         Front => "view.3d.front",
         Left => "view.3d.left",
         Top => "view.3d.top",

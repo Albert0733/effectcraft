@@ -1,0 +1,223 @@
+//! Viewer and colour completion (M7.7): View ▸ Switch 3D View ▸ Default, Split with New Locked
+//! Viewer, Use Display Color Management, Simulate Output; Project Settings ▸ Color Engine,
+//! ACES working spaces, HDR compand / tone mapping, Rec. 2100 output, Feet + Frames.
+
+use effectcraft_project::{ColorEngine, ColorSpace, HdrMode, Project, TimeDisplayStyle};
+use effectcraft_render::RenderOpts;
+use effectcraft_render::three_d::View3D;
+use effectcraft_time::Tick;
+use serde_json::json;
+
+use crate::Session;
+use crate::viewer::{DisplayColor, SimProfile, Simulation};
+
+fn session() -> Session {
+    let mut s = Session::default();
+    s.execute("comp.new", json!({"name": "C", "width": 64, "height": 48, "frameRate": 24, "duration": 10})).unwrap();
+    s
+}
+
+#[test]
+fn default_3d_view_ignores_camera_layers() {
+    let mut s = session();
+    let cid = s.active_comp_id().unwrap();
+    s.execute("layer.newCamera", json!({"position": [32, 24, -300], "poi": [32, 24, 0]})).unwrap();
+    assert_eq!(s.execute("view.3d.default", json!({})).unwrap()["view"], "default");
+    let vs = s.state.views3d.get(&cid).unwrap().clone();
+    assert_eq!(vs.current, View3D::Default);
+    // The comp's default camera: at −zoom looking at the centre, not the camera layer.
+    let cam = s.view_camera(cid).unwrap();
+    let zoom = effectcraft_geom::default_camera_zoom(64.0);
+    assert!((cam.eye.z + zoom).abs() < 1e-9 && (cam.eye.x - 32.0).abs() < 1e-9 && !cam.ortho, "{:?}", cam.eye);
+    // Orbitable like a custom view; Reset 3D View restores it; Last view goes back.
+    s.execute("camera.orbit", json!({"yaw": 30})).unwrap();
+    assert!((s.view_camera(cid).unwrap().eye.x - 32.0).abs() > 1.0);
+    s.execute("view.reset3DView", json!({})).unwrap();
+    assert!((s.view_camera(cid).unwrap().eye.x - 32.0).abs() < 1e-9);
+    s.execute("view.3d.last", json!({})).unwrap();
+    assert_eq!(s.state.views3d[&cid].current, View3D::ActiveCamera);
+    assert_eq!(s.execute("view.set3DView", json!({"view": "Default"})).unwrap()["view"], "default");
+}
+
+#[test]
+fn locked_viewer_keeps_its_comp() {
+    let mut s = session();
+    let a = s.active_comp_id().unwrap();
+    s.execute("view.3d.top", json!({})).unwrap();
+    assert!(!s.is_enabled("view.closeLockedViewer"));
+    let r = s.execute("view.splitLockedViewer", json!({})).unwrap();
+    assert_eq!(r, json!({"comp": a.0, "view": "top"}));
+    // Another comp becomes active; the locked viewer stays on the first.
+    s.execute("comp.new", json!({"name": "B"})).unwrap();
+    assert_ne!(s.active_comp_id(), Some(a));
+    assert_eq!(s.state.locked_viewer.unwrap().comp, a);
+    let st = s.execute("view.displayColor", json!({})).unwrap();
+    assert_eq!(st["lockedViewer"]["comp"], a.0);
+    // Serde of the editor state; explicit comp and view.
+    let back: crate::EditorState = serde_json::from_value(serde_json::to_value(&s.state).unwrap()).unwrap();
+    assert_eq!(back.locked_viewer, s.state.locked_viewer);
+    s.execute("view.splitLockedViewer", json!({"comp": a.0, "view": "custom2"})).unwrap();
+    assert_eq!(s.state.locked_viewer.unwrap().view, View3D::Custom2);
+    assert!(s.execute("view.splitLockedViewer", json!({"view": "sideways"})).is_err());
+    assert_eq!(s.execute("view.closeLockedViewer", json!({})).unwrap()["closed"], true);
+    assert!(s.state.locked_viewer.is_none());
+}
+
+fn px(r: u8, g: u8, b: u8) -> Vec<[u8; 4]> {
+    vec![[r, g, b, 255]]
+}
+
+#[test]
+fn display_color_management_and_simulation() {
+    let mut s = session();
+    // Unmanaged projects: nothing to convert.
+    assert!(DisplayColor::of(&s).is_none());
+    s.execute("file.projectSettings", json!({"workingSpace": "rec2020"})).unwrap();
+    // Managed, sRGB display, no simulation: the frame is already display-referred.
+    assert!(DisplayColor::of(&s).is_none());
+    assert_eq!(crate::menus::checked(&s, "view.displayColorManagement", &json!({})), Some(true));
+    // A Display P3 monitor: pure sRGB red becomes less saturated P3 numbers.
+    s.execute("prefs.set", json!({"key": "previews.displayProfile", "value": "p3"})).unwrap();
+    let mut p = px(255, 0, 0);
+    DisplayColor::of(&s).unwrap().apply(&mut p);
+    assert!((p[0][0] as i32 - 234).abs() <= 2 && (p[0][1] as i32 - 51).abs() <= 3 && (p[0][2] as i32 - 35).abs() <= 3, "{p:?}");
+    // Display colour management off: the working space's (Rec. 2020) numbers go to the screen.
+    s.execute("view.displayColorManagement", json!({})).unwrap();
+    assert_eq!(crate::menus::checked(&s, "view.displayColorManagement", &json!({})), Some(false));
+    let mut q = px(255, 0, 0);
+    DisplayColor::of(&s).unwrap().apply(&mut q);
+    assert!(q[0][0] < 230 && q[0][1] > 60, "raw Rec. 2020 numbers: {q:?}");
+    s.execute("view.displayColorManagement", json!({"value": true})).unwrap();
+    s.execute("prefs.set", json!({"key": "previews.displayProfile", "value": "srgb"})).unwrap();
+    // Simulate Output ▸ Linear with Preserve RGB: linear numbers shown as-is (darker mid-grey).
+    s.execute("view.simulateOutput", json!({"profile": "linear", "preserveRgb": true})).unwrap();
+    let mut g = px(128, 128, 128);
+    DisplayColor::of(&s).unwrap().apply(&mut g);
+    assert!((g[0][0] as i32 - 55).abs() <= 2, "{g:?}");
+    // Without Preserve RGB the round trip through 8-bit linear bands the shadows.
+    s.execute("view.simulateOutput", json!({"profile": "linear"})).unwrap();
+    let dc = DisplayColor::of(&s).unwrap();
+    let levels: std::collections::BTreeSet<u8> = (0..32u8)
+        .map(|v| {
+            let mut p = px(v, v, v);
+            dc.apply(&mut p);
+            p[0][0]
+        })
+        .collect();
+    assert!(levels.len() < 20, "banding: {levels:?}");
+    assert_eq!(crate::menus::checked(&s, "view.simulateOutput", &json!({"profile": "linear"})), Some(true));
+    // Rec. 709 simulation keeps in-gamut colours; legacy Mac gamma 1.8 with Preserve RGB darkens.
+    s.execute("view.simulateOutput", json!({"profile": "rec709"})).unwrap();
+    let mut c = px(200, 100, 50);
+    DisplayColor::of(&s).unwrap().apply(&mut c);
+    assert!((c[0][0] as i32 - 200).abs() <= 2 && (c[0][1] as i32 - 100).abs() <= 2, "{c:?}");
+    s.execute("view.simulateOutput", json!({"profile": "mac18", "preserveRgb": true})).unwrap();
+    let mut m = px(128, 128, 128);
+    DisplayColor::of(&s).unwrap().apply(&mut m);
+    assert!(m[0][0] < 120, "gamma 1.8 numbers on an sRGB display look darker: {m:?}");
+    // Custom… uses (and sets) the custom profile.
+    let r = s.execute("view.simulateOutput", json!({"profile": "custom", "space": "p3", "preserveRgb": false})).unwrap();
+    assert_eq!(r["profile"], "p3");
+    assert_eq!(s.state.viewer.custom_simulation, Simulation { profile: SimProfile::P3, preserve_rgb: false });
+    assert_eq!(crate::menus::checked(&s, "view.simulateOutput", &json!({"profile": "custom"})), Some(true));
+    s.execute("view.simulateOutput", json!({"profile": "none"})).unwrap();
+    assert!(DisplayColor::of(&s).is_none());
+    assert!(s.execute("view.simulateOutput", json!({"profile": "cmyk"})).is_err());
+    // Every menu profile parses.
+    for p in SimProfile::ALL {
+        assert_eq!(SimProfile::parse(p.id()), Some(p));
+    }
+}
+
+fn red_solid(s: &mut Session, hex: &str) {
+    s.execute("layer.newSolid", json!({"color": hex, "width": 64, "height": 48})).unwrap();
+}
+
+#[test]
+fn color_engine_aces_working_spaces_and_hdr() {
+    let mut s = session();
+    let cid = s.active_comp_id().unwrap();
+    // OCIO engine: ACEScg working space and the tone-mapped display by default.
+    s.execute("file.projectSettings", json!({"colorEngine": "ocio"})).unwrap();
+    let st = s.project.settings.clone();
+    assert_eq!((st.color_engine, st.working_space, st.hdr), (ColorEngine::Ocio, Some(ColorSpace::AcesCg), HdrMode::ToneMap));
+    assert!(s.execute("file.projectSettings", json!({"workingSpace": "rec709"})).is_err(), "not in the OCIO config");
+    s.execute("file.projectSettings", json!({"workingSpace": "aces2065"})).unwrap();
+    assert!(s.execute("file.projectSettings", json!({"workingSpace": "rec2100pq"})).is_err(), "not a working space");
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(s.project.settings.working_space, Some(ColorSpace::AcesCg));
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(s.project.settings.color_engine, ColorEngine::Adobe);
+    s.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(s.project.settings.color_engine, ColorEngine::Ocio);
+    // 32 bpc, a solid of 4.0 (over-range) in ACEScg: tone mapped below white, not clipped.
+    s.execute("file.projectSettings", json!({"bitDepth": 32, "hdr": "toneMap"})).unwrap();
+    s.execute("layer.newSolid", json!({"color": "#ffffff", "width": 64, "height": 48})).unwrap();
+    let lid = s.active_comp().unwrap().layers[0].id.0;
+    s.execute("effect.apply", json!({"layers": [lid], "effect": "Exposure"})).unwrap();
+    s.execute("prop.set", json!({"layer": lid, "path": "effects/#1/master/exposure", "value": 2.0})).unwrap();
+    let mapped = s.render(cid, Tick::ZERO, RenderOpts::default()).data[0];
+    assert!(mapped[0] > 0.5 && mapped[0] < 0.99, "tone mapped: {mapped:?}");
+    s.execute("file.projectSettings", json!({"hdr": "clip"})).unwrap();
+    let clipped = s.render(cid, Tick::ZERO, RenderOpts::default()).data[0];
+    assert!(clipped[0] > 1.1, "32 bpc keeps over-range: {clipped:?}");
+    s.execute("file.projectSettings", json!({"hdr": "compand"})).unwrap();
+    let comp = s.render(cid, Tick::ZERO, RenderOpts::default()).data[0];
+    assert!(comp[0] > 0.9 && comp[0] < 1.0, "companded: {comp:?}");
+    // Rec. 2100 PQ output: HDR, no tone mapping: over-range white encodes above SDR white's 0.58.
+    s.execute("file.projectSettings", json!({"outputSpace": "rec2100pq", "hdr": "toneMap"})).unwrap();
+    let pq = s.render(cid, Tick::ZERO, RenderOpts::default()).data[0];
+    assert!(pq[0] > 0.6 && pq[0] < 0.8, "PQ: {pq:?}");
+    s.execute("file.projectSettings", json!({"outputSpace": "rec2100hlg"})).unwrap();
+    let hlg = s.render(cid, Tick::ZERO, RenderOpts::default()).data[0];
+    assert!(hlg[0] > 0.85, "HLG: {hlg:?}");
+    assert!(s.execute("file.projectSettings", json!({"hdr": "glow"})).is_err());
+    // Serde keeps the new settings; older files load with the defaults.
+    let back: Project = serde_json::from_str(&serde_json::to_string(&*s.project).unwrap()).unwrap();
+    assert_eq!(back.settings, s.project.settings);
+    let mut v = serde_json::to_value(&s.project.settings).unwrap();
+    for k in ["color_engine", "hdr", "output_space"] {
+        v.as_object_mut().unwrap().remove(k);
+    }
+    let old: effectcraft_project::ProjectSettings = serde_json::from_value(v).unwrap();
+    assert_eq!((old.color_engine, old.hdr, old.output_space), (ColorEngine::Adobe, HdrMode::Clip, None));
+}
+
+#[test]
+fn aces_working_space_matches_the_ocio_config() {
+    // ACEScg in the colour module and in the OCIO effects' built-in config agree.
+    let mut s = session();
+    s.execute("file.projectSettings", json!({"workingSpace": "acescg"})).unwrap();
+    red_solid(&mut s, "#808080");
+    let cid = s.active_comp_id().unwrap();
+    // Authored ACEScg values (0.5 linear AP1 grey) → sRGB display.
+    let out = s.render(cid, Tick::ZERO, RenderOpts::default()).data[0];
+    let want = effectcraft_color::linear_to_srgb(128.0 / 255.0);
+    assert!((out[0] - want).abs() < 0.01 && (out[1] - want).abs() < 0.01, "{out:?} vs {want}");
+}
+
+#[test]
+fn feet_and_frames_display_and_entry() {
+    let mut s = session();
+    let comp = s.active_comp().unwrap().clone();
+    s.execute("file.projectSettings", json!({"timeDisplay": "feet35"})).unwrap();
+    assert_eq!(s.project.settings.time_display, TimeDisplayStyle::Feet35);
+    let t = comp.frame_rate.tick_of(16 * 3 + 5);
+    assert_eq!(crate::commands::time::display_time(&s, &comp, t), "0003+05");
+    // Typed feet+frames in the time field.
+    let r = s.execute("time.set", json!({"timecode": "2+10"})).unwrap();
+    assert_eq!(r["frame"], 42);
+    assert_eq!(r["display"], "0002+10");
+    let r = s.execute("time.set", json!({"timecode": "+6"})).unwrap();
+    assert_eq!(r["frame"], 48);
+    s.execute("file.projectSettings", json!({"timeDisplay": "feet16"})).unwrap();
+    assert_eq!(crate::commands::time::display_time(&s, &comp, comp.frame_rate.tick_of(95)), "0002+15");
+    s.execute("file.projectSettings", json!({"timeDisplay": "frames"})).unwrap();
+    assert_eq!(crate::commands::time::display_time(&s, &comp, comp.frame_rate.tick_of(95)), "00095");
+    s.execute("file.projectSettings", json!({"timeDisplay": "timecode"})).unwrap();
+    assert_eq!(crate::commands::time::display_time(&s, &comp, comp.frame_rate.tick_of(48)), "0:00:02:00");
+    assert!(s.execute("file.projectSettings", json!({"timeDisplay": "furlongs"})).is_err());
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(s.project.settings.time_display, TimeDisplayStyle::Frames);
+    assert_eq!(serde_json::to_value(TimeDisplayStyle::Feet16).unwrap(), json!("Feet16"));
+}

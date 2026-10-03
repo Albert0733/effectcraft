@@ -487,7 +487,7 @@ fn frontend_commands_emit_events_and_stubs_are_disabled() {
     let ev = frontend_events(&mut s);
     assert_eq!(ev[0].0, "view.zoomIn");
     assert_eq!(ev[1], ("window.panel".to_string(), json!({"panel": "align"})));
-    for id in ["layer.autoTrace", "camera.stereoRig", "view.displayColorManagement", "view.3d.default", "layer.create", "track.motion"] {
+    for id in ["layer.autoTrace", "layer.sceneEditDetection", "layer.create", "track.motion"] {
         assert!(!s.is_enabled(id), "{id}");
         assert!(matches!(s.execute(id, json!({})), Err(EngineError::Disabled(..))), "{id}");
     }

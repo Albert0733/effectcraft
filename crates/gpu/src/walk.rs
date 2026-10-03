@@ -48,6 +48,14 @@ pub(crate) fn render<'g>(e: &mut Enc<'g>, r: &Renderer, comp_id: ItemId, t: Tick
             canvas = ops::quantize(e, &canvas, l);
         }
     }
+    if r.depth() == 0
+        && let Some((lin, mode, enc)) = pipe.output_hdr()
+    {
+        on_cpu(e, &mut canvas, |img| {
+            effectcraft_render::color::output_hdr(img, lin, mode, enc);
+            pipe.quantize(img);
+        })?;
+    }
     Some(canvas)
 }
 

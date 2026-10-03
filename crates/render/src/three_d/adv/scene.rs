@@ -806,6 +806,20 @@ fn ssaa_for(r: &Renderer, out: (u32, u32)) -> u32 {
 
 /// Build the scene of a run of 3D layers.
 pub(crate) fn build(r: &Renderer, ctx: &EvalCtx, run: &[&Layer], out: (u32, u32)) -> Scene {
+    build_at(r, ctx, None, run, out)
+}
+
+/// Whether a layer's motion is blurred (Motion Blur switch, comp setting and render option).
+pub(crate) fn motion_blurred(r: &Renderer, ctx: &EvalCtx, layer: &Layer) -> bool {
+    r.opts.motion_blur && ctx.comp.enable_motion_blur && layer.switches.motion_blur
+}
+
+/// [`build`] at a motion-blur sub-sample: layers with Motion Blur on, the camera and the lights
+/// are evaluated at `sub`'s time; the other layers stay at `ctx`'s.
+pub(crate) fn build_at(r: &Renderer, ctx: &EvalCtx, sub: Option<&EvalCtx>, run: &[&Layer], out: (u32, u32)) -> Scene {
+    let base = ctx;
+    let at = sub.unwrap_or(ctx);
+    let ctx = at;
     let cam = camera_for(r, ctx);
     let lin = r.pipe.linear || r.pipe.linear_blend;
     let ssaa = ssaa_for(r, out);
@@ -816,6 +830,7 @@ pub(crate) fn build(r: &Renderer, ctx: &EvalCtx, run: &[&Layer], out: (u32, u32)
         cam,
     };
     for layer in run {
+        let ctx = if sub.is_some() && motion_blurred(r, base, layer) { at } else { base };
         if layer.environment || layer.switches.adjustment || ctx.opacity(layer) <= 0.0 || !layer.has_video() {
             continue;
         }

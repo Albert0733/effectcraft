@@ -312,6 +312,70 @@ fn aux_views(
     main
 }
 
+/// View ▸ Split with New Locked Viewer: the locked viewer on the left of the Composition panel
+/// (its comp and 3D view stay put whatever comp is active). Returns the main viewer's rectangle.
+fn locked_pane(app: &mut EffectcraftApp, ui: &mut egui::Ui, full: Rect, bg: Color32) -> Rect {
+    let Some(lv) = app.session.state.locked_viewer else { return full };
+    let Some(comp) = app.session.project.comp(lv.comp).cloned() else { return full };
+    let name = app.session.project.item(lv.comp).map(|i| i.name.clone()).unwrap_or_default();
+    let gap = 2.0;
+    let mid = full.center().x;
+    let r = Rect::from_min_max(full.min, pos2(mid - gap / 2.0, full.max.y));
+    let main = Rect::from_min_max(pos2(mid + gap / 2.0, full.min.y), full.max);
+    let ctx = ui.ctx().clone();
+    let p = ui.painter().clone();
+    p.rect_filled(Rect::from_min_max(pos2(r.max.x, full.min.y), pos2(main.min.x, full.max.y)), 0.0, Color32::from_black_alpha(200));
+    p.rect_filled(r, 0.0, bg);
+    let (cw, ch) = (comp.width as f32, comp.height as f32);
+    let fit = ((r.width() - 20.0) / cw).min((r.height() - 44.0) / ch).max(0.01);
+    let cr = Rect::from_center_size(r.center(), vec2(cw * fit, ch * fit));
+    let scale = (fit * ctx.pixels_per_point()).min(1.0) as f64;
+    let t = app.session.time_of(lv.comp);
+    let cam = (lv.view != View3D::ActiveCamera && comp.has_3d())
+        .then(|| app.session.state.views3d.get(&lv.comp).cloned().unwrap_or_default().cam(lv.view, comp.width as f64, comp.height as f64).state());
+    let dc = effectcraft_engine::viewer::DisplayColor::of(&app.session);
+    let key = {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (app.session.revision, lv.comp.0, t.0, scale.to_bits(), format!("{cam:?}{}", dc.is_some())).hash(&mut h);
+        h.finish()
+    };
+    let id = egui::Id::new("viewer-locked");
+    let cached: Option<(u64, egui::TextureHandle)> = ctx.data(|d| d.get_temp(id));
+    let tex = match cached {
+        Some((k, tex)) if k == key => tex,
+        _ => {
+            let opts = effectcraft_engine::render::RenderOpts { scale, view: cam, ..Default::default() };
+            let img = app.session.render(lv.comp, t, opts);
+            let mut ci = crate::frames::to_color_image(&img);
+            if let Some(dc) = dc {
+                let mut px: Vec<[u8; 4]> = ci.pixels.iter().map(|c| c.to_array()).collect();
+                dc.apply(&mut px);
+                ci = egui::ColorImage::new(ci.size, px.into_iter().map(|a| Color32::from_rgba_premultiplied(a[0], a[1], a[2], a[3])).collect());
+            }
+            let tex = ctx.load_texture("viewer-locked", ci, egui::TextureOptions::LINEAR);
+            ctx.data_mut(|d| d.insert_temp(id, (key, tex.clone())));
+            tex
+        }
+    };
+    let b = comp.background;
+    p.rect_filled(cr, 0.0, Color32::from_rgb((b[0] * 255.0) as u8, (b[1] * 255.0) as u8, (b[2] * 255.0) as u8));
+    p.image(tex.id(), cr, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+    p.rect_stroke(cr, 0.0, Stroke::new(1.0, Color32::from_black_alpha(160)), StrokeKind::Outside);
+    let label = format!("Locked: {name} \u{2014} {}", if comp.has_3d() { lv.view.label() } else { "Active Camera" });
+    p.text(r.left_top() + vec2(8.0, 8.0), Align2::LEFT_TOP, &label, Tokens::ui(11.0), Color32::from_white_alpha(210));
+    app.auto.add("viewer.locked", r, &label);
+    // Close the locked viewer.
+    let close = Rect::from_min_size(pos2(r.max.x - 26.0, r.min.y + 4.0), vec2(20.0, 20.0));
+    let resp = ui.interact(close, egui::Id::new("viewer-locked-close"), Sense::click());
+    p.text(close.center(), Align2::CENTER_CENTER, "\u{00d7}", Tokens::ui(14.0), if resp.hovered() { Color32::WHITE } else { Color32::from_white_alpha(170) });
+    app.auto.add("viewer.locked.close", close, "Close Locked Viewer");
+    if resp.clicked() {
+        let _ = app.session.execute("view.closeLockedViewer", serde_json::json!({}));
+    }
+    main
+}
+
 pub(crate) fn checker(p: &egui::Painter, r: Rect) {
     let s = 10.0;
     p.rect_filled(r, 0.0, Color32::from_gray(0xcc));
@@ -380,6 +444,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let pasteboard = app.ui.viewer.pasteboard.map(|[r, g, b]| Color32::from_rgb(r, g, b)).unwrap_or(t.pasteboard);
     // View ▸ Switch View Layout: extra views (Top / Front / Right) beside the main view, which
     // keeps the overlays and the interaction.
+    let full = locked_pane(app, ui, full, pasteboard);
     let area = aux_views(app, ui, &comp, cid, full, pasteboard);
     p.rect_filled(area, 0.0, pasteboard);
     // View ▸ Show Rulers takes a strip on the top and left.

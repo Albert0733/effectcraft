@@ -307,8 +307,13 @@ pub(crate) fn showing_snapshot(app: &EffectcraftApp, ctx: &egui::Context) -> boo
     app.session.snapshot.is_some() && (app.session.state.viewer.show_snapshot || f5)
 }
 
-fn transformed(img: &egui::ColorImage, ch: Channel, colorized: bool, stops: f32) -> egui::ColorImage {
+/// Show Channel and exposure, then the display colour conversion (View ▸ Use Display Color
+/// Management / Simulate Output).
+fn transformed(img: &egui::ColorImage, ch: Channel, colorized: bool, stops: f32, dc: Option<vw::DisplayColor>) -> egui::ColorImage {
     let mut px: Vec<[u8; 4]> = img.pixels.iter().map(|c| c.to_array()).collect();
+    if let Some(dc) = dc.filter(|_| matches!(ch, Channel::Rgb | Channel::RgbStraight)) {
+        dc.apply(&mut px);
+    }
     vw::display_transform(&mut px, ch, colorized, stops);
     egui::ColorImage::new(img.size, px.into_iter().map(|a| Color32::from_rgba_premultiplied(a[0], a[1], a[2], a[3])).collect())
 }
@@ -341,14 +346,18 @@ pub(crate) fn draw_frame(app: &mut EffectcraftApp, ctx: &egui::Context, painter:
         }
         return;
     }
-    let plain = opts.channel == Channel::Rgb && opts.exposure == 0.0;
+    let dc = vw::DisplayColor::of(&app.session);
+    // The display conversion's inputs, for the texture caches.
+    let dc_key = format!("{:?}{:?}{}", dc.is_some(), opts.simulation, app.session.prefs.previews.display_profile)
+        + &format!("{:?}{:?}{}", app.session.project.settings.working_space, app.session.project.settings.output_space, opts.display_color_management);
+    let plain = opts.channel == Channel::Rgb && opts.exposure == 0.0 && dc.is_none();
     let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
     if snap {
         let Some(s) = app.session.snapshot.clone() else { return };
         let key = {
             use std::hash::{Hash, Hasher};
             let mut h = std::collections::hash_map::DefaultHasher::new();
-            (std::sync::Arc::as_ptr(&s.image) as usize, opts.channel.id(), opts.colorized, opts.exposure.to_bits()).hash(&mut h);
+            (std::sync::Arc::as_ptr(&s.image) as usize, opts.channel.id(), opts.colorized, opts.exposure.to_bits(), &dc_key).hash(&mut h);
             h.finish()
         };
         let id = egui::Id::new("viewer-snapshot-tex");
@@ -356,7 +365,7 @@ pub(crate) fn draw_frame(app: &mut EffectcraftApp, ctx: &egui::Context, painter:
             Some((k, tex)) if k == key => tex,
             _ => {
                 let img = crate::frames::to_color_image(&s.image);
-                let img = if plain { img } else { transformed(&img, opts.channel, opts.colorized, opts.exposure) };
+                let img = if plain { img } else { transformed(&img, opts.channel, opts.colorized, opts.exposure, dc) };
                 let tex = ctx.load_texture("viewer-snapshot", img, egui::TextureOptions::LINEAR);
                 ctx.data_mut(|d| d.insert_temp(id, (key, tex.clone())));
                 tex
@@ -400,14 +409,14 @@ pub(crate) fn draw_frame(app: &mut EffectcraftApp, ctx: &egui::Context, painter:
     let key = {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
-        (std::sync::Arc::as_ptr(&src) as usize, opts.channel.id(), opts.colorized, opts.exposure.to_bits()).hash(&mut h);
+        (std::sync::Arc::as_ptr(&src) as usize, opts.channel.id(), opts.colorized, opts.exposure.to_bits(), &dc_key).hash(&mut h);
         h.finish()
     };
     let id = egui::Id::new("viewer-display-tex");
     let tex = match ctx.data(|d| d.get_temp::<(u64, egui::TextureHandle)>(id)) {
         Some((k, tex)) if k == key => tex,
         _ => {
-            let tex = ctx.load_texture("viewer-display", transformed(&src, opts.channel, opts.colorized, opts.exposure), zoom_opts);
+            let tex = ctx.load_texture("viewer-display", transformed(&src, opts.channel, opts.colorized, opts.exposure, dc), zoom_opts);
             ctx.data_mut(|d| d.insert_temp(id, (key, tex.clone())));
             tex
         }

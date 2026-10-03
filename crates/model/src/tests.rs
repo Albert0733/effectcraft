@@ -316,3 +316,47 @@ fn contours_group_into_outlines_by_nesting() {
     assert_eq!(g.len(), 3);
     assert_eq!(g.iter().map(|o| o.holes.len()).sum::<usize>(), 2);
 }
+
+#[test]
+fn gltf_cameras_and_punctual_lights() {
+    let doc = r#"{
+        "asset": {"version": "2.0"},
+        "scene": 0,
+        "scenes": [{"nodes": [0, 2]}],
+        "nodes": [
+            {"name": "Rig", "translation": [0, 0, 10], "children": [1]},
+            {"name": "Cam", "camera": 0, "translation": [1, 0, 0]},
+            {"name": "Sun", "rotation": [-0.7071068, 0, 0, 0.7071068], "extensions": {"KHR_lights_punctual": {"light": 1}}},
+            {"name": "Orphan", "camera": 1}
+        ],
+        "cameras": [
+            {"type": "perspective", "name": "Shot", "perspective": {"yfov": 0.5, "znear": 0.1, "aspectRatio": 1.5}},
+            {"type": "orthographic", "orthographic": {"xmag": 2, "ymag": 1, "znear": 0, "zfar": 10}}
+        ],
+        "extensions": {"KHR_lights_punctual": {"lights": [
+            {"type": "spot", "name": "Key", "color": [1, 0.5, 0.25], "intensity": 3, "spot": {"innerConeAngle": 0.2, "outerConeAngle": 0.4}},
+            {"type": "directional", "intensity": 2}
+        ]}}
+    }"#;
+    let m = crate::gltf::parse(doc.as_bytes(), &|_| None).unwrap();
+    assert_eq!(m.cameras.len(), 2);
+    assert_eq!(m.cameras[0].name, "Shot");
+    assert_eq!(m.cameras[0].projection, CameraProjection::Perspective { yfov: 0.5, aspect: Some(1.5), znear: 0.1 });
+    assert_eq!(m.cameras[1].projection, CameraProjection::Orthographic { xmag: 2.0, ymag: 1.0 });
+    assert_eq!(m.lights.len(), 2);
+    assert_eq!(m.lights[0].kind, ModelLightKind::Spot { inner: 0.2, outer: 0.4 });
+    assert_eq!(m.lights[0].color, [1.0, 0.5, 0.25]);
+    assert_eq!(m.lights[1].kind, ModelLightKind::Directional);
+    assert_eq!(m.lights[1].name, "Light 2");
+    // Only nodes of the scene are placed; the camera node inherits its parent's translation.
+    let cams = m.placed(false, None, 0.0);
+    assert_eq!(cams.len(), 1);
+    assert_eq!((cams[0].index, cams[0].node), (0, 1));
+    let eye = cams[0].world.apply(vec3(0.0, 0.0, 0.0));
+    assert!((eye.x - 1.0).abs() < 1e-9 && (eye.z - 10.0).abs() < 1e-9, "{eye:?}");
+    let lights = m.placed(true, None, 0.0);
+    assert_eq!(lights.len(), 1);
+    // −90° about X: the light's −Z axis points down (−Y in glTF).
+    let d = lights[0].world.apply_vec(vec3(0.0, 0.0, -1.0));
+    assert!((d.y + 1.0).abs() < 1e-6, "{d:?}");
+}

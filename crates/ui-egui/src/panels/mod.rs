@@ -42,7 +42,7 @@ pub mod viewer_tools;
 pub mod waveform;
 
 use effectcraft_engine::Session;
-use effectcraft_engine::project::{Comp, TimeDisplayStyle};
+use effectcraft_engine::project::Comp;
 use effectcraft_engine::time::Tick;
 use egui::Rect;
 
@@ -60,14 +60,10 @@ pub enum DragPayload {
     Property { layer: u64, prop: u64 },
 }
 
-/// The current time formatted per project settings (timecode with `;` for drop-frame, or frames).
+/// The current time formatted per project settings (timecode with `;` for drop-frame, frames
+/// or Feet + Frames).
 pub fn timecode(session: &Session, comp: &Comp, t: Tick) -> String {
-    let fr = comp.frame_rate;
-    match session.project.settings.time_display {
-        TimeDisplayStyle::Frames => format!("{:05}", fr.frame_at(t) + session.project.settings.frame_start),
-        // AE's display: `0:00:02:15` (non-drop-frame counting, as AE shows new comps).
-        TimeDisplayStyle::Timecode => effectcraft_engine::time::format_timecode_ae(fr.frame_at(t + comp.display_start), fr, false),
-    }
+    effectcraft_engine::commands::time::display_time(session, comp, t)
 }
 
 pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: PanelKind, rect: Rect) {

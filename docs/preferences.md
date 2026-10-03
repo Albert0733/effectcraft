@@ -85,6 +85,7 @@ Commands (CLI, MCP, control channel):
   around the current time)
 - `previews.showInternalWireframes`: outlines of the layers inside a selected collapsed precomp
 - `previews.zoomQuality`: Faster = nearest-neighbour viewer scaling, More Accurate = bilinear
+- `previews.displayProfile`: the monitor's colour space for View ▸ Use Display Color Management
 - `appearance.useLabelColorForTabs`: Composition / Timeline tabs show the comp's label colour,
   Effect Controls / Properties the layer's
 - `appearance.cycleMaskColors`: new masks cycle through the mask colours (off: all the first)
