@@ -5,7 +5,7 @@
 
 EffectCraft ships 303 effects with 2434 parameters in total, grouped into the same categories as the Effects & Presets panel. Every effect is our own implementation, written from public behaviour descriptions and standard image-processing literature. Parameter names, order, popup options, units, defaults and ranges follow the reference application so that projects, expressions and muscle memory carry over.
 
-- **GPU**: 24 effects also run on the GPU compositor with identical results.
+- **GPU**: 37 effects also run on the GPU compositor with identical results.
 - **32**: 303 effects process 32-bit float (HDR, overbright) pixels without clamping.
 - **Status**: 261 implemented in full, 42 partial (what is missing is listed).
 
@@ -49,16 +49,16 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 | Bilateral Blur | `ec.blur.bilateral` | 3 |  | 32 | Implemented |
 | CC Cross Blur | `ec.blur.cccross` | 3 |  | 32 | Implemented |
 | CC Radial Blur | `ec.blur.ccradial` | 4 |  | 32 | Implemented |
-| CC Radial Fast Blur | `ec.blur.ccradialfast` | 3 |  | 32 | Implemented |
+| CC Radial Fast Blur | `ec.blur.ccradialfast` | 3 | GPU | 32 | Implemented |
 | CC Vector Blur | `ec.blur.ccvector` | 4 |  | 32 | Implemented |
-| Camera Lens Blur | `ec.blur.cameralens` | 10 |  | 32 | Partial: no Diffraction Fringe or Blur Map layer |
+| Camera Lens Blur | `ec.blur.cameralens` | 10 | GPU | 32 | Partial: no Diffraction Fringe or Blur Map layer |
 | Camera-Shake Deblur | `ec.blur.camerashakedeblur` | 8 |  | 32 | Implemented |
 | Channel Blur | `ec.blur.channel` | 6 |  | 32 | Implemented |
 | Compound Blur | `ec.blur.compound` | 4 |  | 32 | Implemented |
 | Directional Blur | `ec.blur.directional` | 2 | GPU | 32 | Implemented |
 | Fast Box Blur | `ec.blur.fastbox` | 4 | GPU | 32 | Implemented |
 | Gaussian Blur | `ec.blur.gaussian` | 3 | GPU | 32 | Implemented |
-| Radial Blur | `ec.blur.radial` | 4 |  | 32 | Implemented |
+| Radial Blur | `ec.blur.radial` | 4 | GPU | 32 | Implemented |
 | Sharpen | `ec.blur.sharpen` | 1 |  | 32 | Implemented |
 | Smart Blur | `ec.blur.smart` | 3 |  | 32 | Implemented |
 | Unsharp Mask | `ec.blur.unsharp` | 3 |  | 32 | Implemented |
@@ -187,7 +187,7 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 
 | Effect | Id | Params | GPU | 32 | Status |
 |---|---|---:|:-:|:-:|---|
-| 4-Color Gradient | `ec.generate.fourcolor` | 12 |  | 32 | Implemented |
+| 4-Color Gradient | `ec.generate.fourcolor` | 12 | GPU | 32 | Implemented |
 | Advanced Lightning | `ec.generate.advancedlightning` | 16 |  | 32 | Partial: no Alpha Obstacle; most Expert Settings missing |
 | Audio Spectrum | `ec.generate.audiospectrum` | 23 |  | 32 | Implemented |
 | Audio Waveform | `ec.generate.audiowaveform` | 17 |  | 32 | Implemented |
@@ -197,15 +197,15 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 | CC Light Rays | `ec.generate.cclightrays` | 8 |  | 32 | Implemented |
 | CC Light Sweep | `ec.generate.cclightsweep` | 9 |  | 32 | Implemented |
 | CC Threads | `ec.generate.ccthreads` | 8 |  | 32 | Implemented |
-| Cell Pattern | `ec.generate.cellpattern` | 14 |  | 32 | Partial: HQ variants render like the standard ones |
-| Checkerboard | `ec.generate.checkerboard` | 10 |  | 32 | Implemented |
+| Cell Pattern | `ec.generate.cellpattern` | 14 | GPU | 32 | Partial: HQ variants render like the standard ones |
+| Checkerboard | `ec.generate.checkerboard` | 10 | GPU | 32 | Implemented |
 | Circle | `ec.generate.circle` | 11 |  | 32 | Implemented |
 | Ellipse | `ec.generate.ellipse` | 8 |  | 32 | Implemented |
 | Eyedropper Fill | `ec.generate.eyedropperfill` | 5 |  | 32 | Implemented |
 | Fill | `ec.generate.fill` | 3 | GPU | 32 | Partial: no Fill Mask / All Masks / feather |
 | Fractal | `ec.generate.fractal` | 21 |  | 32 | Implemented |
 | Gradient Ramp | `ec.generate.gradientramp` | 7 | GPU | 32 | Implemented |
-| Grid | `ec.generate.grid` | 12 |  | 32 | Implemented |
+| Grid | `ec.generate.grid` | 12 | GPU | 32 | Implemented |
 | Lens Flare | `ec.generate.lensflare` | 4 |  | 32 | Implemented |
 | Paint Bucket | `ec.generate.paintbucket` | 11 |  | 32 | Implemented |
 | Radio Waves | `ec.generate.radiowaves` | 17 |  | 32 | Partial: no Image Contours or Mask wave types, Parameters Are Set At, reflection or stroke profile |
@@ -263,14 +263,14 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 
 | Effect | Id | Params | GPU | 32 | Status |
 |---|---|---:|:-:|:-:|---|
-| Add Grain | `ec.noise.addgrain` | 22 |  | 32 | Partial: no preview region, presets, channel balance or temporal controls |
+| Add Grain | `ec.noise.addgrain` | 22 | GPU | 32 | Partial: no preview region, presets, channel balance or temporal controls |
 | Curl Noise | `ec.noise.curlnoise` | 10 |  | 32 | Implemented |
 | Dust & Scratches | `ec.noise.dustscratches` | 3 |  | 32 | Implemented |
 | Fractal Noise | `ec.noise.fractal` | 26 | GPU | 32 | Implemented |
 | Match Grain | `ec.noise.matchgrain` | 25 |  | 32 | Partial: no preview region, presets, sampling or temporal controls |
 | Median | `ec.noise.median` | 2 |  | 32 | Implemented |
 | Median (Legacy) | `ec.noise.medianlegacy` | 2 |  | 32 | Implemented |
-| Noise | `ec.noise.noise` | 3 |  | 32 | Implemented |
+| Noise | `ec.noise.noise` | 3 | GPU | 32 | Implemented |
 | Noise Alpha | `ec.noise.noisealpha` | 8 |  | 32 | Implemented |
 | Noise HLS | `ec.noise.noisehls` | 6 |  | 32 | Implemented |
 | Noise HLS Auto | `ec.noise.noisehlsauto` | 6 |  | 32 | Implemented |
@@ -401,11 +401,11 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 | CC Twister | `ec.transition.cctwister` | 5 |  | 32 | Implemented |
 | CC WarpoMatic | `ec.transition.ccwarpomatic` | 8 |  | 32 | Implemented |
 | Card Wipe | `ec.transition.cardwipe` | 12 |  | 32 | Partial: 2D flip only; no back layer picker, camera, lighting or jitter |
-| Gradient Wipe | `ec.transition.gradientwipe` | 5 |  | 32 | Implemented |
+| Gradient Wipe | `ec.transition.gradientwipe` | 5 | GPU | 32 | Implemented |
 | Iris Wipe | `ec.transition.iriswipe` | 7 |  | 32 | Implemented |
-| Linear Wipe | `ec.transition.linearwipe` | 3 |  | 32 | Implemented |
-| Radial Wipe | `ec.transition.radialwipe` | 5 |  | 32 | Implemented |
-| Venetian Blinds | `ec.transition.venetian` | 4 |  | 32 | Implemented |
+| Linear Wipe | `ec.transition.linearwipe` | 3 | GPU | 32 | Implemented |
+| Radial Wipe | `ec.transition.radialwipe` | 5 | GPU | 32 | Implemented |
+| Venetian Blinds | `ec.transition.venetian` | 4 | GPU | 32 | Implemented |
 
 ## Utility
 

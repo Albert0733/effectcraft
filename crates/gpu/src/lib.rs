@@ -164,3 +164,5 @@ mod tests_adv3d;
 mod tests_fx_distort;
 #[cfg(test)]
 mod tests_particles;
+#[cfg(test)]
+mod tests_fx_generate;

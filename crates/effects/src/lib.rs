@@ -71,6 +71,12 @@ pub use effectcraft_raster::{AuxChannels, Image};
 pub use misc::{INVERT_ALPHA, INVERT_CHANNELS};
 pub use sim::particle_state;
 pub use sim3::playground_state;
+// CPU helpers the GPU kernels share (effectcraft-gpu).
+pub use blur2::camera_lens_spans;
+pub use generate::gen_mode;
+pub use generate2::pattern_kind as cell_pattern_kind;
+pub use noise::GrainLook;
+pub use transition::place_layer;
 
 /// Effect categories in Effects & Presets order.
 pub const CATEGORIES: &[&str] = &[
@@ -661,6 +667,20 @@ pub const GPU_EFFECTS: &[&str] = &[
     "ec.stylize.mosaic",
     "ec.stylize.findedges",
     "ec.stylize.emboss",
+    // Blur, transition and generate family (effectcraft-gpu `fx_generate`).
+    "ec.blur.radial",
+    "ec.blur.cameralens",
+    "ec.blur.ccradialfast",
+    "ec.transition.venetian",
+    "ec.transition.linearwipe",
+    "ec.transition.radialwipe",
+    "ec.transition.gradientwipe",
+    "ec.generate.cellpattern",
+    "ec.generate.checkerboard",
+    "ec.generate.grid",
+    "ec.generate.fourcolor",
+    "ec.noise.noise",
+    "ec.noise.addgrain",
 ];
 
 /// Effects whose output depends on [`EffectCtx::time`] directly (not only through animated

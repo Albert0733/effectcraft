@@ -30,7 +30,7 @@ fn scale_px(px: &mut Px, k: f32) {
 /// Resample `other` into `b`'s pixel grid with placement `mode` (Gradient Wipe's Gradient
 /// Placement, Texturize's Texture Placement): 0 tile from the top-left, 1 centre once,
 /// 2 stretch to fit.
-pub(crate) fn place_layer(ctx: &EffectCtx, b: &Buf, other: &crate::LayerPixels, mode: u32) -> effectcraft_raster::Image {
+pub fn place_layer(ctx: &EffectCtx, b: &Buf, other: &crate::LayerPixels, mode: u32) -> effectcraft_raster::Image {
     let (ls, os) = (ctx.layer_size, other.size);
     let inv = 1.0 / b.scale.max(1e-9);
     crate::util::gen_image(b.img.width, b.img.height, |x, y| {
