@@ -593,6 +593,10 @@ pub const PARAM_GROUPS: &[(&str, &str)] = &[
     ("repel", "Repel"),
     ("wall", "Wall"),
     ("persistentPropertyMapper", "Persistent Property Mapper"),
+    ("ephemeralPropertyMapper", "Ephemeral Property Mapper"),
+    ("particleExploder", "Particle Exploder"),
+    ("affects", "Affects"),
+    ("options", "Options"),
     // Keying, Matte, Obsolete (Key Light's groups are in `keylight::GROUPS`).
     ("ultraSettings", "Ultra Settings"),
     ("fillAndStroke", "Fill and Stroke"),

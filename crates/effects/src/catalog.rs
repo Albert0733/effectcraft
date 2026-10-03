@@ -37,7 +37,6 @@ pub const PARTIAL: &[(&str, &str)] = &[
     ("ec.vr.converter", "common layouts only"),
     ("ec.sim.caustics", "no Sky group or light type"),
     ("ec.sim.foam", "no wobble, pop velocity, custom bubble texture, environment map or flow map"),
-    ("ec.sim.particleplayground", "no Particle Exploder, Ephemeral Property Mapper, Affects groups or text particles"),
     ("ec.sim.waveworld", "no wireframe controls, dry-area rendering or ground group"),
     ("ec.stylize.glow", "no Glow Operation or arbitrary colour map"),
     ("ec.stylize.cartoon", "no Edge Enhancement"),

@@ -94,6 +94,11 @@ fn glyph_src(c: char) -> &'static str {
     }
 }
 
+/// A glyph's strokes on the 4 × 6 grid (Particle Playground's text particles).
+pub(crate) fn glyph_strokes(c: char) -> Vec<Vec<[f64; 2]>> {
+    parse_glyph(c)
+}
+
 fn parse_glyph(c: char) -> Vec<Vec<[f64; 2]>> {
     glyph_src(c)
         .split(';')
