@@ -42,6 +42,7 @@ pub mod ocio_config;
 pub mod paint;
 mod perspective;
 mod perspective2;
+pub mod plugin;
 pub mod psim;
 pub mod puppet;
 pub mod roto;
@@ -425,14 +426,37 @@ pub fn registry() -> &'static [EffectSpec] {
     })
 }
 
+/// A built-in effect or a registered plug-in by id.
 pub fn find(id: &str) -> Option<&'static EffectSpec> {
-    registry().iter().find(|s| s.id == id)
+    registry().iter().find(|s| s.id == id).or_else(|| plugin::plugins().into_iter().find(|s| s.id == id))
+}
+
+/// Every effect: the built-ins ([`registry`]) and the registered plug-ins
+/// ([`plugin::register_plugin`]), sorted by category then name.
+pub fn all() -> Vec<&'static EffectSpec> {
+    let plugins = plugin::plugins();
+    let mut v: Vec<&'static EffectSpec> = registry().iter().collect();
+    if !plugins.is_empty() {
+        v.extend(plugins);
+        v.sort_by(|a, b| a.category.cmp(b.category).then(a.name.cmp(b.name)));
+    }
+    v
+}
+
+/// Effects & Presets categories: [`CATEGORIES`] then the plug-ins' own, alphabetically.
+pub fn categories() -> Vec<&'static str> {
+    let mut v: Vec<&'static str> = CATEGORIES.to_vec();
+    let mut extra: Vec<&'static str> = plugin::plugins().iter().map(|s| s.category).filter(|c| !CATEGORIES.contains(c)).collect();
+    extra.sort_unstable();
+    extra.dedup();
+    v.extend(extra);
+    v
 }
 
 /// Find by id or (case-insensitive) display name.
 pub fn lookup(name_or_id: &str) -> Option<&'static EffectSpec> {
     find(name_or_id)
-        .or_else(|| registry().iter().find(|s| s.name.eq_ignore_ascii_case(name_or_id)))
+        .or_else(|| all().into_iter().find(|s| s.name.eq_ignore_ascii_case(name_or_id)))
         .or_else(|| {
             // After Effects' third-party display names we register under a generic name.
             keylight::KEYLIGHT_ALIASES.iter().any(|a| a.eq_ignore_ascii_case(name_or_id)).then(|| find("ec.keying.keylight")).flatten()

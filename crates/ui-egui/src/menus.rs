@@ -456,6 +456,12 @@ pub fn frontend(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, p: Valu
             app.dialog = Some(crate::Dialog::About);
             Value::Null
         }
+        // Window ▸ <ScriptUI panel>: dock (or bring forward) the panel the script built.
+        "window.scriptPanel" => {
+            let id = p.get("window").and_then(Value::as_u64).ok_or("no ScriptUI panel window")? as u32;
+            app.show_panel(PanelKind::ScriptPanel(id));
+            json!({"window": id})
+        }
         "layer.style.options" => {
             crate::panels::layer_styles_dialog::open(app, &p)?;
             Value::Null
@@ -822,7 +828,9 @@ fn file_dialog(app: &mut EffectcraftApp, id: &str, params: &Value) -> Option<Res
         "file.exportLottie" => ("path", Ask::Save("Animation.json")),
         "file.importLottie" => ("path", Ask::Open(&["json", "lottie"])),
         "render.saveCurrentPreview" => ("path", Ask::Save("Preview.mp4")),
-        "file.runScript" => ("path", Ask::Open(&["jsx", "js", "jsonl", "json", "txt"])),
+        "file.runScript" if params.get("name").is_none() => ("path", Ask::Open(&["jsx", "js", "jsonl", "json", "txt"])),
+        "file.installScript" | "file.installScriptUIPanel" => ("path", Ask::Open(&["jsx", "js"])),
+        "effect.plugins.load" if params.get("folder").is_none() => ("path", Ask::Open(&["wasm", "wat"])),
         "file.replaceFootage" => ("path", Ask::Import),
         "file.collectFiles" => ("folder", Ask::Save("Collected Files")),
         "file.saveCopyAsXml" => ("path", Ask::Save("Untitled Project.ecprojx")),

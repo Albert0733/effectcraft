@@ -30,6 +30,14 @@
 //! * **Security**: scripts can import/open/save projects and render, but `File` reads are limited
 //!   to the project's folder and writes (and the network) are off unless Preferences ▸ Scripting
 //!   & Expressions ▸ Allow Scripts to Write Files and Access Network is on.
+//! * **ScriptUI** (`scriptui.js`, `ui.rs`): `Window` (dialog / palette / window), `Panel`,
+//!   `Group`, `Button`, `StaticText`, `EditText`, `Checkbox`, `RadioButton`, `Slider`,
+//!   `Progressbar`, `DropDownList`, `ListBox`, `TabbedPanel`/`Tab`, with `add()`, `orientation`,
+//!   `alignChildren`, `alignment`, `margins`, `spacing`, `preferredSize`, `onClick` /
+//!   `onChange` / `onChanging` / `onClose`, `show()` / `close()` and `layout.layout()`. Windows
+//!   are published to [`Session::script_ui`](effectcraft_engine::Session::script_ui) for
+//!   frontends and agents (`scriptui.*` commands); modal dialogs block `show()` until they close.
+//!   Scripts in the ScriptUI Panels folder run with `this` = a dockable `Panel`.
 //!
 //! Entry points: [`install`] sets [`Session::script`](effectcraft_engine::Session::script), which
 //! the `script.run` command, File ▸ Scripts ▸ Run Script File… (`.jsx`/`.js`), the Script Console
@@ -40,19 +48,22 @@
 pub mod matchnames;
 mod model;
 mod runtime;
+mod ui;
 
 use effectcraft_engine::{ScriptRequest, Session};
 
 pub use runtime::{Outcome, ScriptError, run};
+pub use ui::dispatch_ui;
 
 /// The [`effectcraft_engine::ScriptRunner`] this crate provides.
 pub fn runner(s: &mut Session, req: &ScriptRequest) -> serde_json::Value {
     run(s, req).to_json()
 }
 
-/// Enable scripting on a session.
+/// Enable scripting (and ScriptUI) on a session.
 pub fn install(s: &mut Session) {
     s.script = Some(runner);
+    s.script_ui.dispatch = Some(dispatch_ui);
 }
 
 /// Run `code` as a one-off script named `name`.
@@ -62,3 +73,5 @@ pub fn run_code(s: &mut Session, code: &str, name: &str) -> Outcome {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_ui;

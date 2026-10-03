@@ -13,6 +13,7 @@ pub mod camera_track;
 pub mod commands;
 pub mod config;
 pub mod demo;
+pub mod history;
 pub mod jobs;
 pub mod links;
 pub mod logging;
@@ -25,6 +26,7 @@ pub mod prefs;
 pub mod psd_import;
 pub mod render_queue;
 pub mod roto;
+pub mod scriptui;
 mod session_settings;
 pub mod shortcuts;
 pub mod sysinfo;
@@ -54,6 +56,7 @@ pub use effectcraft_render as render;
 pub use effectcraft_text as text;
 pub use effectcraft_time as time;
 pub use effectcraft_track as track;
+pub use history::{Branch, History, HistoryNode};
 pub use render_queue::{ExportJob, ExportResult, Exporter, JobState};
 
 #[derive(Debug, thiserror::Error)]
@@ -95,15 +98,6 @@ impl Services for FsServices {
 pub trait Importer: Send + Sync {
     /// Probe a file and return footage metadata.
     fn probe(&self, path: &str) -> std::result::Result<effectcraft_project::Footage, String>;
-}
-
-/// Undo history of whole-project snapshots.
-#[derive(Clone, Default)]
-pub struct History {
-    pub undo: Vec<(String, Arc<Project>)>,
-    pub redo: Vec<(String, Arc<Project>)>,
-    /// Key of the last merged step: a continuous gesture with the same key folds into one step.
-    pub merge_key: Option<String>,
 }
 
 /// A keyframe reference: layer, property uid, key time (layer time).
@@ -336,6 +330,11 @@ pub struct Session {
     /// The JavaScript scripting engine (set by the host that links `effectcraft-script`):
     /// `script.run`, File ▸ Scripts ▸ Run Script File… (`.jsx`/`.js`) and the Script Console.
     pub script: Option<ScriptRunner>,
+    /// Loads WebAssembly effect plug-ins (set by the host that links `effectcraft-plugin` with
+    /// its runtime): `effect.plugins.load`.
+    pub plugin_loader: Option<PluginLoader>,
+    /// ScriptUI windows and panels opened by scripts (see [`scriptui`]).
+    pub script_ui: scriptui::ScriptUi,
     /// The last physical-memory reading (Settings ▸ Memory & CPU budgets); `None` = unknown
     /// (headless sessions don't query it, see [`Session::memory_tick`]).
     pub sys_memory: Option<sysinfo::SysMemory>,
@@ -366,6 +365,10 @@ pub struct ScriptRequest<'a> {
 /// Runs a script against the session and reports `{ok, result, output, error: {message, line,
 /// column, file} | null}`.
 pub type ScriptRunner = fn(&mut Session, &ScriptRequest) -> Value;
+
+/// Loads one WebAssembly effect plug-in (`bytes`, `source` path) into the effect registry and
+/// describes it (`{id, name, category, version, api, params}`).
+pub type PluginLoader = fn(&[u8], &str) -> std::result::Result<Value, String>;
 
 impl Default for Session {
     fn default() -> Self {
@@ -405,6 +408,8 @@ impl Default for Session {
             autosave: autosave::AutoSaveState::default(),
             snapshot: None,
             script: None,
+            plugin_loader: None,
+            script_ui: scriptui::ScriptUi::default(),
             sys_memory: None,
             applied_nested_switches: None,
             offload: None,
@@ -484,15 +489,13 @@ impl Session {
         }
         let same = merge.is_some() && merge.map(str::to_string) == self.history.merge_key;
         if !same {
-            self.history.undo.push((label.to_string(), before));
+            // Undone steps aren't lost: they stay in the History panel as a branch.
             let levels = self.prefs.general.undo_levels.max(1) as usize;
-            if self.history.undo.len() > levels {
-                let extra = self.history.undo.len() - levels;
-                self.history.undo.drain(..extra);
-            }
+            self.history.record(label, before, levels);
+        } else {
+            self.history.abandon_redo(&before);
         }
         self.history.merge_key = merge.map(str::to_string);
-        self.history.redo.clear();
         self.project = Arc::new(p);
         self.state = st;
         self.bump();
@@ -892,6 +895,8 @@ pub fn font_menu(prefs: &prefs::Prefs) -> Vec<FontRow> {
     out.extend(all.iter().map(|f| row(f, false)));
     out
 }
+#[cfg(test)]
+mod tests_history;
 #[cfg(test)]
 mod tests_paint;
 #[cfg(test)]

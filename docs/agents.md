@@ -235,6 +235,35 @@ In expressions, `text.sourceText.style` / `getStyleAt(i, t)` read styles and the
 (`setFontSize(v, start?, count?)`, `setFillColor`, `setText`, `setJustification`…) return a
 styled document.
 
+### Scripts and ScriptUI windows
+
+Scripts that build ScriptUI windows publish them to the session; agents drive them like a user:
+
+1. `scriptui.list` → `[{window, title, kind: dialog|palette|window|panel, script, modal, size}]`.
+2. `scriptui.get {"window": id}` → the control tree (`type`, `name`, `text`, `value`, `checked`,
+   `items`, `selection`, laid-out `bounds`, `handlers`…).
+3. `scriptui.click {"widget": "ok"}` presses a button / toggles a checkbox / picks a radio button or
+   tab; `scriptui.set {"widget": "#4", "value": "Shot_"}` types into edit text, moves a slider or
+   picks a list item (index or text); `scriptui.close {"result": 2}` closes. Controls are addressed
+   by id, `#id`, `properties.name` or text; `window` can be omitted when one window is open. Each
+   returns the handler run's `{ok, output, error}`.
+
+A dialog's `show()` waits for the user: the `script.run` / `file.runScript` reply carries
+`"waiting": true`, and the script continues (its final output arrives in the reply of the click
+that closes the dialog). File ▸ Scripts: `file.scripts.list`, `file.runScript {"name": …}`,
+`file.installScript` / `file.installScriptUIPanel {"path": …}`, `window.scriptPanel {"name": …}`.
+
+### History, puppet recording, plug-ins
+
+* `edit.history.list` lists every undo state as a tree (undoing then editing keeps the undone
+  states as a branch); `edit.history.goto {"index": n}` (or `id`, or `steps`) jumps to any of
+  them. MCP: the `history` tool.
+* `puppet.recordPin {"layer": "#1", "pin": "Puppet Pin 1", "samples": [[t, x, y]…]}` records a
+  drag (t = seconds since it began, layer space) into Position keys at the comp frame rate from the
+  current time; `puppet.recordOptions {speed, smoothing, useDraftDeformation, showMesh}`.
+* `effect.plugins.load {"path": "x.wasm"}` / `effect.plugins.list`: WebAssembly effect plug-ins
+  ([plugins.md](plugins.md)), then `effect.apply` by id like a built-in.
+
 ## CLI
 
 Each invocation runs a headless engine with no window. It opens the demo project unless you pass

@@ -591,8 +591,7 @@ fn edit_original(s: &mut Session, _: &Value) -> Result<Value> {
 }
 
 fn purge(s: &mut Session, _: &Value) -> Result<Value> {
-    s.history.undo.clear();
-    s.history.redo.clear();
+    s.history.clear();
     s.toast("Purged undo history");
     Ok(Value::Null)
 }
@@ -637,7 +636,58 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!("edit.purge", "Purge", [], None, "{what?: all|memoryAndDisk|memory|disk|3d|image|snapshot}", always_ok, purge_caches),
         crate::query!("cache.diskStats", "Disk Cache Statistics", "{}", disk_stats),
         cmd!("edit.editOriginal", "Edit Original...", ["Edit"], Some("Cmd+E"), "{}", has_selected_footage, edit_original),
+        crate::query!(
+            "edit.history.list",
+            "History",
+            "{} → {states: [{index, id, label, parent, depth, current, line, future}], current, branches}",
+            history_list
+        ),
+        cmd!(
+            "edit.history.goto",
+            "Go to History State",
+            [],
+            None,
+            "{index? (from edit.history.list) | id? | steps? (negative = back along the line)}",
+            always_ok,
+            history_goto
+        ),
     ]
+}
+
+// ---------------------------------------------------------------- History panel
+
+/// `edit.history.list`: every state of the (branching) undo history.
+fn history_list(s: &mut Session, _: &Value) -> Result<Value> {
+    let nodes = s.history_tree();
+    let current = nodes.iter().position(|n| n.current);
+    Ok(json!({"states": nodes, "current": current, "branches": s.history.branches.len()}))
+}
+
+/// `edit.history.goto`: jump to a state by `index` (from `edit.history.list`), `id`, or
+/// `steps` along the working line (negative = back, like Undo).
+fn history_goto(s: &mut Session, p: &Value) -> Result<Value> {
+    let c = "edit.history.goto";
+    if let Some(n) = p.get("steps").and_then(Value::as_i64) {
+        for _ in 0..n.unsigned_abs() {
+            let moved = if n < 0 { s.undo() } else { s.redo() };
+            if !moved {
+                break;
+            }
+        }
+    } else {
+        let nodes = s.history_tree();
+        let id = match (p.get("id").and_then(Value::as_str), p.get("index").and_then(Value::as_u64)) {
+            (Some(id), _) => id.to_string(),
+            (None, Some(i)) => nodes.get(i as usize).map(|n| n.id.clone()).ok_or_else(|| super::bad(c, format!("no state {i} (0..{})", nodes.len())))?,
+            _ => return Err(super::bad(c, "give `index`, `id` or `steps`")),
+        };
+        if !s.goto_history(&id) {
+            return Err(super::bad(c, format!("no history state `{id}`")));
+        }
+    }
+    let nodes = s.history_tree();
+    let cur = nodes.iter().find(|n| n.current).cloned();
+    Ok(json!({"current": cur.as_ref().map(|n| n.index), "label": cur.map(|n| n.label)}))
 }
 
 fn layers_or_keys(s: &Session) -> std::result::Result<(), String> {
