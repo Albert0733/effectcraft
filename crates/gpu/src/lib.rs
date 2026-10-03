@@ -143,4 +143,6 @@ mod tests;
 #[cfg(test)]
 mod tests_3d;
 #[cfg(test)]
+mod tests_adjust;
+#[cfg(test)]
 mod tests_adv3d;

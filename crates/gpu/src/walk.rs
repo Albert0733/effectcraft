@@ -124,9 +124,14 @@ fn draw_collapsed<'a>(e: &mut Enc, r: &Renderer<'a>, ctx: &EvalCtx<'a>, layer: &
 }
 
 fn draw_layer(e: &mut Enc, r: &Renderer, ctx: &EvalCtx, layer: &Layer, canvas: &mut GpuImage) -> Option<()> {
-    if layer.switches.adjustment || layer.switches.quality == Quality::Wireframe {
-        // Adjustment layers run their effects on the comp below (CPU, with GPU effects where
-        // available); wireframes draw outlines.
+    if layer.switches.adjustment {
+        if draw_adjustment(e, r, ctx, layer, canvas).is_some() {
+            return Some(());
+        }
+        return on_cpu(e, canvas, |img| r.draw_layer_cpu(ctx, layer, img));
+    }
+    if layer.switches.quality == Quality::Wireframe {
+        // Wireframes draw outlines on the CPU.
         return on_cpu(e, canvas, |img| r.draw_layer_cpu(ctx, layer, img));
     }
     let opacity = r.layer_opacity(ctx, layer);
@@ -159,6 +164,33 @@ fn draw_layer(e: &mut Enc, r: &Renderer, ctx: &EvalCtx, layer: &Layer, canvas: &
     }
     tmp = place(e, r, ctx, layer, &st.body, &tmp, layer.blend_mode, 1.0)?;
     *canvas = ops::channel_mix(e, canvas, &tmp, bl.channels, opacity);
+    Some(())
+}
+
+/// Adjustment layer (`Renderer::draw_adjustment`): the effect stack runs on the comp below,
+/// resident on the GPU (non-GPU effects read back, run on the CPU and upload), and the result
+/// replaces the canvas inside the layer's footprint × opacity. `None` = draw it on the CPU.
+fn draw_adjustment(e: &mut Enc, r: &Renderer, ctx: &EvalCtx, layer: &Layer, canvas: &mut GpuImage) -> Option<()> {
+    let opacity = r.layer_opacity(ctx, layer);
+    let Some(foot) = r.adjustment_footprint(ctx, layer) else { return Some(()) };
+    let (w, h) = (canvas.width, canvas.height);
+    let matte = place(e, r, ctx, layer, &Arc::new(foot), &e.image(w, h), BlendMode::Normal, 1.0)?;
+    let pipe = r.pipe();
+    // Effects run in the working space, not the linear blending space.
+    let below = match pipe.from_blend() {
+        Some(c) => ops::convert(e, canvas, &c),
+        None => canvas.clone(),
+    };
+    let mut fx = crate::effects::GpuFx::new(e, below, [0.0; 2], r.opts.scale, pipe.levels);
+    r.run_effects_on(ctx, layer, true, &mut fx);
+    let (mut adjusted, _, _) = fx.finish()?;
+    if adjusted.width != w || adjusted.height != h {
+        return Some(());
+    }
+    if let Some(c) = pipe.to_blend() {
+        adjusted = ops::convert(e, &adjusted, &c);
+    }
+    *canvas = ops::adjust_mix(e, canvas, &adjusted, &matte, opacity);
     Some(())
 }
 

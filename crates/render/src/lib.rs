@@ -242,6 +242,41 @@ pub trait Accelerator: Send + Sync {
     }
 }
 
+/// Where an effect stack runs (see [`Renderer::run_effects_on`]): a CPU buffer, or an image
+/// resident on an accelerator.
+pub trait FxTarget {
+    /// Run a chain of accelerator-supported effects (quantising after each to the bit depth).
+    /// `false` = not handled: the effects then run one by one through [`FxTarget::cpu`].
+    fn gpu(&mut self, steps: &[FxStep]) -> bool;
+    /// Run one CPU effect: `f` maps the buffer.
+    fn cpu(&mut self, f: &mut dyn FnMut(Buf) -> Buf);
+}
+
+/// The CPU effect target (GPU chains go through [`Accelerator::effects`]: upload, readback).
+struct CpuFx<'a> {
+    accel: Option<&'a dyn Accelerator>,
+    levels: Option<f32>,
+    buf: Option<Buf>,
+}
+
+impl FxTarget for CpuFx<'_> {
+    fn gpu(&mut self, steps: &[FxStep]) -> bool {
+        let (Some(a), Some(b)) = (self.accel, &self.buf) else { return false };
+        match a.effects(steps, b, self.levels) {
+            Some(out) => {
+                self.buf = Some(out);
+                true
+            }
+            None => false,
+        }
+    }
+    fn cpu(&mut self, f: &mut dyn FnMut(Buf) -> Buf) {
+        if let Some(b) = self.buf.take() {
+            self.buf = Some(f(b));
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct RenderOpts {
     /// Output scale relative to comp pixels (1 = Full, 0.5 = Half…).
@@ -592,19 +627,28 @@ impl<'a> Renderer<'a> {
     }
 
     /// Run the first `limit` effects of the layer's stack (by position; disabled ones count).
-    fn apply_effects_timed(
+    fn apply_effects_timed(&self, ctx: &EvalCtx, layer: &Layer, buf: Buf, adjustment: bool, limit: usize, timing: Option<&mut Vec<(String, f64)>>) -> Buf {
+        let mut t = CpuFx { accel: self.active_accel(), levels: self.pipe.levels, buf: Some(buf) };
+        self.run_effect_stack(ctx, layer, adjustment, limit, timing, &mut t);
+        t.buf.unwrap_or_else(|| Buf { img: Image::new(1, 1), offset: [0.0; 2], scale: self.opts.scale })
+    }
+
+    /// Run the layer's video effect stack on `target`: runs of GPU-capable effects go to
+    /// [`FxTarget::gpu`] (when an accelerator is active and supports them), the rest to
+    /// [`FxTarget::cpu`] one by one (quantised to the bit depth after each).
+    fn run_effect_stack(
         &self,
         ctx: &EvalCtx,
         layer: &Layer,
-        mut buf: Buf,
         adjustment: bool,
         limit: usize,
         mut timing: Option<&mut Vec<(String, f64)>>,
-    ) -> Buf {
+        target: &mut dyn FxTarget,
+    ) {
         if !layer.switches.effects {
-            return buf;
+            return;
         }
-        let Some(fx) = layer.effects() else { return buf };
+        let Some(fx) = layer.effects() else { return };
         let lt = layer.layer_time(ctx.time);
         let size = source_size(self.project, layer);
         let layer_size = if size.0 == 0 { [ctx.comp.width as f64, ctx.comp.height as f64] } else { [size.0 as f64, size.1 as f64] };
@@ -635,7 +679,7 @@ impl<'a> Renderer<'a> {
         let mut k = 0;
         while k < stack.len() {
             let (i, g, spec) = stack[k];
-            // A run of GPU effects goes to the accelerator in one upload / readback.
+            // A run of GPU effects goes to the accelerator in one go.
             if let Some(a) = accel
                 && spec.gpu
                 && a.supports_effect(spec.id)
@@ -651,8 +695,7 @@ impl<'a> Renderer<'a> {
                     })
                     .collect();
                 let t0 = web_time::Instant::now();
-                if let Some(out) = a.effects(&steps, &buf, self.pipe.levels) {
-                    buf = out;
+                if target.gpu(&steps) {
                     if let Some(v) = timing.as_deref_mut() {
                         let ms = t0.elapsed().as_secs_f64() * 1e3 / run.len() as f64;
                         v.extend(run.iter().map(|(_, _, s)| (format!("{} (gpu)", s.id), ms)));
@@ -667,14 +710,16 @@ impl<'a> Renderer<'a> {
             let env = EffectEnv { effect_index: i, ..env };
             let ectx = EffectCtx { params: &params, time: lt.seconds(), layer_size, seed: g.uid as u32, adjustment, env };
             let t0 = web_time::Instant::now();
-            buf = effectcraft_effects::apply(spec, &ectx, buf);
-            // 8/16 bpc effects write integer pixels.
-            self.pipe.quantize(&mut buf.img);
+            target.cpu(&mut |buf| {
+                let mut buf = effectcraft_effects::apply(spec, &ectx, buf);
+                // 8/16 bpc effects write integer pixels.
+                self.pipe.quantize(&mut buf.img);
+                buf
+            });
             if let Some(v) = timing.as_deref_mut() {
                 v.push((spec.id.to_string(), t0.elapsed().as_secs_f64() * 1e3));
             }
         }
-        buf
     }
 
     /// Source pixels of a layer in layer space (before masks/effects).
@@ -1387,6 +1432,22 @@ impl<'a> Renderer<'a> {
     /// [`Self::draw_3d_run`] (adjustment or wireframe layers in the run, Advanced 3D).
     pub fn prepare_3d_run(&self, ctx: &EvalCtx<'a>, run: &[&Layer], out: (u32, u32)) -> Option<three_d::Run3d> {
         three_d::compose::gpu_run(self, ctx, run, out)
+    }
+
+    /// Run the layer's effect stack on `target` (an accelerator's resident image): GPU-capable
+    /// runs through [`FxTarget::gpu`], the others through [`FxTarget::cpu`], with the CPU's
+    /// parameters and environment. `adjustment`: the stack runs on the comp below (adjustment
+    /// layers).
+    pub fn run_effects_on(&self, ctx: &EvalCtx, layer: &Layer, adjustment: bool, target: &mut dyn FxTarget) {
+        self.run_effect_stack(ctx, layer, adjustment, usize::MAX, None, target);
+    }
+
+    /// An adjustment layer's footprint (its source with masks applied, layer space): where
+    /// its effects show. `None` = the layer changes nothing.
+    pub fn adjustment_footprint(&self, ctx: &EvalCtx, layer: &Layer) -> Option<Buf> {
+        let mut foot = self.source(ctx, layer)?;
+        let _ = masks::apply(ctx, layer, &mut foot);
+        Some(foot)
     }
 
     /// Draw one 2D layer into `canvas` on the CPU (any kind: adjustment, wireframe, styled…).

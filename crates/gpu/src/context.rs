@@ -26,6 +26,7 @@ const ENTRIES: &[&str] = &[
     "shadow_make",
     "shadow_combine",
     "pointwise",
+    "adjust_mix",
 ];
 
 /// Entry points that also bind group 1 (four read-only storage buffers; see
@@ -580,6 +581,27 @@ impl<'g> Enc<'g> {
             bytes.extend_from_slice(&x.to_le_bytes());
         }
         self.bytes(bytes)
+    }
+
+    /// Copy an image into a storage buffer (RGBA f32 rows) for kernels that read a third image
+    /// through `data`: (buffer, row length in pixels).
+    pub fn to_buffer(&mut self, img: &GpuImage) -> (wgpu::Buffer, u32) {
+        let row = (img.width * 16).div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let buf = self.g.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("image rows"),
+            size: row as u64 * img.height as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.encoder().copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo { texture: &img.texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buf,
+                layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: Some(img.height) },
+            },
+            wgpu::Extent3d { width: img.width, height: img.height, depth_or_array_layers: 1 },
+        );
+        (buf, row / 16)
     }
 
     /// A read-only storage buffer holding `bytes` (padded to 16 bytes).

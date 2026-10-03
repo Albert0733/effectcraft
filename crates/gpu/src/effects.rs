@@ -62,6 +62,48 @@ pub(crate) fn run_chain(e: &mut Enc, chain: &[FxStep], buf: &Buf, levels: Option
     Some(Buf { img, offset: b.offset, scale: b.scale })
 }
 
+/// An effect stack running on a GPU-resident image (adjustment layers): GPU chains stay on
+/// the device; CPU effects read the image back, run, and upload the result.
+pub(crate) struct GpuFx<'e, 'g> {
+    e: &'e mut Enc<'g>,
+    b: Option<GBuf>,
+    levels: Option<f32>,
+}
+
+impl<'e, 'g> GpuFx<'e, 'g> {
+    pub fn new(e: &'e mut Enc<'g>, img: GpuImage, offset: [f64; 2], scale: f64, levels: Option<f32>) -> Self {
+        GpuFx { e, b: Some(GBuf { img, offset, scale }), levels }
+    }
+
+    /// The result: (image, offset, scale); `None` when a step failed.
+    pub fn finish(self) -> Option<(GpuImage, [f64; 2], f64)> {
+        self.b.map(|b| (b.img, b.offset, b.scale))
+    }
+}
+
+impl effectcraft_render::FxTarget for GpuFx<'_, '_> {
+    fn gpu(&mut self, steps: &[FxStep]) -> bool {
+        let Some(b) = &self.b else { return false };
+        let mut cur = GBuf { img: b.img.clone(), offset: b.offset, scale: b.scale };
+        for step in steps {
+            let Some(next) = apply(self.e, step.spec.id, &step.ctx, cur) else { return false };
+            cur = next;
+            if let Some(l) = self.levels {
+                cur.img = ops::quantize(self.e, &cur.img, l);
+            }
+        }
+        self.b = Some(cur);
+        true
+    }
+
+    fn cpu(&mut self, f: &mut dyn FnMut(Buf) -> Buf) {
+        let Some(b) = self.b.take() else { return };
+        let Some(img) = self.e.download(&b.img) else { return };
+        let out = f(Buf { img, offset: b.offset, scale: b.scale });
+        self.b = self.e.g.upload_image(&out.img).map(|img| GBuf { img, offset: out.offset, scale: out.scale });
+    }
+}
+
 fn apply(e: &mut Enc, id: &str, ctx: &EffectCtx, b: GBuf) -> Option<GBuf> {
     match id {
         "ec.blur.gaussian" => gaussian(e, ctx, b),
