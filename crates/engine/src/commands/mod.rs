@@ -1,13 +1,16 @@
 //! The command registry. Ids follow After Effects' menu structure; every menu item, panel button,
 //! shortcut and viewer/timeline gesture maps to one of these.
 
+mod align_data;
 mod anim;
 pub mod anim_tools;
 mod animation;
 mod app_more;
+mod autotrace;
 mod camera_cmds;
 mod comp;
-mod comp_more;
+pub(crate) mod comp_more;
+pub mod content_fill;
 mod create;
 mod edit;
 mod effect;
@@ -16,6 +19,7 @@ pub mod expr_tools;
 mod file;
 pub(crate) mod file_more;
 mod focus;
+pub mod footage_panel;
 mod frontend;
 mod help;
 mod key_labels;
@@ -32,6 +36,7 @@ mod mask;
 pub mod mask_interp;
 pub(crate) mod model3d;
 pub mod paint;
+pub mod panels_cmds;
 mod paths;
 mod project_items;
 mod prop;
@@ -42,6 +47,7 @@ mod query;
 mod render_queue;
 pub(crate) mod rig3d;
 pub mod roto_cmds;
+mod scene_detect;
 mod settings;
 mod shape_stroke;
 mod stubs;
@@ -169,6 +175,12 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(essential::specs());
         v.extend(expr_tools::specs());
         v.extend(proxy::specs());
+        v.extend(panels_cmds::specs());
+        v.extend(footage_panel::specs());
+        v.extend(autotrace::specs());
+        v.extend(scene_detect::specs());
+        v.extend(align_data::specs());
+        v.extend(content_fill::specs());
         v.extend(stubs::specs());
         v
     })
@@ -268,12 +280,15 @@ pub(crate) fn has_project_selection(s: &Session) -> std::result::Result<(), Stri
     if s.state.project_selection.is_empty() { Err("select an item in the Project panel first".into()) } else { Ok(()) }
 }
 
-/// Disabled-command enablement (menu entries whose implementation lands with another milestone).
+/// Disabled-command enablement (menu entries whose implementation lands with another milestone;
+/// none are left, kept for future stubs).
+#[allow(dead_code)]
 pub(crate) fn not_yet(_: &Session) -> std::result::Result<(), String> {
     Err("not available yet in EffectCraft".into())
 }
 
 /// `run` of a not-yet-available command.
+#[allow(dead_code)]
 pub(crate) fn not_yet_run(_: &mut Session, _: &Value) -> Result<Value> {
     Err(EngineError::Other("not available yet in EffectCraft".into()))
 }
