@@ -701,6 +701,18 @@ pub enum DockAction {
     PanelMenu(PanelKind, egui::Pos2),
     /// A tab started being dragged (re-dock or undock).
     BeginDrag(PanelKind),
+    /// The tab's lock was toggled (Composition / Timeline viewer lock).
+    ToggleLock(PanelKind),
+}
+
+/// After Effects-style extras on a tab that shows a composition (Composition, Timeline): a close
+/// button (×), the item's label colour as a small square and the viewer lock.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TabDeco {
+    pub swatch: egui::Color32,
+    pub locked: bool,
+    /// Close button and lock (Composition, Timeline); Effect Controls shows just the swatch.
+    pub viewer: bool,
 }
 
 /// Lay out the tree into group rects (with `gap` gutters) and handle gutter dragging.
@@ -786,6 +798,7 @@ pub fn draw_group_chrome(
     t: &Tokens,
     reg: &mut crate::automation::Registry,
     title: &dyn Fn(PanelKind) -> String,
+    decos: &[(PanelKind, TabDeco)],
 ) -> Vec<DockAction> {
     let mut actions = Vec::new();
     let painter = ui.painter().clone();
@@ -812,7 +825,14 @@ pub fn draw_group_chrome(
             let label = title(*p);
             let galley = painter.layout_no_wrap(label.clone(), Tokens::ui(12.0), if is_active { t.tab_text_active } else { t.tab_text });
             let menu_w = if is_active { 20.0 } else { 0.0 };
-            let w = galley.size().x + 16.0 + menu_w;
+            let deco = decos.iter().find(|(k, _)| k == p).map(|(_, d)| *d);
+            // × (active tab only), swatch and lock before the label.
+            let deco_w = match deco {
+                Some(d) if d.viewer => (if is_active { 16.0 } else { 0.0 }) + 14.0 + 16.0,
+                Some(_) => 14.0,
+                None => 0.0,
+            };
+            let w = galley.size().x + 16.0 + menu_w + deco_w;
             if x + w > strip.max.x - 20.0 && i > g.active {
                 let r = Rect::from_min_size(pos2(strip.max.x - 22.0, strip.min.y + 6.0), vec2(18.0, 20.0));
                 let resp = ui.interact(r, egui::Id::new(("tab-overflow", g.path.clone())), Sense::click());
@@ -830,7 +850,44 @@ pub fn draw_group_chrome(
                 actions.push(DockAction::BeginDrag(*p));
             }
             reg.add(&format!("panel.tab.{}", p.id()), tab, &label);
-            let label_x = tab.min.x + 8.0;
+            let mut label_x = tab.min.x + 8.0;
+            if let Some(d) = deco {
+                let mut dx = tab.min.x + 6.0;
+                if is_active && d.viewer {
+                    let cr = Rect::from_center_size(pos2(dx + 5.0, text_y), vec2(10.0, 10.0));
+                    let cresp = ui.interact(cr.expand(2.0), egui::Id::new(("tab-close", g.path.clone(), i)), Sense::click());
+                    let cc = if cresp.hovered() { t.tab_text_active } else { t.tab_text };
+                    let k = 3.5;
+                    painter.line_segment([cr.center() + vec2(-k, -k), cr.center() + vec2(k, k)], Stroke::new(1.2, cc));
+                    painter.line_segment([cr.center() + vec2(-k, k), cr.center() + vec2(k, -k)], Stroke::new(1.2, cc));
+                    reg.add(&format!("panel.tab.{}.close", p.id()), cr, "Close");
+                    if cresp.clicked() {
+                        actions.push(DockAction::Close(*p));
+                    }
+                    dx += 16.0;
+                }
+                let sw = Rect::from_center_size(pos2(dx + 5.0, text_y), vec2(9.0, 9.0));
+                painter.rect_filled(sw, 1.0, d.swatch);
+                dx += 14.0;
+                label_x = dx;
+                if d.viewer {
+                    let lr = Rect::from_center_size(pos2(dx + 6.0, text_y), vec2(12.0, 12.0));
+                    let lresp = ui.interact(lr.expand(2.0), egui::Id::new(("tab-lock", g.path.clone(), i)), Sense::click());
+                    let lc = if d.locked {
+                        t.tab_text_active
+                    } else if lresp.hovered() {
+                        t.tab_text
+                    } else {
+                        t.text_faint
+                    };
+                    icons::paint(&painter, lr, Icon::Lock, lc);
+                    reg.add(&format!("panel.tab.{}.lock", p.id()), lr, if d.locked { "Unlock" } else { "Lock" });
+                    if lresp.clicked() {
+                        actions.push(DockAction::ToggleLock(*p));
+                    }
+                    label_x = dx + 16.0;
+                }
+            }
             let label_w = galley.size().x;
             let col = if is_active || resp.hovered() { t.tab_text_active } else { t.tab_text };
             painter.galley_with_override_text_color(pos2(label_x, text_y - galley.size().y / 2.0), galley, col);

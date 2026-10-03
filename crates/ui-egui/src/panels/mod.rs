@@ -14,6 +14,7 @@ pub mod expr_editor;
 pub mod flowchart;
 pub mod footage_panel;
 pub mod forms;
+pub mod fx_editors;
 pub mod fx_widgets;
 pub mod graph;
 pub mod graph_tools;

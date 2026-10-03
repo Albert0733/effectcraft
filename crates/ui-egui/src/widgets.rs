@@ -154,8 +154,27 @@ pub fn dropdown(ui: &mut Ui, rect: Rect, text: &str, t: &Tokens, id: egui::Id) -
     let resp = ui.interact(rect, id, Sense::click());
     ui.painter().rect_filled(rect, 3.0, if resp.hovered() { t.hover } else { t.field_bg });
     ui.painter().rect_stroke(rect, 3.0, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
-    ui.painter().text(pos2(rect.min.x + 7.0, rect.center().y), Align2::LEFT_CENTER, text, Tokens::ui(11.5), t.text);
+    // Text that doesn't fit before the arrow is elided (narrow panels).
+    let room = rect.width() - 7.0 - 18.0;
+    let fits = |s: &str| ui.painter().layout_no_wrap(s.to_string(), Tokens::ui(11.5), t.text).size().x <= room;
+    let shown = if fits(text) {
+        text.to_string()
+    } else {
+        let chars: Vec<char> = text.chars().collect();
+        let mut n = chars.len();
+        loop {
+            n = n.saturating_sub(1);
+            let s: String = chars[..n].iter().collect::<String>().trim_end().to_string() + "…";
+            if n == 0 || fits(&s) {
+                break s;
+            }
+        }
+    };
+    ui.painter().text(pos2(rect.min.x + 7.0, rect.center().y), Align2::LEFT_CENTER, shown, Tokens::ui(11.5), t.text);
     icons::paint(ui.painter(), Rect::from_center_size(pos2(rect.max.x - 9.0, rect.center().y), vec2(8.0, 8.0)), Icon::ChevronDown, t.text_dim);
+    if text.chars().count() > 0 && !fits(text) {
+        return resp.on_hover_text(text.to_string());
+    }
     resp
 }
 

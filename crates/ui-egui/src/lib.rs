@@ -991,7 +991,9 @@ impl EffectcraftApp {
         for ev in self.session.drain_events() {
             match ev {
                 effectcraft_engine::Event::OpenComp(_) => {
-                    self.ui.dock.activate(PanelKind::Composition);
+                    if !self.ui.locked_tabs.contains(&PanelKind::Composition.id()) {
+                        self.ui.dock.activate(PanelKind::Composition);
+                    }
                     self.ui.timeline.pps = None;
                 }
                 effectcraft_engine::Event::Toast { message, .. } => self.toast = Some((message, ctx.input(|i| i.time))),
