@@ -423,6 +423,36 @@ fn fxs_warp(@builtin(global_invocation_id) gid: vec3<u32>) {
                 u = u / w;
                 v = v / w;
             }
+            // Perspective below 100 %: blend toward the bilinear (non-perspective) inverse, found
+            // by Newton iterations from the projective guess as on the CPU; positions relative to
+            // the first corner keep f32's precision. f[7] = (corner 0, perspective, on);
+            // f[8] = (corner 1, corner 2) and f[9].xy = corner 3, relative to corner 0.
+            if (P.f[7].w != 0.0) {
+                let q1 = P.f[8].xy;
+                let q2 = P.f[8].zw;
+                let q3 = P.f[9].xy;
+                let k = q2 - q3 - q1;
+                let t = vec2<f32>(x, y) - P.f[7].xy;
+                var bu = u;
+                var bv = v;
+                for (var i = 0; i < 8; i++) {
+                    let f = q1 * bu + q3 * bv + k * (bu * bv) - t;
+                    if (abs(f.x) + abs(f.y) < 1e-4) {
+                        break;
+                    }
+                    let ju = q1 + k * bv;
+                    let jv = q3 + k * bu;
+                    let det = ju.x * jv.y - jv.x * ju.y;
+                    if (abs(det) < 1e-12) {
+                        break;
+                    }
+                    bu -= (jv.y * f.x - jv.x * f.y) / det;
+                    bv -= (-ju.y * f.x + ju.x * f.y) / det;
+                }
+                let persp = P.f[7].z;
+                u = bu + (u - bu) * persp;
+                v = bv + (v - bv) * persp;
+            }
             if (u < -1e-9 || u > 1.0 + 1e-9 || v < -1e-9 || v > 1.0 + 1e-9) {
                 textureStore(out, p, vec4<f32>(0.0));
                 return;

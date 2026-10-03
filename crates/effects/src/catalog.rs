@@ -100,6 +100,15 @@ pub fn gpu_supported(id: &str, ctx: &crate::EffectCtx) -> bool {
     match id {
         "ec.generate.cellpattern" if (6..=10).contains(&ctx.params.e("cellPattern")) => return false,
         "ec.distort.turbulentdisplace" if ctx.params.e("pinning") >= 8 => return false,
+        // Fisheye / Twist (a crease at the unit circle) bent past 50 % or with Horizontal /
+        // Vertical Distortion: Newton's inverse wanders chaotically before converging near the
+        // fold, so f32 lands on other pixels than the CPU's f64.
+        "ec.distort.warp"
+            if matches!(ctx.params.e("warpStyle"), 11 | 14)
+                && (ctx.params.f("bend").abs() > 50.0 || ctx.params.f("horizontalDistortion") != 0.0 || ctx.params.f("verticalDistortion") != 0.0) =>
+        {
+            return false;
+        }
         _ => {}
     }
     let Some((_, controls)) = CPU_ONLY_CONTROLS.iter().find(|(e, _)| *e == id) else { return true };

@@ -17,7 +17,7 @@ pub(crate) fn apply(e: &mut Enc, src: &GpuImage, d: &PlaneDof) -> Option<GpuImag
     let padded = e.image(w, h);
     e.copy_into(src, &padded, d.pad, d.pad);
     let boosted = if d.highlight.gain > 0.0 {
-        let out = e.image(w, h);
+        let out = e.scratch(w, h);
         let mut p = Params::default();
         p.f[0] = [d.highlight.gain as f32, d.highlight.threshold as f32, d.highlight.saturation as f32, 0.0];
         e.pixels("bokeh_boost", &p, &padded, None, &out, None);
@@ -47,7 +47,7 @@ pub(crate) fn apply(e: &mut Enc, src: &GpuImage, d: &PlaneDof) -> Option<GpuImag
     let (lo, hi) = (d.levels[0], d.levels[d.levels.len() - 1]);
     let mut acc = e.image(w, h);
     for (k, (off, count, norm)) in levels.into_iter().enumerate() {
-        let out = e.image(w, h);
+        let out = e.scratch(w, h);
         let mut p = Params::default();
         p.u[0] = [off, count, k as u32, n];
         p.u[1] = [u32::from(k == 0), 0, 0, 0];

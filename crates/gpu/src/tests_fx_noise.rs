@@ -33,6 +33,17 @@ fn medians() {
 }
 
 #[test]
+fn large_radius_medians() {
+    // Past the bisection radius: the sliding-histogram kernel (windows larger than the layer).
+    effect_case("ec.noise.median", &[("radius", n(9.0))]);
+    effect_case("ec.noise.median", &[("radius", n(24.0)), ("operateOnAlpha", on())]);
+    effect_case("ec.noise.medianlegacy", &[("radius", n(17.0))]);
+    effect_case("ec.noise.medianlegacy", &[("radius", n(40.0)), ("operateOnAlphaChannel", on())]);
+    effect_case("ec.noise.dustscratches", &[("radius", n(20.0)), ("threshold", n(10.0))]);
+    effect_case("ec.noise.dustscratches", &[("radius", n(60.0)), ("threshold", n(0.0)), ("operateOnAlpha", on())]);
+}
+
+#[test]
 fn edge_preserving_blurs() {
     effect_case("ec.blur.bilateral", &[]);
     effect_case("ec.blur.bilateral", &[("radius", n(9.0)), ("threshold", n(30.0)), ("colorize", Value::Bool(false))]);

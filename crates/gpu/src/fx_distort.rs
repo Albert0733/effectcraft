@@ -66,7 +66,7 @@ pub(crate) fn apply(e: &mut Enc, id: &str, ctx: &EffectCtx, b: GBuf) -> Option<G
 
 /// Run a same-size per-pixel kernel over the buffer.
 fn run(e: &mut Enc, entry: &str, p: &Params, mut b: GBuf, data: Option<&wgpu::Buffer>) -> Option<GBuf> {
-    let out = e.image(b.img.width, b.img.height);
+    let out = e.scratch(b.img.width, b.img.height);
     e.pixels(entry, p, &b.img, None, &out, data);
     b.img = out;
     Some(b)
@@ -267,7 +267,7 @@ fn displacement_map(e: &mut Enc, ctx: &EffectCtx, mut b: GBuf) -> Option<GBuf> {
     p.u[1] = [w as u32, h as u32, 0, 0];
     p.f[0] = [mh as f32, mv as f32, 0.0, 0.0];
     let buf = e.data(&data);
-    let out = e.image(b.img.width, b.img.height);
+    let out = e.scratch(b.img.width, b.img.height);
     e.pixels("dst_displace", &p, &b.img, map.as_ref(), &out, Some(&buf));
     b.img = out;
     Some(b)
@@ -300,7 +300,12 @@ fn mesh_warp(e: &mut Enc, ctx: &EffectCtx, b: GBuf) -> Option<GBuf> {
             srcp.push(b.to_px([gi as f64 / nx as f64 * lw, gj as f64 / ny as f64 * lh]));
         }
     }
-    // distort2::grid_warp: triangles in order, bucketed per output row.
+    grid_warp(e, b, nx, ny, &dest, &srcp)
+}
+
+/// distort2::grid_warp: grid point `i` of the (nx+1)×(ny+1) grid at `dest[i]` shows the source at
+/// `srcp[i]` (Mesh Warp, Bezier Warp). Triangles in order, bucketed per output row.
+pub(crate) fn grid_warp(e: &mut Enc, b: GBuf, nx: usize, ny: usize, dest: &[(f64, f64)], srcp: &[(f64, f64)]) -> Option<GBuf> {
     let idx = |i: usize, j: usize| j * (nx + 1) + i;
     let hh = b.img.height as usize;
     let mut tri_data: Vec<f32> = Vec::with_capacity(nx * ny * 24);
@@ -390,7 +395,7 @@ fn mosaic(e: &mut Enc, ctx: &EffectCtx, mut b: GBuf) -> Option<GBuf> {
     e.pixels("dst_mosaic_rows", &p, &b.img, None, &rows, Some(&buf));
     let tiles = e.image(nx as u32, ny as u32);
     e.pixels("dst_mosaic_tiles", &p, &rows, None, &tiles, Some(&buf));
-    let out = e.image(b.img.width, b.img.height);
+    let out = e.scratch(b.img.width, b.img.height);
     e.pixels("dst_mosaic_out", &p, &tiles, None, &out, Some(&buf));
     b.img = out;
     Some(b)
