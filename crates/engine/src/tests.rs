@@ -302,6 +302,17 @@ fn comp_settings_anchor_start_timecode_renderer() {
 }
 
 #[test]
+fn comp_rejects_zero_and_negative_frame_rates() {
+    let mut s = Session::default();
+    for fps in [0.0, -30.0, 0.0001] {
+        assert!(s.execute("comp.new", json!({"frameRate": fps})).is_err(), "{fps}");
+    }
+    s.execute("comp.new", json!({"frameRate": 30, "duration": 1})).unwrap();
+    assert!(s.execute("comp.settings", json!({"frameRate": 0})).is_err());
+    assert_eq!(s.active_comp().unwrap().frame_rate, crate::time::FrameRate::FPS_30);
+}
+
+#[test]
 fn render_queue_add_accepts_documented_settings_when_checked() {
     let mut s = demo();
     let r = s.execute_checked(
