@@ -325,7 +325,9 @@ pub fn build_mesh(strokes: &[LiquifyStroke], w: f64, h: f64, frozen: &(dyn Fn(f6
 
 type MeshCache = Mutex<HashMap<u64, Arc<Mesh>>>;
 
-fn cached_mesh(ctx: &EffectCtx) -> Arc<Mesh> {
+/// Liquify's displacement mesh for the instance (replayed strokes, cached; also used by the
+/// GPU kernels).
+pub fn liquify_mesh(ctx: &EffectCtx) -> Arc<Mesh> {
     use std::hash::{Hash, Hasher};
     let text = ctx.params.s("distortionMesh");
     let mask = ctx.params.f("freezeAreaMask").round() as usize;
@@ -369,7 +371,7 @@ fn liquify(ctx: &EffectCtx, mut b: Buf) -> Buf {
     if ctx.params.s("distortionMesh").trim().is_empty() && !show_freeze && !show_mesh {
         return b;
     }
-    let mesh = cached_mesh(ctx);
+    let mesh = liquify_mesh(ctx);
     let off = ctx.params.v2("distortionMeshOffset");
     let mesh_color = ctx.params.color("meshColor");
     let src = b.img.clone();

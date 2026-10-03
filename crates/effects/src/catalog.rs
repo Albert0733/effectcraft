@@ -88,6 +88,7 @@ const CPU_ONLY_CONTROLS: &[(&str, &[&str])] = &[
     ("ec.noise.addgrain", &["viewingMode", "preset", "color/redBalance", "color/greenBalance", "color/blueBalance", "previewRegion/"]),
     ("ec.blur.cameralens", &["irisProperties/diffractionFringe", "blurMap/blurMapLayer"]),
     ("ec.noise.removegrain", &["temporalFiltering/enabled"]),
+    ("ec.distort.liquify", &["viewFreezeAreaMask", "viewMesh"]),
 ];
 
 /// Whether the GPU kernel of effect `id` covers the instance's current settings (see
