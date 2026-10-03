@@ -22,6 +22,7 @@ cpal or muda. Everything in L0 to L4, the egui UI and the web app also build for
 | L2 | `project` | The document: items, compositions, layers, the property tree, render queue model, `.ecproj` serde |
 | L2 | `text` | Fonts, shaping, layout, per-glyph geometry, text animators and selectors |
 | L2 | `effects` | The effect registry (241 effects) and their CPU implementations |
+| L2 | `model` | 3D models for Advanced 3D: glTF 2.0 (`.gltf`/`.glb`) and OBJ/MTL import (meshes, PBR metallic-roughness materials and textures, node hierarchy, skins, animations), parametric primitives, extruded/bevelled outline meshes and polygon triangulation |
 | L2 | `track` | Motion tracking: feature/search region point tracking (pyramid normalized cross-correlation, Lucas–Kanade sub-pixel refinement), confidence, homography/affine/similarity solves |
 | L3 | `render` | Evaluation and compositing: sources, masks, effects, transforms, 3D, motion blur, mattes, blending, layer cache, audio mixdown |
 | L3 | `media` | Footage decoding (FilmCraft's pure-Rust codecs), image sequences, frame cache |
@@ -30,13 +31,15 @@ cpal or muda. Everything in L0 to L4, the egui UI and the web app also build for
 | L3 | `gpu` | The GPU compositor and GPU effects on wgpu compute shaders (Metal, Vulkan, Direct3D 12, WebGPU), checked against the CPU renderer |
 | L3 | `lottie` | Lottie JSON / dotLottie import and export (layers, precomps, eased and spatial keyframes, shapes, masks, mattes) with a warnings list for what Lottie cannot express |
 | L4 | `engine` | `Session`: project, undo history, editor state, the command registry and menus |
-| L4 | `host` | A fully wired `Session` (media, expressions, exporter) for the frontends |
+| L4 | `script` | Scripting: JavaScript (boa) with an After Effects-style object model (`app.project`, comps, layers, properties, render queue) whose edits run engine commands; AE match names |
+| L4 | `host` | A fully wired `Session` (media, expressions, scripting, exporter) for the frontends |
 | L5 | `ui-egui` | The desktop interface: docking, panels, viewer, timeline, graph editor, dialogs, control channel |
 | L5 | `automation` | The MCP server, headless or bridged to the running app |
 | L6 | apps `effectcraft`, `effectcraft-cli`, `effectcraft-web` | Desktop app; command-line tool (render, exec, get/set, MCP); the browser app (wasm32, [web.md](web.md)) |
 
 Allowed same-layer edges: `path → keyframe, raster`, `text → path`, `effects → project, text, path, track`,
-`media / expr / export / gpu → render`, `export → media`, `lottie → format`, `host → engine`.
+`media / expr / export / gpu → render`, `export → media`, `lottie → format`, `host → engine, script`,
+`script → engine`.
 
 ## 2. Time
 
@@ -68,7 +71,35 @@ the **source** (solid, footage frame, text, shape contents, or a nested comp), a
 then **effects** in order, then **layer styles**, then the **transform** into comp space (with motion blur sub-samples
 when enabled), the **track matte**, and finally **blends** into the accumulator. Adjustment layers
 apply their effects to the accumulator. Runs of 3D layers are composited per pixel through the
-active camera, with lights, shadows and depth of field.
+active camera, with lights, shadows and depth of field (Classic 3D), or rasterised as meshes by
+the Advanced 3D renderer (below).
+
+**Advanced 3D** (Composition Settings ▸ 3D Renderer ▸ Advanced 3D, `comp.renderer`;
+`crates/render/src/three_d/adv`, `crates/model`). A run of 3D layers becomes one scene of
+world-space triangles: 3D model layers (glTF 2.0 / OBJ footage, mapped from +Y-up model units
+into the layer by Geometry Options ▸ Model Scale; skins and animation clips played along layer
+time), primitive layers (Layer ▸ New ▸ Cube/Sphere/Plane/Torus/Cone/Cylinder, parametric in
+Geometry Options), text and shape layers with Geometry Options ▸ Extrusion Depth (glyph and
+fill outlines flattened, triangulated with holes and extruded with Angular/Concave/Convex
+bevels, per character so per-character 3D carries over), and a textured card for every other
+3D layer. Shading is physically based in linear light (glTF metallic-roughness; Cook–Torrance
+GGX specular, Smith–Schlick geometry, Schlick Fresnel, Lambert diffuse, after Karis 2013):
+parallel, spot and point lights with After Effects' falloffs, ambient lights, image-based
+light from an Environment light whose Source (or the comp's Environment Layer, Layer ▸
+Environment Layer) is an equirectangular image (cosine irradiance map; roughness-indexed mip
+chain with the split-sum environment BRDF fit), and percentage-closer-filtered shadow maps
+(spot: perspective, parallel: orthographic over the scene, point: six cube faces). Cards keep
+Material Options (Accepts Lights/Shadows, Casts Shadows On/Only, Ambient, Diffuse, Specular);
+models and primitives add Base Color, Metallic, Roughness, Emissive. Rasterisation runs at 2×2
+supersampling with a reversed-Z depth buffer; opaque triangles resolve visibility first, the
+transparent ones are sorted back to front and blended. The software rasteriser
+(`adv::raster`) is the reference and the headless/CI path; `effectcraft-gpu` implements
+`Accelerator::raster_3d` with a wgpu render pipeline (`advanced3d.wgsl`) that repeats the
+shading step for step, and tests compare the two. Resolve, depth of field (a gather blur by
+each pixel's circle of confusion from the camera's Depth of Field settings) and the conversion
+back to the working encoding run on the CPU for both. Not yet: motion blur, track mattes and
+blend modes inside an Advanced 3D run, collapsed 3D precomps (drawn flattened), morph targets,
+extruded strokes.
 
 A **layer cache** keeps each layer's finished pixels (source, masks and effects) keyed by a hash of
 its evaluated inputs, excluding the transform. Static and transform-only layers render once;
@@ -194,6 +225,28 @@ in the effect.
 Expressions are JavaScript, run by boa, with After Effects' object model (`thisComp`, `thisLayer`,
 `time`, `value`, `wiggle`, `loopOut`, vector maths on arrays, and so on). A syntax error keeps the
 text, disables the expression and shows a warning, like After Effects.
+
+## 5a. Scripting
+
+`effectcraft-script` runs JavaScript (boa, a fresh context per run; the Script Console keeps one)
+with an object model written from the behaviour the After Effects Scripting Guide documents:
+`app`, `Project`, `ItemCollection`, `CompItem`/`FootageItem`/`FolderItem`, `LayerCollection`,
+`AVLayer`/`TextLayer`/`ShapeLayer`/`CameraLayer`/`LightLayer`, `PropertyGroup`/`Property`
+(values, keyframes, eases, expressions), `TextDocument`, `Shape`, `KeyframeEase`, `MarkerValue`,
+`RenderQueue`/`RenderQueueItem`/`OutputModule`, `File`/`Folder` and the enums. The model lives in
+`prelude.js`; it reads the session through `__query` (JSON snapshots of items, layers, property
+nodes, values and keys) and edits only through `__exec`, which runs engine commands, so every
+scripted edit is undoable and identical to the UI's. While a script runs the session is moved
+into a thread-local the natives borrow (nothing borrowed enters the JS heap); the comp a call
+targets is made active for that command only. `app.beginUndoGroup`/`endUndoGroup` fold the undo
+steps in between into one named step. Match names (`ADBE Transform Group`, `ADBE Position`,
+`ADBE Gaussian Blur 2`, `ADBE Vector Shape - Rect`…) come from a table in `matchnames.rs`; effect
+parameters are `<effect match name>-0001…`. `File` reads are limited to the project's folder, and
+writes and the network are refused, unless Preferences ▸ Scripting & Expressions ▸ Allow Scripts
+to Write Files and Access Network is on. Entry points: the `script.run` command
+(`Session::script`, set by the host), File ▸ Scripts ▸ Run Script File… (`.jsx`/`.js`; `.json`
+command scripts still run as steps), Window ▸ Script Console, `effectcraft-cli script` and the
+MCP `run_script` tool.
 
 ## 6. Commands, the UI seam and automation
 

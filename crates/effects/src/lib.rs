@@ -8,8 +8,10 @@
 
 pub mod audio_fx;
 mod blur2;
+mod blur3;
 mod channel;
 mod channel2;
+mod channel3d;
 mod color2;
 mod color3;
 mod color_fx;
@@ -17,16 +19,20 @@ mod controls;
 mod distort;
 mod distort2;
 mod distort3;
+pub mod distort4;
 mod generate;
 mod generate2;
 mod generate3;
 mod keying;
 mod keying2;
+pub mod keylight;
 mod matte;
 mod misc;
+pub mod mocha_shape;
 mod noise;
 mod noise2;
 mod obsolete;
+mod ocio;
 pub mod paint;
 mod perspective;
 mod perspective2;
@@ -34,6 +40,7 @@ pub mod puppet;
 pub mod roto;
 mod sim;
 mod sim2;
+mod sim3;
 mod stylize2;
 mod stylize3;
 mod textfx;
@@ -43,6 +50,7 @@ mod transition2;
 pub mod util;
 mod utility;
 mod utility2;
+mod vr;
 pub mod warp_stab;
 
 use std::collections::HashMap;
@@ -52,7 +60,7 @@ pub use color2::Curve;
 use effectcraft_keyframe::Value;
 use effectcraft_project::build::Ids;
 use effectcraft_project::{GroupKind, ParamUi, PropGroup, Property};
-pub use effectcraft_raster::Image;
+pub use effectcraft_raster::{AuxChannels, Image};
 
 /// Effect categories in Effects & Presets order.
 pub const CATEGORIES: &[&str] = &[
@@ -233,6 +241,13 @@ pub trait EffectHost: Sync {
     fn layer_at(&self, _id: u64, _comp_time: f64, _masks_and_effects: bool) -> Option<LayerPixels> {
         None
     }
+    /// Auxiliary 3D channels (depth, object / material IDs, normals, Cryptomatte, any named
+    /// EXR channel) of the effect's own layer source at the current time, in layer space (see
+    /// [`AuxChannels`]). `None` when the source has none (the 3D Channel effects then pass the
+    /// layer through).
+    fn aux(&self) -> Option<std::sync::Arc<AuxChannels>> {
+        None
+    }
 }
 
 /// Extra context the renderer may supply (all optional; `Default` is "nothing known").
@@ -247,6 +262,10 @@ pub struct EffectEnv<'a> {
     pub frame_rate: f64,
     /// Index of the running effect in its layer's stack (for [`EffectHost::self_at`]).
     pub effect_index: usize,
+    /// The project's working colour space (`None` = unmanaged, treated as sRGB).
+    pub working_space: Option<effectcraft_color::ColorSpace>,
+    /// Working-space pixels are linear light (Linearize Working Space).
+    pub working_linear: bool,
 }
 
 /// What an effect gets to render with.
@@ -350,6 +369,14 @@ pub fn registry() -> &'static [EffectSpec] {
         v.extend(noise2::specs());
         v.extend(color3::specs());
         v.extend(obsolete::specs());
+        v.extend(ocio::specs());
+        v.extend(vr::specs());
+        v.extend(blur3::specs());
+        v.extend(distort4::specs());
+        v.extend(keylight::specs());
+        v.extend(mocha_shape::specs());
+        v.extend(sim3::specs());
+        v.extend(channel3d::specs());
         v.extend(time_fx::specs());
         v.extend(audio_fx::specs());
         v.extend(paint::specs());
@@ -372,7 +399,10 @@ pub fn find(id: &str) -> Option<&'static EffectSpec> {
 
 /// Find by id or (case-insensitive) display name.
 pub fn lookup(name_or_id: &str) -> Option<&'static EffectSpec> {
-    find(name_or_id).or_else(|| registry().iter().find(|s| s.name.eq_ignore_ascii_case(name_or_id)))
+    find(name_or_id).or_else(|| registry().iter().find(|s| s.name.eq_ignore_ascii_case(name_or_id))).or_else(|| {
+        // After Effects' third-party display names we register under a generic name.
+        keylight::KEYLIGHT_ALIASES.iter().any(|a| a.eq_ignore_ascii_case(name_or_id)).then(|| find("ec.keying.keylight")).flatten()
+    })
 }
 
 /// A parameter's default value on a layer of `layer_size` (point defaults are fractions of the
@@ -494,6 +524,10 @@ pub const TIME_DEPENDENT: &[&str] = &[
     "ec.time.ccforcemotionblur",
     "ec.time.ccwidetime",
     "ec.time.pixelmotionblur",
+    "ec.vr.digitalglitch",
+    "ec.blur.camerashakedeblur",
+    "ec.distort.rollingshutterrepair",
+    "ec.obsolete.mochashape",
     // Each frame gets its own stabilizing warp.
     warp_stab::ID,
     // Each frame has its own segmentation.

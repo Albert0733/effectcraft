@@ -1145,6 +1145,7 @@ name = "effectcraft-automation"
 version = "0.1.0"
 dependencies = [
  "effectcraft-engine",
+ "effectcraft-script",
  "image",
  "serde_json",
  "thiserror 2.0.21",
@@ -1197,6 +1198,7 @@ dependencies = [
  "effectcraft-geom",
  "effectcraft-keyframe",
  "effectcraft-lottie",
+ "effectcraft-model",
  "effectcraft-path",
  "effectcraft-project",
  "effectcraft-raster",
@@ -1288,6 +1290,7 @@ dependencies = [
  "effectcraft-expr",
  "effectcraft-media",
  "effectcraft-project",
+ "effectcraft-script",
  "serde_json",
 ]
 
@@ -1324,10 +1327,12 @@ dependencies = [
 name = "effectcraft-media"
 version = "0.1.0"
 dependencies = [
+ "effectcraft-model",
  "effectcraft-project",
  "effectcraft-raster",
  "effectcraft-render",
  "effectcraft-time",
+ "exr",
  "filmcraft-codecs",
  "filmcraft-color",
  "filmcraft-frame",
@@ -1336,6 +1341,18 @@ dependencies = [
  "image",
  "log",
  "rayon",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "effectcraft-model"
+version = "0.1.0"
+dependencies = [
+ "effectcraft-geom",
+ "image",
+ "serde",
+ "serde_json",
  "thiserror 2.0.21",
 ]
 
@@ -1381,6 +1398,7 @@ dependencies = [
  "effectcraft-effects",
  "effectcraft-geom",
  "effectcraft-keyframe",
+ "effectcraft-model",
  "effectcraft-path",
  "effectcraft-project",
  "effectcraft-raster",
@@ -1391,6 +1409,21 @@ dependencies = [
  "rayon",
  "serde",
  "web-time",
+]
+
+[[package]]
+name = "effectcraft-script"
+version = "0.1.0"
+dependencies = [
+ "boa_engine",
+ "effectcraft-engine",
+ "effectcraft-expr",
+ "effectcraft-keyframe",
+ "effectcraft-path",
+ "effectcraft-project",
+ "effectcraft-render",
+ "effectcraft-time",
+ "serde_json",
 ]
 
 [[package]]
@@ -1769,6 +1802,7 @@ dependencies = [
  "miniz_oxide 0.8.9",
  "num-complex",
  "pulp",
+ "rayon-core",
  "smallvec",
  "zune-inflate",
 ]

@@ -29,11 +29,9 @@ pub fn specs() -> Vec<CommandSpec> {
         stub!("keys.selectLabelGroup", "Select Keyframe Label Group", [], "{scope}"),
         // Layer ▸ New (3D / content-aware fill).
         stub!("layer.newContentAwareFill", "Content-Aware Fill Layer...", ["Layer", "New"], "{}"),
-        stub!("layer.new3dPrimitive", "3D Primitive", [], "{kind: cube|sphere|plane|torus|cone|cylinder}"),
         // Mask options not in the mask model yet; pen / vertex editing (timeline milestone).
         // Time (timeline milestone).
         stub!("layer.alignVideoToData", "Align Video to Data", ["Layer", "Time"], "{}"),
-        stub!("layer.environment", "Environment Layer", ["Layer"], "{}"),
         stub!("layer.create", "Create", [], "{op}"),
         stub!("layer.autoTrace", "Auto-trace...", ["Layer"], "{}"),
         stub!("layer.sceneEditDetection", "Scene Edit Detection...", ["Layer"], "{}"),
@@ -47,9 +45,6 @@ pub fn specs() -> Vec<CommandSpec> {
         stub!("light.fromModel", "Create Lights from 3D Model", ["Layer", "Light"], "{}"),
         stub!("light.controlWithCamera", "Control Light with Camera", ["Layer", "Light"], "{}"),
         stub!("light.environmentBackground", "Create Environment Light Background Layer", ["Layer", "Light"], "{}"),
-        stub!("material.revealSource", "Reveal Material Source in Project", ["Layer", "Material"], "{}"),
-        stub!("material.reset", "Reset Material", ["Layer", "Material"], "{}"),
-        stub!("material.duplicateAssign", "Duplicate and Assign Material", ["Layer", "Material"], "{}"),
         stub!("view.3d.default", "Default", ["View", "Switch 3D View"], "{}"),
         stub!("view.splitLockedViewer", "Split with New Locked Viewer", ["View"], "{}"),
         // Color management.

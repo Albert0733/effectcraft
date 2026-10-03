@@ -508,6 +508,27 @@ pub fn render(ctx: &EvalCtx, layer: &Layer, contents: &PropGroup, s: f64) -> Buf
 #[cfg(test)]
 mod tests;
 
+/// The filled outlines of a shape layer in layer space with their straight colours (gradient
+/// fills: the colour half way along), for Advanced 3D extrusion. Strokes are not extruded.
+pub fn fill_outlines(ctx: &EvalCtx, layer: &Layer, contents: &PropGroup) -> Vec<(Vec<BezPath>, [f32; 4])> {
+    let mut arena = Vec::new();
+    let (draws, _) = collect(ctx, layer, contents, &mut arena);
+    draws
+        .iter()
+        .rev()
+        .filter(|d| d.opacity > 0.0)
+        .filter_map(|d| {
+            let c = match &d.paint {
+                Paint::Fill { color, .. } => *color,
+                Paint::Gradient { g, stroke: None, .. } => g.sample(0.5),
+                _ => return None,
+            };
+            let paths: Vec<BezPath> = d.slots.iter().map(|&i| arena[i].clone()).filter(|p| !p.elements().is_empty()).collect();
+            (!paths.is_empty()).then_some((paths, [c[0], c[1], c[2], c[3] * d.opacity]))
+        })
+        .collect()
+}
+
 /// Layer-space bounds of a shape layer's painted contents (strokes included), without
 /// rasterising.
 pub fn content_bounds(ctx: &EvalCtx, layer: &Layer, contents: &PropGroup) -> Option<kurbo::Rect> {

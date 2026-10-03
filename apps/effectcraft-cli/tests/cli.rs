@@ -131,3 +131,34 @@ fn mcp_over_stdio() {
     assert_eq!(replies[2]["result"]["isError"], false, "{}", replies[2]);
     assert_eq!(replies[3]["result"]["content"][0]["type"], "image");
 }
+
+#[test]
+fn script_file_and_eval() {
+    let proj = tmp("scripted.ecproj");
+    let p = proj.to_str().unwrap();
+    let jsx = tmp("build.jsx");
+    std::fs::write(
+        &jsx,
+        "app.beginUndoGroup('Build');\nvar c = app.project.items.addComp('FromJsx', 160, 90, 1, 2, 24);\nc.layers.addSolid([1, 0, 0], 'Red', 160, 90, 1);\napp.endUndoGroup();\nwriteLn('built ' + c.name);\nc.numLayers",
+    )
+    .unwrap();
+    let v = ok_json(&["script", jsx.to_str().unwrap(), "--save-as", p]);
+    assert_eq!(v["ok"], json!(true), "{v}");
+    assert_eq!(v["result"], json!(1));
+    assert_eq!(v["output"], json!("built FromJsx"));
+    assert_eq!(v["saved"], p);
+    // Run against the saved project (positional), plain output.
+    let out = bin().args(["script", "--eval", "app.project.item(1).name + ' has ' + app.project.item(1).numLayers", p]).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "\"FromJsx has 1\"");
+    // Errors: exit 1 with file:line:col.
+    let bad = tmp("bad.jsx");
+    std::fs::write(&bad, "var a = 1;\n\nmissingFunction();\n").unwrap();
+    let out = bin().args(["script", bad.to_str().unwrap()]).output().unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("bad.jsx:3:1") && err.contains("missingFunction"), "{err}");
+    let (code, v) = run_json(&["script", "--eval", "\nnope()"]);
+    assert_eq!(code, 1);
+    assert_eq!(v["error"]["line"], json!(2));
+}

@@ -491,6 +491,9 @@ impl Default for AnimToolsState {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UiState {
     pub tool: Tool,
+    /// Window ▸ Script Console input, output and history.
+    #[serde(default)]
+    pub script_console: crate::panels::script_console::ScriptConsole,
     /// Tool shown in each toolbar slot.
     pub slot_tools: Vec<Tool>,
     pub workspace: String,
@@ -591,6 +594,7 @@ impl Default for UiState {
     fn default() -> Self {
         UiState {
             tool: Tool::Selection,
+            script_console: Default::default(),
             slot_tools: Tool::SLOTS.iter().map(|s| s[0]).collect(),
             workspace: "Default".into(),
             dock: crate::dock::workspace("Default"),
