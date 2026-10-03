@@ -90,7 +90,8 @@ const COMBINER_FROM: [&str; 14] = [
     "Min RGB",
 ];
 /// Channel Combiner's To options (a single value goes into one channel).
-const COMBINER_TO: [&str; 8] = ["Red Only", "Green Only", "Blue Only", "Alpha Only", "Lightness Only", "Hue Only", "Saturation Only", "Grayscale"];
+const COMBINER_TO: [&str; 9] =
+    ["Red Only", "Green Only", "Blue Only", "Alpha Only", "Lightness Only", "Hue Only", "Saturation Only", "Grayscale", "Saturation Multiplied"];
 
 fn channel_combiner(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let from = ctx.params.e("from");
@@ -160,6 +161,13 @@ fn channel_combiner(ctx: &EffectCtx, mut b: Buf) -> Buf {
                         let (r, g, bb) = hsl_to_rgb(0.0, v.clamp(0.0, 1.0), 0.5);
                         [r, g, bb]
                     }
+                    // Saturation Multiplied: the pixel keeps its hue and lightness; its saturation
+                    // is scaled by the value.
+                    8 => {
+                        let (h, s, l) = rgb_to_hsl(c[0], c[1], c[2]);
+                        let (r, g, bb) = hsl_to_rgb(h, (s * v).clamp(0.0, 1.0), l);
+                        [r, g, bb]
+                    }
                     _ => [v, v, v],
                 }
             }
@@ -175,6 +183,25 @@ fn channel_combiner(ctx: &EffectCtx, mut b: Buf) -> Buf {
 /// Minimax's Direction options.
 pub(crate) const MINIMAX_DIRECTIONS: [&str; 3] = ["Horizontal & Vertical", "Just Horizontal", "Just Vertical"];
 
+/// `p` with `rx` / `ry` zero pixels added on every side.
+fn pad_plane(p: &Plane, rx: usize, ry: usize) -> Plane {
+    let (w, h) = (p.w + 2 * rx, p.h + 2 * ry);
+    let mut out = Plane::new(w, h);
+    for y in 0..p.h {
+        out.data[(y + ry) * w + rx..(y + ry) * w + rx + p.w].copy_from_slice(&p.data[y * p.w..(y + 1) * p.w]);
+    }
+    out
+}
+
+/// The `w`×`h` interior of a plane padded by [`pad_plane`].
+fn crop_plane(p: &Plane, rx: usize, ry: usize, w: usize, h: usize) -> Plane {
+    let mut out = Plane::new(w, h);
+    for y in 0..h {
+        out.data[y * w..(y + 1) * w].copy_from_slice(&p.data[(y + ry) * p.w + rx..(y + ry) * p.w + rx + w]);
+    }
+    out
+}
+
 fn minimax(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let r = (ctx.params.f("radius") * b.scale).round().max(0.0) as usize;
     if r == 0 {
@@ -182,6 +209,7 @@ fn minimax(ctx: &EffectCtx, mut b: Buf) -> Buf {
     }
     let op = ctx.params.e("operation");
     let ch = ctx.params.e("channel");
+    let dont_shrink = ctx.params.b("dontShrinkEdges");
     let (rx, ry) = match ctx.params.e("direction") {
         1 => (r, 0),
         2 => (0, r),
@@ -204,12 +232,16 @@ fn minimax(ctx: &EffectCtx, mut b: Buf) -> Buf {
         if !sel[k] {
             continue;
         }
-        *pl = match op {
-            0 => morph_plane(pl, rx, ry, false),
-            1 => morph_plane(pl, rx, ry, true),
-            2 => morph_plane(&morph_plane(pl, rx, ry, false), rx, ry, true),
-            _ => morph_plane(&morph_plane(pl, rx, ry, true), rx, ry, false),
+        // Beyond the layer edge is empty (0), so Minimum eats into the edges unless Don't
+        // Shrink Edges extends the edge pixels instead.
+        let padded = if dont_shrink { pl.clone() } else { pad_plane(pl, rx, ry) };
+        let out = match op {
+            0 => morph_plane(&padded, rx, ry, false),
+            1 => morph_plane(&padded, rx, ry, true),
+            2 => morph_plane(&morph_plane(&padded, rx, ry, false), rx, ry, true),
+            _ => morph_plane(&morph_plane(&padded, rx, ry, true), rx, ry, false),
         };
+        *pl = if dont_shrink { out } else { crop_plane(&out, rx, ry, pl.w, pl.h) };
     }
     let mut img = join(&planes);
     img.data.par_iter_mut().for_each(|px| {
@@ -408,6 +440,7 @@ pub fn specs() -> Vec<EffectSpec> {
                 p("radius", "Radius", num(0.0), slider(0.0, 500.0, 0.0, 100.0, 0)),
                 p("channel", "Channel", Value::Enum(0), popup(&["Color", "Alpha", "Alpha and Color", "Red", "Green", "Blue"])),
                 p("direction", "Direction", Value::Enum(0), popup(&MINIMAX_DIRECTIONS)),
+                p("dontShrinkEdges", "Don't Shrink Edges", Value::Bool(false), ParamUi::Checkbox),
             ],
             minimax,
         ),
@@ -657,5 +690,24 @@ mod tests {
         let out = run("ec.channel.solidcomposite", &[("color", Value::Color([1.0, 0.0, 0.0, 1.0]))], img);
         assert!(close(out.get(0, 0), [0.0, 0.0, 1.0, 1.0]));
         assert!(close(out.get(1, 0), [1.0, 0.0, 0.0, 1.0]));
+    }
+
+    #[test]
+    fn minimax_shrinks_layer_edges_unless_told_not_to() {
+        let img = Image::filled(9, 9, [1.0, 1.0, 1.0, 1.0]);
+        let shrunk = run("ec.channel.minimax", &[("radius", num(2.0)), ("operation", Value::Enum(0))], img.clone());
+        assert_eq!(shrunk.get(0, 4)[0], 0.0);
+        assert_eq!(shrunk.get(4, 4)[0], 1.0);
+        let kept = run("ec.channel.minimax", &[("radius", num(2.0)), ("operation", Value::Enum(0)), ("dontShrinkEdges", Value::Bool(true))], img);
+        assert_eq!(kept.get(0, 4)[0], 1.0);
+    }
+
+    #[test]
+    fn channel_combiner_saturation_multiplied() {
+        // From Lightness (0.5) into Saturation Multiplied halves the saturation, keeping hue.
+        let red = Image::filled(1, 1, [0.75, 0.25, 0.25, 1.0]);
+        let out = run("ec.channel.combiner", &[("from", Value::Enum(8)), ("to", Value::Enum(8))], red).get(0, 0);
+        let (h, s, l) = rgb_to_hsl(out[0], out[1], out[2]);
+        assert!((h.abs() < 1e-4 || (h - 1.0).abs() < 1e-4) && (s - 0.25).abs() < 1e-3 && (l - 0.5).abs() < 1e-3, "{h} {s} {l}");
     }
 }

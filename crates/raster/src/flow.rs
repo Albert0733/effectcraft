@@ -95,18 +95,28 @@ fn sad(a: &Plane, b: &Plane, bx: i64, by: i64, bs: i64, dx: i64, dy: i64) -> f32
 /// Block-matching flow from `a` to `b` (same size). `block` is the tile size at full resolution;
 /// `radius` the search range at the coarsest level (motion up to about `radius · 2^levels`).
 pub fn block_flow(a: &Image, b: &Image, block: u32, radius: i32) -> Flow {
-    let bs = block.max(4) as usize;
+    block_flow_window(a, b, block, block, radius)
+}
+
+/// [`block_flow`] with separate vector spacing and matching window: one vector per
+/// `tile × tile` tile, each matched with the `window × window` block centred on its tile
+/// (Timewarp's Vector Detail and Block Size).
+pub fn block_flow_window(a: &Image, b: &Image, tile: u32, window: u32, radius: i32) -> Flow {
+    let bs = tile.max(2) as usize;
+    let win = window.max(4) as i64;
+    // Window origin relative to the tile origin.
+    let wo = bs as i64 / 2 - win / 2;
     let (w, h) = (a.width as usize, a.height as usize);
     let cols = w.div_ceil(bs).max(1);
     let rows = h.div_ceil(bs).max(1);
     let mut flow = Flow { width: a.width, height: a.height, block: bs as u32, cols, rows, v: vec![[0.0; 2]; cols * rows] };
-    if a.width != b.width || a.height != b.height || w < bs || h < bs {
+    if a.width != b.width || a.height != b.height || w < bs || h < bs || (w as i64) < win || (h as i64) < win {
         return flow;
     }
     // Pyramids (level 0 = full resolution); stop while blocks still fit.
     let mut pa = vec![Plane::luma(a)];
     let mut pb = vec![Plane::luma(b)];
-    while pa.len() < 4 && pa.last().is_some_and(|p| p.w / 2 >= bs * 2 && p.h / 2 >= bs * 2) {
+    while pa.len() < 4 && pa.last().is_some_and(|p| p.w / 2 >= (bs as i64).max(win) as usize * 2 && p.h / 2 >= (bs as i64).max(win) as usize * 2) {
         let (na, nb) = (pa.last().map(Plane::half), pb.last().map(Plane::half));
         pa.extend(na);
         pb.extend(nb);
@@ -118,15 +128,15 @@ pub fn block_flow(a: &Image, b: &Image, block: u32, radius: i32) -> Flow {
         let (la, lb) = (&pa[level], &pb[level]);
         let k = 1i64 << level;
         // The block covers the tile's footprint at this level (at least 4 pixels).
-        let lbs = ((bs as i64) / k).max(4);
+        let lbs = (win / k).max(4);
         let r = if level == top { radius as i64 } else { 1 };
         let prev = cur.clone();
         cur = (0..cols * rows)
             .into_par_iter()
             .map(|i| {
                 let (c, rr) = ((i % cols) as i64, (i / cols) as i64);
-                let bx = c * bs as i64 / k;
-                let by = rr * bs as i64 / k;
+                let bx = (c * bs as i64 + wo) / k;
+                let by = (rr * bs as i64 + wo) / k;
                 // Candidates: this tile's and its neighbours' vectors from the coarser level.
                 let mut seeds: Vec<[i64; 2]> = vec![[0, 0]];
                 if level != top {
@@ -160,18 +170,19 @@ pub fn block_flow(a: &Image, b: &Image, block: u32, radius: i32) -> Flow {
     // Sub-pixel refinement (parabola through the SAD of the neighbours) at full resolution.
     let (la, lb) = (&pa[0], &pb[0]);
     let bsi = bs as i64;
+    let wsi = win;
     let fine: Vec<[f32; 2]> = (0..cols * rows)
         .into_par_iter()
         .map(|i| {
-            let (bx, by) = ((i % cols) as i64 * bsi, (i / cols) as i64 * bsi);
+            let (bx, by) = ((i % cols) as i64 * bsi + wo, (i / cols) as i64 * bsi + wo);
             let d = cur[i];
-            let e0 = sad(la, lb, bx, by, bsi, d[0], d[1]);
+            let e0 = sad(la, lb, bx, by, wsi, d[0], d[1]);
             let fit = |em: f32, ep: f32| {
                 let den = em - 2.0 * e0 + ep;
                 if den > 1e-6 { (0.5 * (em - ep) / den).clamp(-0.5, 0.5) } else { 0.0 }
             };
-            let sx = fit(sad(la, lb, bx, by, bsi, d[0] - 1, d[1]), sad(la, lb, bx, by, bsi, d[0] + 1, d[1]));
-            let sy = fit(sad(la, lb, bx, by, bsi, d[0], d[1] - 1), sad(la, lb, bx, by, bsi, d[0], d[1] + 1));
+            let sx = fit(sad(la, lb, bx, by, wsi, d[0] - 1, d[1]), sad(la, lb, bx, by, wsi, d[0] + 1, d[1]));
+            let sy = fit(sad(la, lb, bx, by, wsi, d[0], d[1] - 1), sad(la, lb, bx, by, wsi, d[0], d[1] + 1));
             [d[0] as f32 + sx, d[1] as f32 + sy]
         })
         .collect();

@@ -428,6 +428,42 @@ fn smear(ctx: &EffectCtx, mut b: Buf) -> Buf {
 
 // ---------------------------------------------------------------- Reshape
 
+/// Reshape's correspondence points: "s,d s,d …" (outline fractions, sorted by destination).
+fn parse_correspondence(s: &str) -> Vec<(f64, f64)> {
+    let mut v: Vec<(f64, f64)> = s
+        .split_whitespace()
+        .filter_map(|t| {
+            let (a, b) = t.split_once(',')?;
+            Some((a.trim().parse::<f64>().ok()?.rem_euclid(1.0), b.trim().parse::<f64>().ok()?.rem_euclid(1.0)))
+        })
+        .collect();
+    v.sort_by(|a, b| a.1.total_cmp(&b.1));
+    v
+}
+
+/// The source outline fraction matching destination fraction `u` (piecewise linear between
+/// correspondence pairs; around the loop for closed shapes).
+fn map_fraction(pairs: &[(f64, f64)], u: f64, closed: bool) -> f64 {
+    let n = pairs.len();
+    if n == 1 {
+        return (pairs[0].0 + (u - pairs[0].1)).rem_euclid(1.0);
+    }
+    if !closed {
+        // Open paths: clamp beyond the first / last pair (ends map to ends).
+        let ext: Vec<(f64, f64)> = std::iter::once((0.0, 0.0)).chain(pairs.iter().copied()).chain(std::iter::once((1.0, 1.0))).collect();
+        let k = ext.iter().rposition(|p| p.1 <= u).unwrap_or(0).min(ext.len() - 2);
+        let (a, b) = (ext[k], ext[k + 1]);
+        let t = if b.1 > a.1 { (u - a.1) / (b.1 - a.1) } else { 0.0 };
+        return (a.0 + (b.0 - a.0) * t).clamp(0.0, 1.0);
+    }
+    let k = pairs.iter().rposition(|p| p.1 <= u).unwrap_or(n - 1);
+    let (a, b) = (pairs[k], pairs[(k + 1) % n]);
+    let du = (b.1 - a.1).rem_euclid(1.0).max(1e-9);
+    let ds = (b.0 - a.0).rem_euclid(1.0);
+    let t = (u - a.1).rem_euclid(1.0) / du;
+    (a.0 + ds * t).rem_euclid(1.0)
+}
+
 fn reshape(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let (Some((sm, sc)), Some((dm, dc))) = (mask_px(ctx, &b, "sourceMask"), mask_px(ctx, &b, "destinationMask")) else { return b };
     let pct = ctx.params.f("percent") / 100.0;
@@ -450,7 +486,25 @@ fn reshape(ctx: &EffectCtx, mut b: Buf) -> Buf {
     } else {
         0
     };
-    let disp: Vec<[f64; 2]> = (0..N).map(|i| [s[(i + rot) % N][0] - d[i][0], s[(i + rot) % N][1] - d[i][1]]).collect();
+    // Correspondence points ("source,destination" pairs of outline fractions 0..1) pin which
+    // point of the source outline goes to which point of the destination outline; in between
+    // the outlines are matched proportionally by length. Without them the starting point is
+    // chosen automatically (above).
+    let pairs = parse_correspondence(ctx.params.s("correspondencePoints"));
+    let src_at = |i: usize| -> [f64; 2] {
+        if pairs.is_empty() {
+            return s[(i + rot) % N];
+        }
+        let u = map_fraction(&pairs, i as f64 / N as f64, sc && dc);
+        let len = crate::util::poly_length(&sm, sc);
+        crate::util::poly_point_at(&sm, sc, u * len).0
+    };
+    let disp: Vec<[f64; 2]> = (0..N)
+        .map(|i| {
+            let q = src_at(i);
+            [q[0] - d[i][0], q[1] - d[i][1]]
+        })
+        .collect();
     let smooth = ctx.params.e("interpolation") == 2;
     b.img = remap(&b.img, false, |x, y| {
         if let Some(bd) = &bound
@@ -839,6 +893,8 @@ pub fn specs() -> Vec<EffectSpec> {
                 p("percent", "Percent", num(100.0), pct()),
                 p("elasticity", "Elasticity", Value::Enum(0), popup(&ELASTICITY)),
                 p("interpolation", "Interpolation Method", Value::Enum(1), popup(&["Discrete", "Linear", "Smooth"])),
+                // Correspondence points: "source,destination" outline fractions (0..1) per point.
+                p("correspondencePoints", "Correspondence Points", Value::Str(String::new()), ParamUi::Hidden),
             ],
             reshape,
         ),
@@ -1027,6 +1083,22 @@ mod tests {
         let o = run("ec.distort.reshape", &[("sourceMask", Value::Enum(1)), ("destinationMask", Value::Enum(2)), ("boundaryMask", Value::Enum(3))], im, &masks);
         assert!(o.img.get(24, 15)[0] > 0.8, "{:?}", o.img.get(24, 15));
         assert!(o.img.get(11, 15)[0] < 0.3, "{:?}", o.img.get(11, 15));
+    }
+
+    #[test]
+    fn reshape_correspondence_points_steer_the_match() {
+        // Matching outlines with a zero pair change nothing; a quarter-turn offset twists.
+        let im = img(40, 40);
+        let masks = [rect_mask(10.0, 10.0, 30.0, 30.0), rect_mask(10.0, 10.0, 30.0, 30.0), rect_mask(0.0, 0.0, 40.0, 40.0)];
+        let base = [("sourceMask", Value::Enum(1)), ("destinationMask", Value::Enum(2)), ("boundaryMask", Value::Enum(3))];
+        let same = run("ec.distort.reshape", &[base.as_slice(), &[("correspondencePoints", Value::Str("0,0".into()))]].concat(), im.clone(), &masks);
+        assert!(maxd(&same.img, &im) < 1e-3, "matching outlines: no change");
+        let twisted = run("ec.distort.reshape", &[base.as_slice(), &[("correspondencePoints", Value::Str("0.25,0".into()))]].concat(), im.clone(), &masks);
+        assert!(maxd(&twisted.img, &im) > 0.1);
+        // Fraction mapping.
+        assert!((map_fraction(&[(0.0, 0.0), (0.5, 0.25)], 0.125, true) - 0.25).abs() < 1e-9);
+        assert!((map_fraction(&[(0.2, 0.0)], 0.9, true) - 0.1).abs() < 1e-9);
+        assert!((map_fraction(&[(0.5, 0.5)], 0.25, false) - 0.25).abs() < 1e-9);
     }
 
     #[test]
