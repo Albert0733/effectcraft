@@ -3,11 +3,11 @@
 <!-- Generated from the effect registry (crates/effects/src/catalog.rs); do not edit by hand.
      Regenerate: UPDATE_DOCS=1 cargo test -p effectcraft-effects --lib effects_doc_is_current -->
 
-EffectCraft ships 303 effects with 2562 parameters in total, grouped into the same categories as the Effects & Presets panel. Every effect is our own implementation, written from public behaviour descriptions and standard image-processing literature. Parameter names, order, popup options, units, defaults and ranges follow the reference application so that projects, expressions and muscle memory carry over.
+EffectCraft ships 303 effects with 2647 parameters in total, grouped into the same categories as the Effects & Presets panel. Every effect is our own implementation, written from public behaviour descriptions and standard image-processing literature. Parameter names, order, popup options, units, defaults and ranges follow the reference application so that projects, expressions and muscle memory carry over.
 
 - **GPU**: 24 effects also run on the GPU compositor with identical results.
 - **32**: 303 effects process 32-bit float (HDR, overbright) pixels without clamping.
-- **Status**: 266 implemented in full, 37 partial (what is missing is listed).
+- **Status**: 269 implemented in full, 34 partial (what is missing is listed).
 
 Effects are addressed by id (`ec.<category>.<name>`) or display name in commands, scripts and the control channel, and every parameter by its id (`effects/#1/blurriness`).
 
@@ -328,11 +328,11 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 | CC Scatterize | `ec.sim.ccscatterize` | 4 |  | 32 | Implemented |
 | CC Snowfall | `ec.sim.ccsnowfall` | 19 |  | 32 | Implemented |
 | CC Star Burst | `ec.sim.ccstarburst` | 6 |  | 32 | Implemented |
-| Card Dance | `ec.sim.carddance` | 35 |  | 32 | Partial: no camera system, corner pins or lighting/material controls |
+| Card Dance | `ec.sim.carddance` | 53 |  | 32 | Implemented |
 | Caustics | `ec.sim.caustics` | 21 |  | 32 | Partial: no Sky group or light type |
 | Foam | `ec.sim.foam` | 24 |  | 32 | Partial: no wobble, pop velocity, custom bubble texture, environment map or flow map |
 | Particle Playground | `ec.sim.particleplayground` | 37 |  | 32 | Partial: no Particle Exploder, Ephemeral Property Mapper, Affects groups or text particles |
-| Shatter | `ec.sim.shatter` | 26 |  | 32 | Partial: no custom shatter map, gradient, textures or extrusion rendering |
+| Shatter | `ec.sim.shatter` | 60 |  | 32 | Implemented |
 | Wave World | `ec.sim.waveworld` | 27 |  | 32 | Partial: no wireframe controls, dry-area rendering or ground group |
 
 ## Stylize
@@ -400,7 +400,7 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 | CC Scale Wipe | `ec.transition.ccscalewipe` | 3 |  | 32 | Implemented |
 | CC Twister | `ec.transition.cctwister` | 5 |  | 32 | Implemented |
 | CC WarpoMatic | `ec.transition.ccwarpomatic` | 8 |  | 32 | Implemented |
-| Card Wipe | `ec.transition.cardwipe` | 12 |  | 32 | Partial: 2D flip only; no back layer picker, camera, lighting or jitter |
+| Card Wipe | `ec.transition.cardwipe` | 44 |  | 32 | Implemented |
 | Gradient Wipe | `ec.transition.gradientwipe` | 5 |  | 32 | Implemented |
 | Iris Wipe | `ec.transition.iriswipe` | 7 |  | 32 | Implemented |
 | Linear Wipe | `ec.transition.linearwipe` | 3 |  | 32 | Implemented |

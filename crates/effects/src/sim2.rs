@@ -10,6 +10,7 @@ use effectcraft_project::ParamUi;
 use effectcraft_raster::{Image, Px};
 use rayon::prelude::*;
 
+use crate::card3d::{Lighting, Proj};
 use crate::generate::value_noise;
 use crate::sim::{Acc, Shape, Sprite, h, hs, pct, pt, raster, spec, splat};
 use crate::util::{Plane, SimCache, gauss_plane, layer_or_self, params_key, unpremul};
@@ -17,7 +18,7 @@ use crate::{Buf, EffectCtx, EffectSpec, col, num, p, popup, slider};
 
 // ------------------------------------------------------------------ 3D pieces
 
-type M3 = [[f64; 3]; 3];
+pub(crate) type M3 = [[f64; 3]; 3];
 
 fn mat_mul(a: &M3, b: &M3) -> M3 {
     std::array::from_fn(|i| std::array::from_fn(|j| (0..3).map(|k| a[i][k] * b[k][j]).sum()))
@@ -35,7 +36,7 @@ fn rot_xyz(x: f64, y: f64, z: f64) -> M3 {
 }
 
 /// Rotation by `angle` about unit `axis` (Rodrigues).
-fn rot_axis(axis: [f64; 3], angle: f64) -> M3 {
+pub(crate) fn rot_axis(axis: [f64; 3], angle: f64) -> M3 {
     let l = (axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]).sqrt();
     if l < 1e-12 || angle == 0.0 {
         return [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
@@ -72,9 +73,15 @@ struct Cam {
     d: f64,
 }
 
+impl Cam {
+    fn proj(self) -> Proj {
+        Proj::simple(self.c, self.d)
+    }
+}
+
 /// A planar textured piece ready to draw.
 #[derive(Clone, Copy)]
-struct Piece {
+pub(crate) struct Piece {
     /// Screen (buffer px, homogeneous) → piece-local (a, b, w).
     inv: M3,
     /// Rest centre of the piece in texture pixels.
@@ -84,34 +91,43 @@ struct Piece {
     n: u8,
     bbox: [f32; 4],
     shade: f32,
-    alpha: f32,
+    /// Lighting: colour multiplier and additive specular highlight.
+    tint: [f32; 3],
+    spec: [f32; 3],
+    pub(crate) alpha: f32,
     /// Flat straight colour instead of the texture.
-    flat: Option<[f32; 3]>,
+    pub(crate) flat: Option<[f32; 3]>,
     /// Facing away from the camera (draw the back texture).
-    back: bool,
+    pub(crate) back: bool,
+    /// Back faces sample their texture mirrored about the piece centre: 0 no, 1 vertically
+    /// (flipped about the X axis), 2 horizontally (about the Y axis).
+    pub(crate) back_mirror: u8,
     depth: f64,
 }
 
 impl Piece {
     /// Place polygon `poly` (texture px, around rest centre `c0`) with rotation `r` and its
-    /// centre at 3D `pos` (buffer px; z away from the camera).
-    fn new(poly: &[[f32; 2]], c0: [f32; 2], r: &M3, pos: [f64; 3], cam: Cam) -> Option<Piece> {
+    /// centre at 3D `pos` (buffer px; z away from the camera), seen through `cam`.
+    pub(crate) fn new(poly: &[[f32; 2]], c0: [f32; 2], r: &M3, pos: [f64; 3], cam: impl Into<Proj>) -> Option<Piece> {
+        let cam: Proj = cam.into();
         let n = poly.len().min(6);
         if n < 3 {
             return None;
         }
-        let (cx, cy, d) = (cam.c[0], cam.c[1], cam.d);
-        let zc = pos[2];
-        let hm: M3 = [
-            [cx * r[2][0] + d * r[0][0], cx * r[2][1] + d * r[0][1], cx * (d + zc) + d * (pos[0] - cx)],
-            [cy * r[2][0] + d * r[1][0], cy * r[2][1] + d * r[1][1], cy * (d + zc) + d * (pos[1] - cy)],
-            [r[2][0], r[2][1], d + zc],
-        ];
+        let m = &cam.m;
+        let row = |i: usize| -> [f64; 3] {
+            [
+                m[i][0] * r[0][0] + m[i][1] * r[1][0] + m[i][2] * r[2][0],
+                m[i][0] * r[0][1] + m[i][1] * r[1][1] + m[i][2] * r[2][1],
+                m[i][0] * pos[0] + m[i][1] * pos[1] + m[i][2] * pos[2] + m[i][3],
+            ]
+        };
+        let hm: M3 = [row(0), row(1), row(2)];
         let mut bb = [f32::INFINITY, f32::INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY];
         for v in &poly[..n] {
             let (a, b) = ((v[0] - c0[0]) as f64, (v[1] - c0[1]) as f64);
             let w = hm[2][0] * a + hm[2][1] * b + hm[2][2];
-            if w < d * 0.05 {
+            if w < cam.near {
                 return None;
             }
             let sx = ((hm[0][0] * a + hm[0][1] * b + hm[0][2]) / w) as f32;
@@ -126,8 +142,12 @@ impl Piece {
         if area < 0.0 {
             pp[..n].reverse();
         }
-        // Front normal (0, 0, -1) rotated; facing the camera when its z is negative.
-        let nz = -r[2][2];
+        // The front faces -z at rest; it faces the camera when its normal points at the eye.
+        let eye = cam.eye();
+        let nrm = [-r[0][2], -r[1][2], -r[2][2]];
+        let to_eye = [eye[0] - pos[0], eye[1] - pos[1], eye[2] - pos[2]];
+        let facing = nrm[0] * to_eye[0] + nrm[1] * to_eye[1] + nrm[2] * to_eye[2];
+        let depth = hm[2][2];
         Some(Piece {
             inv,
             c0,
@@ -135,10 +155,13 @@ impl Piece {
             n: n as u8,
             bbox: [bb[0] - 1.0, bb[1] - 1.0, bb[2] + 1.0, bb[3] + 1.0],
             shade: 1.0,
+            tint: [1.0; 3],
+            spec: [0.0; 3],
             alpha: 1.0,
             flat: None,
-            back: nz > 0.0,
-            depth: zc,
+            back: facing < 0.0,
+            back_mirror: 0,
+            depth,
         })
     }
 
@@ -146,10 +169,23 @@ impl Piece {
     fn facing(r: &M3) -> f32 {
         r[2][2].abs() as f32
     }
+
+    /// Light the piece (rotation `r`, centre `pos`) with Lighting / Material.
+    pub(crate) fn light(&mut self, l: &Lighting, r: &M3, pos: [f64; 3], eye: [f64; 3]) {
+        let (t, s) = l.shade([-r[0][2], -r[1][2], -r[2][2]], pos, eye);
+        self.tint = t;
+        self.spec = s;
+    }
+}
+
+impl From<Cam> for Proj {
+    fn from(c: Cam) -> Proj {
+        c.proj()
+    }
 }
 
 /// Draw pieces (already sorted far → near) over `out`.
-fn draw_pieces(out: &mut Image, pieces: &[Piece], front: &Image, back: Option<&Image>) {
+pub(crate) fn draw_pieces(out: &mut Image, pieces: &[Piece], front: &Image, back: Option<&Image>) {
     raster(
         out,
         pieces,
@@ -181,6 +217,11 @@ fn draw_pieces(out: &mut Image, pieces: &[Piece], front: &Image, back: Option<&I
                 Some(c) => (c, 1.0),
                 None => {
                     let tex = if q.back { back.unwrap_or(front) } else { front };
+                    let (u, v) = match (q.back, q.back_mirror) {
+                        (true, 1) => (u, 2.0 * q.c0[1] - v),
+                        (true, 2) => (2.0 * q.c0[0] - u, v),
+                        _ => (u, v),
+                    };
                     unpremul(tex.sample_bilinear(u as f64, v as f64))
                 }
             };
@@ -189,13 +230,14 @@ fn draw_pieces(out: &mut Image, pieces: &[Piece], front: &Image, back: Option<&I
                 return None;
             }
             let k = q.shade;
-            Some([c[0] * k * a, c[1] * k * a, c[2] * k * a, a])
+            let o: [f32; 3] = std::array::from_fn(|i| c[i] * k * q.tint[i] + q.spec[i]);
+            Some([o[0] * a, o[1] * a, o[2] * a, a])
         },
         Acc::Over,
     );
 }
 
-fn sort_far_first(pieces: &mut [Piece]) {
+pub(crate) fn sort_far_first(pieces: &mut [Piece]) {
     pieces.sort_by(|a, b| b.depth.total_cmp(&a.depth));
 }
 
@@ -430,12 +472,9 @@ fn card_dance(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let [lw, lh] = ctx.layer_size;
     let s = b.scale;
     let (cw, ch) = (lw / cols as f64, lh / rows as f64);
-    let zpos = pr.f("cameraPosition/cameraZ").max(0.05);
-    let focal = pr.f("cameraPosition/focalLength").max(1.0);
-    let cam = Cam { c: [b.offset[0] + lw * 0.5 * s, b.offset[1] + lh * 0.5 * s], d: lw.max(lh) * s * zpos * focal / 140.0 };
-    let ambient = pr.f("lighting/ambientLight") as f32;
-    let diffuse = pr.f("material/diffuse") as f32;
-    let intensity = pr.f("lighting/lightIntensity") as f32;
+    let cam = crate::card3d::projection(ctx, &b);
+    let eye = cam.eye();
+    let light = Lighting::from(ctx, &b);
     let props: Vec<(u32, f64, f64)> =
         CD_PROPS.iter().map(|(id, g)| (pr.e(&format!("{g}/{id}Source")), pr.f(&format!("{g}/{id}Multiplier")), pr.f(&format!("{g}/{id}Offset")))).collect();
     let src = b.img.clone();
@@ -458,7 +497,7 @@ fn card_dance(ctx: &EffectCtx, mut b: Buf) -> Buf {
             let (tw, th) = ((cw * s) as f32, (ch * s) as f32);
             let poly = [[tx0, ty0], [tx0 + tw, ty0], [tx0 + tw, ty0 + th], [tx0, ty0 + th]];
             let mut pc = Piece::new(&poly, [bx as f32, by as f32], &rs, pos, cam)?;
-            pc.shade = ambient + diffuse * intensity * Piece::facing(&r);
+            pc.light(&light, &r, pos, eye);
             Some(pc)
         })
         .collect();
@@ -471,7 +510,8 @@ fn card_dance(ctx: &EffectCtx, mut b: Buf) -> Buf {
 
 // ------------------------------------------------------------------ Shatter
 
-const SHATTER_PATTERNS: &[&str] = &["Bricks", "Glass", "Hexagons", "Squares", "Triangles"];
+/// Shatter's Pattern options; the last, Custom, takes its pieces from Custom Shatter Map.
+const SHATTER_PATTERNS: &[&str] = &["Bricks", "Glass", "Hexagons", "Squares", "Triangles", "Custom"];
 
 /// Pattern cells (polygons in pattern space, before rotation) covering `[x0, x1]×[y0, y1]`.
 fn pattern_cells(kind: u32, cell: f64, x0: f64, y0: f64, x1: f64, y1: f64, seed: u32) -> Vec<Vec<[f64; 2]>> {
@@ -570,12 +610,40 @@ fn drag_factors(k: f64, t: f64) -> (f64, f64) {
         ((1.0 - e) / k, t / k - (1.0 - e) / (k * k))
     }
 }
+/// Shatter's Front / Side / Back Mode options.
+const SHATTER_TEXTURE_MODES: [&str; 3] = ["Color", "Layer", "Tinted Layer"];
+
+/// One face's texture: a flat colour, a layer, or a layer tinted by the Textures colour.
+struct Face {
+    mode: u32,
+    img: Option<Image>,
+}
+
+impl Face {
+    fn from(ctx: &EffectCtx, b: &Buf, mode: &str, layer: &str, default_mode: u32) -> Face {
+        let mode = ctx.params.get(mode).map(|v| v.as_enum()).unwrap_or(default_mode);
+        // A face layer of None is the effect's own layer.
+        let img = (mode != 0).then(|| layer_or_self(ctx, b, layer, true, true));
+        Face { mode, img }
+    }
+}
+
+/// Group key of a Custom Shatter Map colour (pieces of one colour break as one).
+fn map_key(c: [f32; 4]) -> u32 {
+    let (c, a) = unpremul(c);
+    if a < 0.5 {
+        return u32::MAX;
+    }
+    let q = |v: f32| ((v.clamp(0.0, 1.0) * 15.0).round() as u32) & 15;
+    q(c[0]) << 8 | q(c[1]) << 4 | q(c[2])
+}
 
 fn shatter(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let pr = ctx.params;
     let view = pr.e("view");
     let render = pr.e("render");
     let kind = pr.e("shape/pattern");
+    let custom = kind as usize == SHATTER_PATTERNS.len() - 1;
     let reps = pr.f("shape/repetitions").clamp(1.0, 500.0);
     let dir = pr.f("shape/direction").to_radians();
     let origin = pr.v2("shape/origin");
@@ -591,15 +659,29 @@ fn shatter(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let gravity = pr.f("physics/gravity");
     let gdir = pr.f("physics/gravityDirection").to_radians();
     let ginc = pr.f("physics/gravityInclination").to_radians();
-    let ambient = pr.f("lighting/ambientLight") as f32;
-    let intensity = pr.f("lighting/lightIntensity") as f32;
     let seed = (pr.f("randomSeed") as u32).wrapping_mul(0x9e3779b1) ^ ctx.seed;
     let [lw, lh] = ctx.layer_size;
     let s = b.scale;
     let t = ctx.time.max(0.0);
     let unit = lw * 0.1;
     let cell = lw / reps;
-    let cam = Cam { c: [b.offset[0] + lw * 0.5 * s, b.offset[1] + lh * 0.5 * s], d: 2.0 * lw.max(lh) * s };
+    let extrude = pr.f("shape/extrusionDepth").max(0.0) * cell * s;
+    let cam = crate::card3d::projection(ctx, &b);
+    let eye = cam.eye();
+    let light = Lighting::from(ctx, &b);
+    // Gradient: with a gradient layer only pieces at least as bright as 1 − Shatter Threshold
+    // (Invert Gradient: as dark) break.
+    let gradient = ctx.layer_param("gradient/gradientLayer", true).map(|o| crate::util::fit_layer(ctx, &b, &o, true));
+    let threshold = pr.get("gradient/shatterThreshold").map(Value::as_f64).unwrap_or(0.0) / 100.0;
+    let invert_gradient = pr.b("gradient/invertGradient");
+    // Textures.
+    let tex_color = pr.get("textures/color").map(|v| v.as_color()).unwrap_or([1.0; 4]);
+    let tex_opacity = pr.get("textures/opacity").map(Value::as_f64).unwrap_or(1.0).clamp(0.0, 1.0) as f32;
+    let front = Face::from(ctx, &b, "textures/frontMode", "textures/frontLayer", 1);
+    let side = Face::from(ctx, &b, "textures/sideMode", "textures/sideLayer", 0);
+    let backf = Face::from(ctx, &b, "textures/backMode", "textures/backLayer", 1);
+    let custom_map = custom.then(|| layer_or_self(ctx, &b, "shape/customShatterMap", true, true));
+    let white_fixed = pr.b("shape/whiteTilesFixed");
     let (sd, cd) = dir.sin_cos();
     let to_layer = |q: [f64; 2]| [origin[0] + q[0] * cd - q[1] * sd, origin[1] + q[0] * sd + q[1] * cd];
     // Pattern-space bounds of the layer rectangle.
@@ -609,21 +691,45 @@ fn shatter(ctx: &EffectCtx, mut b: Buf) -> Buf {
     });
     let (px0, px1) = (corners.iter().map(|c| c[0]).fold(f64::INFINITY, f64::min), corners.iter().map(|c| c[0]).fold(f64::NEG_INFINITY, f64::max));
     let (py0, py1) = (corners.iter().map(|c| c[1]).fold(f64::INFINITY, f64::min), corners.iter().map(|c| c[1]).fold(f64::NEG_INFINITY, f64::max));
-    let cells = pattern_cells(kind, cell, px0, py0, px1, py1, seed);
+    // Custom Shatter Map: square cells grouped by the map's colour.
+    let cells = pattern_cells(if custom { 3 } else { kind }, cell, px0, py0, px1, py1, seed);
+    let polys: Vec<Vec<[f64; 2]>> = cells.iter().map(|poly| poly.iter().map(|&q| to_layer(q)).collect()).collect();
+    let centre = |lp: &[[f64; 2]]| [lp.iter().map(|v| v[0]).sum::<f64>() / lp.len() as f64, lp.iter().map(|v| v[1]).sum::<f64>() / lp.len() as f64];
+    let keys: Vec<u32> = match &custom_map {
+        Some(m) => polys
+            .iter()
+            .map(|lp| {
+                let c = centre(lp);
+                map_key(m.sample_bilinear(c[0] * s + b.offset[0], c[1] * s + b.offset[1]))
+            })
+            .collect(),
+        None => (0..polys.len() as u32).collect(),
+    };
+    // Group centres (custom map) — each group moves as one rigid piece.
+    let mut groups: std::collections::HashMap<u32, ([f64; 2], f64)> = std::collections::HashMap::new();
+    for (lp, &key) in polys.iter().zip(&keys) {
+        let c = centre(lp);
+        let e = groups.entry(key).or_insert(([0.0; 2], 0.0));
+        e.0[0] += c[0];
+        e.0[1] += c[1];
+        e.1 += 1.0;
+    }
     let g3 = [gdir.sin() * ginc.cos() * gravity * unit, -gdir.cos() * ginc.cos() * gravity * unit, ginc.sin() * gravity * unit];
     let src = b.img.clone();
-    let mut pieces: Vec<Piece> = cells
+    let mut pieces: Vec<Piece> = polys
         .par_iter()
-        .enumerate()
-        .filter_map(|(i, poly)| {
-            let i = i as u32;
-            let lp: Vec<[f64; 2]> = poly.iter().map(|&q| to_layer(q)).collect();
+        .zip(keys.par_iter())
+        .flat_map_iter(|(lp, &key)| {
+            let mut out: Vec<Piece> = vec![];
             let (mnx, mxx) = (lp.iter().map(|v| v[0]).fold(f64::INFINITY, f64::min), lp.iter().map(|v| v[0]).fold(f64::NEG_INFINITY, f64::max));
             let (mny, mxy) = (lp.iter().map(|v| v[1]).fold(f64::INFINITY, f64::min), lp.iter().map(|v| v[1]).fold(f64::NEG_INFINITY, f64::max));
-            if mxx < 0.0 || mxy < 0.0 || mnx > lw || mny > lh {
-                return None;
+            if mxx < 0.0 || mxy < 0.0 || mnx > lw || mny > lh || key == u32::MAX {
+                return out.into_iter();
             }
-            let c = [lp.iter().map(|v| v[0]).sum::<f64>() / lp.len() as f64, lp.iter().map(|v| v[1]).sum::<f64>() / lp.len() as f64];
+            let pc_c = centre(lp);
+            let (gsum, gn) = groups[&key];
+            let gc = [gsum[0] / gn, gsum[1] / gn];
+            let i = key;
             // Broken when inside a force sphere (centred `depth` in front of the layer).
             let mut v = [0.0f64; 3];
             let mut broken = false;
@@ -632,7 +738,7 @@ fn shatter(ctx: &EffectCtx, mut b: Buf) -> Buf {
                 if rad <= 0.0 {
                     continue;
                 }
-                let dv = [c[0] - fp[0], c[1] - fp[1], fd * lw];
+                let dv = [gc[0] - fp[0], gc[1] - fp[1], fd * lw];
                 let dist = (dv[0] * dv[0] + dv[1] * dv[1] + dv[2] * dv[2]).sqrt();
                 if dist < rad {
                     broken = true;
@@ -642,19 +748,31 @@ fn shatter(ctx: &EffectCtx, mut b: Buf) -> Buf {
                     }
                 }
             }
-            if (broken && render == 1) || (!broken && render == 2) {
-                return None;
+            if broken && let Some(g) = &gradient {
+                let (c, _) = unpremul(g.sample_bilinear(gc[0] * s + b.offset[0], gc[1] * s + b.offset[1]));
+                let mut l = effectcraft_color::luminance(c[0], c[1], c[2]).clamp(0.0, 1.0) as f64;
+                if invert_gradient {
+                    l = 1.0 - l;
+                }
+                broken = threshold > 0.0 && l >= 1.0 - threshold;
             }
-            let mut pos = [c[0], c[1], 0.0];
+            if broken && custom && white_fixed && key == 0xfff {
+                broken = false;
+            }
+            if (broken && render == 1) || (!broken && render == 2) {
+                return out.into_iter();
+            }
+            let mut gpos = [gc[0], gc[1], 0.0];
             let mut r = rot_axis([1.0, 0.0, 0.0], 0.0);
-            if broken && t > 0.0 {
+            let moving = broken && t > 0.0;
+            if moving {
                 let mass = 1.0 + mass_var * hs(i, 1, seed) as f64;
                 for q in 0..3 {
                     v[q] = v[q] / mass + randomness * unit * hs(i, 2 + q as u32, seed) as f64 * 2.0;
                 }
                 let (f1, f2) = drag_factors(k, t);
                 for q in 0..3 {
-                    pos[q] += v[q] * f1 + g3[q] * f2;
+                    gpos[q] += v[q] * f1 + g3[q] * f2;
                 }
                 let axis = match tumble {
                     1 => [0.0, 0.0, 0.0],
@@ -670,18 +788,66 @@ fn shatter(ctx: &EffectCtx, mut b: Buf) -> Buf {
                 let omega = rot_speed * std::f64::consts::TAU * (0.5 + h(i, 9, seed) as f64) * speed.min(10.0);
                 r = rot_axis(axis, omega * f1);
             }
+            // The piece's centre: its offset from the group centre, rotated with the group.
+            let off = [pc_c[0] - gc[0], pc_c[1] - gc[1], 0.0];
+            let pos: [f64; 3] = std::array::from_fn(|q| gpos[q] + (0..3).map(|k| r[q][k] * off[k]).sum::<f64>());
             let tex: Vec<[f32; 2]> = lp.iter().map(|v| [(v[0] * s + b.offset[0]) as f32, (v[1] * s + b.offset[1]) as f32]).collect();
-            let c0 = [(c[0] * s + b.offset[0]) as f32, (c[1] * s + b.offset[1]) as f32];
+            let c0 = [(pc_c[0] * s + b.offset[0]) as f32, (pc_c[1] * s + b.offset[1]) as f32];
             let posb = [pos[0] * s + b.offset[0], pos[1] * s + b.offset[1], pos[2] * s];
-            let mut pc = Piece::new(&tex, c0, &r, posb, cam)?;
-            pc.shade = ambient + (1.0 - ambient) * intensity * Piece::facing(&r);
-            Some(pc)
+            let Some(mut pc) = Piece::new(&tex, c0, &r, posb, cam) else { return out.into_iter() };
+            pc.light(&light, &r, posb, eye);
+            pc.alpha = tex_opacity;
+            let face = if pc.back { &backf } else { &front };
+            if face.mode == 0 {
+                pc.flat = Some([tex_color[0], tex_color[1], tex_color[2]]);
+            } else if face.mode == 2 {
+                pc.tint = std::array::from_fn(|q| pc.tint[q] * tex_color[q]);
+            }
+            // Extrusion: the sides of a moving piece, from its front outline back by the depth.
+            if moving && extrude > 0.0 {
+                let nb = [r[0][2], r[1][2], r[2][2]];
+                let n = tex.len();
+                for e in 0..n {
+                    let (a, bv) = (tex[e], tex[(e + 1) % n]);
+                    let ed = [(bv[0] - a[0]) as f64, (bv[1] - a[1]) as f64];
+                    let len = (ed[0] * ed[0] + ed[1] * ed[1]).sqrt();
+                    if len < 1e-6 {
+                        continue;
+                    }
+                    let ew: [f64; 3] = std::array::from_fn(|q| (r[q][0] * ed[0] + r[q][1] * ed[1]) / len);
+                    let third = [ew[1] * nb[2] - ew[2] * nb[1], ew[2] * nb[0] - ew[0] * nb[2], ew[0] * nb[1] - ew[1] * nb[0]];
+                    let rs: M3 = std::array::from_fn(|q| [ew[q], nb[q], third[q]]);
+                    // Side centre in world: edge midpoint (world) plus half the depth backwards.
+                    let mid = [((a[0] + bv[0]) * 0.5 - c0[0]) as f64, ((a[1] + bv[1]) * 0.5 - c0[1]) as f64];
+                    let mw: [f64; 3] = std::array::from_fn(|q| posb[q] + r[q][0] * mid[0] + r[q][1] * mid[1] + nb[q] * extrude * 0.5);
+                    let (hl, hd) = ((len * 0.5) as f32, (extrude * 0.5) as f32);
+                    let cs = [(a[0] + bv[0]) * 0.5, (a[1] + bv[1]) * 0.5];
+                    let quad = [[cs[0] - hl, cs[1] - hd], [cs[0] + hl, cs[1] - hd], [cs[0] + hl, cs[1] + hd], [cs[0] - hl, cs[1] + hd]];
+                    if let Some(mut sp) = Piece::new(&quad, cs, &rs, mw, cam) {
+                        sp.light(&light, &rs, mw, eye);
+                        sp.alpha = tex_opacity;
+                        let colour = match (&side.img, side.mode) {
+                            (Some(img), m) if m != 0 => {
+                                let (c, _) = unpremul(img.sample_bilinear(cs[0] as f64, cs[1] as f64));
+                                if m == 2 { std::array::from_fn(|q| c[q] * tex_color[q]) } else { c }
+                            }
+                            _ => [tex_color[0], tex_color[1], tex_color[2]],
+                        };
+                        sp.flat = Some(colour);
+                        out.push(sp);
+                    }
+                }
+            }
+            out.push(pc);
+            out.into_iter()
         })
         .collect();
     sort_far_first(&mut pieces);
     let mut out = Image::new(src.width, src.height);
+    let front_img = front.img.as_ref().unwrap_or(&src);
+    let back_img = backf.img.as_ref().unwrap_or(front_img);
     if view == 0 {
-        draw_pieces(&mut out, &pieces, &src, None);
+        draw_pieces(&mut out, &pieces, front_img, Some(back_img));
     } else {
         // Wireframes: piece outlines (front view: at rest; otherwise animated), plus forces.
         let animated = view == 2 || view == 4;
@@ -1277,13 +1443,9 @@ fn card_dance_params() -> Vec<crate::ParamSpec> {
         v.push(p(n[1], "Multiplier", num(0.0), slider(lo, hi, if rot { -360.0 } else { -10.0 }, if rot { 360.0 } else { 10.0 }, 2)));
         v.push(p(n[2], "Offset", num(if scale { 1.0 } else { 0.0 }), slider(lo, hi, if rot { -360.0 } else { -10.0 }, if rot { 360.0 } else { 10.0 }, 2)));
     }
-    v.extend([
-        p("cameraPosition/cameraZ", "Z Position", num(2.0), slider(0.05, 10.0, 0.5, 5.0, 2)),
-        p("cameraPosition/focalLength", "Focal Length", num(70.0), slider(1.0, 500.0, 10.0, 200.0, 1)),
-        p("lighting/lightIntensity", "Light Intensity", num(1.0), slider(0.0, 4.0, 0.0, 2.0, 2)),
-        p("lighting/ambientLight", "Ambient Light", num(0.25), slider(0.0, 2.0, 0.0, 1.0, 2)),
-        p("material/diffuse", "Diffuse Reflection", num(0.75), slider(0.0, 2.0, 0.0, 1.0, 2)),
-    ]);
+    v.extend(crate::card3d::camera_params(2.0));
+    v.extend(crate::card3d::lighting_params(1.0, 0.25));
+    v.extend(crate::card3d::material_params(0.75));
     v
 }
 
@@ -1399,6 +1561,8 @@ pub fn specs() -> Vec<EffectSpec> {
                 p("shape/repetitions", "Repetitions", num(10.0), slider(1.0, 500.0, 1.0, 100.0, 2)),
                 p("shape/direction", "Direction", num(0.0), ParamUi::Angle),
                 p("shape/origin", "Origin", pt(0.5, 0.5), ParamUi::Point),
+                p("shape/customShatterMap", "Custom Shatter Map", Value::Layer(None), ParamUi::Layer),
+                p("shape/whiteTilesFixed", "White Tiles Fixed", Value::Bool(false), ParamUi::Checkbox),
                 p("shape/extrusionDepth", "Extrusion Depth", num(0.05), slider(0.0, 1.0, 0.0, 1.0, 3)),
                 p("force1/force1Position", "Position", pt(0.5, 0.5), ParamUi::Point),
                 p("force1/force1Depth", "Depth", num(0.1), slider(-1.0, 1.0, -1.0, 1.0, 3)),
@@ -1416,10 +1580,24 @@ pub fn specs() -> Vec<EffectSpec> {
                 p("physics/gravity", "Gravity", num(3.0), slider(0.0, 100.0, 0.0, 10.0, 2)),
                 p("physics/gravityDirection", "Gravity Direction", num(180.0), ParamUi::Angle),
                 p("physics/gravityInclination", "Gravity Inclination", num(0.0), slider(-90.0, 90.0, -90.0, 90.0, 1)),
-                p("lighting/lightIntensity", "Light Intensity", num(1.0), slider(0.0, 4.0, 0.0, 2.0, 2)),
-                p("lighting/ambientLight", "Ambient Light", num(0.25), slider(0.0, 2.0, 0.0, 1.0, 2)),
-                p("randomSeed", "Random Seed", num(0.0), slider(0.0, 10_000.0, 0.0, 1000.0, 0)),
-            ],
+                p("gradient/shatterThreshold", "Shatter Threshold", num(0.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
+                p("gradient/gradientLayer", "Gradient Layer", Value::Layer(None), ParamUi::Layer),
+                p("gradient/invertGradient", "Invert Gradient", Value::Bool(false), ParamUi::Checkbox),
+                p("textures/color", "Color", col(1.0, 1.0, 1.0), ParamUi::Color),
+                p("textures/opacity", "Opacity", num(1.0), slider(0.0, 1.0, 0.0, 1.0, 3)),
+                p("textures/frontMode", "Front Mode", Value::Enum(1), popup(&SHATTER_TEXTURE_MODES)),
+                p("textures/sideMode", "Side Mode", Value::Enum(0), popup(&SHATTER_TEXTURE_MODES)),
+                p("textures/backMode", "Back Mode", Value::Enum(1), popup(&SHATTER_TEXTURE_MODES)),
+                p("textures/frontLayer", "Front Layer", Value::Layer(None), ParamUi::Layer),
+                p("textures/sideLayer", "Side Layer", Value::Layer(None), ParamUi::Layer),
+                p("textures/backLayer", "Back Layer", Value::Layer(None), ParamUi::Layer),
+            ]
+            .into_iter()
+            .chain(crate::card3d::camera_params(4.0))
+            .chain(crate::card3d::lighting_params(1.0, 0.25))
+            .chain(crate::card3d::material_params(0.75))
+            .chain([p("randomSeed", "Random Seed", num(0.0), slider(0.0, 10_000.0, 0.0, 1000.0, 0))])
+            .collect(),
             shatter,
         ),
         spec(
@@ -1650,5 +1828,178 @@ mod tests {
             run("ec.sim.foam", &v, Image::new(32, 32), 1.5).data.iter().map(|p| p[3]).sum::<f32>()
         };
         assert!(count(0.0) < count(20.0) * 0.9, "{} vs {}", count(0.0), count(20.0));
+    }
+
+    /// A host with a comp camera (identity, or tilted) and a first comp light.
+    struct Scene {
+        camera: Option<[[f64; 4]; 3]>,
+        light: Option<crate::CompLight>,
+        layer: Option<Image>,
+    }
+    impl crate::EffectHost for Scene {
+        fn layer(&self, _: u64, _: bool) -> Option<crate::LayerPixels> {
+            let img = self.layer.clone()?;
+            let size = [img.width as f64, img.height as f64];
+            Some(crate::LayerPixels { buf: Buf { img, offset: [0.0; 2], scale: 1.0 }, size })
+        }
+        fn audio(&self, _: u64, _: f64, _: usize, _: u32) -> Option<Vec<f32>> {
+            None
+        }
+        fn comp_scene(&self) -> Option<crate::CompScene> {
+            Some(crate::CompScene { camera: self.camera, light: self.light })
+        }
+    }
+
+    fn run_env(id: &str, vals: &[(&str, Value)], img: Image, t: f64, host: &Scene) -> Image {
+        run_fx(id, vals, img, t, EffectEnv { host: Some(host), ..Default::default() }).img
+    }
+
+    #[test]
+    fn card_dance_camera_systems() {
+        let src = ramp(40, 30);
+        // Camera Position: rotating the camera changes the view; zero rotation is the layer.
+        let r = run("ec.sim.carddance", &[("cameraPosition/yRotation", num(30.0))], src.clone(), 0.0);
+        assert!(sum_diff(&r, &src) > 10.0);
+        let order = run("ec.sim.carddance", &[("cameraPosition/yRotation", num(30.0)), ("cameraPosition/xRotation", num(30.0))], src.clone(), 0.0);
+        let order2 = run(
+            "ec.sim.carddance",
+            &[("cameraPosition/yRotation", num(30.0)), ("cameraPosition/xRotation", num(30.0)), ("cameraPosition/transformOrder", Value::Enum(5))],
+            src.clone(),
+            0.0,
+        );
+        assert!(sum_diff(&order, &order2) > 1.0, "Transform Order matters");
+        // X, Y Position moves the view: the layer shifts by the offset.
+        let moved = run("ec.sim.carddance", &[("cameraPosition/xyPosition", pt(30.0, 15.0))], src.clone(), 0.0);
+        assert!((moved.get(25, 10)[0] - src.get(15, 10)[0]).abs() < 0.03, "{:?} {:?}", moved.get(25, 10), src.get(15, 10));
+        // Corner Pins: the layer's corners land on the pins.
+        let pins = [
+            ("cameraSystem", Value::Enum(1)),
+            ("cornerPins/upperLeftCorner", pt(10.0, 5.0)),
+            ("cornerPins/upperRightCorner", pt(30.0, 5.0)),
+            ("cornerPins/lowerLeftCorner", pt(10.0, 25.0)),
+            ("cornerPins/lowerRightCorner", pt(30.0, 25.0)),
+        ];
+        let cp = run("ec.sim.carddance", &pins, src.clone(), 0.0);
+        assert_eq!(cp.get(3, 3)[3], 0.0, "outside the pinned quad");
+        assert!(cp.get(20, 15)[3] > 0.99);
+        assert!((cp.get(20, 15)[0] - src.get(20, 15)[0]).abs() < 0.05, "centre maps to centre");
+        // Comp Camera: the identity camera reproduces the layer; a camera that doubles x moves it.
+        let ident = Scene { camera: Some([[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 0.002, 1.0]]), light: None, layer: None };
+        let cc = run_env("ec.sim.carddance", &[("cameraSystem", Value::Enum(2))], src.clone(), 0.0, &ident);
+        assert!(max_diff(&cc, &src) < 0.02, "{}", max_diff(&cc, &src));
+        let half = Scene { camera: Some([[0.5, 0.0, 0.0, 0.0], [0.0, 0.5, 0.0, 0.0], [0.0, 0.0, 0.002, 1.0]]), ..ident };
+        let cc = run_env("ec.sim.carddance", &[("cameraSystem", Value::Enum(2))], src.clone(), 0.0, &half);
+        assert_eq!(cc.get(35, 25)[3], 0.0, "half-size view leaves the far corner empty");
+    }
+
+    #[test]
+    fn card_dance_lighting_and_material() {
+        let src = Image::filled(40, 30, [0.5, 0.5, 0.5, 1.0]);
+        let tilt = [("rows", num(1.0)), ("columns", num(1.0)), ("yRotation/yRotSource", Value::Enum(0)), ("yRotation/yRotOffset", num(60.0))];
+        let lit = |extra: &[(&str, Value)]| {
+            let mut v: Vec<(&str, Value)> = tilt.to_vec();
+            v.extend_from_slice(extra);
+            run("ec.sim.carddance", &v, src.clone(), 0.0).get(20, 15)
+        };
+        let base = lit(&[]);
+        // Tilted cards facing away from a frontal light get darker than flat ones.
+        assert!(base[0] < 0.45, "{base:?}");
+        // Light colour tints; intensity brightens; ambient alone lights evenly.
+        let red = lit(&[("lighting/lightColor", col(1.0, 0.0, 0.0))]);
+        assert!(red[0] > red[1] + 0.05);
+        assert!(lit(&[("lighting/lightIntensity", num(2.0))])[0] > base[0]);
+        let amb = lit(&[("lighting/ambientLight", num(1.0)), ("material/diffuse", num(0.0))]);
+        assert!((amb[0] - 0.5).abs() < 1e-3);
+        // A light placed to the side (Point Source) changes the shading of the tilted card.
+        let side = lit(&[("lighting/lightType", Value::Enum(1)), ("lighting/lightPosition", pt(200.0, 15.0)), ("lighting/lightDepth", num(0.2))]);
+        assert!((side[0] - base[0]).abs() > 0.02, "{side:?} vs {base:?}");
+        // Specular adds a highlight on flat, frontally lit cards.
+        let flat = run("ec.sim.carddance", &[("material/specular", num(0.5))], src.clone(), 0.0).get(20, 15);
+        assert!(flat[0] > 0.9, "{flat:?}");
+        // First Comp Light: no light in the comp → ambient only; a light from the host is used.
+        let none = Scene { camera: None, light: None, layer: None };
+        let a = run_env("ec.sim.carddance", &[("lighting/lightType", Value::Enum(2))], src.clone(), 0.0, &none).get(20, 15);
+        assert!((a[0] - 0.5 * (0.25 + 0.75)).abs() < 1e-3, "{a:?}");
+        let blue = Scene { light: Some(crate::CompLight { pos: [20.0, 15.0, -100.0], dir: [0.0, 0.0, 1.0], color: [0.0, 0.0, 1.0], kind: 0 }), ..none };
+        let a = run_env("ec.sim.carddance", &[("lighting/lightType", Value::Enum(2))], src.clone(), 0.0, &blue).get(20, 15);
+        assert!(a[2] > a[0] + 0.2, "{a:?}");
+    }
+
+    #[test]
+    fn shatter_custom_map_gradient_textures_and_extrusion() {
+        let src = ramp(32, 32);
+        let base = [("view", Value::Enum(0)), ("force1/force1Position", pt(16.0, 16.0)), ("force1/force1Radius", num(2.0)), ("shape/origin", pt(16.0, 16.0))];
+        let with = |extra: &[(&str, Value)], t: f64, host: Option<&Scene>| {
+            let mut v: Vec<(&str, Value)> = base.to_vec();
+            v.extend_from_slice(extra);
+            match host {
+                Some(h) => run_env("ec.sim.shatter", &v, src.clone(), t, h),
+                None => run("ec.sim.shatter", &v, src.clone(), t),
+            }
+        };
+        // Custom Shatter Map: a map white on the left and black on the right; with White Tiles
+        // Fixed the left half stays put while the right half breaks away.
+        let mut map = Image::new(32, 32);
+        for y in 0..32 {
+            for x in 0..32 {
+                map.set(x, y, if x < 16 { [1.0; 4] } else { [0.0, 0.0, 0.0, 1.0] });
+            }
+        }
+        let host = Scene { camera: None, light: None, layer: Some(map) };
+        let custom = [("shape/pattern", Value::Enum(5)), ("shape/customShatterMap", Value::Layer(Some(1))), ("shape/whiteTilesFixed", Value::Bool(true))];
+        let at_rest = with(&custom, 0.0, Some(&host));
+        assert!(max_diff(&at_rest, &src) < 0.05, "custom pieces tile the layer: {}", max_diff(&at_rest, &src));
+        let broke = with(&custom, 1.0, Some(&host));
+        assert!(max_diff_region(&broke, &src, 0..12) < 0.05, "white tiles fixed");
+        assert!(sum_diff_region(&broke, &src, 20..32) > 5.0, "black group moved");
+        // Gradient: a black gradient layer with threshold 50 % keeps everything together.
+        let black = Scene { camera: None, light: None, layer: Some(Image::filled(32, 32, [0.0, 0.0, 0.0, 1.0])) };
+        let g = with(&[("gradient/gradientLayer", Value::Layer(Some(1))), ("gradient/shatterThreshold", num(50.0))], 1.0, Some(&black));
+        assert!(max_diff(&g, &src) < 0.05);
+        let gi = with(
+            &[("gradient/gradientLayer", Value::Layer(Some(1))), ("gradient/shatterThreshold", num(50.0)), ("gradient/invertGradient", Value::Bool(true))],
+            1.0,
+            Some(&black),
+        );
+        assert!(sum_diff(&gi, &src) > 10.0);
+        // Textures: Front Mode Color paints the pieces flat; Opacity fades them.
+        let flat = with(&[("textures/frontMode", Value::Enum(0)), ("textures/color", col(0.0, 1.0, 0.0))], 0.0, None);
+        let p = flat.get(16, 16);
+        assert!(p[1] > 0.95 && p[0] < 0.05, "{p:?}");
+        let half = with(&[("textures/opacity", num(0.5)), ("shape/repetitions", num(2.0))], 0.0, None);
+        assert!((half.get(8, 4)[3] - 0.5).abs() < 0.02, "{:?}", half.get(8, 4));
+        // Extrusion: thicker pieces cover more once they tumble.
+        let cover = |d: f64| {
+            with(&[("shape/extrusionDepth", num(d)), ("textures/sideMode", Value::Enum(0)), ("textures/color", col(1.0, 1.0, 1.0))], 0.6, None)
+                .data
+                .iter()
+                .map(|p| p[3])
+                .sum::<f32>()
+        };
+        assert!(cover(1.0) > cover(0.0) + 1.0, "{} vs {}", cover(1.0), cover(0.0));
+        // Deterministic and seek-consistent.
+        assert_eq!(with(&custom, 0.7, Some(&host)), with(&custom, 0.7, Some(&host)));
+    }
+
+    fn max_diff_region(a: &Image, b: &Image, xs: std::ops::Range<u32>) -> f32 {
+        let mut m = 0.0f32;
+        for y in 0..a.height {
+            for x in xs.clone() {
+                let (p, q) = (a.get(x as i64, y as i64), b.get(x as i64, y as i64));
+                m = (0..4).map(|k| (p[k] - q[k]).abs()).fold(m, f32::max);
+            }
+        }
+        m
+    }
+
+    fn sum_diff_region(a: &Image, b: &Image, xs: std::ops::Range<u32>) -> f32 {
+        let mut s = 0.0;
+        for y in 0..a.height {
+            for x in xs.clone() {
+                let (p, q) = (a.get(x as i64, y as i64), b.get(x as i64, y as i64));
+                s += (0..4).map(|k| (p[k] - q[k]).abs()).sum::<f32>();
+            }
+        }
+        s
     }
 }

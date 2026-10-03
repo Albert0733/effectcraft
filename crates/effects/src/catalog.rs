@@ -35,15 +35,12 @@ pub const PARTIAL: &[(&str, &str)] = &[
     ("ec.noise.removegrain", "no preview region, sampling or temporal filtering"),
     ("ec.vr.digitalglitch", "reduced control set"),
     ("ec.vr.converter", "common layouts only"),
-    ("ec.sim.carddance", "no camera system, corner pins or lighting/material controls"),
-    ("ec.sim.shatter", "no custom shatter map, gradient, textures or extrusion rendering"),
     ("ec.sim.caustics", "no Sky group or light type"),
     ("ec.sim.foam", "no wobble, pop velocity, custom bubble texture, environment map or flow map"),
     ("ec.sim.particleplayground", "no Particle Exploder, Ephemeral Property Mapper, Affects groups or text particles"),
     ("ec.sim.waveworld", "no wireframe controls, dry-area rendering or ground group"),
     ("ec.stylize.glow", "no Glow Operation or arbitrary colour map"),
     ("ec.stylize.cartoon", "no Edge Enhancement"),
-    ("ec.transition.cardwipe", "2D flip only; no back layer picker, camera, lighting or jitter"),
     ("ec.transition.blockdissolve", "no Soft Edges option"),
 ];
 
@@ -79,6 +76,11 @@ pub fn param_shown(effect: &str, param: &str, value: &dyn Fn(&str) -> Option<eff
                 _ => true,
             }
         }
+        "ec.sim.carddance" | "ec.transition.cardwipe" => crate::card3d::shown(param, &e).unwrap_or(true),
+        "ec.sim.shatter" => match param {
+            "shape/customShatterMap" | "shape/whiteTilesFixed" => e("shape/pattern") == 5,
+            _ => crate::card3d::shown(param, &e).unwrap_or(true),
+        },
         _ => {
             let _ = b("");
             true

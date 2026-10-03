@@ -242,6 +242,18 @@ fn is_numeric_ui(u: &ParamUi) -> bool {
 /// point defaults of added parameters. Returns whether anything changed.
 pub fn upgrade_instance(spec: &EffectSpec, g: &mut PropGroup, ids: &mut Ids, layer_size: [f64; 2]) -> bool {
     let before = g.clone();
+    // Card Wipe's Back Layer was a None / Self popup; it is a layer parameter now, with "Self"
+    // kept in the hidden Back Layer Is Self switch.
+    let mut back_self = None;
+    if spec.id == "ec.transition.cardwipe"
+        && let Some(pr) = g.get_mut("backLayer")
+        && matches!(pr.ui, ParamUi::Popup { .. })
+    {
+        back_self = Some(pr.value.as_enum() == 1);
+        pr.value = Value::Layer(None);
+        pr.keys.clear();
+        pr.ui = ParamUi::Layer;
+    }
     for ps in &spec.params {
         // Locate the stored property: at its spec path, under an old id, or at top level
         // before it moved into a twirl-down group.
@@ -295,6 +307,11 @@ pub fn upgrade_instance(spec: &EffectSpec, g: &mut PropGroup, ids: &mut Ids, lay
                 None => g.children.push(src.into()),
             }
         }
+    }
+    if let Some(on) = back_self
+        && let Some(pr) = g.get_mut("backSelf")
+    {
+        pr.value = Value::Bool(on);
     }
     // Refresh twirl-down group names.
     fn names(g: &mut PropGroup) {
@@ -367,5 +384,22 @@ mod tests {
         assert!(upgrade_instance(spec, &mut g, &mut Ids(&mut next), [100.0, 50.0]));
         assert!(g.get("smoothness").is_none());
         assert_eq!(prop_at(&mut g, "stabilization/smoothness").unwrap().value, Value::Scalar(12.0));
+    }
+
+    #[test]
+    fn card_wipe_back_layer_popup_becomes_a_layer_parameter() {
+        let spec = find("ec.transition.cardwipe").unwrap();
+        let mut next = 1;
+        for (old, self_) in [(1, true), (0, false)] {
+            let mut g = instantiate(spec, &mut Ids(&mut next), "Card Wipe", [100.0, 50.0]);
+            take_prop(&mut g, "backSelf");
+            let pr = g.get_mut("backLayer").unwrap();
+            pr.ui = ParamUi::Popup { options: vec!["None".into(), "Self".into()] };
+            pr.value = Value::Enum(old);
+            assert!(upgrade_instance(spec, &mut g, &mut Ids(&mut next), [100.0, 50.0]));
+            assert_eq!(g.get("backLayer").unwrap().value, Value::Layer(None));
+            assert_eq!(g.get("backLayer").unwrap().ui, ParamUi::Layer);
+            assert_eq!(g.get("backSelf").unwrap().value, Value::Bool(self_));
+        }
     }
 }

@@ -151,6 +151,31 @@ impl EffectHost for FxHost<'_, '_, '_> {
         }
     }
 
+    fn comp_scene(&self) -> Option<effectcraft_effects::CompScene> {
+        // The comp camera's view of the layer (as if 3D at its transform), brought back into the
+        // layer's own pixel grid through the inverse of how the layer itself composites.
+        let world = self.ctx.world_matrix(self.layer);
+        let (cam, _, _) = self.ctx.camera();
+        let p = (cam * world).0;
+        let back = self.ctx.layer_to_comp(self.layer).0.inverse()?.0;
+        let rows = [p[0], p[1], p[3]];
+        let camera: [[f64; 4]; 3] = std::array::from_fn(|i| std::array::from_fn(|j| (0..3).map(|k| back[i][k] * rows[k][j]).sum()));
+        let inv = world.inverse();
+        let light = three_d::light::lights_at(self.ctx).first().and_then(|l| {
+            let inv = inv.as_ref()?;
+            let pos = inv.apply(l.pos);
+            let dir = inv.apply_vec(l.dir);
+            let len = (dir.x * dir.x + dir.y * dir.y + dir.z * dir.z).sqrt().max(1e-12);
+            let kind = match l.kind {
+                effectcraft_project::LightKind::Parallel => 0,
+                effectcraft_project::LightKind::Ambient => 2,
+                _ => 1,
+            };
+            Some(effectcraft_effects::CompLight { pos: [pos.x, pos.y, pos.z], dir: [dir.x / len, dir.y / len, dir.z / len], color: l.color, kind })
+        });
+        Some(effectcraft_effects::CompScene { camera: Some(camera), light })
+    }
+
     fn layer_at(&self, id: u64, comp_time: f64, masks_and_effects: bool) -> Option<LayerPixels> {
         let other = self.ctx.layer(effectcraft_project::LayerId(id))?;
         if other.id == self.layer.id || self.r.depth > MAX_FX_DEPTH {

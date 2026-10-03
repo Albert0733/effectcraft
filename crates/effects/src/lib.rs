@@ -10,6 +10,7 @@ pub mod audio_fx;
 mod blur2;
 mod blur3;
 pub mod camera_tracker;
+mod card3d;
 pub mod catalog;
 mod channel;
 mod channel2;
@@ -60,6 +61,7 @@ pub mod warp_stab;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
+pub use card3d::{CompLight, CompScene};
 pub use color_fx::{HUESAT_CHANNELS, LEVELS_CHANNELS, exposure_settings, huesat_ranges_identity, levels_channel_ids, levels_channels_identity, levels_clip};
 pub use color2::Curve;
 use effectcraft_keyframe::Value;
@@ -258,6 +260,11 @@ pub trait EffectHost: Sync {
     /// [`AuxChannels`]). `None` when the source has none (the 3D Channel effects then pass the
     /// layer through).
     fn aux(&self) -> Option<std::sync::Arc<AuxChannels>> {
+        None
+    }
+    /// The composition's camera and first light relative to the effect's layer (Card
+    /// Dance / Shatter / Card Wipe's Comp Camera and First Comp Light). `None` when unknown.
+    fn comp_scene(&self) -> Option<CompScene> {
         None
     }
 }
@@ -573,6 +580,11 @@ pub const PARAM_GROUPS: &[(&str, &str)] = &[
     ("xScale", "X Scale"),
     ("yScale", "Y Scale"),
     ("cameraPosition", "Camera Position"),
+    ("cornerPins", "Corner Pins"),
+    ("positionJitter", "Position Jitter"),
+    ("rotationJitter", "Rotation Jitter"),
+    ("textures", "Textures"),
+    ("gradient", "Gradient"),
     ("cannon", "Cannon"),
     ("grid", "Grid"),
     ("layerExploder", "Layer Exploder"),
@@ -677,6 +689,8 @@ pub const TIME_DEPENDENT: &[&str] = &[
     "ec.time.ccforcemotionblur",
     "ec.time.ccwidetime",
     "ec.time.pixelmotionblur",
+    // Card Wipe's position / rotation jitter moves with time.
+    "ec.transition.cardwipe",
     // Temporal Smoothing reads neighbouring frames.
     "ec.color.autolevels",
     "ec.color.autocontrast",
@@ -711,7 +725,8 @@ pub fn apply(spec: &EffectSpec, ctx: &EffectCtx, buf: Buf) -> Buf {
 #[cfg(test)]
 pub(crate) fn run_fx(id: &str, vals: &[(&str, Value)], img: Image, time: f64, env: EffectEnv) -> Buf {
     let s = find(id).unwrap_or_else(|| panic!("no effect {id}"));
-    let mut params = Params { values: s.params.iter().map(|p| (p.id.to_string(), p.default.clone())).collect() };
+    let size = [img.width as f64, img.height as f64];
+    let mut params = Params { values: s.params.iter().map(|p| (p.id.to_string(), default_value(p, size))).collect() };
     for (k, v) in vals {
         assert!(params.values.contains_key(*k), "{id}: unknown param {k}");
         params.values.insert(k.to_string(), v.clone());
