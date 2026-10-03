@@ -2,7 +2,8 @@
 //! `fxn_`): the CPU effects' exact steps with the pixel loops as compute kernels.
 //!
 //! Median, Median (Legacy) and Dust & Scratches take the median of the 512-level quantised
-//! channels by bisection over the window (radius ≤ [`MEDIAN_MAX_R`] on the GPU). Fractal and
+//! channels: by bisection over the window up to radius [`MEDIAN_BISECT_R`], above that with the
+//! CPU's sliding 512-bin histogram per channel (one invocation per row segment). Fractal and
 //! Turbulent Noise resolve every per-octave term on the CPU in the CPU's f32 order
 //! (`effectcraft_effects::fractal_gpu`) and evaluate the pixels on the GPU. Echo and Posterize
 //! Time fetch the layer's other frames through the effect host like the CPU does, then
@@ -21,6 +22,7 @@ use crate::effects::{GBuf, box_passes, gaussian_blur};
 pub(crate) const KERNELS: &[&str] = &[
     "fxn_quant",
     "fxn_median",
+    "fxn_median_huang",
     "fxn_median_out",
     "fxn_edge",
     "fxn_smart_edges",
@@ -66,8 +68,10 @@ pub(crate) const IDS: &[&str] = &[
     "ec.time.posterizetime",
 ];
 
-/// Largest median radius (buffer pixels) the GPU takes; larger ones render on the CPU.
-pub(crate) const MEDIAN_MAX_R: usize = 16;
+/// Largest median radius (buffer pixels) taken by bisection over the window; larger radii
+/// slide a histogram along each row (`fxn_median_huang`), whose cost grows with the radius,
+/// not its square.
+pub(crate) const MEDIAN_BISECT_R: usize = 4;
 
 /// Run effect `id` (one of [`IDS`]); `None` = this parameter combination runs on the CPU.
 pub(crate) fn apply(e: &mut Enc, id: &str, ctx: &EffectCtx, b: GBuf) -> Option<GBuf> {
@@ -99,7 +103,7 @@ pub(crate) fn apply(e: &mut Enc, id: &str, ctx: &EffectCtx, b: GBuf) -> Option<G
 
 /// A same-size per-pixel kernel.
 fn run(e: &mut Enc, entry: &str, p: &Params, src: &GpuImage, aux: Option<&GpuImage>, data: Option<&wgpu::Buffer>) -> GpuImage {
-    let out = e.image(src.width, src.height);
+    let out = e.scratch(src.width, src.height);
     e.pixels(entry, p, src, aux, &out, data);
     out
 }
@@ -152,16 +156,21 @@ pub(crate) fn fractal(e: &mut Enc, ctx: &EffectCtx, b: GBuf, turbulent: bool) ->
 /// noise::median_image (of the straight colour with alpha 1 when `straight`).
 fn median_image(e: &mut Enc, img: &GpuImage, r: usize, straight: bool) -> GpuImage {
     let q = run(e, "fxn_quant", &with_u0([straight as u32, 0, 0, 0]), img, None, None);
-    run(e, "fxn_median", &with_u0([r as u32, 0, 0, 0]), &q, None, None)
+    if r <= MEDIAN_BISECT_R {
+        return run(e, "fxn_median", &with_u0([r as u32, 0, 0, 0]), &q, None, None);
+    }
+    // Segments long enough that filling the first window (2r + 1)² costs about as much as
+    // sliding along the rest.
+    let seg = (4 * r as u32).clamp(32, 512).min(q.width);
+    let out = e.scratch(q.width, q.height);
+    e.dispatch("fxn_median_huang", &with_u0([r as u32, seg, 0, 0]), &q, None, &out, None, (q.height.div_ceil(64), q.width.div_ceil(seg)));
+    out
 }
 
 fn median(e: &mut Enc, id: &str, ctx: &EffectCtx, b: GBuf) -> Option<GBuf> {
     let r = (ctx.params.f("radius") * b.scale).round().max(0.0) as usize;
     if r == 0 {
         return Some(b);
-    }
-    if r > MEDIAN_MAX_R {
-        return None;
     }
     let (mode, on_alpha, straight) = match id {
         "ec.noise.medianlegacy" => {
@@ -251,7 +260,7 @@ fn gf(e: &mut Enc, mode: u32, s: &GpuImage, a: &GpuImage, d: Option<&GpuImage>, 
 }
 
 /// util::guided_filter on every channel at once (guide `g`, input `p`).
-fn guided_filter(e: &mut Enc, g: &GpuImage, p: &GpuImage, r: usize, eps: f32) -> GpuImage {
+pub(crate) fn guided_filter(e: &mut Enc, g: &GpuImage, p: &GpuImage, r: usize, eps: f32) -> GpuImage {
     let bx = |e: &mut Enc, img: &GpuImage| box_passes(e, img, &[r], &[r], true);
     let mean_g = bx(e, g);
     let mean_p = bx(e, p);
@@ -443,7 +452,7 @@ fn compound_blur(e: &mut Enc, ctx: &EffectCtx, mut b: GBuf) -> Option<GBuf> {
             let buf = e.data(&data);
             let mut p = with_u0([1, invert as u32, 0, 0]);
             p.u[1][0] = w as u32;
-            let out = e.image(b.img.width, b.img.height);
+            let out = e.scratch(b.img.width, b.img.height);
             e.pixels("fxn_cb_map", &p, &layer, None, &out, Some(&buf));
             out
         }
@@ -461,7 +470,7 @@ fn compound_blur(e: &mut Enc, ctx: &EffectCtx, mut b: GBuf) -> Option<GBuf> {
         })
         .collect();
     let (rows, row) = e.image_rows(&map);
-    let out = e.image(b.img.width, b.img.height);
+    let out = e.scratch(b.img.width, b.img.height);
     for k in 0..N - 1 {
         e.pixels("fxn_cb_level", &with_u0([k as u32, row, 0, 0]), &levels[k], Some(&levels[k + 1]), &out, Some(&rows));
     }
@@ -531,7 +540,7 @@ fn minimax(e: &mut Enc, ctx: &EffectCtx, mut b: GBuf) -> Option<GBuf> {
         planes = morph(e, &planes, rx, ry, modes(max));
     }
     if !dont_shrink {
-        let out = e.image(w, h);
+        let out = e.scratch(w, h);
         e.pixels("fxn_crop", &with_u0([rx as u32, ry as u32, 0, 0]), &planes, None, &out, None);
         planes = out;
     }

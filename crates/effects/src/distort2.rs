@@ -507,6 +507,15 @@ fn bez(p0: [f64; 2], p1: [f64; 2], p2: [f64; 2], p3: [f64; 2], t: f64) -> [f64; 
 }
 
 fn bezier_warp(ctx: &EffectCtx, mut b: Buf) -> Buf {
+    let (n, dest, srcp) = bezier_grid(ctx, b.offset, b.scale);
+    b.img = grid_warp(&b.img, b.img.width, b.img.height, n, n, &dest, &srcp);
+    b
+}
+
+/// Bezier Warp's n×n grid: (n, destination points, source points) in buffer pixels (the GPU
+/// rasterises the same grid).
+pub fn bezier_grid(ctx: &EffectCtx, offset: [f64; 2], scale: f64) -> (usize, Vec<Pt>, Vec<Pt>) {
+    let to_px = |p: [f64; 2]| (p[0] * scale + offset[0], p[1] * scale + offset[1]);
     let g = |id: &str| ctx.params.v2(id);
     let (tl, tlt, trt, tr) = (g("topLeftVertex"), g("topLeftTangent"), g("topRightTangent"), g("rightTopVertex"));
     let (rtt, rbt, br) = (g("rightTopTangent"), g("rightBottomTangent"), g("bottomRightVertex"));
@@ -529,12 +538,11 @@ fn bezier_warp(ctx: &EffectCtx, mut b: Buf) -> Buf {
                 let bil = (1.0 - u) * (1.0 - v) * tl[k] + u * (1.0 - v) * tr[k] + (1.0 - u) * v * bl[k] + u * v * br[k];
                 s[k] = (1.0 - v) * c0[k] + v * c1[k] + (1.0 - u) * d0[k] + u * d1[k] - bil;
             }
-            dest.push(b.to_px(s));
-            srcp.push(b.to_px([u * lw, v * lh]));
+            dest.push(to_px(s));
+            srcp.push(to_px([u * lw, v * lh]));
         }
     }
-    b.img = grid_warp(&b.img, b.img.width, b.img.height, n, n, &dest, &srcp);
-    b
+    (n, dest, srcp)
 }
 
 // ---------------------------------------------------------------- CC Bend It

@@ -20,9 +20,18 @@
 //! GPU effects ([`effectcraft_effects::GPU_EFFECTS`]) run as compute kernels with the CPU
 //! effect's exact steps (padding, box-blur radii, parameter conversions); chains of them are
 //! uploaded and read back once. Each family lives in its own module with its own WGSL file
-//! (`fx_color`, `fx_distort`, `fx_generate`, `fx_key`, `fx_noise`, `fx_stylize`, `fx_tone`);
-//! settings a kernel cannot match fall back to the CPU (`catalog::gpu_supported`, or `None`
-//! from the family's `apply`).
+//! (`fx_color`, `fx_distort`, `fx_extra`, `fx_generate`, `fx_key`, `fx_noise`, `fx_stylize`,
+//! `fx_tone`, `fx_warp`); settings a kernel cannot match fall back to the CPU
+//! (`catalog::gpu_supported`, or `None` from the family's `apply`).
+//!
+//! Working textures come from a pool (`context::Pool`): a frame allocates several full-frame
+//! RGBA f32 images per layer, and creating and zeroing those cost more than compositing a small
+//! layer. A released texture is reused once every encoder that could still read it has been
+//! submitted. 8/16 bpc quantisation after each layer is fused into that layer's composite.
+//! [`Backend::Auto`](effectcraft_render::Backend) renders each comp on whichever compositor
+//! measured faster for it ([`effectcraft_render::AutoPick`], kept by [`Gpu`]): a light comp
+//! that the CPU composites in a millisecond stays there rather than paying for a full-frame
+//! readback.
 //!
 //! GPU particles (`particles`): the stepped particle effects hand their simulation to
 //! [`effectcraft_effects::psim::ParticleSim`], implemented here with one invocation per particle
@@ -40,18 +49,20 @@ mod context;
 mod effects;
 mod fx_color;
 mod fx_distort;
+mod fx_extra;
 mod fx_generate;
 mod fx_key;
 mod fx_noise;
 mod fx_stylize;
 mod fx_tone;
+mod fx_warp;
 mod ops;
 mod particles;
 mod walk;
 
 use std::sync::Arc;
 
-pub use context::{GpuContext, GpuImage};
+pub use context::{GpuContext, GpuImage, TransferStats};
 use effectcraft_effects::Buf;
 use effectcraft_project::ItemId;
 use effectcraft_raster::Image;
@@ -65,6 +76,8 @@ use crate::context::Enc;
 #[derive(Clone)]
 pub struct Gpu {
     ctx: Arc<GpuContext>,
+    /// Backend::Auto's per-comp CPU / GPU timings.
+    auto: Arc<effectcraft_render::AutoPick>,
 }
 
 /// A viewer frame left on the GPU: premultiplied RGBA8 (`wgpu::TextureFormat::Rgba8Unorm`),
@@ -89,7 +102,7 @@ impl Gpu {
     }
 
     pub fn from_context(ctx: GpuContext) -> Gpu {
-        Gpu { ctx: Arc::new(ctx) }
+        Gpu { ctx: Arc::new(ctx), auto: Default::default() }
     }
 
     pub fn context(&self) -> &GpuContext {
@@ -165,6 +178,10 @@ impl Accelerator for Gpu {
     fn particles(&self) -> Option<&dyn effectcraft_effects::psim::ParticleSim> {
         self.ctx.can_readback().then_some(self as &dyn effectcraft_effects::psim::ParticleSim)
     }
+
+    fn auto_pick(&self) -> Option<&effectcraft_render::AutoPick> {
+        Some(&self.auto)
+    }
 }
 
 impl effectcraft_effects::psim::ParticleSim for Gpu {
@@ -186,6 +203,8 @@ mod tests_fx_color;
 #[cfg(test)]
 mod tests_fx_distort;
 #[cfg(test)]
+mod tests_fx_extra;
+#[cfg(test)]
 mod tests_fx_generate;
 #[cfg(test)]
 mod tests_fx_key;
@@ -195,5 +214,7 @@ mod tests_fx_noise;
 mod tests_fx_stylize;
 #[cfg(test)]
 mod tests_fx_tone;
+#[cfg(test)]
+mod tests_fx_warp;
 #[cfg(test)]
 mod tests_particles;

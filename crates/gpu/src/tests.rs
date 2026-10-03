@@ -156,8 +156,15 @@ pub(crate) fn diff(cpu: &Image, gpu: &Image, tol: f32) -> Diff {
     let mut d = Diff { max: 0.0, over: 0, total: cpu.data.len(), worst: (0, 0, [0.0; 4], [0.0; 4]), quantized: false };
     for (i, (a, b)) in cpu.data.iter().zip(&gpu.data).enumerate() {
         // Absolute below 1, relative above (32 bpc over-range values, e.g. Divide by ~0).
-        let m = (0..4).map(|c| (a[c] - b[c]).abs() / a[c].abs().max(1.0)).fold(0.0f32, f32::max);
-        let m = if m.is_nan() { f32::INFINITY } else { m };
+        // A NaN on one side only (e.g. a kernel that skipped pixels of a NaN-poisoned scratch
+        // image) is the largest difference.
+        let m = (0..4)
+            .map(|c| match (a[c].is_nan(), b[c].is_nan()) {
+                (true, true) => 0.0,
+                (false, false) => (a[c] - b[c]).abs() / a[c].abs().max(1.0),
+                _ => f32::INFINITY,
+            })
+            .fold(0.0f32, f32::max);
         if m > tol {
             d.over += 1;
         }
@@ -511,7 +518,7 @@ fn effect_chains_and_mixed_stacks() {
         let mut l = s.footage(80, 50);
         s.effect(&mut l, "ec.color.exposure", &[("master/exposure", n(0.7))]);
         s.effect(&mut l, "ec.blur.gaussian", &[("blurriness", n(5.0))]);
-        s.effect(&mut l, "ec.stylize.coloremboss", &[]);
+        s.effect(&mut l, "ec.stylize.ccplastic", &[]);
         s.effect(&mut l, "ec.stylize.glow", &[]);
         s.effect(&mut l, "ec.channel.invert", &[("blend", n(50.0))]);
         s.push(l);

@@ -386,8 +386,25 @@ fn cc_split2(ctx: &EffectCtx, b: Buf) -> Buf {
 
 // ---------------------------------------------------------------- Smear (mask based)
 
-fn smear(ctx: &EffectCtx, mut b: Buf) -> Buf {
-    let (Some((src_m, _)), Some((bound, _))) = (mask_px(ctx, &b, "sourceMask"), mask_px(ctx, &b, "boundaryMask")) else { return b };
+/// Smear's set-up in buffer pixels (shared with the GPU kernel).
+pub struct SmearSetup {
+    /// Boundary outline and the source outline moved by offset / rotation / scale.
+    pub bound: Vec<[f64; 2]>,
+    pub moved: Vec<[f64; 2]>,
+    /// Source outline centroid, rotation (cos, sin), scale, offset (buffer pixels).
+    pub c: [f64; 2],
+    pub cs: f64,
+    pub sn: f64,
+    pub scl: f64,
+    pub off: [f64; 2],
+    pub pct: f64,
+    /// Elasticity exponent.
+    pub kexp: f64,
+}
+
+/// `None` when Smear leaves the buffer as it is (a mask missing, Percent 0).
+pub fn smear_setup(ctx: &EffectCtx, b: &Buf) -> Option<SmearSetup> {
+    let (Some((src_m, _)), Some((bound, _))) = (mask_px(ctx, b, "sourceMask"), mask_px(ctx, b, "boundaryMask")) else { return None };
     let pct = ctx.params.f("percent") / 100.0;
     let off = ctx.params.v2("maskOffset");
     let (ox, oy) = (off[0] * b.scale, off[1] * b.scale);
@@ -400,23 +417,30 @@ fn smear(ctx: &EffectCtx, mut b: Buf) -> Buf {
         let (dx, dy) = ((p[0] - c[0]) * scl, (p[1] - c[1]) * scl);
         [c[0] + dx * cs - dy * sn + ox, c[1] + dx * sn + dy * cs + oy]
     };
+    let moved: Vec<[f64; 2]> = src_m.iter().map(|&q| fwd(q)).collect();
+    if pct == 0.0 {
+        return None;
+    }
+    Some(SmearSetup { bound, moved, c, cs, sn, scl, off: [ox, oy], pct, kexp })
+}
+
+fn smear(ctx: &EffectCtx, mut b: Buf) -> Buf {
+    let Some(s) = smear_setup(ctx, &b) else { return b };
+    let (c, cs, sn, scl, [ox, oy]) = (s.c, s.cs, s.sn, s.scl, s.off);
     let inv = |x: f64, y: f64| -> (f64, f64) {
         let (dx, dy) = (x - ox - c[0], y - oy - c[1]);
         (c[0] + (dx * cs + dy * sn) / scl, c[1] + (-dx * sn + dy * cs) / scl)
     };
-    let moved: Vec<[f64; 2]> = src_m.iter().map(|&q| fwd(q)).collect();
-    if pct == 0.0 {
-        return b;
-    }
+    let (bound, moved, pct, kexp) = (&s.bound, &s.moved, s.pct, s.kexp);
     b.img = remap(&b.img, false, |x, y| {
-        if !point_in_poly(&bound, x, y) {
+        if !point_in_poly(bound, x, y) {
             return Some((x, y));
         }
-        let w = if point_in_poly(&moved, x, y) {
+        let w = if point_in_poly(moved, x, y) {
             1.0
         } else {
-            let dm = dist_to_poly(&moved, true, x, y);
-            let db = dist_to_poly(&bound, true, x, y);
+            let dm = dist_to_poly(moved, true, x, y);
+            let db = dist_to_poly(bound, true, x, y);
             (db / (db + dm).max(1e-9)).powf(1.0 / kexp)
         };
         let (ix, iy) = inv(x, y);
@@ -464,15 +488,33 @@ fn map_fraction(pairs: &[(f64, f64)], u: f64, closed: bool) -> f64 {
     (a.0 + ds * t).rem_euclid(1.0)
 }
 
-fn reshape(ctx: &EffectCtx, mut b: Buf) -> Buf {
-    let (Some((sm, sc)), Some((dm, dc))) = (mask_px(ctx, &b, "sourceMask"), mask_px(ctx, &b, "destinationMask")) else { return b };
+/// Points Reshape samples each outline at.
+pub const RESHAPE_POINTS: usize = 48;
+
+/// Reshape's set-up in buffer pixels (shared with the GPU kernel).
+pub struct ReshapeSetup {
+    /// The destination outline's sample points and the displacement back to the source
+    /// outline at each.
+    pub dest: Vec<[f64; 2]>,
+    pub disp: Vec<[f64; 2]>,
+    pub bound: Option<Vec<[f64; 2]>>,
+    /// Elasticity exponent.
+    pub kexp: f64,
+    pub pct: f64,
+    /// Smooth interpolation of the boundary fade.
+    pub smooth: bool,
+}
+
+/// `None` when Reshape leaves the buffer as it is (a mask missing, Percent 0).
+pub fn reshape_setup(ctx: &EffectCtx, b: &Buf) -> Option<ReshapeSetup> {
+    let (Some((sm, sc)), Some((dm, dc))) = (mask_px(ctx, b, "sourceMask"), mask_px(ctx, b, "destinationMask")) else { return None };
     let pct = ctx.params.f("percent") / 100.0;
     if pct == 0.0 {
-        return b;
+        return None;
     }
-    let bound = mask_px(ctx, &b, "boundaryMask").map(|m| m.0);
+    let bound = mask_px(ctx, b, "boundaryMask").map(|m| m.0);
     let kexp = elastic_exp(ctx.params.e("elasticity"));
-    const N: usize = 48;
+    const N: usize = RESHAPE_POINTS;
     let s = resample_poly(&sm, sc, N);
     let d = resample_poly(&dm, dc, N);
     // Align the starting correspondence point (closed shapes): best cyclic rotation.
@@ -506,6 +548,12 @@ fn reshape(ctx: &EffectCtx, mut b: Buf) -> Buf {
         })
         .collect();
     let smooth = ctx.params.e("interpolation") == 2;
+    Some(ReshapeSetup { dest: d, disp, bound, kexp, pct, smooth })
+}
+
+fn reshape(ctx: &EffectCtx, mut b: Buf) -> Buf {
+    const N: usize = RESHAPE_POINTS;
+    let Some(ReshapeSetup { dest: d, disp, bound, kexp, pct, smooth }) = reshape_setup(ctx, &b) else { return b };
     b.img = remap(&b.img, false, |x, y| {
         if let Some(bd) = &bound
             && !point_in_poly(bd, x, y)

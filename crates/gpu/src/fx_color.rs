@@ -143,7 +143,7 @@ fn point(e: &mut Enc, id: &str, ctx: &EffectCtx, b: GBuf) -> Option<GBuf> {
         }
         _ => return None,
     }
-    let out = e.image(b.img.width, b.img.height);
+    let out = e.scratch(b.img.width, b.img.height);
     e.pixels("fxc_point", &p, &b.img, None, &out, data.as_ref());
     Some(GBuf { img: out, ..b })
 }
@@ -198,7 +198,7 @@ fn lumetri(e: &mut Enc, ctx: &EffectCtx, b: GBuf) -> Option<GBuf> {
     ]);
     debug_assert_eq!(d.len(), 50);
     let buf = e.data(&d);
-    let out = e.image(b.img.width, b.img.height);
+    let out = e.scratch(b.img.width, b.img.height);
     e.pixels("fxc_lumetri", &Params::default(), &b.img, None, &out, Some(&buf));
     let sharpen = f("creative/adjustments/sharpen");
     if sharpen == 0.0 {
@@ -227,7 +227,7 @@ fn morph(e: &mut Enc, img: &GpuImage, r: u32, modes: [u32; 4]) -> GpuImage {
         let mut p = Params::default();
         p.u[0] = [r, vertical, 0, 0];
         p.u[1] = modes;
-        let out = e.image(cur.width, cur.height);
+        let out = e.scratch(cur.width, cur.height);
         e.pixels("fxc_morph", &p, &cur, None, &out, None);
         cur = out;
     }
@@ -248,7 +248,7 @@ pub(crate) fn morph_frac(e: &mut Enc, img: &GpuImage, radius: f64, modes: [u32; 
     let b = morph(e, img, r0 + 1, modes);
     let mut p = Params::default();
     p.f[0][0] = t;
-    let out = e.image(img.width, img.height);
+    let out = e.scratch(img.width, img.height);
     e.pixels("fxc_lerp", &p, &a, Some(&b), &out, None);
     out
 }
@@ -328,7 +328,7 @@ fn key_light(e: &mut Enc, ctx: &EffectCtx, b: GBuf) -> Option<GBuf> {
     let mut m = raw.clone();
     if rollback > 0.0 {
         let sg_img = morph_frac(e, &m, rollback, [0, 1, 2, 2]);
-        let out = e.image(w, h);
+        let out = e.scratch(w, h);
         e.pixels("fxc_kl_rollback", &Params::default(), &sg_img, Some(&raw), &out, None);
         m = out;
     }
@@ -367,7 +367,7 @@ fn key_light(e: &mut Enc, ctx: &EffectCtx, b: GBuf) -> Option<GBuf> {
         }
         let mut p = Params::default();
         p.f[0][0] = hard;
-        let out = e.image(w, h);
+        let out = e.scratch(w, h);
         e.pixels("fxc_kl_edge", &p, &planes, Some(&band), &out, None);
         planes = out;
     }
@@ -390,7 +390,7 @@ fn key_light(e: &mut Enc, ctx: &EffectCtx, b: GBuf) -> Option<GBuf> {
     p.f[5] = ["sourceCrops/cropLeft", "sourceCrops/cropRight", "sourceCrops/cropTop", "sourceCrops/cropBottom"].map(|k| (pr.f(k) / 100.0) as f32);
     p.f[6] = [b.offset[0] as f32, b.offset[1] as f32, b.scale as f32, 0.0];
     p.f[7] = [ctx.layer_size[0].max(1e-9) as f32, ctx.layer_size[1].max(1e-9) as f32, 0.0, 0.0];
-    let out = e.image(w, h);
+    let out = e.scratch(w, h);
     e.pixels("fxc_kl_final", &p, &b.img, Some(&planes), &out, None);
     Some(GBuf { img: out, ..b })
 }
