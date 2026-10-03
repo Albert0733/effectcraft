@@ -273,6 +273,10 @@ that closes the dialog). File ▸ Scripts: `file.scripts.list`, `file.runScript 
   Advanced pin a null that drives it (parent the nulls to each other to build limbs);
   `paths.nullsFollowPoints {..., "pins": [...]}` makes nulls that ride on pins (parent props to
   them). Without `pins` they use the selected pins, or every pin of a layer with no path.
+* Follow-through (hair, cloth, tails): `puppet.follow {"leader": "Puppet Pin 1", "pins": [...],
+  "delay": 0.1, "amount": 100, "cascade": true}` makes the pins trail the leader's motion (the
+  k-th nearest by k × delay with `cascade`) through Position expressions; without `leader` /
+  `pins` the first selected pin leads the other selected pins.
 * `effect.plugins.load {"path": "x.wasm"}` / `effect.plugins.list`: WebAssembly effect plug-ins
   ([plugins.md](plugins.md)), then `effect.apply` by id like a built-in.
 

@@ -317,3 +317,24 @@ fn run_script_round_trip() {
     let (c, err) = call(&mut bare, "run_script", json!({"code": "1"}));
     assert!(err && c[0]["text"].as_str().unwrap().contains("not available"), "{c:?}");
 }
+
+#[test]
+fn puppet_rigging_over_mcp() {
+    let mut s = server();
+    let ex = |s: &mut McpServer, command: &str, params: Value| call_json(s, "execute_command", json!({"command": command, "params": params}));
+    ex(&mut s, "comp.new", json!({"name": "Rig", "width": 200, "height": 100, "duration": 2}));
+    let id = ex(&mut s, "layer.newSolid", json!({"width": 100, "height": 60, "color": "#3060c0"}))["layer"].clone();
+    let lead = ex(&mut s, "puppet.addPin", json!({"layer": id, "position": [10, 30]}))["pin"].clone();
+    let tail = ex(&mut s, "puppet.addPin", json!({"layer": id, "position": [90, 30]}))["pin"].clone();
+    let bend = ex(&mut s, "puppet.addPin", json!({"layer": id, "kind": "bend", "position": [50, 30]}))["pin"].clone();
+    // Turn and scale the Bend pin, select pins, make the tail trail the leader, rig the leader.
+    ex(&mut s, "puppet.setPin", json!({"layer": id, "pin": bend, "rotation": 45, "scale": 120}));
+    assert_eq!(ex(&mut s, "puppet.selectPins", json!({"layer": id, "pins": [lead, tail]}))["pins"], json!([lead, tail]));
+    assert_eq!(ex(&mut s, "puppet.follow", json!({"delay": 0.25}))["pins"], json!([{"pin": tail, "delay": 0.25}]));
+    let r = ex(&mut s, "paths.pointsFollowNulls", json!({"layer": id, "pins": [lead]}));
+    assert_eq!(r["nulls"].as_array().unwrap().len(), 1);
+    // The new commands are listed for agents.
+    let (c, _) = call(&mut s, "list_commands", json!({"filter": "puppet."}));
+    let text = c[0]["text"].as_str().unwrap();
+    assert!(text.contains("puppet.follow") && text.contains("puppet.selectPins"), "{text}");
+}

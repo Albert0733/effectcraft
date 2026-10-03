@@ -313,6 +313,31 @@ fn puppet_pins_rig_to_nulls_both_ways() {
 }
 
 #[test]
+fn puppet_follow_through_trails_the_leader_by_cascading_delays() {
+    let (mut s, id) = setup();
+    let lead = s.execute("puppet.addPin", json!({"layer": id, "position": [10, 30]})).unwrap()["pin"].clone();
+    let far = s.execute("puppet.addPin", json!({"layer": id, "position": [90, 30]})).unwrap()["pin"].clone();
+    let near = s.execute("puppet.addPin", json!({"layer": id, "position": [50, 30]})).unwrap()["pin"].clone();
+    let pos_uid = |s: &Session, pin: &Value| layer_of(s, id).props.find_group(pin.as_u64().unwrap()).unwrap().get("position").unwrap().uid;
+    // Leader first, then the followers (in any order): nearer pins trail less.
+    s.execute("puppet.selectPins", json!({"layer": id, "pins": [lead, far, near]})).unwrap();
+    let steps = s.history.undo.len();
+    let r = s.execute("puppet.follow", json!({"delay": 0.2})).unwrap();
+    assert_eq!(s.history.undo.len(), steps + 1, "one undo step");
+    assert_eq!(r["leader"], lead);
+    assert_eq!(r["pins"], json!([{"pin": near, "delay": 0.2}, {"pin": far, "delay": 0.4}]));
+    let e = expr_of(&s, id, pos_uid(&s, &far));
+    assert!(e.contains("(\"Puppet Pin 1\")(\"Position\")") && e.contains("valueAtTime(time - 0.4)") && e.contains("- [10, 30]) * 1"), "{e}");
+    // Without cascade every follower trails by the same delay; `amount` scales the motion.
+    s.execute("puppet.follow", json!({"layer": id, "leader": "Puppet Pin 1", "pins": [far, near], "delay": 0.25, "amount": 50, "cascade": false})).unwrap();
+    assert!(expr_of(&s, id, pos_uid(&s, &far)).contains("valueAtTime(time - 0.25)") && expr_of(&s, id, pos_uid(&s, &far)).contains("* 0.5"));
+    // Errors: no followers, or a pin without a Position.
+    assert!(s.execute("puppet.follow", json!({"layer": id, "leader": "Puppet Pin 1", "pins": [lead]})).is_err());
+    let bend = s.execute("puppet.addPin", json!({"layer": id, "kind": "bend", "position": [30, 30]})).unwrap()["pin"].clone();
+    assert!(s.execute("puppet.follow", json!({"layer": id, "leader": "Puppet Pin 1", "pins": [bend]})).is_err());
+}
+
+#[test]
 fn project_with_paint_and_puppet_round_trips() {
     let (mut s, id) = setup();
     s.execute("paint.stroke", json!({"layer": id, "points": [[10, 30, 0.5], [90, 30, 1.0]], "durationMode": "writeOn"})).unwrap();

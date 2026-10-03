@@ -257,6 +257,30 @@ fn puppet_pin_rigs_follow_and_lead_with_live_expressions() {
 }
 
 #[test]
+fn puppet_follow_through_delays_the_leaders_motion() {
+    let mut s = session();
+    s.execute("comp.new", json!({"name": "C", "width": 200, "height": 100, "duration": 2, "frameRate": 30})).unwrap();
+    let id = s.execute("layer.newSolid", json!({"width": 100, "height": 60, "color": [0, 0, 1]})).unwrap()["layer"].as_u64().unwrap();
+    let lead = s.execute("puppet.addPin", json!({"layer": id, "position": [10, 30]})).unwrap()["pin"].clone();
+    s.execute("puppet.addPin", json!({"layer": id, "position": [50, 30]})).unwrap();
+    s.execute("puppet.addPin", json!({"layer": id, "position": [90, 30]})).unwrap();
+    // The leader drops 20 px between 0 and 0.5 s.
+    s.execute("puppet.movePin", json!({"layer": id, "pin": lead, "position": [10, 50], "time": 0.5})).unwrap();
+    s.execute("puppet.follow", json!({"layer": id, "leader": "Puppet Pin 1", "pins": ["Puppet Pin 2", "Puppet Pin 3"], "delay": 0.2})).unwrap();
+    let y = |s: &mut Session, pin: usize, t: f64| {
+        let info = s.execute("puppet.info", json!({"layer": id, "time": t})).unwrap();
+        info["meshes"][0]["pins"][pin]["position"][1].as_f64().unwrap()
+    };
+    // At rest before anything moves; pin 2 trails 0.2 s and pin 3 (farther) 0.4 s.
+    assert_eq!((y(&mut s, 1, 0.0), y(&mut s, 2, 0.0)), (30.0, 30.0));
+    let (lead_y, p2, p3) = (y(&mut s, 0, 0.5), y(&mut s, 1, 0.5), y(&mut s, 2, 0.5));
+    assert!(lead_y > p2 && p2 > p3 && p3 > 30.0, "{lead_y} {p2} {p3}");
+    assert!((y(&mut s, 1, 0.7) - 50.0).abs() < 1e-6, "pin 2 arrives 0.2 s after the leader");
+    assert!(y(&mut s, 2, 0.7) < 50.0 - 1e-3);
+    assert!((y(&mut s, 2, 0.9) - 50.0).abs() < 1e-6, "pin 3 arrives 0.4 s after the leader");
+}
+
+#[test]
 fn sockets_talk_tcp_behind_the_network_preference() {
     use std::io::{BufRead, BufReader, Write};
     let mut s = session();
