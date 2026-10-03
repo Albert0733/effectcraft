@@ -496,14 +496,36 @@ fn advanced_spill(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let amt = ctx.params.f("suppression") as f32 / 100.0;
     let range = ctx.params.f("ultraSettings/spillRange") as f32 / 100.0;
     let luma = ctx.params.f("ultraSettings/lumaCorrection") as f32 / 100.0;
+    // Ultra: Tolerance limits suppression to hues near the key colour; Desaturate takes the
+    // colour out of suppressed pixels; Spill Color Correction puts the removed spill back as
+    // neutral light (so suppressed areas keep their brightness without the cast).
+    let key = ctx.params.color("ultraSettings/keyColor");
+    let key_hue = effectcraft_color::rgb_to_hsl(key[0], key[1], key[2]).0;
+    let tol = if ultra { ctx.params.get("ultraSettings/tolerance").map(Value::as_f64).unwrap_or(100.0) as f32 / 100.0 } else { 1.0 };
+    let desat = if ultra { ctx.params.f("ultraSettings/desaturate") as f32 / 100.0 } else { 0.0 };
+    let neutral = if ultra { ctx.params.f("ultraSettings/spillColorCorrection") as f32 / 100.0 } else { 0.0 };
     b.img.map_straight(|mut c| {
+        let w = if tol < 1.0 {
+            let h = effectcraft_color::rgb_to_hsl(c[0], c[1], c[2]).0;
+            let d = (h - key_hue).abs();
+            let d = d.min(1.0 - d);
+            (1.0 - d / (tol * 0.5).max(1e-4)).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
         let mx = c[o1].max(c[o2]);
         let avg = 0.5 * (c[o1] + c[o2]);
         let limit = mx + (avg - mx) * range;
-        let spill = (c[pi] - limit).max(0.0) * amt;
+        let spill = (c[pi] - limit).max(0.0) * amt * w;
         c[pi] -= spill;
-        let back = spill * LUMA_W[pi] * luma;
-        c.map(|v| v + back)
+        let back = spill * LUMA_W[pi] * luma + spill * neutral / 3.0;
+        let mut c = c.map(|v| v + back);
+        if desat > 0.0 && spill > 0.0 {
+            let l = effectcraft_color::luminance(c[0], c[1], c[2]);
+            let k = (desat * (spill * 4.0).min(1.0)).min(1.0);
+            c = c.map(|v| v + (l - v) * k);
+        }
+        c
     });
     b
 }
@@ -675,7 +697,10 @@ pub fn specs() -> Vec<EffectSpec> {
                 p("method", "Method", Value::Enum(0), popup(&["Standard", "Ultra"])),
                 p("suppression", "Suppression", num(100.0), slider(0.0, 200.0, 0.0, 100.0, 0)),
                 p("ultraSettings/keyColor", "Key Color", col(0.0, 1.0, 0.0), ParamUi::Color),
+                p("ultraSettings/tolerance", "Tolerance", num(50.0), pct()),
+                p("ultraSettings/desaturate", "Desaturate", num(0.0), pct()),
                 p("ultraSettings/spillRange", "Spill Range", num(50.0), pct()),
+                p("ultraSettings/spillColorCorrection", "Spill Color Correction", num(0.0), pct()),
                 p("ultraSettings/lumaCorrection", "Luma Correction", num(0.0), pct()),
             ],
             advanced_spill,
@@ -845,5 +870,27 @@ mod tests {
         let img = green_screen();
         let out = run("ec.key.keycleaner", &[], img.clone());
         assert_eq!(out.get(12, 2), img.get(12, 2));
+    }
+
+    #[test]
+    fn advanced_spill_ultra_tolerance_desaturate_and_color_correction() {
+        let ultra = |extra: &[(&str, Value)], c: [f32; 4]| {
+            let mut v = vec![("method", Value::Enum(1)), ("ultraSettings/keyColor", Value::Color([0.0, 1.0, 0.0, 1.0]))];
+            v.extend_from_slice(extra);
+            run("ec.key.advancedspill", &v, Image::filled(1, 1, c)).get(0, 0)
+        };
+        // A yellow-green pixel (hue away from the key) is left alone with a narrow tolerance.
+        let yg = [0.6, 0.8, 0.1, 1.0];
+        assert!((ultra(&[("ultraSettings/tolerance", num(5.0))], yg)[1] - 0.8).abs() < 1e-5);
+        assert!(ultra(&[("ultraSettings/tolerance", num(100.0))], yg)[1] < 0.79);
+        // Desaturate greys the suppressed pixel.
+        let g = [0.3, 0.8, 0.3, 1.0];
+        let d = ultra(&[("ultraSettings/desaturate", num(100.0))], g);
+        assert!((d[0] - d[1]).abs() < 0.05, "{d:?}");
+        // Spill Color Correction keeps the brightness the suppression removed.
+        let plain = ultra(&[], g);
+        let cc = ultra(&[("ultraSettings/spillColorCorrection", num(100.0))], g);
+        let sum = |p: [f32; 4]| p[0] + p[1] + p[2];
+        assert!(sum(cc) > sum(plain) + 0.1 && (sum(cc) - sum(g)).abs() < 1e-4, "{plain:?} {cc:?}");
     }
 }

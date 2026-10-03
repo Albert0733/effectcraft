@@ -3,11 +3,11 @@
 <!-- Generated from the effect registry (crates/effects/src/catalog.rs); do not edit by hand.
      Regenerate: UPDATE_DOCS=1 cargo test -p effectcraft-effects --lib effects_doc_is_current -->
 
-EffectCraft ships 303 effects with 2773 parameters in total, grouped into the same categories as the Effects & Presets panel. Every effect is our own implementation, written from public behaviour descriptions and standard image-processing literature. Parameter names, order, popup options, units, defaults and ranges follow the reference application so that projects, expressions and muscle memory carry over.
+EffectCraft ships 303 effects with 2854 parameters in total, grouped into the same categories as the Effects & Presets panel. Every effect is our own implementation, written from public behaviour descriptions and standard image-processing literature. Parameter names, order, popup options, units, defaults and ranges follow the reference application so that projects, expressions and muscle memory carry over.
 
 - **GPU**: 24 effects also run on the GPU compositor with identical results.
 - **32**: 303 effects process 32-bit float (HDR, overbright) pixels without clamping.
-- **Status**: 287 implemented in full, 16 partial (what is missing is listed).
+- **Status**: 290 implemented in full, 13 partial (what is missing is listed).
 
 Effects are addressed by id (`ec.<category>.<name>`) or display name in commands, scripts and the control channel, and every parameter by its id (`effects/#1/blurriness`).
 
@@ -197,7 +197,7 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 | CC Light Rays | `ec.generate.cclightrays` | 8 |  | 32 | Implemented |
 | CC Light Sweep | `ec.generate.cclightsweep` | 9 |  | 32 | Implemented |
 | CC Threads | `ec.generate.ccthreads` | 8 |  | 32 | Implemented |
-| Cell Pattern | `ec.generate.cellpattern` | 14 |  | 32 | Partial: HQ variants render like the standard ones |
+| Cell Pattern | `ec.generate.cellpattern` | 14 |  | 32 | Implemented |
 | Checkerboard | `ec.generate.checkerboard` | 10 |  | 32 | Implemented |
 | Circle | `ec.generate.circle` | 11 |  | 32 | Implemented |
 | Ellipse | `ec.generate.ellipse` | 8 |  | 32 | Implemented |
@@ -235,13 +235,13 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 
 | Effect | Id | Params | GPU | 32 | Status |
 |---|---|---:|:-:|:-:|---|
-| Advanced Spill Suppressor | `ec.key.advancedspill` | 5 |  | 32 | Partial: no Tolerance, Desaturate or Spill Color Correction |
+| Advanced Spill Suppressor | `ec.key.advancedspill` | 8 |  | 32 | Implemented |
 | CC Simple Wire Removal | `ec.key.ccsimplewireremoval` | 7 |  | 32 | Implemented |
 | Color Difference Key | `ec.key.colordifference` | 16 |  | 32 | Implemented |
 | Color Range | `ec.key.colorrange` | 8 |  | 32 | Implemented |
 | Difference Matte | `ec.key.differencematte` | 6 |  | 32 | Implemented |
 | Extract | `ec.key.extract` | 6 |  | 32 | Implemented |
-| Inner/Outer Key | `ec.key.innerouter` | 10 |  | 32 | Partial: one additional mask per side; no cleanup strokes |
+| Inner/Outer Key | `ec.key.innerouter` | 88 |  | 32 | Implemented |
 | Key Cleaner | `ec.key.keycleaner` | 4 |  | 32 | Implemented |
 | Key Light | `ec.keying.keylight` | 42 |  | 32 | Partial: no Source Crops X/Y Method or Edge Colour; no colour suppression / balancing |
 | Linear Color Key | `ec.key.linearcolor` | 6 |  | 32 | Implemented |

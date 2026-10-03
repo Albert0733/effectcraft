@@ -38,6 +38,10 @@ pub const PARAM_ID_ALIASES: &[(&str, &str, &str)] = &[
     ("ec.matte.rotobrush", "refineEdgeMatte/extendWhereSmoothed", "refineEdgeMatte/decontamination/extendWhereSmoothed"),
     ("ec.matte.rotobrush", "refineEdgeMatte/increaseDecontaminationRadius", "refineEdgeMatte/decontamination/increaseDecontaminationRadius"),
     ("ec.matte.rotobrush", "refineEdgeMatte/viewDecontaminationMap", "refineEdgeMatte/decontamination/viewDecontaminationMap"),
+    // Keying: Inner/Outer Key's single additional masks became Additional Foreground /
+    // Background 1 (of 10).
+    ("ec.key.innerouter", "additionalForeground", "additionalForeground/foreground1"),
+    ("ec.key.innerouter", "additionalBackground", "additionalBackground/background1"),
     // Generate: Radio Waves' growth speed was called Velocity; Velocity now moves the wave.
     ("ec.generate.radiowaves", "velocity", "waveMotion/expansion"),
 ];
@@ -153,6 +157,8 @@ pub fn legacy_default(effect: &str, param: &str) -> Option<Value> {
         ("ec.noise.removegrain", "noiseReductionSettings/mode") => Value::Enum(1),
         // Audio: the Compressor's release was always manual.
         ("ec.audio.compressor", "autoRelease") => Value::Bool(false),
+        // Keying: Advanced Spill Suppressor's Ultra mode had no hue tolerance.
+        ("ec.key.advancedspill", "ultraSettings/tolerance") => Value::Scalar(100.0),
         // Transition: Block Dissolve's blocks had hard edges.
         ("ec.transition.blockdissolve", "softEdges") => Value::Bool(false),
         _ => return None,
@@ -434,5 +440,19 @@ mod tests {
         assert!(g.get("redsCyan").is_none());
         assert_eq!(prop_at(&mut g, "details/reds/redsCyan").unwrap().value, Value::Scalar(40.0));
         assert_eq!(g.sub("details").unwrap().sub("reds").unwrap().name, "Reds");
+    }
+
+    #[test]
+    fn inner_outer_key_additional_masks_move_into_their_groups() {
+        let spec = find("ec.key.innerouter").unwrap();
+        let mut next = 1;
+        let mut g = instantiate(spec, &mut Ids(&mut next), "Inner/Outer Key", [100.0, 50.0]);
+        let mut pr = take_at(&mut g, "additionalForeground/foreground1").unwrap();
+        pr.match_id = "additionalForeground".into();
+        pr.value = Value::Enum(3);
+        g.children.push(pr.into());
+        assert!(upgrade_instance(spec, &mut g, &mut Ids(&mut next), [100.0, 50.0]));
+        assert!(g.get("additionalForeground").is_none());
+        assert_eq!(prop_at(&mut g, "additionalForeground/foreground1").unwrap().value, Value::Enum(3));
     }
 }

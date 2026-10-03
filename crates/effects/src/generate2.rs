@@ -43,8 +43,9 @@ fn add_light(px: Px, l: [f32; 3], la: f32) -> Px {
 
 // ---------------------------------------------------------------- Cell Pattern
 
-/// Cell Pattern options. The HQ variants share the shaping of their standard counterparts
-/// (we always render at full precision).
+/// Cell Pattern options. The HQ variants share the shaping of their standard counterparts but
+/// search a wider neighbourhood of cells (no artefacts at high Disperse) and anti-alias the
+/// cell edges (4×4 samples per pixel).
 const CELL_PATTERNS: [&str; 12] = [
     "Bubbles",
     "Crystals",
@@ -75,13 +76,13 @@ fn pattern_kind(i: u32) -> u32 {
 
 /// Worley distances for point (u, v) in cell units: (F1, F2, hash of the nearest cell).
 /// `tile` repeats the cell layout every (columns, rows) cells.
-fn worley(u: f64, v: f64, disperse: f64, evo: f64, seed: u32, tile: Option<(i64, i64)>) -> (f64, f64, f32) {
+fn worley_r(u: f64, v: f64, disperse: f64, evo: f64, seed: u32, tile: Option<(i64, i64)>, reach: i64) -> (f64, f64, f32) {
     let (cx, cy) = (u.floor() as i64, v.floor() as i64);
     let mut f1 = f64::INFINITY;
     let mut f2 = f64::INFINITY;
     let mut id = 0.0f32;
-    for j in -1..=1 {
-        for i in -1..=1 {
+    for j in -reach..=reach {
+        for i in -reach..=reach {
             let (gx, gy) = (cx + i, cy + j);
             let (tx, ty) = match tile {
                 Some((nx, ny)) => (gx.rem_euclid(nx), gy.rem_euclid(ny)),
@@ -135,6 +136,7 @@ fn overflow(v: f32, mode: u32) -> f32 {
 
 fn cell_pattern(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let pattern = pattern_kind(ctx.params.e("cellPattern"));
+    let hq = (6..=10).contains(&ctx.params.e("cellPattern"));
     let invert = ctx.params.b("invert");
     let contrast = ctx.params.f("contrast") as f32 / 100.0;
     let ov = ctx.params.e("overflow");
@@ -152,11 +154,19 @@ fn cell_pattern(ctx: &EffectCtx, mut b: Buf) -> Buf {
         .params
         .b("tilingOptions/enableTiling")
         .then(|| (ctx.params.f("tilingOptions/cellsHorizontal").round().max(1.0) as i64, ctx.params.f("tilingOptions/cellsVertical").round().max(1.0) as i64));
+    let subs: Vec<f64> = if hq { (0..4).map(|k| (k as f64 + 0.5) / 4.0).collect() } else { vec![0.5] };
+    let reach = if hq { 2 } else { 1 };
     map_xy(&mut b.img, |x, y, _| {
-        let u = (x as f64 + 0.5 - off.0) / size;
-        let v = (y as f64 + 0.5 - off.1) / size;
-        let (f1, f2, id) = worley(u, v, disperse, evo, seed, tile);
-        let mut val = cell_value(pattern, f1, f2, id);
+        let mut val = 0.0;
+        for sy in &subs {
+            for sx in &subs {
+                let u = (x as f64 + sx - off.0) / size;
+                let v = (y as f64 + sy - off.1) / size;
+                let (f1, f2, id) = worley_r(u, v, disperse, evo, seed, tile, reach);
+                val += cell_value(pattern, f1, f2, id);
+            }
+        }
+        let mut val = val / (subs.len() * subs.len()) as f32;
         val = overflow((val - 0.5) * contrast + 0.5, ov);
         if invert {
             val = 1.0 - val;
@@ -1346,5 +1356,27 @@ mod tests {
         let (old, new) = (both.get(55, 32), both.get(35, 32));
         assert!(old[0] > 0.9 && old[1] < 0.1, "{old:?}");
         assert!(new[1] > 0.9 && new[0] < 0.1, "{new:?}");
+    }
+
+    #[test]
+    fn cell_pattern_hq_variants_antialias() {
+        let s = crate::find("ec.generate.cellpattern").unwrap();
+        let r = |pat: u32| {
+            let mut params = Params { values: s.params.iter().map(|p| (p.id.to_string(), p.default.clone())).collect() };
+            params.values.insert("cellPattern".into(), Value::Enum(pat));
+            params.values.insert("size".into(), num(12.0));
+            let ctx = EffectCtx { params: &params, time: 0.0, layer_size: [48.0, 48.0], seed: 1, adjustment: false, env: Default::default() };
+            crate::apply(s, &ctx, Buf { img: Image::new(48, 48), offset: [0.0; 2], scale: 1.0 }).img
+        };
+        let distinct = |img: &Image| {
+            let mut v: Vec<u32> = img.data.iter().map(|p| (p[0] * 10000.0) as u32).collect();
+            v.sort_unstable();
+            v.dedup();
+            v.len()
+        };
+        let (std, hq) = (r(4), r(9));
+        assert_eq!(CELL_PATTERNS[9], "Crystallize HQ");
+        assert_ne!(std, hq);
+        assert!(distinct(&hq) > distinct(&std) * 2, "{} vs {}", distinct(&hq), distinct(&std));
     }
 }
