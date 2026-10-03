@@ -42,6 +42,8 @@ pub struct DialogState {
     pub marker: super::markers_ui::MarkerDraft,
     /// Pre-compose dialog.
     pub precompose: super::precomp::PrecomposeDraft,
+    /// Layer Style dialog.
+    pub layer_style: super::layer_styles_dialog::LayerStyleState,
 }
 
 pub fn open_new_comp(app: &mut EffectcraftApp) {
@@ -124,6 +126,7 @@ pub fn show(app: &mut EffectcraftApp, ctx: &egui::Context) {
         Dialog::TrackOptions => super::tracker::options_dialog(app, ctx, &t),
         Dialog::Marker => super::markers_ui::dialog(app, ctx, &t),
         Dialog::Precompose => super::precomp::dialog(app, ctx, &t),
+        Dialog::LayerStyles => super::layer_styles_dialog::show(app, ctx, &t),
         Dialog::TrackTarget => super::tracker::target_dialog(app, ctx, &t),
         Dialog::TrackApply => super::tracker::apply_dialog(app, ctx, &t),
     }

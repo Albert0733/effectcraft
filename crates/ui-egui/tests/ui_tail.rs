@@ -60,6 +60,49 @@ fn timeline_outline_columns_scroll_horizontally() {
     assert!(h.state().auto.find("timeline.outlineScroll").is_none());
 }
 
+fn styles(h: &mut Harness<'_, EffectcraftApp>) -> Vec<String> {
+    let v = h.state_mut().session.execute("layer.style.list", json!({})).unwrap();
+    v["styles"].as_array().unwrap().iter().map(|s| s["style"].as_str().unwrap().to_string()).collect()
+}
+
+#[test]
+fn layer_style_dialog_adds_previews_and_cancels() {
+    let mut h = harness(1400.0);
+    let lid = h.state().session.active_comp().unwrap().layers[0].id.0;
+    h.state_mut().session.execute("layer.select", json!({"layers": [lid]})).unwrap();
+    let ctx = h.ctx.clone();
+    // Layer ▸ Layer Styles ▸ Drop Shadow (from the menu): adds the style and opens the dialog on it.
+    effectcraft_ui_egui::menus::invoke(h.state_mut(), &ctx, "layer.style.dropShadow", json!({})).unwrap();
+    h.run_steps(3);
+    assert_eq!(h.state().dialog, Some(effectcraft_ui_egui::Dialog::LayerStyles));
+    assert_eq!(styles(&mut h), ["dropShadow"]);
+    assert!(h.state().auto.find("dialog.layerStyle.prop.dropShadow/distance").is_some(), "the style's controls are shown");
+    // Live preview: the controls edit the real property (here through the same command).
+    h.state_mut().session.execute("prop.set", json!({"layer": lid, "path": "layerStyles/dropShadow/distance", "value": 25, "merge": "x"})).unwrap();
+    // Pick Stroke in the list (its page: not applied), then Cancel: everything done in the
+    // dialog is rolled back. (Dialog buttons are driven through the dialog's functions:
+    // kittest pointer events don't reach Foreground areas here.)
+    effectcraft_ui_egui::panels::layer_styles_dialog::select(h.state_mut(), "stroke");
+    h.run_steps(2);
+    assert_eq!(h.state().auto.find("dialog.layerStyle.page").unwrap().label, "stroke");
+    assert!(h.state().auto.find("dialog.layerStyle.prop.dropShadow/distance").is_none());
+    assert!(h.state().auto.find("dialog.layerStyle.cancel").is_some());
+    effectcraft_ui_egui::panels::layer_styles_dialog::finish(h.state_mut(), false);
+    h.run_steps(2);
+    assert!(h.state().dialog.is_none());
+    assert!(styles(&mut h).is_empty(), "Cancel removes the style added from the menu");
+    // Layer Style Options… on Stroke, add it (the list check box runs layer.style.add), OK keeps it.
+    effectcraft_ui_egui::menus::invoke(h.state_mut(), &ctx, "layer.style.options", json!({"style": "stroke"})).unwrap();
+    h.run_steps(3);
+    assert!(h.state().auto.find("dialog.layerStyle.prop.stroke/size").is_none(), "not applied yet");
+    h.state_mut().session.execute("layer.style.add", json!({"style": "stroke"})).unwrap();
+    h.run_steps(3);
+    assert!(h.state().auto.find("dialog.layerStyle.prop.stroke/size").is_some(), "its controls appear");
+    effectcraft_ui_egui::panels::layer_styles_dialog::finish(h.state_mut(), true);
+    assert!(h.state().dialog.is_none());
+    assert_eq!(styles(&mut h), ["stroke"]);
+}
+
 #[test]
 fn project_panel_columns_scroll_horizontally() {
     let mut h = harness(1400.0);

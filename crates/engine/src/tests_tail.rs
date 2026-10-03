@@ -271,7 +271,8 @@ fn tate_chu_yoko_via_set_text_with_undo_and_serde() {
     let lay = effectcraft_text::layout_doc(&doc);
     assert!((lay.glyphs[1].origin.y - lay.glyphs[2].origin.y).abs() < 1e-6, "the digits share a row");
     let back = roundtrip(&s);
-    let effectcraft_keyframe::Value::Text(d) = &back.comp(s.active_comp_id().unwrap()).unwrap().layer(LayerId(t)).unwrap().props.prop("text/sourceText").unwrap().value
+    let effectcraft_keyframe::Value::Text(d) =
+        &back.comp(s.active_comp_id().unwrap()).unwrap().layer(LayerId(t)).unwrap().props.prop("text/sourceText").unwrap().value
     else {
         panic!()
     };
