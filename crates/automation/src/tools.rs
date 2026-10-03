@@ -207,6 +207,11 @@ fn get_comp(b: &mut Backend, a: &Value) -> Result<Reply> {
 
 /// Flatten a `layer.tree` property tree into `[{path, type, value, keys?, expression?}]`.
 fn flatten(node: &Value, out: &mut Vec<Value>) {
+    // A group cut off by `depth` stays visible (instead of vanishing from the flat list).
+    if node.get("truncated").and_then(Value::as_bool) == Some(true) {
+        out.push(json!({"path": node["path"], "type": "group", "name": node["name"], "truncated": true}));
+        return;
+    }
     match node.get("children").and_then(Value::as_array) {
         Some(ch) => ch.iter().for_each(|c| flatten(c, out)),
         None => {
@@ -307,7 +312,8 @@ fn add_keyframe(b: &mut Backend, a: &Value) -> Result<Reply> {
 
 fn render_frame(b: &mut Backend, a: &Value) -> Result<Reply> {
     let max_side = get(a, "max_side").and_then(Value::as_u64).unwrap_or(960) as u32;
-    let f = b.render(get(a, "comp"), get(a, "time").and_then(Value::as_f64), max_side)?;
+    let transparent = get(a, "transparent").and_then(Value::as_bool).unwrap_or(false);
+    let f = b.render_with(get(a, "comp"), get(a, "time").and_then(Value::as_f64), max_side, transparent)?;
     let mut info = json!({"comp": f.comp, "time": f.time, "width": f.width, "height": f.height});
     if let Some(p) = get(a, "path").and_then(Value::as_str) {
         std::fs::write(p, &f.png).map_err(|e| Error::Other(format!("cannot write {p}: {e}")))?;
@@ -387,6 +393,15 @@ fn history_tool(b: &mut Backend, a: &Value) -> Result<Reply> {
         b.exec("edit.history.goto", p)?;
     }
     json_reply(b.exec("edit.history.list", json!({}))?)
+}
+
+fn batch_tool(b: &mut Backend, a: &Value) -> Result<Reply> {
+    let steps = need(a, "steps")?;
+    let steps = match steps {
+        Value::String(_) => params_of(Some(steps))?,
+        v => v.clone(),
+    };
+    json_reply(b.exec("engine.batch", obj(&[("steps", Some(&steps)), ("label", get(a, "label")), ("atomic", get(a, "atomic"))]))?)
 }
 
 // ------------------------------------------------------------------ bridge-only tools
@@ -610,7 +625,8 @@ static TOOLS: &[ToolDef] = &[
                     "time": {"type": "number", "description": "Comp time in seconds (default: current time)."},
                     "max_side": {"type": "integer", "description": "Longest side in pixels (default 960; 0 = full comp size)."},
                     "path": {"type": "string", "description": "Also write the PNG here."},
-                    "inline": {"type": "boolean", "description": "Include the image in the reply (default true)."}
+                    "inline": {"type": "boolean", "description": "Include the image in the reply (default true)."},
+                    "transparent": {"type": "boolean", "description": "Keep the frame's alpha (RGBA PNG, as an RGB + Alpha render writes it) instead of compositing over the comp's background colour."}
                 }),
                 &[],
             )
@@ -766,5 +782,21 @@ static TOOLS: &[ToolDef] = &[
         bridge_only: true,
         schema: || schema(json!({"method": {"type": "string"}, "params": {"type": "object", "additionalProperties": true}}), &["method"]),
         run: control,
+    },
+    ToolDef {
+        name: "batch",
+        description: "Run several engine commands in one call as ONE undo step (engine.batch). Later steps can use earlier results: a string param \"$N\" or \"$N.key\" is step N's result (1-based), e.g. create a layer, then key and style it: {\"steps\":[{\"command\":\"layer.newText\",\"params\":{\"text\":\"Hi\",\"name\":\"Title\"}},{\"command\":\"prop.addKey\",\"params\":{\"layer\":\"$1.layer\",\"path\":\"transform/opacity\",\"time\":0,\"value\":0}},{\"command\":\"effect.apply\",\"params\":{\"layer\":\"$1.layer\",\"effect\":\"Glow\"}}]}. Returns {steps, results}. If a step fails the whole batch is rolled back (unless atomic: false) and the error names the step.",
+        bridge_only: false,
+        schema: || {
+            schema(
+                json!({
+                    "steps": {"type": "array", "items": {"type": "object", "properties": {"command": {"type": "string"}, "params": {"type": "object", "additionalProperties": true}}, "required": ["command"]}},
+                    "label": {"type": "string", "description": "Undo step name (default Batch)."},
+                    "atomic": {"type": "boolean", "description": "Roll everything back when a step fails (default true)."}
+                }),
+                &["steps"],
+            )
+        },
+        run: batch_tool,
     },
 ];

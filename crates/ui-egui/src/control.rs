@@ -453,7 +453,8 @@ fn render_frame(app: &EffectcraftApp, p: &Value) -> Outcome {
     };
     let t = p.get("time").or(p.get("seconds")).and_then(Value::as_f64).map(effectcraft_time::Tick::from_seconds_f64).unwrap_or_else(|| s.time());
     let max_side = p.get("max_side").or(p.get("maxSide")).and_then(Value::as_u64).unwrap_or(0) as u32;
-    let (w, h, rgba) = match s.render_rgba8(cid, t, max_side) {
+    let transparent = p.get("transparent").and_then(Value::as_bool).unwrap_or(false);
+    let (w, h, rgba) = match s.render_rgba8_alpha(cid, t, max_side, transparent) {
         Ok(r) => r,
         Err(e) => return err(e),
     };

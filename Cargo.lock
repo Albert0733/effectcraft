@@ -1158,6 +1158,7 @@ name = "effectcraft-automation"
 version = "0.1.1"
 dependencies = [
  "effectcraft-engine",
+ "effectcraft-host",
  "effectcraft-script",
  "image",
  "serde_json",

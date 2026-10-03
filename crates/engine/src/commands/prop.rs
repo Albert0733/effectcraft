@@ -111,11 +111,28 @@ fn get(s: &mut Session, p: &Value) -> Result<Value> {
     let t = f_p(p, "time").map(Tick::from_seconds_f64).unwrap_or_else(|| s.time());
     let keys: Vec<Value> =
         pr.keys.iter().map(|k| json!({"time": k.time.seconds(), "value": k.value.to_json(), "in": k.in_interp.label(), "out": k.out_interp.label()})).collect();
-    Ok(json!({
+    let raw = pr.value_at(l.layer_time(t));
+    let mut out = json!({
         "layer": lid.0, "uid": pr.uid, "match": pr.match_id, "name": pr.name, "type": pr.value.kind_name(),
-        "time": t.seconds(), "value": pr.value_at(l.layer_time(t)).to_json(), "animated": !pr.keys.is_empty(),
+        "time": t.seconds(), "value": raw.to_json(), "animated": !pr.keys.is_empty(),
         "keys": keys, "expression": pr.expr.as_ref().map(|e| e.text.clone()),
-    }))
+    });
+    // With an expression, `value` is the keyframed (pre-expression) value; also report what the
+    // expression makes of it (what renders), or why it fails.
+    if pr.has_expression()
+        && let (Some(h), Some(comp)) = (s.expr.as_deref(), s.project.comp(cid))
+    {
+        let mut ctx = crate::render::EvalCtx::new(&s.project, cid, comp, t);
+        ctx.expr = Some(h);
+        match h.eval(&ctx, l, pr, &raw) {
+            Ok(v) => out["evaluated"] = v.to_json(),
+            Err(e) => {
+                out["evaluated"] = raw.to_json();
+                out["expressionError"] = json!(e);
+            }
+        }
+    }
+    Ok(out)
 }
 
 fn toggle_anim(s: &mut Session, p: &Value) -> Result<Value> {
@@ -256,16 +273,27 @@ fn select_keys(s: &mut Session, p: &Value) -> Result<Value> {
     let mut sel = vec![];
     if let Some(Value::Array(keys)) = p.get("keys") {
         for k in keys {
-            let lid = k.get("layer").and_then(|v| super::resolve_layer(comp, v));
-            let uid = k.get("prop").and_then(Value::as_u64);
-            let t = k.get("time").and_then(Value::as_f64).map(Tick::from_seconds_f64);
-            if let (Some(l), Some(u), Some(t)) = (lid, uid, t) {
-                // Snap to the stored key time.
-                let kt = comp.layer(l).and_then(|ly| ly.props.find(u)).and_then(|pr| pr.keys.iter().map(|k| k.time).min_by_key(|kt| (kt.0 - t.0).abs()));
-                if let Some(kt) = kt {
-                    sel.push(KeyRef { layer: l, prop: u, time: kt });
-                }
+            // `{layer, prop: uid | path, time}` (or `path`); anything that matches nothing is an
+            // error rather than a silently empty selection.
+            let lv = k.get("layer").ok_or_else(|| bad("keys.select", format!("{k}: missing `layer`")))?;
+            let l = super::resolve_layer(comp, lv).ok_or_else(|| bad("keys.select", format!("no layer {lv}")))?;
+            let ly = comp.layer(l).ok_or(EngineError::NoComp)?;
+            let pr = match (k.get("prop"), k.get("path").and_then(Value::as_str)) {
+                (Some(Value::Number(n)), _) => n.as_u64().and_then(|u| ly.props.find(u)),
+                (Some(Value::String(path)), _) => ly.props.prop(path),
+                (None, Some(path)) => ly.props.prop(path),
+                _ => return Err(bad("keys.select", format!("{k}: give `prop` (uid) or `path`"))),
             }
+            .ok_or_else(|| bad("keys.select", format!("{k}: no such property on layer {lv}")))?;
+            let t = k.get("time").and_then(Value::as_f64).map(Tick::from_seconds_f64).ok_or_else(|| bad("keys.select", format!("{k}: missing `time`")))?;
+            // Snap to the stored key time.
+            let kt = pr
+                .keys
+                .iter()
+                .map(|k| k.time)
+                .min_by_key(|kt| (kt.0 - t.0).abs())
+                .ok_or_else(|| bad("keys.select", format!("`{}` has no keyframes", pr.name)))?;
+            sel.push(KeyRef { layer: l, prop: pr.uid, time: kt });
         }
     }
     if b_p(p, "add").unwrap_or(false) {
@@ -591,7 +619,7 @@ pub fn specs() -> Vec<CommandSpec> {
             has_layers,
             convert_expr_to_keys
         ),
-        cmd!("keys.select", "Select Keyframes", [], None, "{keys: [{layer, prop, time}], add?}", has_comp, select_keys),
+        cmd!("keys.select", "Select Keyframes", [], None, "{keys: [{layer, prop: uid | path (or `path`), time (layer s)}], add?}", has_comp, select_keys),
         cmd!("keys.move", "Move Keyframes", [], None, "{delta (s), merge?}", has_keys, move_keys),
         cmd!("keys.delete", "Delete Keyframes", [], None, "{}", has_keys, delete_keys),
         cmd!("keys.easyEase", "Easy Ease", ["Animation", "Keyframe Assistant"], Some("F9"), "{which?: both|in|out}", has_keys, ease),

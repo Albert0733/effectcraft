@@ -313,6 +313,9 @@ fn find_missing(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn collect_files(s: &mut Session, p: &Value) -> Result<Value> {
     let folder = str_p(p, "folder").ok_or_else(|| bad("file.collectFiles", "missing `folder`"))?.trim_end_matches('/').to_string();
+    // Collect Files makes its folder (and the footage folder inside it).
+    #[cfg(not(target_arch = "wasm32"))]
+    std::fs::create_dir_all(format!("{folder}/(Footage)")).map_err(|e| EngineError::Other(format!("cannot create {folder}: {e}")))?;
     let mut proj = (*s.project).clone();
     let mut copied = 0;
     let mut errors = vec![];
@@ -528,6 +531,18 @@ impl Interpretation {
     }
 
     pub(crate) fn apply(&self, f: &mut Footage, guessed: Option<(AlphaMode, [f32; 3])>) {
+        let before = f.frame_rate;
+        self.apply_settings(f, guessed);
+        // Conforming keeps the frames and changes how long they last (12 frames at 30 fps are
+        // 0.4 s; conformed to 12 fps, 1 s). Stills have no frame rate of their own.
+        let (old, new) = (before.as_f64(), f.frame_rate.as_f64());
+        if matches!(f.kind, FootageKind::Video | FootageKind::Sequence) && old > 0.0 && new > 0.0 && (old - new).abs() > 1e-9 {
+            let frames = (f.duration.seconds() * old).round() as i64;
+            f.duration = f.frame_rate.tick_of(frames);
+        }
+    }
+
+    fn apply_settings(&self, f: &mut Footage, guessed: Option<(AlphaMode, [f32; 3])>) {
         if self.native {
             if let Some(n) = f.native_rate.take() {
                 f.frame_rate = n;
@@ -617,8 +632,21 @@ fn interpret(s: &mut Session, p: &Value) -> Result<Value> {
         .collect();
     s.edit("Interpret Footage", None, |proj, _| {
         for (i, g) in items.iter().zip(&guesses) {
-            if let Some(ItemKind::Footage(f)) = proj.item_mut(*i).map(|x| &mut x.kind) {
-                it.apply(f, *g);
+            let Some(ItemKind::Footage(f)) = proj.item_mut(*i).map(|x| &mut x.kind) else { continue };
+            let old = f.duration;
+            it.apply(f, *g);
+            let new = f.duration;
+            if new == old {
+                continue;
+            }
+            // Layers that ran to the footage's end still do (After Effects re-times them too).
+            let ids: Vec<ItemId> = proj.comps().map(|(id, _)| *id).collect();
+            for cid in ids {
+                for l in proj.comp_mut(cid).into_iter().flat_map(|c| c.layers.iter_mut()) {
+                    if l.source.item() == Some(*i) && (l.stretch - 100.0).abs() < 1e-9 && l.out_point == l.start_time + old {
+                        l.out_point = l.start_time + new;
+                    }
+                }
             }
         }
         Ok(())

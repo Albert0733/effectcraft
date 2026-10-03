@@ -185,6 +185,61 @@ fn sample_stops<T: Copy>(stops: &[(f64, T)], t: f64, lerp: impl Fn(T, T, f64) ->
     stops.last().map(|s| s.1)
 }
 
+/// A gradient written the way people (and agents) write it: `{colors: [[pos, color]…],
+/// opacities?: [[pos, alpha]…]}`, `[[pos, color]…]` or `[color, color…]` (evenly spaced), where a
+/// colour is `"#rrggbb"` or `[r, g, b, a?]` (0–1). Opacity stops default to the colours' alpha.
+fn gradient_json(j: &serde_json::Value) -> Option<Gradient> {
+    use serde_json::Value as J;
+    fn color(c: &J) -> Option<[f32; 4]> {
+        if let Some(s) = c.as_str() {
+            let c = effectcraft_color::Rgba::from_hex(s)?;
+            return Some([c.r, c.g, c.b, c.a]);
+        }
+        let a: Vec<f32> = c.as_array()?.iter().map(|x| x.as_f64().map(|v| v as f32)).collect::<Option<_>>()?;
+        match a.len() {
+            3 => Some([a[0], a[1], a[2], 1.0]),
+            4 => Some([a[0], a[1], a[2], a[3]]),
+            _ => None,
+        }
+    }
+    fn stops(a: &[J]) -> Option<Vec<(f64, [f32; 4])>> {
+        let n = a.len();
+        if n < 2 {
+            return None;
+        }
+        a.iter()
+            .enumerate()
+            .map(|(i, s)| match s.as_array() {
+                Some(p) if p.len() == 2 && p[0].is_number() => Some((p[0].as_f64()?, color(&p[1])?)),
+                _ => Some((i as f64 / (n - 1) as f64, color(s)?)),
+            })
+            .collect()
+    }
+    let (colors, opacities) = match j {
+        J::Array(a) => (stops(a)?, None),
+        J::Object(o) => {
+            let colors = stops(o.get("colors")?.as_array()?)?;
+            let op = match o.get("opacities") {
+                Some(J::Array(a)) => Some(
+                    a.iter()
+                        .map(|s| {
+                            let p = s.as_array()?;
+                            Some((p.first()?.as_f64()?, p.get(1)?.as_f64()? as f32))
+                        })
+                        .collect::<Option<Vec<_>>>()?,
+                ),
+                _ => None,
+            };
+            (colors, op)
+        }
+        _ => return None,
+    };
+    let mut colors = colors;
+    colors.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let opacities = opacities.unwrap_or_else(|| colors.iter().map(|(p, c)| (*p, c[3])).collect());
+    Some(Gradient { colors: colors.into_iter().map(|(p, c)| (p, [c[0], c[1], c[2], 1.0])).collect(), opacities })
+}
+
 /// The value of a property.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "t", content = "v")]
@@ -375,7 +430,9 @@ impl Value {
             }
             Value::Layer(_) => Some(Value::Layer(j.as_u64())),
             Value::Path(_) => serde_json::from_value::<ShapePath>(j.clone()).ok().map(Value::Path).or_else(|| serde_json::from_value::<Value>(j.clone()).ok()),
-            _ => serde_json::from_value::<Value>(j.clone()).ok(),
+            Value::Gradient(_) => {
+                serde_json::from_value::<Value>(j.clone()).ok().filter(|v| matches!(v, Value::Gradient(_))).or_else(|| gradient_json(j).map(Value::Gradient))
+            }
         }
     }
     /// JSON for display/automation (numbers/arrays for numeric kinds).

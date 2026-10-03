@@ -103,7 +103,17 @@ fn apply(s: &mut Session, p: &Value) -> Result<Value> {
         st.last_effect = Some(spec.id.to_string());
         Ok(out)
     })?;
-    Ok(json!({"effects": uids}))
+    // Each instance's property path prefix (`effects/#2`), ready for prop.set paths.
+    let comp = s.project.comp(cid).ok_or(EngineError::NoComp)?;
+    let paths: Vec<Value> = sizes
+        .iter()
+        .zip(&uids)
+        .map(|((lid, _), uid)| {
+            let n = comp.layer(*lid).and_then(|l| l.props.group("effects")).and_then(|fx| fx.children.iter().position(|c| c.uid() == *uid));
+            json!(n.map(|n| format!("effects/#{}", n + 1)))
+        })
+        .collect();
+    Ok(json!({"effects": uids, "paths": paths, "effect": spec.id}))
 }
 
 fn find_fx(s: &Session, p: &Value, cmd: &str) -> Result<(effectcraft_project::ItemId, effectcraft_project::LayerId, Uid)> {

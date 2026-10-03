@@ -558,6 +558,22 @@ mod tests {
         Tick::from_seconds_f64(x)
     }
 
+    /// M13.15: agents set gradients as plain JSON, not only the tagged form `get` returns.
+    #[test]
+    fn gradients_coerce_from_plain_json() {
+        let g = Value::Gradient(Gradient::default());
+        let plain = serde_json::json!({"colors": [[0, [0, 0.5, 1, 1]], [1, "#ffff00"]], "opacities": [[0, 1], [1, 0.5]]});
+        let Some(Value::Gradient(a)) = g.coerce_json(&plain) else { panic!("object form") };
+        assert_eq!(a.colors, vec![(0.0, [0.0, 0.5, 1.0, 1.0]), (1.0, [1.0, 1.0, 0.0, 1.0])]);
+        assert_eq!(a.opacities, vec![(0.0, 1.0), (1.0, 0.5)]);
+        let Some(Value::Gradient(b)) = g.coerce_json(&serde_json::json!(["#ff0000", "#00ff00", "#0000ff"])) else { panic!("list form") };
+        assert_eq!(b.colors.iter().map(|c| c.0).collect::<Vec<_>>(), vec![0.0, 0.5, 1.0]);
+        assert_eq!(b.opacities.len(), 3);
+        // The tagged form (what prop.get returns) still round-trips.
+        assert_eq!(g.coerce_json(&g.to_json()), Some(g.clone()));
+        assert_eq!(g.coerce_json(&serde_json::json!(5)), None);
+    }
+
     #[test]
     fn linear_and_hold() {
         let keys = vec![Keyframe::new(s(0.0), Value::Scalar(0.0)), Keyframe::new(s(2.0), Value::Scalar(100.0))];

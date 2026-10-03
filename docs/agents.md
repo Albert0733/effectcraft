@@ -59,9 +59,10 @@ The server speaks JSON-RPC 2.0 over stdio, one message per line, and supports MC
 | `add_keyframe {layer, path, time+value \| keys:[...], interpolation?}` | Adds keys, then optionally applies linear/bezier/hold/easyEase. |
 | `list_effects {filter?}` | Effect ids, names, categories, GPU / 32-bpc support and parameters. |
 | `add_effect {layer, effect, values?, comp?}` | Apply an effect and set its parameters in one call; returns the instance path (`effects/#n`) and its parameter paths. |
-| `render_frame {comp?, time?, max_side?, path?, inline?}` | Returns a PNG image of a frame. |
+| `render_frame {comp?, time?, max_side?, path?, inline?, transparent?}` | Returns a PNG image of a frame; `transparent: true` keeps the alpha (as an RGB + Alpha render writes it) instead of compositing over the comp background. |
 | `open_project {path \| demo \| new}` / `save_project {path?}` | Open and save files. |
 | `undo {steps?}` / `redo {steps?}` | History. |
+| `batch {steps: [{command, params}], label?, atomic?}` | Several commands in one call and one undo step (`engine.batch`); `"$N.key"` in a param is step N's result (`"$1.layer"`). A failing step rolls the batch back and names the step. |
 | *(bridge)* `screenshot {panel?, id?}`, `ui_inspect`, `ui_elements {prefix?}`, `ui_click`, `ui_drag`, `ui_key`, `ui_type`, `ui_set`, `control {method, params}` | Look at and operate the live window. |
 
 Layers are referenced by id (from `get_comp`), `"#n"` (1-based index from the top) or name. Comps are
@@ -102,6 +103,38 @@ Short recipes; every step is one tool call.
 
 The desktop app checks footage in the background after every open (a "Checking footage" job in
 the Progress panel, `jobs.list`); headless sessions run `footage.check` when they want it.
+### Cookbook (from end-to-end QA)
+
+The scenarios in `crates/automation/tests/qa/` and `apps/effectcraft-cli/tests/qa_template.rs`
+build real projects through these interfaces; they are worked examples of everything below.
+
+* **Name things when you create them**: `layer.newText`, `layer.newShape`, `layer.newSolid`,
+  `layer.newNull`, `layer.newCamera` and `layer.newLight` take `name`, so later calls can say
+  `"layer": "Title"`. A reference that matches no layer is an error, never a silent no-op.
+* **Use the paths replies give you**: `effect.apply` returns `{effects: [uid], paths:
+  ["effects/#2"]}`; `layer.addShapeItem {kind, group?: uid|path}` returns `{uid, path}` (e.g.
+  `contents/group/contents/gfill`), ready for `set_property`. `@uid` works as a whole path.
+* **One call, one undo step**: `batch {"steps":[{"command":"layer.newShape","params":{"kind":"ellipse","name":"Ring"}},{"command":"layer.addShapeItem","params":{"layer":"$1.layer","kind":"trim"}},{"command":"prop.addKey","params":{"layer":"$1.layer","path":"transform/opacity","time":0,"value":0}}]}`
+  (a string param that is exactly `"$N"` or `"$N.key"` is replaced; `$2.path` is the trim's path).
+* **Expressions**: `set_property`/`get_property` replies carry `evaluated` (what renders) next to
+  `value` (the keyframed value) and `expressionError` when the expression fails.
+* **Easing with Keyframe Velocity**: select keys by path, `keys.select {"keys":[{"layer":"Ring","path":"contents/trim/end","time":0}]}`,
+  then `keys.velocity {"outSpeed":0,"outInfluence":33.33}`.
+* **Gradients**: `set_property {"path":"contents/gfill/colors","value":["#0080ff","#ffff00"]}` or
+  `{"colors":[[0,"#0080ff"],[1,[1,1,0]]],"opacities":[[0,1],[1,0.5]]}`.
+* **Image sequences** import at 30 fps (Settings ▸ Import); `file.interpretFootage {"items":[id],
+  "frameRate":12}` conforms them (the item and layers that ran to its end get the new length).
+* **Masks**: `layer.addMask {layer, shape: rect|ellipse, rect}` first, then `layer.mask.set
+  {field: feather|expansion|opacity, value}`.
+* **Renders**: `renderQueue.add {comp, format: h264|prores|webm|png…, channels: rgba,
+  proresProfile: 4444, output}` then `renderQueue.render {"wait": true}`. Check a render by
+  importing it (`file.import`, `file.newCompFromSelection`) and `render_frame {transparent: true}`
+  for its alpha. (WebM VP9 alpha is written, but read back opaque for now.)
+* **Essential Graphics**: controls can be addressed by name (`essential.set {"layer":"#1",
+  "control":"Title","value":"John Smith"}`); a command that targets an explicit `comp` runs even
+  when the active comp would disable it (`essential.exportTemplate {"comp":"Lower Third", …}`).
+* **History**: Levels of Undo defaults to 32 (`prefs.set {"key":"general.undoLevels","value":99}`);
+  `history` lists branches and `history {"goto": id}` jumps between them.
 
 ### Motion tracking
 

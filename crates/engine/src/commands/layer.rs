@@ -115,7 +115,9 @@ fn new_text(s: &mut Session, p: &Value) -> Result<Value> {
     let mut q = p.clone();
     if let Some(o) = q.as_object_mut() {
         o.remove("box");
+        o.remove("name");
     }
+    let layer_name = str_p(p, "name").map(str::to_string);
     apply_text_params("layer.newText", &q, &mut doc, None)?;
     let mut pos = p.get("position").and_then(|v| v.as_array()).map(|a| [a[0].as_f64().unwrap_or(0.0), a.get(1).and_then(Value::as_f64).unwrap_or(0.0)]);
     if let Some([x, y, w, h]) = bx {
@@ -129,7 +131,7 @@ fn new_text(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let edit = b_p(p, "edit").unwrap_or(false);
     let id = s.edit("New Text Layer", None, |proj, st| {
-        let name: String = doc.text.lines().next().unwrap_or("").chars().take(40).collect();
+        let name: String = layer_name.clone().unwrap_or_else(|| doc.text.lines().next().unwrap_or("").chars().take(40).collect());
         let mut l = build::layer(proj, &comp, if name.is_empty() { "Text" } else { &name }, LayerSource::Text, (comp.width, comp.height), None);
         if let Some(pr) = l.props.prop_mut("text/sourceText") {
             pr.value = KV::Text(Box::new(doc.clone()));
@@ -848,7 +850,7 @@ fn mask_props(s: &mut Session, p: &Value) -> Result<Value> {
     let inverted = b_p(p, "inverted");
     s.edit("Mask Settings", None, |proj, _| {
         let l = layer_mut(proj, cid, lid)?;
-        let masks = l.props.sub_mut("masks").ok_or_else(|| bad("layer.setMask", "no masks"))?;
+        let masks = l.props.sub_mut("masks").ok_or_else(|| bad("layer.setMask", "the layer has no masks (add one with layer.addMask)"))?;
         let g = match &target {
             Value::Number(n) => {
                 let n = n.as_u64().unwrap_or(1);
@@ -878,7 +880,18 @@ fn mask_props(s: &mut Session, p: &Value) -> Result<Value> {
 fn add_shape_item(s: &mut Session, p: &Value) -> Result<Value> {
     let (cid, lid) = layer_p(s, p, "layer.addShapeItem")?;
     let kind = str_p(p, "kind").ok_or_else(|| bad("layer.addShapeItem", "missing `kind`"))?.to_string();
-    let group_uid = p.get("group").and_then(Value::as_u64);
+    // `group`: a uid or a property path (`contents/group`).
+    let group_uid = match p.get("group") {
+        Some(Value::String(path)) => Some(
+            s.project
+                .comp(cid)
+                .and_then(|c| c.layer(lid))
+                .and_then(|l| l.props.group(path))
+                .map(|g| g.uid)
+                .ok_or_else(|| bad("layer.addShapeItem", format!("no group `{path}`")))?,
+        ),
+        v => v.and_then(Value::as_u64),
+    };
     let uid = s.edit("Add Shape Item", None, |proj, _| {
         let mut next = proj.next_id;
         let mut ids = Ids(&mut next);
@@ -909,7 +922,9 @@ fn add_shape_item(s: &mut Session, p: &Value) -> Result<Value> {
         target.children.push(g.into());
         Ok(uid)
     })?;
-    Ok(json!({"uid": uid}))
+    // The new item's property path, ready for prop.set / add_keyframe (`contents/trim#2/end`).
+    let path = s.project.comp(cid).and_then(|c| c.layer(lid)).and_then(|l| l.props.match_path_of(uid));
+    Ok(json!({"uid": uid, "path": path}))
 }
 
 fn set_text(s: &mut Session, p: &Value) -> Result<Value> {
@@ -1066,7 +1081,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Text",
             ["Layer", "New"],
             Some("Cmd+Alt+Shift+T"),
-            "{text?, position? [x,y], box? [x,y,w,h] (paragraph text, comp space), vertical?, edit? (start editing), font?, style?, size?, fill?, stroke?, applyFill?, applyStroke?, strokeWidth?, tracking?, leading?, baselineShift?, hScale?, vScale?, tsume?, fauxBold?, fauxItalic?, allCaps?, smallCaps?, baseline?, superscript?, subscript?, kerning?, ligatures?, justify?, indentLeft?, indentRight?, indentFirst?, spaceBefore?, spaceAfter?, direction?, composer?, hangingPunctuation?, strokeOverFill?} (attributes as layer.setText)",
+            "{text?, name? (layer name; default the text), position? [x,y], box? [x,y,w,h] (paragraph text, comp space), vertical?, edit? (start editing), font?, style?, size?, fill?, stroke?, applyFill?, applyStroke?, strokeWidth?, tracking?, leading?, baselineShift?, hScale?, vScale?, tsume?, fauxBold?, fauxItalic?, allCaps?, smallCaps?, baseline?, superscript?, subscript?, kerning?, ligatures?, justify?, indentLeft?, indentRight?, indentFirst?, spaceBefore?, spaceAfter?, direction?, composer?, hangingPunctuation?, strokeOverFill?} (attributes as layer.setText)",
             has_comp,
             new_text
         ),
@@ -1077,7 +1092,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Shape Layer",
             ["Layer", "New"],
             None,
-            "{kind?: rect|rounded|ellipse|star|polygon|none, size?, fill?, stroke?, strokeWidth?, position?}",
+            "{kind?: rect|rounded|ellipse|star|polygon|none, name?, size?, fill?, stroke?, strokeWidth?, position?}",
             has_comp,
             new_shape
         ),
@@ -1154,7 +1169,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Add (Shape)",
             [],
             None,
-            "{layer?, kind: group|rect|ellipse|star|polygon|fill|stroke|gfill|trim|repeater|round|offset|pucker|twist|zigzag|wiggle|merge, group?: uid}",
+            "{layer?, kind: group|rect|ellipse|star|polygon|fill|stroke|gfill|trim|repeater|round|offset|pucker|twist|zigzag|wiggle|merge, group?: uid|path} → {uid, path}",
             has_layers,
             add_shape_item
         ),
