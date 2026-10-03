@@ -2,27 +2,42 @@
 
 How close EffectCraft is to After Effects 2026, feature by feature, and how much work is left.
 
-## Current status (audit at commit `fa26ad9`, 2 October 2026, late)
+## Current status (audit at commit `978e8d7`, 3 October 2026)
 
 | Measure | Value |
 |---|---|
-| **Feature parity, weighted by tier** (P0 ×3, P1 ×2, P2 ×1) | **≈ 93%** |
-| Unweighted | ≈ 91% |
-| P0 / P1 / P2 | ≈ 96% / 90% / 65% |
-| Features done / partial / missing | 41 / 50 / 1 of 92 (missing: a plug-in API) |
-| **Effects** | **298 of 298** After Effects 2026 effects exist (some still simplified) |
-| Disabled menu entries left | 26 commands (31 menu items) |
-| Remaining work | ≈ 50–55 agent-hours at the pace measured so far (≈ 150 by the original conservative audit scale) |
-| **Wall-clock estimate** | **≈ 11–14 hours** with five agents in parallel; ≈ 6–8 hours for 100% of P0 + P1 |
+| **Feature parity, weighted by tier** (P0 ×3, P1 ×2, P2 ×1) | **≈ 94%** counting every partial feature as half done; ≈ 98% using per-feature fractions |
+| Unweighted | ≈ 94% (half-credit) / 98% (fractions) |
+| P0 / P1 / P2 | ≈ 96% / 92% / 85% (half-credit); 99% / 97% / 96% (fractions) |
+| Features done / partial / missing | 80 / 12 / 0 of 92 |
+| **Effects** | **298 of 298** After Effects 2026 effects exist; 42 still simplified ([effects.md](effects.md)); 58 run on the GPU |
+| Disabled menu entries left | 0 (the stub list is empty) |
+| Remaining work | ≈ 19–22 agent-hours at the pace measured so far (≈ 58 on the conservative audit scale) |
+| **Wall-clock estimate** | **≈ 4–5 hours** with five agents in parallel; ≈ 3 hours for 100% of P0 + P1 |
+
+Partial features: effect implementations (42 simplified effects), the Preview panel's settings
+(range, play from, skip, frame rate, full screen), GPU coverage (Advanced 3D, more GPU effects),
+the web app (no threads for viewer frames and Roto Brush), the Learn panel and Align to Selection /
+Distribute, Advanced 3D (iris shapes, collapsed precomps, extruded strokes), ScriptUI resource
+strings and `onDraw`, Essential Graphics font and scale controls, and the learned-model quality of
+Roto Brush and face tracking (both are classical). Menu items still absent: Save Frame As ▸
+Photoshop Layers / ProEXR, Open in Essential Graphics, Vanishing Point import, Watch Folder.
+
+### Previous audit (commit `fa26ad9`, 2 October 2026, late): ≈ 93%
 
 By area: Layers 98%, Output 95%, Compositions 95%, Automation 96%, Paint 95%, Text 95%, Import 96%,
 Animation 94%, Masks 94%, Preview 94%, Interface 93%, Shapes 93%, 3D 91%, Audio 90%, Project 90%,
-Tracking 88%, Effects 85%, Web 65%.
+Tracking 96%, Effects 85%, Web 65%.
 
 What is left, in priority order: the web app's depth (threads, storage, audio, non-blocking
-renders); stroke taper/wave and multi-segment dashes; variable mask feather points; camera iris/bokeh and focus-link commands; Render Queue field render, crop/resize and templates;
-approximated effects (Subspace Warp, Key Cleaner) and Liquify's viewer brush; text in imported
-PDF/AI files and Illustrator procset EPS; more codecs; 59 preferences not yet wired; ScriptUI; face tracking; and the "better than After Effects" items (a plug-in API, branching history; GPU particles landed in M12.7).
+renders); stroke taper/wave and multi-segment dashes; variable mask feather points; camera iris/bokeh and focus-link commands; 
+approximated effects (Key Cleaner) and Liquify's viewer brush; text in imported
+PDF/AI files and Illustrator procset EPS; and more codecs. Face tracking and a true Subspace Warp
+landed in M13.3. ScriptUI (dialogs that block `show()`, palettes, dockable ScriptUI panels, File ▸ Scripts install
+and sample scripts), puppet pin recording and the remaining "better than After Effects" items — a
+versioned effect plug-in API with sandboxed WebAssembly plug-ins ([plugins.md](plugins.md)),
+branching undo history in the History panel, and a bit-identical rendering test across runs and
+thread counts — landed in M13.1 (GPU particles landed in M12.7). Render Queue field render, crop/resize, templates and logs, and VP9 inter frames landed in M10.2.
 
 The sections below are the original audit (morning of 2 October, ≈ 64%) and its updates, kept for
 history.
@@ -107,13 +122,13 @@ the disk cache in the formats wave; the 3D Camera Tracker in M12.6.)
 | Area | Weighted parity | Remaining (agent-hours) | Biggest gaps |
 |---|---|---|---|
 | Layers | 88% | 4.8 | frame blending, collapse transformations, slip edit |
-| Output | 90% | 3.0 | multiple output modules, pre-render (WebM with VP9 alpha + Opus and WAV/AIFF audio-only landed: VP9 is intra-only, Opus CELT-only) |
+| Output | 97% | 0.8 | Render Settings complete (field render + 3:2 pulldown, effects/solo/guide/depth/blending/blur overrides, time sampling, storage overflow), Output Module crop/ROI/resize, alpha modes, post-render actions, PCM formats, templates with defaults, render logs, Notify (M10.2); WebM VP9 key + inter frames with motion search, loop filter and rate control. Left: Opus is CELT-only, Photoshop sequence output, overflow for movies only checks at file creation |
 | Audio | 85% | 0.5 | audio to keyframes |
 | Import | 94% | 1.0 | text and images inside PDF/AI files, Illustrator EPS relying on Adobe procsets, smart-object perspective/warps, PSD 3D layers (PDF / PDF-compatible AI / EPS vector footage with Continuously Rasterize, layered composition import and Create Shapes from Vector Layer, and PSD smart objects with embedded files landed in M13.2; PSD as footage/composition/retain layer sizes, SVG footage earlier) |
-| Automation | ≈ 90% | 0.8 | scripting covers the documented core object model (AUT-2, M14.4: `app`, project items, comps, layers, properties and keyframes, text documents, markers, render queue, Script Console, `effectcraft-cli script`, MCP `run_script`); still missing: ScriptUI panels/dialogs, `.jsxbin`, sockets |
+| Automation | ≈ 97% | 0.3 | `.jsxbin`, sockets, ScriptUI resource strings and custom `onDraw` graphics (the core object model landed in M14.4; ScriptUI windows/dialogs/dockable panels with `scriptui.*` agent commands, File ▸ Scripts install + sample scripts, and the effect plug-in API (EFF-6, WebAssembly) landed in M13.1) |
 | Shapes | ≈ 80% | 1.5 | Lottie can't carry stroke taper/wave (stroke Taper and Wave, Dash 2/Gap 2/Dash 3/Gap 3 and radial-gradient Highlight Length/Angle landed in M13.5; pen tool for shape paths and vertex editing in M6.5) |
 | Compositions | ≈ 80% | 3.5 | Mocha-style planar tracks for templates, Essential Graphics' rare controls (font menus, mirrored properties) (the marker dialog, Composition Flowchart, Essential Graphics with master properties, `.ectemplate` templates and Responsive Design — Time landed: CMP-6, CMP-7) |
-| Animation | 67% | 10.0 | puppet, Wiggler/Smoother/Motion Sketch (motion-path handles and the graph editor transform box landed in M5.8; keyframe colour labels and Select Keyframe Label Group, Graph Editor snapping to markers / layer ends in M13.5) |
+| Animation | 70% | 9.0 | puppet depth beyond pins and recording (puppet pin recording with Record Options landed in M13.1), Wiggler/Smoother/Motion Sketch (motion-path handles and the graph editor transform box landed in M5.8; keyframe colour labels and Select Keyframe Label Group, Graph Editor snapping to markers / layer ends in M13.5) |
 | Text | ≈ 94% | 0.5 | no extruded strokes, variable-axis animation changes outlines but not advances (OpenType features — stylistic sets, discretionary ligatures, contextual / stylistic alternates, swash, titling, ordinals, fractions, figure styles, true small caps / all small caps and superior / inferior glyphs with faux fallback — per character with the Character panel's OpenType popup and `text.fontFeatures` landed in M13.2; vertical Roman / Tate-Chu-Yoko, forced LTR paragraphs, caret on animated and path text, Variable Font Axes and Lottie style runs landed in M13.5; extruded, bevelled text in M7.6; per-character styles, paragraph settings, on-canvas editing and the `sourceText` style API in M9.9–M9.10) |
 | Web | 85% | 1.0 | viewer frames and Roto Brush propagation still on the page's thread; GPU effects in the browser (browser storage, Web Audio, Web Worker renders/analyses, WebGPU viewer and offline install landed in M15.2) |
 | 3D | 85% | 6.5 | multi-view layouts, iris shapes in Advanced 3D's depth of field, collapsed 3D precomps in Advanced 3D, the Extended Viewer for Advanced 3D comps (Classic 3D Extended Viewer landed in M13.5 UI completion); collapsed precomps of another size seen through the parent's camera render (fixed in M13.2); stereo rigs, orbit nulls, lights controlled by the camera, cameras/lights from glTF models, environment backgrounds, Advanced 3D motion blur, blend modes and track mattes landed in M7.7; Classic 3D iris-shaped bokeh with highlights, progressive depth of field on tilted layers and the focus-link commands landed in M13.5; Advanced 3D (glTF/OBJ models, primitives, extruded text and shapes, PBR, image-based light, shadow maps, GPU rasteriser) in M7.4–M7.6 |
@@ -122,7 +137,7 @@ the disk cache in the formats wave; the 3D Camera Tracker in M12.6.)
 | Project | ≈ 68% | 5.5 | auto-save, folder moves, OCIO displays beyond the built-in tone map (Color Engine with OCIO/ACES working spaces, HDR compand/tone mapping, Rec. 2100 PQ/HLG output, Feet + Frames, display colour management, Simulate Output and the locked viewer landed in M7.7; proxies and Interpret Footage fields / pixel aspect / alpha guess landed: PRJ-8, PRJ-3) |
 | Masks & roto | 74% | 5.0 | Roto Brush's learned (3.0) segmentation model (variable-width mask feather points with the Mask Feather tool landed in M13.5; mask tracking and Mask Interpolation landed in M6.6; Roto Brush & Refine Edge with graph-cut segmentation, flow propagation, edge matting, decontamination and Freeze in M6.7) |
 | Preview | 66% | 4.0 | GPU bokeh depth of field, wireframes and Advanced 3D compositing (Classic 3D runs and adjustment layers composite on the GPU since M12.7; persistent disk cache with the blue cache bar landed; region of interest, snapshots, exposure and Fast Previews landed in M0.13) |
-| Tracking | ≈ 85% | 2.5 | face tracking, Subspace Warp's mesh warp, lens distortion in the camera solve (Rolling Shutter Repair landed in M9.11; point tracker, mask tracking, Warp Stabilizer and the 3D Camera Tracker landed in M6.x / M12.5 / M12.6) |
+| Tracking | ≈ 96% | 0.3 | face tracking is a classical (skin model + feature components + shape model) fitter, not a learned detector: profile views and occluded faces are weak; Rolling Shutter Ripple is approximated by Subspace Warp's mesh density (face tracking (Outline Only / Detailed Features with Face Track Points and Extract & Copy Face Measurements), Subspace Warp's content-preserving mesh warp on subspace-smoothed trajectories, and radial lens distortion (k1, k2) in the camera bundle adjustment with Undistort Footage landed in M13.3; Rolling Shutter Repair in M9.11; point tracker, mask tracking, Warp Stabilizer and the 3D Camera Tracker in M6.x / M12.5 / M12.6) |
 | Paint | 0% | 4.0 | Brush, Clone Stamp, Eraser |
 
 ## Effects still missing

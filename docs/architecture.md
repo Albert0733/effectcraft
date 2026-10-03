@@ -35,9 +35,10 @@ cpal or muda. Everything in L0 to L4, the egui UI and the web app also build for
 | L3 | `export` | Render queue encoding: H.264, ProRes, WebM (VP9 + alpha, Opus), PNG/JPEG/TIFF/EXR sequences, GIF, WAV/AIFF |
 | L3 | `gpu` | The GPU compositor and GPU effects on wgpu compute shaders (Metal, Vulkan, Direct3D 12, WebGPU), checked against the CPU renderer |
 | L3 | `lottie` | Lottie JSON / dotLottie import and export (layers, precomps, eased and spatial keyframes, shapes, masks, mattes) with a warnings list for what Lottie cannot express |
-| L4 | `engine` | `Session`: project, undo history, editor state, the command registry and menus |
-| L4 | `script` | Scripting: JavaScript (boa) with an After Effects-style object model (`app.project`, comps, layers, properties, render queue) whose edits run engine commands; AE match names |
-| L4 | `host` | A fully wired `Session` (media, expressions, scripting, exporter) for the frontends |
+| L3 | `plugin` | Effect plug-ins: loads sandboxed WebAssembly effect modules (plug-in API v1; the wasmi interpreter behind the `wasm` feature, on for native hosts) into the effect registry ([plugins.md](plugins.md)) |
+| L4 | `engine` | `Session`: project, branching undo history, editor state, the command registry and menus, the ScriptUI window model (`scriptui`) |
+| L4 | `script` | Scripting: JavaScript (boa) with an After Effects-style object model (`app.project`, comps, layers, properties, render queue) and ScriptUI (dialogs, palettes, dockable panels; script-host threads so dialogs block `show()`), whose edits run engine commands; AE match names |
+| L4 | `host` | A fully wired `Session` (media, expressions, scripting, WebAssembly plug-ins, exporter) for the frontends |
 | L5 | `ui-egui` | The desktop interface: docking, panels, viewer, timeline, graph editor, dialogs, control channel |
 | L5 | `automation` | The MCP server, headless or bridged to the running app |
 | L6 | apps `effectcraft`, `effectcraft-cli`, `effectcraft-web` | Desktop app; command-line tool (render, exec, get/set, MCP); the browser app (wasm32, [web.md](web.md)) |
@@ -229,6 +230,13 @@ tracks them with pyramidal Lucas–Kanade and fits the chosen model (position �
 RANSAC; the motion moves the Mask Path's vertices and tangents and is keyed per frame. **Mask
 Interpolation** (`mask.interpolate`) uses `effectcraft-path`'s smart interpolation (arc-length
 vertex insertion, shape-context matching, rigid in-betweens) to key in-between shapes.
+The two **Face Tracking** methods (`effectcraft_track::face`) fit a face inside the mask instead:
+a skin colour model from the first frame, the face outline along rays from the skin component's
+centre (an area-moment ellipse gives centre, size and roll), facial features as the non-skin
+components inside it, and an active-shape point distribution model trained on synthetic face
+shapes (our own generator, no external weights) that fills and checks the landmarks. The outline
+keys the Mask Path; Detailed Features keys a Face Track Points effect, and
+`track.extractFaceMeasurements` derives a keyed Face Measurements effect (and copies its keys).
 
 **Warp Stabilizer** (`effects::warp_stab`, `engine::warp`): `warp.analyze` renders the layer's
 input to the effect (`Renderer::layer_input`: source, masks and the effects above it) for every
@@ -237,7 +245,10 @@ translation / similarity / homography fits) as JSON in the effect's hidden Analy
 with a key of the layer's source, In/Out, start, stretch and Time Remap. `Session::edit` clears
 analyses whose key no longer matches and queues them; the desktop app re-analyses them in the
 background. Rendering derives the stabilization plan (smoothed camera path or No Motion, framing,
-auto-scale; cached per analysis and settings) and warps each frame; Synthesize Edges fills the
+auto-scale; cached per analysis and settings) and warps each frame. Subspace Warp also stores long
+feature trajectories in the analysis, smooths them in a low-rank subspace (Liu et al. 2011) and
+warps each frame with a content-preserving mesh (Liu et al. 2009) fitted to the smoothed
+positions, rendered as a per-pixel mesh lookup; Synthesize Edges fills the
 borders from neighbouring frames read with `EffectHost::self_at`. The effect lives in the
 effects crate, hence the `effects → track` edge.
 
@@ -268,7 +279,10 @@ the essential matrix (normalised 8-point in RANSAC) or a planar homography decom
 resection and triangulation; a sparse Levenberg–Marquardt bundle adjustment (Schur complement over
 the points, Huber loss) with the focal length fixed, shared, or per frame; a log-spaced and
 golden-section focal search for Fixed Angle of View / Variable Zoom; a rotation-only model for tripod
-pans, chosen by Auto Detect when it explains the tracks as well. Tracks and solve are stored as JSON
+pans, chosen by Auto Detect when it explains the tracks as well; with Solve Lens Distortion (or
+Detailed Analysis) radial distortion `k1, k2` is adjusted jointly in a final bundle adjustment on
+the raw tracks and the solve repeated on tracks undistorted with that estimate; Undistort Footage
+renders the input through the inverse model. Tracks and solve are stored as JSON
 in hidden effect parameters with keys: changing the layer's frames clears both, changing Shot Type,
 Angle of View, Solve Method or deleting points only re-solves. The solve's canonical frame maps to
 comp space so the first frame's camera is the default comp camera (or so a chosen ground plane is

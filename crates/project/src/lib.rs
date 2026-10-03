@@ -8,6 +8,7 @@ pub mod build;
 pub mod essential;
 pub mod props;
 pub mod render_queue;
+pub mod render_templates;
 pub mod styles;
 pub mod tracking;
 
@@ -940,11 +941,25 @@ pub struct Project {
     /// The Render Queue (Composition ▸ Add to Render Queue).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub render_queue: Vec<render_queue::RenderQueueItem>,
+    /// Render Settings / Output Module templates and their defaults.
+    #[serde(default, skip_serializing_if = "render_templates::RenderTemplates::is_default")]
+    pub render_templates: render_templates::RenderTemplates,
+    /// Render Queue preferences (Notify, storage overflow folders).
+    #[serde(default, skip_serializing_if = "render_queue::RenderQueuePrefs::is_default")]
+    pub render_prefs: render_queue::RenderQueuePrefs,
 }
 
 impl Default for Project {
     fn default() -> Self {
-        Project { schema: SCHEMA_VERSION, settings: ProjectSettings::default(), items: BTreeMap::new(), next_id: 1, render_queue: Vec::new() }
+        Project {
+            schema: SCHEMA_VERSION,
+            settings: ProjectSettings::default(),
+            items: BTreeMap::new(),
+            next_id: 1,
+            render_queue: Vec::new(),
+            render_templates: Default::default(),
+            render_prefs: Default::default(),
+        }
     }
 }
 

@@ -223,7 +223,21 @@ fn puppet_options(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: &egui::Painter
         }
         x = r.max.x + 12.0;
     }
-    x + 4.0
+    // Record Options… (⌘/Ctrl-drag a pin records its motion in real time).
+    let label = "Record Options...";
+    let w = 104.0;
+    let r = Rect::from_min_size(pos2(x, cy - 10.0), vec2(w, 20.0));
+    let resp = ui.interact(r, egui::Id::new("puppet-record-options"), egui::Sense::click()).on_hover_text("⌘/Ctrl-drag a pin to record its motion");
+    p.rect_stroke(r, 3.0, egui::Stroke::new(1.0, if resp.hovered() { t.accent } else { t.field_border }), egui::StrokeKind::Inside);
+    p.text(r.center(), Align2::CENTER_CENTER, label, Tokens::ui(11.5), t.text);
+    app.auto.add("header.puppet.recordOptions", r, label);
+    if resp.clicked() {
+        let ctx = ui.ctx().clone();
+        if let Err(e) = crate::menus::invoke(app, &ctx, "puppet.recordOptions", json!({})) {
+            app.ui.status = e;
+        }
+    }
+    r.max.x + 16.0
 }
 
 fn ws_menu(app: &mut EffectcraftApp, ui: &mut egui::Ui) {

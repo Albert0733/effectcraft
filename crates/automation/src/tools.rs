@@ -315,6 +315,32 @@ fn redo(b: &mut Backend, a: &Value) -> Result<Reply> {
     history(b, a, "edit.redo")
 }
 
+fn script_ui_tool(b: &mut Backend, a: &Value) -> Result<Reply> {
+    let action = get(a, "action").and_then(Value::as_str).unwrap_or("list");
+    let id = match action {
+        "list" => "scriptui.list",
+        "get" => "scriptui.get",
+        "click" => "scriptui.click",
+        "set" => "scriptui.set",
+        "close" => "scriptui.close",
+        other => return Err(Error::BadArgs(format!("unknown action `{other}` (list | get | click | set | close)"))),
+    };
+    let p = obj(&[("window", get(a, "window")), ("widget", get(a, "widget")), ("value", get(a, "value")), ("result", get(a, "result"))]);
+    json_reply(b.exec(id, p)?)
+}
+
+fn history_tool(b: &mut Backend, a: &Value) -> Result<Reply> {
+    if let Some(g) = get(a, "goto") {
+        let p = match g {
+            Value::String(id) if id.parse::<u64>().is_err() => json!({"id": id}),
+            Value::String(n) => json!({"index": n.parse::<u64>().unwrap_or(0)}),
+            v => json!({"index": v}),
+        };
+        b.exec("edit.history.goto", p)?;
+    }
+    json_reply(b.exec("edit.history.list", json!({}))?)
+}
+
 // ------------------------------------------------------------------ bridge-only tools
 
 fn screenshot(b: &mut Backend, a: &Value) -> Result<Reply> {
@@ -534,6 +560,31 @@ static TOOLS: &[ToolDef] = &[
         bridge_only: false,
         schema: || schema(json!({"steps": {"type": "integer", "minimum": 1}}), &[]),
         run: redo,
+    },
+    ToolDef {
+        name: "history",
+        description: "The branching undo history (History panel): without arguments lists every state {index, id, label, parent, depth (0 = working line, >0 = branch), current, future}; undoing and then editing keeps the undone states as a branch. With `goto` (an index or id from the listing) jumps to that state, on any branch, without losing the others.",
+        bridge_only: false,
+        schema: || schema(json!({"goto": {"type": ["integer", "string"], "description": "State index or id to jump to (edit.history.goto)."}}), &[]),
+        run: history_tool,
+    },
+    ToolDef {
+        name: "script_ui",
+        description: "Drive ScriptUI windows that scripts opened (dialogs, palettes, dockable panels). action `list` (default): open windows; `get`: a window's control tree (type, name, text, value, checked, items, selection, bounds); `click`: press a button / toggle a checkbox / pick a radio button; `set`: type text, move a slider, pick a list item (index or text); `close`: close a window (`result` for a dialog's show(), default 2 = Cancel). Controls by id, \"#id\", properties.name or text. A dialog's script resumes when the dialog closes.",
+        bridge_only: false,
+        schema: || {
+            schema(
+                json!({
+                    "action": {"type": "string", "enum": ["list", "get", "click", "set", "close"]},
+                    "window": {"type": ["integer", "string"], "description": "Window id or title (optional when one is open)."},
+                    "widget": {"type": ["integer", "string"], "description": "Control id, \"#id\", properties.name or text."},
+                    "value": {"description": "For `set`: text, number, bool, item index or item text."},
+                    "result": {"type": "integer", "description": "For `close`: what the dialog's show() returns."}
+                }),
+                &[],
+            )
+        },
+        run: script_ui_tool,
     },
     ToolDef {
         name: "screenshot",

@@ -121,6 +121,17 @@ enum Gesture {
         pin: u64,
         inv: Mat3,
     },
+    /// Puppet tool Record mode (⌘/Ctrl-drag a pin): the drag is sampled in real time (seconds
+    /// since it began, layer space) and becomes keyframes on release (`puppet.recordPin`); the
+    /// current time runs along while recording.
+    PuppetRecord {
+        layer: LayerId,
+        pin: u64,
+        inv: Mat3,
+        began: f64,
+        cti: Tick,
+        samples: Vec<(f64, [f64; 2])>,
+    },
     /// Pen tool: pulling the tangents of the vertex just placed.
     Pen {
         layer: LayerId,
@@ -934,7 +945,13 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
             t if t.is_shape() => Some(Gesture::Create { tool: t, start: cpt }),
             t if t.puppet_kind().is_some() => pin_hits.iter().rev().find(|h| h.pos.distance(press) < 8.0).and_then(|h| {
                 let l = comp.layer(h.layer)?;
-                Some(Gesture::PuppetPin { layer: h.layer, pin: h.pin, inv: l2c(&ectx, l).0.inverse()? })
+                let inv = l2c(&ectx, l).0.inverse()?;
+                if mods.command {
+                    let lp = inv.apply(gv2(cpt[0], cpt[1]));
+                    let began = ui.input(|i| i.time);
+                    return Some(Gesture::PuppetRecord { layer: h.layer, pin: h.pin, inv, began, cti: time, samples: vec![(0.0, [lp.x, lp.y])] });
+                }
+                Some(Gesture::PuppetPin { layer: h.layer, pin: h.pin, inv })
             }),
             Tool::Orbit | Tool::PanCamera | Tool::Dolly => Some(Gesture::Camera { tool }),
             Tool::Selection if super::tracker::hit_at(&track_hits, press).is_some() => {
@@ -1170,6 +1187,20 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 }
                 let _ = app.session.execute("mask.setVertex", params);
             }
+            Gesture::PuppetRecord { layer, pin, inv, began, cti, mut samples } => {
+                let lp = inv.apply(gv2(cpt[0], cpt[1]));
+                let now = ui.input(|i| i.time) - began;
+                if samples.last().is_none_or(|s| now > s.0) {
+                    samples.push((now, [lp.x, lp.y]));
+                }
+                // The current time runs with the recording (Record Options ▸ Speed).
+                let speed = app.session.state.puppet.record_speed.max(1.0) / 100.0;
+                app.session.set_time(cti + Tick::from_seconds_f64(now / speed));
+                painter.circle_filled(pos, 6.0, Color32::from_rgb(0xe0, 0x30, 0x30));
+                painter.text(pos + vec2(10.0, -10.0), Align2::LEFT_BOTTOM, "Recording", Tokens::ui(11.0), Color32::from_rgb(0xff, 0x60, 0x60));
+                ui.data_mut(|dd| dd.insert_temp(gid, Gesture::PuppetRecord { layer, pin, inv, began, cti, samples }));
+                ui.ctx().request_repaint();
+            }
             Gesture::PuppetPin { layer, pin, inv } => {
                 let lp = inv.apply(gv2(cpt[0], cpt[1]));
                 if let Err(e) = app.session.execute("puppet.movePin", json!({"layer": layer.0, "pin": pin, "position": [lp.x, lp.y], "merge": merge})) {
@@ -1202,6 +1233,12 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     if resp.drag_stopped() {
         if let (Some(g), Some(pos)) = (gesture, resp.interact_pointer_pos()) {
             match g {
+                Gesture::PuppetRecord { layer, pin, cti, samples, .. } => {
+                    let pts: Vec<serde_json::Value> = samples.iter().map(|(t, p)| json!([t, p[0], p[1]])).collect();
+                    if let Err(e) = app.session.execute("puppet.recordPin", json!({"layer": layer.0, "pin": pin, "samples": pts, "start": cti.seconds()})) {
+                        app.ui.status = e.to_string();
+                    }
+                }
                 Gesture::Create { tool, start } => {
                     let end = map.to_comp(pos);
                     create_shape(app, tool, start, end, mods.shift);

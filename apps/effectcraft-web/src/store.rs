@@ -216,6 +216,18 @@ impl ConfigStore for WebConfig {
         self.store.changed();
         Ok(())
     }
+    fn list(&self, dir: &str) -> Vec<String> {
+        let pre = format!("{CONFIG}{}/", dir.trim_end_matches('/'));
+        let mut v: Vec<String> = self
+            .store
+            .lock()
+            .list(&pre)
+            .into_iter()
+            .filter_map(|(k, ..)| k.strip_prefix(&pre).filter(|n| !n.is_empty() && !n.contains('/')).map(str::to_string))
+            .collect();
+        v.sort();
+        v
+    }
     fn dir(&self) -> Option<PathBuf> {
         Some(PathBuf::from("/"))
     }

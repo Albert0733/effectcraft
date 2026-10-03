@@ -41,6 +41,7 @@ fn app() -> (EffectcraftApp, u64, u64) {
             })
             .collect(),
         ground: None,
+        distortion: None,
     };
     s.execute("prop.set", json!({"layer": plate, "path": "effects/#1/solve", "value": solve.to_json()})).unwrap();
     s.camera_pending.clear();

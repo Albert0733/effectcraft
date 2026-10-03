@@ -74,6 +74,8 @@ pub enum Dialog {
     Precompose,
     /// Layer ▸ Layer Styles ▸ Layer Style Options…
     LayerStyles,
+    /// Edit ▸ Templates ▸ Render Settings… / Output Module….
+    RenderTemplates,
 }
 
 /// Host hooks provided by the native app (file pickers etc.).
@@ -855,6 +857,8 @@ impl EffectcraftApp {
         panels::precomp::mini_flowchart(self, &ctx);
         panels::home::capture_thumbnail(self);
         panels::dialogs::show(self, &ctx);
+        panels::scriptui_view::sync_panels(self);
+        panels::scriptui_view::show_windows(self, &ctx);
         panels::learn::coach(self, &ctx);
         self.draw_toast(ui, full);
     }

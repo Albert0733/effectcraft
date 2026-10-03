@@ -34,8 +34,10 @@ pub mod properties;
 pub mod puppet_tool;
 pub mod render_queue;
 pub mod roto_tool;
+pub mod rq_templates;
 pub mod scopes_panel;
 pub mod script_console;
+pub mod scriptui_view;
 pub mod settings;
 pub mod shortcut_editor;
 pub mod text_panels;
@@ -107,6 +109,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: PanelKind, rect: Rec
         PanelKind::Paint => paint_panels::paint(app, ui, rect),
         PanelKind::Brushes => paint_panels::brushes(app, ui, rect),
         PanelKind::EssentialGraphics => essential::show(app, ui, rect),
+        PanelKind::ScriptPanel(id) => scriptui_view::panel(app, ui, rect, id),
         PanelKind::Flowchart => flowchart::show(app, ui, rect),
         PanelKind::LumetriScopes => scopes_panel::show(app, ui, rect),
         PanelKind::Footage => footage_panel::show(app, ui, rect),

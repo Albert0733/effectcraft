@@ -10,6 +10,7 @@
 
 use rayon::prelude::*;
 
+use super::Distortion;
 use super::geometry::Pose;
 use super::linalg::*;
 
@@ -19,6 +20,8 @@ pub struct BaCam {
     pub pose: Pose,
     /// Focal length (pixels).
     pub f: f64,
+    /// Lens distortion (shared by all cameras; adjusted when [`BaOpts::distortion`]).
+    pub dist: Distortion,
 }
 
 /// One observation: camera `cam` sees point `pt` at `uv` (pixels relative to the principal
@@ -50,11 +53,13 @@ pub struct BaOpts {
     /// Huber threshold (pixels).
     pub huber: f64,
     pub max_iter: usize,
+    /// Adjust the shared radial distortion `(k1, k2)` too.
+    pub distortion: bool,
 }
 
 impl Default for BaOpts {
     fn default() -> Self {
-        BaOpts { focal: FocalMode::Fixed, fix_points: false, fix_centers: false, fixed: vec![], huber: 2.0, max_iter: 30 }
+        BaOpts { focal: FocalMode::Fixed, fix_points: false, fix_centers: false, fixed: vec![], huber: 2.0, max_iter: 30, distortion: false }
     }
 }
 
@@ -77,7 +82,8 @@ pub fn residual(c: &BaCam, x: V3, uv: [f64; 2]) -> Option<[f64; 2]> {
     if p[2] <= 1e-9 {
         return None;
     }
-    Some([c.f * p[0] / p[2] - uv[0], c.f * p[1] / p[2] - uv[1]])
+    let q = c.dist.distort([c.f * p[0] / p[2], c.f * p[1] / p[2]]);
+    Some([q[0] - uv[0], q[1] - uv[1]])
 }
 
 /// Total robust cost.
@@ -108,6 +114,8 @@ struct Layout {
     fidx: Vec<usize>,
     /// Index of the shared focal parameter.
     shared: Option<usize>,
+    /// Index of `k1` (then `k2`) when the distortion is adjusted.
+    dist: Option<usize>,
     n: usize,
     rot_only: bool,
 }
@@ -132,7 +140,11 @@ fn layout(ncam: usize, o: &BaOpts) -> Layout {
         n += 1;
         n - 1
     });
-    Layout { start, fidx, shared, n, rot_only: o.fix_centers }
+    let dist = o.distortion.then(|| {
+        n += 2;
+        n - 2
+    });
+    Layout { start, fidx, shared, dist, n, rot_only: o.fix_centers }
 }
 
 /// Camera-side Jacobian entries of one observation: (parameter index, d r / d param).
@@ -204,12 +216,21 @@ pub fn adjust(cams: &mut [BaCam], pts: &mut [V3], obs: &[BaObs], o: &BaOpts) -> 
                     continue;
                 }
                 let iz = 1.0 / xc[2];
-                let p = [c.f * xc[0] * iz, c.f * xc[1] * iz];
-                let r = [p[0] - ob.uv[0], p[1] - ob.uv[1]];
+                let p0 = [c.f * xc[0] * iz, c.f * xc[1] * iz];
+                let pd = c.dist.distort(p0);
+                let r = [pd[0] - ob.uv[0], pd[1] - ob.uv[1]];
                 let e = (r[0] * r[0] + r[1] * r[1]).sqrt();
                 let w = if e <= o.huber { 1.0 } else { o.huber / e };
-                let a = [[c.f * iz, 0.0, -c.f * xc[0] * iz * iz], [0.0, c.f * iz, -c.f * xc[1] * iz * iz]];
+                let a0 = [[c.f * iz, 0.0, -c.f * xc[0] * iz * iz], [0.0, c.f * iz, -c.f * xc[1] * iz * iz]];
+                // Through the distortion: d r = D d p.
+                let (dj, dk) = c.dist.jacobian(p0);
+                let a = [0, 1].map(|i| [0, 1, 2].map(|k| dj[i][0] * a0[0][k] + dj[i][1] * a0[1][k]));
+                let p = [dj[0][0] * p0[0] + dj[0][1] * p0[1], dj[1][0] * p0[0] + dj[1][1] * p0[1]];
                 cam_jac(&l, ci, c, xc, &a, p, &mut jc);
+                if let Some(g) = l.dist {
+                    jc.push((g, [dk[0][0], dk[1][0]]));
+                    jc.push((g + 1, [dk[0][1], dk[1][1]]));
+                }
                 // Point Jacobian: A R.
                 let jx = if o.fix_points {
                     [[0.0; 3]; 2]
@@ -236,7 +257,8 @@ pub fn adjust(cams: &mut [BaCam], pts: &mut [V3], obs: &[BaObs], o: &BaOpts) -> 
                             [w * (ja[0] * jx[0][0] + ja[1] * jx[1][0]), w * (ja[0] * jx[0][1] + ja[1] * jx[1][1]), w * (ja[0] * jx[0][2] + ja[1] * jx[1][2])];
                         // Each observation of a point is on another camera: only the shared focal
                         // length repeats.
-                        let found = if Some(*ia) == l.shared { ps.w.iter_mut().find(|e| e.0 == *ia) } else { None };
+                        let repeats = Some(*ia) == l.shared || l.dist.is_some_and(|g| *ia == g || *ia == g + 1);
+                        let found = if repeats { ps.w.iter_mut().find(|e| e.0 == *ia) } else { None };
                         match found {
                             Some(e) => e.1 = add(e.1, wv),
                             None => ps.w.push((*ia, wv)),
@@ -385,6 +407,10 @@ pub fn adjust(cams: &mut [BaCam], pts: &mut [V3], obs: &[BaObs], o: &BaOpts) -> 
                 if let Some(g) = l.shared {
                     c.f *= dc[g].clamp(-0.5, 0.5).exp();
                 }
+                if let Some(g) = l.dist {
+                    c.dist.k1 += dc[g].clamp(-0.2, 0.2);
+                    c.dist.k2 += dc[g + 1].clamp(-0.2, 0.2);
+                }
             }
             let mut np: Vec<V3> = pts.to_vec();
             if !o.fix_points {
@@ -445,7 +471,11 @@ mod tests {
         let truth: Vec<V3> = (0..80).map(|_| [u() * 6.0, u() * 4.0, 6.0 + u() * 4.0]).collect();
         let f = 900.0;
         let cams_true: Vec<BaCam> = (0..6)
-            .map(|i| BaCam { pose: Pose { r: rodrigues([0.0, -0.05 * i as f64, 0.01 * i as f64]), c: [0.3 * i as f64, 0.05 * i as f64, 0.0] }, f })
+            .map(|i| BaCam {
+                pose: Pose { r: rodrigues([0.0, -0.05 * i as f64, 0.01 * i as f64]), c: [0.3 * i as f64, 0.05 * i as f64, 0.0] },
+                f,
+                dist: Distortion::NONE,
+            })
             .collect();
         let mut obs = vec![];
         for (ci, c) in cams_true.iter().enumerate() {

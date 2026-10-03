@@ -37,6 +37,12 @@ pub fn solve_linear<const N: usize>(mut a: [[f64; N]; N], mut b: [f64; N]) -> Op
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Homography(pub [[f64; 3]; 3]);
 
+impl Default for Homography {
+    fn default() -> Self {
+        Homography::IDENTITY
+    }
+}
+
 impl Homography {
     pub const IDENTITY: Homography = Homography([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]);
 
