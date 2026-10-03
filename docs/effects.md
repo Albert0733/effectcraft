@@ -5,7 +5,7 @@
 
 EffectCraft ships 306 effects with 3009 parameters in total, grouped into the same categories as the Effects & Presets panel. Every effect is our own implementation, written from public behaviour descriptions and standard image-processing literature. Parameter names, order, popup options, units, defaults and ranges follow the reference application so that projects, expressions and muscle memory carry over.
 
-- **GPU**: 174 effects also run on the GPU compositor with identical results.
+- **GPU**: 181 effects also run on the GPU compositor with identical results.
 - **32**: 306 effects process 32-bit float (HDR, overbright) pixels without clamping.
 - **Status**: 306 implemented in full, 0 partial (what is missing is listed).
 
@@ -112,11 +112,11 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 | Levels | `ec.color.levels` | 36 | GPU | 32 | Implemented |
 | Levels (Individual Controls) | `ec.color.levelsic` | 27 | GPU | 32 | Implemented |
 | Lumetri Color | `ec.color.lumetri` | 66 | GPU | 32 | Implemented |
-| OCIO CDL Transform | `ec.color.ociocdl` | 12 |  | 32 | Implemented |
-| OCIO Color Space Transform | `ec.color.ociocolorspace` | 7 |  | 32 | Implemented |
-| OCIO Display Transform | `ec.color.ociodisplay` | 9 |  | 32 | Implemented |
-| OCIO File Transform | `ec.color.ociofile` | 4 |  | 32 | Implemented |
-| OCIO Look Transform | `ec.color.ociolook` | 6 |  | 32 | Implemented |
+| OCIO CDL Transform | `ec.color.ociocdl` | 12 | GPU | 32 | Implemented |
+| OCIO Color Space Transform | `ec.color.ociocolorspace` | 7 | GPU | 32 | Implemented |
+| OCIO Display Transform | `ec.color.ociodisplay` | 9 | GPU | 32 | Implemented |
+| OCIO File Transform | `ec.color.ociofile` | 4 | GPU | 32 | Implemented |
+| OCIO Look Transform | `ec.color.ociolook` | 6 | GPU | 32 | Implemented |
 | PS Arbitrary Map | `ec.color.psarbitrarymap` | 2 | GPU | 32 | Implemented |
 | Photo Filter | `ec.color.photofilter` | 4 | GPU | 32 | Implemented |
 | Selective Color | `ec.color.selectivecolor` | 38 | GPU | 32 | Implemented |
@@ -412,10 +412,10 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 
 | Effect | Id | Params | GPU | 32 | Status |
 |---|---|---:|:-:|:-:|---|
-| Apply Color LUT | `ec.utility.applylut` | 0 |  | 32 | Implemented |
+| Apply Color LUT | `ec.utility.applylut` | 0 | GPU | 32 | Implemented |
 | CC Overbrights | `ec.utility.ccoverbrights` | 2 |  | 32 | Implemented |
 | Cineon Converter | `ec.utility.cineon` | 7 |  | 32 | Implemented |
-| Color Profile Converter | `ec.utility.colorprofileconverter` | 7 |  | 32 | Implemented |
+| Color Profile Converter | `ec.utility.colorprofileconverter` | 7 | GPU | 32 | Implemented |
 | Face Measurements | `ec.utility.facemeasurements` | 14 |  | 32 | Implemented |
 | Face Track Points | `ec.utility.facetrackpoints` | 26 |  | 32 | Implemented |
 | Grow Bounds | `ec.utility.growbounds` | 1 |  | 32 | Implemented |

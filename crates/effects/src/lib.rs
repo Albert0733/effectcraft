@@ -99,6 +99,8 @@ pub use time_fx::{posterized_time, time_frames};
 pub use ocio::color_stabilizer_maps;
 // GPU effects, part B (3D Channel, Immersive Video, colour management, simulation render passes).
 pub use channel3d::{CRYPTO_LAYERS, id_color, selection_hashes};
+pub use ocio::{ColorOp, Straight, Tf, color_program};
+pub use utility::{Lut, load_lut};
 
 /// Effect categories in Effects & Presets order.
 pub const CATEGORIES: &[&str] = &[
@@ -942,6 +944,14 @@ pub const GPU_EFFECTS: &[&str] = &[
     "ec.3d.fog3d",
     "ec.3d.idmatte",
     "ec.3d.identifier",
+    // Colour management.
+    "ec.utility.applylut",
+    "ec.color.ociocdl",
+    "ec.color.ociocolorspace",
+    "ec.color.ociodisplay",
+    "ec.color.ociofile",
+    "ec.color.ociolook",
+    "ec.utility.colorprofileconverter",
 ];
 
 /// Effects whose output depends on [`EffectCtx::time`] directly (not only through animated

@@ -63,10 +63,7 @@ pub fn param_shown(effect: &str, param: &str, value: &dyn Fn(&str) -> Option<eff
 /// Controls of GPU-accelerated effects that only the CPU implements: while any of them is away
 /// from its default the effect renders on the CPU. (Prefixes ending in `/` cover a whole group.)
 const CPU_ONLY_CONTROLS: &[(&str, &[&str])] = &[
-    (
-        "ec.color.lumetri",
-        &["highDynamicRange", "basicCorrection/inputLut", "creative/look", "curves/rgbCurves/", "curves/hueSaturationCurves/", "hslSecondary/"],
-    ),
+    ("ec.color.lumetri", &["highDynamicRange", "curves/rgbCurves/", "curves/hueSaturationCurves/", "hslSecondary/"]),
     (
         "ec.color.colorama",
         &["inputPhase/addPhase", "outputCycle/usePresetPalette", "modify/", "pixelSelection/matchingMode", "masking/maskingMode", "masking/compositeOverLayer"],
