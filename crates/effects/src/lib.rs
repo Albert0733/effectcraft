@@ -838,6 +838,10 @@ pub const GPU_EFFECTS: &[&str] = &[
     "ec.distort.cctiler",
     "ec.distort.ccgriddler",
     "ec.distort.liquify",
+    "ec.distort.twirllegacy",
+    "ec.distort.ccripplepulse",
+    "ec.distort.ccpowerpin",
+    "ec.distort.ccflomotion",
     // effectcraft-gpu fx_noise (noise, blur, time)
     //
 ];

@@ -36,6 +36,7 @@ pub(crate) const KERNELS: &[&str] = &[
     "fxs_glow_op",
     "fxs_add",
     "fxs_div",
+    "fxs_flomotion",
 ];
 
 /// Effect ids implemented here.
@@ -67,6 +68,10 @@ pub(crate) const IDS: &[&str] = &[
     "ec.distort.cctiler",
     "ec.distort.ccgriddler",
     "ec.distort.liquify",
+    "ec.distort.twirllegacy",
+    "ec.distort.ccripplepulse",
+    "ec.distort.ccpowerpin",
+    "ec.distort.ccflomotion",
 ];
 
 /// Run effect `id` (one of [`IDS`]); `None` = this parameter combination runs on the CPU.
@@ -102,6 +107,10 @@ pub(crate) fn apply(e: &mut Enc, id: &str, ctx: &EffectCtx, b: GBuf) -> Option<G
         "ec.distort.cctiler" => cc_tiler(e, ctx, b),
         "ec.distort.ccgriddler" => cc_griddler(e, ctx, b),
         "ec.distort.liquify" => liquify(e, ctx, b),
+        "ec.distort.twirllegacy" => twirl_legacy(e, ctx, b),
+        "ec.distort.ccripplepulse" => ripple_pulse(e, ctx, b),
+        "ec.distort.ccpowerpin" => power_pin(e, ctx, b),
+        "ec.distort.ccflomotion" => flo_motion(e, ctx, b),
         _ => None,
     }
 }
@@ -436,6 +445,110 @@ fn liquify(e: &mut Enc, ctx: &EffectCtx, b: GBuf) -> Option<GBuf> {
         b,
         Some(&buf),
     )
+}
+
+fn twirl_legacy(e: &mut Enc, ctx: &EffectCtx, b: GBuf) -> Option<GBuf> {
+    let ang = ctx.params.f("angle").to_radians();
+    if ang == 0.0 {
+        return Some(b);
+    }
+    let (lw, lh) = (ctx.layer_size[0] * b.scale, ctx.layer_size[1] * b.scale);
+    let r = (ctx.params.f("radius") / 100.0 * lw.min(lh) * 0.5).max(1.0);
+    let c = b.to_px(ctx.params.v2("center"));
+    warp(e, 10, |p| p.f[0] = [c.0 as f32, c.1 as f32, r as f32, ang as f32], b, None)
+}
+
+fn ripple_pulse(e: &mut Enc, ctx: &EffectCtx, b: GBuf) -> Option<GBuf> {
+    let level = ctx.params.f("pulseLevel") / 100.0;
+    let amp = ctx.params.f("amplitude") / 100.0;
+    if level == 0.0 || amp == 0.0 {
+        return Some(b);
+    }
+    let c = b.to_px(ctx.params.v2("center"));
+    let span = ctx.params.f("timeSpan").max(0.01);
+    let size = ctx.layer_size[0].max(ctx.layer_size[1]) * b.scale;
+    let speed = size * 0.5 / span;
+    let lambda = (size * 0.06).max(2.0);
+    let height = level * amp * lambda * 0.5;
+    let front = speed * ctx.time.max(0.0);
+    let bump = ctx.params.b("renderBump");
+    warp(
+        e,
+        11,
+        |p| {
+            p.u[0][1] = bump as u32;
+            p.f[0] = [c.0 as f32, c.1 as f32, front as f32, speed as f32];
+            p.f[1] = [span as f32, lambda as f32, height as f32, 0.0];
+        },
+        b,
+        None,
+    )
+}
+
+fn power_pin(e: &mut Enc, ctx: &EffectCtx, mut b: GBuf) -> Option<GBuf> {
+    // Perspective below 100 % (a bilinear inverse by Newton iterations with finite
+    // differences) renders on the CPU.
+    if ctx.params.f("perspective") / 100.0 < 1.0 {
+        return None;
+    }
+    let (lw, lh) = (ctx.layer_size[0].max(1.0), ctx.layer_size[1].max(1.0));
+    let ex = [ctx.params.f("expandTop"), ctx.params.f("expandLeft"), ctx.params.f("expandRight"), ctx.params.f("expandBottom")];
+    let (x0, y0) = (-ex[1] / 100.0 * lw, -ex[0] / 100.0 * lh);
+    let (x1, y1) = (lw + ex[2] / 100.0 * lw, lh + ex[3] / 100.0 * lh);
+    let corners = [ctx.params.v2("topLeft"), ctx.params.v2("topRight"), ctx.params.v2("bottomRight"), ctx.params.v2("bottomLeft")];
+    if !ctx.adjustment {
+        let mut need = 0.0f64;
+        for c in &corners {
+            let (px, py) = b.to_px(*c);
+            need = need.max(-px).max(-py).max(px - b.img.width as f64).max(py - b.img.height as f64);
+        }
+        if need > 0.0 {
+            b.pad(e, need.ceil().min(4096.0) as u32 + 1)?;
+        }
+    }
+    let q = corners.map(|c| {
+        let p = b.to_px(c);
+        vec2(p.0, p.1)
+    });
+    let Some(inv) = Mat3::square_to_quad(q).inverse() else { return Some(b) };
+    let r = inv.0.map(|r| [r[0] as f32, r[1] as f32, r[2] as f32, 0.0]);
+    let (sc, off) = (b.scale, b.offset);
+    warp(
+        e,
+        12,
+        |p| {
+            p.f[2] = r[0];
+            p.f[3] = r[1];
+            p.f[4] = r[2];
+            p.f[5] = [x0 as f32, y0 as f32, (x1 - x0) as f32, (y1 - y0) as f32];
+            p.f[6] = [sc as f32, off[0] as f32, off[1] as f32, 0.0];
+        },
+        b,
+        None,
+    )
+}
+
+fn flo_motion(e: &mut Enc, ctx: &EffectCtx, b: GBuf) -> Option<GBuf> {
+    let knots = [(ctx.params.v2("knot1"), ctx.params.f("amount1") / 100.0), (ctx.params.v2("knot2"), ctx.params.f("amount2") / 100.0)];
+    if knots.iter().all(|k| k.1 == 0.0) {
+        return Some(b);
+    }
+    let ss = match ctx.params.e("antialiasing") {
+        0 => 1,
+        1 => 2,
+        _ => 3,
+    };
+    let falloff = ctx.params.f("falloff").max(0.01);
+    let (lw, lh) = (ctx.layer_size[0].max(1.0), ctx.layer_size[1].max(1.0));
+    let radius = (lw * lw + lh * lh).sqrt() * 0.5;
+    let mut p = Params::default();
+    p.u[0] = [ss, ctx.params.b("tileEdges") as u32, 0, 0];
+    for (i, (k, a)) in knots.iter().enumerate() {
+        p.f[i] = [k[0] as f32, k[1] as f32, *a as f32, 0.0];
+    }
+    p.f[2] = [falloff as f32, radius as f32, lw as f32, lh as f32];
+    p.f[3] = [b.scale as f32, b.offset[0] as f32, b.offset[1] as f32, 0.0];
+    run(e, "fxs_flomotion", &p, b, None)
 }
 
 // ---------------------------------------------------------------- separable tables

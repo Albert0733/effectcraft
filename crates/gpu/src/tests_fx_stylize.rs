@@ -142,6 +142,23 @@ fn cc_slant_smear_split() {
 }
 
 #[test]
+fn twirl_legacy_ripple_pulse_power_pin() {
+    effect_case("ec.distort.twirllegacy", &[("angle", n(90.0))]);
+    effect_case("ec.distort.twirllegacy", &[("angle", n(-250.0)), ("radius", n(80.0)), ("center", pt(30.0, 18.0))]);
+    effect_case("ec.distort.ccripplepulse", &[("pulseLevel", n(80.0)), ("timeSpan", n(0.5))]);
+    effect_case("ec.distort.ccripplepulse", &[("pulseLevel", n(-60.0)), ("amplitude", n(150.0)), ("renderBump", on()), ("center", pt(25.0, 20.0))]);
+    effect_case("ec.distort.ccpowerpin", &[("topLeft", pt(5.0, 3.0)), ("bottomRight", pt(62.0, 38.0))]);
+    effect_case("ec.distort.ccpowerpin", &[("topRight", pt(80.0, -6.0)), ("bottomLeft", pt(-4.0, 50.0)), ("expandLeft", n(20.0)), ("expandBottom", n(-10.0))]);
+}
+
+#[test]
+fn flo_motion() {
+    effect_case("ec.distort.ccflomotion", &[]);
+    effect_case("ec.distort.ccflomotion", &[("antialiasing", e(2)), ("tileEdges", on()), ("amount1", n(-150.0)), ("falloff", n(0.7))]);
+    effect_case("ec.distort.ccflomotion", &[("antialiasing", e(0)), ("amount2", n(0.0)), ("knot1", pt(20.0, 30.0))]);
+}
+
+#[test]
 fn liquify_render() {
     let mesh = "warp 20 50 0 0 0 10,10 20,15 30,20\ntwirlClockwise 24 80 0 0 0 40,25 42,27";
     effect_case("ec.distort.liquify", &[("distortionMesh", Value::Str(mesh.into()))]);

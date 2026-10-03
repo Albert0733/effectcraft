@@ -180,10 +180,29 @@ fn fxs_point(@builtin(global_invocation_id) gid: vec3<u32>) {
 //    f[0] = (cx, cy, size, rotation); f[1].x = segment angle
 //  9 Liquify (distort4::liquify): u[0].xy = (_, mesh nx, mesh ny); f[0] = (cell, mesh offset x, y,
 //    percentage); f[1] = (scale, buffer offset x, y); data = mesh offsets (x, y) per node
+// 10 Twirl (Legacy) (distort3::twirl_legacy): f[0] = (cx, cy, radius, angle)
+// 11 CC Ripple Pulse (distort3::cc_ripple_pulse): u[0].y = render bump; f[0] = (cx, cy, front,
+//    speed); f[1] = (time span, wavelength, height)
+// 12 CC Power Pin, full perspective (distort3::cc_power_pin): f[2..5] = inverse of the
+//    square → quad matrix (rows); f[5] = source rect in layer pixels (x0, y0, w, h);
+//    f[6] = (scale, buffer offset x, y)
 
 fn fxs_mesh_d(i: u32, j: u32) -> vec2<f32> {
     let k = (j * P.u[0].y + i) * 2u;
     return vec2<f32>(data[k], data[k + 1u]);
+}
+
+// distort3::cc_ripple_pulse's wave.
+fn fxs_pulse(r: f32) -> f32 {
+    let front = P.f[0].z;
+    let speed = P.f[0].w;
+    let span = P.f[1].x;
+    let age = (front - r) / max(speed, 1e-9);
+    if (age < 0.0 || age > span) {
+        return 0.0;
+    }
+    let fade = 1.0 - age / span;
+    return sin(FXS_TAU * (r - front) / P.f[1].y) * fade;
 }
 
 // distort4::Mesh::at.
@@ -360,6 +379,60 @@ fn fxs_warp(@builtin(global_invocation_id) gid: vec3<u32>) {
             let pct = P.f[0].w;
             s = vec2<f32>((lx + d.x * pct) * scale + o.x, (ly + d.y * pct) * scale + o.y);
         }
+        case 10u: {
+            let c = P.f[0].xy;
+            let r = P.f[0].z;
+            let dx = x - c.x;
+            let dy = y - c.y;
+            let d = sqrt(dx * dx + dy * dy);
+            if (d < r) {
+                let a = -P.f[0].w * (1.0 - d / r);
+                let sn = sin(a);
+                let co = cos(a);
+                s = vec2<f32>(c.x + dx * co - dy * sn, c.y + dx * sn + dy * co);
+            }
+        }
+        case 11u: {
+            let c = P.f[0].xy;
+            let dx = x - c.x;
+            let dy = y - c.y;
+            let r = sqrt(dx * dx + dy * dy);
+            let height = P.f[1].z;
+            let d = fxs_pulse(r) * height;
+            var u = vec2<f32>(0.0);
+            if (r > 1e-9) {
+                u = vec2<f32>(dx / r, dy / r);
+            }
+            var o = sample_bilinear(src, x - u.x * d, y - u.y * d);
+            if (P.u[0].y != 0u && d != 0.0) {
+                let slope = (fxs_pulse(r + 0.5) - fxs_pulse(r - 0.5)) * height;
+                let k = clamp(1.0 - slope * 0.5, 0.0, 2.0);
+                o = vec4<f32>(o.xyz * k, o.w);
+            }
+            textureStore(out, p, o);
+            return;
+        }
+        case 12u: {
+            let r0 = P.f[2];
+            let r1 = P.f[3];
+            let r2 = P.f[4];
+            var u = r0.x * x + r0.y * y + r0.z;
+            var v = r1.x * x + r1.y * y + r1.z;
+            let w = r2.x * x + r2.y * y + r2.z;
+            if (w != 1.0 && w != 0.0) {
+                u = u / w;
+                v = v / w;
+            }
+            if (u < -1e-9 || u > 1.0 + 1e-9 || v < -1e-9 || v > 1.0 + 1e-9) {
+                textureStore(out, p, vec4<f32>(0.0));
+                return;
+            }
+            let rc = P.f[5];
+            let lx = rc.x + u * rc.z;
+            let ly = rc.y + v * rc.w;
+            let o = P.f[6];
+            s = vec2<f32>(lx * o.x + o.y, ly * o.x + o.z);
+        }
         default: {}
     }
     if (clamped) {
@@ -367,6 +440,50 @@ fn fxs_warp(@builtin(global_invocation_id) gid: vec3<u32>) {
     } else {
         textureStore(out, p, sample_bilinear(src, s.x, s.y));
     }
+}
+
+// ---------------------------------------------------------------- CC Flo Motion (distort4::flo_motion)
+
+// One knot's pull at layer point q: f[k] = (knot x, knot y, amount, _).
+fn fxs_flo_knot(q: vec2<f32>, k: vec4<f32>) -> vec2<f32> {
+    if (k.z == 0.0) {
+        return q;
+    }
+    let d = q - k.xy;
+    let r = sqrt(d.x * d.x + d.y * d.y) / P.f[2].y;
+    let w = powz(1.0 - min(r, 1.0), P.f[2].x);
+    let s = max(1.0 - clamp(k.z, -4.0, 0.95) * w, 0.02);
+    return k.xy + d * s;
+}
+
+// u[0] = (supersampling, tile edges); f[0], f[1] = knots; f[2] = (falloff, radius, layer w,
+// layer h); f[3] = (scale, buffer offset x, y)
+@compute @workgroup_size(16, 16)
+fn fxs_flomotion(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let p = vec2<i32>(gid.xy);
+    if (!fxs_inside(p)) {
+        return;
+    }
+    let ss = P.u[0].x;
+    let scale = P.f[3].x;
+    let off = P.f[3].yz;
+    let lw = P.f[2].z;
+    let lh = P.f[2].w;
+    var acc = vec4<f32>(0.0);
+    for (var sy = 0u; sy < ss; sy++) {
+        for (var sx = 0u; sx < ss; sx++) {
+            let px = f32(p.x) + (f32(sx) + 0.5) / f32(ss);
+            let py = f32(p.y) + (f32(sy) + 0.5) / f32(ss);
+            var q = vec2<f32>((px - off.x) / scale, (py - off.y) / scale);
+            q = fxs_flo_knot(q, P.f[0]);
+            q = fxs_flo_knot(q, P.f[1]);
+            if (P.u[0].y != 0u) {
+                q = vec2<f32>(q.x - floor(q.x / lw) * lw, q.y - floor(q.y / lh) * lh);
+            }
+            acc += sample_bilinear(src, q.x * scale + off.x, q.y * scale + off.y);
+        }
+    }
+    textureStore(out, p, acc / f32(ss * ss));
 }
 
 // ---------------------------------------------------------------- separable table warps
