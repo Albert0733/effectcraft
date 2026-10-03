@@ -16,8 +16,8 @@
 
 <p align="center">
   A free, open-source compositor in the spirit of After Effects: compositions, layers,
-  keyframes, 259 effects, layer styles, expressions, 3D cameras and lights, and a render queue, native on macOS,
-  Windows and Linux, and in the browser later on. Young, moving fast, and already usable.
+  keyframes, 306 effects, layer styles, expressions, 3D cameras and lights, and a render queue, native on macOS,
+  Windows and Linux, and in the browser. Young, moving fast, and already usable.
 </p>
 
 <p align="center">
@@ -78,8 +78,8 @@ then to go further in a few places where it matters to us:
 - **Everything is scriptable.** Every menu item, timeline drag and property edit goes through one
   command registry, so the same actions are reachable from a command line, a JSON control
   channel and an MCP server for agents.
-- **No FFmpeg.** Video and audio decoding and encoding come from FilmCraft's own pure-Rust
-  codecs.
+- **No FFmpeg.** Video and audio decoding and encoding are pure Rust: FilmCraft's codecs and
+  EffectCraft's own VP9, AV1, HEVC and Opus encoders.
 
 ## Animate
 
@@ -115,7 +115,7 @@ Paragraph, Align, Info, Preview, Audio and the Render Queue, docked the way you 
 
 ## Effects
 
-259 effects across After Effects' categories, each with its parameter names, order and
+306 effects (every one of After Effects' 298, and more) across its categories, each with its parameter names, order and
 defaults: blur and sharpen, channel, color correction (Curves, Levels, Hue/Saturation, Lumetri
 Color…), distort (Warp, Bulge, Turbulent Displace, CC Power Pin…), generate (Fractal Noise,
 Gradient Ramp, Stroke, Write-on, Audio Spectrum…), keying, matte, noise and grain, perspective,
@@ -143,12 +143,13 @@ tools, and Front, Top, Left and Custom views.
 ## Export
 
 A Render Queue like After Effects', with Render Settings and Output Modules: **H.264** MP4 and
-**ProRes** MOV (Proxy to 4444 XQ with alpha) with audio, **WebM** (VP9 with inter frames and
-alpha, Opus), PNG, JPEG, TIFF and 32-bit EXR sequences, animated GIF and WAV/AIFF. Field
+**ProRes** MOV (Proxy to 4444 XQ with alpha) with audio, **HEVC** (Main / Main 10) and **AV1**
+MP4, **WebM** (VP9 with inter frames and alpha, or AV1; Opus audio), PNG, JPEG, TIFF and 32-bit EXR sequences, animated GIF and WAV/AIFF. Field
 rendering with 3:2 pulldown, effect/solo/guide/depth overrides, crop, region of interest and
 resize, Render Settings and Output Module templates with defaults, post-render actions, storage
-overflow and render logs. The same queue runs from the command line. Every encoder is
-FilmCraft's pure-Rust code; there is no FFmpeg inside.
+overflow and render logs. The same queue runs from the command line. Every encoder is pure
+Rust (FilmCraft's H.264, ProRes and AAC; EffectCraft's own VP9, AV1, HEVC and Opus); there is no
+FFmpeg inside.
 
 **Lottie** goes both ways: File ▸ Export ▸ Lottie JSON… writes a composition (precomps, shape,
 solid, image, text and null layers, eased and spatial keyframes, masks, track mattes, blend
@@ -195,10 +196,12 @@ tests, layering, asset attribution and the WebAssembly build). See [CONTRIBUTING
 ## Where it stands
 
 EffectCraft is young. The core of After Effects is in place and gets deeper every week: what is
-done and what comes next is in the [ROADMAP](ROADMAP.md). Not there yet: Roto Brush, Warp
-Stabilizer and the 3D camera tracker, Advanced 3D, on-canvas text editing and GPU compositing. The web build
-([docs/web.md](docs/web.md)) runs the full app in the browser, single-threaded for now. Projects
-are saved as `.ecproj`, readable versioned JSON; After Effects `.aep` files cannot be opened.
+done and what comes next is in the [ROADMAP](ROADMAP.md). Still to come: learned models for
+Roto Brush and face tracking (both use classical methods today), GPU versions of the remaining
+CPU-only effects, the Advanced 3D Extended Viewer, and shared-memory threads in the web build. The
+web build ([docs/web.md](docs/web.md)) runs the full app in the browser, with renders, analyses
+and viewer frames in Web Workers. Projects are saved as `.ecproj`, readable versioned JSON; After
+Effects `.aep` files cannot be opened.
 
 ## How it's made
 

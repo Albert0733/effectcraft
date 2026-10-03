@@ -13,8 +13,8 @@ The model is `effectcraft_engine::prefs::Prefs`: serde, versioned (`version`), a
 keys (`general.undoLevels`, `autoSave.intervalMinutes`, `labels.3.name`). It is stored as
 `prefs.json` through the session's `ConfigStore` (the desktop app uses the platform config
 directory: `~/Library/Application Support/EffectCraft` on macOS, `%APPDATA%\EffectCraft` on
-Windows, `$XDG_CONFIG_HOME/effectcraft` on Linux; the web app can back the same trait with
-`localStorage`). Loading migrates older layouts, keeps unknown keys (from newer versions) and
+Windows, `$XDG_CONFIG_HOME/effectcraft` on Linux; the web app keeps it in browser storage: the
+Origin Private File System, or IndexedDB where OPFS can't write, see [web.md](web.md)). Loading migrates older layouts, keeps unknown keys (from newer versions) and
 falls back to defaults for values that don't parse.
 
 Commands (CLI, MCP, control channel):
@@ -90,6 +90,8 @@ Commands (CLI, MCP, control channel):
   Effect Controls / Properties the layer's
 - `appearance.cycleMaskColors`: new masks cycle through the mask colours (off: all the first)
 - `appearance.useGradients`: soft gradient on panel tab strips
+- `appearance.inWindowMenuBarMac`: on macOS, draw the menu bar inside the window instead of the
+  native menu bar
 - `grids.gridStyle`, `grids.guideStyle`: lines, dashed lines or dots (grid, proportional grid,
   guides); `grids.proportionalHorizontal` / `grids.proportionalVertical`: View ▸ Show
   Proportional Grid divisions
