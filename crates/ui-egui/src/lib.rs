@@ -791,6 +791,11 @@ impl EffectcraftApp {
             self.session.poll_mask_track();
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
         }
+        // Background tasks (Content-Aware Fill, Scene Edit Detection).
+        if !self.session.tasks.is_empty() {
+            self.session.poll_jobs();
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
         // Analyses running in a worker (the web app).
         if !self.session.offloaded.is_empty() {
             self.session.poll_offload();

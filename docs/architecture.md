@@ -287,6 +287,42 @@ demand (`self_at`) and `roto.propagate` fills in the background; `Session::edit`
 Key in step with the layer's source, masks and upstream effects. Freeze stores final 8-bit mattes
 in the effect.
 
+**Content-Aware Fill** (`raster::inpaint`, `engine::commands::content_fill`): the hole is
+where the layer's masked source (`Renderer::layer_input` with no effects) is under half
+opacity, grown by Alpha Expansion. Optical flow between neighbouring membrane-filled frames is
+*completed* inside the holes (membrane interpolation of the surrounding tiles' motion); each
+missing pixel follows it forwards and backwards to the nearest frame (or reference frame) where
+it is visible, the two candidates blended by temporal distance, with Lighting Correction adding
+the membrane of the border mismatch (Poisson-style). What no frame shows is synthesised by
+PatchMatch (Barnes et al. 2009) inside Wexler et al.'s (2007) multi-scale EM: Object refines each
+frame starting from the previous result warped along the flow; Surface carries one synthesised
+fill through the range; Edge Blend is the membrane fill alone. The frames are written as a PNG
+sequence and imported into a "Fill" layer above the source. It runs as a generic **background
+task** (`engine::jobs`: a closure with progress and cancel on a thread, inline on wasm32 or
+with `wait`, whose result is applied on the UI thread as one undo step); the Progress panel and
+`jobs.list` / `jobs.cancel` show these tasks together with the render queue and the analyses.
+
+**Scene Edit Detection** (`raster::cuts`) compares consecutive frames by colour-histogram
+distance and motion-compensated (block-flow warped) luma error, takes their geometric mean and
+marks frames that exceed a threshold and several times their neighbours' median; the cuts
+become layer markers, split layers, or split-and-precomposed layers. **Auto-trace**
+(`path::trace`) runs marching squares on the chosen channel, Douglas–Peucker simplification and
+cubic fitting with Corner Roundness blending chord and smooth tangents; holes become Subtract
+masks, and a work-area trace keys Mask Path per frame.
+
+**Align Video to Data** reads data footage (File ▸ Import of `.json`, `.csv`, `.tsv`, kept as
+text in the project). Supported data: JSON as an array of objects or an object holding one
+(`{"samples": [...]}`), CSV/TSV with a header row (quoted fields allowed). The time key is the
+`key` parameter or the first field named `time`, `timestamp`, `t`, `date`, `datetime`, `utc`,
+`gps_time`, `seconds` or `time_s`; values may be ISO 8601 date-times (with `Z` or `±hh:mm`),
+times of day (`hh:mm:ss.sss`), timecode (`hh:mm:ss:ff` at the footage rate), Unix seconds or
+Unix milliseconds. The layer's Start Time becomes `dataStart + videoStart − firstSample`
+(`videoStart` given, or the file's creation date on the desktop; reduced to a time of day when
+the data has no dates).
+
+**Lumetri Scopes** (`raster::scopes`) are density plots of the viewer frame (rendered over the
+comp background) with BT.601 / BT.709 / BT.2020 luma and colour-difference coefficients.
+
 ## 5. Expressions
 
 Expressions are JavaScript, run by boa, with After Effects' object model (`thisComp`, `thisLayer`,

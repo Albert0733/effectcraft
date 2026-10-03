@@ -638,7 +638,7 @@ fn dynamic_menus_and_window_viewer_labels() {
     assert_eq!(crate::menus::entry_label(&s, &entry("window.panel", "composition")), "Composition: Main");
     assert_eq!(crate::menus::entry_label(&s, &entry("window.panel", "timeline")), "Timeline: Main");
     assert!(crate::menus::entry_label(&s, &entry("window.panel", "layer")).starts_with("Layer: "));
-    assert_eq!(crate::menus::entry_label(&s, &entry("window.unavailablePanel", "footage")), "Footage: (none)");
+    assert_eq!(crate::menus::entry_label(&s, &entry("window.panel", "footage")), "Footage: (none)");
     // Other open comps are listed as viewers.
     let other = s.execute("comp.new", json!({"name": "Second"})).unwrap()["comp"].as_u64().unwrap();
     let (e, _) = crate::menus::dynamic(&s, "openViewers", &Default::default());
