@@ -118,9 +118,11 @@ pub struct RenderSource {
     pub layer_cache: Arc<LayerCache>,
     /// GPU compositor on the viewer's device (Mercury GPU Acceleration), if available.
     pub gpu: Option<Gpu>,
-    /// Keep GPU frames on the GPU for the viewer (native egui-wgpu textures). Off by default:
-    /// Show Channel / exposure / region-of-interest drawing read the CPU frame texture, so GPU
-    /// frames are read back (the compositing still runs on the GPU).
+    /// Keep GPU frames on the GPU for the viewer (native egui-wgpu textures). Off on the
+    /// desktop: Show Channel / exposure / region-of-interest drawing read the CPU frame texture,
+    /// so GPU frames are read back (the compositing still runs on the GPU). On in the browser
+    /// while the viewer draws plainly, because there frames can't be read back synchronously
+    /// (`EffectcraftApp::gpu_display`).
     pub gpu_display: bool,
 }
 
@@ -173,6 +175,11 @@ impl Frames {
         if self.ctx.is_none() {
             self.ctx = Some(ctx.clone());
         }
+    }
+
+    /// The egui context (to request repaints from callbacks).
+    pub fn context(&self) -> Option<egui::Context> {
+        self.ctx.clone()
     }
 
     pub fn get(&self, k: &FrameKey) -> Option<FrameImage> {

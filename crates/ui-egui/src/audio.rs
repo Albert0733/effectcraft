@@ -1,8 +1,9 @@
 //! Real-time audio preview.
 //!
 //! The frontend owns no audio API: the native app supplies an [`AudioDevice`] (cpal) through
-//! [`crate::Hooks::audio_device`]. During preview playback an [`AudioPlayback`] runs a feeder
-//! thread that mixes the composition ahead of the device with the same mixdown export uses
+//! [`crate::Hooks::audio_device`], the web app one on Web Audio. During preview playback an
+//! [`AudioPlayback`] runs a feeder thread (wasm32: [`AudioPlayback::pump`] every UI frame) that
+//! mixes the composition ahead of the device with the same mixdown export uses
 //! (`effectcraft_render::audio::mix_comp`: Audio switch, solo, Audio Levels, audio effects) and
 //! pushes it into an [`AudioFeed`]; the device callback pulls from the feed.
 //!
@@ -35,6 +36,9 @@ pub trait AudioDevice: Send {
     fn latency_frames(&self) -> u64 {
         0
     }
+    /// Called every UI frame while playing: devices without an audio thread of their own (Web
+    /// Audio) move queued samples to the output here.
+    fn pump(&mut self) {}
 }
 
 /// Opens the default output device (`None` when there is none).
@@ -160,8 +164,16 @@ pub struct AudioPlayback {
     device: Box<dyn AudioDevice>,
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
+    /// wasm32 (no threads): what the feeder thread would own, run by [`AudioPlayback::pump`].
+    feeder: Option<(RenderSource, ItemId, i64)>,
     pub rate: u32,
     pub span: PlaySpan,
+}
+
+/// Audio kept queued ahead of the device: ~200 ms (a feeder thread tops it up continuously);
+/// wasm32 tops it up once per UI frame, so it keeps ~350 ms to ride out slow frames.
+fn queue_target(rate: u32) -> usize {
+    if cfg!(target_arch = "wasm32") { rate as usize * 7 / 20 } else { rate as usize / 5 }
 }
 
 impl AudioPlayback {
@@ -185,13 +197,18 @@ impl AudioPlayback {
         for _ in 0..prime {
             cursor = feed_block(&src, comp, &feed, &span, cursor, rate);
         }
+        if cfg!(target_arch = "wasm32") {
+            let mut p = AudioPlayback { feed: feed.clone(), device, stop, thread: None, feeder: Some((src, comp, cursor)), rate, span };
+            p.device.start(feed)?;
+            p.pump();
+            return Ok(p);
+        }
         let thread = {
             let (feed, stop) = (feed.clone(), stop.clone());
             std::thread::Builder::new()
                 .name("ec-audio-feed".into())
                 .spawn(move || {
-                    // Keep ~200 ms queued ahead of the device.
-                    let target = rate as usize / 5;
+                    let target = queue_target(rate);
                     while !stop.load(Ordering::Relaxed) {
                         if feed.queued_frames() < target && !feed.finished.load(Ordering::Relaxed) {
                             cursor = feed_block(&src, comp, &feed, &span, cursor, rate);
@@ -203,7 +220,19 @@ impl AudioPlayback {
                 .map_err(|e| e.to_string())?
         };
         device.start(feed.clone())?;
-        Ok(AudioPlayback { feed, device, stop, thread: Some(thread), rate, span })
+        Ok(AudioPlayback { feed, device, stop, thread: Some(thread), feeder: None, rate, span })
+    }
+
+    /// Every UI frame while playing: on wasm32 mix ahead into the feed (what the feeder thread
+    /// does elsewhere), then let the device take what it needs.
+    pub fn pump(&mut self) {
+        if let Some((src, comp, cursor)) = &mut self.feeder {
+            let target = queue_target(self.rate);
+            while self.feed.queued_frames() < target && !self.feed.finished.load(Ordering::Relaxed) {
+                *cursor = feed_block(src, *comp, &self.feed, &self.span, *cursor, self.rate);
+            }
+        }
+        self.device.pump();
     }
 
     /// The comp sample index audible now.

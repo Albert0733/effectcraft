@@ -1511,10 +1511,12 @@ dependencies = [
  "egui",
  "js-sys",
  "log",
+ "serde",
  "serde_json",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+ "web-time",
 ]
 
 [[package]]

@@ -239,7 +239,7 @@ fn auto_save(s: &mut Session, _: &Value) -> Result<Value> {
 
 fn recovery_info(s: &mut Session, _: &Value) -> Result<Value> {
     let root = s.default_autosave_root();
-    let latest = crate::autosave::latest(&s.prefs, s.path.as_deref(), root.as_deref()).map(|p| p.to_string_lossy().to_string());
+    let latest = crate::autosave::latest_in(s.file_ops(), &s.prefs, s.path.as_deref(), root.as_deref()).map(|p| p.to_string_lossy().to_string());
     Ok(json!({
         "lastAutoSave": s.autosave.last_path,
         "latestOnDisk": latest,

@@ -89,11 +89,19 @@ impl Session {
         self.config.as_ref().and_then(|c| c.dir())
     }
 
+    /// Where auto-saves live: the config store's [`crate::config::FileOps`], else the file system.
+    pub fn file_ops(&self) -> &dyn crate::config::FileOps {
+        match &self.config {
+            Some(c) => c.files(),
+            None => &crate::config::StdFiles,
+        }
+    }
+
     /// Write an auto-save now (whether or not the project is dirty). Returns its path.
     pub fn autosave_now(&mut self) -> Result<String> {
         let json = self.project.to_json();
         let root = self.default_autosave_root();
-        let (path, slot) = autosave::write(&self.prefs, self.path.as_deref(), root.as_deref(), self.autosave.last_slot, &json)
+        let (path, slot) = autosave::write_in(self.file_ops(), &self.prefs, self.path.as_deref(), root.as_deref(), self.autosave.last_slot, &json)
             .map_err(|e| EngineError::Other(format!("auto-save failed: {e}")))?;
         let p = path.to_string_lossy().to_string();
         self.autosave.last_slot = Some(slot);

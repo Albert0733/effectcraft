@@ -15,6 +15,7 @@ pub mod demo;
 pub mod links;
 pub mod mask_track;
 pub mod menus;
+pub mod offload;
 pub mod prefs;
 pub mod render_queue;
 pub mod roto;
@@ -297,6 +298,11 @@ pub struct Session {
     /// The JavaScript scripting engine (set by the host that links `effectcraft-script`):
     /// `script.run`, File ▸ Scripts ▸ Run Script File… (`.jsx`/`.js`) and the Script Console.
     pub script: Option<ScriptRunner>,
+    /// Runs renders and analyses off the UI thread where there are no threads (the web app's
+    /// Web Workers, see [`offload`]); `None` = threads (desktop) or inline (wasm32).
+    pub offload: Option<Arc<dyn offload::Offload>>,
+    /// Analyses running in the [`Session::offload`] worker.
+    pub offloaded: Vec<offload::OffloadedJob>,
 }
 
 /// A script to run (see [`Session::script`]).
@@ -348,6 +354,8 @@ impl Default for Session {
             autosave: autosave::AutoSaveState::default(),
             snapshot: None,
             script: None,
+            offload: None,
+            offloaded: vec![],
         }
     }
 }

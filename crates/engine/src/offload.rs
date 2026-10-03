@@ -1,0 +1,741 @@
+//! Background jobs where the platform has no threads (the browser).
+//!
+//! On the desktop, renders and analyses run on threads that share the session's project and
+//! footage. A wasm build without atomics has one thread per instance, so the web app runs a
+//! second engine instance in a Web Worker instead and talks to it with messages: an
+//! [`Offload`] (set as [`Session::offload`]) ships a [`WorkerRequest`] — the serialized project,
+//! the footage files it reads and the job — and feeds the worker's [`WorkerReply`]s back into an
+//! [`Inbox`] that the session drains every frame ([`Session::poll_render`],
+//! [`Session::poll_offload`]). The worker side is [`run_request`]: a plain session fed the
+//! project runs the job blocking and reports through a callback.
+//!
+//! | Job | Worker runs | Reply applied on the UI thread |
+//! |---|---|---|
+//! | Render Queue | the export of every queued item | item status, progress; files arrive through the host |
+//! | Warp Stabilizer analysis | [`Session::start_warp`] | the effect's property group (one undo step) |
+//! | Track Motion / Stabilize Motion | the tracker analysis | the tracker group |
+//! | Mask tracking | the mask track | the mask group |
+//! | Roto Brush Freeze | the freeze | the effect group |
+//!
+//! Roto Brush propagation fills the session's segmentation cache rather than the project, so it
+//! keeps running on the UI thread.
+//!
+//! Cancelling terminates the worker: what an analysis tracked so far is dropped and the Render
+//! Queue item being rendered becomes "User Stopped".
+
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+
+use effectcraft_keyframe::ShapePath;
+use effectcraft_project::render_queue::{RenderQueueItem, RenderStatus};
+use effectcraft_project::tracking::TrackerSettings;
+use effectcraft_project::{ItemId, ItemKind, LayerId, Project, PropGroup, Uid};
+use effectcraft_time::Tick;
+use serde::{Deserialize, Serialize};
+
+use crate::mask_track::MaskMethod;
+use crate::render_queue::{ItemUpdate, JobShared, JobState};
+use crate::tracking::PointValues;
+use crate::{Event, Session};
+
+/// One job for a worker.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerRequest {
+    pub id: u64,
+    /// The project ([`Project::to_json`]).
+    pub project: String,
+    /// Footage files the job reads; the host ships their bytes before the request.
+    pub files: Vec<String>,
+    pub job: WorkerJob,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum WorkerJob {
+    /// Render Queue: per item, one (item with that output module, resolved output path) per
+    /// output module.
+    Render {
+        items: Vec<Vec<(RenderQueueItem, String)>>,
+    },
+    Warp {
+        comp: ItemId,
+        layer: LayerId,
+        effect: Uid,
+    },
+    RotoFreeze {
+        comp: ItemId,
+        layer: LayerId,
+        effect: Uid,
+    },
+    Track {
+        comp: ItemId,
+        layer: LayerId,
+        tracker: Uid,
+        direction: crate::tracking::Direction,
+        settings: TrackerSettings,
+        points: Vec<PointValues>,
+        times: Vec<Tick>,
+    },
+    MaskTrack {
+        comp: ItemId,
+        layer: LayerId,
+        mask: Uid,
+        direction: crate::tracking::Direction,
+        path: ShapePath,
+        method: MaskMethod,
+        times: Vec<Tick>,
+    },
+}
+
+impl WorkerJob {
+    pub fn kind(&self) -> JobKind {
+        match self {
+            WorkerJob::Render { .. } => JobKind::Render,
+            WorkerJob::Warp { .. } => JobKind::Warp,
+            WorkerJob::RotoFreeze { .. } => JobKind::RotoFreeze,
+            WorkerJob::Track { .. } => JobKind::Track,
+            WorkerJob::MaskTrack { .. } => JobKind::MaskTrack,
+        }
+    }
+
+    /// (comp, layer, property group uid) an analysis writes to.
+    pub fn target(&self) -> Option<(ItemId, LayerId, Uid)> {
+        match *self {
+            WorkerJob::Render { .. } => None,
+            WorkerJob::Warp { comp, layer, effect } | WorkerJob::RotoFreeze { comp, layer, effect } => Some((comp, layer, effect)),
+            WorkerJob::Track { comp, layer, tracker, .. } => Some((comp, layer, tracker)),
+            WorkerJob::MaskTrack { comp, layer, mask, .. } => Some((comp, layer, mask)),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum JobKind {
+    Render,
+    Warp,
+    RotoFreeze,
+    Track,
+    MaskTrack,
+}
+
+impl JobKind {
+    /// The undo step an analysis result becomes.
+    pub fn label(self) -> &'static str {
+        match self {
+            JobKind::Render => "Render",
+            JobKind::Warp => "Warp Stabilizer Analysis",
+            JobKind::RotoFreeze => "Freeze",
+            JobKind::Track => "Analyze Track",
+            JobKind::MaskTrack => "Track Mask",
+        }
+    }
+}
+
+/// What a worker reports.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum WorkerReply {
+    /// Render Queue progress.
+    Render {
+        state: JobState,
+    },
+    /// A Render Queue item started or finished.
+    Item {
+        update: ItemUpdate,
+    },
+    /// Analysis progress (frames).
+    Progress {
+        done: u64,
+        total: u64,
+    },
+    /// An analysis finished: its property group after the job, and the job's message.
+    Group {
+        comp: ItemId,
+        layer: LayerId,
+        group: Box<PropGroup>,
+        message: String,
+    },
+    Failed {
+        error: String,
+    },
+    /// The job ended (always the last reply).
+    Done,
+}
+
+/// Replies waiting for the UI thread.
+#[derive(Default)]
+pub struct Inbox(Mutex<Vec<WorkerReply>>);
+
+impl Inbox {
+    pub fn push(&self, r: WorkerReply) {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).push(r);
+    }
+    pub fn take(&self) -> Vec<WorkerReply> {
+        std::mem::take(&mut *self.0.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+}
+
+/// Runs jobs off the UI thread (the web app: a pool of Web Workers).
+pub trait Offload: Send + Sync {
+    /// Start `req`; replies go to `inbox` (ending with [`WorkerReply::Done`]).
+    fn start(&self, req: WorkerRequest, inbox: Arc<Inbox>) -> Result<(), String>;
+    /// Stop job `id` now (the worker is terminated; no more replies arrive).
+    fn cancel(&self, id: u64);
+}
+
+static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+
+pub fn next_id() -> u64 {
+    NEXT_ID.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Footage files a project reads (paths, sequence frames).
+pub fn footage_files(p: &Project) -> Vec<String> {
+    let mut v: Vec<String> = p
+        .items
+        .values()
+        .filter_map(|i| match &i.kind {
+            ItemKind::Footage(f) if !f.path.is_empty() => Some(std::iter::once(f.path.clone()).chain(f.sequence.iter().cloned()).collect::<Vec<_>>()),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    v.sort();
+    v.dedup();
+    v
+}
+
+// ---------------------------------------------------------------- progress hook (worker side)
+
+thread_local! {
+    static HOOK: RefCell<Option<Box<dyn FnMut(u64, u64)>>> = const { RefCell::new(None) };
+}
+
+/// Analyses call this as frames complete; a worker forwards it (no-op elsewhere).
+pub fn report(done: u64, total: u64) {
+    HOOK.with(|h| {
+        if let Ok(mut h) = h.try_borrow_mut()
+            && let Some(f) = h.as_mut()
+        {
+            f(done, total);
+        }
+    });
+}
+
+fn with_hook<R>(hook: Box<dyn FnMut(u64, u64)>, f: impl FnOnce() -> R) -> R {
+    HOOK.with(|h| *h.borrow_mut() = Some(hook));
+    let r = f();
+    HOOK.with(|h| *h.borrow_mut() = None);
+    r
+}
+
+// ---------------------------------------------------------------- worker side
+
+/// Where a worker sends its replies.
+pub type Post = Rc<dyn Fn(WorkerReply)>;
+
+/// Run `req` on `s` (a session with footage, expressions and an exporter, but no project yet),
+/// blocking, reporting through `post`. Always ends with [`WorkerReply::Done`].
+pub fn run_request(s: &mut Session, req: WorkerRequest, post: &Post) {
+    match Project::from_json(&req.project) {
+        Ok(p) => {
+            s.replace_project(p, None);
+            if let Err(e) = run_job(s, req.job, post.clone()) {
+                post(WorkerReply::Failed { error: e });
+            }
+        }
+        Err(e) => post(WorkerReply::Failed { error: format!("project: {e}") }),
+    }
+    post(WorkerReply::Done);
+}
+
+fn run_job(s: &mut Session, job: WorkerJob, post: Post) -> Result<(), String> {
+    let kind = job.kind();
+    let target = job.target();
+    match job {
+        WorkerJob::Render { items } => {
+            let exporter = s.exporter.clone().ok_or("export is not available in this build")?;
+            let shared = JobShared::default();
+            // Item updates and progress go out as they happen (progress at most every 100 ms).
+            let last = Cell::new(None::<web_time::Instant>);
+            let notify = |sh: &JobShared, force: bool| {
+                let ups = std::mem::take(&mut *crate::render_queue::lock(&sh.updates));
+                for u in ups {
+                    post(WorkerReply::Item { update: u });
+                }
+                if force || last.get().is_none_or(|t| t.elapsed().as_millis() >= 100) {
+                    last.set(Some(web_time::Instant::now()));
+                    post(WorkerReply::Render { state: sh.snapshot() });
+                }
+            };
+            crate::render_queue::run_items(s, exporter, items, &shared, &mut |sh| notify(sh, false));
+            notify(&shared, true);
+            Ok(())
+        }
+        WorkerJob::Warp { comp, layer, effect } => analysis(s, kind, target, post, |s| s.start_warp(comp, layer, effect, true).map(|_| ())),
+        WorkerJob::RotoFreeze { comp, layer, effect } => analysis(s, kind, target, post, |s| {
+            s.start_roto(comp, layer, effect, crate::roto::RotoTask::Freeze, crate::roto::Direction::Both, true).map(|_| ())
+        }),
+        WorkerJob::Track { comp, layer, tracker, direction, settings, points, times } => analysis(s, kind, target, post, |s| {
+            let work = crate::tracking::Work {
+                project: s.project.clone(),
+                footage: s.footage.clone(),
+                expr: s.expr.clone(),
+                cache: s.layer_cache.clone(),
+                comp,
+                layer,
+                settings,
+                points,
+                times,
+            };
+            s.start_track(work, tracker, direction, true)
+        }),
+        WorkerJob::MaskTrack { comp, layer, mask, direction, path, method, times } => analysis(s, kind, target, post, |s| {
+            let work = crate::mask_track::MaskWork {
+                project: s.project.clone(),
+                footage: s.footage.clone(),
+                expr: s.expr.clone(),
+                cache: s.layer_cache.clone(),
+                comp,
+                layer,
+                path,
+                method,
+                times,
+            };
+            s.start_mask_track(work, mask, direction, true)
+        }),
+    }
+}
+
+fn analysis(
+    s: &mut Session,
+    kind: JobKind,
+    target: Option<(ItemId, LayerId, Uid)>,
+    post: Post,
+    run: impl FnOnce(&mut Session) -> Result<(), String>,
+) -> Result<(), String> {
+    let (comp, layer, uid) = target.ok_or("no target")?;
+    let rev = s.revision;
+    // Progress at most every 100 ms.
+    let p = post.clone();
+    let mut last = None::<web_time::Instant>;
+    let hook = Box::new(move |done: u64, total: u64| {
+        if last.is_none_or(|t: web_time::Instant| t.elapsed().as_millis() >= 100) {
+            last = Some(web_time::Instant::now());
+            p(WorkerReply::Progress { done, total });
+        }
+    });
+    with_hook(hook, || run(s))?;
+    let message = s
+        .events
+        .iter()
+        .rev()
+        .find_map(|e| match e {
+            Event::Toast { message, .. } => Some(message.clone()),
+            _ => None,
+        })
+        .unwrap_or_default();
+    let failed = s.events.iter().any(|e| matches!(e, Event::Toast { error: true, .. }));
+    if failed {
+        return Err(message);
+    }
+    if s.revision == rev && kind != JobKind::Track && kind != JobKind::MaskTrack {
+        // Nothing written (e.g. the analysis was empty).
+        return Err(if message.is_empty() { "nothing was analysed".into() } else { message });
+    }
+    let group = s.project.comp(comp).and_then(|c| c.layer(layer)).and_then(|l| l.props.find_group(uid)).cloned().ok_or("the analysed property is gone")?;
+    post(WorkerReply::Group { comp, layer, group: Box::new(group), message });
+    Ok(())
+}
+
+// ---------------------------------------------------------------- UI side
+
+/// Analysis progress of an offloaded job.
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OffloadProgress {
+    pub done: u64,
+    pub total: u64,
+    pub elapsed: f64,
+    pub finished: bool,
+    pub cancelled: bool,
+    pub error: Option<String>,
+}
+
+/// Frames per second of `done` frames in `elapsed` seconds.
+pub(crate) fn rate(done: u64, elapsed: f64) -> f64 {
+    if elapsed > 0.0 { done as f64 / elapsed } else { 0.0 }
+}
+
+impl OffloadProgress {
+    pub(crate) fn track(&self) -> crate::tracking::TrackProgress {
+        crate::tracking::TrackProgress { done: self.done, total: self.total, elapsed: self.elapsed, fps: rate(self.done, self.elapsed), ..Default::default() }
+    }
+}
+
+/// An analysis running in a worker.
+pub struct OffloadedJob {
+    pub id: u64,
+    pub kind: JobKind,
+    pub comp: ItemId,
+    pub layer: LayerId,
+    pub uid: Uid,
+    pub inbox: Arc<Inbox>,
+    pub progress: OffloadProgress,
+    started: web_time::Instant,
+}
+
+/// A Render Queue job running in a worker (see [`crate::render_queue::RenderJob`]).
+pub struct RemoteRender {
+    pub id: u64,
+    pub inbox: Arc<Inbox>,
+    /// The queue items in the job.
+    pub ids: Vec<u64>,
+}
+
+impl Session {
+    /// Whether jobs started without `wait` go to the [`Offload`].
+    pub fn offloads(&self) -> bool {
+        self.offload.is_some()
+    }
+
+    /// The offloaded analysis of `kind`, if one runs.
+    pub fn offloaded(&self, kind: JobKind) -> Option<&OffloadedJob> {
+        self.offloaded.iter().find(|j| j.kind == kind && !j.progress.finished)
+    }
+
+    /// Send an analysis to the worker.
+    pub(crate) fn offload_analysis(&mut self, job: WorkerJob) -> Result<(), String> {
+        let off = self.offload.clone().ok_or("no background worker")?;
+        let kind = job.kind();
+        let (comp, layer, uid) = job.target().ok_or("not an analysis")?;
+        if self.offloaded(kind).is_some() {
+            return Err(format!("a {} job is already running", kind.label()));
+        }
+        let id = next_id();
+        let inbox = Arc::new(Inbox::default());
+        let req = WorkerRequest { id, project: self.project.to_json(), files: footage_files(&self.project), job };
+        off.start(req, inbox.clone())?;
+        self.offloaded.push(OffloadedJob { id, kind, comp, layer, uid, inbox, progress: OffloadProgress::default(), started: web_time::Instant::now() });
+        self.events.push(Event::ProjectChanged { revision: self.revision });
+        Ok(())
+    }
+
+    /// Cancel the offloaded analysis of `kind` (nothing is written).
+    pub fn cancel_offloaded(&mut self, kind: JobKind) -> bool {
+        let off = self.offload.clone();
+        let Some(j) = self.offloaded.iter_mut().find(|j| j.kind == kind && !j.progress.finished) else { return false };
+        if let Some(off) = off {
+            off.cancel(j.id);
+        }
+        j.progress.cancelled = true;
+        j.progress.finished = true;
+        true
+    }
+
+    /// Apply worker replies to offloaded analyses (results become one undo step each) and drop
+    /// finished jobs. Frontends call this every frame while [`Session::offloaded`] is not empty.
+    pub fn poll_offload(&mut self) -> bool {
+        if self.offloaded.is_empty() {
+            return false;
+        }
+        let mut changed = false;
+        let mut results = vec![];
+        for j in &mut self.offloaded {
+            if j.progress.cancelled {
+                continue;
+            }
+            for r in j.inbox.take() {
+                changed = true;
+                match r {
+                    WorkerReply::Progress { done, total } => {
+                        j.progress.done = done;
+                        j.progress.total = total;
+                    }
+                    WorkerReply::Group { comp, layer, group, message } => results.push((j.kind, comp, layer, group, message)),
+                    WorkerReply::Failed { error } => j.progress.error = Some(error),
+                    WorkerReply::Done => j.progress.finished = true,
+                    WorkerReply::Render { .. } | WorkerReply::Item { .. } => {}
+                }
+            }
+            j.progress.elapsed = j.started.elapsed().as_secs_f64();
+        }
+        for (kind, comp, layer, group, message) in results {
+            let uid = group.uid;
+            let r = self.edit(kind.label(), None, |p, _| {
+                let g = p
+                    .comp_mut(comp)
+                    .and_then(|c| c.layer_mut(layer))
+                    .and_then(|l| l.props.find_group_mut(uid))
+                    .ok_or_else(|| crate::EngineError::Other("the analysed property was removed during the analysis".into()))?;
+                *g = *group;
+                Ok(())
+            });
+            match r {
+                Ok(()) => self.events.push(Event::Toast { message, error: false }),
+                Err(e) => self.events.push(Event::Toast { message: format!("{}: {e}", kind.label()), error: true }),
+            }
+        }
+        let mut done = vec![];
+        self.offloaded.retain(|j| {
+            if j.progress.finished {
+                done.push((j.kind, j.progress.clone()));
+            }
+            !j.progress.finished
+        });
+        for (kind, p) in done {
+            changed = true;
+            if let Some(e) = p.error {
+                self.events.push(Event::Toast { message: format!("{}: {e}", kind.label()), error: true });
+            } else if p.cancelled {
+                self.events.push(Event::Toast { message: format!("{} stopped", kind.label()), error: false });
+            }
+            self.bump();
+        }
+        changed
+    }
+
+    /// Feed a remote render's replies into its [`JobShared`]; a cancelled one is wrapped up here
+    /// (the item being rendered and the ones after it become "User Stopped").
+    pub(crate) fn drain_remote_render(&mut self) {
+        let Some(job) = &self.render_job else { return };
+        let Some(remote) = &job.remote else { return };
+        let shared = job.shared.clone();
+        for r in remote.inbox.take() {
+            match r {
+                WorkerReply::Render { state } => {
+                    let fin = crate::render_queue::lock(&shared.state).finished;
+                    *crate::render_queue::lock(&shared.state) = JobState { finished: fin, ..state };
+                }
+                WorkerReply::Item { update } => crate::render_queue::lock(&shared.updates).push(update),
+                WorkerReply::Failed { error } => {
+                    log::warn!("render worker: {error}");
+                    let cur = crate::render_queue::lock(&shared.state).current;
+                    if let Some(id) = cur {
+                        crate::render_queue::lock(&shared.updates).push(ItemUpdate::Finished {
+                            id,
+                            status: RenderStatus::Failed(error),
+                            seconds: 0.0,
+                            output: None,
+                        });
+                    }
+                }
+                WorkerReply::Done => crate::render_queue::lock(&shared.state).finished = true,
+                _ => {}
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn round<T: Serialize + for<'de> Deserialize<'de>>(v: &T) -> String {
+        let a = serde_json::to_string(v).unwrap();
+        let back: T = serde_json::from_str(&a).unwrap();
+        let b = serde_json::to_string(&back).unwrap();
+        assert_eq!(a, b);
+        a
+    }
+
+    #[test]
+    fn protocol_round_trips() {
+        let mut s = Session::default();
+        s.execute("file.openDemoProject", serde_json::json!({})).unwrap();
+        let comp = s.active_comp_id().unwrap();
+        s.execute("renderQueue.add", serde_json::json!({})).unwrap();
+        let item = s.project.render_queue[0].clone();
+        let reqs = [
+            WorkerJob::Render { items: vec![vec![(item.clone(), "/out.gif".into())]] },
+            WorkerJob::Warp { comp, layer: LayerId(3), effect: 9 },
+            WorkerJob::RotoFreeze { comp, layer: LayerId(3), effect: 9 },
+            WorkerJob::Track {
+                comp,
+                layer: LayerId(1),
+                tracker: 4,
+                direction: crate::tracking::Direction::Backward,
+                settings: TrackerSettings::default(),
+                points: vec![PointValues {
+                    uid: 5,
+                    spec: effectcraft_track::PointSpec { center: [1.0, 2.0], feature_size: [3.0, 4.0], search_offset: [0.5, 0.0], search_size: [9.0, 9.0] },
+                    attach_offset: [0.25, -1.0],
+                }],
+                times: vec![Tick::ZERO, Tick::from_seconds_f64(0.5)],
+            },
+            WorkerJob::MaskTrack {
+                comp,
+                layer: LayerId(2),
+                mask: 7,
+                direction: crate::tracking::Direction::Forward,
+                path: ShapePath::ellipse([10.0, 20.0], 5.0, 6.0),
+                method: MaskMethod::Perspective,
+                times: vec![Tick::from_seconds_f64(1.0)],
+            },
+        ];
+        for job in reqs {
+            let kind = job.kind();
+            let req = WorkerRequest { id: 42, project: s.project.to_json(), files: footage_files(&s.project), job };
+            let t = round(&req);
+            assert!(t.contains("\"kind\":"), "{kind:?}");
+            let back: WorkerRequest = serde_json::from_str(&t).unwrap();
+            assert_eq!(back.job.kind(), kind);
+            assert_eq!(Project::from_json(&back.project).unwrap(), *s.project);
+        }
+        let g = s.active_comp().unwrap().layers[0].props.clone();
+        for r in [
+            WorkerReply::Render { state: JobState { current: Some(3), done: 4, total: 10, items_total: 1, ..Default::default() } },
+            WorkerReply::Item { update: ItemUpdate::Started { id: 3, unix: 1_700_000_000 } },
+            WorkerReply::Item { update: ItemUpdate::Finished { id: 3, status: RenderStatus::Failed("x".into()), seconds: 1.5, output: Some("/a.gif".into()) } },
+            WorkerReply::Progress { done: 1, total: 2 },
+            WorkerReply::Group { comp, layer: LayerId(1), group: Box::new(g), message: "ok".into() },
+            WorkerReply::Failed { error: "boom".into() },
+            WorkerReply::Done,
+        ] {
+            let t = round(&r);
+            assert!(t.starts_with("{\"type\":"), "{t}");
+        }
+    }
+
+    /// An [`Offload`] that runs the job right away in a second session, through JSON (what a
+    /// Web Worker does, minus the threads).
+    struct Inline;
+    impl Offload for Inline {
+        fn start(&self, req: WorkerRequest, inbox: Arc<Inbox>) -> Result<(), String> {
+            let req: WorkerRequest = serde_json::from_str(&serde_json::to_string(&req).unwrap()).unwrap();
+            let mut w = Session { exporter: Some(Arc::new(crate::rq_tests::MockExporter { log: Default::default() })), ..Default::default() };
+            let post: Post = Rc::new(move |r| inbox.push(serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap()));
+            run_request(&mut w, req, &post);
+            Ok(())
+        }
+        fn cancel(&self, _: u64) {}
+    }
+
+    #[test]
+    fn render_runs_through_the_offload() {
+        let mut s = Session {
+            exporter: Some(Arc::new(crate::rq_tests::MockExporter { log: Default::default() })),
+            offload: Some(Arc::new(Inline)),
+            ..Default::default()
+        };
+        s.execute("file.openDemoProject", serde_json::json!({})).unwrap();
+        s.execute("renderQueue.add", serde_json::json!({"output": "/x.gif"})).unwrap();
+        let ids = s.start_render(false).unwrap();
+        // (the inline offload has replied already; replies are applied when polled)
+        s.poll_render();
+        assert!(s.render_job.is_none());
+        let it = s.project.render_queue.iter().find(|i| i.id == ids[0]).unwrap();
+        assert_eq!(it.status, RenderStatus::Done, "{:?}", it.status);
+        assert!(it.last_output.as_deref().is_some_and(|o| o.ends_with("x.gif")));
+        // `wait` renders inline.
+        s.execute("renderQueue.add", serde_json::json!({"output": "/y.gif"})).unwrap();
+        s.start_render(true).unwrap();
+        assert!(s.render_job.is_none() || s.render_job.as_ref().unwrap().remote.is_none());
+    }
+
+    /// Runs jobs in a session sharing `footage` (the synthetic clip of the tracking tests).
+    struct InlineWith(Arc<dyn effectcraft_render::FootageSource>);
+    impl Offload for InlineWith {
+        fn start(&self, req: WorkerRequest, inbox: Arc<Inbox>) -> Result<(), String> {
+            let req: WorkerRequest = serde_json::from_str(&serde_json::to_string(&req).unwrap()).unwrap();
+            let mut w = Session { footage: self.0.clone(), ..Default::default() };
+            let post: Post = Rc::new(move |r| inbox.push(serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap()));
+            run_request(&mut w, req, &post);
+            Ok(())
+        }
+        fn cancel(&self, _: u64) {}
+    }
+
+    /// Never replies (a job still running); records cancellations.
+    #[derive(Default)]
+    struct Hanging(Mutex<Vec<u64>>);
+    impl Offload for Hanging {
+        fn start(&self, _: WorkerRequest, _: Arc<Inbox>) -> Result<(), String> {
+            Ok(())
+        }
+        fn cancel(&self, id: u64) {
+            self.0.lock().unwrap().push(id);
+        }
+    }
+
+    fn pose(f: u32) -> ([f64; 2], f64, f64) {
+        ([150.0 + 2.0 * f as f64, 110.0 + 1.0 * f as f64], 0.0, 1.0)
+    }
+
+    #[test]
+    fn track_analysis_runs_through_the_offload_as_one_undo_step() {
+        let (mut s, clip, _) = crate::tests_track::setup(crate::tests_track::patch_frames(pose));
+        s.offload = Some(Arc::new(InlineWith(s.footage.clone())));
+        s.execute("track.motion", serde_json::json!({})).unwrap();
+        s.execute("track.setPoint", serde_json::json!({"point": 1, "center": pose(0).0, "featureSize": [36, 36], "searchSize": [80, 80]})).unwrap();
+        let undo = s.history.undo.len();
+        s.execute("track.analyze", serde_json::json!({"direction": "forward"})).unwrap();
+        assert!(s.is_tracking() && s.track_job.is_none(), "offloaded, not on a thread");
+        assert!(s.track_progress().is_some());
+        assert!(s.poll_offload());
+        assert!(!s.is_tracking() && s.offloaded.is_empty());
+        let l = s.active_comp().unwrap().layer(clip).unwrap();
+        let tp = l.trackers().next().unwrap().0.track_points().next().unwrap().clone();
+        let fc = tp.get("featureCenter").unwrap();
+        assert_eq!(fc.keys.len(), 25);
+        let v = fc.value_at(crate::tests_track::frame_time(12)).as_vec2();
+        assert!((v[0] - pose(12).0[0]).abs() < 0.3 && (v[1] - pose(12).0[1]).abs() < 0.3, "{v:?}");
+        assert_eq!(s.history.undo.len(), undo + 1);
+        assert_eq!(s.history.undo.last().unwrap().0, "Analyze Track");
+        assert!(s.events.iter().any(|e| matches!(e, Event::Toast { message, error: false } if message.starts_with("Tracked"))));
+        assert!(s.undo());
+        let l = s.active_comp().unwrap().layer(clip).unwrap();
+        assert!(l.trackers().next().unwrap().0.track_points().next().unwrap().get("featureCenter").unwrap().keys.is_empty());
+        // `wait` runs inline.
+        s.redo();
+        s.execute("track.analyze", serde_json::json!({"direction": "forward", "wait": true})).ok();
+        assert!(s.offloaded.is_empty());
+    }
+
+    #[test]
+    fn cancelling_offloaded_jobs() {
+        let (mut s, _, _) = crate::tests_track::setup(crate::tests_track::patch_frames(pose));
+        let off = Arc::new(Hanging::default());
+        s.offload = Some(off.clone());
+        s.exporter = Some(Arc::new(crate::rq_tests::MockExporter { log: Default::default() }));
+        // Analysis: stopping drops the job, nothing is written.
+        s.execute("track.motion", serde_json::json!({})).unwrap();
+        let rev = s.revision;
+        s.execute("track.analyze", serde_json::json!({})).unwrap();
+        assert!(s.is_tracking());
+        assert!(s.execute("track.analyze", serde_json::json!({})).is_err(), "one at a time");
+        assert!(s.stop_track());
+        s.poll_offload();
+        assert!(!s.is_tracking());
+        assert_eq!(off.0.lock().unwrap().len(), 1);
+        assert!(s.events.iter().any(|e| matches!(e, Event::Toast { message, .. } if message.contains("stopped"))));
+        assert!(s.revision > rev);
+        // Render: the queued items become User Stopped.
+        s.execute("renderQueue.add", serde_json::json!({"output": "/a.gif"})).unwrap();
+        let ids = s.start_render(false).unwrap();
+        assert!(s.is_rendering());
+        assert!(s.stop_render());
+        s.poll_render();
+        assert!(!s.is_rendering());
+        assert_eq!(off.0.lock().unwrap().len(), 2);
+        let it = s.project.render_queue.iter().find(|i| i.id == ids[0]).unwrap();
+        assert_eq!(it.status, RenderStatus::UserStopped);
+    }
+
+    #[test]
+    fn progress_hook_is_scoped() {
+        report(1, 2); // no hook: nothing happens
+        let seen = Rc::new(RefCell::new(vec![]));
+        let s2 = seen.clone();
+        with_hook(Box::new(move |d, t| s2.borrow_mut().push((d, t))), || {
+            report(1, 3);
+            report(2, 3);
+        });
+        report(3, 3);
+        assert_eq!(*seen.borrow(), vec![(1, 3), (2, 3)]);
+    }
+}
