@@ -527,8 +527,15 @@ impl<'a> Renderer<'a> {
         let layer_size = if size.0 == 0 { [ctx.comp.width as f64, ctx.comp.height as f64] } else { [size.0 as f64, size.1 as f64] };
         let mask_shapes = masks::shapes(ctx, layer);
         let host = FxHost { r: self, ctx, layer, index: Default::default() };
-        let env =
-            EffectEnv { masks: &mask_shapes, host: Some(&host), comp_time: ctx.time.seconds(), frame_rate: ctx.comp.frame_rate.as_f64(), effect_index: 0 };
+        let env = EffectEnv {
+            masks: &mask_shapes,
+            host: Some(&host),
+            comp_time: ctx.time.seconds(),
+            frame_rate: ctx.comp.frame_rate.as_f64(),
+            effect_index: 0,
+            working_space: self.pipe.space,
+            working_linear: self.pipe.linear,
+        };
         // Video effects in stack order (index, group, spec); disabled and audio effects skipped.
         let stack: Vec<(usize, &effectcraft_project::PropGroup, &'static effectcraft_effects::EffectSpec)> = fx
             .groups()

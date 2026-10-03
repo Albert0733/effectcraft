@@ -27,6 +27,7 @@ mod misc;
 mod noise;
 mod noise2;
 mod obsolete;
+mod ocio;
 pub mod paint;
 mod perspective;
 mod perspective2;
@@ -245,6 +246,10 @@ pub struct EffectEnv<'a> {
     pub frame_rate: f64,
     /// Index of the running effect in its layer's stack (for [`EffectHost::self_at`]).
     pub effect_index: usize,
+    /// The project's working colour space (`None` = unmanaged, treated as sRGB).
+    pub working_space: Option<effectcraft_color::ColorSpace>,
+    /// Working-space pixels are linear light (Linearize Working Space).
+    pub working_linear: bool,
 }
 
 /// What an effect gets to render with.
@@ -348,6 +353,7 @@ pub fn registry() -> &'static [EffectSpec] {
         v.extend(noise2::specs());
         v.extend(color3::specs());
         v.extend(obsolete::specs());
+        v.extend(ocio::specs());
         v.extend(time_fx::specs());
         v.extend(audio_fx::specs());
         v.extend(paint::specs());
