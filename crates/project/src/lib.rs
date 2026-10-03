@@ -542,6 +542,10 @@ pub struct Layer {
     /// reflections) of Advanced 3D comps instead of being drawn.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub environment: bool,
+    /// Layer ▸ Light ▸ Create Environment Light Background Layer: the layer's (equirectangular)
+    /// image is drawn as the 3D scene's backdrop, seen through the camera, instead of as a card.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub environment_background: bool,
     /// The property tree (Masks, Effects, Transform, Text, Contents, Camera/Light options…).
     pub props: PropGroup,
 }

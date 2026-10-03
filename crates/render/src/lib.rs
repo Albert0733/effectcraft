@@ -1016,7 +1016,7 @@ impl<'a> Renderer<'a> {
 
     /// The region of interest of a top-level 2D frame: (x, y) offset of the output in output
     /// pixels and its size. `None` renders the whole comp (no ROI, or a nested comp).
-    fn roi_offset(&self) -> Option<(f64, f64, u32, u32)> {
+    pub(crate) fn roi_offset(&self) -> Option<(f64, f64, u32, u32)> {
         let r = self.opts.roi.filter(|_| self.depth == 0)?;
         let s = self.opts.scale;
         if r[2] <= 0.0 || r[3] <= 0.0 {
@@ -1218,17 +1218,29 @@ impl<'a> Renderer<'a> {
     }
 
     /// Apply the track matte / preserve transparency to an isolated layer render, then blend.
-    fn composite_iso(&self, ctx: &EvalCtx, layer: &Layer, mut iso: Image, canvas: &mut Image, opacity: f32) {
+    fn composite_iso(&self, ctx: &EvalCtx, layer: &Layer, iso: Image, canvas: &mut Image, opacity: f32) {
+        self.composite_iso_with(ctx, layer, iso, canvas, opacity, None);
+    }
+
+    /// [`Self::composite_iso`] with the track matte's pixels already drawn (`matte`, e.g. a 3D
+    /// matte seen through the camera); otherwise the matte layer is placed in 2D.
+    pub(crate) fn composite_iso_with(&self, ctx: &EvalCtx, layer: &Layer, mut iso: Image, canvas: &mut Image, opacity: f32, matte_img: Option<Image>) {
         let matte = layer.track_matte.and_then(|tm| ctx.comp.layer(tm.layer).filter(|m| m.id != layer.id).map(|m| (m, tm.kind)));
         let preserve = layer.preserve_transparency;
         if let Some((m, kind)) = matte {
-            let mut mimg = Image::new(canvas.width, canvas.height);
-            if m.is_active_at(ctx.time)
-                && let Some(mb) = self.layer_buf(ctx, m)
-            {
-                let mo = ctx.opacity(m) as f32;
-                self.place(ctx, m, &mb, &mut mimg, BlendMode::Normal, mo);
-            }
+            let mimg = match matte_img {
+                Some(i) if i.width == canvas.width && i.height == canvas.height => i,
+                _ => {
+                    let mut mimg = Image::new(canvas.width, canvas.height);
+                    if m.is_active_at(ctx.time)
+                        && let Some(mb) = self.layer_buf(ctx, m)
+                    {
+                        let mo = ctx.opacity(m) as f32;
+                        self.place(ctx, m, &mb, &mut mimg, BlendMode::Normal, mo);
+                    }
+                    mimg
+                }
+            };
             iso.data.par_iter_mut().zip(mimg.data.par_iter()).for_each(|(p, q)| {
                 let k = match kind {
                     MatteKind::Alpha => q[3],

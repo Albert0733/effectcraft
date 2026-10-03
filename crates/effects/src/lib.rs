@@ -16,7 +16,7 @@ mod channel3d;
 mod color2;
 mod color3;
 mod color_fx;
-mod controls;
+pub mod controls;
 mod distort;
 mod distort2;
 mod distort3;

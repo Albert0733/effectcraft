@@ -818,6 +818,7 @@ pub fn layer(project: &mut Project, comp: &Comp, name: &str, source: LayerSource
         markers: vec![],
         markers_locked: false,
         environment: false,
+        environment_background: false,
         auto_orient,
         props: root,
     }

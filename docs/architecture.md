@@ -101,9 +101,15 @@ transparent ones are sorted back to front and blended. The software rasteriser
 `Accelerator::raster_3d` with a wgpu render pipeline (`advanced3d.wgsl`) that repeats the
 shading step for step, and tests compare the two. Resolve, depth of field (a gather blur by
 each pixel's circle of confusion from the camera's Depth of Field settings) and the conversion
-back to the working encoding run on the CPU for both. Not yet: motion blur, track mattes and
-blend modes inside an Advanced 3D run, collapsed 3D precomps (drawn flattened), morph targets,
-extruded strokes.
+back to the working encoding run on the CPU for both. **Motion blur** renders the scene at
+sub-samples spread over the comp's shutter (angle, phase, samples per frame) — layers with the
+Motion Blur switch, the camera and the lights at the sub-sample time, other layers at the frame
+time — and averages them. Layers with a **blend mode, a track matte or Preserve Transparency**
+are rendered on their own through the same camera and lights, hidden where the rest of the run
+is nearer, and composited from the farthest to the nearest through the 2D path (a 3D matte is
+itself drawn through the camera). **Environment Light Background** layers (Layer ▸ Light) draw
+their equirectangular image behind the run, looked up by each pixel's view direction. Not yet:
+collapsed 3D precomps (drawn flattened), morph targets, extruded strokes.
 
 A **layer cache** keeps each layer's finished pixels (source, masks and effects) keyed by a hash of
 its evaluated inputs, excluding the transform. Static and transform-only layers render once;

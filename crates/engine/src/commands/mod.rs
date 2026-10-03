@@ -36,6 +36,7 @@ mod proxy;
 pub mod puppet;
 mod query;
 mod render_queue;
+pub(crate) mod rig3d;
 pub mod roto_cmds;
 mod settings;
 mod stubs;
@@ -111,6 +112,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(styles::specs());
         v.extend(three_d::specs());
         v.extend(model3d::specs());
+        v.extend(rig3d::specs());
         v.extend(text_anim::specs());
         v.extend(text_edit::specs());
         v.extend(layer_time::specs());
