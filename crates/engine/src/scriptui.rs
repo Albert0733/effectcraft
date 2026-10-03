@@ -112,7 +112,101 @@ pub struct Widget {
     pub handlers: Vec<String>,
     /// The active tab of a tabbed panel (child index).
     pub active_tab: usize,
+    /// What the control's `onDraw` handler painted (ScriptUIGraphics), in control coordinates.
+    /// Frontends paint it instead of the control's default look, unless it contains
+    /// [`DrawOp::Os`] (`drawOSControl()`), which draws the default look first.
+    pub draw: Vec<DrawOp>,
     pub children: Vec<Widget>,
+}
+
+/// One segment of a ScriptUIGraphics path (control coordinates, pixels).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "k")]
+pub enum PathSeg {
+    /// `moveTo(x, y)`: starts a new subpath.
+    M { x: f64, y: f64 },
+    /// `lineTo(x, y)`.
+    L { x: f64, y: f64 },
+    /// `rectPath(x, y, w, h)`: a closed rectangle subpath.
+    R { x: f64, y: f64, w: f64, h: f64 },
+    /// `ellipsePath(x, y, w, h)`: a closed ellipse inscribed in the rectangle.
+    E { x: f64, y: f64, w: f64, h: f64 },
+    /// `closePath()`.
+    Z,
+}
+
+/// One paint call of an `onDraw` handler. Colours are straight RGBA in 0..1; `None` is a theme
+/// colour (a brush or pen made from a theme colour name).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "camelCase")]
+pub enum DrawOp {
+    /// `fillPath(brush, path)`.
+    Fill { color: Option<[f32; 4]>, path: Vec<PathSeg> },
+    /// `strokePath(pen, path)`.
+    Stroke { color: Option<[f32; 4]>, width: f64, path: Vec<PathSeg> },
+    /// `drawString(text, pen, x, y, font)`: `(x, y)` is the text's top-left.
+    Text {
+        text: String,
+        color: Option<[f32; 4]>,
+        x: f64,
+        y: f64,
+        size: f64,
+        #[serde(default)]
+        style: String,
+    },
+    /// `drawOSControl()`: the control's default look.
+    Os,
+    /// `drawImage(image, x, y, w?, h?)` (drawn as a placeholder frame).
+    Image { x: f64, y: f64, w: f64, h: f64 },
+}
+
+impl PathSeg {
+    /// The subpaths of `path` as polylines (ellipses flattened to `n` segments), each with
+    /// whether it is closed.
+    pub fn polylines(path: &[PathSeg], n: usize) -> Vec<(Vec<[f64; 2]>, bool)> {
+        fn flush(cur: &mut Vec<[f64; 2]>, out: &mut Vec<(Vec<[f64; 2]>, bool)>, closed: bool) {
+            if cur.len() > 1 {
+                out.push((std::mem::take(cur), closed));
+            } else {
+                cur.clear();
+            }
+        }
+        let mut out = vec![];
+        let mut cur: Vec<[f64; 2]> = vec![];
+        for seg in path {
+            match *seg {
+                PathSeg::M { x, y } => {
+                    flush(&mut cur, &mut out, false);
+                    cur.push([x, y]);
+                }
+                PathSeg::L { x, y } => cur.push([x, y]),
+                PathSeg::Z => {
+                    let start = cur.first().copied();
+                    flush(&mut cur, &mut out, true);
+                    // Drawing continues from the subpath's start.
+                    cur.extend(start);
+                }
+                PathSeg::R { x, y, w, h } => {
+                    flush(&mut cur, &mut out, false);
+                    out.push((vec![[x, y], [x + w, y], [x + w, y + h], [x, y + h]], true));
+                }
+                PathSeg::E { x, y, w, h } => {
+                    flush(&mut cur, &mut out, false);
+                    let (cx, cy, rx, ry) = (x + w / 2.0, y + h / 2.0, w / 2.0, h / 2.0);
+                    let n = n.max(8);
+                    let pts = (0..n)
+                        .map(|i| {
+                            let a = i as f64 / n as f64 * std::f64::consts::TAU;
+                            [cx + rx * a.cos(), cy + ry * a.sin()]
+                        })
+                        .collect();
+                    out.push((pts, true));
+                }
+            }
+        }
+        flush(&mut cur, &mut out, false);
+        out
+    }
 }
 
 impl Widget {
@@ -493,7 +587,8 @@ pub(crate) fn set(s: &mut Session, p: &Value) -> Result<Value> {
         let i = w.items.iter().position(|it| it == t).ok_or_else(|| crate::commands::bad(c, format!("no item `{t}` (items: {:?})", w.items)))?;
         value = json!(i);
     }
-    dispatch(s, ScriptUiEvent { window, widget, kind: "change".into(), value })
+    let kind = if p.get("changing").and_then(Value::as_bool) == Some(true) { "changing" } else { "change" };
+    dispatch(s, ScriptUiEvent { window, widget, kind: kind.into(), value })
 }
 
 /// `scriptui.close`: close a window (a dialog's `show()` returns `result`, default 2 = Cancel).
@@ -555,6 +650,31 @@ mod tests {
         assert_eq!(win.root.lookup(&json!("Cancel")).unwrap().id, 3);
         assert_eq!(win.root.lookup(&json!("#4")).unwrap().id, 4);
         assert_eq!(win.root.lookup(&json!(1)).unwrap().id, 1);
+    }
+
+    #[test]
+    fn draw_lists_flatten_to_polylines_and_round_trip() {
+        let path = vec![
+            PathSeg::M { x: 0.0, y: 0.0 },
+            PathSeg::L { x: 10.0, y: 0.0 },
+            PathSeg::L { x: 10.0, y: 10.0 },
+            PathSeg::Z,
+            PathSeg::R { x: 1.0, y: 2.0, w: 3.0, h: 4.0 },
+            PathSeg::E { x: 0.0, y: 0.0, w: 20.0, h: 10.0 },
+        ];
+        let lines = PathSeg::polylines(&path, 16);
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0], (vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0]], true));
+        assert_eq!(lines[1].0[2], [4.0, 6.0]);
+        assert_eq!(lines[2].0.len(), 16);
+        assert!((lines[2].0[0][0] - 20.0).abs() < 1e-9 && (lines[2].0[4][1] - 10.0).abs() < 1e-9);
+        let op = DrawOp::Fill { color: Some([1.0, 0.0, 0.0, 1.0]), path };
+        let j = serde_json::to_value(&op).unwrap();
+        assert_eq!(j["op"], "fill");
+        assert_eq!(j["path"][0], json!({"k": "M", "x": 0.0, "y": 0.0}));
+        assert_eq!(serde_json::from_value::<DrawOp>(j).unwrap(), op);
+        let t: DrawOp = serde_json::from_value(json!({"op": "text", "text": "Hi", "color": null, "x": 1, "y": 2, "size": 14})).unwrap();
+        assert!(matches!(t, DrawOp::Text { size, .. } if size == 14.0));
     }
 
     #[test]

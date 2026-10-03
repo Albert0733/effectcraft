@@ -28,6 +28,7 @@
 //! egui-wgpu to draw.
 
 mod adv3d;
+mod bokeh;
 mod classic3d;
 mod context;
 mod effects;

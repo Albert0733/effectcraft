@@ -36,7 +36,14 @@ pub fn specs() -> Vec<CommandSpec> {
         fe!("app.templates", "Templates", [], None, "{kind: renderSettings|outputModule}", always),
         fe!("app.find", "Find", ["File"], Some("Cmd+F"), "{query?}", always),
         // Preview.
-        fe!("playback.toggle", "Play Current Preview", ["Composition", "Preview"], Some("Space"), "{}", has_comp),
+        fe!(
+            "playback.toggle",
+            "Play Current Preview",
+            ["Composition", "Preview"],
+            Some("Space"),
+            "{shortcut?: spacebar|shiftSpacebar|numpad0|shiftNumpad0|altNumpad0 (whose Preview panel options to use; default spacebar)}",
+            has_comp
+        ),
         fe!("playback.cacheWhenIdle", "Cache Frames When Idle", ["Composition", "Preview"], None, "{value?}", always),
         fe!("playback.audio", "Audio", ["Composition", "Preview"], None, "{value?: include audio in previews}", always),
         // Viewer.
@@ -63,7 +70,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Show Panel",
             [],
             None,
-            "{panel: project|effectControls|composition|layer|timeline|info|audio|preview|effectsPresets|properties|character|paragraph|align|tracker|wiggler|smoother|motionSketch|paint|brushes|renderQueue|flowchart|history|markers|tools|lumetriScopes|footage|mediaBrowser|metadata|progress|contentAwareFill}",
+            "{panel: project|effectControls|composition|layer|timeline|info|audio|preview|effectsPresets|properties|character|paragraph|align|tracker|wiggler|smoother|motionSketch|paint|brushes|renderQueue|flowchart|history|markers|tools|lumetriScopes|footage|mediaBrowser|metadata|progress|contentAwareFill|createNullsFromPaths|vrCompEditor}",
             always
         ),
         fe!(

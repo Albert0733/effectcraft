@@ -13,7 +13,7 @@ use std::collections::HashMap;
 pub use color::parse_color;
 pub use kurbo::{Affine, BezPath};
 pub use pathdata::parse_path_data;
-pub use raster::{rasterize, rasterize_with};
+pub use raster::{blend_pixel, rasterize, rasterize_with};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Error {
@@ -173,6 +173,88 @@ pub struct Group {
     /// Clipping paths in the group's space (after `transform`); the children show only where
     /// every one of them covers (PDF / EPS clipping; SVG `clipPath` is not read yet).
     pub clip: Vec<(BezPath, FillRule)>,
+    /// How the group composites onto what is below it (PDF blend modes; SVG `mix-blend-mode`
+    /// is not read yet).
+    pub blend: BlendMode,
+    /// A soft mask (PDF `SMask` in the graphics state): the group shows where the mask's
+    /// luminosity (or alpha) is high.
+    pub mask: Option<Box<SoftMask>>,
+}
+
+impl Group {
+    /// An empty, opaque, unclipped group.
+    pub fn new(name: &str) -> Group {
+        Group { name: name.to_string(), transform: Affine::IDENTITY, opacity: 1.0, children: vec![], clip: vec![], blend: BlendMode::Normal, mask: None }
+    }
+}
+
+/// Separable and non-separable blend modes (ISO 32000-1 §11.3.5; the same formulas as the
+/// W3C Compositing and Blending Level 1 specification).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum BlendMode {
+    #[default]
+    Normal,
+    Multiply,
+    Screen,
+    Overlay,
+    Darken,
+    Lighten,
+    ColorDodge,
+    ColorBurn,
+    HardLight,
+    SoftLight,
+    Difference,
+    Exclusion,
+    Hue,
+    Saturation,
+    Color,
+    Luminosity,
+}
+
+impl BlendMode {
+    /// A PDF blend mode name (`/Multiply` …); unknown names are Normal.
+    pub fn from_pdf_name(n: &str) -> BlendMode {
+        use BlendMode::*;
+        match n {
+            "Multiply" => Multiply,
+            "Screen" => Screen,
+            "Overlay" => Overlay,
+            "Darken" => Darken,
+            "Lighten" => Lighten,
+            "ColorDodge" => ColorDodge,
+            "ColorBurn" => ColorBurn,
+            "HardLight" => HardLight,
+            "SoftLight" => SoftLight,
+            "Difference" => Difference,
+            "Exclusion" => Exclusion,
+            "Hue" => Hue,
+            "Saturation" => Saturation,
+            "Color" => Color,
+            "Luminosity" => Luminosity,
+            _ => Normal,
+        }
+    }
+}
+
+/// A soft mask: `content` is drawn in the masked group's space; its luminosity (composited
+/// over `backdrop`) or its alpha is the mask.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SoftMask {
+    pub content: Group,
+    pub luminosity: bool,
+    pub backdrop: [f64; 3],
+}
+
+/// A raster image: `width`×`height` straight RGBA8 pixels; `transform` maps pixel space (y
+/// down, pixel `(0, 0)` at the top-left corner) to the parent's space.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Image {
+    pub name: String,
+    pub transform: Affine,
+    pub width: u32,
+    pub height: u32,
+    pub rgba: std::sync::Arc<Vec<u8>>,
+    pub opacity: f64,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -180,6 +262,7 @@ pub struct Group {
 pub enum Node {
     Group(Group),
     Shape(Shape),
+    Image(Image),
 }
 
 /// A parsed SVG document. `root.transform` maps the viewBox to `width`×`height` pixels.
@@ -207,6 +290,7 @@ impl Doc {
                 match c {
                     Node::Group(sub) => walk(sub, m, o, out),
                     Node::Shape(s) => out.push((m * s.transform, o * s.opacity, s)),
+                    Node::Image(_) => {}
                 }
             }
         }
@@ -669,7 +753,7 @@ impl<'a, 'i> Parser<'a, 'i> {
                 for c in n.children() {
                     self.node(c, &st, &mut children, depth + 1);
                 }
-                out.push(Node::Group(Group { name: Self::element_name(n), transform, opacity, children, clip: vec![] }));
+                out.push(Node::Group(Group { name: Self::element_name(n), transform, opacity, children, clip: vec![], blend: BlendMode::Normal, mask: None }));
             }
             "svg" => {
                 // Nested viewport.
@@ -688,7 +772,15 @@ impl<'a, 'i> Parser<'a, 'i> {
                     self.node(c, &st, &mut children, depth + 1);
                 }
                 (self.vw, self.vh) = saved;
-                out.push(Node::Group(Group { name: Self::element_name(n), transform: Affine::translate((x, y)) * vb, opacity, children, clip: vec![] }));
+                out.push(Node::Group(Group {
+                    name: Self::element_name(n),
+                    transform: Affine::translate((x, y)) * vb,
+                    opacity,
+                    children,
+                    clip: vec![],
+                    blend: BlendMode::Normal,
+                    mask: None,
+                }));
             }
             "use" => {
                 let Some(target) = self.href(n) else { return };
@@ -709,11 +801,19 @@ impl<'a, 'i> Parser<'a, 'i> {
                     for c in target.children() {
                         self.node(c, &sst, &mut inner, depth + 1);
                     }
-                    children.push(Node::Group(Group { name: Self::element_name(target), transform: vb, opacity: o, children: inner, clip: vec![] }));
+                    children.push(Node::Group(Group {
+                        name: Self::element_name(target),
+                        transform: vb,
+                        opacity: o,
+                        children: inner,
+                        clip: vec![],
+                        blend: BlendMode::Normal,
+                        mask: None,
+                    }));
                 } else {
                     self.node(target, &st, &mut children, depth + 1);
                 }
-                out.push(Node::Group(Group { name: Self::element_name(n), transform, opacity, children, clip: vec![] }));
+                out.push(Node::Group(Group { name: Self::element_name(n), transform, opacity, children, clip: vec![], blend: BlendMode::Normal, mask: None }));
             }
             "path" | "rect" | "circle" | "ellipse" | "line" | "polyline" | "polygon" => {
                 if !st.visible {
@@ -753,7 +853,15 @@ impl<'a, 'i> Parser<'a, 'i> {
                         self.node(c, &st, &mut children, depth + 1);
                     }
                     if !children.is_empty() {
-                        out.push(Node::Group(Group { name: Self::element_name(n), transform, opacity, children, clip: vec![] }));
+                        out.push(Node::Group(Group {
+                            name: Self::element_name(n),
+                            transform,
+                            opacity,
+                            children,
+                            clip: vec![],
+                            blend: BlendMode::Normal,
+                            mask: None,
+                        }));
                     }
                 }
             }
@@ -945,7 +1053,12 @@ pub fn parse(bytes: &[u8]) -> Result<Doc, Error> {
         p.node(c, &rst, &mut children, 1);
     }
     let transform = viewbox_transform(root, dw, dh);
-    Ok(Doc { width: dw, height: dh, root: Group { name: "svg".into(), transform, opacity, children, clip: vec![] }, skipped: std::mem::take(&mut p.skipped) })
+    Ok(Doc {
+        width: dw,
+        height: dh,
+        root: Group { name: "svg".into(), transform, opacity, children, clip: vec![], blend: BlendMode::Normal, mask: None },
+        skipped: std::mem::take(&mut p.skipped),
+    })
 }
 
 #[cfg(test)]

@@ -28,6 +28,7 @@ pub mod media_panels;
 pub mod misc;
 pub mod paint_panels;
 pub mod panel_kit;
+pub mod path_vr_panels;
 pub mod precomp;
 pub mod project;
 pub mod properties;
@@ -117,6 +118,8 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: PanelKind, rect: Rec
         PanelKind::Metadata => media_panels::metadata(app, ui, rect),
         PanelKind::Progress => media_panels::progress(app, ui, rect),
         PanelKind::ContentAwareFill => content_fill_panel::show(app, ui, rect),
+        PanelKind::CreateNullsFromPaths => path_vr_panels::create_nulls(app, ui, rect),
+        PanelKind::VrCompEditor => path_vr_panels::vr_editor(app, ui, rect),
     }
 }
 

@@ -414,14 +414,53 @@ fn linked_block(files: &[(String, String, [u8; 4], Vec<u8>)]) -> Vec<u8> {
 /// `SoLd`: a placed layer showing linked file `uuid` (content `size` pixels) with its corners at
 /// `quad` (top-left, top-right, bottom-right, bottom-left).
 pub fn smart_object_block(uuid: &str, quad: [[f64; 2]; 4], size: [f64; 2]) -> ([u8; 4], Vec<u8>) {
+    smart_object_block_warped(uuid, quad, size, None)
+}
+
+/// A `warp` descriptor: a named style (bend and distortions in %) over `bounds` (left, top,
+/// right, bottom), or with `mesh` (16 points, content pixels) a custom envelope.
+pub fn warp_descriptor(style: &str, bend: f64, h: f64, v: f64, bounds: [f64; 4], mesh: Option<&[[f64; 2]]>) -> Descriptor {
+    let mut d = Descriptor::new("warp")
+        .with("warpStyle", DValue::Enum("warpStyle".into(), style.into()))
+        .with("warpValue", DValue::Double(bend))
+        .with("warpPerspective", DValue::Double(h))
+        .with("warpPerspectiveOther", DValue::Double(v))
+        .with("warpRotate", DValue::Enum("Ornt".into(), "Hrzn".into()))
+        .with(
+            "bounds",
+            DValue::Descriptor(
+                Descriptor::new("Rctn")
+                    .with("Top ", DValue::UnitFloat("#Pxl".into(), bounds[1]))
+                    .with("Left", DValue::UnitFloat("#Pxl".into(), bounds[0]))
+                    .with("Btom", DValue::UnitFloat("#Pxl".into(), bounds[3]))
+                    .with("Rght", DValue::UnitFloat("#Pxl".into(), bounds[2])),
+            ),
+        )
+        .with("uOrder", DValue::Integer(4))
+        .with("vOrder", DValue::Integer(4));
+    if let Some(m) = mesh {
+        let pts = Descriptor::new("rationalPoint")
+            .with("Hrzn", DValue::UnitFloats("#Pxl".into(), m.iter().map(|p| p[0]).collect()))
+            .with("Vrtc", DValue::UnitFloats("#Pxl".into(), m.iter().map(|p| p[1]).collect()));
+        d = d
+            .with("customEnvelopeWarp", DValue::Descriptor(Descriptor::new("customEnvelopeWarp").with("meshPoints", DValue::ObjectArray(m.len() as u32, pts))));
+    }
+    d
+}
+
+/// `SoLd` with an optional warp; `quad` may be non-affine (perspective).
+pub fn smart_object_block_warped(uuid: &str, quad: [[f64; 2]; 4], size: [f64; 2], warp: Option<Descriptor>) -> ([u8; 4], Vec<u8>) {
     let list = |v: &[f64]| DValue::List(v.iter().map(|x| DValue::Double(*x)).collect());
     let t: Vec<f64> = quad.iter().flat_map(|p| [p[0], p[1]]).collect();
-    let d = Descriptor::new("null")
+    let mut d = Descriptor::new("null")
         .with("Idnt", DValue::Text(uuid.to_string()))
         .with("placed", DValue::Text(uuid.to_string()))
         .with("Trnf", list(&t))
         .with("nonAffineTransform", list(&t))
         .with("Sz  ", DValue::Descriptor(Descriptor::new("Pnt ").with("Wdth", DValue::Double(size[0])).with("Hght", DValue::Double(size[1]))));
+    if let Some(w) = warp {
+        d = d.with("warp", DValue::Descriptor(w));
+    }
     let mut out = b"soLD".to_vec();
     u32b(&mut out, 4);
     u32b(&mut out, 16);

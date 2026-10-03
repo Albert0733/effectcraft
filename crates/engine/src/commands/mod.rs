@@ -1,11 +1,12 @@
 //! The command registry. Ids follow After Effects' menu structure; every menu item, panel button,
 //! shortcut and viewer/timeline gesture maps to one of these.
 
+mod align;
 mod align_data;
 mod anim;
 pub mod anim_tools;
 mod animation;
-mod app_more;
+pub(crate) mod app_more;
 mod autotrace;
 mod camera_cmds;
 mod comp;
@@ -20,6 +21,7 @@ mod file;
 pub(crate) mod file_more;
 mod focus;
 pub mod footage_panel;
+pub(crate) mod frame_export;
 mod frontend;
 mod help;
 mod key_labels;
@@ -28,7 +30,7 @@ mod keys_more;
 mod layer;
 mod layer_menu;
 mod layer_time;
-mod link;
+pub(crate) mod link;
 mod liquify;
 mod lottie;
 mod markers;
@@ -37,6 +39,7 @@ pub mod mask_interp;
 pub(crate) mod model3d;
 pub mod paint;
 pub mod panels_cmds;
+pub(crate) mod path_nulls;
 mod paths;
 mod project_items;
 mod prop;
@@ -60,7 +63,10 @@ pub mod time;
 mod track;
 mod view;
 pub mod viewer_cmds;
+pub(crate) mod vpe;
+pub(crate) mod vr_editor;
 mod warp_cmds;
+pub(crate) mod watch_folder;
 #[cfg(test)]
 pub(crate) use app_more::report_text as report_text_for_tests;
 pub(crate) use app_more::view_command;
@@ -161,6 +167,11 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(file_more::specs());
         v.extend(lottie::specs());
         v.extend(comp_more::specs());
+        v.extend(frame_export::specs());
+        v.extend(watch_folder::specs());
+        v.extend(vpe::specs());
+        v.extend(path_nulls::specs());
+        v.extend(vr_editor::specs());
         v.extend(frontend::specs());
         v.extend(track::specs());
         v.extend(mask_interp::specs());
@@ -182,9 +193,11 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(autotrace::specs());
         v.extend(scene_detect::specs());
         v.extend(align_data::specs());
+        v.extend(align::specs());
         v.extend(content_fill::specs());
         v.extend(stubs::specs());
         v.extend(crate::learn::specs());
+        v.extend(crate::preview::specs());
         v
     })
 }

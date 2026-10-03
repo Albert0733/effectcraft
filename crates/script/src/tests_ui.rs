@@ -183,9 +183,9 @@ fn layout_and_handler_errors() {
     assert_eq!(r["ok"], false);
     assert!(r["error"]["message"].as_str().unwrap().contains("nope"), "{r}");
     assert_eq!(s.script_ui.windows.len(), 1);
-    // Resource strings aren't supported (a clear error).
-    let o = run_code(&mut s, "new Window(\"dialog { text: 'x' }\")", "res.jsx");
-    assert!(o.error.unwrap().message.contains("resource"));
+    // Resource strings build windows too (see tests_ui_more).
+    let o = run_code(&mut s, "new Window(\"dialog { text: 'x' }\").text", "res.jsx");
+    assert_eq!(o.result, json!("x"));
     s.execute("scriptui.close", json!({})).unwrap();
 }
 

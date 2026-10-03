@@ -85,6 +85,9 @@ pub struct TextStyle {
     pub leading: Option<f32>,
     /// OpenType features (stylistic sets, figures, fractions, all small caps…).
     pub opentype: OpenType,
+    /// Variable font axis values (tag, user units): shaping (advances through HVAR / gvar
+    /// phantom points) and outlines use this design-space position.
+    pub variations: Vec<(String, f32)>,
 }
 
 impl Default for TextStyle {
@@ -109,6 +112,7 @@ impl Default for TextStyle {
             script: Script::Normal,
             leading: None,
             opentype: OpenType::default(),
+            variations: Vec::new(),
         }
     }
 }
@@ -194,6 +198,10 @@ impl Hash for TextStyle {
         self.leading.map(f32::to_bits).hash(h);
         (self.kerning, self.optical, self.ligatures, self.faux_bold, self.faux_italic, self.caps, self.underline, self.script).hash(h);
         self.opentype.hash(h);
+        for (t, v) in &self.variations {
+            t.hash(h);
+            hf(h, *v);
+        }
     }
 }
 
@@ -225,6 +233,9 @@ pub struct Glyph {
     pub v_scale: f32,
     /// Index of the style run the glyph belongs to.
     pub run: usize,
+    /// The run's variable font axis values, interned ([`crate::variable::coords`]; 0 = the
+    /// default instance): outlines are drawn there.
+    pub variations: u32,
 }
 
 /// One laid-out line.
@@ -425,7 +436,13 @@ fn ink_x(face: FaceId, gid: u32) -> Option<(f32, f32)> {
 fn shape_item(chars: &[(usize, char, char)], rtl: bool, face: FaceId, size: f32, style: &TextStyle, run: usize, form: Form) -> Vec<ShapedGlyph> {
     let f = fonts::face(face);
     let (Some(font), Some(data)) = (f.font(), f.shaper_data()) else { return Vec::new() };
-    let shaper = data.shaper(&font).build();
+    let instance = (!style.variations.is_empty()).then(|| {
+        harfrust::ShaperInstance::from_variations(
+            &font,
+            style.variations.iter().map(|(t, v)| harfrust::Variation { tag: crate::variable::tag_of(t), value: *v }),
+        )
+    });
+    let shaper = data.shaper(&font).instance(instance.as_ref()).build();
     let mut buf = UnicodeBuffer::new();
     for &(b, _, sc) in chars {
         buf.add(if sc == '\t' { ' ' } else { sc }, b as u32);
@@ -819,6 +836,7 @@ fn paragraph(text: &str, base: usize, runs: &[(Range<usize>, TextStyle)], primar
                         h_scale: st.h_scale,
                         v_scale: st.v_scale,
                         run: g.run,
+                        variations: crate::variable::intern(&st.variations),
                     });
                     pen += g.adv;
                     if space_extra > 0.0 && text[g.cluster..].starts_with(' ') && g.cluster < ce {

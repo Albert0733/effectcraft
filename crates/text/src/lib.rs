@@ -70,7 +70,8 @@ pub(crate) fn outline_units(face: FaceId, gid: u32) -> Option<Arc<BezPath>> {
 /// The outline of a laid-out glyph in pixels, origin on its baseline (y down), with its
 /// horizontal / vertical scale and faux italic.
 pub fn glyph_outline(g: &Glyph) -> BezPath {
-    let Some(units) = outline_units(g.face, g.id) else { return BezPath::new() };
+    let units = if g.variations == 0 { outline_units(g.face, g.id) } else { variable::outline_units_at(g.face, g.id, &variable::coords(g.variations)) };
+    let Some(units) = units else { return BezPath::new() };
     glyph_affine(g) * (*units).clone()
 }
 
@@ -107,6 +108,8 @@ pub struct CharGlyph {
     pub face: FaceId,
     pub gid: u32,
     pub outline_xf: Affine,
+    /// The character's variable font axis values (its style's Variable Font Axes).
+    pub variations: Vec<(String, f32)>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -162,6 +165,7 @@ pub fn text_style(s: &CharStyle) -> TextStyle {
         },
         leading: s.leading.map(|l| l as f32),
         opentype: s.opentype,
+        variations: s.variations.clone(),
     }
 }
 
@@ -336,6 +340,7 @@ pub fn layout_doc(doc: &TextDoc) -> TextLayout {
                 face: g.face,
                 gid: g.id,
                 outline_xf,
+                variations: variable::coords(g.variations).to_vec(),
             });
         }
     }

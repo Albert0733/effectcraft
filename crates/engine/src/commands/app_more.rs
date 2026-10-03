@@ -395,7 +395,7 @@ fn report(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// Orientation (degrees, AE order) of a camera whose +X, +Y (down) and +Z axes point along the
 /// given world directions: searched over quarter turns, which is all the cube faces need.
-fn orientation_for_axes(x: Vec3, y: Vec3, z: Vec3) -> [f64; 3] {
+pub(crate) fn orientation_for_axes(x: Vec3, y: Vec3, z: Vec3) -> [f64; 3] {
     let mut best = ([0.0; 3], f64::MAX);
     for a in 0..4 {
         for b in 0..4 {
@@ -416,7 +416,7 @@ fn orientation_for_axes(x: Vec3, y: Vec3, z: Vec3) -> [f64; 3] {
 
 /// Cube faces in the VR Converter's order (+X, −X, +Y, −Y, +Z, −Z): name, forward, right and up
 /// in the VR convention (X right, Y up, Z front).
-const FACES: [(&str, [f64; 3], [f64; 3], [f64; 3]); 6] = [
+pub(crate) const FACES: [(&str, [f64; 3], [f64; 3], [f64; 3]); 6] = [
     ("Right", [1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]),
     ("Left", [-1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]),
     ("Top", [0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, -1.0]),
@@ -425,10 +425,10 @@ const FACES: [(&str, [f64; 3], [f64; 3], [f64; 3]); 6] = [
     ("Back", [0.0, 0.0, -1.0], [-1.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
 ];
 /// (column, row) of each face in the 3:2 cube map.
-const CELLS_3X2: [(u32, u32); 6] = [(0, 0), (1, 0), (2, 0), (0, 1), (1, 1), (2, 1)];
+pub(crate) const CELLS_3X2: [(u32, u32); 6] = [(0, 0), (1, 0), (2, 0), (0, 1), (1, 1), (2, 1)];
 
 /// VR world direction → After Effects world (Y down).
-fn ae(v: [f64; 3]) -> Vec3 {
+pub(crate) fn ae(v: [f64; 3]) -> Vec3 {
     vec3(v[0], -v[1], v[2])
 }
 

@@ -30,6 +30,9 @@ pub enum DValue {
     Class(String, String),
     Raw(Vec<u8>),
     Reference(Vec<RefItem>),
+    /// An object array (`ObAr`): `count` objects of one class stored column-wise, each item a
+    /// list of `count` values (unit floats).
+    ObjectArray(u32, Descriptor),
 }
 
 /// An item of a reference (`obj `).
@@ -161,6 +164,10 @@ fn read_value(r: &mut Reader, ty: &[u8; 4], depth: usize) -> Result<DValue> {
             }
             DValue::List(v)
         }
+        b"ObAr" => {
+            let n = r.u32()?;
+            DValue::ObjectArray(n, read_descriptor(r)?)
+        }
         b"doub" => DValue::Double(r.f64()?),
         b"UntF" => {
             let unit = String::from_utf8_lossy(&r.tag()?).into_owned();
@@ -279,6 +286,11 @@ fn write_value(out: &mut Vec<u8>, v: &DValue) {
             for x in l {
                 write_value(out, x);
             }
+        }
+        DValue::ObjectArray(n, d) => {
+            out.extend_from_slice(b"ObAr");
+            put_u32(out, *n);
+            write_descriptor(out, d);
         }
         DValue::Double(x) => {
             out.extend_from_slice(b"doub");
