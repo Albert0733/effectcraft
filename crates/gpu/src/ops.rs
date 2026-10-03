@@ -136,7 +136,7 @@ pub fn channel_mix(e: &mut Enc, canvas: &GpuImage, tmp: &GpuImage, channels: [bo
 
 /// Adjustment layer finish: move `canvas` toward `adjusted` by `matte`'s alpha × `opacity`.
 pub fn adjust_mix(e: &mut Enc, canvas: &GpuImage, adjusted: &GpuImage, matte: &GpuImage, opacity: f32) -> GpuImage {
-    let (rows, stride) = e.to_buffer(matte);
+    let (rows, stride) = e.image_rows(matte);
     let mut p = Params::default();
     p.u[0][0] = stride;
     p.f[0][0] = opacity;

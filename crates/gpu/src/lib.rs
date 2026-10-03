@@ -25,6 +25,9 @@ mod adv3d;
 mod classic3d;
 mod context;
 mod effects;
+mod fx_color;
+mod fx_distort;
+mod fx_generate;
 mod ops;
 mod walk;
 

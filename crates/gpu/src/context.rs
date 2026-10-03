@@ -141,7 +141,15 @@ impl GpuContext {
             }
         }
         let name = format!("{} ({:?})", info.name, info.backend);
-        let src = [include_str!("shaders/common.wgsl"), include_str!("shaders/kernels.wgsl"), include_str!("shaders/classic3d.wgsl")].concat();
+        let src = [
+            include_str!("shaders/common.wgsl"),
+            include_str!("shaders/kernels.wgsl"),
+            include_str!("shaders/classic3d.wgsl"),
+            include_str!("shaders/fx_color.wgsl"),
+            include_str!("shaders/fx_distort.wgsl"),
+            include_str!("shaders/fx_generate.wgsl"),
+        ]
+        .concat();
         let module =
             device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("effectcraft kernels"), source: wgpu::ShaderSource::Wgsl(src.into()) });
         let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -190,6 +198,9 @@ impl GpuContext {
         });
         let pipelines = ENTRIES
             .iter()
+            .chain(crate::fx_color::KERNELS)
+            .chain(crate::fx_distort::KERNELS)
+            .chain(crate::fx_generate::KERNELS)
             .map(|e| (e, &layout))
             .chain(EXT_ENTRIES.iter().map(|e| (e, &layout_ext)))
             .map(|(e, layout)| {
@@ -585,7 +596,7 @@ impl<'g> Enc<'g> {
 
     /// Copy an image into a storage buffer (RGBA f32 rows) for kernels that read a third image
     /// through `data`: (buffer, row length in pixels).
-    pub fn to_buffer(&mut self, img: &GpuImage) -> (wgpu::Buffer, u32) {
+    pub fn image_rows(&mut self, img: &GpuImage) -> (wgpu::Buffer, u32) {
         let row = (img.width * 16).div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
         let buf = self.g.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("image rows"),
@@ -606,7 +617,7 @@ impl<'g> Enc<'g> {
 
     /// A read-only storage buffer holding `bytes` (padded to 16 bytes).
     pub fn bytes(&self, mut bytes: Vec<u8>) -> wgpu::Buffer {
-        while bytes.len() < 16 || bytes.len() % 4 != 0 {
+        while bytes.len() < 16 || !bytes.len().is_multiple_of(4) {
             bytes.push(0);
         }
         self.g.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("data"), contents: &bytes, usage: wgpu::BufferUsages::STORAGE })

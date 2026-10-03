@@ -16,19 +16,19 @@ pub fn supports(id: &str) -> bool {
 }
 
 /// A layer buffer on the GPU (see [`Buf`]).
-struct GBuf {
-    img: GpuImage,
-    offset: [f64; 2],
-    scale: f64,
+pub(crate) struct GBuf {
+    pub img: GpuImage,
+    pub offset: [f64; 2],
+    pub scale: f64,
 }
 
 impl GBuf {
-    fn to_px(&self, p: [f64; 2]) -> (f64, f64) {
+    pub fn to_px(&self, p: [f64; 2]) -> (f64, f64) {
         (p[0] * self.scale + self.offset[0], p[1] * self.scale + self.offset[1])
     }
 
     /// Buf::pad: grow by `pad` transparent pixels on every side.
-    fn pad(&mut self, e: &mut Enc, pad: u32) -> Option<()> {
+    pub fn pad(&mut self, e: &mut Enc, pad: u32) -> Option<()> {
         if pad == 0 {
             return Some(());
         }
@@ -114,6 +114,9 @@ fn apply(e: &mut Enc, id: &str, ctx: &EffectCtx, b: GBuf) -> Option<GBuf> {
         "ec.distort.transform" => transform(e, ctx, b),
         "ec.color.curves" => curves(e, ctx, b),
         _ if id.starts_with("ec.control.") => Some(b),
+        _ if crate::fx_color::IDS.contains(&id) => crate::fx_color::apply(e, id, ctx, b),
+        _ if crate::fx_distort::IDS.contains(&id) => crate::fx_distort::apply(e, id, ctx, b),
+        _ if crate::fx_generate::IDS.contains(&id) => crate::fx_generate::apply(e, id, ctx, b),
         _ => pointwise(e, id, ctx, b),
     }
 }
@@ -121,7 +124,7 @@ fn apply(e: &mut Enc, id: &str, ctx: &EffectCtx, b: GBuf) -> Option<GBuf> {
 // ---------------------------------------------------------------- blurs
 
 /// raster::blur::box_radii.
-fn box_radii(sigma: f64, n: usize) -> Vec<usize> {
+pub(crate) fn box_radii(sigma: f64, n: usize) -> Vec<usize> {
     if sigma <= 0.0 {
         return vec![0; n];
     }
@@ -137,7 +140,7 @@ fn box_radii(sigma: f64, n: usize) -> Vec<usize> {
 }
 
 /// Horizontal passes with radii `rx`, then vertical passes with radii `ry` (raster::blur).
-fn box_passes(e: &mut Enc, img: &GpuImage, rx: &[usize], ry: &[usize], repeat: bool) -> GpuImage {
+pub(crate) fn box_passes(e: &mut Enc, img: &GpuImage, rx: &[usize], ry: &[usize], repeat: bool) -> GpuImage {
     let mut cur = img.clone();
     let passes = rx.iter().map(|&r| (false, r)).chain(ry.iter().map(|&r| (true, r))).filter(|p| p.1 > 0);
     for (vertical, r) in passes {
@@ -153,7 +156,7 @@ fn box_passes(e: &mut Enc, img: &GpuImage, rx: &[usize], ry: &[usize], repeat: b
 }
 
 /// raster::gaussian_blur (3 box passes per axis).
-fn gaussian_blur(e: &mut Enc, img: &GpuImage, sx: f64, sy: f64, repeat: bool) -> GpuImage {
+pub(crate) fn gaussian_blur(e: &mut Enc, img: &GpuImage, sx: f64, sy: f64, repeat: bool) -> GpuImage {
     let rx = if sx > 0.05 { box_radii(sx, 3) } else { vec![] };
     let ry = if sy > 0.05 { box_radii(sy, 3) } else { vec![] };
     box_passes(e, img, &rx, &ry, repeat)

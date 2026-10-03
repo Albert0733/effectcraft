@@ -188,7 +188,7 @@ pub(crate) fn draw_run(e: &mut Enc, run: &Run3d, canvas: &GpuImage) -> Option<Gp
         }
         n_geos += p.geos.len() as u32;
     }
-    if (mattes.len() * 4) as u64 > e.g.device.limits().max_storage_buffer_binding_size as u64 {
+    if (mattes.len() * 4) as u64 > e.g.device.limits().max_storage_buffer_binding_size {
         return None;
     }
     let mut lights = Words::default();

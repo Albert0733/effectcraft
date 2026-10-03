@@ -379,7 +379,7 @@ fn layer_styles_collapsed_precomps_and_cpu_fallbacks() {
 
 /// The effect alone on a buffer: GPU kernels vs the CPU effect (32-bit float), including the
 /// buffer geometry (padding, offset).
-fn effect_direct(id: &str, vals: &[(&str, Value)], adjustment: bool) {
+pub(crate) fn effect_direct(id: &str, vals: &[(&str, Value)], adjustment: bool) {
     let Some(g) = gpu() else { return };
     let spec = effectcraft_effects::find(id).unwrap();
     let size = [70.0, 44.0];
@@ -401,7 +401,7 @@ fn effect_direct(id: &str, vals: &[(&str, Value)], adjustment: bool) {
 }
 
 /// One footage layer with `fx` applied, composited over a background, at 8 and 32 bpc.
-fn effect_case(id: &str, vals: &[(&str, Value)]) {
+pub(crate) fn effect_case(id: &str, vals: &[(&str, Value)]) {
     effect_direct(id, vals, false);
     effect_direct(id, vals, true);
     for depth in [BitDepth::Bpc8, BitDepth::Bpc32] {
