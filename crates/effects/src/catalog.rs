@@ -12,11 +12,7 @@ pub const PARTIAL: &[(&str, &str)] = &[
     ("ec.channel.minimax", "no Don't Shrink Edges option"),
     ("ec.channel.combiner", "no Saturation Multiplied target"),
     ("ec.3d.channelextract", "no anti-alias option"),
-    ("ec.color.huesaturation", "no per-range Channel Control"),
-    ("ec.color.levels", "master channel only (no Channel popup)"),
-    ("ec.color.curves", "no Channel popup"),
     ("ec.color.colorama", "no Add Phase, editable Output Cycle, Modify, Pixel Selection or Masking"),
-    ("ec.color.lumetri", "no HSL Secondary, hue/saturation curves, HDR mode or look files"),
     ("ec.color.selectivecolor", "simplified Colors / Details layout"),
     ("ec.distort.turbulentdisplace", "no locked pinning variants"),
     ("ec.distort.opticscompensation", "no Optimal Pixels"),
@@ -39,7 +35,6 @@ pub const PARTIAL: &[(&str, &str)] = &[
     ("ec.noise.removegrain", "no preview region, sampling or temporal filtering"),
     ("ec.vr.digitalglitch", "reduced control set"),
     ("ec.vr.converter", "common layouts only"),
-    ("ec.time.timewarp", "Pixel Motion blends frames (no optical flow); no matte, warp or crop controls"),
     ("ec.sim.carddance", "no camera system, corner pins or lighting/material controls"),
     ("ec.sim.shatter", "no custom shatter map, gradient, textures or extrusion rendering"),
     ("ec.sim.caustics", "no Sky group or light type"),
@@ -51,6 +46,45 @@ pub const PARTIAL: &[(&str, &str)] = &[
     ("ec.transition.cardwipe", "2D flip only; no back layer picker, camera, lighting or jitter"),
     ("ec.transition.blockdissolve", "no Soft Edges option"),
 ];
+
+/// Whether Effect Controls shows parameter (or twirl-down group) `param` (spec id path,
+/// `group/param`) of an instance of effect `effect`, given the instance's current values
+/// (`value(spec id)`). After Effects shows only the controls a popup selects: Levels' channel,
+/// Hue/Saturation's Channel Control, the camera system of the card effects, and so on. Every
+/// parameter stays animatable and addressable; this is presentation only.
+pub fn param_shown(effect: &str, param: &str, value: &dyn Fn(&str) -> Option<effectcraft_keyframe::Value>) -> bool {
+    let e = |id: &str| value(id).map(|v| v.as_enum()).unwrap_or(0);
+    let b = |id: &str| value(id).is_some_and(|v| v.as_bool());
+    match effect {
+        "ec.color.levels" => {
+            let ch = e("channel") as usize;
+            for (i, pre) in crate::color_fx::LEVELS_CHANNEL_PREFIX.iter().enumerate() {
+                if param.starts_with(pre) {
+                    return ch == i + 1;
+                }
+            }
+            let master = ["inBlack", "inWhite", "gamma", "outBlack", "outWhite", "clipToOutputBlack", "clipToOutputWhite"];
+            !master.contains(&param) || ch == 0
+        }
+        "ec.color.huesaturation" => {
+            let ch = e("channelControl") as usize;
+            for (i, (pre, _, _)) in crate::color_fx::HUESAT_RANGES.iter().enumerate() {
+                if param.starts_with(pre) {
+                    return ch == i + 1;
+                }
+            }
+            match param {
+                "hue" | "saturation" | "lightness" => ch == 0,
+                "colorizeSaturation" | "colorizeLightness" => b("colorize"),
+                _ => true,
+            }
+        }
+        _ => {
+            let _ = b("");
+            true
+        }
+    }
+}
 
 /// Implementation status of effect `id` (`Implemented` or `Partial: …`).
 pub fn status(id: &str) -> String {

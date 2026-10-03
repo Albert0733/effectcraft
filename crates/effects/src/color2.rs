@@ -911,7 +911,15 @@ pub fn specs() -> Vec<EffectSpec> {
         spec(
             "ec.color.curves",
             "Curves",
-            vec![curve("rgb", "RGB"), curve("red", "Red"), curve("green", "Green"), curve("blue", "Blue"), curve("alpha", "Alpha")],
+            vec![
+                // The channel the graph edits (the Effect Controls graph's Channel popup).
+                p("channel", "Channel", Value::Enum(0), ParamUi::Hidden),
+                curve("rgb", "RGB"),
+                curve("red", "Red"),
+                curve("green", "Green"),
+                curve("blue", "Blue"),
+                curve("alpha", "Alpha"),
+            ],
             curves,
         ),
         spec("ec.color.levelsic", "Levels (Individual Controls)", lv_params, levels_ic),

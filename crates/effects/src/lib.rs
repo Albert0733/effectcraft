@@ -60,7 +60,7 @@ pub mod warp_stab;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-pub use color_fx::{exposure_settings, levels_clip};
+pub use color_fx::{HUESAT_CHANNELS, LEVELS_CHANNELS, exposure_settings, huesat_ranges_identity, levels_channel_ids, levels_channels_identity, levels_clip};
 pub use color2::Curve;
 use effectcraft_keyframe::Value;
 use effectcraft_project::build::Ids;
@@ -504,6 +504,12 @@ pub const PARAM_GROUPS: &[(&str, &str)] = &[
     ("curves", "Curves"),
     ("colorWheels", "Color Wheels"),
     ("vignette", "Vignette"),
+    ("rgbCurves", "RGB Curves"),
+    ("hueSaturationCurves", "Hue Saturation Curves"),
+    ("hslSecondary", "HSL Secondary"),
+    ("key", "Key"),
+    ("refine", "Refine"),
+    ("correction", "Correction"),
     // Camera Lens Blur.
     ("irisProperties", "Iris Properties"),
     ("highlight", "Highlight"),
@@ -530,6 +536,9 @@ pub const PARAM_GROUPS: &[(&str, &str)] = &[
     // Time: Timewarp.
     ("tuning", "Tuning"),
     ("motionBlur", "Motion Blur"),
+    ("smoothing", "Smoothing"),
+    ("weighting", "Weighting"),
+    ("sourceCrops", "Source Crops"),
     // Simulation.
     ("extras", "Extras"),
     ("wiggle", "Wiggle"),

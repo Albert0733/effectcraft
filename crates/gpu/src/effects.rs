@@ -307,11 +307,19 @@ fn pointwise(e: &mut Enc, id: &str, ctx: &EffectCtx, b: GBuf) -> Option<GBuf> {
             p.f[0] = [br, k, ct, 0.0];
         }
         "ec.color.huesaturation" => {
+            // Colour ranges (Channel Control) render on the CPU.
+            if !effectcraft_effects::huesat_ranges_identity(ctx) {
+                return None;
+            }
             p.u[0] = [3, ctx.params.b("colorize") as u32, 0, 0];
             p.f[0] = [f("hue") as f32 / 360.0, f("saturation") as f32 / 100.0, f("lightness") as f32 / 100.0, 0.0];
             p.f[1] = [f("colorizeHue") as f32 / 360.0, f("colorizeSaturation") as f32 / 100.0, f("colorizeLightness") as f32 / 100.0, 0.0];
         }
         "ec.color.levels" => {
+            // Red / Green / Blue / Alpha controls render on the CPU.
+            if !effectcraft_effects::levels_channels_identity(ctx) {
+                return None;
+            }
             let (clip_b, clip_w) = effectcraft_effects::levels_clip(ctx);
             p.u[0] = [4, clip_b as u32, clip_w as u32, 0];
             p.f[0] = [f("inBlack") as f32, f("inWhite") as f32, f("gamma").max(0.01) as f32, f("outBlack") as f32];

@@ -70,6 +70,85 @@ fn brightness_contrast(ctx: &EffectCtx, mut b: Buf) -> Buf {
     b
 }
 
+/// Hue/Saturation's colour ranges (Channel Control entries after Master): id prefix, display
+/// name and centre hue in degrees.
+pub const HUESAT_RANGES: [(&str, &str, f64); 6] = [
+    ("reds", "Reds", 0.0),
+    ("yellows", "Yellows", 60.0),
+    ("greens", "Greens", 120.0),
+    ("cyans", "Cyans", 180.0),
+    ("blues", "Blues", 240.0),
+    ("magentas", "Magentas", 300.0),
+];
+
+/// Hue/Saturation's Channel Control popup.
+pub const HUESAT_CHANNELS: [&str; 7] = ["Master", "Reds", "Yellows", "Greens", "Cyans", "Blues", "Magentas"];
+
+/// One colour range of Hue/Saturation: the hues it covers fully (`start..end`, degrees, may
+/// wrap), the fall-off widths either side, and its hue / saturation / lightness adjustments.
+#[derive(Clone, Copy, Debug)]
+struct HueRange {
+    start: f32,
+    end: f32,
+    fall_start: f32,
+    fall_end: f32,
+    hue: f32,
+    sat: f32,
+    light: f32,
+}
+
+impl HueRange {
+    /// Membership of hue `h` (degrees): 1 inside the range, ramping to 0 across the fall-offs.
+    fn weight(&self, h: f32) -> f32 {
+        let width = (self.end - self.start).rem_euclid(360.0);
+        let d = (h - self.start).rem_euclid(360.0);
+        if d <= width {
+            return 1.0;
+        }
+        let after = d - width;
+        let before = 360.0 - d;
+        let wa = if self.fall_end > 0.0 { 1.0 - after / self.fall_end } else { 0.0 };
+        let wb = if self.fall_start > 0.0 { 1.0 - before / self.fall_start } else { 0.0 };
+        wa.max(wb).clamp(0.0, 1.0)
+    }
+}
+
+/// The colour ranges with non-zero adjustments.
+fn huesat_ranges(ctx: &EffectCtx) -> Vec<HueRange> {
+    let f = |id: String, d: f64| ctx.params.get(&id).map(Value::as_f64).unwrap_or(d) as f32;
+    HUESAT_RANGES
+        .iter()
+        .map(|(r, _, c)| HueRange {
+            start: f(format!("{r}RangeStart"), c - 15.0),
+            end: f(format!("{r}RangeEnd"), c + 15.0),
+            fall_start: f(format!("{r}StartFalloff"), 30.0).max(0.0),
+            fall_end: f(format!("{r}EndFalloff"), 30.0).max(0.0),
+            hue: f(format!("{r}Hue"), 0.0) / 360.0,
+            sat: f(format!("{r}Saturation"), 0.0) / 100.0,
+            light: f(format!("{r}Lightness"), 0.0) / 100.0,
+        })
+        .filter(|r| r.hue != 0.0 || r.sat != 0.0 || r.light != 0.0)
+        .collect()
+}
+
+/// Whether no colour range of Hue/Saturation adjusts anything (the GPU kernel does Master and
+/// Colorize only).
+pub fn huesat_ranges_identity(ctx: &EffectCtx) -> bool {
+    huesat_ranges(ctx).is_empty()
+}
+
+fn adjust_sat(s: f32, sat: f32) -> f32 {
+    if sat >= 0.0 { s + (1.0 - s) * sat * s.min(1.0) } else { s * (1.0 + sat) }
+}
+
+fn adjust_light(l: f32, light: f32) -> f32 {
+    if light >= 0.0 { l + (1.0 - l) * light } else { l * (1.0 + light) }
+}
+
+/// Hue/Saturation. Master adjusts every pixel; each colour range (Reds … Magentas, chosen in
+/// Channel Control) adjusts pixels whose original hue lies in its range, fading across the
+/// fall-offs (greys, having no hue, belong to no range). Colorize replaces hue and
+/// saturation.
 fn hue_saturation(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let hue = ctx.params.f("hue") as f32 / 360.0;
     let sat = ctx.params.f("saturation") as f32 / 100.0;
@@ -78,14 +157,24 @@ fn hue_saturation(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let ch = ctx.params.f("colorizeHue") as f32 / 360.0;
     let cs = ctx.params.f("colorizeSaturation") as f32 / 100.0;
     let cl = ctx.params.f("colorizeLightness") as f32 / 100.0;
+    let ranges = huesat_ranges(ctx);
     b.img.map_straight(|c| {
         let (h, s, l) = rgb_to_hsl(c[0], c[1], c[2]);
         let (h, s, l) = if colorize {
             (ch, cs, (l + cl * if cl > 0.0 { 1.0 - l } else { l }).clamp(0.0, 1.0))
         } else {
-            let s2 = if sat >= 0.0 { s + (1.0 - s) * sat * s.min(1.0) } else { s * (1.0 + sat) };
-            let l2 = if light >= 0.0 { l + (1.0 - l) * light } else { l * (1.0 + light) };
-            ((h + hue).rem_euclid(1.0), s2.clamp(0.0, 1.0), l2)
+            let mut s2 = adjust_sat(s, sat);
+            let mut l2 = adjust_light(l, light);
+            let mut h2 = h + hue;
+            for r in &ranges {
+                let w = r.weight(h * 360.0) * (s * 20.0).min(1.0);
+                if w > 0.0 {
+                    h2 += r.hue * w;
+                    s2 = adjust_sat(s2.clamp(0.0, 1.0), r.sat * w);
+                    l2 = adjust_light(l2, r.light * w);
+                }
+            }
+            (h2.rem_euclid(1.0), s2.clamp(0.0, 1.0), l2)
         };
         let (r, g, bl) = hsl_to_rgb(h, s, l);
         [r, g, bl]
@@ -107,27 +196,85 @@ pub fn levels_clip(ctx: &EffectCtx) -> (bool, bool) {
     (on("clipToOutputBlack"), on("clipToOutputWhite"))
 }
 
+/// Levels' Channel popup.
+pub const LEVELS_CHANNELS: [&str; 5] = ["RGB", "Red", "Green", "Blue", "Alpha"];
+
+/// Spec-id prefixes of Levels' per-channel controls (`redInBlack`, …; the RGB controls have
+/// plain ids).
+pub const LEVELS_CHANNEL_PREFIX: [&str; 4] = ["red", "green", "blue", "alpha"];
+
+/// Levels' five controls (input black, input white, gamma, output black, output white) for
+/// Channel popup index `ch` (0 = RGB).
+pub fn levels_channel_ids(ch: usize) -> [String; 5] {
+    if ch == 0 || ch > 4 {
+        return ["inBlack", "inWhite", "gamma", "outBlack", "outWhite"].map(String::from);
+    }
+    let pre = LEVELS_CHANNEL_PREFIX[ch - 1];
+    ["InBlack", "InWhite", "Gamma", "OutBlack", "OutWhite"].map(|s| format!("{pre}{s}"))
+}
+
+fn level(v: f32, [ib, iw, g, ob, ow]: [f32; 5], (clip_b, clip_w): (bool, bool)) -> f32 {
+    let mut t = (v - ib) / (iw - ib).max(1e-6);
+    if clip_b {
+        t = t.max(0.0);
+    }
+    if clip_w {
+        t = t.min(1.0);
+    }
+    let t = t.max(0.0).powf(1.0 / g);
+    ob + (ow - ob) * t
+}
+
+const LEVELS_IDENTITY: [f32; 5] = [0.0, 1.0, 1.0, 0.0, 1.0];
+
+/// Levels: the RGB controls map every colour channel, then the Red / Green / Blue controls
+/// their own channel and the Alpha controls alpha. All five sets are kept; the Channel popup
+/// only picks the set Effect Controls shows.
 fn levels(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let ib = ctx.params.f("inBlack") as f32;
     let iw = ctx.params.f("inWhite") as f32;
     let g = ctx.params.f("gamma").max(0.01) as f32;
     let ob = ctx.params.f("outBlack") as f32;
     let ow = ctx.params.f("outWhite") as f32;
-    let (clip_b, clip_w) = levels_clip(ctx);
-    b.img.map_straight(|c| {
-        c.map(|v| {
-            let mut t = (v - ib) / (iw - ib).max(1e-6);
-            if clip_b {
-                t = t.max(0.0);
+    let clip = levels_clip(ctx);
+    b.img.map_straight(|c| c.map(|v| level(v, [ib, iw, g, ob, ow], clip)));
+    let chans = levels_channel_settings(ctx);
+    let ident = |l: &([f32; 5], (bool, bool))| l.0 == LEVELS_IDENTITY;
+    if chans.iter().all(ident) {
+        return b;
+    }
+    use rayon::prelude::*;
+    b.img.data.par_iter_mut().for_each(|px| {
+        let (c, a) = crate::util::unpremul(*px);
+        let mut o = c;
+        for i in 0..3 {
+            if !ident(&chans[i]) {
+                o[i] = level(c[i], chans[i].0, chans[i].1);
             }
-            if clip_w {
-                t = t.min(1.0);
-            }
-            let t = t.max(0.0).powf(1.0 / g);
-            ob + (ow - ob) * t
-        })
+        }
+        let na = if ident(&chans[3]) { a } else { level(a, chans[3].0, chans[3].1).clamp(0.0, 1.0) };
+        *px = crate::util::premul(o, na);
     });
     b
+}
+
+/// Levels' Red, Green, Blue and Alpha settings and clip switches (identity for projects saved
+/// before the Channel popup).
+pub fn levels_channel_settings(ctx: &EffectCtx) -> [([f32; 5], (bool, bool)); 4] {
+    std::array::from_fn(|i| {
+        let ids = levels_channel_ids(i + 1);
+        let v: [f32; 5] = std::array::from_fn(|k| ctx.params.get(&ids[k]).map(|v| v.as_f64() as f32).unwrap_or(LEVELS_IDENTITY[k]));
+        let pre = LEVELS_CHANNEL_PREFIX[i];
+        let on = |id: String| ctx.params.get(&id).is_none_or(|v| v.as_enum() != 0);
+        let clip = if ctx.params.b("noClip") { (false, false) } else { (on(format!("{pre}ClipToOutputBlack")), on(format!("{pre}ClipToOutputWhite"))) };
+        ([v[0], v[1], v[2].max(0.01), v[3], v[4]], clip)
+    })
+}
+
+/// Whether Levels' per-channel controls are all at their defaults (the GPU kernel handles
+/// only the RGB controls).
+pub fn levels_channels_identity(ctx: &EffectCtx) -> bool {
+    levels_channel_settings(ctx).iter().all(|l| l.0 == LEVELS_IDENTITY)
 }
 
 /// Exposure's per-channel (gain, offset, gamma) for R, G, B: the Master group's values, or the
@@ -457,6 +604,24 @@ fn colorama(ctx: &EffectCtx, mut b: Buf) -> Buf {
     b
 }
 
+/// Levels' Red / Green / Blue / Alpha controls ("Red Input Black", …), in that order.
+fn levels_channel_params() -> Vec<crate::ParamSpec> {
+    let leak = |s: String| -> &'static str { Box::leak(s.into_boxed_str()) };
+    let names = ["Input Black", "Input White", "Gamma", "Output Black", "Output White"];
+    let mut v = vec![];
+    for (i, pre) in LEVELS_CHANNEL_PREFIX.iter().enumerate() {
+        let label = LEVELS_CHANNELS[i + 1];
+        let ids = levels_channel_ids(i + 1);
+        for k in 0..5 {
+            let ui = if k == 2 { slider(0.1, 10.0, 0.1, 3.0, 2) } else { slider(-1.0, 2.0, 0.0, 1.0, 3) };
+            v.push(p(leak(ids[k].clone()), leak(format!("{label} {}", names[k])), num(LEVELS_IDENTITY[k] as f64), ui));
+        }
+        v.push(p(leak(format!("{pre}ClipToOutputBlack")), leak(format!("{label} Clip To Output Black")), Value::Enum(2), popup(&LEVELS_CLIP)));
+        v.push(p(leak(format!("{pre}ClipToOutputWhite")), leak(format!("{label} Clip To Output White")), Value::Enum(2), popup(&LEVELS_CLIP)));
+    }
+    v
+}
+
 pub fn specs() -> Vec<EffectSpec> {
     let pct = || slider(-100.0, 100.0, -100.0, 100.0, 1);
     let mut gpg = vec![p("blackStretch", "Black Stretch", num(0.0), slider(0.0, 4.0, 0.0, 4.0, 2))];
@@ -501,21 +666,39 @@ pub fn specs() -> Vec<EffectSpec> {
         spec(
             "ec.color.huesaturation",
             "Hue/Saturation",
-            vec![
-                p("hue", "Master Hue", num(0.0), ParamUi::Angle),
-                p("saturation", "Master Saturation", num(0.0), pct()),
-                p("lightness", "Master Lightness", num(0.0), pct()),
-                p("colorize", "Colorize", Value::Bool(false), ParamUi::Checkbox),
-                p("colorizeHue", "Colorize Hue", num(0.0), ParamUi::Angle),
-                p("colorizeSaturation", "Colorize Saturation", num(25.0), slider(0.0, 100.0, 0.0, 100.0, 0)),
-                p("colorizeLightness", "Colorize Lightness", num(0.0), pct()),
-            ],
+            {
+                let mut v = vec![
+                    p("channelControl", "Channel Control", Value::Enum(0), popup(&HUESAT_CHANNELS)),
+                    p("hue", "Master Hue", num(0.0), ParamUi::Angle),
+                    p("saturation", "Master Saturation", num(0.0), pct()),
+                    p("lightness", "Master Lightness", num(0.0), pct()),
+                ];
+                let leak = |s: String| -> &'static str { Box::leak(s.into_boxed_str()) };
+                for (r, name, c) in HUESAT_RANGES {
+                    let single = name.trim_end_matches('s');
+                    v.push(p(leak(format!("{r}Hue")), leak(format!("{single} Hue")), num(0.0), ParamUi::Angle));
+                    v.push(p(leak(format!("{r}Saturation")), leak(format!("{single} Saturation")), num(0.0), pct()));
+                    v.push(p(leak(format!("{r}Lightness")), leak(format!("{single} Lightness")), num(0.0), pct()));
+                    v.push(p(leak(format!("{r}RangeStart")), leak(format!("{single} Range Start")), num(c - 15.0), slider(-360.0, 720.0, -180.0, 360.0, 0)));
+                    v.push(p(leak(format!("{r}RangeEnd")), leak(format!("{single} Range End")), num(c + 15.0), slider(-360.0, 720.0, -180.0, 360.0, 0)));
+                    v.push(p(leak(format!("{r}StartFalloff")), leak(format!("{single} Start Falloff")), num(30.0), slider(0.0, 180.0, 0.0, 90.0, 0)));
+                    v.push(p(leak(format!("{r}EndFalloff")), leak(format!("{single} End Falloff")), num(30.0), slider(0.0, 180.0, 0.0, 90.0, 0)));
+                }
+                v.extend([
+                    p("colorize", "Colorize", Value::Bool(false), ParamUi::Checkbox),
+                    p("colorizeHue", "Colorize Hue", num(0.0), ParamUi::Angle),
+                    p("colorizeSaturation", "Colorize Saturation", num(25.0), slider(0.0, 100.0, 0.0, 100.0, 0)),
+                    p("colorizeLightness", "Colorize Lightness", num(0.0), pct()),
+                ]);
+                v
+            },
             hue_saturation,
         ),
         spec(
             "ec.color.levels",
             "Levels",
             vec![
+                p("channel", "Channel", Value::Enum(0), popup(&LEVELS_CHANNELS)),
                 p("inBlack", "Input Black", num(0.0), slider(-1.0, 2.0, 0.0, 1.0, 3)),
                 p("inWhite", "Input White", num(1.0), slider(-1.0, 2.0, 0.0, 1.0, 3)),
                 p("gamma", "Gamma", num(1.0), slider(0.1, 10.0, 0.1, 3.0, 2)),
@@ -525,7 +708,10 @@ pub fn specs() -> Vec<EffectSpec> {
                 p("clipToOutputWhite", "Clip To Output White", Value::Enum(2), popup(&LEVELS_CLIP)),
                 // Projects saved before the two popups: "Don't Clip".
                 p("noClip", "Don't Clip", Value::Bool(false), ParamUi::Hidden),
-            ],
+            ]
+            .into_iter()
+            .chain(levels_channel_params())
+            .collect(),
             levels,
         ),
         spec(
@@ -836,5 +1022,51 @@ mod tests {
         let dark = [0.1, 0.1, 0.1, 1.0];
         assert!(px("ec.color.gammapedestalgain", &[("blackStretch", num(4.0))], dark)[0] > 0.15);
         assert!(close(px("ec.color.gammapedestalgain", &[], dark), dark, 1e-6));
+    }
+
+    #[test]
+    fn levels_channel_controls_act_on_their_channel() {
+        let g = [0.5, 0.5, 0.5, 1.0];
+        assert!(close(px("ec.color.levels", &[("channel", Value::Enum(1))], g), g, 1e-6), "the popup alone changes nothing");
+        let r = px("ec.color.levels", &[("redOutWhite", num(0.5))], g);
+        assert!(close(r, [0.25, 0.5, 0.5, 1.0], 1e-5), "{r:?}");
+        let b = px("ec.color.levels", &[("blueGamma", num(2.0)), ("inWhite", num(0.5))], [0.25, 0.25, 0.25, 1.0]);
+        assert!(close(b, [0.5, 0.5, 0.5f32.sqrt(), 1.0], 1e-5), "RGB first, then blue: {b:?}");
+        let a = px("ec.color.levels", &[("alphaOutWhite", num(0.5))], [0.5, 0.5, 0.5, 1.0]);
+        assert!(close(a, [0.25, 0.25, 0.25, 0.5], 1e-5), "{a:?}");
+        // Per-channel clipping follows its own popups.
+        let hot = [0.9, 0.9, 0.9, 1.0];
+        let c = px("ec.color.levels", &[("greenInWhite", num(0.5))], hot)[1];
+        let nc = px("ec.color.levels", &[("greenInWhite", num(0.5)), ("greenClipToOutputWhite", Value::Enum(0))], hot)[1];
+        assert!((c - 1.0).abs() < 1e-6 && (nc - 1.8).abs() < 1e-5, "{c} {nc}");
+    }
+
+    #[test]
+    fn hue_saturation_ranges_adjust_their_hues_only() {
+        let red = [0.8, 0.1, 0.1, 1.0];
+        let blue = [0.1, 0.1, 0.8, 1.0];
+        let grey = [0.5, 0.5, 0.5, 1.0];
+        let v = [("redsSaturation", num(-100.0))];
+        let r = px("ec.color.huesaturation", &v, red);
+        assert!((r[0] - r[1]).abs() < 1e-4, "reds desaturated: {r:?}");
+        assert!(close(px("ec.color.huesaturation", &v, blue), blue, 1e-5));
+        assert!(close(px("ec.color.huesaturation", &v, grey), grey, 1e-5));
+        // Blues hue +120°: blue becomes red.
+        let b = px("ec.color.huesaturation", &[("bluesHue", num(120.0))], blue);
+        assert!(b[0] > 0.7 && b[2] < 0.2, "{b:?}");
+        // Fall-off: a hue 15° past the range end (Reds: −15..15, fall-off 30) gets half.
+        let orange_ish = {
+            let (r, g, b) = hsl_to_rgb(30.0 / 360.0, 0.8, 0.5);
+            [r, g, b, 1.0]
+        };
+        let o = px("ec.color.huesaturation", &[("redsLightness", num(100.0))], orange_ish);
+        let (_, _, l) = rgb_to_hsl(o[0], o[1], o[2]);
+        assert!((l - 0.75).abs() < 0.01, "half weight: {l}");
+        // Moving the range changes which hues it takes.
+        let o2 = px("ec.color.huesaturation", &[("redsLightness", num(100.0)), ("redsRangeEnd", num(40.0))], orange_ish);
+        assert!(rgb_to_hsl(o2[0], o2[1], o2[2]).2 > 0.99);
+        let params = crate::Params { values: [("redsHue".to_string(), num(10.0))].into_iter().collect() };
+        let ctx = EffectCtx { params: &params, time: 0.0, layer_size: [1.0, 1.0], seed: 0, adjustment: false, env: Default::default() };
+        assert!(!huesat_ranges_identity(&ctx));
     }
 }
