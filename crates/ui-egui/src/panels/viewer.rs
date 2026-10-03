@@ -519,7 +519,8 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     app.auto.add("viewer.area", area, "Composition viewer");
 
     // Guides.
-    if app.ui.viewer.safe_margins {
+    let overlays = app.overlays_visible();
+    if overlays && app.ui.viewer.safe_margins {
         let g = &app.session.prefs.grids;
         let (act, title) = (1.0 - g.action_safe as f32 / 100.0, 1.0 - g.title_safe as f32 / 100.0);
         for (k, a) in [(act, 120u8), (title, 160)] {
@@ -530,7 +531,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         painter.line_segment([c - vec2(10.0, 0.0), c + vec2(10.0, 0.0)], Stroke::new(1.0, Color32::from_white_alpha(140)));
         painter.line_segment([c - vec2(0.0, 10.0), c + vec2(0.0, 10.0)], Stroke::new(1.0, Color32::from_white_alpha(140)));
     }
-    if app.ui.viewer.grid {
+    if overlays && app.ui.viewer.grid {
         // Settings ▸ Grids & Guides: gridline spacing, subdivisions and colour.
         let g = &app.session.prefs.grids;
         let [r, gg, b] = hex_rgb(&g.grid_color).unwrap_or([120, 160, 255]);
@@ -567,7 +568,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     vt::proportional_grid(app, &painter, comp_rect);
 
     // Comp guides (View ▸ Show Guides) and the region of interest.
-    if app.ui.viewer.guides {
+    if overlays && app.ui.viewer.guides {
         let [r, gg, b] = hex_rgb(&app.session.prefs.grids.guide_color).unwrap_or([0x3c, 0xc8, 0xf0]);
         let stroke = Stroke::new(1.0, Color32::from_rgb(r, gg, b));
         // Settings ▸ Grids & Guides ▸ Guide Style.
@@ -625,7 +626,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     if finish || app.ui.tool != Tool::Selection {
         ov::end_free_transform(&ctx);
     }
-    if app.ui.viewer.show_layer_controls {
+    if app.layer_controls_visible() {
         // Settings ▸ General ▸ Path Point and Handle Size; Appearance ▸ Use Label Color for
         // Layer Handles and Paths.
         let hs = app.session.prefs.general.path_point_size as f32 + 2.0;
@@ -748,7 +749,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     // Track points of the current track (Tracker panel) on its layer, while that layer is selected.
     let mut track_hits = vec![];
     let track_cur = super::tracker::viewer_track(app);
-    if app.ui.viewer.show_layer_controls
+    if app.layer_controls_visible()
         && let Some((tl, tu)) = track_cur
         && selected.contains(&tl)
         && let Some(layer) = comp.layer(tl)

@@ -15,10 +15,8 @@ How close EffectCraft is to After Effects 2026, feature by feature, and how much
 | Remaining work | ≈ 19–22 agent-hours at the pace measured so far (≈ 58 on the conservative audit scale) |
 | **Wall-clock estimate** | **≈ 4–5 hours** with five agents in parallel; ≈ 3 hours for 100% of P0 + P1 |
 
-Partial features: effect implementations (42 simplified effects), the Preview panel's settings
-(range, play from, skip, frame rate, full screen), GPU coverage (Advanced 3D, more GPU effects),
-the web app (no threads for viewer frames and Roto Brush), the Learn panel and Align to Selection /
-Distribute, Advanced 3D (iris shapes, collapsed precomps, extruded strokes), ScriptUI resource
+Partial features: effect implementations (42 simplified effects), GPU coverage (Advanced 3D, more
+GPU effects), the web app (no threads for viewer frames and Roto Brush), the Learn panel, ScriptUI resource
 strings and `onDraw`, Essential Graphics font and scale controls, and the learned-model quality of
 Roto Brush and face tracking (both are classical). Menu items still absent: Save Frame As ▸
 Photoshop Layers / ProEXR, Open in Essential Graphics, Vanishing Point import, Watch Folder.
@@ -131,12 +129,12 @@ the disk cache in the formats wave; the 3D Camera Tracker in M12.6.)
 | Animation | 70% | 9.0 | puppet depth beyond pins and recording (puppet pin recording with Record Options landed in M13.1), Wiggler/Smoother/Motion Sketch (motion-path handles and the graph editor transform box landed in M5.8; keyframe colour labels and Select Keyframe Label Group, Graph Editor snapping to markers / layer ends in M13.5) |
 | Text | ≈ 95% | 0.4 | no extruded strokes, the Variable Font Axes animator changes outlines but not advances (M13.6: variable font axes in the character style — `layer.setText variations`, the Character panel's Variable Font Axes fields — shape with HVAR / gvar advances and draw at that design-space position; OpenType features — stylistic sets, discretionary ligatures, contextual / stylistic alternates, swash, titling, ordinals, fractions, figure styles, true small caps / all small caps and superior / inferior glyphs with faux fallback — per character with the Character panel's OpenType popup and `text.fontFeatures` landed in M13.2; vertical Roman / Tate-Chu-Yoko, forced LTR paragraphs, caret on animated and path text, Variable Font Axes and Lottie style runs landed in M13.5; extruded, bevelled text in M7.6; per-character styles, paragraph settings, on-canvas editing and the `sourceText` style API in M9.9–M9.10) |
 | Web | 85% | 1.0 | viewer frames and Roto Brush propagation still on the page's thread; GPU effects in the browser (browser storage, Web Audio, Web Worker renders/analyses, WebGPU viewer and offline install landed in M15.2) |
-| 3D | 85% | 6.5 | multi-view layouts, iris shapes in Advanced 3D's depth of field, collapsed 3D precomps in Advanced 3D, the Extended Viewer for Advanced 3D comps (Classic 3D Extended Viewer landed in M13.5 UI completion); collapsed precomps of another size seen through the parent's camera render (fixed in M13.2); stereo rigs, orbit nulls, lights controlled by the camera, cameras/lights from glTF models, environment backgrounds, Advanced 3D motion blur, blend modes and track mattes landed in M7.7; Classic 3D iris-shaped bokeh with highlights, progressive depth of field on tilted layers and the focus-link commands landed in M13.5; Advanced 3D (glTF/OBJ models, primitives, extruded text and shapes, PBR, image-based light, shadow maps, GPU rasteriser) in M7.4–M7.6 |
+| 3D | 88% | 5.5 | multi-view layouts, the Extended Viewer for Advanced 3D comps (Classic 3D Extended Viewer landed in M13.5 UI completion); collapsed precomps of another size seen through the parent's camera render (fixed in M13.2); stereo rigs, orbit nulls, lights controlled by the camera, cameras/lights from glTF models, environment backgrounds, Advanced 3D motion blur, blend modes and track mattes landed in M7.7; Classic 3D iris-shaped bokeh with highlights, progressive depth of field on tilted layers and the focus-link commands landed in M13.5; Advanced 3D depth of field with the iris and highlight options, collapsed precomps as real Advanced 3D geometry and extruded text/shape strokes landed in M13.8; Advanced 3D (glTF/OBJ models, primitives, extruded text and shapes, PBR, image-based light, shadow maps, GPU rasteriser) in M7.4–M7.6 |
 | Effects | ≈ 80% | 4.0 | GPU versions of the remaining effects (58 run on the GPU since M12.7) and the missing controls listed as partial in [effects.md](effects.md) (every After Effects effect exists since M9.11, M12.5 and M12.6; parameter names, order, twirl-downs, popups, units and defaults were aligned in M9.12) |
 | Interface | 74% | 5.0 | more Learn tutorials and pixel-level fidelity of dialogs (the Home ▸ Learn tab with interactive tutorials and a UI fidelity pass landed in M13.5 UI completion; Timeline outline and Project panel columns scroll horizontally, the Layer Style dialog, ROI resize handles, Pan Behind snapping and 3D Reference Axes landed in M13.5; native macOS menu bar, Timeline columns/search/reveal-add, Home screen with recent projects and all AE workspaces landed; viewer rulers/snapping/channels/snapshots landed in M0.13) |
 | Project | ≈ 68% | 5.5 | auto-save, folder moves, OCIO displays beyond the built-in tone map (Color Engine with OCIO/ACES working spaces, HDR compand/tone mapping, Rec. 2100 PQ/HLG output, Feet + Frames, display colour management, Simulate Output and the locked viewer landed in M7.7; proxies and Interpret Footage fields / pixel aspect / alpha guess landed: PRJ-8, PRJ-3) |
 | Masks & roto | 74% | 5.0 | Roto Brush's learned (3.0) segmentation model (variable-width mask feather points with the Mask Feather tool landed in M13.5; mask tracking and Mask Interpolation landed in M6.6; Roto Brush & Refine Edge with graph-cut segmentation, flow propagation, edge matting, decontamination and Freeze in M6.7) |
-| Preview | 68% | 3.7 | wireframes and Advanced 3D compositing on the GPU (Classic 3D bokeh depth of field — iris shapes, highlights, fringe, progressive blur on tilted planes — runs in WGSL since M13.6: 3D Showcase GPU warm 205 → 54 ms/frame at full size on an M4 Pro; Classic 3D runs and adjustment layers composite on the GPU since M12.7; persistent disk cache with the blue cache bar landed; region of interest, snapshots, exposure and Fast Previews landed in M0.13) |
+| Preview | 74% | 3.2 | wireframes and Advanced 3D compositing on the GPU (Classic 3D bokeh depth of field — iris shapes, highlights, fringe, progressive blur on tilted planes — runs in WGSL since M13.6: 3D Showcase GPU warm 205 → 54 ms/frame at full size on an M4 Pro; the Preview panel's five shortcuts with their own Include / Loop / Cache Before Playback / Range / Play From / Frame Rate / Skip / Resolution / Full Screen / stop options and `playback.settings.get/set` landed in M13.8; Classic 3D runs and adjustment layers composite on the GPU since M12.7; persistent disk cache with the blue cache bar landed; region of interest, snapshots, exposure and Fast Previews landed in M0.13) |
 | Tracking | ≈ 96% | 0.3 | face tracking is a classical (skin model + feature components + shape model) fitter, not a learned detector: profile views and occluded faces are weak; Rolling Shutter Ripple is approximated by Subspace Warp's mesh density (face tracking (Outline Only / Detailed Features with Face Track Points and Extract & Copy Face Measurements), Subspace Warp's content-preserving mesh warp on subspace-smoothed trajectories, and radial lens distortion (k1, k2) in the camera bundle adjustment with Undistort Footage landed in M13.3; Rolling Shutter Repair in M9.11; point tracker, mask tracking, Warp Stabilizer and the 3D Camera Tracker in M6.x / M12.5 / M12.6) |
 | Paint | 0% | 4.0 | Brush, Clone Stamp, Eraser |
 
@@ -176,8 +174,29 @@ Tate-Chu-Yoko, forced LTR paragraphs, the editing caret on animated / path text 
 style runs; the Layer Style dialog (LYR-9); Graph Editor snapping to markers and layer ends
 (ANM-4; the reference graph existed); viewer ROI resize handles, Pan Behind snapping and 3D
 Reference Axes; Animate Text ▸ Variable Font Axes. Remaining in these rows: Lottie can't carry
-taper/wave, Advanced 3D's DOF has no iris shapes, and the Variable Font Axes animator doesn't
-change advances (the Character panel's axes do since M13.6).
+taper/wave and the Variable Font Axes animator doesn't change advances (the Character panel's
+axes do since M13.6; Advanced 3D's DOF has iris shapes since M13.8).
+
+## Update: M13.8 Preview panel, Align panel, Advanced 3D completion
+
+- **Preview panel (PRV-1)**: Shortcut popup (Spacebar, Shift+Spacebar, Numpad 0, Shift+Numpad
+  0, Alt+Numpad 0), each shortcut with its own saved options (settings `preview`): Include
+  Video / Audio / Overlays / Layer Controls, Loop, Cache Before Playback, Range (Work Area,
+  Work Area Extended By Current Time, Entire Duration, Play Around Current Time with pre/post
+  roll), Play From (Range Start / Current Time), Frame Rate (Auto or a rate), Skip, Resolution
+  (Auto, Full … Quarter, Custom), Full Screen, "If caching, play cached frames" and "Move time to
+  preview time". `playback.settings.get/set`; playback follows the plan (range, start, skip grid,
+  rate, loop, cache-first, audio-only, resolution override, hidden overlays / layer controls,
+  maximized viewer); the keys trigger their shortcut (`playback.toggle {shortcut?}`,
+  `playback.ramPreview`, `playback.preview.shiftSpacebar|shiftNumpad0|altNumpad0`). Full Screen
+  maximizes the Composition panel rather than taking over the display.
+- **Align panel (UI-1)**: `layer.align {edge, to: composition|selection}` and `layer.distribute
+  {mode}` (edges or centres) on content bounds through transform and parents, one undo step;
+  Align Layers to dropdown and the Distribute Layers row.
+- **Advanced 3D (3D-3)**: depth of field with the camera's iris and highlight options (the
+  Classic 3D bokeh kernel, by each pixel's depth); collapsed precomps add their nested layers
+  as real geometry lit by the parent (2D collapsed precomps draw nested 3D layers with the
+  parent's renderer); text and shape strokes extrude as bevelled meshes in paint order.
 
 ## Update: M13.5 UI completion & fidelity
 

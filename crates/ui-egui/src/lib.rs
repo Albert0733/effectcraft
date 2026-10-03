@@ -110,6 +110,20 @@ pub struct Playback {
     pub shown: u64,
     pub waiting: bool,
     pub fps: f64,
+    /// The Preview panel shortcut that started this preview and what it plays.
+    pub shortcut: effectcraft_engine::preview::PreviewShortcut,
+    pub plan: Option<effectcraft_engine::preview::PreviewPlan>,
+    /// Cache Before Playback: rendering the range before the clock starts.
+    pub caching: bool,
+    /// Resolution override while playing (pixel step), `None` = the viewer's.
+    pub res: Option<u32>,
+    /// Include Overlays / Include Layer Controls.
+    pub overlays: bool,
+    pub layer_controls: bool,
+    /// Full Screen: the maximized panel to restore when the preview stops.
+    pub restore_max: Option<Option<PanelKind>>,
+    /// Audio-only previews: the frame under the audible sample (the current time stays put).
+    pub audio_frame: Option<i64>,
 }
 
 pub struct EffectcraftApp {
@@ -419,6 +433,19 @@ impl EffectcraftApp {
 
     /// The render scale used by the viewer right now.
     pub fn viewer_scale(&self, zoom: f32, ppp: f32) -> f64 {
+        // The preview's Resolution (when not Auto) while it plays.
+        if self.playback.playing
+            && let Some(f) = self.playback.res
+        {
+            let r = match f {
+                1 => state::Resolution::Full,
+                2 => state::Resolution::Half,
+                3 => state::Resolution::Third,
+                4 => state::Resolution::Quarter,
+                n => state::Resolution::Custom(n.min(40) as u8),
+            };
+            return r.scale(zoom, ppp);
+        }
         if self.playback.playing && self.ui.viewer.res == state::Resolution::Auto {
             // Keep previews snappy: half the displayed size, but no lower than Settings ▸
             // Previews ▸ Adaptive Resolution Limit.
@@ -510,64 +537,163 @@ impl EffectcraftApp {
     // ---------------------------------------------------------------- playback
 
     pub fn play(&mut self, now: f64) {
+        let sc = self.session.prefs.preview.current;
+        self.play_with(now, sc);
+    }
+
+    /// Start the preview of a Preview panel shortcut (its range, play-from, rate, skip,
+    /// resolution, loop, caching, full screen and include options).
+    pub fn play_with(&mut self, now: f64, sc: effectcraft_engine::preview::PreviewShortcut) {
         let Some(c) = self.session.active_comp().cloned() else { return };
-        let mut t = self.session.time();
-        let (wa, wb) = c.work_area;
-        if t >= wb - c.frame_duration() || t < wa {
-            t = wa;
+        let preset = self.session.prefs.preview.get(sc).clone();
+        let plan = effectcraft_engine::preview::plan(&preset, &c, self.session.time());
+        let fr = c.frame_rate;
+        if plan.video {
+            self.session.set_time(fr.tick_of(plan.first));
         }
-        self.session.set_time(t);
+        let restore_max = preset.full_screen.then_some(self.ui.maximized);
+        if preset.full_screen && self.ui.dock.contains(PanelKind::Composition) {
+            self.ui.maximized = Some(PanelKind::Composition);
+        }
         self.playback = Playback {
             playing: true,
             start_wall: now,
-            start_time: t,
-            start_frame: c.frame_rate.frame_at(t),
+            start_time: fr.tick_of(plan.first),
+            start_frame: plan.first,
             shown: 0,
             waiting: false,
-            fps: c.frame_rate.as_f64(),
+            fps: plan.fps,
+            shortcut: sc,
+            plan: Some(plan),
+            caching: plan.cache_first && plan.video,
+            res: preset.resolution.factor(preset.custom_resolution),
+            overlays: preset.include_overlays,
+            layer_controls: preset.include_layer_controls,
+            restore_max,
+            audio_frame: (!plan.video).then_some(plan.first),
         };
-        self.start_audio(t);
+        if !self.playback.caching {
+            self.start_audio(fr.tick_of(plan.first));
+        }
     }
 
-    /// Start audio preview from comp time `t` when the Preview panel includes audio, the comp
-    /// has something audible and an output device opens.
+    /// Start audio preview from comp time `t` when the preview includes audio at the comp's
+    /// frame rate, the comp has something audible and an output device opens.
     fn start_audio(&mut self, t: Tick) {
         self.audio = None;
         self.meter.clipped = [false; 2];
-        if !self.ui.preview_audio {
+        let Some(pl) = self.playback.plan else { return };
+        if !pl.audio {
             return;
         }
         let Some(cid) = self.session.active_comp_id() else { return };
         let Some(c) = self.session.project.comp(cid).cloned() else { return };
+        // A preview at another frame rate plays slower or faster than real time: silent.
+        if (pl.fps - c.frame_rate.as_f64()).abs() > 0.01 {
+            return;
+        }
         if !effectcraft_engine::render::audio::comp_has_audio(&self.session.project, cid) {
             return;
         }
         let out = audio::AudioOutput::from_prefs(&self.session.prefs);
         let Some(dev) = self.hooks.audio_device.as_ref().and_then(|f| f(&out)) else { return };
         let mix = self.session.prefs.audio.preview_sample_rate;
-        match audio::AudioPlayback::start(dev, self.render_source(), cid, t, c.work_area.0, c.work_area.1, self.ui.preview_loop, mix) {
+        let fr = c.frame_rate;
+        match audio::AudioPlayback::start(dev, self.render_source(), cid, t, fr.tick_of(pl.start), fr.tick_of(pl.end + 1), pl.looping, mix) {
             Ok(a) => self.audio = Some(a),
             Err(e) => log::warn!("audio preview: {e}"),
         }
     }
 
     pub fn stop(&mut self) {
-        self.playback.playing = false;
+        let was = std::mem::replace(&mut self.playback.playing, false);
         self.audio = None;
+        self.playback.caching = false;
+        if !was {
+            return;
+        }
+        if let Some(m) = self.playback.restore_max.take() {
+            self.ui.maximized = m;
+        }
+        let Some(pl) = self.playback.plan else { return };
+        let move_time = self.session.prefs.preview.get(self.playback.shortcut).move_time_to_preview_time;
+        if !move_time {
+            self.session.set_time(pl.origin);
+        } else if let Some(f) = self.playback.audio_frame
+            && let Some(c) = self.session.active_comp()
+        {
+            let t = c.frame_rate.tick_of(f);
+            self.session.set_time(t);
+        }
     }
 
     pub fn toggle_play(&mut self, now: f64) {
-        if self.playback.playing { self.stop() } else { self.play(now) }
+        let sc = self.session.prefs.preview.current;
+        self.toggle_play_with(now, sc);
     }
 
-    /// RAM preview: advance at the comp frame rate when frames are cached; otherwise hold and
-    /// keep rendering ahead (the green cache bar fills, then playback runs in real time).
+    /// A preview shortcut pressed: start its preview, or stop the running one. While Cache
+    /// Before Playback is still rendering, "If caching, play cached frames" plays what is
+    /// cached so far instead of stopping.
+    pub fn toggle_play_with(&mut self, now: f64, sc: effectcraft_engine::preview::PreviewShortcut) {
+        if !self.playback.playing {
+            self.play_with(now, sc);
+            return;
+        }
+        if self.playback.caching && self.session.prefs.preview.get(self.playback.shortcut).play_cached_frames && self.play_cached(now) {
+            return;
+        }
+        self.stop();
+    }
+
+    /// Cut the caching preview down to the frames cached from its first frame on and play them.
+    fn play_cached(&mut self, now: f64) -> bool {
+        let (Some(mut pl), Some(cid)) = (self.playback.plan, self.session.active_comp_id()) else { return false };
+        let scale = self.viewer_shown.as_ref().map(|(_, k)| k.scale as f64 / 1000.0).unwrap_or(1.0);
+        let mut last = None;
+        let mut f = pl.first;
+        while f <= pl.end && self.frames.is_cached(&self.frame_key(cid, f, scale)) {
+            last = Some(f);
+            f += pl.step;
+        }
+        let Some(last) = last else { return false };
+        pl.end = last;
+        pl.start = pl.first;
+        self.playback.plan = Some(pl);
+        self.playback.caching = false;
+        self.playback.start_wall = now;
+        self.playback.start_frame = pl.first;
+        let t = self.session.active_comp().map(|c| c.frame_rate.tick_of(pl.first)).unwrap_or_default();
+        self.start_audio(t);
+        true
+    }
+
+    /// The viewer shows grids, guides and safe margins (hidden while a preview without
+    /// Include Overlays plays).
+    pub fn overlays_visible(&self) -> bool {
+        !self.playback.playing || self.playback.overlays
+    }
+
+    /// The viewer shows layer handles and paths (View ▸ Show Layer Controls, and Include Layer
+    /// Controls while a preview plays).
+    pub fn layer_controls_visible(&self) -> bool {
+        self.ui.viewer.show_layer_controls && (!self.playback.playing || self.playback.layer_controls)
+    }
+
+    /// RAM preview: advance at the preview's frame rate when frames are cached; otherwise hold
+    /// and keep rendering ahead (the green cache bar fills, then playback runs in real time).
     fn advance_playback(&mut self, ctx: &egui::Context, scale: f64) {
         let Some(cid) = self.session.active_comp_id() else { return };
         let Some(c) = self.session.project.comp(cid).cloned() else { return };
         let now = ctx.input(|i| i.time);
         let fr = c.frame_rate;
-        let (wa, wb) = (fr.frame_at(c.work_area.0), fr.frame_at(c.work_area.1 - c.frame_duration()));
+        let plan = self.playback.plan.filter(|_| self.playback.playing);
+        let (wa, wb) = match plan {
+            Some(p) => (p.start, p.end),
+            None => (fr.frame_at(c.work_area.0), fr.frame_at(c.work_area.1 - c.frame_duration())),
+        };
+        let looping = plan.is_none_or(|p| p.looping);
+        let video = plan.is_none_or(|p| p.video);
         // Prefetch ahead.
         let cur = fr.frame_at(self.session.time());
         // While paused (scrubbing, editing) the viewer's frame comes first: prefetch only a few
@@ -580,17 +706,53 @@ impl EffectcraftApp {
             (self.frames_parallelism() / 2).max(2) as i64
         };
         let mut queued = self.frames.inflight();
+        if self.playback.caching
+            && let Some(p) = plan
+        {
+            // Cache Before Playback: the whole range in play order, then start the clock.
+            let mut all = true;
+            let n = (p.end - p.start) / p.step + 1;
+            let order: Vec<i64> = (0..n).filter_map(|k| p.frame_after(p.first, k)).collect();
+            for f in order {
+                let key = self.frame_key(cid, f, scale);
+                if self.frames.is_cached(&key) {
+                    continue;
+                }
+                all = false;
+                if queued < ahead as usize {
+                    self.request_frame(cid, f, scale);
+                    queued += 1;
+                }
+            }
+            self.playback.waiting = !all;
+            if all {
+                self.playback.caching = false;
+                self.playback.start_wall = now;
+                self.playback.start_frame = p.first;
+                self.session.set_time(fr.tick_of(p.first));
+                self.start_audio(fr.tick_of(p.first));
+            }
+            ctx.request_repaint();
+            return;
+        }
+        let step = plan.map_or(1, |p| p.step);
         for k in 0..ahead * 3 {
-            if queued >= ahead as usize {
+            if queued >= ahead as usize || !video {
                 break;
             }
-            let mut f = cur + k;
-            if f > wb {
-                if !self.ui.preview_loop {
-                    break;
+            let f = match plan {
+                Some(p) => match p.frame_after(cur, k) {
+                    Some(f) => f,
+                    None => break,
+                },
+                None => {
+                    let mut f = cur + k;
+                    if f > wb {
+                        f = wa + (f - wb - 1).rem_euclid((wb - wa + 1).max(1));
+                    }
+                    f
                 }
-                f = wa + (f - wb - 1).rem_euclid((wb - wa + 1).max(1));
-            }
+            };
             let key = self.frame_key(cid, f, scale);
             if !self.frames.is_cached(&key) {
                 self.request_frame(cid, f, scale);
@@ -607,33 +769,61 @@ impl EffectcraftApp {
         if !self.playback.playing {
             return;
         }
+        let snap = |f: i64| wa + (f - wa).div_euclid(step) * step;
         // Audio clock drives playback: show the frame under the audible sample (frames that
         // are not rendered yet are dropped, never delayed).
         if let Some(a) = &self.audio {
             if a.finished() {
-                self.session.set_time(fr.tick_of(wb));
+                if video {
+                    self.session.set_time(fr.tick_of(wb));
+                } else {
+                    self.playback.audio_frame = Some(wb);
+                }
                 self.stop();
                 return;
             }
-            let target = audio::frame_of_sample(a.clock(), a.rate, fr).clamp(wa, wb);
-            self.playback.waiting = !self.frames.is_cached(&self.frame_key(cid, target, scale));
-            if target != cur {
-                self.session.set_time(fr.tick_of(target));
-                self.playback.shown += 1;
+            let target = snap(audio::frame_of_sample(a.clock(), a.rate, fr).clamp(wa, wb));
+            if !video {
+                self.playback.audio_frame = Some(target);
+            } else {
+                self.playback.waiting = !self.frames.is_cached(&self.frame_key(cid, target, scale));
+                if target != cur {
+                    self.session.set_time(fr.tick_of(target));
+                    self.playback.shown += 1;
+                }
             }
             ctx.request_repaint();
             return;
         }
         let elapsed = now - self.playback.start_wall;
-        let mut target = self.playback.start_frame + (elapsed * fr.as_f64()).floor() as i64;
-        if target > wb {
-            if self.ui.preview_loop {
-                target = wa + (target - wa).rem_euclid((wb - wa + 1).max(1));
-            } else {
-                self.session.set_time(fr.tick_of(wb));
-                self.stop();
-                return;
+        let n = ((elapsed * self.playback.fps) / step as f64).floor() as i64;
+        let target = match plan {
+            Some(p) => p.frame_after(self.playback.start_frame, n),
+            None => {
+                let t = self.playback.start_frame + n;
+                if t <= wb {
+                    Some(t)
+                } else if looping {
+                    Some(wa + (t - wa).rem_euclid((wb - wa + 1).max(1)))
+                } else {
+                    None
+                }
             }
+        };
+        let Some(target) = target else {
+            if video {
+                self.session.set_time(fr.tick_of(wb));
+            } else {
+                self.playback.audio_frame = Some(wb);
+            }
+            self.stop();
+            return;
+        };
+        if !video {
+            // Audio-only preview without an audio device: the clock runs, the time stays.
+            self.playback.audio_frame = Some(target);
+            ctx.request_repaint();
+            return;
         }
         let key = self.frame_key(cid, target, scale);
         if self.frames.is_cached(&key) {
@@ -645,8 +835,7 @@ impl EffectcraftApp {
         } else {
             // Not cached yet: hold the clock at the current frame (cache first, then play).
             self.playback.waiting = true;
-            let next = cur + 1;
-            let next = if next > wb { wa } else { next };
+            let next = plan.and_then(|p| p.frame_after(cur, 1)).unwrap_or(if cur + 1 > wb { wa } else { cur + 1 });
             if self.frames.is_cached(&self.frame_key(cid, next, scale)) {
                 self.session.set_time(fr.tick_of(next));
             }
