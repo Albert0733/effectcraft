@@ -67,27 +67,47 @@ fn matte_choker(ctx: &EffectCtx, mut b: Buf) -> Buf {
     b
 }
 
+/// Refine Soft / Hard Matte. Refine Soft Matte nests its decontamination settings in a
+/// "Decontamination" twirl-down; Refine Hard Matte lists them flat.
 fn refine(ctx: &EffectCtx, mut b: Buf, hard: bool) -> Buf {
-    let r = (ctx.params.f("radius") * b.scale).round().max(1.0) as usize;
-    let smooth = ctx.params.f("smooth") as f32 / 100.0;
-    let feather = ctx.params.f("feather") / 100.0 * r as f64 * 0.5;
-    let choke = ctx.params.f("choke") as f32 / 100.0 * 0.5;
-    let decon = ctx.params.b("decontaminate");
-    let decon_amt = ctx.params.f("decontaminationAmount") as f32 / 100.0;
-    let invert = ctx.params.b("invert");
-    let contrast = if hard { ctx.params.f("alphaContrast") as f32 / 100.0 } else { 1.0 };
+    let pr = ctx.params;
+    let dk = |id: &str| if hard { id.to_string() } else { format!("decontamination/{id}") };
+    let r = (pr.f("radius") * b.scale).round().max(1.0) as usize;
+    let smooth = pr.f("smooth") as f32 / 100.0;
+    let feather = pr.f("feather") / 100.0 * r as f64 * 0.5;
+    // Choke (positive shrinks; Refine Hard Matte) and Shift Edge (positive grows; Refine Soft
+    // Matte; older soft instances may still carry a hidden Choke).
+    let choke = (pr.f("choke") - if hard { 0.0 } else { pr.f("shiftEdge") }).clamp(-100.0, 100.0) as f32 / 100.0 * 0.5;
+    let decon = pr.b("decontaminate");
+    let decon_amt = pr.f(&dk("decontaminationAmount")) as f32 / 100.0;
+    let extend = pr.b(&dk("extendWhereSmoothed"));
+    let decon_r = r as f64 + pr.f(&dk("increaseDecontaminationRadius")).max(0.0) * b.scale;
+    let view_map = pr.b(&dk("viewDecontaminationMap"));
+    let invert = pr.b("invert");
+    let contrast = if hard { pr.f("alphaContrast") as f32 / 100.0 } else { 1.0 + pr.f("contrast").max(0.0) as f32 / 100.0 * 3.0 };
+    let edge_details = hard || pr.b("calculateEdgeDetails");
+    let view_edges = !hard && pr.b("viewEdgeRegion");
 
     let a = Plane::alpha(&b.img);
-    let guide = Plane::from_image(&b.img, |px| effectcraft_color::luminance(px[0], px[1], px[2]));
-    let eps = 1e-4 + smooth * smooth * 0.05;
-    let filtered = guided_filter(&guide, &a, r, eps);
     // Only the edge band (where the matte varies within the radius) is refined.
     let hi = morph_plane(&a, r, r, true);
     let lo = morph_plane(&a, r, r, false);
+    let band = |i: usize| hi.data[i] - lo.data[i] > 1e-3;
     let mut na = Plane::new(a.w, a.h);
-    na.data.par_iter_mut().enumerate().for_each(|(i, v)| {
-        *v = if hi.data[i] - lo.data[i] > 1e-3 { filtered.data[i].clamp(0.0, 1.0) } else { a.data[i] };
-    });
+    if edge_details {
+        let guide = Plane::from_image(&b.img, |px| effectcraft_color::luminance(px[0], px[1], px[2]));
+        let eps = 1e-4 + smooth * smooth * 0.05;
+        let filtered = guided_filter(&guide, &a, r, eps);
+        na.data.par_iter_mut().enumerate().for_each(|(i, v)| {
+            *v = if band(i) { filtered.data[i].clamp(0.0, 1.0) } else { a.data[i] };
+        });
+    } else {
+        na = a.clone();
+        if smooth > 0.0 {
+            let s = smooth as f64 * r as f64 * 0.5;
+            na = gauss_plane(&na, s, s);
+        }
+    }
     if feather > 0.0 {
         na = gauss_plane(&na, feather, feather);
     }
@@ -105,14 +125,43 @@ fn refine(ctx: &EffectCtx, mut b: Buf, hard: bool) -> Buf {
         let v = v.clamp(0.0, 1.0);
         if invert { 1.0 - v } else { v }
     });
+    if view_edges {
+        // The refined matte in grey with the analysed edge band tinted.
+        b.img.data.par_iter_mut().enumerate().for_each(|(i, px)| {
+            let v = na.data[i];
+            *px = if band(i) { [0.5 + 0.5 * v, 0.5 * v, 0.5 * v, 1.0] } else { [v, v, v, 1.0] };
+        });
+        return b;
+    }
+    // Decontamination strength per pixel: partial input alpha, and (Extend Where Smoothed) where
+    // the refinement made the matte partial.
+    let strength = |i: usize, a0: f32| -> f32 {
+        let partial = |a: f32| a > 1e-4 && a < 0.999;
+        let n = na.data[i];
+        let t = if partial(a0) {
+            1.0 - a0
+        } else if extend && partial(n) {
+            1.0 - n
+        } else {
+            0.0
+        };
+        decon_amt * t
+    };
+    if view_map {
+        b.img.data.par_iter_mut().enumerate().for_each(|(i, px)| {
+            let v = if decon { strength(i, px[3]) } else { 0.0 };
+            *px = [v, v, v, 1.0];
+        });
+        return b;
+    }
     if decon && decon_amt > 0.0 {
-        let est = gaussian_blur(&b.img, r as f64 * 0.5, r as f64 * 0.5, true);
+        let est = gaussian_blur(&b.img, decon_r * 0.5, decon_r * 0.5, true);
         b.img.data.par_iter_mut().enumerate().for_each(|(i, px)| {
             let (c, a0) = unpremul(*px);
-            if a0 > 1e-4 && a0 < 0.999 {
+            let t = strength(i, a0);
+            if t > 0.0 && a0 > 1e-4 {
                 let (ec, ea) = unpremul(est.data[i]);
                 if ea > 1e-4 {
-                    let t = decon_amt * (1.0 - a0);
                     *px = premul([0, 1, 2].map(|k| c[k] + (ec[k] - c[k]) * t), a0);
                 }
             }
@@ -131,21 +180,47 @@ fn refine_hard(ctx: &EffectCtx, b: Buf) -> Buf {
 }
 
 pub fn specs() -> Vec<EffectSpec> {
-    let refine_params = |hard: bool| {
-        let mut v = vec![
-            p("radius", "Additional Edge Radius", num(if hard { 3.0 } else { 10.0 }), slider(1.0, 200.0, 1.0, 50.0, 1)),
-            p("smooth", "Smooth", num(if hard { 20.0 } else { 0.0 }), slider(0.0, 100.0, 0.0, 100.0, 0)),
-            p("feather", "Feather", num(if hard { 0.0 } else { 10.0 }), slider(0.0, 100.0, 0.0, 100.0, 0)),
-            p("choke", "Choke", num(0.0), slider(-100.0, 100.0, -100.0, 100.0, 0)),
-        ];
-        if hard {
-            v.push(p("alphaContrast", "Alpha Contrast", num(300.0), slider(100.0, 1000.0, 100.0, 500.0, 0)));
-        }
-        v.push(p("decontaminate", "Decontaminate Edge Colors", Value::Bool(true), ParamUi::Checkbox));
-        v.push(p("decontaminationAmount", "Decontamination Amount", num(100.0), slider(0.0, 100.0, 0.0, 100.0, 0)));
-        v.push(p("invert", "Invert", Value::Bool(false), ParamUi::Checkbox));
-        v
+    let pct0 = || slider(0.0, 100.0, 0.0, 100.0, 0);
+    let check = |id: &'static str, name: &'static str, on: bool| p(id, name, Value::Bool(on), ParamUi::Checkbox);
+    let decon = |pre: &'static [&'static str; 4]| {
+        vec![
+            p(pre[0], "Decontamination Amount", num(100.0), pct0()),
+            check(pre[1], "Extend Where Smoothed", true),
+            p(pre[2], "Increase Decontamination Radius", num(0.0), slider(0.0, 100.0, 0.0, 20.0, 1)),
+            check(pre[3], "View Decontamination Map", false),
+        ]
     };
+    let radius = |d: f64| p("radius", "Additional Edge Radius", num(d), slider(1.0, 200.0, 1.0, 50.0, 1));
+    let mut soft_params = vec![
+        check("calculateEdgeDetails", "Calculate Edge Details", true),
+        radius(10.0),
+        check("viewEdgeRegion", "View Edge Region", false),
+        p("smooth", "Smooth", num(0.0), pct0()),
+        p("feather", "Feather", num(10.0), pct0()),
+        p("contrast", "Contrast", num(0.0), pct0()),
+        p("shiftEdge", "Shift Edge", num(0.0), slider(-100.0, 100.0, -100.0, 100.0, 0)),
+        check("decontaminate", "Decontaminate Edge Colors", true),
+    ];
+    soft_params.extend(decon(&[
+        "decontamination/decontaminationAmount",
+        "decontamination/extendWhereSmoothed",
+        "decontamination/increaseDecontaminationRadius",
+        "decontamination/viewDecontaminationMap",
+    ]));
+    soft_params.push(check("invert", "Invert", false));
+    // Superseded by Shift Edge (opposite sign); kept so older projects render as before.
+    soft_params.push(p("choke", "Choke", num(0.0), ParamUi::Hidden));
+    let mut hard_params = vec![
+        p("smooth", "Smooth", num(20.0), pct0()),
+        p("feather", "Feather", num(0.0), pct0()),
+        p("choke", "Choke", num(0.0), slider(-100.0, 100.0, -100.0, 100.0, 0)),
+        check("decontaminate", "Decontaminate Edge Colors", true),
+    ];
+    hard_params.extend(decon(&["decontaminationAmount", "extendWhereSmoothed", "increaseDecontaminationRadius", "viewDecontaminationMap"]));
+    // Our extras: the analysed edge band's radius, alpha contrast and inversion.
+    hard_params.push(radius(3.0));
+    hard_params.push(p("alphaContrast", "Alpha Contrast", num(300.0), slider(100.0, 1000.0, 100.0, 500.0, 0)));
+    hard_params.push(check("invert", "Invert", false));
     let soft = || slider(0.0, 1000.0, 0.0, 100.0, 1);
     let ch = || slider(-127.0, 127.0, -127.0, 127.0, 0);
     let gl = || slider(0.0, 100.0, 0.0, 100.0, 1);
@@ -173,8 +248,8 @@ pub fn specs() -> Vec<EffectSpec> {
             ],
             matte_choker,
         ),
-        spec("ec.matte.refinesoft", "Refine Soft Matte", refine_params(false), refine_soft),
-        spec("ec.matte.refinehard", "Refine Hard Matte", refine_params(true), refine_hard),
+        spec("ec.matte.refinesoft", "Refine Soft Matte", soft_params, refine_soft),
+        spec("ec.matte.refinehard", "Refine Hard Matte", hard_params, refine_hard),
     ]
 }
 
@@ -228,6 +303,38 @@ mod tests {
         let out = run("ec.matte.mattechoker", &[], img.clone());
         assert!(alpha_sum(&out) < alpha_sum(&img));
         assert!(out.get(12, 12)[3] > 0.99);
+    }
+
+    #[test]
+    fn refine_soft_matte_shift_edge_contrast_and_views() {
+        let mut img = square();
+        // A soft ramp on the left edge of the square.
+        for y in 6..18 {
+            img.set(5, y, [0.4, 0.2, 0.1, 0.5]);
+        }
+        let base = run("ec.matte.refinesoft", &[("feather", num(0.0))], img.clone());
+        let grown = run("ec.matte.refinesoft", &[("feather", num(0.0)), ("shiftEdge", num(60.0))], img.clone());
+        assert!(alpha_sum(&grown) > alpha_sum(&base) + 0.5, "{} vs {}", alpha_sum(&grown), alpha_sum(&base));
+        let legacy = run("ec.matte.refinesoft", &[("feather", num(0.0)), ("choke", num(-60.0))], img.clone());
+        assert_eq!(legacy.data, grown.data, "the hidden legacy Choke is Shift Edge negated");
+        // Without edge detail calculation (and no smoothing) the matte only goes through the
+        // level adjustments: identity at defaults.
+        let plain = run(
+            "ec.matte.refinesoft",
+            &[("feather", num(0.0)), ("calculateEdgeDetails", Value::Bool(false)), ("decontaminate", Value::Bool(false))],
+            img.clone(),
+        );
+        assert!(plain.data.iter().zip(&img.data).all(|(a, b)| (0..4).all(|k| (a[k] - b[k]).abs() < 1e-5)));
+        // View Edge Region and View Decontamination Map are opaque diagnostic views.
+        let edges = run("ec.matte.refinesoft", &[("viewEdgeRegion", Value::Bool(true))], img.clone());
+        assert!(edges.data.iter().all(|p| p[3] == 1.0));
+        assert!(edges.get(5, 10)[0] > edges.get(5, 10)[1], "band is tinted");
+        let map = run(
+            "ec.matte.refinesoft",
+            &[("decontamination/viewDecontaminationMap", Value::Bool(true)), ("calculateEdgeDetails", Value::Bool(false)), ("feather", num(0.0))],
+            img,
+        );
+        assert!(map.get(5, 10)[0] > 0.4 && map.get(12, 12)[0] == 0.0);
     }
 
     #[test]

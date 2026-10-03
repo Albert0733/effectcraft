@@ -26,7 +26,8 @@ fn remap(src: &Image, repeat: bool, f: impl Fn(f64, f64) -> (f64, f64) + Sync) -
 
 fn twirl(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let ang = ctx.params.f("angle").to_radians();
-    let r = (ctx.params.f("radius") / 100.0 * b.img.width.min(b.img.height) as f64 * 0.5).max(1.0);
+    // Twirl Radius is a percentage of the layer's larger dimension: 50 reaches the edges.
+    let r = (ctx.params.f("radius") / 100.0 * b.layer_w(ctx).max(b.layer_h(ctx)) * b.scale).max(1.0);
     let c = b.to_px(ctx.params.v2("center"));
     b.img = remap(&b.img, false, |x, y| {
         let (dx, dy) = (x - c.0, y - c.1);
@@ -63,16 +64,95 @@ fn bulge(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let ry = (ctx.params.f("vradius") * b.scale).max(1.0);
     let c = b.to_px(ctx.params.v2("center"));
     let h = ctx.params.f("height");
+    // Taper Radius: higher values make the sides of the bulge shallower (a more peaked profile).
+    let taper = 1.0 + ctx.params.f("taperRadius").max(0.0) / 100.0 * 3.0;
+    let pin = ctx.params.b("pinAllEdges");
+    let (lx, ly) = (b.offset[0], b.offset[1]);
+    let (lw, lh) = (b.layer_w(ctx) * b.scale, b.layer_h(ctx) * b.scale);
+    let edge = (lw.min(lh) * 0.1).max(1.0);
     b.img = remap(&b.img, false, |x, y| {
         let (dx, dy) = ((x - c.0) / rx, (y - c.1) / ry);
         let d2 = dx * dx + dy * dy;
         if d2 >= 1.0 {
             return (x, y);
         }
-        let k = 1.0 - h * (1.0 - d2) * 0.5;
+        let mut amt = h * (1.0 - d2).powf(taper) * 0.5;
+        if pin {
+            let ex = ((x - lx - 0.5).min(lx + lw - 0.5 - x) / edge).clamp(0.0, 1.0);
+            let ey = ((y - ly - 0.5).min(ly + lh - 0.5 - y) / edge).clamp(0.0, 1.0);
+            amt *= ex.min(ey);
+        }
+        let k = 1.0 - amt;
         (c.0 + dx * rx * k, c.1 + dy * ry * k)
     });
     b
+}
+
+/// Wave Warp's wave shapes ([`WAVE_TYPES`] order) at phase `t` (radians), in -1..1. `seed`
+/// seeds the noise shapes.
+fn wave_shape(kind: u32, t: f64, seed: u32) -> f64 {
+    let tau = std::f64::consts::TAU;
+    let ph = t.rem_euclid(tau) / tau;
+    // A half circle over u in 0..1 (0 at the ends, 1 in the middle).
+    let half = |u: f64| (1.0 - (2.0 * u - 1.0).powi(2)).max(0.0).sqrt();
+    let noise = |i: f64| crate::util::hash1(i as i64 as u32, 0x5eed, seed) as f64 * 2.0 - 1.0;
+    match kind {
+        1 => {
+            if ph < 0.5 {
+                1.0
+            } else {
+                -1.0
+            }
+        }
+        2 => 1.0 - 4.0 * (ph - 0.5).abs(),
+        3 => 2.0 * ph - 1.0,
+        // Circle: alternating upper and lower half circles.
+        4 => {
+            if ph < 0.5 {
+                half(ph * 2.0)
+            } else {
+                -half(ph * 2.0 - 1.0)
+            }
+        }
+        // Semicircle: a row of half circles bulging the same way.
+        5 => 2.0 * half((ph * 2.0).fract()) - 1.0,
+        // Uncircle: the concave gaps between half circles, meeting in cusps.
+        6 => 1.0 - 2.0 * half((ph * 2.0).fract()),
+        // Noise: a random level per half wave; Smooth Noise eases between the levels.
+        7 => noise((t / tau * 2.0).floor()),
+        8 => {
+            let u = t / tau * 2.0;
+            let (i, f) = (u.floor(), u - u.floor());
+            let s = f * f * (3.0 - 2.0 * f);
+            noise(i) * (1.0 - s) + noise(i + 1.0) * s
+        }
+        _ => t.sin(),
+    }
+}
+
+pub(crate) const WAVE_TYPES: [&str; 9] = ["Sine", "Square", "Triangle", "Sawtooth", "Circle", "Semicircle", "Uncircle", "Noise", "Smooth Noise"];
+pub(crate) const WAVE_PINNING: [&str; 9] =
+    ["None", "All Edges", "Center", "Left Edge", "Top Edge", "Right Edge", "Bottom Edge", "Horizontal Edges", "Vertical Edges"];
+
+/// Wave Warp pinning weight (0 = pinned, 1 = free) at buffer pixel (x, y) of the layer
+/// rectangle `(x0, y0, w, h)`.
+fn wave_pin(pin: u32, x: f64, y: f64, rect: (f64, f64, f64, f64)) -> f64 {
+    let (x0, y0, w, h) = rect;
+    // Measured between the outermost pixel centres, so pinned edges stay exactly in place.
+    let (u, v) = (((x - x0 - 0.5) / (w - 1.0).max(1.0)).clamp(0.0, 1.0), ((y - y0 - 0.5) / (h - 1.0).max(1.0)).clamp(0.0, 1.0));
+    let horiz = (v.min(1.0 - v) * 2.0).clamp(0.0, 1.0);
+    let vert = (u.min(1.0 - u) * 2.0).clamp(0.0, 1.0);
+    match pin {
+        1 => horiz.min(vert),
+        2 => (((u - 0.5).powi(2) + (v - 0.5).powi(2)).sqrt() * 2.0).min(1.0),
+        3 => u,
+        4 => v,
+        5 => 1.0 - u,
+        6 => 1.0 - v,
+        7 => horiz,
+        8 => vert,
+        _ => 1.0,
+    }
 }
 
 fn wave_warp(ctx: &EffectCtx, mut b: Buf) -> Buf {
@@ -82,36 +162,26 @@ fn wave_warp(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let speed = ctx.params.f("speed");
     let phase = ctx.params.f("phase").to_radians() + ctx.time * speed * std::f64::consts::TAU;
     let kind = ctx.params.e("waveType");
+    let pin = ctx.params.e("pinning");
+    let seed = ctx.seed ^ 0x3a7e;
     let (dx, dy) = (dir.sin(), -dir.cos());
     if !ctx.adjustment {
         b.pad(h.abs().ceil() as u32 + 1);
     }
-    let wave = move |t: f64| -> f64 {
-        let ph = t.rem_euclid(std::f64::consts::TAU) / std::f64::consts::TAU;
-        match kind {
-            1 => {
-                if ph < 0.5 {
-                    1.0
-                } else {
-                    -1.0
-                }
-            }
-            2 => 1.0 - 4.0 * (ph - 0.5).abs(),
-            3 => 2.0 * ph - 1.0,
-            _ => t.sin(),
-        }
-    };
+    let rect = (b.offset[0], b.offset[1], (b.layer_w(ctx) * b.scale).max(1.0), (b.layer_h(ctx) * b.scale).max(1.0));
     b.img = remap(&b.img, false, |x, y| {
         // Waves travel along `dir`; displacement is perpendicular to it.
         let along = x * dx + y * dy;
-        let disp = wave(along / w * std::f64::consts::TAU + phase) * h;
+        let disp = wave_shape(kind, along / w * std::f64::consts::TAU + phase, seed) * h * wave_pin(pin, x, y, rect);
         (x + dy * disp, y - dx * disp)
     });
     b
 }
 
 fn ripple(ctx: &EffectCtx, mut b: Buf) -> Buf {
-    let r = (ctx.params.f("radius") / 100.0 * b.img.width.max(b.img.height) as f64).max(1.0);
+    // Radius is a percentage of the layer: 100 from the layer centre reaches the edge.
+    let r = (ctx.params.f("radius") / 100.0 * b.layer_w(ctx).max(b.layer_h(ctx)) * 0.5 * b.scale).max(1.0);
+    let asymmetric = ctx.params.e("conversion") == 0;
     let c = b.to_px(ctx.params.v2("center"));
     let w = (ctx.params.f("waveWidth") * b.scale).max(1.0);
     let h = ctx.params.f("waveHeight") * b.scale;
@@ -123,8 +193,12 @@ fn ripple(ctx: &EffectCtx, mut b: Buf) -> Buf {
             return (x, y);
         }
         let fall = 1.0 - d / r;
-        let o = (d / w * std::f64::consts::TAU + phase).sin() * h * fall;
-        (x + dx / d * o, y + dy / d * o)
+        let arg = d / w * std::f64::consts::TAU + phase;
+        let o = arg.sin() * h * fall;
+        // Asymmetric ripples also move sideways (a quarter wave out of step).
+        let t = if asymmetric { arg.cos() * h * fall * 0.5 } else { 0.0 };
+        let (ux, uy) = (dx / d, dy / d);
+        (x + ux * o - uy * t, y + uy * o + ux * t)
     });
     b
 }
@@ -193,13 +267,14 @@ fn transform(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let skew_axis = ctx.params.f("skewAxis");
     let rot = ctx.params.f("rotation");
     let opacity = ctx.params.f("opacity") as f32 / 100.0;
+    let sampling = if ctx.params.e("sampling") == 1 { effectcraft_raster::Sampling::Bicubic } else { effectcraft_raster::Sampling::Bilinear };
     let m = Mat3::translate(vec2(pos.0, pos.1))
         * Mat3::rotate_deg(rot)
         * Mat3::skew_deg(skew, skew_axis)
         * Mat3::scale(vec2(sw / 100.0, sh / 100.0))
         * Mat3::translate(vec2(-anchor.0, -anchor.1));
     let mut out = Image::new(b.img.width, b.img.height);
-    effectcraft_raster::composite_warp(&mut out, &b.img, &m, &effectcraft_raster::WarpOpts { opacity, ..Default::default() });
+    effectcraft_raster::composite_warp(&mut out, &b.img, &m, &effectcraft_raster::WarpOpts { opacity, sampling, ..Default::default() });
     b.img = out;
     b
 }
@@ -255,6 +330,8 @@ pub fn specs() -> Vec<EffectSpec> {
                 p("vradius", "Vertical Radius", num(50.0), slider(0.0, 4000.0, 0.0, 1000.0, 1)),
                 p("center", "Bulge Center", pt(0.5, 0.5), ParamUi::Point),
                 p("height", "Bulge Height", num(1.0), slider(-4.0, 4.0, -4.0, 4.0, 2)),
+                p("taperRadius", "Taper Radius", num(0.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
+                p("pinAllEdges", "Pin All Edges", Value::Bool(false), ParamUi::Checkbox),
             ],
             bulge,
         ),
@@ -262,11 +339,12 @@ pub fn specs() -> Vec<EffectSpec> {
             "ec.distort.wavewarp",
             "Wave Warp",
             vec![
-                p("waveType", "Wave Type", Value::Enum(0), popup(&["Sine", "Square", "Triangle", "Sawtooth"])),
+                p("waveType", "Wave Type", Value::Enum(0), popup(&WAVE_TYPES)),
                 p("height", "Wave Height", num(10.0), slider(-1000.0, 1000.0, -100.0, 100.0, 0)),
                 p("width", "Wave Width", num(40.0), slider(1.0, 10000.0, 1.0, 500.0, 0)),
                 p("direction", "Direction", num(90.0), ParamUi::Angle),
                 p("speed", "Wave Speed", num(1.0), slider(-100.0, 100.0, -5.0, 5.0, 1)),
+                p("pinning", "Pinning", Value::Enum(0), popup(&WAVE_PINNING)),
                 p("phase", "Phase", num(0.0), ParamUi::Angle),
             ],
             wave_warp,
@@ -277,9 +355,10 @@ pub fn specs() -> Vec<EffectSpec> {
             vec![
                 p("radius", "Radius", num(50.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
                 p("center", "Center of Ripple", pt(0.5, 0.5), ParamUi::Point),
+                p("conversion", "Type of Conversion", Value::Enum(0), popup(&["Asymmetric", "Symmetric"])),
+                p("speed", "Wave Speed", num(1.0), slider(-15.0, 15.0, -5.0, 5.0, 1)),
                 p("waveWidth", "Wave Width", num(20.0), slider(1.0, 1000.0, 1.0, 100.0, 1)),
                 p("waveHeight", "Wave Height", num(10.0), slider(0.0, 400.0, 0.0, 100.0, 1)),
-                p("speed", "Wave Speed", num(1.0), slider(-15.0, 15.0, -5.0, 5.0, 1)),
                 p("phase", "Ripple Phase", num(0.0), ParamUi::Angle),
             ],
             ripple,
@@ -318,6 +397,7 @@ pub fn specs() -> Vec<EffectSpec> {
                 p("skewAxis", "Skew Axis", num(0.0), ParamUi::Angle),
                 p("rotation", "Rotation", num(0.0), ParamUi::Angle),
                 p("opacity", "Opacity", num(100.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
+                p("sampling", "Sampling", Value::Enum(0), popup(&["Bilinear", "Bicubic"])),
             ],
             transform,
         ),
@@ -333,4 +413,101 @@ pub fn specs() -> Vec<EffectSpec> {
             corner_pin,
         ),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Params;
+
+    fn img(w: u32, h: u32) -> Image {
+        crate::util::gen_image(w, h, |x, y| [x as f32 / w as f32, y as f32 / h as f32, ((x * 7 + y * 3) % 11) as f32 / 11.0, 1.0])
+    }
+
+    /// Run with Point defaults scaled to the layer (like `instantiate`).
+    fn run(id: &str, set: &[(&str, Value)], im: Image) -> Buf {
+        let s = crate::find(id).unwrap();
+        let ls = [im.width as f64, im.height as f64];
+        let mut params = Params { values: s.params.iter().map(|p| (p.id.to_string(), crate::default_value(p, ls))).collect() };
+        for (k, v) in set {
+            assert!(params.values.contains_key(*k), "{id}: unknown param {k}");
+            params.values.insert(k.to_string(), v.clone());
+        }
+        let ctx = EffectCtx { params: &params, time: 0.0, layer_size: ls, seed: 3, adjustment: false, env: Default::default() };
+        crate::apply(s, &ctx, Buf { img: im, offset: [0.0, 0.0], scale: 1.0 })
+    }
+
+    fn differs(a: Px4, b: Px4) -> bool {
+        (0..4).any(|i| (a[i] - b[i]).abs() > 1e-4)
+    }
+    type Px4 = [f32; 4];
+
+    #[test]
+    fn twirl_radius_is_a_percentage_of_the_larger_dimension() {
+        // 60×20 layer, radius 50 → 30 px: a pixel 20 px right of the centre is twirled (the old
+        // smaller-dimension rule gave 5 px), corners (> 30 px away) are not.
+        let im = img(60, 20);
+        let o = run("ec.distort.twirl", &[("angle", num(90.0)), ("radius", num(50.0))], im.clone());
+        assert!(differs(o.img.get(50, 10), im.get(50, 10)));
+        assert_eq!(o.img.get(0, 0), im.get(0, 0));
+    }
+
+    #[test]
+    fn ripple_radius_reaches_the_edge_at_100_and_conversion_matters() {
+        let im = img(40, 40);
+        let base = [("radius", num(100.0)), ("waveHeight", num(4.0)), ("waveWidth", num(7.0))];
+        let asym = run("ec.distort.ripple", &base, im.clone());
+        let mut sym_set = base.to_vec();
+        sym_set.push(("conversion", Value::Enum(1)));
+        let sym = run("ec.distort.ripple", &sym_set, im.clone());
+        assert!(asym.img.data.iter().zip(&sym.img.data).any(|(a, b)| differs(*a, *b)));
+        // Corners lie beyond radius 100 % (half the layer) and stay put.
+        assert_eq!(asym.img.get(0, 0), im.get(0, 0));
+    }
+
+    #[test]
+    fn bulge_taper_and_pin_all_edges() {
+        let im = img(40, 40);
+        let big = [("hradius", num(40.0)), ("vradius", num(40.0)), ("height", num(2.0))];
+        let free = run("ec.distort.bulge", &big, im.clone());
+        let mut pinned_set = big.to_vec();
+        pinned_set.push(("pinAllEdges", Value::Bool(true)));
+        let pinned = run("ec.distort.bulge", &pinned_set, im.clone());
+        assert!(differs(free.img.get(20, 0), im.get(20, 0)));
+        assert!(!differs(pinned.img.get(20, 0), im.get(20, 0)));
+        assert!(!differs(pinned.img.get(0, 20), im.get(0, 20)));
+        let mut taper_set = big.to_vec();
+        taper_set.push(("taperRadius", num(100.0)));
+        let tapered = run("ec.distort.bulge", &taper_set, im.clone());
+        assert!(differs(tapered.img.get(30, 20), free.img.get(30, 20)));
+    }
+
+    #[test]
+    fn wave_warp_shapes_stay_in_range_and_pinning_holds_the_edge() {
+        for k in 0..WAVE_TYPES.len() as u32 {
+            for i in 0..200 {
+                let v = wave_shape(k, i as f64 * 0.137 - 5.0, 9);
+                assert!((-1.0001..=1.0001).contains(&v), "{} {v}", WAVE_TYPES[k as usize]);
+            }
+        }
+        let im = img(40, 30);
+        // Direction 0° → horizontal displacement; Left Edge pinning keeps the left column.
+        let set = [("direction", num(0.0)), ("height", num(5.0)), ("pinning", Value::Enum(3))];
+        let o = run("ec.distort.wavewarp", &set, im.clone());
+        let pad = ((o.img.width - im.width) / 2) as i64;
+        for y in 0..30 {
+            let (a, b) = (o.img.get(pad, y + pad), im.get(0, y));
+            assert!((0..4).all(|i| (a[i] - b[i]).abs() < 0.01), "row {y}: {a:?} vs {b:?}");
+        }
+        let free = run("ec.distort.wavewarp", &[("direction", num(0.0)), ("height", num(5.0))], im);
+        assert!(free.img.data.iter().zip(&o.img.data).any(|(a, b)| differs(*a, *b)));
+    }
+
+    #[test]
+    fn transform_sampling_bicubic_differs_from_bilinear() {
+        let im = img(32, 32);
+        let a = run("ec.distort.transform", &[("rotation", num(17.0))], im.clone());
+        let b = run("ec.distort.transform", &[("rotation", num(17.0)), ("sampling", Value::Enum(1))], im);
+        assert!(a.img.data.iter().zip(&b.img.data).any(|(p, q)| differs(*p, *q)));
+    }
 }

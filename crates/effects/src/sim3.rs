@@ -76,8 +76,10 @@ impl MapImg {
     }
 }
 
-pub const MAP_TARGETS: [&str; 12] =
-    ["None", "Red", "Green", "Blue", "Scale", "Opacity", "X Velocity", "Y Velocity", "X Force", "Y Force", "Kinetic Friction", "Mass"];
+/// Particle properties a Property Mapper channel can drive (After Effects' order; the
+/// properties we don't model yet are left out).
+pub const MAP_TARGETS: [&str; 14] =
+    ["None", "Red", "Green", "Blue", "Kinetic Friction", "Scale", "X", "Y", "X Speed", "Y Speed", "X Force", "Y Force", "Opacity", "Mass"];
 
 struct Pg {
     // Cannon
@@ -113,10 +115,16 @@ impl Pg {
         // AE angles: 0° = up, clockwise.
         let a = (self.barrel_angle + h(1) * self.dir_spread * 0.5).to_radians();
         let d = [a.sin(), -a.cos()];
-        let perp = [-d[1], d[0]];
-        let off = h(2) * self.barrel_radius;
         let speed = (self.vel + h(3) * self.vel_spread).max(0.0);
-        let p = [self.pos[0] + perp[0] * off, self.pos[1] + perp[1] * off];
+        // Barrel: positive radii are a square around the cannon position, negative ones a disc.
+        let r = self.barrel_radius;
+        let off = if r >= 0.0 {
+            [h(2) * r, h(4) * r]
+        } else {
+            let (a, rr) = (hash1(id, 5, s) * std::f32::consts::TAU, hash1(id, 6, s).sqrt() * -r);
+            [a.cos() * rr, a.sin() * rr]
+        };
+        let p = [self.pos[0] + off[0], self.pos[1] + off[1]];
         PgParticle { p, v: [d[0] * speed, d[1] * speed], origin: p, c: self.color, r: self.radius, mass: 1.0, friction: 0.0, force: [0.0; 2], id }
     }
 
@@ -133,14 +141,16 @@ impl Pg {
                         1 => q.c[0] = v,
                         2 => q.c[1] = v,
                         3 => q.c[2] = v,
-                        4 => q.r = self.radius * v.max(0.0),
-                        5 => q.c[3] = v.clamp(0.0, 1.0),
-                        6 => q.v[0] = v,
-                        7 => q.v[1] = v,
-                        8 => q.force[0] = v,
-                        9 => q.force[1] = v,
-                        10 => q.friction = v.clamp(0.0, 1.0),
-                        11 => q.mass = v.max(0.01),
+                        4 => q.friction = v.clamp(0.0, 1.0),
+                        5 => q.r = self.radius * v.max(0.0),
+                        6 => q.p[0] = v,
+                        7 => q.p[1] = v,
+                        8 => q.v[0] = v,
+                        9 => q.v[1] = v,
+                        10 => q.force[0] = v,
+                        11 => q.force[1] = v,
+                        12 => q.c[3] = v.clamp(0.0, 1.0),
+                        13 => q.mass = v.max(0.01),
                         _ => {}
                     }
                 }
@@ -237,46 +247,46 @@ fn image_key(img: &Image) -> u64 {
 fn particle_playground(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let pr = ctx.params;
     let (lw, lh) = (ctx.layer_size[0] as f32, ctx.layer_size[1] as f32);
-    let grav_dir = (pr.f("gravityDirection") as f32).to_radians();
-    let gf = pr.f("gravityForce") as f32;
-    let wall = (pr.f("wallBoundary").round() as usize).checked_sub(1).and_then(|i| ctx.env.masks.get(i)).map(|m| m.points.clone());
-    let mapper = if pr.b("mapperEnabled") { ctx.layer_param("useLayerAsMap", true).map(|lp| MapImg::from(ctx, lp)) } else { None };
+    let grav_dir = (pr.f("gravity/gravityDirection") as f32).to_radians();
+    let gf = pr.f("gravity/gravityForce") as f32;
+    let wall = (pr.f("wall/wallBoundary").round() as usize).checked_sub(1).and_then(|i| ctx.env.masks.get(i)).map(|m| m.points.clone());
+    let mapper = if pr.b("mapperEnabled") { ctx.layer_param("persistentPropertyMapper/useLayerAsMap", true).map(|lp| MapImg::from(ctx, lp)) } else { None };
     let pg = Pg {
         cannon: pr.b("cannonEnabled"),
-        pos: { pr.v2("cannonPosition").map(|v| v as f32) },
-        barrel_angle: pr.f("barrelAngle") as f32,
-        barrel_radius: pr.f("barrelRadius") as f32,
-        rate: pr.f("particlesPerSecond").max(0.0),
-        dir_spread: pr.f("directionRandomSpread") as f32,
-        vel: pr.f("velocity") as f32,
-        vel_spread: pr.f("velocityRandomSpread") as f32,
-        color: pr.color("cannonColor"),
-        radius: pr.f("cannonParticleRadius").max(0.0) as f32,
+        pos: { pr.v2("cannon/cannonPosition").map(|v| v as f32) },
+        barrel_angle: pr.f("cannon/barrelAngle") as f32,
+        barrel_radius: pr.f("cannon/barrelRadius") as f32,
+        rate: pr.f("cannon/particlesPerSecond").max(0.0),
+        dir_spread: pr.f("cannon/directionRandomSpread") as f32,
+        vel: pr.f("cannon/velocity") as f32,
+        vel_spread: pr.f("cannon/velocityRandomSpread") as f32,
+        color: pr.color("cannon/cannonColor"),
+        radius: pr.f("cannon/cannonParticleRadius").max(0.0) as f32,
         gravity: [grav_dir.sin() * gf, -grav_dir.cos() * gf],
-        grav_spread: (pr.f("gravityForceRandomSpread") / 100.0).max(0.0) as f32,
-        repel: pr.f("repelForce") as f32 * 100.0,
-        repel_radius: pr.f("repelForceRadius").max(0.0) as f32,
+        grav_spread: (pr.f("gravity/gravityForceRandomSpread") / 100.0).max(0.0) as f32,
+        repel: pr.f("repel/repelForce") as f32 * 100.0,
+        repel_radius: pr.f("repel/repelForceRadius").max(0.0) as f32,
         wall,
         mapper,
         map_to: [
-            (pr.e("mapRedTo"), pr.f("redMin") as f32, pr.f("redMax") as f32),
-            (pr.e("mapGreenTo"), pr.f("greenMin") as f32, pr.f("greenMax") as f32),
-            (pr.e("mapBlueTo"), pr.f("blueMin") as f32, pr.f("blueMax") as f32),
+            (pr.e("persistentPropertyMapper/mapRedTo"), pr.f("persistentPropertyMapper/redMin") as f32, pr.f("persistentPropertyMapper/redMax") as f32),
+            (pr.e("persistentPropertyMapper/mapGreenTo"), pr.f("persistentPropertyMapper/greenMin") as f32, pr.f("persistentPropertyMapper/greenMax") as f32),
+            (pr.e("persistentPropertyMapper/mapBlueTo"), pr.f("persistentPropertyMapper/blueMin") as f32, pr.f("persistentPropertyMapper/blueMax") as f32),
         ],
         seed: (pr.f("randomSeed") as u32).wrapping_mul(0x9e37_79b9) ^ ctx.seed,
         bounds: [-lw * 2.0, -lh * 2.0, lw * 3.0, lh * 3.0],
     };
     // Initial particles: Grid and Layer Exploder.
     let grid_on = pr.b("gridEnabled");
-    let across = pr.f("particlesAcross").max(0.0).round() as u32;
-    let down = pr.f("particlesDown").max(0.0).round() as u32;
-    let gpos = pr.v2("gridPosition");
-    let (gw, gh) = (pr.f("gridWidth"), pr.f("gridHeight"));
-    let gcol = pr.color("gridColor");
-    let grad = pr.f("gridParticleRadius").max(0.0) as f32;
+    let across = pr.f("grid/particlesAcross").max(0.0).round() as u32;
+    let down = pr.f("grid/particlesDown").max(0.0).round() as u32;
+    let gpos = pr.v2("grid/gridPosition");
+    let (gw, gh) = (pr.f("grid/gridWidth"), pr.f("grid/gridHeight"));
+    let gcol = pr.color("grid/gridColor");
+    let grad = pr.f("grid/gridParticleRadius").max(0.0) as f32;
     let exploder = if pr.b("exploderEnabled") {
         let host = ctx.env.host;
-        let lid = pr.get("explodeLayer").and_then(Value::as_layer);
+        let lid = pr.get("layerExploder/explodeLayer").and_then(Value::as_layer);
         match (host, lid) {
             (Some(h), Some(id)) => h.layer_at(id, ctx.env.comp_time - ctx.time, true).or_else(|| h.layer(id, true)),
             _ => None,
@@ -284,9 +294,9 @@ fn particle_playground(ctx: &EffectCtx, mut b: Buf) -> Buf {
     } else {
         None
     };
-    let ex_r = pr.f("radiusOfNewParticles").max(0.5) as f32;
-    let ex_disp = pr.f("velocityDispersion") as f32;
-    let layer_map = pr.b("layerMapEnabled").then(|| ctx.layer_param("layerMapLayer", true).map(|lp| MapImg::from(ctx, lp))).flatten();
+    let ex_r = pr.f("layerExploder/radiusOfNewParticles").max(0.5) as f32;
+    let ex_disp = pr.f("layerExploder/velocityDispersion") as f32;
+    let layer_map = pr.b("layerMapEnabled").then(|| ctx.layer_param("layerMap/layerMapLayer", true).map(|lp| MapImg::from(ctx, lp))).flatten();
 
     let mut key = params_key(ctx, &Buf { img: Image::new(0, 0), offset: [0.0; 2], scale: 1.0 }, 0x7067);
     if let Some(m) = &pg.mapper {
@@ -372,19 +382,19 @@ fn cc_hair(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let thick = pr.f("thickness").max(0.05) as f32;
     let weight = pr.f("weight") as f32;
     let const_mass = pr.b("constantMass");
-    let map = ctx.layer_param("mapLayer", true).map(|lp| MapImg::from(ctx, lp));
-    let map_strength = (pr.f("mapStrength") / 100.0) as f32;
-    let map_soft = pr.f("mapSoftness").max(0.0) as f32;
-    let noise = (pr.f("addNoise") / 100.0) as f32;
-    let hc = pr.color("hairColor");
-    let bright = (pr.f("brightness") / 100.0) as f32;
-    let opacity = (pr.f("opacity") / 100.0) as f32;
-    let inherit = (pr.f("colorInheritance") / 100.0) as f32;
-    let light_i = (pr.f("lightIntensity") / 100.0) as f32;
-    let ld = (pr.f("lightDirection") as f32).to_radians();
+    let map = ctx.layer_param("hairfallMap/mapLayer", true).map(|lp| MapImg::from(ctx, lp));
+    let map_strength = (pr.f("hairfallMap/mapStrength") / 100.0) as f32;
+    let map_soft = pr.f("hairfallMap/mapSoftness").max(0.0) as f32;
+    let noise = (pr.f("hairfallMap/addNoise") / 100.0) as f32;
+    let hc = pr.color("hairColor/hairColor");
+    let bright = (pr.f("hairColor/brightness") / 100.0) as f32;
+    let opacity = (pr.f("hairColor/opacity") / 100.0) as f32;
+    let inherit = (pr.f("hairColor/colorInheritance") / 100.0) as f32;
+    let light_i = (pr.f("light/lightIntensity") / 100.0) as f32;
+    let ld = (pr.f("light/lightDirection") as f32).to_radians();
     let light = [ld.sin(), -ld.cos()];
-    let (amb, dif, spe) = ((pr.f("ambient") / 100.0) as f32, (pr.f("diffuse") / 100.0) as f32, (pr.f("specular") / 100.0) as f32);
-    let rough = (pr.f("roughness") / 100.0).clamp(0.01, 1.0) as f32;
+    let (amb, dif, spe) = ((pr.f("shading/ambient") / 100.0) as f32, (pr.f("shading/diffuse") / 100.0) as f32, (pr.f("shading/specular") / 100.0) as f32);
+    let rough = (pr.f("shading/roughness") / 100.0).clamp(0.01, 1.0) as f32;
     let seed = ctx.seed ^ (pr.f("randomSeed") as u32).wrapping_mul(0x85eb_ca6b);
     let (lw, lh) = (ctx.layer_size[0] as f32, ctx.layer_size[1] as f32);
     // Roots: a jittered grid over the layer, density per 1 000 px².
@@ -464,55 +474,57 @@ pub fn specs() -> Vec<EffectSpec> {
     let px = |d: f64, max: f64| (num(d), slider(0.0, max * 10.0, 0.0, max, 1));
     let sp = |id: &'static str, name: &'static str, v: (Value, ParamUi)| p(id, name, v.0, v.1);
     let mut pg = vec![
+        // Generator switches (kept for saved projects; After Effects turns a generator off with
+        // its rate / counts instead).
+        p("cannonEnabled", "Cannon Enabled", Value::Bool(true), ParamUi::Hidden),
+        p("gridEnabled", "Grid Enabled", Value::Bool(true), ParamUi::Hidden),
+        p("exploderEnabled", "Layer Exploder Enabled", Value::Bool(true), ParamUi::Hidden),
+        p("layerMapEnabled", "Layer Map Enabled", Value::Bool(true), ParamUi::Hidden),
+        p("mapperEnabled", "Persistent Property Mapper Enabled", Value::Bool(true), ParamUi::Hidden),
         // Cannon
-        p("cannonEnabled", "Cannon", Value::Bool(true), ParamUi::Checkbox),
-        p("cannonPosition", "Position", pt(0.5, 0.9), ParamUi::Point),
-        p("barrelAngle", "Barrel Angle", num(0.0), ParamUi::Angle),
-        sp("barrelRadius", "Barrel Radius", px(0.0, 100.0)),
-        sp("particlesPerSecond", "Particles Per Second", px(60.0, 500.0)),
-        sp("directionRandomSpread", "Direction Random Spread", px(20.0, 360.0)),
-        sp("velocity", "Velocity", px(130.0, 1000.0)),
-        sp("velocityRandomSpread", "Velocity Random Spread", px(20.0, 500.0)),
-        p("cannonColor", "Color", col(1.0, 0.0, 0.0), ParamUi::Color),
-        sp("cannonParticleRadius", "Particle Radius", px(2.0, 50.0)),
+        p("cannon/cannonPosition", "Position", pt(0.5, 0.9), ParamUi::Point),
+        p("cannon/barrelRadius", "Barrel Radius", num(0.0), slider(-1000.0, 1000.0, -100.0, 100.0, 1)),
+        sp("cannon/particlesPerSecond", "Particles Per Second", px(60.0, 500.0)),
+        p("cannon/barrelAngle", "Direction", num(0.0), ParamUi::Angle),
+        sp("cannon/directionRandomSpread", "Direction Random Spread", px(20.0, 360.0)),
+        sp("cannon/velocity", "Velocity", px(130.0, 1000.0)),
+        sp("cannon/velocityRandomSpread", "Velocity Random Spread", px(20.0, 500.0)),
+        p("cannon/cannonColor", "Color", col(1.0, 0.0, 0.0), ParamUi::Color),
+        sp("cannon/cannonParticleRadius", "Particle Radius", px(2.0, 50.0)),
         // Grid
-        p("gridEnabled", "Grid", Value::Bool(true), ParamUi::Checkbox),
-        p("gridPosition", "Grid Position", pt(0.5, 0.5), ParamUi::Point),
-        sp("gridWidth", "Width", px(100.0, 2000.0)),
-        sp("gridHeight", "Height", px(100.0, 2000.0)),
-        sp("particlesAcross", "Particles Across", px(0.0, 100.0)),
-        sp("particlesDown", "Particles Down", px(0.0, 100.0)),
-        p("gridColor", "Grid Color", col(1.0, 1.0, 1.0), ParamUi::Color),
-        sp("gridParticleRadius", "Grid Particle Radius", px(2.0, 50.0)),
+        p("grid/gridPosition", "Position", pt(0.5, 0.5), ParamUi::Point),
+        sp("grid/gridWidth", "Width", px(100.0, 2000.0)),
+        sp("grid/gridHeight", "Height", px(100.0, 2000.0)),
+        sp("grid/particlesAcross", "Particles Across", px(0.0, 100.0)),
+        sp("grid/particlesDown", "Particles Down", px(0.0, 100.0)),
+        p("grid/gridColor", "Color", col(1.0, 1.0, 1.0), ParamUi::Color),
+        sp("grid/gridParticleRadius", "Particle Radius", px(2.0, 50.0)),
         // Layer Exploder
-        p("exploderEnabled", "Layer Exploder", Value::Bool(true), ParamUi::Checkbox),
-        p("explodeLayer", "Explode Layer", Value::Layer(None), ParamUi::Layer),
-        sp("radiusOfNewParticles", "Radius of New Particles", px(2.0, 50.0)),
-        sp("velocityDispersion", "Velocity Dispersion", px(20.0, 500.0)),
+        p("layerExploder/explodeLayer", "Explode Layer", Value::Layer(None), ParamUi::Layer),
+        sp("layerExploder/radiusOfNewParticles", "Radius of New Particles", px(2.0, 50.0)),
+        sp("layerExploder/velocityDispersion", "Velocity Dispersion", px(20.0, 500.0)),
         // Layer Map
-        p("layerMapEnabled", "Layer Map", Value::Bool(true), ParamUi::Checkbox),
-        p("layerMapLayer", "Use Layer", Value::Layer(None), ParamUi::Layer),
+        p("layerMap/layerMapLayer", "Use Layer", Value::Layer(None), ParamUi::Layer),
         // Gravity
-        sp("gravityForce", "Force", px(108.0, 1000.0)),
-        sp("gravityForceRandomSpread", "Force Random Spread", px(0.0, 100.0)),
-        p("gravityDirection", "Direction", num(180.0), ParamUi::Angle),
+        sp("gravity/gravityForce", "Force", px(108.0, 1000.0)),
+        sp("gravity/gravityForceRandomSpread", "Force Random Spread", px(0.0, 100.0)),
+        p("gravity/gravityDirection", "Direction", num(180.0), ParamUi::Angle),
         // Repel
-        p("repelForce", "Repel Force", num(0.0), slider(-100.0, 100.0, -10.0, 10.0, 2)),
-        sp("repelForceRadius", "Force Radius", px(0.0, 100.0)),
+        p("repel/repelForce", "Force", num(0.0), slider(-100.0, 100.0, -10.0, 10.0, 2)),
+        sp("repel/repelForceRadius", "Force Radius", px(0.0, 100.0)),
         // Wall
-        p("wallBoundary", "Boundary", num(0.0), ParamUi::Mask),
+        p("wall/wallBoundary", "Boundary", num(0.0), ParamUi::Mask),
         // Persistent Property Mapper
-        p("mapperEnabled", "Persistent Property Mapper", Value::Bool(true), ParamUi::Checkbox),
-        p("useLayerAsMap", "Use Layer As Map", Value::Layer(None), ParamUi::Layer),
+        p("persistentPropertyMapper/useLayerAsMap", "Use Layer As Map", Value::Layer(None), ParamUi::Layer),
     ];
-    for (to, mn, mx, n_to, n_min, n_max) in [
-        ("mapRedTo", "redMin", "redMax", "Map Red To", "Red Min", "Red Max"),
-        ("mapGreenTo", "greenMin", "greenMax", "Map Green To", "Green Min", "Green Max"),
-        ("mapBlueTo", "blueMin", "blueMax", "Map Blue To", "Blue Min", "Blue Max"),
+    for (to, mn, mx, n_to) in [
+        ("persistentPropertyMapper/mapRedTo", "persistentPropertyMapper/redMin", "persistentPropertyMapper/redMax", "Map Red To"),
+        ("persistentPropertyMapper/mapGreenTo", "persistentPropertyMapper/greenMin", "persistentPropertyMapper/greenMax", "Map Green To"),
+        ("persistentPropertyMapper/mapBlueTo", "persistentPropertyMapper/blueMin", "persistentPropertyMapper/blueMax", "Map Blue To"),
     ] {
         pg.push(p(to, n_to, Value::Enum(0), popup(&MAP_TARGETS)));
-        pg.push(p(mn, n_min, num(0.0), slider(-10000.0, 10000.0, -100.0, 100.0, 2)));
-        pg.push(p(mx, n_max, num(1.0), slider(-10000.0, 10000.0, -100.0, 100.0, 2)));
+        pg.push(p(mn, "Min", num(0.0), slider(-10000.0, 10000.0, -100.0, 100.0, 2)));
+        pg.push(p(mx, "Max", num(1.0), slider(-10000.0, 10000.0, -100.0, 100.0, 2)));
     }
     pg.push(p("randomSeed", "Random Seed", num(0.0), slider(0.0, 10000.0, 0.0, 1000.0, 0)));
     let pc = |d: f64| (num(d), slider(0.0, 100.0, 0.0, 100.0, 1));
@@ -528,23 +540,23 @@ pub fn specs() -> Vec<EffectSpec> {
                 p("constantMass", "Constant Mass", Value::Bool(false), ParamUi::Checkbox),
                 sp("density", "Density", px(100.0, 1000.0)),
                 // Hairfall Map
-                sp("mapStrength", "Map Strength", pc(0.0)),
-                p("mapLayer", "Map Layer", Value::Layer(None), ParamUi::Layer),
-                sp("mapSoftness", "Map Softness", px(0.0, 100.0)),
-                sp("addNoise", "Add Noise", pc(0.0)),
+                sp("hairfallMap/mapStrength", "Map Strength", pc(0.0)),
+                p("hairfallMap/mapLayer", "Map Layer", Value::Layer(None), ParamUi::Layer),
+                sp("hairfallMap/mapSoftness", "Map Softness", px(0.0, 100.0)),
+                sp("hairfallMap/addNoise", "Add Noise", pc(0.0)),
                 // Hair Color
-                p("hairColor", "Color", col(0.35, 0.25, 0.15), ParamUi::Color),
-                sp("brightness", "Brightness", px(100.0, 400.0)),
-                sp("opacity", "Opacity", pc(100.0)),
-                sp("colorInheritance", "Color Inheritance", pc(0.0)),
+                p("hairColor/hairColor", "Color", col(0.35, 0.25, 0.15), ParamUi::Color),
+                sp("hairColor/brightness", "Brightness", px(100.0, 400.0)),
+                sp("hairColor/opacity", "Opacity", pc(100.0)),
+                sp("hairColor/colorInheritance", "Color Inheritance", pc(0.0)),
                 // Light
-                sp("lightIntensity", "Light Intensity", px(100.0, 400.0)),
-                p("lightDirection", "Light Direction", num(-45.0), ParamUi::Angle),
+                sp("light/lightIntensity", "Light Intensity", px(100.0, 400.0)),
+                p("light/lightDirection", "Light Direction", num(-45.0), ParamUi::Angle),
                 // Shading
-                sp("ambient", "Ambient", pc(40.0)),
-                sp("diffuse", "Diffuse", pc(60.0)),
-                sp("specular", "Specular", pc(30.0)),
-                sp("roughness", "Roughness", pc(20.0)),
+                sp("shading/ambient", "Ambient", pc(40.0)),
+                sp("shading/diffuse", "Diffuse", pc(60.0)),
+                sp("shading/specular", "Specular", pc(30.0)),
+                sp("shading/roughness", "Roughness", pc(20.0)),
                 p("randomSeed", "Random Seed", num(0.0), slider(0.0, 10000.0, 0.0, 1000.0, 0)),
             ],
             cc_hair,
@@ -562,7 +574,7 @@ mod tests {
     }
 
     fn cannon(t: f64) -> Image {
-        run(&[("cannonPosition", Value::Vec2([40.0, 50.0])), ("velocity", num(60.0)), ("gravityForce", num(30.0))], t)
+        run(&[("cannon/cannonPosition", Value::Vec2([40.0, 50.0])), ("cannon/velocity", num(60.0)), ("gravity/gravityForce", num(30.0))], t)
     }
 
     #[test]
@@ -590,13 +602,13 @@ mod tests {
                 "ec.sim.particleplayground",
                 &[
                     ("cannonEnabled", Value::Bool(false)),
-                    ("gridPosition", Value::Vec2([40.0, 10.0])),
-                    ("gridWidth", num(40.0)),
-                    ("gridHeight", num(0.0)),
-                    ("particlesAcross", num(5.0)),
-                    ("particlesDown", num(1.0)),
-                    ("gravityForce", num(100.0)),
-                    ("wallBoundary", num(1.0)),
+                    ("grid/gridPosition", Value::Vec2([40.0, 10.0])),
+                    ("grid/gridWidth", num(40.0)),
+                    ("grid/gridHeight", num(0.0)),
+                    ("grid/particlesAcross", num(5.0)),
+                    ("grid/particlesDown", num(1.0)),
+                    ("gravity/gravityForce", num(100.0)),
+                    ("wall/wallBoundary", num(1.0)),
                 ],
                 Image::new(80, 60),
                 t,
@@ -634,14 +646,14 @@ mod tests {
             let img = run(
                 &[
                     ("cannonEnabled", Value::Bool(false)),
-                    ("gridPosition", Value::Vec2([40.0, 30.0])),
-                    ("gridWidth", num(6.0)),
-                    ("gridHeight", num(6.0)),
-                    ("particlesAcross", num(3.0)),
-                    ("particlesDown", num(3.0)),
-                    ("gravityForce", num(0.0)),
-                    ("repelForce", num(force)),
-                    ("repelForceRadius", num(20.0)),
+                    ("grid/gridPosition", Value::Vec2([40.0, 30.0])),
+                    ("grid/gridWidth", num(6.0)),
+                    ("grid/gridHeight", num(6.0)),
+                    ("grid/particlesAcross", num(3.0)),
+                    ("grid/particlesDown", num(3.0)),
+                    ("gravity/gravityForce", num(0.0)),
+                    ("repel/repelForce", num(force)),
+                    ("repel/repelForceRadius", num(20.0)),
                 ],
                 0.5,
             );
@@ -662,8 +674,22 @@ mod tests {
     #[test]
     fn property_mapper_and_layer_map_read_layers() {
         // Without a host, the layer-based features are inert (deterministic output).
-        let a = run(&[("mapRedTo", Value::Enum(6)), ("redMin", num(-50.0)), ("redMax", num(50.0))], 0.7);
-        let b = run(&[("mapRedTo", Value::Enum(6)), ("redMin", num(-50.0)), ("redMax", num(50.0))], 0.7);
+        let a = run(
+            &[
+                ("persistentPropertyMapper/mapRedTo", Value::Enum(8)),
+                ("persistentPropertyMapper/redMin", num(-50.0)),
+                ("persistentPropertyMapper/redMax", num(50.0)),
+            ],
+            0.7,
+        );
+        let b = run(
+            &[
+                ("persistentPropertyMapper/mapRedTo", Value::Enum(8)),
+                ("persistentPropertyMapper/redMin", num(-50.0)),
+                ("persistentPropertyMapper/redMax", num(50.0)),
+            ],
+            0.7,
+        );
         assert_eq!(a.data, b.data);
         let st = Pg {
             cannon: false,
@@ -682,7 +708,7 @@ mod tests {
             repel_radius: 0.0,
             wall: None,
             mapper: Some(MapImg { img: Image::filled(4, 4, [1.0, 0.0, 0.5, 1.0]), k: [1.0; 2], o: [0.0; 2] }),
-            map_to: [(6, 0.0, 120.0), (0, 0.0, 1.0), (4, 0.0, 2.0)],
+            map_to: [(8, 0.0, 120.0), (0, 0.0, 1.0), (5, 0.0, 2.0)],
             seed: 1,
             bounds: [-1e6, -1e6, 1e6, 1e6],
         };
@@ -692,6 +718,77 @@ mod tests {
         // Red 1 → X velocity 120 px/s; blue 0.5 → scale 1 (radius 2).
         assert!((s.parts[0].v[0] - 120.0).abs() < 1e-3);
         assert!((s.parts[0].r - 2.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn barrel_radius_square_or_disc() {
+        let pg = |r: f32| Pg {
+            cannon: true,
+            pos: [0.0; 2],
+            barrel_angle: 0.0,
+            barrel_radius: r,
+            rate: 0.0,
+            dir_spread: 0.0,
+            vel: 0.0,
+            vel_spread: 0.0,
+            color: [1.0; 4],
+            radius: 2.0,
+            gravity: [0.0; 2],
+            grav_spread: 0.0,
+            repel: 0.0,
+            repel_radius: 0.0,
+            wall: None,
+            mapper: None,
+            map_to: [(0, 0.0, 1.0); 3],
+            seed: 3,
+            bounds: [-1e6, -1e6, 1e6, 1e6],
+        };
+        let (sq, disc) = (pg(10.0), pg(-10.0));
+        let mut corner = false;
+        for id in 0..400 {
+            let a = sq.spawn(id).p;
+            assert!(a[0].abs() <= 10.0 && a[1].abs() <= 10.0);
+            // A square barrel fills its corners (both offsets in use, not a line).
+            corner |= a[0].abs() > 7.5 && a[1].abs() > 7.5;
+            let b = disc.spawn(id).p;
+            assert!(b[0].hypot(b[1]) <= 10.0 + 1e-4);
+        }
+        assert!(corner);
+        // Radius 0: every particle starts at the cannon position.
+        assert_eq!(pg(0.0).spawn(5).p, [0.0, 0.0]);
+    }
+
+    #[test]
+    fn mapper_drives_position_and_opacity_in_ae_order() {
+        let st = Pg {
+            cannon: false,
+            pos: [0.0; 2],
+            barrel_angle: 0.0,
+            barrel_radius: 0.0,
+            rate: 0.0,
+            dir_spread: 0.0,
+            vel: 0.0,
+            vel_spread: 0.0,
+            color: [1.0; 4],
+            radius: 2.0,
+            gravity: [0.0; 2],
+            grav_spread: 0.0,
+            repel: 0.0,
+            repel_radius: 0.0,
+            wall: None,
+            mapper: Some(MapImg { img: Image::filled(4, 4, [1.0, 0.5, 0.25, 1.0]), k: [1.0; 2], o: [0.0; 2] }),
+            map_to: [(6, 0.0, 30.0), (12, 0.0, 1.0), (4, 0.0, 1.0)],
+            seed: 1,
+            bounds: [-1e6, -1e6, 1e6, 1e6],
+        };
+        assert_eq!(MAP_TARGETS[6], "X");
+        assert_eq!(MAP_TARGETS[12], "Opacity");
+        let mut s = PgState::default();
+        s.parts.push(PgParticle { p: [1.0, 1.0], v: [0.0; 2], origin: [1.0, 1.0], c: [1.0; 4], r: 2.0, mass: 1.0, friction: 0.0, force: [0.0; 2], id: 0 });
+        st.step(&mut s);
+        assert!((s.parts[0].p[0] - 30.0).abs() < 1e-3, "{:?}", s.parts[0].p);
+        assert!((s.parts[0].c[3] - 0.5).abs() < 1e-3);
+        assert!((s.parts[0].friction - 0.25).abs() < 1e-3);
     }
 
     #[test]

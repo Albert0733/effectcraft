@@ -191,6 +191,8 @@ fn chaikin(pts: &[[f64; 2]], iters: usize) -> Vec<[f64; 2]> {
 
 #[derive(Clone, Copy)]
 struct FracSet {
+    /// Mandelbrot iterations start at the Julia centre (the "Over Julia" set choices).
+    over_julia: bool,
     julia: bool,
     inverse: bool,
 }
@@ -220,38 +222,49 @@ fn escape(z0: (f64, f64), c: (f64, f64), power: u32, limit: f64, max_iter: u32) 
     None
 }
 
+/// Fractal Set Choice options.
+pub(crate) const FRACTAL_SETS: [&str; 6] =
+    ["Mandelbrot", "Mandelbrot Inverse", "Mandelbrot Over Julia", "Mandelbrot Inverse Over Julia", "Julia", "Julia Inverse"];
+/// Fractal Palette options.
+pub(crate) const FRACTAL_PALETTES: [&str; 4] = ["Lightness Gradient", "Hue Wheel", "Black And White", "Solid Color"];
+/// Fractal Oversample Method options.
+pub(crate) const FRACTAL_OVERSAMPLE: [&str; 2] = ["Edge Detect-Fast-May Miss Pixels", "Brute Force-Slow-Every Pixel"];
+
 fn fractal(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let pr = ctx.params;
     let set_choice = pr.e("setChoice");
     let power = 2 + pr.e("equation").min(2);
-    let mc = (pr.f("mandelbrotX"), pr.f("mandelbrotY"));
-    let mmag = pr.f("mandelbrotMagnification");
-    let mlim = pr.f("mandelbrotEscapeLimit").max(1.01);
-    let jc = (pr.f("juliaX"), pr.f("juliaY"));
-    let jmag = pr.f("juliaMagnification");
-    let jlim = pr.f("juliaEscapeLimit").max(1.01);
-    let post = (pr.f("postInversionX"), pr.f("postInversionY"));
-    let overlay = pr.b("overlay");
-    let transparent_inside = pr.b("transparency") || overlay;
-    let palette = pr.e("palette");
-    let hue = (pr.f("hue") / 360.0) as f32;
-    let steps = pr.f("cycleSteps").max(1.0);
-    let cyc_off = pr.f("cycleOffset") / 360.0;
-    let edge = pr.b("edgeHighlight");
-    let every = pr.e("samplingMethod") == 1;
-    let factor = pr.f("samplingFactor").round().clamp(1.0, 9.0) as usize;
+    let mc = (pr.f("mandelbrot/mandelbrotX"), pr.f("mandelbrot/mandelbrotY"));
+    let mmag = pr.f("mandelbrot/mandelbrotMagnification");
+    let mlim = pr.f("mandelbrot/mandelbrotEscapeLimit").max(1.01);
+    let jc = (pr.f("julia/juliaX"), pr.f("julia/juliaY"));
+    let jmag = pr.f("julia/juliaMagnification");
+    let jlim = pr.f("julia/juliaEscapeLimit").max(1.01);
+    let post = (pr.f("postInversionOffset/postInversionX"), pr.f("postInversionOffset/postInversionY"));
+    let overlay = pr.b("fractalColor/overlay");
+    let transparency = pr.b("fractalColor/transparency");
+    let transparent_inside = transparency || overlay;
+    let palette = pr.e("fractalColor/palette");
+    let hue = (pr.f("fractalColor/hue") / 360.0) as f32;
+    let steps = pr.f("fractalColor/cycleSteps").max(1.0);
+    let cyc_off = pr.f("fractalColor/cycleOffset") / 360.0;
+    let edge = pr.b("fractalColor/edgeHighlight");
+    let every = pr.e("highQualitySettings/samplingMethod") == 1;
+    let factor = pr.f("highQualitySettings/samplingFactor").round().clamp(1.0, 9.0) as usize;
     let (w, h) = (b.img.width as usize, b.img.height as usize);
     let lw = ctx.layer_size[0].max(1.0);
     let lh = ctx.layer_size[1].max(1.0);
     let inv = 1.0 / b.scale.max(1e-9);
     let (off_x, off_y) = (b.offset[0], b.offset[1]);
+    // FRACTAL_SETS order.
+    let set = |julia, inverse, over_julia| FracSet { over_julia, julia, inverse };
     let sets: (FracSet, Option<FracSet>) = match set_choice {
-        1 => (FracSet { julia: false, inverse: true }, None),
-        2 => (FracSet { julia: false, inverse: false }, Some(FracSet { julia: false, inverse: true })),
-        3 => (FracSet { julia: false, inverse: true }, Some(FracSet { julia: false, inverse: false })),
-        4 => (FracSet { julia: true, inverse: false }, None),
-        5 => (FracSet { julia: true, inverse: true }, None),
-        _ => (FracSet { julia: false, inverse: false }, None),
+        1 => (set(false, true, false), None),
+        2 => (set(false, false, true), None),
+        3 => (set(false, true, true), None),
+        4 => (set(true, false, false), None),
+        5 => (set(true, true, false), None),
+        _ => (set(false, false, false), None),
     };
     let iter_for = |mag: f64| (96.0 + 48.0 * mag.max(0.0)).clamp(64.0, 3000.0) as u32;
     let eval_set = |s: FracSet, lx: f64, ly: f64| -> Option<f64> {
@@ -264,7 +277,12 @@ fn fractal(ctx: &EffectCtx, mut b: Buf) -> Buf {
             u = u / d + post.0;
             v = -v / d + post.1;
         }
-        if s.julia { escape((u, v), mc, power, lim, iter_for(mag)) } else { escape((0.0, 0.0), (u, v), power, lim, iter_for(mag)) }
+        if s.julia {
+            escape((u, v), mc, power, lim, iter_for(mag))
+        } else {
+            let z0 = if s.over_julia { jc } else { (0.0, 0.0) };
+            escape(z0, (u, v), power, lim, iter_for(mag))
+        }
     };
     let eval = |lx: f64, ly: f64| -> Option<f64> {
         let a = eval_set(sets.0, lx, ly);
@@ -274,14 +292,26 @@ fn fractal(ctx: &EffectCtx, mut b: Buf) -> Buf {
         }
     };
     let shade = |n: Option<f64>| -> Px {
+        // Solid Color: only the inside of the set is drawn (Transparency flips the sides).
+        if palette == 3 {
+            let (r, g, bl) = hsl_to_rgb(hue, 1.0, 0.5);
+            return if n.is_none() != transparency { [r, g, bl, 1.0] } else { [0.0; 4] };
+        }
         let Some(n) = n else {
             return if transparent_inside { [0.0; 4] } else { [0.0, 0.0, 0.0, 1.0] };
         };
-        let band = ((n / steps + cyc_off).rem_euclid(1.0)) as f32;
+        let u = n / steps + cyc_off;
+        let band = (u.rem_euclid(1.0)) as f32;
         let (r, g, bl) = match palette {
+            // Hue Wheel: the full hue circle at full saturation and brightness.
             1 => hsl_to_rgb((hue + band).rem_euclid(1.0), 1.0, 0.5),
-            2 => hsl_to_rgb((hue + band).rem_euclid(1.0), 1.0, 0.3 + 0.4 * (band * 4.0).fract()),
-            _ => hsl_to_rgb(hue, 0.85, band.clamp(0.0, 1.0)),
+            // Black And White: alternating bands.
+            2 => {
+                let v = if (u.floor() as i64).rem_euclid(2) == 0 { 0.0 } else { 1.0 };
+                (v, v, v)
+            }
+            // Lightness Gradient: black → hue → white, the hue moving 45° each cycle.
+            _ => hsl_to_rgb((hue + u.floor() as f32 * 0.125).rem_euclid(1.0), 0.85, band.clamp(0.0, 1.0)),
         };
         let mut c = [r, g, bl];
         if edge && n.fract() < 0.12 {
@@ -455,17 +485,17 @@ fn scribble(ctx: &EffectCtx, mut b: Buf) -> Buf {
     }
     let sc = b.scale;
     let fill = pr.e("fillType");
-    let ew = pr.f("edgeWidth").max(0.1) * sc;
+    let ew = pr.f("edgeOptions/edgeWidth").max(0.1) * sc;
     let ang = pr.f("angle").to_radians();
     let d = [ang.cos(), ang.sin()];
     let n = [-d[1], d[0]];
     let width = (pr.f("strokeWidth") * sc).max(0.1);
-    let curv = pr.f("curviness") / 100.0;
-    let curv_var = pr.f("curvinessVariation") / 100.0;
-    let spacing = (pr.f("spacing") * sc).max(0.75).max(width * 0.25);
-    let spacing_var = pr.f("spacingVariation") / 100.0;
-    let overlap = pr.f("pathOverlap") / 100.0;
-    let overlap_var = pr.f("pathOverlapVariation") / 100.0;
+    let curv = pr.f("strokeOptions/curviness") / 100.0;
+    let curv_var = pr.f("strokeOptions/curvinessVariation") / 100.0;
+    let spacing = (pr.f("strokeOptions/spacing") * sc).max(0.75).max(width * 0.25);
+    let spacing_var = pr.f("strokeOptions/spacingVariation") / 100.0;
+    let overlap = pr.f("strokeOptions/pathOverlap") / 100.0;
+    let overlap_var = pr.f("strokeOptions/pathOverlapVariation") / 100.0;
     let start = pr.f("start").clamp(0.0, 100.0) / 100.0;
     let end = pr.f("end").clamp(0.0, 100.0) / 100.0;
     let sequential = pr.b("fillPathsSequentially");
@@ -757,6 +787,9 @@ fn vegas(ctx: &EffectCtx, mut b: Buf) -> Buf {
         }
     };
     let nseg = pr.f("segments").round().clamp(1.0, 1000.0) as usize;
+    // Shorter Contours Have Fewer Segments: segment count scales with contour length.
+    let fewer = pr.e("stroke") == 0 && pr.e("shorterContoursHave") == 1;
+    let longest = paths.iter().map(|(p, c)| poly_length(p, *c)).fold(0.0, f64::max);
     let seg_len = pr.f("length").clamp(0.0, 1.0);
     let bunched = pr.e("segmentDistribution") == 0;
     let rot = pr.f("rotation") / 360.0;
@@ -772,6 +805,7 @@ fn vegas(ctx: &EffectCtx, mut b: Buf) -> Buf {
             continue;
         }
         let phase = rot + if random_phase { hash1(ci as u32, 1, seed) as f64 } else { 0.0 };
+        let nseg = if fewer && longest > 0.0 { ((nseg as f64 * len / longest).round() as usize).max(1) } else { nseg };
         let each = len / nseg as f64 * seg_len;
         for i in 0..nseg {
             let base = if bunched { (i as f64 + (hash1(ci as u32, i as u32 + 7, seed) as f64 - 0.5) * 0.8) / nseg as f64 } else { i as f64 / nseg as f64 };
@@ -1401,32 +1435,27 @@ pub fn specs() -> Vec<EffectSpec> {
             "ec.generate.fractal",
             "Fractal",
             vec![
-                p(
-                    "setChoice",
-                    "Set Choice",
-                    Value::Enum(0),
-                    popup(&["Mandelbrot", "Mandelbrot Inverse", "Mandelbrot Over Inverse", "Mandelbrot Inverse Over Mandelbrot", "Julia", "Julia Inverse"]),
-                ),
+                p("setChoice", "Set Choice", Value::Enum(0), popup(&FRACTAL_SETS)),
                 p("equation", "Equation", Value::Enum(0), popup(&["z = z^2 + c", "z = z^3 + c", "z = z^4 + c"])),
-                p("mandelbrotX", "Mandelbrot: X (Real)", num(-0.74), slider(-2.0, 2.0, -2.0, 2.0, 4)),
-                p("mandelbrotY", "Mandelbrot: Y (Imaginary)", num(0.15), slider(-2.0, 2.0, -2.0, 2.0, 4)),
-                p("mandelbrotMagnification", "Mandelbrot: Magnification", num(0.0), slider(-5.0, 30.0, -5.0, 30.0, 2)),
-                p("mandelbrotEscapeLimit", "Mandelbrot: Escape Limit", num(4.0), slider(1.0, 1000.0, 1.0, 100.0, 1)),
-                p("juliaX", "Julia: X (Real)", num(0.0), slider(-2.0, 2.0, -2.0, 2.0, 4)),
-                p("juliaY", "Julia: Y (Imaginary)", num(0.0), slider(-2.0, 2.0, -2.0, 2.0, 4)),
-                p("juliaMagnification", "Julia: Magnification", num(0.0), slider(-5.0, 30.0, -5.0, 30.0, 2)),
-                p("juliaEscapeLimit", "Julia: Escape Limit", num(4.0), slider(1.0, 1000.0, 1.0, 100.0, 1)),
-                p("postInversionX", "Post-Inversion Offset: X Offset", num(0.0), slider(-2.0, 2.0, -2.0, 2.0, 4)),
-                p("postInversionY", "Post-Inversion Offset: Y Offset", num(0.0), slider(-2.0, 2.0, -2.0, 2.0, 4)),
-                check("overlay", "Overlay", false),
-                check("transparency", "Transparency", false),
-                p("palette", "Palette", Value::Enum(0), popup(&["Lightness Bands", "Hue Bands", "Hue/Lightness Bands"])),
-                p("hue", "Hue", num(0.0), ang()),
-                p("cycleSteps", "Cycle Steps", num(32.0), slider(1.0, 1000.0, 1.0, 256.0, 0)),
-                p("cycleOffset", "Cycle Offset", num(0.0), ang()),
-                check("edgeHighlight", "Edge Highlight", false),
-                p("samplingMethod", "Sampling Method", Value::Enum(0), popup(&["Edge Detect", "Every Pixel"])),
-                p("samplingFactor", "Sampling Factor", num(2.0), slider(1.0, 9.0, 1.0, 9.0, 0)),
+                p("mandelbrot/mandelbrotX", "X (Real)", num(-0.74), slider(-2.0, 2.0, -2.0, 2.0, 4)),
+                p("mandelbrot/mandelbrotY", "Y (Imaginary)", num(0.15), slider(-2.0, 2.0, -2.0, 2.0, 4)),
+                p("mandelbrot/mandelbrotMagnification", "Magnification", num(0.0), slider(-5.0, 30.0, -5.0, 30.0, 2)),
+                p("mandelbrot/mandelbrotEscapeLimit", "Escape Limit", num(4.0), slider(1.0, 1000.0, 1.0, 100.0, 1)),
+                p("julia/juliaX", "X (Real)", num(0.0), slider(-2.0, 2.0, -2.0, 2.0, 4)),
+                p("julia/juliaY", "Y (Imaginary)", num(0.0), slider(-2.0, 2.0, -2.0, 2.0, 4)),
+                p("julia/juliaMagnification", "Magnification", num(0.0), slider(-5.0, 30.0, -5.0, 30.0, 2)),
+                p("julia/juliaEscapeLimit", "Escape Limit", num(4.0), slider(1.0, 1000.0, 1.0, 100.0, 1)),
+                p("postInversionOffset/postInversionX", "X Offset", num(0.0), slider(-2.0, 2.0, -2.0, 2.0, 4)),
+                p("postInversionOffset/postInversionY", "Y Offset", num(0.0), slider(-2.0, 2.0, -2.0, 2.0, 4)),
+                check("fractalColor/overlay", "Overlay", false),
+                check("fractalColor/transparency", "Transparency", false),
+                p("fractalColor/palette", "Palette", Value::Enum(0), popup(&FRACTAL_PALETTES)),
+                p("fractalColor/hue", "Hue", num(0.0), ang()),
+                p("fractalColor/cycleSteps", "Cycle Steps", num(32.0), slider(1.0, 1000.0, 1.0, 256.0, 0)),
+                p("fractalColor/cycleOffset", "Cycle Offset", num(0.0), ang()),
+                check("fractalColor/edgeHighlight", "Edge Highlight", false),
+                p("highQualitySettings/samplingMethod", "Oversample Method", Value::Enum(0), popup(&FRACTAL_OVERSAMPLE)),
+                p("highQualitySettings/samplingFactor", "Oversample Factor", num(2.0), slider(1.0, 9.0, 1.0, 9.0, 0)),
             ],
             fractal,
         ),
@@ -1437,17 +1466,17 @@ pub fn specs() -> Vec<EffectSpec> {
                 p("scribble", "Scribble", Value::Enum(0), popup(&["Single Mask", "All Masks", "All Masks Using Modes"])),
                 mask_idx("mask", "Mask", 1.0),
                 p("fillType", "Fill Type", Value::Enum(0), popup(&["Inside", "Centered Edge", "Inside Edge", "Outside Edge", "Left Edge", "Right Edge"])),
-                p("edgeWidth", "Edge Options: Edge Width", num(10.0), slider(0.0, 1000.0, 0.0, 100.0, 1)),
+                p("edgeOptions/edgeWidth", "Edge Width", num(10.0), slider(0.0, 1000.0, 0.0, 100.0, 1)),
                 p("color", "Color", col(1.0, 0.0, 0.0), ParamUi::Color),
                 p("opacity", "Opacity", num(100.0), pct()),
                 p("angle", "Angle", num(45.0), ang()),
                 p("strokeWidth", "Stroke Width", num(2.0), slider(0.1, 50.0, 0.1, 50.0, 1)),
-                p("curviness", "Stroke Options: Curviness", num(50.0), pct()),
-                p("curvinessVariation", "Stroke Options: Curviness Variation", num(50.0), pct()),
-                p("spacing", "Stroke Options: Spacing", num(5.0), slider(0.1, 100.0, 0.1, 50.0, 1)),
-                p("spacingVariation", "Stroke Options: Spacing Variation", num(50.0), pct()),
-                p("pathOverlap", "Stroke Options: Path Overlap", num(0.0), slider(-100.0, 100.0, -100.0, 100.0, 1)),
-                p("pathOverlapVariation", "Stroke Options: Path Overlap Variation", num(50.0), pct()),
+                p("strokeOptions/curviness", "Curviness", num(50.0), pct()),
+                p("strokeOptions/curvinessVariation", "Curviness Variation", num(50.0), pct()),
+                p("strokeOptions/spacing", "Spacing", num(5.0), slider(0.1, 100.0, 0.1, 50.0, 1)),
+                p("strokeOptions/spacingVariation", "Spacing Variation", num(50.0), pct()),
+                p("strokeOptions/pathOverlap", "Path Overlap", num(0.0), slider(-100.0, 100.0, -100.0, 100.0, 1)),
+                p("strokeOptions/pathOverlapVariation", "Path Overlap Variation", num(50.0), pct()),
                 p("start", "Start", num(0.0), pct()),
                 p("end", "End", num(100.0), pct()),
                 check("fillPathsSequentially", "Fill Paths Sequentially", true),
@@ -1488,8 +1517,9 @@ pub fn specs() -> Vec<EffectSpec> {
                 p("threshold", "Image Contours: Threshold", num(50.0), pct()),
                 p("preBlur", "Image Contours: Pre-Blur", num(1.0), slider(0.0, 100.0, 0.0, 20.0, 1)),
                 p("tolerance", "Image Contours: Tolerance", num(0.01), slider(0.0, 1.0, 0.0, 0.1, 3)),
-                p("renderMode", "Image Contours: Render Mode", Value::Enum(0), popup(&["All Contours", "Selected Contour"])),
+                p("renderMode", "Image Contours: Render", Value::Enum(0), popup(&["All Contours", "Selected Contour"])),
                 p("selectedContour", "Image Contours: Selected Contour", num(1.0), slider(1.0, 1000.0, 1.0, 20.0, 0)),
+                p("shorterContoursHave", "Image Contours: Shorter Contours Have", Value::Enum(0), popup(&["Same Number of Segments", "Fewer Segments"])),
                 mask_idx("path", "Mask/Path: Path", 1.0),
                 p("segments", "Segments: Segments", num(32.0), slider(1.0, 1000.0, 1.0, 100.0, 0)),
                 p("length", "Segments: Length", num(0.5), slider(0.0, 1.0, 0.0, 1.0, 3)),
@@ -1696,8 +1726,29 @@ mod tests {
         // The default view contains the main cardioid (black, opaque) and escaped (coloured) points.
         assert!(a.img.data.iter().any(|p| p[3] > 0.99 && p[0] + p[1] + p[2] < 0.01));
         assert!(a.img.data.iter().any(|p| p[0] + p[1] + p[2] > 0.3));
-        let t = run("ec.generate.fractal", &[("transparency", Value::Bool(true))], img);
+        let t = run("ec.generate.fractal", &[("fractalColor/transparency", Value::Bool(true))], img);
         assert!(t.img.data.iter().any(|p| p[3] == 0.0));
+    }
+
+    #[test]
+    fn fractal_palettes_and_set_choices() {
+        let img = Image::new(64, 48);
+        // Solid Color: only the inside of the set is drawn; Transparency flips it.
+        let solid = run("ec.generate.fractal", &[("fractalColor/palette", Value::Enum(3))], img.clone());
+        assert!(solid.img.data.iter().any(|p| p[3] == 0.0) && solid.img.data.iter().any(|p| p[3] > 0.99 && p[0] > 0.9));
+        let flipped = run("ec.generate.fractal", &[("fractalColor/palette", Value::Enum(3)), ("fractalColor/transparency", Value::Bool(true))], img.clone());
+        for (a, b) in solid.img.data.iter().zip(&flipped.img.data) {
+            assert!((a[3] > 0.5) != (b[3] > 0.5) || (a[3] - 0.5).abs() < 0.49);
+        }
+        // Black And White: escaped pixels are pure black or white (away from supersampled edges).
+        let bw = run("ec.generate.fractal", &[("fractalColor/palette", Value::Enum(2)), ("highQualitySettings/samplingFactor", num(1.0))], img.clone());
+        assert!(bw.img.data.iter().all(|p| p[0] == p[1] && p[1] == p[2] && (p[0] == 0.0 || p[0] == 1.0)));
+        // Mandelbrot Over Julia depends on the Julia centre.
+        let o1 = run("ec.generate.fractal", &[("setChoice", Value::Enum(2)), ("julia/juliaX", num(0.3))], img.clone());
+        let o2 = run("ec.generate.fractal", &[("setChoice", Value::Enum(2)), ("julia/juliaX", num(-0.2))], img.clone());
+        assert_ne!(o1.img.data, o2.img.data);
+        let plain = run("ec.generate.fractal", &[("julia/juliaX", num(0.3))], img);
+        assert_ne!(o1.img.data, plain.img.data);
     }
 
     #[test]
@@ -1725,7 +1776,7 @@ mod tests {
         let masks = square_mask();
         let env = EffectEnv { masks: &masks, ..Default::default() };
         let img = Image::new(64, 64);
-        let o = run_env("ec.generate.scribble", &[("fillType", Value::Enum(3)), ("edgeWidth", num(6.0))], img, 0.5, env);
+        let o = run_env("ec.generate.scribble", &[("fillType", Value::Enum(3)), ("edgeOptions/edgeWidth", num(6.0))], img, 0.5, env);
         // Outside edge: paint near the border outside, nothing in the centre.
         assert!(alpha_sum(&o.img, 26, 26, 38, 38) < 0.5);
         assert!(alpha_sum(&o.img, 8, 8, 16, 56) > 5.0);

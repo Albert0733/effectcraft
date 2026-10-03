@@ -2,15 +2,13 @@
 //! and synthesised onto this one), Median (Legacy) and Curl Noise (divergence-free flow
 //! distortion from the curl of a fractal noise potential).
 
-use effectcraft_color::luminance;
 use effectcraft_keyframe::Value;
 use effectcraft_project::ParamUi;
 use effectcraft_raster::Image;
 use rayon::prelude::*;
 
-use crate::generate::value_noise;
-use crate::noise::{fbm, median_image};
-use crate::util::{Plane, gauss_plane, layer_or_self, premul, smoothstep, unpremul};
+use crate::noise::{GrainLook, fbm, grain_params, median_image};
+use crate::util::{Plane, gauss_plane, layer_or_self, premul, unpremul};
 use crate::{Buf, EffectCtx, EffectSpec, num, p, popup, slider};
 
 fn spec(id: &'static str, name: &'static str, params: Vec<crate::ParamSpec>, render: crate::RenderFn) -> EffectSpec {
@@ -79,39 +77,15 @@ fn match_grain(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let src_stats = grain_stats(&source);
     let comp = (ctx.params.f("compensateForExistingNoise") / 100.0) as f32;
     let own = if comp > 0.0 { grain_stats(&b.img) } else { GrainStats::default() };
-    let intensity = ctx.params.f("intensity") as f32;
-    let chan = [ctx.params.f("redIntensity") as f32, ctx.params.f("greenIntensity") as f32, ctx.params.f("blueIntensity") as f32];
+    let look = GrainLook::from_params(ctx);
     let amp: [f32; 3] = [0, 1, 2].map(|k| {
         let s = src_stats.std[k];
         let e = own.std[k] * comp;
-        (s * s - e * e).max(0.0).sqrt() * intensity * chan[k]
+        (s * s - e * e).max(0.0).sqrt() * look.intensity * look.channel_intensity[k]
     });
-    let size = (src_stats.size.max(0.5) * ctx.params.f("size") as f32 * b.scale as f32).max(0.05);
-    let aspect = ctx.params.f("aspectRatio").max(0.05) as f32;
-    let soft = ctx.params.f("softness") * b.scale;
-    let mono = ctx.params.b("monochromatic");
-    let sat = ctx.params.f("saturation") as f32;
-    let blend_mode = ctx.params.e("blendingMode");
-    let (ws, wm, wh) = (ctx.params.f("shadows") as f32, ctx.params.f("midtones") as f32, ctx.params.f("highlights") as f32);
-    let seed = (ctx.params.f("randomSeed") as i64 as u32) ^ ctx.seed.wrapping_mul(0x9e37);
-    let ft = ctx.time * 24.0 * ctx.params.f("animationSpeed");
-    let frame = if ctx.params.b("animateSmoothly") { ft as f32 } else { ft.floor() as f32 };
+    let size = (src_stats.size.max(0.5) * look.size * b.scale as f32).max(0.05);
     let (w, h) = (b.img.width as usize, b.img.height as usize);
-    let nch = if mono { 1 } else { 3 };
-    let mut planes: Vec<Plane> = (0..nch)
-        .map(|k| {
-            let mut pl = Plane::new(w, h);
-            pl.data.par_chunks_mut(w.max(1)).enumerate().for_each(|(y, row)| {
-                for (x, v) in row.iter_mut().enumerate() {
-                    *v = value_noise(x as f32 / size, y as f32 / (size * aspect), frame, seed.wrapping_add(k as u32 * 131)) - 0.5;
-                }
-            });
-            pl
-        })
-        .collect();
-    if soft > 0.05 {
-        planes = planes.iter().map(|pl| gauss_plane(pl, soft, soft * aspect as f64)).collect();
-    }
+    let mut planes = look.planes(w, h, size, b.scale, 131);
     // Normalise each synthetic plane to unit standard deviation so the measured stats transfer.
     for pl in planes.iter_mut() {
         let n = pl.data.len().max(1) as f64;
@@ -122,13 +96,9 @@ fn match_grain(ctx: &EffectCtx, mut b: Buf) -> Buf {
     }
     b.img.data.par_iter_mut().enumerate().for_each(|(i, px)| {
         let (c, a) = unpremul(*px);
-        let mut g = if mono { [planes[0].data[i]; 3] } else { [planes[0].data[i], planes[1].data[i], planes[2].data[i]] };
-        let gm = (g[0] + g[1] + g[2]) / 3.0;
-        g = g.map(|v| gm + (v - gm) * sat);
-        let l = luminance(c[0], c[1], c[2]).clamp(0.0, 1.0);
-        let s = 1.0 - smoothstep(0.0, 0.5, l);
-        let hi = smoothstep(0.5, 1.0, l);
-        let weight = ws * s + wm * (1.0 - s - hi) + wh * hi;
+        let raw = if look.mono { [planes[0].data[i]; 3] } else { [planes[0].data[i], planes[1].data[i], planes[2].data[i]] };
+        let g = look.color(raw);
+        let weight = look.weight(c);
         match view {
             1 => {
                 let o = [0, 1, 2].map(|k| (0.5 + g[k] * amp[k]).clamp(0.0, 1.0));
@@ -139,15 +109,7 @@ fn match_grain(ctx: &EffectCtx, mut b: Buf) -> Buf {
                 if a <= 0.0 {
                     return;
                 }
-                let o = [0, 1, 2].map(|k| {
-                    let n = g[k] * amp[k] * weight;
-                    let v = match blend_mode {
-                        1 => c[k] * (1.0 + n * 2.0),
-                        2 => 1.0 - (1.0 - c[k]) * (1.0 - n * 2.0),
-                        _ => c[k] + n,
-                    };
-                    v.max(0.0)
-                });
+                let o = [0, 1, 2].map(|k| look.blend(c[k], g[k] * amp[k] * weight));
                 *px = premul(o, a);
             }
         }
@@ -246,7 +208,7 @@ fn curl_noise(ctx: &EffectCtx, mut b: Buf) -> Buf {
 }
 
 pub fn specs() -> Vec<EffectSpec> {
-    let mult = || slider(0.0, 10.0, 0.0, 2.0, 2);
+    let (tweaking, color, application, animation) = grain_params();
     vec![
         spec(
             "ec.noise.matchgrain",
@@ -256,23 +218,10 @@ pub fn specs() -> Vec<EffectSpec> {
                 p("noiseSourceLayer", "Noise Source Layer", Value::Layer(None), ParamUi::Layer),
                 p("noiseSourceLayerSource", "Noise Source Layer Source", Value::Enum(0), ParamUi::Hidden),
                 p("compensateForExistingNoise", "Compensate for Existing Noise", num(0.0), pct()),
-                p("intensity", "Intensity", num(1.0), slider(0.0, 100.0, 0.0, 10.0, 2)),
-                p("size", "Size", num(1.0), slider(0.05, 100.0, 0.1, 10.0, 2)),
-                p("softness", "Softness", num(0.0), slider(0.0, 100.0, 0.0, 5.0, 2)),
-                p("aspectRatio", "Aspect Ratio", num(1.0), slider(0.05, 20.0, 0.25, 4.0, 2)),
-                p("redIntensity", "Red Intensity", num(1.0), mult()),
-                p("greenIntensity", "Green Intensity", num(1.0), mult()),
-                p("blueIntensity", "Blue Intensity", num(1.0), mult()),
-                p("monochromatic", "Monochromatic", Value::Bool(false), ParamUi::Checkbox),
-                p("saturation", "Saturation", num(1.0), mult()),
-                p("blendingMode", "Blending Mode", Value::Enum(0), popup(&["Normal", "Multiply", "Screen"])),
-                p("shadows", "Shadows", num(1.0), mult()),
-                p("midtones", "Midtones", num(1.0), mult()),
-                p("highlights", "Highlights", num(1.0), mult()),
-                p("animationSpeed", "Animation Speed", num(1.0), slider(0.0, 100.0, 0.0, 5.0, 2)),
-                p("animateSmoothly", "Animate Smoothly", Value::Bool(true), ParamUi::Checkbox),
-                p("randomSeed", "Random Seed", num(0.0), slider(0.0, 100000.0, 0.0, 1000.0, 0)),
-            ],
+            ]
+            .into_iter()
+            .chain([tweaking, color, application, animation].into_iter().flatten())
+            .collect(),
             match_grain,
         ),
         spec(

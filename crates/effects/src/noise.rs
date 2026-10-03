@@ -34,52 +34,178 @@ pub(crate) fn fbm(u: f32, v: f32, z: f32, seed: u32, octaves: f32) -> f32 {
     sum / norm.max(1e-6)
 }
 
+// ---- Add Grain / Match Grain shared look ----
+
+/// Blending Mode options of Add Grain and Match Grain.
+pub(crate) const GRAIN_BLEND_MODES: [&str; 5] = ["Film", "Multiply", "Add", "Screen", "Overlay"];
+
+/// The Tweaking / Color / Application / Animation controls Add Grain and Match Grain share
+/// (twirl-down groups with the same ids in both effects).
+pub(crate) struct GrainLook {
+    pub intensity: f32,
+    pub channel_intensity: [f32; 3],
+    pub size: f32,
+    pub channel_size: [f32; 3],
+    pub softness: f64,
+    pub aspect: f32,
+    pub mono: bool,
+    pub saturation: f32,
+    pub tint_amount: f32,
+    pub tint: [f32; 3],
+    pub mode: u32,
+    /// Shadows, Midtones, Highlights weights and the tonal Midpoint.
+    pub tones: [f32; 3],
+    pub midpoint: f32,
+    /// Grain time (frames of grain at the animation speed) and whether it interpolates.
+    pub frame: f32,
+    pub seed: u32,
+}
+
+impl GrainLook {
+    pub(crate) fn from_params(ctx: &EffectCtx) -> GrainLook {
+        let pr = ctx.params;
+        let ch = |pre: &str, a: &str, b: &str, c: &str| [a, b, c].map(|k| pr.get(&format!("{pre}{k}")).map(Value::as_f64).unwrap_or(1.0) as f32);
+        let ft = ctx.time * 24.0 * pr.f("animation/animationSpeed");
+        let smooth = pr.get("animation/animateSmoothly").is_none_or(Value::as_bool);
+        let tint = pr.color("color/tintColor");
+        GrainLook {
+            intensity: pr.f("tweaking/intensity") as f32,
+            channel_intensity: ch("tweaking/channelIntensities/", "redIntensity", "greenIntensity", "blueIntensity"),
+            size: pr.f("tweaking/size").max(0.05) as f32,
+            channel_size: ch("tweaking/channelSize/", "redSize", "greenSize", "blueSize"),
+            softness: pr.f("tweaking/softness"),
+            aspect: pr.f("tweaking/aspectRatio").max(0.05) as f32,
+            mono: pr.b("color/monochromatic"),
+            saturation: pr.f("color/saturation") as f32,
+            tint_amount: (pr.f("color/tintAmount") as f32).clamp(0.0, 1.0),
+            tint: [tint[0], tint[1], tint[2]],
+            mode: pr.e("application/blendingMode"),
+            tones: [pr.f("application/shadows") as f32, pr.f("application/midtones") as f32, pr.f("application/highlights") as f32],
+            midpoint: pr.get("application/midpoint").map(Value::as_f64).unwrap_or(0.5).clamp(0.01, 0.99) as f32,
+            frame: if smooth && ft.fract() != 0.0 { ft as f32 } else { ft.floor() as f32 },
+            seed: (pr.f("animation/randomSeed") as i64 as u32) ^ ctx.seed.wrapping_mul(0x9e37),
+        }
+    }
+
+    /// Zero-mean noise planes (one, or one per channel) of grain `size` pixels (times each
+    /// channel's size), softened by Softness, stretched by Aspect Ratio.
+    pub(crate) fn planes(&self, w: usize, h: usize, size: f32, scale: f64, salt: u32) -> Vec<Plane> {
+        let nch = if self.mono { 1 } else { 3 };
+        let mut planes: Vec<Plane> = (0..nch)
+            .map(|k| {
+                let s = (size * if self.mono { 1.0 } else { self.channel_size[k].max(0.05) }).max(0.05);
+                let mut pl = Plane::new(w, h);
+                pl.data.par_chunks_mut(w.max(1)).enumerate().for_each(|(y, row)| {
+                    for (x, v) in row.iter_mut().enumerate() {
+                        *v = value_noise(x as f32 / (s * self.aspect), y as f32 / s, self.frame, self.seed.wrapping_add(k as u32 * salt)) - 0.5;
+                    }
+                });
+                pl
+            })
+            .collect();
+        let soft = self.softness * scale;
+        if soft > 0.05 {
+            planes = planes.iter().map(|pl| gauss_plane(pl, soft * self.aspect as f64, soft)).collect();
+        }
+        planes
+    }
+
+    /// Tonal weight of the grain at straight colour `c` (Shadows / Midtones / Highlights around
+    /// the Midpoint).
+    pub(crate) fn weight(&self, c: [f32; 3]) -> f32 {
+        let l = luminance(c[0], c[1], c[2]).clamp(0.0, 1.0);
+        let s = 1.0 - smoothstep(0.0, self.midpoint, l);
+        let hi = smoothstep(self.midpoint, 1.0, l);
+        self.tones[0] * s + self.tones[1] * (1.0 - s - hi) + self.tones[2] * hi
+    }
+
+    /// Per-channel grain from the raw plane values `g` (Saturation, Tint).
+    pub(crate) fn color(&self, mut g: [f32; 3]) -> [f32; 3] {
+        if !self.mono {
+            let gm = (g[0] + g[1] + g[2]) / 3.0;
+            g = g.map(|v| gm + (v - gm) * self.saturation);
+        }
+        if self.tint_amount > 0.0 {
+            let l = luminance(self.tint[0], self.tint[1], self.tint[2]).max(1e-3);
+            g = [0, 1, 2].map(|k| g[k] * ((1.0 - self.tint_amount) + self.tint_amount * self.tint[k] / l));
+        }
+        g
+    }
+
+    /// Combine source channel `c` with signed grain `n` by the Blending Mode.
+    pub(crate) fn blend(&self, c: f32, n: f32) -> f32 {
+        match self.mode {
+            // Multiply: scales the source (the grain is signed, so it can darken or lighten).
+            1 => c * (1.0 + n),
+            // Add.
+            2 => c + n,
+            // Screen: always lighter.
+            3 => 1.0 - (1.0 - c) * (1.0 - n.abs()),
+            // Overlay: full grain in the midtones, less in shadows and highlights.
+            4 => c + n * 4.0 * c * (1.0 - c),
+            // Film: embedded in the image, stronger in the darker tones.
+            _ => c + n * (1.0 - 0.5 * c),
+        }
+        .max(0.0)
+    }
+}
+
+/// Grain control parameters shared by Add Grain and Match Grain, in Effect Controls order:
+/// (Tweaking, Color, Application, Animation).
+pub(crate) fn grain_params() -> (Vec<crate::ParamSpec>, Vec<crate::ParamSpec>, Vec<crate::ParamSpec>, Vec<crate::ParamSpec>) {
+    let mult = || slider(0.0, 10.0, 0.0, 2.0, 2);
+    let tweaking = vec![
+        p("tweaking/intensity", "Intensity", num(1.0), slider(0.0, 100.0, 0.0, 10.0, 2)),
+        p("tweaking/channelIntensities/redIntensity", "Red Intensity", num(1.0), mult()),
+        p("tweaking/channelIntensities/greenIntensity", "Green Intensity", num(1.0), mult()),
+        p("tweaking/channelIntensities/blueIntensity", "Blue Intensity", num(1.0), mult()),
+        p("tweaking/size", "Size", num(1.0), slider(0.05, 100.0, 0.1, 10.0, 2)),
+        p("tweaking/channelSize/redSize", "Red Size", num(1.0), mult()),
+        p("tweaking/channelSize/greenSize", "Green Size", num(1.0), mult()),
+        p("tweaking/channelSize/blueSize", "Blue Size", num(1.0), mult()),
+        p("tweaking/softness", "Softness", num(0.0), slider(0.0, 100.0, 0.0, 5.0, 2)),
+        p("tweaking/aspectRatio", "Aspect Ratio", num(1.0), slider(0.05, 20.0, 0.25, 4.0, 2)),
+    ];
+    let color = vec![
+        p("color/monochromatic", "Monochromatic", Value::Bool(false), ParamUi::Checkbox),
+        p("color/saturation", "Saturation", num(1.0), mult()),
+        p("color/tintAmount", "Tint Amount", num(0.0), slider(0.0, 1.0, 0.0, 1.0, 2)),
+        p("color/tintColor", "Tint Color", crate::col(1.0, 1.0, 1.0), ParamUi::Color),
+    ];
+    let application = vec![
+        p("application/blendingMode", "Blending Mode", Value::Enum(0), popup(&GRAIN_BLEND_MODES)),
+        p("application/shadows", "Shadows", num(1.0), mult()),
+        p("application/midtones", "Midtones", num(1.0), mult()),
+        p("application/highlights", "Highlights", num(1.0), mult()),
+        p("application/midpoint", "Midpoint", num(0.5), slider(0.0, 1.0, 0.0, 1.0, 2)),
+    ];
+    let animation = vec![
+        p("animation/animationSpeed", "Animation Speed", num(1.0), slider(0.0, 100.0, 0.0, 5.0, 2)),
+        p("animation/animateSmoothly", "Animate Smoothly", Value::Bool(true), ParamUi::Checkbox),
+        p("animation/randomSeed", "Random Seed", num(0.0), slider(0.0, 100000.0, 0.0, 1000.0, 0)),
+    ];
+    (tweaking, color, application, animation)
+}
+
 // ---- Add Grain ----
 
 fn add_grain(ctx: &EffectCtx, mut b: Buf) -> Buf {
-    let intensity = ctx.params.f("intensity") as f32;
-    if intensity <= 0.0 {
+    let look = GrainLook::from_params(ctx);
+    if look.intensity <= 0.0 {
         return b;
     }
-    let size = (ctx.params.f("size") * b.scale).max(0.05) as f32;
-    let aspect = ctx.params.f("aspectRatio").max(0.05) as f32;
-    let soft = ctx.params.f("softness") * b.scale;
-    let mono = ctx.params.b("monochromatic");
-    let sat = ctx.params.f("saturation") as f32;
-    let (ws, wm, wh) = (ctx.params.f("shadows") as f32, ctx.params.f("midtones") as f32, ctx.params.f("highlights") as f32);
-    let seed = (ctx.params.f("randomSeed") as i64 as u32) ^ ctx.seed.wrapping_mul(0x9e37);
-    let frame = (ctx.time * 24.0 * ctx.params.f("animationSpeed")).floor() as i64 as f32;
     let (w, h) = (b.img.width as usize, b.img.height as usize);
-    let nch = if mono { 1 } else { 3 };
-    let mut planes: Vec<Plane> = (0..nch)
-        .map(|k| {
-            let mut pl = Plane::new(w, h);
-            pl.data.par_chunks_mut(w.max(1)).enumerate().for_each(|(y, row)| {
-                for (x, v) in row.iter_mut().enumerate() {
-                    let n = value_noise(x as f32 / size, y as f32 / (size * aspect), frame, seed.wrapping_add(k as u32 * 101));
-                    *v = (n - 0.5) * 2.5;
-                }
-            });
-            pl
-        })
-        .collect();
-    if soft > 0.05 {
-        planes = planes.iter().map(|pl| gauss_plane(pl, soft, soft * aspect as f64)).collect();
-    }
-    let amp = intensity * 0.1;
+    let planes = look.planes(w, h, look.size * b.scale as f32, b.scale, 101);
+    let amp = look.intensity * 0.25;
     b.img.data.par_iter_mut().enumerate().for_each(|(i, px)| {
         let (c, a) = unpremul(*px);
         if a <= 0.0 {
             return;
         }
-        let mut g = if mono { [planes[0].data[i]; 3] } else { [planes[0].data[i], planes[1].data[i], planes[2].data[i]] };
-        let gm = (g[0] + g[1] + g[2]) / 3.0;
-        g = g.map(|v| gm + (v - gm) * sat);
-        let l = luminance(c[0], c[1], c[2]).clamp(0.0, 1.0);
-        let s = 1.0 - smoothstep(0.0, 0.5, l);
-        let hi = smoothstep(0.5, 1.0, l);
-        let weight = ws * s + wm * (1.0 - s - hi) + wh * hi;
-        let o = [0, 1, 2].map(|k| (c[k] + g[k] * amp * weight).max(0.0));
+        let raw = if look.mono { [planes[0].data[i]; 3] } else { [planes[0].data[i], planes[1].data[i], planes[2].data[i]] };
+        let g = look.color(raw);
+        let weight = look.weight(c);
+        let o = [0, 1, 2].map(|k| look.blend(c[k], g[k] * amp * look.channel_intensity[k] * weight));
         *px = premul(o, a);
     });
     b
@@ -208,97 +334,59 @@ fn dust_scratches(ctx: &EffectCtx, mut b: Buf) -> Buf {
 }
 
 fn remove_grain(ctx: &EffectCtx, mut b: Buf) -> Buf {
-    let amt = ctx.params.f("noiseReduction") as f32;
-    if amt <= 0.0 {
+    let pr = ctx.params;
+    let amt = pr.f("noiseReductionSettings/noiseReduction") as f32;
+    let um_amount = pr.f("unsharpMask/amount") as f32 / 100.0;
+    if amt <= 0.0 && um_amount <= 0.0 {
         return b;
     }
-    let passes = ctx.params.f("passes").round().clamp(1.0, 4.0) as usize;
+    let passes = pr.f("noiseReductionSettings/passes").round().clamp(1.0, 8.0) as usize;
+    let multichannel = pr.e("noiseReductionSettings/mode") == 0;
+    let texture = (pr.f("fineTuning/texture") as f32).clamp(0.0, 1.0);
     let r = (2.0 * b.scale).round().max(1.0) as usize;
     let eps = (0.02 * amt).powi(2);
-    let mut ch = split(&b.img);
-    for c in ch.iter_mut().take(3) {
+    let orig = split(&b.img);
+    let mut ch = orig.clone();
+    if amt > 0.0 {
+        // Multichannel: all channels are guided by the luminance (correlated noise model);
+        // Single Channel: each channel guides itself.
         for _ in 0..passes {
-            *c = guided_filter(c, c, r, eps);
+            let guide = multichannel.then(|| {
+                let (w, h) = (ch[0].w, ch[0].h);
+                Plane { w, h, data: (0..w * h).map(|i| luminance(ch[0].data[i], ch[1].data[i], ch[2].data[i])).collect() }
+            });
+            for c in ch.iter_mut().take(3) {
+                *c = match &guide {
+                    Some(g) => guided_filter(g, c, r, eps),
+                    None => guided_filter(c, c, r, eps),
+                };
+            }
+        }
+        // Texture: let some of the removed fine detail back through.
+        if texture > 0.0 {
+            for k in 0..3 {
+                ch[k] = ch[k].zip_map(&orig[k], |f, o| f + (o - f) * texture);
+            }
         }
     }
-    let alpha = ch[3].clone();
+    // Unsharp Mask: restore edge contrast lost to the degraining.
+    if um_amount > 0.0 {
+        let radius = (pr.f("unsharpMask/radius") * b.scale).max(0.1);
+        let thr = pr.f("unsharpMask/threshold") as f32 / 255.0;
+        for c in ch.iter_mut().take(3) {
+            let low = gauss_plane(c, radius, radius);
+            *c = c.zip_map(&low, |v, l| if (v - l).abs() > thr { v + (v - l) * um_amount } else { v });
+        }
+    }
+    let alpha = orig[3].clone();
     let mut out = join(&ch);
     out.data.par_iter_mut().zip(alpha.data.par_iter()).for_each(|(p, &a)| {
         for c in 0..3 {
-            p[c] = p[c].max(0.0);
+            p[c] = p[c].clamp(0.0, a.max(0.0));
         }
         p[3] = a;
     });
     b.img = out;
-    b
-}
-
-// ---- Turbulent Noise ----
-
-fn overflow(v: f32, mode: u32) -> f32 {
-    match mode {
-        1 => (0.5 + 0.5 * (2.0 * (v - 0.5)).tanh() / 1f32.tanh()).clamp(0.0, 1.0),
-        2 => {
-            let t = v.rem_euclid(2.0);
-            if t > 1.0 { 2.0 - t } else { t }
-        }
-        _ => v.clamp(0.0, 1.0),
-    }
-}
-
-fn turbulent_noise(ctx: &EffectCtx, mut b: Buf) -> Buf {
-    let kind = ctx.params.e("fractalType");
-    let invert = ctx.params.b("invert");
-    let contrast = ctx.params.f("contrast") as f32 / 100.0;
-    let brightness = ctx.params.f("brightness") as f32 / 100.0;
-    let ov = ctx.params.e("overflow");
-    let scale = (ctx.params.f("scale") * b.scale).max(1.0) as f32;
-    let rot = (ctx.params.f("rotation") as f32).to_radians();
-    let octaves = ctx.params.f("complexity").clamp(1.0, 20.0) as f32;
-    let infl = (ctx.params.f("subInfluence") as f32 / 100.0).clamp(0.0, 1.0);
-    let sub = (ctx.params.f("subScaling") as f32 / 100.0).clamp(0.1, 1.0);
-    let evo = ctx.params.f("evolution") as f32 / 360.0;
-    let seed = (ctx.params.f("randomSeed") as i64 as u32) ^ 0x7a3d;
-    let opacity = ctx.params.f("opacity") as f32 / 100.0;
-    let blend = ctx.params.f("blend") as f32 / 100.0;
-    let (sr, cr) = rot.sin_cos();
-    let (ox, oy) = b.to_px(ctx.params.v2("offset"));
-    let n_oct = octaves.ceil() as usize;
-    let frac = octaves - octaves.floor();
-    b.img.rows_mut().for_each(|(y, row)| {
-        for (x, px) in row.iter_mut().enumerate() {
-            let (dx, dy) = (x as f32 + 0.5 - ox as f32, y as f32 + 0.5 - oy as f32);
-            let (mut u, mut v) = ((dx * cr + dy * sr) / scale, (-dx * sr + dy * cr) / scale);
-            if kind == 3 {
-                // Dynamic: domain-warped by a low-frequency field.
-                u += (value_noise(u * 0.5, v * 0.5, evo, seed ^ 0x55) - 0.5) * 1.5;
-                v += (value_noise(u * 0.5, v * 0.5, evo, seed ^ 0xaa) - 0.5) * 1.5;
-            }
-            let (mut sum, mut norm, mut amp, mut f) = (0.0, 0.0, 1.0, 1.0);
-            for o in 0..n_oct {
-                let w = if o + 1 == n_oct && frac > 0.0 { frac } else { 1.0 };
-                let n = value_noise(u * f, v * f, evo + o as f32 * 5.17, seed.wrapping_add(o as u32 * 31));
-                let n = match kind {
-                    1 => 1.0 - (n * 2.0 - 1.0).powi(2),
-                    2 => 1.0 - (n * 2.0 - 1.0).abs(),
-                    _ => n,
-                };
-                sum += n * amp * w;
-                norm += amp * w;
-                amp *= infl;
-                f /= sub;
-            }
-            let mut val = sum / norm.max(1e-6);
-            val = overflow((val - 0.5) * contrast + 0.5 + brightness, ov);
-            if invert {
-                val = 1.0 - val;
-            }
-            let g = [val * opacity, val * opacity, val * opacity, opacity];
-            for c in 0..4 {
-                px[c] = px[c] * blend + g[c] * (1.0 - blend);
-            }
-        }
-    });
     b
 }
 
@@ -307,11 +395,18 @@ fn turbulent_noise(ctx: &EffectCtx, mut b: Buf) -> Buf {
 /// Per-pixel noise in 0..1 that changes smoothly with `phase` (whole units = new pattern).
 #[inline]
 fn phased(x: u32, y: u32, seed: u32, phase: f32) -> f32 {
+    phased_cycle(x, y, seed, phase, 0)
+}
+
+/// [`phased`] whose patterns repeat every `cycle` whole units (0 = never): Cycle Noise.
+#[inline]
+fn phased_cycle(x: u32, y: u32, seed: u32, phase: f32, cycle: i64) -> f32 {
     let k = phase.floor();
     let t = phase - k;
-    let k = k as i64 as u32;
-    let a = hash1(x, y, seed.wrapping_add(k.wrapping_mul(0x632b)));
-    let b = hash1(x, y, seed.wrapping_add(k.wrapping_add(1).wrapping_mul(0x632b)));
+    let k = k as i64;
+    let wrap = |k: i64| if cycle > 0 { k.rem_euclid(cycle) } else { k } as u32;
+    let a = hash1(x, y, seed.wrapping_add(wrap(k).wrapping_mul(0x632b)));
+    let b = hash1(x, y, seed.wrapping_add(wrap(k + 1).wrapping_mul(0x632b)));
     lerp(a, b, t * t * (3.0 - 2.0 * t))
 }
 
@@ -325,9 +420,11 @@ fn noise_alpha(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let ov = ctx.params.e("overflow");
     let seed = (ctx.params.f("randomSeed") as i64 as u32) ^ ctx.seed.wrapping_mul(0x2f1);
     let phase = ctx.params.f("noisePhase") as f32 / 360.0 + if kind >= 2 { ctx.time as f32 } else { 0.0 };
+    let cycle = if ctx.params.b("noiseOptions/cycleNoise") { ctx.params.f("noiseOptions/cycle").round().max(1.0) as i64 } else { 0 };
     b.img.rows_mut().for_each(|(y, row)| {
         for (x, px) in row.iter_mut().enumerate() {
-            let mut n = if kind >= 2 { phased(x as u32, y as u32, seed, phase) } else { phased(x as u32, y as u32, seed, phase.floor()) };
+            let ph = if kind >= 2 { phase } else { phase.floor() };
+            let mut n = phased_cycle(x as u32, y as u32, seed, ph, cycle);
             if kind % 2 == 1 {
                 n *= n;
             }
@@ -434,30 +531,16 @@ pub fn specs() -> Vec<EffectSpec> {
     let mut hls_auto = hls_common();
     hls_auto.push(p("noiseAnimationSpeed", "Noise Animation Speed", num(10.0), slider(0.0, 1000.0, 0.0, 30.0, 1)));
     vec![
-        spec(
-            "ec.noise.addgrain",
-            "Add Grain",
-            vec![
-                p("intensity", "Intensity", num(1.0), slider(0.0, 100.0, 0.0, 10.0, 2)),
-                p("size", "Size", num(1.0), slider(0.05, 100.0, 0.1, 10.0, 2)),
-                p("softness", "Softness", num(0.0), slider(0.0, 100.0, 0.0, 5.0, 2)),
-                p("aspectRatio", "Aspect Ratio", num(1.0), slider(0.05, 20.0, 0.25, 4.0, 2)),
-                p("monochromatic", "Monochromatic", Value::Bool(false), ParamUi::Checkbox),
-                p("saturation", "Saturation", num(1.0), slider(0.0, 10.0, 0.0, 2.0, 2)),
-                p("shadows", "Shadows", num(1.0), slider(0.0, 10.0, 0.0, 2.0, 2)),
-                p("midtones", "Midtones", num(1.0), slider(0.0, 10.0, 0.0, 2.0, 2)),
-                p("highlights", "Highlights", num(1.0), slider(0.0, 10.0, 0.0, 2.0, 2)),
-                p("randomSeed", "Random Seed", num(0.0), slider(0.0, 100000.0, 0.0, 1000.0, 0)),
-                p("animationSpeed", "Animation Speed", num(1.0), slider(0.0, 100.0, 0.0, 5.0, 2)),
-            ],
-            add_grain,
-        ),
+        {
+            let (tweaking, color, application, animation) = grain_params();
+            spec("ec.noise.addgrain", "Add Grain", [tweaking, color, application, animation].into_iter().flatten().collect(), add_grain)
+        },
         spec(
             "ec.noise.median",
             "Median",
             vec![
                 p("radius", "Radius", num(0.0), slider(0.0, 255.0, 0.0, 50.0, 0)),
-                p("operateOnAlpha", "Operate on Alpha Channel", Value::Bool(false), ParamUi::Checkbox),
+                p("operateOnAlpha", "Operate On Alpha Channel", Value::Bool(false), ParamUi::Checkbox),
             ],
             median,
         ),
@@ -467,7 +550,7 @@ pub fn specs() -> Vec<EffectSpec> {
             vec![
                 p("radius", "Radius", num(1.0), slider(0.0, 255.0, 0.0, 50.0, 0)),
                 p("threshold", "Threshold", num(0.0), slider(0.0, 255.0, 0.0, 255.0, 0)),
-                p("operateOnAlpha", "Operate on Alpha Channel", Value::Bool(false), ParamUi::Checkbox),
+                p("operateOnAlpha", "Operate On Alpha Channel", Value::Bool(false), ParamUi::Checkbox),
             ],
             dust_scratches,
         ),
@@ -475,32 +558,15 @@ pub fn specs() -> Vec<EffectSpec> {
             "ec.noise.removegrain",
             "Remove Grain",
             vec![
-                p("noiseReduction", "Noise Reduction", num(1.0), slider(0.0, 5.0, 0.0, 5.0, 2)),
-                p("passes", "Passes", num(1.0), slider(1.0, 4.0, 1.0, 4.0, 0)),
+                p("noiseReductionSettings/noiseReduction", "Noise Reduction", num(1.0), slider(0.0, 5.0, 0.0, 5.0, 2)),
+                p("noiseReductionSettings/passes", "Passes", num(1.0), slider(1.0, 8.0, 1.0, 4.0, 0)),
+                p("noiseReductionSettings/mode", "Mode", Value::Enum(0), popup(&["Multichannel", "Single Channel"])),
+                p("fineTuning/texture", "Texture", num(0.0), slider(0.0, 1.0, 0.0, 1.0, 2)),
+                p("unsharpMask/amount", "Amount", num(0.0), slider(0.0, 500.0, 0.0, 200.0, 1)),
+                p("unsharpMask/radius", "Radius", num(1.0), slider(0.1, 100.0, 0.1, 10.0, 1)),
+                p("unsharpMask/threshold", "Threshold", num(0.0), slider(0.0, 255.0, 0.0, 255.0, 0)),
             ],
             remove_grain,
-        ),
-        spec(
-            "ec.noise.turbulent",
-            "Turbulent Noise",
-            vec![
-                p("fractalType", "Fractal Type", Value::Enum(1), popup(&["Basic", "Turbulent Smooth", "Turbulent Sharp", "Dynamic"])),
-                p("invert", "Invert", Value::Bool(false), ParamUi::Checkbox),
-                p("contrast", "Contrast", num(100.0), slider(0.0, 10000.0, 0.0, 400.0, 1)),
-                p("brightness", "Brightness", num(0.0), slider(-10000.0, 10000.0, -200.0, 200.0, 1)),
-                p("overflow", "Overflow", Value::Enum(0), popup(&["Clip", "Soft Clamp", "Wrap Back"])),
-                p("scale", "Scale", num(100.0), slider(1.0, 10000.0, 20.0, 600.0, 1)),
-                p("rotation", "Rotation", num(0.0), ParamUi::Angle),
-                p("offset", "Offset Turbulence", Value::Vec2([0.5, 0.5]), ParamUi::Point),
-                p("complexity", "Complexity", num(6.0), slider(1.0, 20.0, 1.0, 10.0, 1)),
-                p("subInfluence", "Sub Influence (%)", num(70.0), slider(0.0, 100.0, 25.0, 100.0, 1)),
-                p("subScaling", "Sub Scaling", num(56.0), slider(10.0, 100.0, 25.0, 100.0, 1)),
-                p("evolution", "Evolution", num(0.0), ParamUi::Angle),
-                p("randomSeed", "Random Seed", num(0.0), slider(0.0, 100000.0, 0.0, 1000.0, 0)),
-                p("opacity", "Opacity", num(100.0), pct()),
-                p("blend", "Blend With Original", num(0.0), pct()),
-            ],
-            turbulent_noise,
         ),
         spec(
             "ec.noise.noisealpha",
@@ -512,6 +578,8 @@ pub fn specs() -> Vec<EffectSpec> {
                 p("overflow", "Overflow", Value::Enum(0), popup(&["Clip", "Wrap Back", "Wrap"])),
                 p("randomSeed", "Random Seed", num(0.0), slider(0.0, 100000.0, 0.0, 1000.0, 0)),
                 p("noisePhase", "Noise Phase", num(0.0), ParamUi::Angle),
+                p("noiseOptions/cycleNoise", "Cycle Noise", Value::Bool(false), ParamUi::Checkbox),
+                p("noiseOptions/cycle", "Cycle", num(1.0), slider(1.0, 100.0, 1.0, 30.0, 0)),
             ],
             noise_alpha,
         ),
@@ -594,9 +662,9 @@ mod tests {
 
     #[test]
     fn turbulent_noise_seeded() {
-        let a = run("ec.noise.turbulent", &[("randomSeed", num(4.0))], gray(24, 16, 0.0), 0.0);
-        let b = run("ec.noise.turbulent", &[("randomSeed", num(4.0))], gray(24, 16, 0.0), 0.0);
-        let c = run("ec.noise.turbulent", &[("randomSeed", num(5.0))], gray(24, 16, 0.0), 0.0);
+        let a = run("ec.noise.turbulent", &[("evolutionOptions/randomSeed", num(4.0))], gray(24, 16, 0.0), 0.0);
+        let b = run("ec.noise.turbulent", &[("evolutionOptions/randomSeed", num(4.0))], gray(24, 16, 0.0), 0.0);
+        let c = run("ec.noise.turbulent", &[("evolutionOptions/randomSeed", num(5.0))], gray(24, 16, 0.0), 0.0);
         assert_eq!(a.img, b.img);
         assert_ne!(a.img, c.img);
         assert!(a.img.data.iter().all(|p| (0.0..=1.0).contains(&p[0])));
@@ -631,7 +699,7 @@ mod tests {
 
     #[test]
     fn add_grain_keeps_flat_mean() {
-        let out = run("ec.noise.addgrain", &[("intensity", num(2.0))], gray(64, 64, 0.5), 0.0);
+        let out = run("ec.noise.addgrain", &[("tweaking/intensity", num(2.0)), ("application/blendingMode", Value::Enum(2))], gray(64, 64, 0.5), 0.0);
         let mean: f32 = out.img.data.iter().map(|p| p[0]).sum::<f32>() / out.img.data.len() as f32;
         assert!((mean - 0.5).abs() < 0.05, "{mean}");
         assert!(out.img.data.iter().any(|p| (p[0] - 0.5).abs() > 0.01));
@@ -645,7 +713,79 @@ mod tests {
             *p = [0.5 + n, 0.5 + n, 0.5 + n, 1.0];
         }
         let var = |im: &Image| im.data.iter().map(|p| (p[0] - 0.5).powi(2)).sum::<f32>();
-        let out = run("ec.noise.removegrain", &[("noiseReduction", num(3.0))], img.clone(), 0.0);
+        let out = run("ec.noise.removegrain", &[("noiseReductionSettings/noiseReduction", num(3.0))], img.clone(), 0.0);
         assert!(var(&out.img) < var(&img) * 0.5);
+        // Single Channel also smooths; Texture lets detail back; Unsharp Mask restores edges.
+        let single = run(
+            "ec.noise.removegrain",
+            &[("noiseReductionSettings/noiseReduction", num(3.0)), ("noiseReductionSettings/mode", Value::Enum(1))],
+            img.clone(),
+            0.0,
+        );
+        assert!(var(&single.img) < var(&img) * 0.5);
+        let tex = run("ec.noise.removegrain", &[("noiseReductionSettings/noiseReduction", num(3.0)), ("fineTuning/texture", num(1.0))], img.clone(), 0.0);
+        assert!((var(&tex.img) - var(&img)).abs() < 1e-3);
+        let mut edge = gray(16, 8, 0.2);
+        for y in 0..8 {
+            for x in 8..16 {
+                edge.set(x, y, [0.8, 0.8, 0.8, 1.0]);
+            }
+        }
+        let sharp = run(
+            "ec.noise.removegrain",
+            &[("noiseReductionSettings/noiseReduction", num(0.0)), ("unsharpMask/amount", num(100.0)), ("unsharpMask/radius", num(2.0))],
+            edge.clone(),
+            0.0,
+        );
+        assert!(sharp.img.get(8, 4)[0] > 0.8 && sharp.img.get(7, 4)[0] < 0.2);
+    }
+
+    #[test]
+    fn add_grain_blending_modes_tint_and_channel_controls() {
+        let base = gray(48, 48, 0.4);
+        let a = run("ec.noise.addgrain", &[("tweaking/intensity", num(3.0))], base.clone(), 0.0);
+        let screen = run("ec.noise.addgrain", &[("tweaking/intensity", num(3.0)), ("application/blendingMode", Value::Enum(3))], base.clone(), 0.0);
+        // Screen only ever lightens.
+        assert!(screen.img.data.iter().all(|p| p[0] >= 0.4 - 1e-6));
+        assert_ne!(a.img, screen.img);
+        // Zero red intensity leaves red untouched.
+        let nored = run("ec.noise.addgrain", &[("tweaking/intensity", num(3.0)), ("tweaking/channelIntensities/redIntensity", num(0.0))], base.clone(), 0.0);
+        assert!(nored.img.data.iter().all(|p| (p[0] - 0.4).abs() < 1e-6));
+        assert!(nored.img.data.iter().any(|p| (p[1] - 0.4).abs() > 1e-3));
+        // A full red tint on monochromatic grain puts the grain in red only... mostly.
+        let tinted = run(
+            "ec.noise.addgrain",
+            &[
+                ("tweaking/intensity", num(3.0)),
+                ("color/monochromatic", Value::Bool(true)),
+                ("color/tintAmount", num(1.0)),
+                ("color/tintColor", crate::col(1.0, 0.0, 0.0)),
+            ],
+            base,
+            0.0,
+        );
+        assert!(tinted.img.data.iter().all(|p| (p[1] - 0.4).abs() < 1e-6));
+        assert!(tinted.img.data.iter().any(|p| (p[0] - 0.4).abs() > 1e-3));
+    }
+
+    #[test]
+    fn noise_alpha_cycle_repeats() {
+        let at = |phase: f64| {
+            run(
+                "ec.noise.noisealpha",
+                &[
+                    ("amount", num(60.0)),
+                    ("noise", Value::Enum(2)),
+                    ("noisePhase", num(phase)),
+                    ("noiseOptions/cycleNoise", Value::Bool(true)),
+                    ("noiseOptions/cycle", num(3.0)),
+                ],
+                Image::filled(12, 12, [0.25, 0.25, 0.25, 0.5]),
+                0.0,
+            )
+            .img
+        };
+        assert_eq!(at(90.0), at(90.0 + 3.0 * 360.0));
+        assert_ne!(at(90.0), at(90.0 + 360.0));
     }
 }

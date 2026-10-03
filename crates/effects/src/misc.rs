@@ -100,13 +100,39 @@ fn unsharp(ctx: &EffectCtx, mut b: Buf) -> Buf {
     b
 }
 
+/// Position (0 = Color A, 1 = Color B) in Glow's A & B gradient for brightness `l`: `loops`
+/// cycles starting at `phase` (revolutions), shaped by Color Looping (0 Sawtooth A>B,
+/// 1 Sawtooth B>A, 2 Triangle A>B>A, 3 Triangle B>A>B) and biased so `mid` maps to the middle.
+pub(crate) fn glow_ab_t(l: f32, looping: u32, loops: f32, phase: f32, mid: f32) -> f32 {
+    let u = l.clamp(0.0, 1.0) * loops.max(0.0) + phase;
+    let mut t = u - u.floor();
+    if u > 0.0 && t <= 0.0 {
+        t = 1.0;
+    }
+    let tri = 1.0 - (2.0 * t - 1.0).abs();
+    let t = match looping {
+        0 => t,
+        1 => 1.0 - t,
+        3 => 1.0 - tri,
+        _ => tri,
+    };
+    let m = mid.clamp(0.01, 0.99);
+    t.max(0.0).powf(0.5f32.ln() / m.ln())
+}
+
 fn glow(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let thr = ctx.params.f("threshold") as f32 / 100.0;
     let radius = ctx.params.f("radius") * b.scale;
     let intensity = ctx.params.f("intensity") as f32;
+    let alpha_based = ctx.params.e("based") == 0;
     let use_colors = ctx.params.e("colors") == 1;
+    let looping = ctx.params.e("colorLooping");
+    let loops = ctx.params.f("colorLoops") as f32;
+    let phase = (ctx.params.f("colorPhase") / 360.0) as f32;
+    let mid = ctx.params.f("abMidpoint") as f32 / 100.0;
     let ca = ctx.params.color("colorA");
     let cb = ctx.params.color("colorB");
+    let (kx, ky) = dims_xy(ctx.params.e("glowDimensions"));
     if !ctx.adjustment {
         b.pad((radius * 1.5).ceil() as u32 + 2);
     }
@@ -118,10 +144,11 @@ fn glow(ctx: &EffectCtx, mut b: Buf) -> Buf {
             *px = [0.0; 4];
             return;
         }
-        let l = luminance(px[0] / a, px[1] / a, px[2] / a);
+        // Glow Based On: brightness from the colours, or from the alpha channel.
+        let l = if alpha_based { a } else { luminance(px[0] / a, px[1] / a, px[2] / a) };
         let k = ((l - thr) / (1.0 - thr).max(1e-3)).clamp(0.0, 1.0);
         if use_colors {
-            let t = l.clamp(0.0, 1.0);
+            let t = glow_ab_t(l, looping, loops, phase, mid);
             let c = [ca[0] + (cb[0] - ca[0]) * t, ca[1] + (cb[1] - ca[1]) * t, ca[2] + (cb[2] - ca[2]) * t];
             *px = [c[0] * k * a, c[1] * k * a, c[2] * k * a, k * a];
         } else {
@@ -129,21 +156,27 @@ fn glow(ctx: &EffectCtx, mut b: Buf) -> Buf {
         }
     });
     let s = (radius / 2.0).max(0.5);
-    let blurred = gaussian_blur(&bright, s, s, false);
-    let composite_behind = ctx.params.e("operation") == 1;
+    let blurred = gaussian_blur(&bright, s * kx, s * ky, false);
+    let mode = ctx.params.e("operation");
     b.img.data.par_iter_mut().zip(blurred.data.par_iter()).for_each(|(o, g)| {
         let g = g.map(|v| v * intensity);
-        if composite_behind {
-            let k = 1.0 - o[3];
-            for c in 0..4 {
-                o[c] += g[c] * k;
+        match mode {
+            // Behind: the glow shows only where the original is transparent.
+            1 => {
+                let k = 1.0 - o[3];
+                for c in 0..4 {
+                    o[c] += g[c] * k;
+                }
             }
-        } else {
-            // Add (screen-like add on premultiplied colour; alpha grows by the glow's alpha).
-            for c in 0..3 {
-                o[c] += g[c];
+            // None: the glow alone.
+            2 => *o = [g[0], g[1], g[2], g[3]],
+            // On Top: add (screen-like add on premultiplied colour; alpha grows by the glow's alpha).
+            _ => {
+                for c in 0..3 {
+                    o[c] += g[c];
+                }
+                o[3] = (o[3] + g[3] * (1.0 - o[3])).min(1.0);
             }
-            o[3] = (o[3] + g[3] * (1.0 - o[3])).min(1.0);
         }
         o[3] = o[3].clamp(0.0, 1.0);
     });
@@ -185,12 +218,66 @@ fn drop_shadow(ctx: &EffectCtx, mut b: Buf) -> Buf {
     b
 }
 
+/// Invert's Channel options (After Effects order): RGB / HLS / YIQ groups, each followed by its
+/// single channels, then Alpha.
+pub const INVERT_CHANNELS: [&str; 13] =
+    ["RGB", "Red", "Green", "Blue", "HLS", "Hue", "Lightness", "Saturation", "YIQ", "Luminance", "In Phase Chrominance", "Quadrature Chrominance", "Alpha"];
+/// Index of "Alpha" in [`INVERT_CHANNELS`].
+pub const INVERT_ALPHA: u32 = 12;
+
+fn rgb_to_yiq(c: [f32; 3]) -> [f32; 3] {
+    [0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2], 0.596 * c[0] - 0.274 * c[1] - 0.322 * c[2], 0.211 * c[0] - 0.523 * c[1] + 0.312 * c[2]]
+}
+
+fn yiq_to_rgb(c: [f32; 3]) -> [f32; 3] {
+    [c[0] + 0.956 * c[1] + 0.621 * c[2], c[0] - 0.272 * c[1] - 0.647 * c[2], c[0] - 1.106 * c[1] + 1.703 * c[2]]
+}
+
+/// Invert straight colour `s` in the colour space / channel `ch` (an [`INVERT_CHANNELS`] index
+/// other than Alpha).
+fn invert_color(ch: u32, s: [f32; 3]) -> [f32; 3] {
+    match ch {
+        1 => [1.0 - s[0], s[1], s[2]],
+        2 => [s[0], 1.0 - s[1], s[2]],
+        3 => [s[0], s[1], 1.0 - s[2]],
+        4..=7 => {
+            let (mut h, mut sat, mut l) = effectcraft_color::rgb_to_hsl(s[0], s[1], s[2]);
+            if matches!(ch, 4 | 5) {
+                h = 1.0 - h;
+            }
+            if matches!(ch, 4 | 6) {
+                l = 1.0 - l;
+            }
+            if matches!(ch, 4 | 7) {
+                sat = 1.0 - sat;
+            }
+            let (r, g, b) = effectcraft_color::hsl_to_rgb(h, sat, l);
+            [r, g, b]
+        }
+        8..=11 => {
+            // Y inverts around 1, the (signed) chrominance axes around 0.
+            let mut q = rgb_to_yiq(s);
+            if matches!(ch, 8 | 9) {
+                q[0] = 1.0 - q[0];
+            }
+            if matches!(ch, 8 | 10) {
+                q[1] = -q[1];
+            }
+            if matches!(ch, 8 | 11) {
+                q[2] = -q[2];
+            }
+            yiq_to_rgb(q).map(|v| v.max(0.0))
+        }
+        _ => [1.0 - s[0], 1.0 - s[1], 1.0 - s[2]],
+    }
+}
+
 fn invert(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let ch = ctx.params.e("channel");
     let blend = 1.0 - ctx.params.f("blend") as f32 / 100.0;
     b.img.data.par_iter_mut().for_each(|px| {
         let a = px[3];
-        if ch == 4 {
+        if ch == INVERT_ALPHA {
             let na = 1.0 - a;
             let k = if a > 0.0 { na / a } else { 0.0 };
             let inv = [px[0] * k, px[1] * k, px[2] * k, na];
@@ -203,13 +290,7 @@ fn invert(ctx: &EffectCtx, mut b: Buf) -> Buf {
             return;
         }
         let s = [px[0] / a, px[1] / a, px[2] / a];
-        let mut o = s;
-        match ch {
-            1 => o[0] = 1.0 - s[0],
-            2 => o[1] = 1.0 - s[1],
-            3 => o[2] = 1.0 - s[2],
-            _ => o = [1.0 - s[0], 1.0 - s[1], 1.0 - s[2]],
-        }
+        let o = invert_color(ch, s);
         for c in 0..3 {
             px[c] = (s[c] + (o[c] - s[c]) * blend) * a;
         }
@@ -224,11 +305,38 @@ fn mosaic(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let cw = (w as f64 / hb as f64).max(1.0);
     let ch = (h as f64 / vb as f64).max(1.0);
     let src = b.img.clone();
+    if ctx.params.b("sharpColors") {
+        // Each tile takes the colour of the pixel at its centre.
+        b.img.rows_mut().for_each(|(y, row)| {
+            let cy = ((y as f64 / ch).floor() + 0.5) * ch;
+            for (x, px) in row.iter_mut().enumerate() {
+                let cx = ((x as f64 / cw).floor() + 0.5) * cw;
+                *px = src.get_clamped(cx as i64, cy as i64);
+            }
+        });
+        return b;
+    }
+    // Each tile takes the average colour of its region.
+    let (nx, ny) = ((w as f64 / cw).ceil() as usize, (h as f64 / ch).ceil() as usize);
+    let mut sums = vec![[0.0f64; 5]; nx * ny];
+    for y in 0..h {
+        let ty = ((y as f64 / ch) as usize).min(ny - 1);
+        for x in 0..w {
+            let tx = ((x as f64 / cw) as usize).min(nx - 1);
+            let p = src.get(x as i64, y as i64);
+            let s = &mut sums[ty * nx + tx];
+            for c in 0..4 {
+                s[c] += p[c] as f64;
+            }
+            s[4] += 1.0;
+        }
+    }
     b.img.rows_mut().for_each(|(y, row)| {
-        let cy = ((y as f64 / ch).floor() + 0.5) * ch;
+        let ty = ((y as f64 / ch) as usize).min(ny - 1);
         for (x, px) in row.iter_mut().enumerate() {
-            let cx = ((x as f64 / cw).floor() + 0.5) * cw;
-            *px = src.get_clamped(cx as i64, cy as i64);
+            let tx = ((x as f64 / cw) as usize).min(nx - 1);
+            let s = sums[ty * nx + tx];
+            *px = [0, 1, 2, 3].map(|c| (s[c] / s[4].max(1.0)) as f32);
         }
     });
     b
@@ -251,6 +359,7 @@ fn threshold(ctx: &EffectCtx, mut b: Buf) -> Buf {
 
 fn find_edges(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let inv = ctx.params.b("invert");
+    let blend = ctx.params.f("blend") as f32 / 100.0;
     let src = b.img.clone();
     b.img.rows_mut().for_each(|(y, row)| {
         for (x, px) in row.iter_mut().enumerate() {
@@ -263,16 +372,22 @@ fn find_edges(ctx: &EffectCtx, mut b: Buf) -> Buf {
             let e = (gx * gx + gy * gy).sqrt().min(1.0);
             let v = if inv { e } else { 1.0 - e };
             let a = px[3];
-            *px = [v * a, v * a, v * a, a];
+            *px = blend_with(*px, [v * a, v * a, v * a, a], blend);
         }
     });
     b
+}
+
+/// Blend With Original: `orig` over the effect result `fx` by `k` (0 = effect only).
+fn blend_with(orig: [f32; 4], fx: [f32; 4], k: f32) -> [f32; 4] {
+    [0, 1, 2, 3].map(|c| fx[c] + (orig[c] - fx[c]) * k)
 }
 
 fn emboss(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let ang = ctx.params.f("direction").to_radians();
     let relief = ctx.params.f("relief") * b.scale;
     let contrast = ctx.params.f("contrast") as f32 / 100.0;
+    let blend = ctx.params.f("blend") as f32 / 100.0;
     let (dx, dy) = (ang.cos() * relief, -ang.sin() * relief);
     let src = b.img.clone();
     b.img.rows_mut().for_each(|(y, row)| {
@@ -282,7 +397,7 @@ fn emboss(ctx: &EffectCtx, mut b: Buf) -> Buf {
             let d = luminance(a[0], a[1], a[2]) - luminance(c[0], c[1], c[2]);
             let v = (0.5 + d * contrast).clamp(0.0, 1.0);
             let al = px[3];
-            *px = [v * al, v * al, v * al, al];
+            *px = blend_with(*px, [v * al, v * al, v * al, al], blend);
         }
     });
     b
@@ -291,6 +406,8 @@ fn emboss(ctx: &EffectCtx, mut b: Buf) -> Buf {
 fn noise(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let amt = ctx.params.f("amount") as f32 / 100.0;
     let color = ctx.params.b("color");
+    // Old saves lack the switch: clipping was always on.
+    let clip = ctx.params.get("clip").is_none_or(|v| v.as_bool());
     let frame_seed = (ctx.time * 1000.0) as u32 ^ ctx.seed;
     let w = b.img.width;
     b.img.rows_mut().for_each(|(y, row)| {
@@ -306,9 +423,16 @@ fn noise(ctx: &EffectCtx, mut b: Buf) -> Buf {
                 let v = n(0);
                 (v, v, v)
             };
-            px[0] = (px[0] + r * a).clamp(0.0, a);
-            px[1] = (px[1] + g * a).clamp(0.0, a);
-            px[2] = (px[2] + bl * a).clamp(0.0, a);
+            if clip {
+                px[0] = (px[0] + r * a).clamp(0.0, a);
+                px[1] = (px[1] + g * a).clamp(0.0, a);
+                px[2] = (px[2] + bl * a).clamp(0.0, a);
+            } else {
+                // Unclipped: values past black / white wrap around (integer overflow look).
+                for (c, n) in [r, g, bl].into_iter().enumerate() {
+                    px[c] = ((px[c] / a + n).rem_euclid(1.0)) * a;
+                }
+            }
         }
     });
     b
@@ -346,8 +470,12 @@ fn radial_wipe(ctx: &EffectCtx, mut b: Buf) -> Buf {
     b.img.rows_mut().for_each(|(y, row)| {
         for (x, px) in row.iter_mut().enumerate() {
             let a = ((x as f64 + 0.5 - c.0).atan2(-(y as f64 + 0.5 - c.1)).to_degrees() - start).rem_euclid(360.0);
-            let a = if dir == 1 { 360.0 - a } else { a };
-            let edge = done * 360.0;
+            // Both: the wipe opens in both directions from the start angle at once.
+            let (a, edge) = match dir {
+                1 => (360.0 - a, done * 360.0),
+                2 => (a.min(360.0 - a), done * 180.0),
+                _ => (a, done * 360.0),
+            };
             let k = ((a - edge) / feather + 0.5).clamp(0.0, 1.0) as f32;
             for ch in px.iter_mut() {
                 *ch *= k;
@@ -416,6 +544,8 @@ pub fn specs() -> Vec<EffectSpec> {
                 p("amount", "Amount", num(10.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
                 p("center", "Center", Value::Vec2([0.5, 0.5]), ParamUi::Point),
                 p("type", "Type", Value::Enum(0), popup(&["Spin", "Zoom"])),
+                // Our blur is always fully anti-aliased; the choice is kept for compatibility.
+                p("antialiasing", "Antialiasing (Best Quality)", Value::Enum(0), popup(&["Low", "High"])),
             ],
             radial,
         ),
@@ -442,8 +572,13 @@ pub fn specs() -> Vec<EffectSpec> {
                 p("intensity", "Glow Intensity", num(1.0), slider(0.0, 255.0, 0.0, 4.0, 1)),
                 p("operation", "Composite Original", Value::Enum(0), popup(&["On Top", "Behind", "None"])),
                 p("colors", "Glow Colors", Value::Enum(0), popup(&["Original Colors", "A & B Colors"])),
+                p("colorLooping", "Color Looping", Value::Enum(2), popup(&["Sawtooth A>B", "Sawtooth B>A", "Triangle A>B>A", "Triangle B>A>B"])),
+                p("colorLoops", "Color Loops", num(1.0), slider(1.0, 127.0, 1.0, 10.0, 1)),
+                p("colorPhase", "Color Phase", num(0.0), ParamUi::Angle),
+                p("abMidpoint", "A & B Midpoint", num(50.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
                 p("colorA", "Color A", col(1.0, 1.0, 1.0), ParamUi::Color),
                 p("colorB", "Color B", col(0.0, 0.0, 0.0), ParamUi::Color),
+                p("glowDimensions", "Glow Dimensions", Value::Enum(0), dims()),
             ],
             glow,
         ),
@@ -454,12 +589,19 @@ pub fn specs() -> Vec<EffectSpec> {
             vec![
                 p("horizontal", "Horizontal Blocks", num(10.0), slider(1.0, 4000.0, 1.0, 200.0, 0)),
                 p("vertical", "Vertical Blocks", num(10.0), slider(1.0, 4000.0, 1.0, 200.0, 0)),
+                p("sharpColors", "Sharp Colors", Value::Bool(false), ParamUi::Checkbox),
             ],
             mosaic,
         ),
         spec("ec.stylize.posterize", "Posterize", "Stylize", vec![p("level", "Level", num(6.0), slider(2.0, 255.0, 2.0, 32.0, 0))], posterize),
         spec("ec.stylize.threshold", "Threshold", "Stylize", vec![p("level", "Level", num(128.0), slider(0.0, 255.0, 0.0, 255.0, 0))], threshold),
-        spec("ec.stylize.findedges", "Find Edges", "Stylize", vec![p("invert", "Invert", Value::Bool(false), ParamUi::Checkbox)], find_edges),
+        spec(
+            "ec.stylize.findedges",
+            "Find Edges",
+            "Stylize",
+            vec![p("invert", "Invert", Value::Bool(false), ParamUi::Checkbox), p("blend", "Blend With Original", num(0.0), slider(0.0, 100.0, 0.0, 100.0, 0))],
+            find_edges,
+        ),
         spec(
             "ec.stylize.emboss",
             "Emboss",
@@ -468,6 +610,7 @@ pub fn specs() -> Vec<EffectSpec> {
                 p("direction", "Direction", num(45.0), ParamUi::Angle),
                 p("relief", "Relief", num(1.5), slider(0.0, 10.0, 0.0, 10.0, 2)),
                 p("contrast", "Contrast", num(100.0), slider(0.0, 500.0, 0.0, 500.0, 0)),
+                p("blend", "Blend With Original", num(0.0), slider(0.0, 100.0, 0.0, 100.0, 0)),
             ],
             emboss,
         ),
@@ -490,7 +633,7 @@ pub fn specs() -> Vec<EffectSpec> {
             "Invert",
             "Channel",
             vec![
-                p("channel", "Channel", Value::Enum(0), popup(&["RGB", "Red", "Green", "Blue", "Alpha"])),
+                p("channel", "Channel", Value::Enum(0), popup(&INVERT_CHANNELS)),
                 p("blend", "Blend With Original", num(0.0), slider(0.0, 100.0, 0.0, 100.0, 0)),
             ],
             invert,
@@ -502,6 +645,7 @@ pub fn specs() -> Vec<EffectSpec> {
             vec![
                 p("amount", "Amount of Noise", num(0.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
                 p("color", "Use Color Noise", Value::Bool(true), ParamUi::Checkbox),
+                p("clip", "Clip Result Values", Value::Bool(true), ParamUi::Checkbox),
             ],
             noise,
         ),
