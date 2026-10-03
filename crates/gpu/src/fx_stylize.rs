@@ -117,7 +117,7 @@ pub(crate) fn apply(e: &mut Enc, id: &str, ctx: &EffectCtx, b: GBuf) -> Option<G
 
 /// Run a same-size per-pixel kernel over the buffer.
 fn run(e: &mut Enc, entry: &str, p: &Params, mut b: GBuf, data: Option<&wgpu::Buffer>) -> Option<GBuf> {
-    let out = e.image(b.img.width, b.img.height);
+    let out = e.scratch(b.img.width, b.img.height);
     e.pixels(entry, p, &b.img, None, &out, data);
     b.img = out;
     Some(b)
@@ -486,11 +486,7 @@ fn ripple_pulse(e: &mut Enc, ctx: &EffectCtx, b: GBuf) -> Option<GBuf> {
 }
 
 fn power_pin(e: &mut Enc, ctx: &EffectCtx, mut b: GBuf) -> Option<GBuf> {
-    // Perspective below 100 % (a bilinear inverse by Newton iterations with finite
-    // differences) renders on the CPU.
-    if ctx.params.f("perspective") / 100.0 < 1.0 {
-        return None;
-    }
+    let persp = (ctx.params.f("perspective") / 100.0).clamp(0.0, 1.0);
     let (lw, lh) = (ctx.layer_size[0].max(1.0), ctx.layer_size[1].max(1.0));
     let ex = [ctx.params.f("expandTop"), ctx.params.f("expandLeft"), ctx.params.f("expandRight"), ctx.params.f("expandBottom")];
     let (x0, y0) = (-ex[1] / 100.0 * lw, -ex[0] / 100.0 * lh);
@@ -522,6 +518,13 @@ fn power_pin(e: &mut Enc, ctx: &EffectCtx, mut b: GBuf) -> Option<GBuf> {
             p.f[4] = r[2];
             p.f[5] = [x0 as f32, y0 as f32, (x1 - x0) as f32, (y1 - y0) as f32];
             p.f[6] = [sc as f32, off[0] as f32, off[1] as f32, 0.0];
+            if persp < 1.0 {
+                let rel = |i: usize| [(q[i].x - q[0].x) as f32, (q[i].y - q[0].y) as f32];
+                let (q1, q2, q3) = (rel(1), rel(2), rel(3));
+                p.f[7] = [q[0].x as f32, q[0].y as f32, persp as f32, 1.0];
+                p.f[8] = [q1[0], q1[1], q2[0], q2[1]];
+                p.f[9] = [q3[0], q3[1], 0.0, 0.0];
+            }
         },
         b,
         None,
@@ -642,7 +645,7 @@ fn motion_tile(e: &mut Enc, ctx: &EffectCtx, b: GBuf) -> Option<GBuf> {
     p.f[0] = [phase as f32, (lw * s) as f32, (lh * s) as f32, 0.0];
     p.f[1] = [b.offset[0] as f32, b.offset[1] as f32, 0.0, 0.0];
     let buf = e.data(&data);
-    let out = e.image(nw, nh);
+    let out = e.scratch(nw, nh);
     e.pixels("fxs_motiontile", &p, &b.img, None, &out, Some(&buf));
     Some(GBuf { img: out, offset: noff, scale: s })
 }
@@ -676,7 +679,7 @@ fn repetile(e: &mut Enc, ctx: &EffectCtx, b: GBuf) -> Option<GBuf> {
     p.u[0] = [nw, ctx.params.e("tiling"), 0, 0];
     p.f[0] = [x0 as f32, y0 as f32, w as f32, h as f32];
     let buf = e.data(&data);
-    let out = e.image(nw, nh);
+    let out = e.scratch(nw, nh);
     e.pixels("fxs_repetile", &p, &b.img, None, &out, Some(&buf));
     Some(GBuf { img: out, offset: [l, u], scale: s })
 }
@@ -814,7 +817,7 @@ fn roughen_edges(e: &mut Enc, ctx: &EffectCtx, mut b: GBuf) -> Option<GBuf> {
     p.f[1] = [fm, evo, c, evo_w];
     p.f[2] = [oct + extra, infl, im, sharp];
     p.f[3] = [ec[0], ec[1], ec[2], sm];
-    let out = e.image(b.img.width, b.img.height);
+    let out = e.scratch(b.img.width, b.img.height);
     e.pixels("fxs_roughen", &p, &b.img, Some(&d), &out, None);
     b.img = out;
     Some(b)
@@ -855,7 +858,7 @@ fn texturize(e: &mut Enc, ctx: &EffectCtx, mut b: GBuf) -> Option<GBuf> {
     let hgt = gaussian_blur(e, &luma, s, s, true);
     let mut p = Params::default();
     p.f[0] = [ang.cos() as f32, -ang.sin() as f32, k, 0.0];
-    let out = e.image(b.img.width, b.img.height);
+    let out = e.scratch(b.img.width, b.img.height);
     e.pixels("fxs_texturize", &p, &b.img, Some(&hgt), &out, None);
     b.img = out;
     Some(b)
@@ -937,7 +940,7 @@ pub(crate) fn glow(e: &mut Enc, ctx: &EffectCtx, mut b: GBuf) -> Option<GBuf> {
     let glow_op = effectcraft_effects::glow_operation(ctx);
     let mut p = Params::default();
     p.f[0][0] = intensity;
-    let out = e.image(b.img.width, b.img.height);
+    let out = e.scratch(b.img.width, b.img.height);
     if operation == 0 && glow_op != BlendMode::Add {
         p.u[0][0] = ops::mode_id(glow_op);
         e.pixels("fxs_glow_op", &p, &b.img, Some(&blurred), &out, None);
@@ -995,7 +998,7 @@ pub(crate) fn transform(e: &mut Enc, ctx: &EffectCtx, mut b: GBuf) -> Option<GBu
     }
     let mut p = Params::default();
     p.f[0][0] = count as f32;
-    let out = e.image(w, h);
+    let out = e.scratch(w, h);
     e.pixels("fxs_div", &p, &acc, None, &out, None);
     b.img = out;
     Some(b)

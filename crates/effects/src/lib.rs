@@ -74,7 +74,8 @@ pub use color_fx::{
 pub use color2::{Curve, auto_correct_settings, equalize_tables, luma_clip_points, shadow_highlight_amounts};
 pub use color3::OffsetCurve;
 pub use distort::transform_shutter;
-pub use distort2::{MAGNIFY_MODES, parse_mesh};
+pub use distort2::{MAGNIFY_MODES, bezier_grid, parse_mesh};
+pub use distort3::{RESHAPE_POINTS, ReshapeSetup, SmearSetup, reshape_setup, smear_setup};
 pub use distort4::liquify_mesh;
 use effectcraft_keyframe::Value;
 use effectcraft_project::build::Ids;
@@ -914,6 +915,22 @@ pub const GPU_EFFECTS: &[&str] = &[
     "ec.channel.minimax",
     "ec.time.echo",
     "ec.time.posterizetime",
+    // effectcraft-gpu fx_warp (warps, cartoon)
+    "ec.distort.warp",
+    "ec.distort.bezierwarp",
+    "ec.distort.ccbendit",
+    "ec.distort.ccpageturn",
+    "ec.distort.smear",
+    "ec.distort.reshape",
+    "ec.stylize.coloremboss",
+    "ec.stylize.cartoon",
+    // effectcraft-gpu fx_extra (shapes, bevels)
+    "ec.generate.circle",
+    "ec.generate.ellipse",
+    "ec.transition.iriswipe",
+    "ec.perspective.bevelalpha",
+    "ec.perspective.beveledges",
+    "ec.obsolete.gaussianlegacy",
 ];
 
 /// Effects whose output depends on [`EffectCtx::time`] directly (not only through animated

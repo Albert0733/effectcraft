@@ -111,3 +111,58 @@ fn history_panel_jumps_between_branches() {
     click(&mut h, &format!("history.state.{c}"));
     assert_eq!(layer_names(&h), ["C", "A"]);
 }
+
+/// onDraw fills of concave paths and real images (drawImage, image controls), rendered.
+#[test]
+fn on_draw_concave_fills_and_images_render() {
+    let dir = std::env::temp_dir().join(format!("effectcraft-scriptui-img-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let png = dir.join("green.png");
+    image::RgbaImage::from_pixel(8, 8, image::Rgba([0, 255, 0, 255])).save(&png).unwrap();
+    let png = png.to_string_lossy().replace('\\', "/");
+    let mut s = effectcraft_host::session();
+    s.execute("comp.new", json!({"name": "Main", "width": 320, "height": 180, "duration": 4})).unwrap();
+    let mut h = Harness::builder().with_size(egui::vec2(1400.0, 900.0)).with_pixels_per_point(1.0).wgpu().build_eframe(|_| EffectcraftApp::new(s));
+    h.run_steps(3);
+    let code = format!(
+        r#"
+      var w = new Window("palette", "Paint");
+      var c = w.add("group");
+      c.preferredSize = [120, 80];
+      c.onDraw = function () {{
+        var g = this.graphics;
+        g.newPath();
+        // An L: the top-right quarter is a notch (a convex-only fill would cover it).
+        g.moveTo(0, 0); g.lineTo(60, 0); g.lineTo(60, 40); g.lineTo(120, 40); g.lineTo(120, 80); g.lineTo(0, 80); g.closePath();
+        g.fillPath(g.newBrush(g.BrushType.SOLID_COLOR, [1, 0, 0, 1]));
+        g.drawImage(ScriptUI.newImage(File("{png}")), 90, 5, 20, 20);
+      }};
+      var im = w.add("image", undefined, File("{png}"));
+      im.preferredSize = [40, 40];
+      w.show();
+    "#
+    );
+    let r = h.state_mut().session.execute("script.run", json!({"code": code, "name": "paint.jsx"})).unwrap();
+    assert_eq!(r["ok"], true, "{r}");
+    h.run_steps(4);
+    let win = h.state().session.script_ui.windows[0].clone();
+    let g = &win.root.children[0];
+    assert!(matches!(&g.draw[1], effectcraft_engine::scriptui::DrawOp::Image { image: Some(i), .. } if i.src.as_deref() == Some(png.as_str())));
+    assert_eq!(win.root.children[1].image.as_ref().and_then(|i| i.src.clone()).as_deref(), Some(png.as_str()));
+    let img = h.render().expect("render");
+    if let Ok(d) = std::env::var("EC_SNAPSHOT_DIR") {
+        img.save(format!("{d}/scriptui_paint.png")).unwrap();
+    }
+    let px = |p: egui::Pos2| img.get_pixel(p.x as u32, p.y as u32).0;
+    let gr = rect(&h, &format!("scriptui.{}.{}", win.id, g.id));
+    let red = |c: [u8; 4]| c[0] > 200 && c[1] < 60 && c[2] < 60;
+    let green = |c: [u8; 4]| c[1] > 200 && c[0] < 60 && c[2] < 60;
+    assert!(red(px(gr.min + vec2(20.0, 20.0))), "inside the L: {:?}", px(gr.min + vec2(20.0, 20.0)));
+    assert!(red(px(gr.min + vec2(100.0, 60.0))), "the L's foot");
+    assert!(!red(px(gr.min + vec2(75.0, 30.0))), "the notch stays empty: {:?}", px(gr.min + vec2(75.0, 30.0)));
+    assert!(green(px(gr.min + vec2(100.0, 15.0))), "drawImage: {:?}", px(gr.min + vec2(100.0, 15.0)));
+    let ir = rect(&h, &format!("scriptui.{}.{}", win.id, win.root.children[1].id));
+    assert!(green(px(ir.center())), "image control: {:?}", px(ir.center()));
+    h.state_mut().session.execute("scriptui.close", json!({})).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}

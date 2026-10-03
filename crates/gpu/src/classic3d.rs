@@ -213,7 +213,7 @@ pub(crate) fn draw_run(e: &mut Enc, run: &Run3d, canvas: &GpuImage) -> Option<Gp
     let mb = e.data(&mattes);
     let mut p = Params::default();
     p.u[0] = [run.planes.len() as u32, run.lights.len() as u32, run.casters.len() as u32, 0];
-    let out = e.image(w, h);
+    let out = e.scratch(w, h);
     e.dispatch_ext("classic3d", &p, &atlas, Some(canvas), &out, Some(&mb), (w.div_ceil(16), h.div_ceil(16)), Some([&pb, &gb, &lb, &cb]));
     Some(out)
 }

@@ -84,7 +84,7 @@ fn shadow_highlight(e: &mut Enc, ctx: &EffectCtx, b: GBuf) -> Option<GBuf> {
         (pr.f("blend") / 100.0).clamp(0.0, 1.0) as f32,
         0.0,
     ];
-    let out = e.image(w, h);
+    let out = e.scratch(w, h);
     e.pixels("fxt_point", &p, &b.img, Some(&bases), &out, None);
     let Some((lo0, hi0)) = clip0 else { return Some(GBuf { img: out, ..b }) };
     let adjusted = e.download(&out)?;
@@ -158,7 +158,7 @@ fn op(code: u32) -> Params {
 
 fn run(e: &mut Enc, p: &Params, b: GBuf, data: Option<Vec<f32>>) -> Option<GBuf> {
     let buf = data.map(|d| e.data(&d));
-    let out = e.image(b.img.width, b.img.height);
+    let out = e.scratch(b.img.width, b.img.height);
     e.pixels("fxt_point", p, &b.img, None, &out, buf.as_ref());
     Some(GBuf { img: out, ..b })
 }

@@ -161,8 +161,14 @@ Half, Third and Quarter resolution render proportionally fewer pixels end to end
 Acceleration, the default, or Mercury Software Only; `render.backend`). The CPU renderer is the
 reference and keeps rendering layer content (sources, masks, CPU effects, layer styles) into the
 layer cache. The render crate defines an `Accelerator` trait; `effectcraft_gpu::Gpu` implements it
-on wgpu compute shaders. `RenderOpts::backend` picks `Cpu`, `Gpu` or `Auto` (GPU when an
-accelerator is attached and the project's renderer is the GPU). A GPU frame walks the comp like
+on wgpu compute shaders. `RenderOpts::backend` picks `Cpu`, `Gpu` or `Auto` (an accelerator
+attached and the project's renderer the GPU). Auto renders each comp's top-level frames on
+whichever compositor measured faster for it (`render::auto::AutoPick`, kept by the accelerator):
+per comp, output scale and path (readback or viewer display) it averages CPU and GPU frame times
+(warm-up on both sides, the fastest warm-up frame starting the average, single stalls capped),
+picks the GPU unless the CPU is clearly faster, and re-measures the other side every 48 frames.
+Light comps (a few small layers, which the CPU composites only within their bounds) then stay on
+the CPU instead of paying for full-frame passes and a readback. A GPU frame walks the comp like
 `draw_comp`: cached layer buffers are uploaded once per buffer, then transformed with the CPU's
 sampling (nearest, bilinear, Catmull-Rom bicubic, the same minification pre-filter), motion-blur
 sub-samples are accumulated, and track mattes, Preserve Transparency, layer style passes,
@@ -175,17 +181,32 @@ fragment sort (intersecting planes, coplanar stack order), Blinn-Phong lighting,
 against the caster planes (Shadow Diffusion, Light Transmission) and blending. Adjustment layers
 run their effect stacks on the GPU-resident comp (`Renderer::run_effects_on` with an `FxTarget`):
 runs of GPU effects stay on the device and only non-GPU effects read back and upload. Advanced 3D
-compositing and wireframes still run on the CPU between GPU steps (read back, draw, upload). GPU
-effects (`effects::GPU_EFFECTS`, 152 of them: blurs, colour correction, keying incl. Key Light,
-mattes, channel, stylize, distortion, transitions, generators, noise, grain and time; see
+runs render on the GPU end to end (`gpu::adv3d`, `Renderer::prepare_adv_run` /
+`Accelerator::render_3d`): each motion-blur sub-sample's scene is rasterised (`advanced3d.wgsl`),
+then compute kernels (`adv3d.wgsl`) resolve the 2×2 supersampling, average the sub-samples
+(nearest depth), apply the depth-based iris depth of field with the Classic 3D bokeh spans
+(`three_d::bokeh::kernel_spans`, highlight boost, progressive blur levels) and composite over the
+GPU canvas; only the depth of field reads back its 8-byte radius range. Advanced 3D layers with
+blend modes, track mattes or Preserve Transparency and environment backgrounds take the CPU's
+2D compositing path (their scenes still render through `render_3d`). Wireframe outlines draw on
+the GPU from the CPU's pixel list (`Renderer::wireframe_pixels`). GPU
+effects (`effects::GPU_EFFECTS`, 166 of them: blurs, colour correction, keying incl. Key Light,
+mattes, channel, stylize, distortion and warps (Warp, Bezier Warp, Smear, Reshape, CC Bend It, CC
+Page Turn), Cartoon, bevels, shapes, transitions, generators, noise, grain and time; see
 [effects.md](effects.md)) repeat the CPU effect's steps (padding, box radii, parameters, hashes)
 as kernels, in one module per family (`gpu::fx_*` with `shaders/fx_*.wgsl`); consecutive GPU
 effects run as one chain with one upload and one readback. Statistics that need the whole frame
 (Auto Levels / Contrast / Color, Equalize, Shadow/Highlight, Color Stabilizer, Remove Grain's
 noise level) are measured on the CPU from one readback and applied on the GPU; effects reading
 other frames (Echo, Posterize Time) upload the frames the host renders. Settings a kernel cannot
-match render on the CPU (`effects::catalog::gpu_supported`). Tests render scenes on both paths and compare them
-(≤ 1/255 at 8 bpc, ≤ 1e-3 at 32 bpc); they skip without an adapter. The desktop viewer builds the
+match render on the CPU (`effects::catalog::gpu_supported`; e.g. Warp's Fisheye and Twist past
+50 % or with a distortion, whose Newton inverse wanders chaotically near the crease). Tests render
+scenes on both paths and compare them (≤ 1/255 at 8 bpc, ≤ 1e-3 at 32 bpc); they skip without an
+adapter. Working textures (premultiplied RGBA f32) come from a pool: a released texture is reused
+once every encoder that could still read it has been submitted, transparent inputs share one
+zero texture per size, readback staging buffers are reused, and the 8/16 bpc quantisation after
+each layer is fused into the layer's composite kernel; under test, pooled scratch images start
+as NaNs (a kernel that skips pixels fails the oracle) and validation errors panic. The desktop viewer builds the
 `Gpu` on egui-wgpu's device and shows frames from GPU textures without reading them back
 (`ui-egui::frames`); headless renders, the CLI (unless `--gpu`) and CI use the CPU. On the web
 (WebGPU) the GPU composites viewer frames; steps that need a readback fall back to the CPU (the
@@ -195,8 +216,9 @@ Playground cannons without interacting forces evolve every particle independentl
 backend (reached through `EffectHost::particles` when the GPU compositor is active) simulates one
 particle per invocation from the CPU's birth schedule and keeps per-key state checkpoints on the
 GPU, like `SimCache`; the CPU simulation stays the oracle (tests compare ids and positions).
-`effectcraft-cli bench --gpu` reports CPU vs GPU ms/frame, speed-up and pixel agreement for every
-comp plus an adjustment-layer comp.
+`effectcraft-cli bench --gpu` reports CPU vs GPU ms/frame, speed-up, Auto's ms/frame, pixel
+agreement and the steady-state upload / readback MB per frame for every comp plus an
+adjustment-layer comp.
 
 **Colour and bit depth** (`crates/render/src/color.rs`, `crates/color/src/space.rs`). Pixels are
 `f32`, but 8 and 16 bpc projects clamp and quantise each layer after its source and masks and

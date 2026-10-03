@@ -7,6 +7,7 @@
 //! Adjustment layers run their effects on everything below, limited by their own bounds/masks.
 
 pub mod audio;
+pub mod auto;
 pub mod cache;
 pub mod color;
 pub mod disk_cache;
@@ -20,6 +21,7 @@ pub mod three_d;
 
 use std::sync::Arc;
 
+pub use auto::{AutoKey, AutoPick};
 pub use cache::{CacheStats, LayerCache};
 use effectcraft_color::BlendMode;
 use effectcraft_effects::{Buf, EffectCtx, EffectEnv, EffectHost, LayerPixels, Params};
@@ -278,9 +280,20 @@ pub trait Accelerator: Send + Sync {
     fn raster_3d(&self, _scene: &three_d::adv::Scene) -> Option<three_d::adv::Target> {
         None
     }
+    /// Render a whole prepared Advanced 3D run (every motion-blur sub-sample rasterised and
+    /// resolved, averaged, depth of field, encoding) with [`three_d::adv::render_prepared`]'s
+    /// semantics. `None` = not handled (the CPU path runs, using [`Self::raster_3d`]).
+    fn render_3d(&self, _run: &three_d::adv::Prepared) -> Option<three_d::adv::Rendered> {
+        None
+    }
     /// A particle simulation backend (GPU particles) for the stepped particle effects, with
     /// the CPU simulation's semantics. `None` = they simulate on the CPU.
     fn particles(&self) -> Option<&dyn effectcraft_effects::psim::ParticleSim> {
+        None
+    }
+    /// Timing history [`Backend::Auto`] uses to send each comp's top-level frames to the
+    /// faster compositor. `None` = Auto always tries the accelerator first.
+    fn auto_pick(&self) -> Option<&AutoPick> {
         None
     }
 }
@@ -592,22 +605,8 @@ impl<'a> Renderer<'a> {
 
     /// Draw a Wireframe-quality layer: its bounds as a one-pixel outline.
     fn draw_wireframe(&self, ctx: &EvalCtx, layer: &Layer, canvas: &mut Image) {
-        let Some(b) = content_bounds(ctx, layer) else { return };
-        let s = self.opts.scale;
-        let (l2c, _) = ctx.layer_to_comp(layer);
-        let m = Mat3::scale(vec2(s, s)) * self.outer.map_or(l2c, |o| o * l2c);
-        let c = [(b[0], b[1]), (b[2], b[1]), (b[2], b[3]), (b[0], b[3])].map(|(x, y)| m.apply(vec2(x, y)));
-        let (w, h) = (canvas.width as i64, canvas.height as i64);
-        for i in 0..4 {
-            let (p, q) = (c[i], c[(i + 1) % 4]);
-            let n = ((q.x - p.x).abs().max((q.y - p.y).abs()) * 2.0).ceil().clamp(1.0, 1.0e5) as usize;
-            for j in 0..=n {
-                let t = j as f64 / n as f64;
-                let (x, y) = ((p.x + (q.x - p.x) * t).floor() as i64, (p.y + (q.y - p.y) * t).floor() as i64);
-                if x >= 0 && y >= 0 && x < w && y < h {
-                    canvas.set(x as u32, y as u32, [1.0, 1.0, 1.0, 1.0]);
-                }
-            }
+        for (x, y) in self.wireframe_pixels(ctx, layer, (canvas.width, canvas.height)) {
+            canvas.set(x, y, [1.0, 1.0, 1.0, 1.0]);
         }
     }
 
@@ -628,14 +627,41 @@ impl<'a> Renderer<'a> {
     /// Render a composition at comp time `t` (transparent background, comp size × scale).
     /// Top-level frames go to the GPU when [`Self::active_accel`] is set and handles them.
     pub fn comp_frame(&self, comp_id: ItemId, t: Tick) -> Image {
-        // Classic 3D runs composite on the GPU too (M12.7), so Auto sends 3D comps there as well.
+        // Classic 3D runs composite on the GPU too (M12.7), so Auto sends 3D comps there as well;
+        // Auto renders each comp on whichever compositor measured faster ([`AutoPick`]).
         if self.depth == 0
             && let Some(a) = self.active_accel()
-            && let Some(img) = a.comp_frame(self, comp_id, t)
         {
+            let auto = self.frame_auto(a, comp_id, false);
+            if auto.is_none_or(|(p, key)| p.choose(key)) {
+                let t0 = web_time::Instant::now();
+                if let Some(img) = a.comp_frame(self, comp_id, t) {
+                    if let Some((p, key)) = auto {
+                        p.record(key, true, t0.elapsed().as_secs_f64() * 1e3);
+                    }
+                    return img;
+                }
+                if let Some((p, key)) = auto {
+                    p.declined(key);
+                }
+            }
+            let t0 = web_time::Instant::now();
+            let img = self.comp_frame_cpu(comp_id, t);
+            if let Some((p, key)) = auto {
+                p.record(key, false, t0.elapsed().as_secs_f64() * 1e3);
+            }
             return img;
         }
         self.comp_frame_cpu(comp_id, t)
+    }
+
+    /// The Auto timing history and key for a top-level frame of `comp` (`None` unless the
+    /// backend is [`Backend::Auto`] and the accelerator keeps history).
+    pub fn frame_auto(&self, a: &'a dyn Accelerator, comp: ItemId, display: bool) -> Option<(&'a AutoPick, AutoKey)> {
+        if self.opts.backend != Backend::Auto || self.opts.roi.is_some() {
+            return None;
+        }
+        Some((a.auto_pick()?, AutoKey::new(comp, self.opts.scale, display)))
     }
 
     /// [`Self::comp_frame`] on the CPU compositor only.
@@ -1571,6 +1597,39 @@ impl<'a> Renderer<'a> {
         three_d::compose::gpu_run(self, ctx, run, out)
     }
 
+    /// A run of consecutive 3D layers of an Advanced 3D comp prepared for an accelerator's
+    /// compositor ([`three_d::adv::Prepared`]): rendered as one scene and composited (Normal,
+    /// premultiplied over) onto the canvas. `None` = not an Advanced 3D comp, or a layer needs the
+    /// 2D compositing path (blend mode, track matte, Preserve Transparency): draw it with
+    /// [`Self::draw_3d_run`].
+    pub fn prepare_adv_run<'p>(&'p self, ctx: &'p EvalCtx<'a>, run: &'p [&'p Layer], out: (u32, u32)) -> Option<three_d::adv::Prepared<'p, 'a>> {
+        three_d::adv::prepare_run(self, ctx, run, out)
+    }
+
+    /// The pixels a Wireframe-quality layer sets (white, opaque) on a `size` canvas: its
+    /// bounds' outline, one pixel wide. Empty when the layer has no bounds.
+    pub fn wireframe_pixels(&self, ctx: &EvalCtx, layer: &Layer, size: (u32, u32)) -> Vec<(u32, u32)> {
+        let Some(b) = content_bounds(ctx, layer) else { return vec![] };
+        let s = self.opts.scale;
+        let (l2c, _) = ctx.layer_to_comp(layer);
+        let m = Mat3::scale(vec2(s, s)) * self.outer.map_or(l2c, |o| o * l2c);
+        let c = [(b[0], b[1]), (b[2], b[1]), (b[2], b[3]), (b[0], b[3])].map(|(x, y)| m.apply(vec2(x, y)));
+        let (w, h) = (size.0 as i64, size.1 as i64);
+        let mut out = vec![];
+        for i in 0..4 {
+            let (p, q) = (c[i], c[(i + 1) % 4]);
+            let n = ((q.x - p.x).abs().max((q.y - p.y).abs()) * 2.0).ceil().clamp(1.0, 1.0e5) as usize;
+            for j in 0..=n {
+                let t = j as f64 / n as f64;
+                let (x, y) = ((p.x + (q.x - p.x) * t).floor() as i64, (p.y + (q.y - p.y) * t).floor() as i64);
+                if x >= 0 && y >= 0 && x < w && y < h {
+                    out.push((x as u32, y as u32));
+                }
+            }
+        }
+        out
+    }
+
     /// Run the layer's effect stack on `target` (an accelerator's resident image): GPU-capable
     /// runs through [`FxTarget::gpu`], the others through [`FxTarget::cpu`], with the CPU's
     /// parameters and environment. `adjustment`: the stack runs on the comp below (adjustment
@@ -1581,9 +1640,20 @@ impl<'a> Renderer<'a> {
 
     /// An adjustment layer's footprint (its source with masks applied, layer space): where
     /// its effects show. `None` = the layer changes nothing.
-    pub fn adjustment_footprint(&self, ctx: &EvalCtx, layer: &Layer) -> Option<Buf> {
+    pub fn adjustment_footprint(&self, ctx: &EvalCtx, layer: &Layer) -> Option<Arc<Buf>> {
+        // Cached, so an accelerator sees the same buffer (and uploads it once) every frame.
+        let key = self.cache.and_then(|_| cache::footprint_key(ctx, layer, self.raster_scale(ctx, layer), self.opts.draft));
+        if let (Some(c), Some(k)) = (self.cache, key)
+            && let Some(b) = c.get(k)
+        {
+            return Some(b);
+        }
         let mut foot = self.source(ctx, layer)?;
         let _ = masks::apply(ctx, layer, &mut foot);
+        let foot = Arc::new(foot);
+        if let (Some(c), Some(k)) = (self.cache, key) {
+            c.insert(k, foot.clone());
+        }
         Some(foot)
     }
 
@@ -1735,6 +1805,8 @@ pub fn render_frame(project: &Project, comp: ItemId, t: Tick, scale: f64) -> Ima
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_auto;
 #[cfg(test)]
 mod tests_remap;
 #[cfg(test)]

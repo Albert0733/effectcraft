@@ -108,6 +108,9 @@ fn add_property(s: &mut Session, p: &Value) -> Result<Value> {
             Some(t)
         }
     };
+    // A property already in the panel (as the same kind of control) is added again as a mirror
+    // (`mirror: false`: skipped).
+    let mirror = b_p(p, "mirror").unwrap_or(true);
     let mut added = vec![];
     for (cid, lid, uid) in &targets {
         let l = s.project.comp(*cid).and_then(|c| c.layer(*lid)).ok_or(EngineError::NoComp)?;
@@ -122,30 +125,122 @@ fn add_property(s: &mut Session, p: &Value) -> Result<Value> {
         {
             return Err(bad(C, format!("`{}` can't be shown as a {} control", pr.name, t.label())));
         }
-        if s.project.comp(*cid).and_then(|c| c.essential.as_ref()).is_some_and(|e| e.control_for_as(*lid, *uid, as_type).is_some()) {
-            continue;
-        }
-        let name = rename.clone().unwrap_or_else(|| match as_type {
+        let eg = s.project.comp(*cid).and_then(|c| c.essential.as_ref());
+        let existing = eg
+            .and_then(|e| e.control_for_as(*lid, *uid, as_type).or_else(|| as_type.is_none().then(|| e.driver_of(*lid, *uid)).flatten()))
+            .map(|c| (c.id, c.name.clone()));
+        let (kind, as_type) = match existing {
+            Some(_) if !mirror => continue,
+            Some((of, _)) => (EgKind::Mirror { of }, None),
+            None => (EgKind::Property { layer: *lid, prop: *uid, links: vec![] }, as_type),
+        };
+        let name = rename.clone().or(existing.map(|e| e.1)).unwrap_or_else(|| match as_type {
             Some(ControlType::Font) => format!("{} Font", l.name),
             _ => pr.name.clone(),
         });
-        added.push((*cid, *lid, *uid, name, as_type));
+        added.push((*cid, kind, name, as_type));
     }
     let ids = s.edit("Add Property to Essential Graphics", None, |proj, st| {
         if let Some((cid, ..)) = added.first() {
             st.essential_primary.get_or_insert(*cid);
         }
         let mut ids = vec![];
-        for (k, (cid, lid, uid, name, as_type)) in added.iter().enumerate() {
+        for (k, (cid, kind, name, as_type)) in added.iter().enumerate() {
             let id = proj.alloc();
             let eg = eg_of(proj, *cid)?;
-            let ctl = EgControl { id, name: name.clone(), kind: EgKind::Property { layer: *lid, prop: *uid }, as_type: *as_type };
+            let ctl = EgControl { id, name: name.clone(), kind: kind.clone(), as_type: *as_type };
             insert(eg, ctl, group, index.map(|i| i + k), C)?;
             ids.push(id);
         }
         Ok(ids)
     })?;
-    Ok(json!({"controls": ids}))
+    let mirrors: Vec<u64> = ids.iter().zip(&added).filter(|(_, a)| matches!(a.1, EgKind::Mirror { .. })).map(|(i, _)| *i).collect();
+    Ok(json!({"controls": ids, "mirrors": mirrors}))
+}
+/// Add a mirror of a property control (the same property shown again, e.g. in another group).
+fn add_mirror(s: &mut Session, p: &Value) -> Result<Value> {
+    const C: &str = "essential.addMirror";
+    let cid = eg_comp(s, p)?;
+    let of = control_p(s, cid, p, C)?;
+    let eg = s.project.comp(cid).and_then(|c| c.essential.clone()).unwrap_or_default();
+    let master =
+        eg.resolve(of).filter(|c| matches!(c.kind, EgKind::Property { .. })).ok_or_else(|| bad(C, format!("control {of} is not a property control")))?;
+    let (of, master_name) = (master.id, master.name.clone());
+    let name = str_p(p, "name").map(str::to_string).unwrap_or(master_name);
+    let group = p.get("group").and_then(Value::as_u64);
+    let index = p.get("index").and_then(Value::as_u64).map(|i| i as usize);
+    let id = s.edit("Add Mirror to Essential Graphics", None, |proj, _| {
+        let id = proj.alloc();
+        insert(eg_of(proj, cid)?, EgControl { id, name, kind: EgKind::Mirror { of }, as_type: None }, group, index, C)?;
+        Ok(id)
+    })?;
+    Ok(json!({"control": id, "of": of}))
+}
+
+/// The property a link command names: `{layer, path|prop}` or the first selected property.
+fn link_target(s: &Session, p: &Value, cmd: &str) -> Result<(ItemId, LayerId, Uid)> {
+    if p.get("path").is_some() || p.get("prop").is_some() {
+        return super::prop::prop_ref(s, p, cmd);
+    }
+    let cid = comp_id(s, p)?;
+    selected_leaf_props(s)
+        .into_iter()
+        .next()
+        .map(|(l, u)| (cid, l, u))
+        .ok_or_else(|| bad(cmd, "select a property in the timeline (or give `layer` and `path`)"))
+}
+
+/// Make a property control drive another property too (same kind of value).
+fn link_property(s: &mut Session, p: &Value) -> Result<Value> {
+    const C: &str = "essential.linkProperty";
+    let cid = eg_comp(s, p)?;
+    let control = control_p(s, cid, p, C)?;
+    let (pc, lid, uid) = link_target(s, p, C)?;
+    if pc != cid {
+        return Err(bad(C, "the property must be in the Essential Graphics composition"));
+    }
+    let eg = s.project.comp(cid).and_then(|c| c.essential.clone()).unwrap_or_default();
+    let ctl = eg.resolve(control).ok_or_else(|| bad(C, format!("no control {control}")))?.clone();
+    if ctl.as_type == Some(ControlType::Font) {
+        return Err(bad(C, "a Font control can't drive other properties"));
+    }
+    let (main, _) = essential::source_prop(&s.project, cid, &ctl).ok_or_else(|| bad(C, format!("control {control} is not a property control")))?;
+    let main = main.props.find(match ctl.kind {
+        EgKind::Property { prop, .. } => prop,
+        _ => 0,
+    });
+    let target = s.project.comp(cid).and_then(|c| c.layer(lid)).and_then(|l| l.props.find(uid)).ok_or_else(|| bad(C, "no such property"))?;
+    if !main.is_some_and(|m| essential::linkable(m, target)) {
+        return Err(bad(C, format!("`{}` is not the same kind of property as the control", target.name)));
+    }
+    if let Some(d) = eg.driver_of(lid, uid) {
+        return Err(bad(C, format!("`{}` is already driven by control {}", target.name, d.id)));
+    }
+    let id = ctl.id;
+    s.edit("Link Property to Essential Graphics Control", None, |proj, _| {
+        if let Some(EgControl { kind: EgKind::Property { links, .. }, .. }) = eg_of(proj, cid)?.find_mut(id) {
+            links.push(essential::EgLink { layer: lid, prop: uid });
+        }
+        Ok(())
+    })?;
+    Ok(json!({"control": id, "layer": lid.0, "prop": uid}))
+}
+
+fn unlink_property(s: &mut Session, p: &Value) -> Result<Value> {
+    const C: &str = "essential.unlinkProperty";
+    let cid = eg_comp(s, p)?;
+    let control = control_p(s, cid, p, C)?;
+    let (_, lid, uid) = link_target(s, p, C)?;
+    let eg = s.project.comp(cid).and_then(|c| c.essential.clone()).unwrap_or_default();
+    let id = eg.resolve(control).map(|c| c.id).ok_or_else(|| bad(C, format!("no control {control}")))?;
+    s.edit("Unlink Property from Essential Graphics Control", None, |proj, _| match eg_of(proj, cid)?.find_mut(id) {
+        Some(EgControl { kind: EgKind::Property { links, .. }, .. }) if links.iter().any(|k| k.layer == lid && k.prop == uid) => {
+            links.retain(|k| !(k.layer == lid && k.prop == uid));
+            Ok(())
+        }
+        _ => Err(bad(C, "the property is not linked to this control")),
+    })?;
+    Ok(json!({"control": id, "layer": lid.0, "prop": uid}))
 }
 
 fn control_type(pr: &effectcraft_project::Property) -> Option<ControlType> {
@@ -261,11 +356,17 @@ fn remove(s: &mut Session, p: &Value) -> Result<Value> {
     const C: &str = "essential.remove";
     let cid = eg_comp(s, p)?;
     let id = control_p(s, cid, p, C)?;
+    // A property control's mirrors go with it.
+    let mirrors = s.project.comp(cid).and_then(|c| c.essential.as_ref()).map(|e| e.mirrors_of(id)).unwrap_or_default();
     s.edit("Remove Essential Graphics Control", None, |proj, _| {
-        eg_of(proj, cid)?.remove(id).ok_or_else(|| bad(C, format!("no control {id}")))?;
+        let eg = eg_of(proj, cid)?;
+        eg.remove(id).ok_or_else(|| bad(C, format!("no control {id}")))?;
+        for m in &mirrors {
+            eg.remove(*m);
+        }
         Ok(())
     })?;
-    Ok(json!({"control": id}))
+    Ok(json!({"control": id, "mirrors": mirrors}))
 }
 
 fn move_control(s: &mut Session, p: &Value) -> Result<Value> {
@@ -393,14 +494,36 @@ pub fn supported_properties(project: &Project, cid: ItemId) -> Vec<Value> {
 
 fn control_json(project: &Project, cid: ItemId, c: &EgControl) -> Value {
     match &c.kind {
-        EgKind::Property { layer, prop } => {
+        EgKind::Property { layer, prop, .. } => {
             let src = essential::source_prop(project, cid, c);
+            let links: Vec<Value> = essential::linked_props(project, cid, c)
+                .into_iter()
+                .map(|(l, pr)| json!({"layer": l.id.0, "layerName": l.name, "prop": pr.uid, "path": super::match_path_of(&l.props, pr.uid)}))
+                .collect();
             json!({
                 "id": c.id, "name": c.name, "kind": "property", "layer": layer.0, "prop": prop,
                 "layerName": src.map(|(l, _)| l.name.clone()),
                 "path": src.and_then(|(l, _)| super::match_path_of(&l.props, *prop)),
                 "type": src.and_then(|(_, pr)| essential::effective_type(c, pr)),
                 "value": src.map(|(_, pr)| value_json(essential::effective_type(c, pr), &pr.value_at(Tick::ZERO))),
+                "missing": src.is_none(),
+                "links": links,
+                "mirrors": project.comp(cid).and_then(|c| c.essential.as_ref()).map(|e| e.mirrors_of(c.id)).unwrap_or_default(),
+            })
+        }
+        EgKind::Mirror { of } => {
+            // Shown as its master (same kind of control).
+            let master = project.comp(cid).and_then(|x| x.essential.as_ref()).and_then(|e| e.resolve(c.id)).cloned();
+            let src = essential::source_prop(project, cid, c);
+            let ty = |pr| master.as_ref().and_then(|m| essential::effective_type(m, pr));
+            json!({
+                "id": c.id, "name": c.name, "kind": "mirror", "of": of,
+                "layer": src.map(|(l, _)| l.id.0),
+                "prop": src.map(|(_, pr)| pr.uid),
+                "layerName": src.map(|(l, _)| l.name.clone()),
+                "path": src.and_then(|(l, pr)| super::match_path_of(&l.props, pr.uid)),
+                "type": src.and_then(|(_, pr)| ty(pr)),
+                "value": src.map(|(_, pr)| value_json(ty(pr), &pr.value_at(Tick::ZERO))),
                 "missing": src.is_none(),
             })
         }
@@ -476,6 +599,7 @@ fn instance_json(s: &mut Session, p: &Value) -> Result<Value> {
         }
         let kind = match c.kind {
             EgKind::Property { .. } => "property",
+            EgKind::Mirror { .. } => "mirror",
             EgKind::Media { .. } => "media",
             EgKind::Comment { .. } => "comment",
             EgKind::Group { .. } => "group",
@@ -532,11 +656,21 @@ fn targets(s: &Session, cid: ItemId, lid: LayerId, p: &Value) -> Vec<(u64, Uid)>
     let Some(l) = s.project.comp(cid).and_then(|c| c.layer(lid)) else { return vec![] };
     let over = essential::overridden(l);
     let Some(g) = essential::group(l) else { return vec![] };
-    let want = p.get("control").and_then(Value::as_u64);
+    // A control, its master and the master's mirrors share one value: act on all of them.
+    let want: Option<Vec<u64>> = p.get("control").and_then(Value::as_u64).map(|w| {
+        let src = match l.source {
+            LayerSource::Comp { item } => s.project.comp(item).and_then(|c| c.essential.as_ref()),
+            _ => None,
+        };
+        match src.and_then(|e| e.resolve(w).map(|m| (e, m.id))) {
+            Some((e, m)) => std::iter::once(m).chain(e.mirrors_of(m)).chain(std::iter::once(w)).collect(),
+            None => vec![w],
+        }
+    });
     let mut out = vec![];
     g.walk("", &mut |_, pr| {
         if let Some(c) = essential::control_of(&pr.match_id)
-            && want.is_none_or(|w| w == c)
+            && want.as_ref().is_none_or(|w| w.contains(&c))
             && (want.is_some() || over.contains(&pr.uid))
         {
             out.push((c, pr.uid));
@@ -582,7 +716,8 @@ fn push_to_comp(s: &mut Session, p: &Value) -> Result<Value> {
     let l = s.project.comp(cid).and_then(|c| c.layer(lid)).cloned().ok_or(EngineError::NoComp)?;
     let mut writes = vec![];
     for (control, uid) in &ts {
-        let (Some(ctl), Some(pr)) = (eg.find(*control), l.props.find(*uid)) else { continue };
+        // A mirror pushes into its master's properties.
+        let (Some(ctl), Some(pr)) = (eg.resolve(*control), l.props.find(*uid)) else { continue };
         writes.push((ctl.kind.clone(), pr.clone(), ctl.as_type));
     }
     s.edit("Push Override Values to Source", None, |proj, _| {
@@ -590,7 +725,7 @@ fn push_to_comp(s: &mut Session, p: &Value) -> Result<Value> {
         for (kind, pr, as_type) in &writes {
             match kind {
                 // A Font control writes only the font (the source keeps its text and keys).
-                EgKind::Property { layer, prop } if *as_type == Some(ControlType::Font) => {
+                EgKind::Property { layer, prop, .. } if *as_type == Some(ControlType::Font) => {
                     if let Some(target) = sc.layer_mut(*layer).and_then(|l| l.props.find_mut(*prop)) {
                         essential::merge_font(&mut target.value, &pr.value);
                         for k in &mut target.keys {
@@ -598,24 +733,27 @@ fn push_to_comp(s: &mut Session, p: &Value) -> Result<Value> {
                         }
                     }
                 }
-                EgKind::Property { layer, prop } => {
-                    let Some(inner) = sc.layer_mut(*layer) else { continue };
-                    // Instance keys are in the precomp layer's time (= the source comp's time);
-                    // the source property's keys are in the inner layer's time.
-                    let keys: Vec<_> = pr
-                        .keys
-                        .iter()
-                        .map(|k| {
-                            let mut k = k.clone();
-                            k.time = inner.layer_time(k.time);
-                            k
-                        })
-                        .collect();
-                    if let Some(target) = inner.props.find_mut(*prop) {
-                        target.value = pr.value.clone();
-                        target.keys = keys;
+                EgKind::Property { .. } => {
+                    for (layer, prop) in kind.targets() {
+                        let Some(inner) = sc.layer_mut(layer) else { continue };
+                        // Instance keys are in the precomp layer's time (= the source comp's
+                        // time); the source property's keys are in the inner layer's time.
+                        let keys: Vec<_> = pr
+                            .keys
+                            .iter()
+                            .map(|k| {
+                                let mut k = k.clone();
+                                k.time = inner.layer_time(k.time);
+                                k
+                            })
+                            .collect();
+                        if let Some(target) = inner.props.find_mut(prop) {
+                            target.value = pr.value.clone();
+                            target.keys = keys;
+                        }
                     }
                 }
+
                 EgKind::Media { layer } => {
                     if let Some(inner) = sc.layer_mut(*layer) {
                         inner.source = LayerSource::Footage { item: ItemId(pr.value.as_f64().max(0.0) as u64) };
@@ -855,9 +993,28 @@ pub fn specs() -> Vec<CommandSpec> {
             "Add Property to Essential Graphics",
             ["Animation"],
             None,
-            "{comp?, layer?, path?|prop?: uid (default: the selected properties), name?, group?: control id, index?, as?: font (Source Text font family/style/size) | scale (uniform Scale)}",
+            "{comp?, layer?, path?|prop?: uid (default: the selected properties), name?, group?: control id, index?, as?: font (Source Text font family/style/size) | scale (uniform Scale), mirror?: bool (a property already present is added as a mirror; default true)}",
             has_selected_props,
             add_property
+        ),
+        cmd!("essential.addMirror", "Add Mirror", [], None, "{comp?, control, name?, group?, index?}", has_eg, add_mirror),
+        cmd!(
+            "essential.linkProperty",
+            "Link Property to Control",
+            [],
+            None,
+            "{comp?, control, layer?, path?|prop? (default: the selected property)}",
+            has_eg,
+            link_property
+        ),
+        cmd!(
+            "essential.unlinkProperty",
+            "Unlink Property",
+            [],
+            None,
+            "{comp?, control, layer?, path?|prop? (default: the selected property)}",
+            has_eg,
+            unlink_property
         ),
         cmd!("essential.addMedia", "Add Media Replacement", [], None, "{layer, name?, group?}", has_comp, add_media),
         cmd!("essential.addGroup", "Add Group", [], None, "{comp?, name?, index?}", has_comp, add_group),

@@ -326,10 +326,20 @@ fn has_expression(g: &PropGroup) -> bool {
     })
 }
 
+/// Cache key for an adjustment layer's footprint (its source through its masks, see
+/// `Renderer::adjustment_footprint`): the GPU compositor then uploads it once, not every frame.
+pub fn footprint_key(ctx: &EvalCtx, layer: &Layer, scale: f64, draft: bool) -> Option<u64> {
+    Some(derive(key_any(ctx, layer, scale, draft, false)?, 0xf007_9417))
+}
+
 fn key_with(ctx: &EvalCtx, layer: &Layer, scale: f64, draft: bool, footage: bool) -> Option<u64> {
     if layer.switches.adjustment {
         return None;
     }
+    key_any(ctx, layer, scale, draft, footage)
+}
+
+fn key_any(ctx: &EvalCtx, layer: &Layer, scale: f64, draft: bool, footage: bool) -> Option<u64> {
     let mut h = KeyHasher(0xcbf2_9ce4_8422_2325);
     match &layer.source {
         LayerSource::Solid { item } => {
