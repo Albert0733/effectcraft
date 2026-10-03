@@ -258,13 +258,50 @@ fn project_settings(s: &mut Session, p: &Value) -> Result<Value> {
         if let Some(l) = p.get("blendLinear").or_else(|| p.get("blendColorsUsing1Gamma")).and_then(Value::as_bool) {
             proj.settings.blend_linear = l;
         }
+        use effectcraft_project::{ColorEngine, ColorSpace, HdrMode};
+        let cmd = "file.projectSettings";
+        if let Some(e) = str_p(p, "colorEngine") {
+            let engine = match e.to_ascii_lowercase().replace([' ', '-', '_'], "").as_str() {
+                "adobe" | "adobemanaged" | "builtin" => ColorEngine::Adobe,
+                "ocio" | "ociomanaged" => ColorEngine::Ocio,
+                _ => return Err(bad(cmd, format!("colorEngine: adobe|ocio, not `{e}`"))),
+            };
+            if engine == ColorEngine::Ocio && proj.settings.color_engine != ColorEngine::Ocio {
+                // The OCIO built-in config works in ACES and renders the display through its
+                // tone-mapped view.
+                if !proj.settings.working_space.is_some_and(|w| w.is_linear()) {
+                    proj.settings.working_space = Some(ColorSpace::AcesCg);
+                }
+                if proj.settings.hdr == HdrMode::Clip {
+                    proj.settings.hdr = HdrMode::ToneMap;
+                }
+            }
+            proj.settings.color_engine = engine;
+        }
         if let Some(w) = p.get("workingSpace") {
+            let ids = ColorSpace::WORKING.iter().map(|c| c.id()).collect::<Vec<_>>().join("|");
             proj.settings.working_space = match w.as_str() {
                 None | Some("none" | "None" | "") => None,
                 Some(n) => Some(
-                    effectcraft_project::ColorSpace::parse(n)
-                        .ok_or_else(|| bad("file.projectSettings", format!("workingSpace: none|srgb|rec709|rec2020|p3, not `{n}`")))?,
+                    ColorSpace::parse(n).filter(|c| ColorSpace::WORKING.contains(c)).ok_or_else(|| bad(cmd, format!("workingSpace: none|{ids}, not `{n}`")))?,
                 ),
+            };
+        }
+        if proj.settings.color_engine == ColorEngine::Ocio && !proj.settings.working_space.is_some_and(|w| w.is_linear()) {
+            return Err(bad(cmd, "the OCIO built-in config's working spaces are acescg and aces2065"));
+        }
+        if let Some(h) = str_p(p, "hdr") {
+            proj.settings.hdr = match h.to_ascii_lowercase().replace([' ', '-', '_'], "").as_str() {
+                "clip" | "off" | "none" => HdrMode::Clip,
+                "compand" => HdrMode::Compand,
+                "tonemap" | "tonemapped" => HdrMode::ToneMap,
+                _ => return Err(bad(cmd, format!("hdr: clip|compand|toneMap, not `{h}`"))),
+            };
+        }
+        if let Some(o) = p.get("outputSpace") {
+            proj.settings.output_space = match o.as_str() {
+                None | Some("none" | "None" | "" | "default") => None,
+                Some(n) => Some(ColorSpace::parse(n).ok_or_else(|| bad(cmd, format!("outputSpace: srgb|rec709|rec2020|p3|rec2100pq|rec2100hlg, not `{n}`")))?),
             };
         }
         if let Some(r) = p.get("renderer").or_else(|| p.get("gpuAcceleration")) {
@@ -279,8 +316,8 @@ fn project_settings(s: &mut Session, p: &Value) -> Result<Value> {
             };
         }
         if let Some(t) = str_p(p, "timeDisplay") {
-            proj.settings.time_display =
-                if t.eq_ignore_ascii_case("frames") { effectcraft_project::TimeDisplayStyle::Frames } else { effectcraft_project::TimeDisplayStyle::Timecode };
+            proj.settings.time_display = effectcraft_project::TimeDisplayStyle::parse(t)
+                .ok_or_else(|| bad("file.projectSettings", format!("timeDisplay: timecode|frames|feet35|feet16, not `{t}`")))?;
         }
         Ok(())
     })?;
@@ -353,7 +390,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Project Settings...",
             ["File"],
             Some("Cmd+Alt+Shift+K"),
-            "{bitDepth?: 8|16|32, workingSpace?: none|srgb|rec709|rec2020|p3, linearize?, blendLinear?, renderer?: gpu|software, timeDisplay?: timecode|frames}",
+            "{bitDepth?: 8|16|32, colorEngine?: adobe|ocio, workingSpace?: none|srgb|rec709|rec2020|p3|acescg|aces2065, linearize?, blendLinear?, hdr?: clip|compand|toneMap, outputSpace?: srgb|rec709|rec2020|p3|rec2100pq|rec2100hlg, renderer?: gpu|software, timeDisplay?: timecode|frames|feet35|feet16}",
             always,
             project_settings
         ),

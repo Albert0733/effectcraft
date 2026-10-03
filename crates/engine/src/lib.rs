@@ -216,6 +216,9 @@ pub struct EditorState {
     /// Essential Graphics can expose).
     #[serde(default)]
     pub essential_solo: bool,
+    /// View ▸ Split with New Locked Viewer: the second viewer's comp and 3D view.
+    #[serde(default)]
+    pub locked_viewer: Option<commands::viewer_cmds::LockedViewer>,
 }
 
 fn one_view() -> u8 {
@@ -689,6 +692,8 @@ mod tests_anim_tools;
 #[cfg(test)]
 mod tests_camera_track;
 #[cfg(test)]
+mod tests_color_view;
+#[cfg(test)]
 mod tests_disk_cache;
 #[cfg(test)]
 mod tests_effects;
@@ -710,6 +715,8 @@ mod tests_model3d;
 mod tests_project_items;
 #[cfg(test)]
 mod tests_proxy;
+#[cfg(test)]
+mod tests_rig3d;
 #[cfg(test)]
 mod tests_settings;
 #[cfg(test)]

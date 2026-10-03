@@ -144,11 +144,13 @@ pub fn quantize(e: &mut Enc, img: &GpuImage, levels: f32) -> GpuImage {
 }
 
 fn curve_id(s: Option<effectcraft_color::ColorSpace>) -> u32 {
-    use effectcraft_color::ColorSpace::*;
-    match s {
-        None => 0,
-        Some(Srgb | DisplayP3) => 1,
-        Some(Rec709 | Rec2020) => 2,
+    use effectcraft_color::space::Curve;
+    match s.map(|s| s.curve()) {
+        None | Some(Curve::Linear) => 0,
+        Some(Curve::Srgb) => 1,
+        Some(Curve::Gamma24) => 2,
+        Some(Curve::Pq) => 3,
+        Some(Curve::Hlg) => 4,
     }
 }
 

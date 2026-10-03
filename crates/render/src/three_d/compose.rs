@@ -338,6 +338,15 @@ fn scene_lights(ctx: &EvalCtx) -> Vec<LightState> {
 
 /// Draw a run of consecutive 3D layers (bottom-to-top order) into `canvas`.
 pub(crate) fn draw_run(r: &Renderer, ctx: &EvalCtx, run: &[&Layer], canvas: &mut Image) {
+    // Environment background layers: an infinitely distant sky behind the rest of the run.
+    if run.iter().any(|l| l.environment_background) {
+        for l in run.iter().filter(|l| l.environment_background) {
+            draw_sky(r, ctx, l, canvas);
+        }
+        let rest: Vec<&Layer> = run.iter().copied().filter(|l| !l.environment_background).collect();
+        draw_run(r, ctx, &rest, canvas);
+        return;
+    }
     // 3D adjustment layers act on everything below them in the stack (like 2D ones): split.
     if let Some(k) = run.iter().position(|l| l.switches.adjustment) {
         draw_run(r, ctx, &run[..k], canvas);
@@ -792,4 +801,50 @@ pub(crate) fn aux_pass(r: &Renderer, ctx: &EvalCtx) -> effectcraft_raster::AuxCh
     }
     aux.manifests = vec![("CryptoObject".into(), manifest_obj), ("CryptoMaterial".into(), manifest_mat)];
     aux
+}
+
+/// Rotation (radians) of the comp's first Environment light, which also turns its backdrop.
+pub(crate) fn environment_rotation(ctx: &EvalCtx) -> f32 {
+    ctx.comp
+        .layers
+        .iter()
+        .find(|l| matches!(l.source, effectcraft_project::LayerSource::Light { kind: LightKind::Environment }) && l.is_active_at(ctx.time))
+        .and_then(|l| l.props.sub("lightOptions").map(|g| ctx.f(l, g, "rotation", 0.0)))
+        .unwrap_or(0.0)
+        .to_radians() as f32
+}
+
+/// Draw an Environment Light Background layer: its (equirectangular) image looked up by each
+/// pixel's view direction through the camera, as an infinitely distant backdrop.
+pub(crate) fn draw_sky(r: &Renderer, ctx: &EvalCtx, layer: &Layer, canvas: &mut Image) {
+    let Some(buf) = r.blend_layer_buf(ctx, layer) else { return };
+    let img = &buf.img;
+    if img.width == 0 || img.height == 0 {
+        return;
+    }
+    let op = (ctx.opacity(layer) as f32 * r.opacity_mul()).clamp(0.0, 1.0);
+    if op <= 0.0 {
+        return;
+    }
+    let cam = camera_for(r, ctx);
+    let (fwd, right, down) = (cam.forward(), cam.right(), cam.down());
+    let s = r.opts.scale.max(1e-9);
+    let (cw, ch) = (ctx.comp.width as f64, ctx.comp.height as f64);
+    let (ox, oy) = r.roi_offset().map_or((0.0, 0.0), |(x, y, _, _)| (x, y));
+    let rot = environment_rotation(ctx);
+    let (iw, ih) = (img.width as f64, img.height as f64);
+    canvas.rows_mut().for_each(|(y, row)| {
+        let cy = (y as f64 + 0.5 + oy) / s;
+        for (x, d) in row.iter_mut().enumerate() {
+            let cx = (x as f64 + 0.5 + ox) / s;
+            let dir = if cam.ortho { fwd } else { (fwd * cam.zoom + right * (cx - cw / 2.0) + down * (cy - ch / 2.0)).normalize() };
+            let (u, v) = super::adv::shade::equirect_uv([dir.x as f32, dir.y as f32, dir.z as f32], rot);
+            // Wrap horizontally across the seam.
+            let sx = (u as f64 * iw).clamp(0.5, iw - 0.5);
+            let sy = (v as f64 * ih).clamp(0.5, ih - 0.5);
+            let p = img.sample_bilinear(sx, sy);
+            let k = 1.0 - p[3] * op;
+            *d = [p[0] * op + d[0] * k, p[1] * op + d[1] * k, p[2] * op + d[2] * k, p[3] * op + d[3] * k];
+        }
+    });
 }

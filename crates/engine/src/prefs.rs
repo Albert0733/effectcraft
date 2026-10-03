@@ -104,6 +104,8 @@ page!(Previews {
     /// `faster` or `moreAccurate`.
     zoom_quality: String = "moreAccurate".into(),
     show_gpu_info: bool = false,
+    /// The monitor's colour space for View ▸ Use Display Color Management: `srgb` or `p3`.
+    display_profile: String = "srgb".into(),
 });
 
 page!(Appearance {
@@ -728,6 +730,7 @@ pub fn pages() -> Vec<Page> {
                 s("previews.cacheFramesWhenIdle", "Cache Frames When Idle", B, true),
                 s("previews.fastPreviews", "Fast Previews (Draft 3D, Faster Effects)", B, true),
                 s("previews.zoomQuality", "Viewer Zoom Quality", Kind::Choice(&[("Faster", "faster"), ("More Accurate", "moreAccurate")]), false),
+                s("previews.displayProfile", "Display Color Space", Kind::Choice(&[("sRGB", "srgb"), ("Display P3", "p3")]), true),
                 Button { label: "GPU Information...", command: "app.gpuInfo", params: "{}" },
             ],
         },

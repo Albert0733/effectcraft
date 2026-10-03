@@ -312,3 +312,116 @@ fn extruded_text_renders_as_a_mesh() {
     let img = render(&p, cid);
     assert!(img.data.iter().filter(|q| q[3] > 0.5).count() > 200);
 }
+
+// ---------------------------------------------------------------- motion blur, blend modes, mattes
+
+fn solid(p: &mut Project, color: [f32; 3], w: u32, h: u32) -> ItemId {
+    p.add_item("S", Default::default(), None, ItemKind::Solid(effectcraft_project::Solid { color, width: w, height: h, pixel_aspect: 1.0 }))
+}
+
+/// Pixels of row `y` whose alpha is partial (motion-blur smear or anti-aliasing).
+fn partial(img: &crate::Image, y: u32) -> usize {
+    (0..img.width).filter(|x| (0.05..0.95).contains(&img.data[(y * img.width + x) as usize][3])).count()
+}
+
+#[test]
+fn motion_blur_smears_moving_meshes() {
+    let (mut p, cid) = project(160, 120);
+    add(&mut p, cid, LayerSource::Primitive { kind: PrimitiveKind::Cube }, |l| {
+        set(l, "geometryOptions/width", Value::Scalar(30.0));
+        set(l, "geometryOptions/height", Value::Scalar(30.0));
+        set(l, "geometryOptions/depth", Value::Scalar(30.0));
+        // 60 px per frame to the right.
+        let pr = l.props.prop_mut("transform/position").unwrap();
+        pr.keys = vec![
+            effectcraft_keyframe::Keyframe::new(Tick::ZERO, Value::Vec3([50.0, 60.0, 0.0])),
+            effectcraft_keyframe::Keyframe::new(Tick::from_seconds_f64(1.0), Value::Vec3([50.0 + 30.0 * 60.0, 60.0, 0.0])),
+        ];
+    });
+    let sharp = render(&p, cid);
+    let hard = partial(&sharp, 60);
+    assert!(hard <= 4, "no blur without the switch: {hard}");
+    p.comp_mut(cid).unwrap().layers[0].switches.motion_blur = true;
+    let blurred = render(&p, cid);
+    let smear = partial(&blurred, 60);
+    // A 180° shutter smears over half a frame of motion (≈ 30 px).
+    assert!(smear > 20, "smeared: {smear}");
+    // Coverage is conserved: the summed alpha along the row stays about the cube's width.
+    let sum = |im: &crate::Image| (0..160).map(|x| im.data[60 * 160 + x][3]).sum::<f32>();
+    assert!((sum(&blurred) - sum(&sharp)).abs() < 4.0, "{} vs {}", sum(&blurred), sum(&sharp));
+    // The comp's motion blur switch and the render option turn it off.
+    p.comp_mut(cid).unwrap().enable_motion_blur = false;
+    assert!(partial(&render(&p, cid), 60) <= 4);
+    p.comp_mut(cid).unwrap().enable_motion_blur = true;
+    let r = Renderer::new(&p, &NoFootage, RenderOpts { motion_blur: false, ..Default::default() });
+    assert!(partial(&r.comp_frame(cid, Tick::ZERO), 60) <= 4);
+    // Shutter angle 0 has no exposure time: no smear.
+    p.comp_mut(cid).unwrap().shutter_angle = 0.0;
+    assert!(partial(&render(&p, cid), 60) <= 4);
+}
+
+#[test]
+fn blend_modes_and_occlusion_in_advanced_3d() {
+    let (mut p, cid) = project(120, 90);
+    let red = solid(&mut p, [1.0, 0.0, 0.0], 120, 90);
+    let gray = solid(&mut p, [0.5, 0.5, 0.5], 60, 40);
+    let blue = solid(&mut p, [0.0, 0.0, 1.0], 20, 20);
+    // Back: a red card; middle: a gray Multiply card; front: a small blue card on the left.
+    add(&mut p, cid, LayerSource::Solid { item: red }, |l| {
+        l.switches.three_d = true;
+    });
+    add(&mut p, cid, LayerSource::Solid { item: gray }, |l| {
+        l.switches.three_d = true;
+        l.blend_mode = effectcraft_color::BlendMode::Multiply;
+        set(l, "transform/position", Value::Vec3([60.0, 45.0, -20.0]));
+        set(l, "transform/anchor", Value::Vec3([30.0, 20.0, 0.0]));
+    });
+    add(&mut p, cid, LayerSource::Solid { item: blue }, |l| {
+        l.switches.three_d = true;
+        set(l, "transform/position", Value::Vec3([45.0, 45.0, -40.0]));
+        set(l, "transform/anchor", Value::Vec3([10.0, 10.0, 0.0]));
+    });
+    let img = render(&p, cid);
+    let at = |x: usize, y: usize| img.data[y * 120 + x];
+    // Multiply over red: half red, no gray.
+    let c = at(70, 45);
+    assert!((c[0] - 0.5).abs() < 0.02 && c[1] < 0.02 && c[2] < 0.02 && c[3] > 0.99, "multiplied {c:?}");
+    // Outside the gray card: plain red.
+    let r = at(115, 5);
+    assert!(r[0] > 0.98 && r[1] < 0.02, "{r:?}");
+    // The nearer blue card hides the Multiply card behind it.
+    let b = at(40, 45);
+    assert!(b[2] > 0.98 && b[0] < 0.02, "occluded {b:?}");
+    // Normal mode for comparison: gray covers the red.
+    p.comp_mut(cid).unwrap().layers[1].blend_mode = effectcraft_color::BlendMode::Normal;
+    let n = render(&p, cid).data[45 * 120 + 70];
+    assert!((n[0] - 0.5).abs() < 0.02 && (n[1] - 0.5).abs() < 0.02, "{n:?}");
+}
+
+#[test]
+fn track_mattes_in_advanced_3d() {
+    let (mut p, cid) = project(120, 90);
+    let white = solid(&mut p, [1.0, 1.0, 1.0], 120, 90);
+    let small = solid(&mut p, [1.0, 1.0, 1.0], 40, 30);
+    // Layer order (top first): the matte, then the matted layer.
+    add(&mut p, cid, LayerSource::Solid { item: white }, |l| l.switches.three_d = true);
+    add(&mut p, cid, LayerSource::Solid { item: small }, |l| {
+        l.switches.three_d = true;
+        l.switches.video = false;
+        // A 3D matte is seen through the camera.
+        set(l, "transform/position", Value::Vec3([30.0, 30.0, 0.0]));
+        set(l, "transform/anchor", Value::Vec3([20.0, 15.0, 0.0]));
+    });
+    let matte = p.comp(cid).unwrap().layers[0].id;
+    p.comp_mut(cid).unwrap().layers[1].track_matte = Some(effectcraft_project::TrackMatte { layer: matte, kind: effectcraft_project::MatteKind::Alpha });
+    let img = render(&p, cid);
+    let inside = img.data[30 * 120 + 30];
+    let outside = img.data[70 * 120 + 100];
+    assert!(inside[3] > 0.99 && inside[0] > 0.99, "{inside:?}");
+    assert!(outside[3] < 0.01, "{outside:?}");
+    // An inverted alpha matte keeps the outside instead.
+    p.comp_mut(cid).unwrap().layers[1].track_matte =
+        Some(effectcraft_project::TrackMatte { layer: matte, kind: effectcraft_project::MatteKind::AlphaInverted });
+    let img = render(&p, cid);
+    assert!(img.data[30 * 120 + 30][3] < 0.01 && img.data[70 * 120 + 100][3] > 0.99);
+}

@@ -17,7 +17,7 @@
 //!   pixels to their parent). Without a working space the sRGB curve is used.
 
 use effectcraft_color::{ColorSpace, Conversion};
-use effectcraft_project::ProjectSettings;
+use effectcraft_project::{HdrMode, ProjectSettings};
 use effectcraft_raster::Image;
 use rayon::prelude::*;
 
@@ -32,12 +32,24 @@ pub struct Pipe {
     pub linear: bool,
     /// Blend in linear light (and the working space is not already linear).
     pub linear_blend: bool,
+    /// The top-level output's space (sRGB unless Project Settings choose another).
+    pub out: ColorSpace,
+    /// HDR handling for standard-dynamic-range output.
+    pub hdr: HdrMode,
 }
 
 impl Pipe {
     pub fn of(s: &ProjectSettings) -> Pipe {
-        let linear = s.linearize && s.working_space.is_some();
-        Pipe { levels: s.bit_depth.levels(), space: s.working_space, linear, linear_blend: s.blend_linear && !linear }
+        // ACES working spaces are linear light by definition.
+        let linear = s.working_space.is_some_and(|w| s.linearize || w.is_linear());
+        Pipe {
+            levels: s.bit_depth.levels(),
+            space: s.working_space,
+            linear,
+            linear_blend: s.blend_linear && !linear,
+            out: s.output_space.unwrap_or(ColorSpace::Srgb),
+            hdr: s.hdr,
+        }
     }
 
     /// The space whose curve encodes working-space pixels (sRGB when unmanaged).
@@ -67,10 +79,22 @@ impl Pipe {
         self.linear_blend.then(|| Conversion::delinearize(self.curve()))
     }
 
-    /// Working space → sRGB display (top-level comp output).
+    /// Working space → the output space (top-level comp output; sRGB by default). `None` when
+    /// unmanaged or when [`Pipe::output_hdr`] applies.
     pub fn output(&self) -> Option<Conversion> {
         let ws = self.space?;
-        Conversion::new(ws, self.linear, ColorSpace::Srgb, false)
+        if self.output_hdr().is_some() {
+            return None;
+        }
+        Conversion::new(ws, self.linear, self.out, false)
+    }
+
+    /// Output with HDR compand / tone mapping (standard-dynamic-range outputs only): working
+    /// space → linear output primaries, the HDR curve, then the output's encoding.
+    pub fn output_hdr(&self) -> Option<(Option<Conversion>, HdrMode, Conversion)> {
+        let ws = self.space?;
+        (self.hdr != HdrMode::Clip && !self.out.is_hdr())
+            .then(|| (Conversion::new(ws, self.linear, self.out, true), self.hdr, Conversion::delinearize(self.out)))
     }
 
     /// One pixel clamped and quantised to the bit depth.
@@ -122,6 +146,7 @@ impl Pipe {
         let mut k = self.levels.map_or(0, |l| l as u64);
         k = k.wrapping_mul(31).wrapping_add(self.space.map_or(7, |s| s as u64 + 11));
         k = k.wrapping_mul(31).wrapping_add(self.linear as u64 * 2 + self.linear_blend as u64);
+        k = k.wrapping_mul(31).wrapping_add(self.out as u64 * 4 + self.hdr as u64);
         k
     }
 }
@@ -199,6 +224,45 @@ pub fn convert(img: &mut Image, c: &Conversion) {
             return;
         }
         let o = c.apply([p[0] / a, p[1] / a, p[2] / a]);
+        *p = [o[0] * a, o[1] * a, o[2] * a, a];
+    });
+}
+
+/// Compand: an exponential knee from 80%, approaching 1.0 (linear light, per channel).
+pub fn compand(v: f32) -> f32 {
+    const K: f32 = 0.8;
+    if v <= K { v } else { K + (1.0 - K) * (1.0 - (-(v - K) / (1.0 - K)).exp()) }
+}
+
+/// Extended Reinhard tone mapping of luminance with white at `W` (linear light).
+pub fn tone_map(c: [f32; 3]) -> [f32; 3] {
+    const W: f32 = 4.0;
+    let l = effectcraft_color::luminance(c[0], c[1], c[2]);
+    if l <= 0.0 {
+        return c;
+    }
+    let lm = l * (1.0 + l / (W * W)) / (1.0 + l);
+    let k = lm / l;
+    c.map(|v| v * k)
+}
+
+/// The HDR step of [`Pipe::output_hdr`] on premultiplied pixels.
+pub fn output_hdr(img: &mut Image, to_linear: Option<Conversion>, mode: HdrMode, encode: Conversion) {
+    img.data.par_iter_mut().for_each(|p| {
+        let a = p[3];
+        if a <= 0.0 {
+            return;
+        }
+        let mut c = [p[0] / a, p[1] / a, p[2] / a];
+        if let Some(t) = &to_linear {
+            c = t.apply(c);
+        }
+        c = match mode {
+            HdrMode::Clip => c,
+            HdrMode::Compand => c.map(compand),
+            HdrMode::ToneMap => tone_map(c),
+        };
+        let o = encode.apply(c);
         *p = [o[0] * a, o[1] * a, o[2] * a, a];
     });
 }
