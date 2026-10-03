@@ -89,6 +89,7 @@ These rows are in the dialog for After Effects parity and are stored, but nothin
 - `composition.hardwareAcceleratePanels`: Hardware Accelerate Composition, Layer and Footage Panels
 - `previews.showInternalWireframes`: Show Internal Wireframes
 - `previews.zoomQuality`: Viewer Zoom Quality
+- `previews.displayProfile`: Display Color Space
 - `appearance.useLabelColorForTabs`: Use Label Color for Related Tabs
 - `appearance.cycleMaskColors`: Cycle Mask Colors
 - `appearance.useGradients`: Use Gradients

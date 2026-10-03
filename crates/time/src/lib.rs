@@ -435,6 +435,55 @@ pub fn parse_timecode(input: &str, rate: FrameRate, drop_frame: bool, current: i
     })
 }
 
+/// Format a frame count as Feet + Frames (film footage counting) with `per_foot` frames per
+/// foot (35 mm film: 16, 16 mm: 40): `0012+07`. Negative counts get a leading `-`.
+pub fn format_feet_frames(frame: i64, per_foot: i64) -> String {
+    let pf = per_foot.max(1);
+    let sign = if frame < 0 { "-" } else { "" };
+    let a = frame.abs();
+    let w = if pf > 100 { 3 } else { 2 };
+    format!("{sign}{:04}+{:0w$}", a / pf, a % pf)
+}
+
+/// Parse a Feet + Frames field into a frame count: `12+07` (feet + frames; frames may overflow
+/// a foot), `-1+04`, a bare frame count (`250`), or `+n` / `-n` frames relative to `current`.
+pub fn parse_feet_frames(input: &str, per_foot: i64, current: i64) -> Result<i64, ParseError> {
+    let s = input.trim();
+    let bad = || ParseError(format!("not feet+frames: `{input}`"));
+    let num = |t: &str| -> Result<i64, ParseError> {
+        let t = t.trim();
+        if t.is_empty() {
+            return Ok(0);
+        }
+        if !t.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(bad());
+        }
+        t.parse::<i64>().map_err(|_| ParseError("number too large".into()))
+    };
+    if s.is_empty() {
+        return Err(ParseError("empty feet+frames".into()));
+    }
+    let (sign, body) = match s.as_bytes()[0] {
+        b'-' => (-1, &s[1..]),
+        b'+' => (1, &s[1..]),
+        _ => (0, s),
+    };
+    match body.rfind('+') {
+        Some(i) => {
+            let v = num(&body[..i])? * per_foot.max(1) + num(&body[i + 1..])?;
+            // A sign before feet+frames is the sign of the count, not a relative move.
+            Ok(if sign < 0 { -v } else { v })
+        }
+        None => {
+            let v = num(body)?;
+            Ok(match sign {
+                0 => v,
+                k => current + k * v,
+            })
+        }
+    }
+}
+
 /// Common audio sample rates offered in sequence settings.
 pub const SAMPLE_RATES: [i64; 6] = [32_000, 44_100, 48_000, 88_200, 96_000, 192_000];
 
@@ -523,6 +572,31 @@ mod tests {
             let r = FrameRate::COMMON[ri];
             let txt = format_timecode_frames(f, r, false);
             prop_assert_eq!(parse_timecode(&txt, r, false, 0).unwrap(), f);
+        }
+    }
+
+    #[test]
+    fn feet_and_frames() {
+        // 35 mm: 16 frames per foot; 16 mm: 40.
+        assert_eq!(format_feet_frames(0, 16), "0000+00");
+        assert_eq!(format_feet_frames(16 * 12 + 7, 16), "0012+07");
+        assert_eq!(format_feet_frames(95, 40), "0002+15");
+        assert_eq!(format_feet_frames(-20, 16), "-0001+04");
+        assert_eq!(parse_feet_frames("12+07", 16, 0), Ok(199));
+        assert_eq!(parse_feet_frames("0012+07", 16, 0), Ok(199));
+        assert_eq!(parse_feet_frames("2+15", 40, 0), Ok(95));
+        assert_eq!(parse_feet_frames("-1+04", 16, 0), Ok(-20));
+        assert_eq!(parse_feet_frames("1+20", 16, 0), Ok(36), "frames may overflow a foot");
+        assert_eq!(parse_feet_frames("250", 16, 0), Ok(250));
+        assert_eq!(parse_feet_frames("+10", 16, 100), Ok(110));
+        assert_eq!(parse_feet_frames("-10", 16, 100), Ok(90));
+        assert_eq!(parse_feet_frames("+", 16, 5), Ok(5));
+        assert!(parse_feet_frames("1:2", 16, 0).is_err());
+        assert!(parse_feet_frames("", 16, 0).is_err());
+        for f in [0, 1, 15, 16, 17, 1234, 99_999] {
+            for pf in [16, 40] {
+                assert_eq!(parse_feet_frames(&format_feet_frames(f, pf), pf, 0), Ok(f));
+            }
         }
     }
 }

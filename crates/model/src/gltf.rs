@@ -7,8 +7,9 @@
 //! (base colour, metallic-roughness, normal, occlusion and emissive textures; alpha modes;
 //! double-sided; `KHR_materials_emissive_strength`, `KHR_materials_unlit`), embedded or
 //! external PNG/JPEG images with sampler wrap modes, skins and animations (step, linear and
-//! cubic-spline translation/rotation/scale). Sparse accessors, morph targets, cameras and
-//! lights are ignored.
+//! cubic-spline translation/rotation/scale), perspective and orthographic cameras, and
+//! `KHR_lights_punctual` lights (directional, point, spot). Sparse accessors and morph targets
+//! are ignored.
 
 use std::sync::Arc;
 
@@ -363,6 +364,8 @@ pub fn parse(bytes: &[u8], resolve: &dyn Fn(&str) -> Option<Vec<u8>>) -> Result<
             matrix,
             mesh: idx(n, "mesh").filter(|&m| m < meshes.len()),
             skin: idx(n, "skin"),
+            camera: idx(n, "camera"),
+            light: n.get("extensions").and_then(|e| e.get("KHR_lights_punctual")).and_then(|e| idx(e, "light")),
             children: arr(n, "children").iter().filter_map(Value::as_u64).map(|c| c as usize).collect(),
         });
     }
@@ -434,7 +437,54 @@ pub fn parse(bytes: &[u8], resolve: &dyn Fn(&str) -> Option<Vec<u8>>) -> Result<
         animations.push(anim);
     }
 
-    Ok(Model { meshes, nodes, roots, materials, textures, skins, animations })
+    let cameras = arr(&j, "cameras").iter().enumerate().map(|(i, c)| camera(c, i)).collect();
+    let lights = j
+        .get("extensions")
+        .and_then(|e| e.get("KHR_lights_punctual"))
+        .map(|e| arr(e, "lights").iter().enumerate().map(|(i, l)| light(l, i)).collect())
+        .unwrap_or_default();
+    Ok(Model { meshes, nodes, roots, materials, textures, skins, animations, cameras, lights })
+}
+
+fn name_or(v: &Value, d: String) -> String {
+    v.get("name").and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_string).unwrap_or(d)
+}
+
+/// A glTF camera (glTF 2.0 §5.12): `perspective` {yfov, aspectRatio?, znear} or
+/// `orthographic` {xmag, ymag}.
+fn camera(c: &Value, i: usize) -> crate::ModelCamera {
+    let projection = match (c.get("type").and_then(Value::as_str), c.get("orthographic")) {
+        (Some("orthographic"), Some(o)) => crate::CameraProjection::Orthographic { xmag: num(o, "xmag", 1.0), ymag: num(o, "ymag", 1.0) },
+        _ => {
+            let p = c.get("perspective").cloned().unwrap_or(Value::Null);
+            crate::CameraProjection::Perspective {
+                yfov: num(&p, "yfov", 0.8).clamp(1e-3, 3.1),
+                aspect: p.get("aspectRatio").and_then(Value::as_f64),
+                znear: num(&p, "znear", 0.01),
+            }
+        }
+    };
+    crate::ModelCamera { name: name_or(c, format!("Camera {}", i + 1)), projection }
+}
+
+/// A `KHR_lights_punctual` light: type, color, intensity, range, spot cone angles.
+fn light(l: &Value, i: usize) -> crate::ModelLight {
+    let kind = match l.get("type").and_then(Value::as_str) {
+        Some("directional") => crate::ModelLightKind::Directional,
+        Some("spot") => {
+            let s = l.get("spot").cloned().unwrap_or(Value::Null);
+            let outer = num(&s, "outerConeAngle", std::f64::consts::FRAC_PI_4).clamp(1e-3, std::f64::consts::FRAC_PI_2);
+            crate::ModelLightKind::Spot { inner: num(&s, "innerConeAngle", 0.0).clamp(0.0, outer), outer }
+        }
+        _ => crate::ModelLightKind::Point,
+    };
+    crate::ModelLight {
+        name: name_or(l, format!("Light {}", i + 1)),
+        kind,
+        color: nums(l, "color", [1.0; 3]),
+        intensity: num(l, "intensity", 1.0).max(0.0),
+        range: l.get("range").and_then(Value::as_f64),
+    }
 }
 
 fn primitive(d: &Doc, p: &Value, materials: &[Material]) -> Result<Option<Primitive>> {

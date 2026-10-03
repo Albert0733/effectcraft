@@ -340,11 +340,15 @@ pub enum View3D {
     Custom1,
     Custom2,
     Custom3,
+    /// The comp's default camera (50 mm, looking at the comp centre), ignoring camera layers;
+    /// orbitable like the custom views.
+    Default,
 }
 
 impl View3D {
-    pub const ALL: [View3D; 10] = [
+    pub const ALL: [View3D; 11] = [
         View3D::ActiveCamera,
+        View3D::Default,
         View3D::Front,
         View3D::Left,
         View3D::Top,
@@ -367,6 +371,7 @@ impl View3D {
             View3D::Custom1 => "Custom View 1",
             View3D::Custom2 => "Custom View 2",
             View3D::Custom3 => "Custom View 3",
+            View3D::Default => "Default",
         }
     }
     /// Stable id used by commands (`activeCamera`, `front`, `custom1`…).
@@ -382,6 +387,7 @@ impl View3D {
             View3D::Custom1 => "custom1",
             View3D::Custom2 => "custom2",
             View3D::Custom3 => "custom3",
+            View3D::Default => "default",
         }
     }
     pub fn from_id(s: &str) -> Option<View3D> {
@@ -433,6 +439,7 @@ pub fn default_view_cam(v: View3D, w: f64, h: f64) -> ViewCam {
         View3D::Custom1 => custom(30.0, -20.0),
         View3D::Custom2 => custom(0.0, -35.0),
         View3D::Custom3 => custom(-30.0, -20.0),
+        View3D::Default => ViewCam { eye: arr(vec3(w / 2.0, h / 2.0, -zoom)), poi: arr(c), down: [0.0, 1.0, 0.0], zoom, ortho: false },
     }
 }
 
