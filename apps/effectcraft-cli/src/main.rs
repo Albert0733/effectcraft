@@ -4,6 +4,7 @@
 //! effectcraft-cli info                                        project + engine summary
 //! effectcraft-cli commands [--filter TEXT] [--enabled]        list engine commands
 //! effectcraft-cli exec <command-id> [--params JSON]           run one command
+//! effectcraft-cli exec --list [--filter TEXT] [--schemas]     list engine commands (as `commands`)
 //! effectcraft-cli run <id> <json> [<id> <json> …]             run several commands in order
 //! effectcraft-cli props <comp> <layer> [--flat] [--time S]    a layer's property tree (with paths)
 //! effectcraft-cli get <comp> <layer> <path> [--time S]        read a property
@@ -36,7 +37,7 @@ use serde_json::{Value, json};
 const USAGE: &str = "usage: effectcraft-cli <info|commands|exec|run|props|get|set|render-frame|render|script|mcp> [args] [--json]
   info                                     project + engine summary
   commands [--filter TEXT] [--enabled]     list engine commands
-  exec <command-id> [--params JSON]        run one engine command
+  exec <command-id> [--params JSON]        run one engine command (exec --list: list them, as `commands`)
   run <id> <json> [<id> <json> ...]        run several commands in order
   props <comp> <layer> [--flat] [--time S] a layer's property tree with paths
   get <comp> <layer> <path> [--time S]     read a property
@@ -346,23 +347,8 @@ fn run(cmd: &str, args: &Args, json_out: bool) -> Result<(), Failure> {
                 }
             }
         }
-        "commands" => {
-            let mut b = backend(args, false)?;
-            let v = tool(&mut b, "list_commands", json!({"filter": args.opt("--filter"), "enabled_only": args.flag("--enabled")}))?;
-            if json_out {
-                emit(&v, true);
-            } else {
-                for c in v.as_array().into_iter().flatten() {
-                    println!(
-                        "{:<36} {:<36} {:<16} {}",
-                        c["id"].as_str().unwrap_or(""),
-                        c["label"].as_str().unwrap_or(""),
-                        c["shortcut"].as_str().unwrap_or(""),
-                        c["params"].as_str().unwrap_or("")
-                    );
-                }
-            }
-        }
+        "commands" => list_commands_cmd(args, json_out)?,
+        "exec" if args.flag("--list") => list_commands_cmd(args, json_out)?,
         "script" => script_cmd(args, json_out)?,
         "exec" => {
             let Some(id) = args.pos.first().cloned() else { return usage_err("exec needs a command id") };
@@ -601,6 +587,27 @@ fn render(args: &Args, json_out: bool) -> Result<(), Failure> {
     }
     if json_out {
         emit(&json!({"rendered": results}), true);
+    }
+    Ok(())
+}
+
+/// `commands` / `exec --list`: every engine command (id, label, shortcut, params doc; with
+/// `--schemas` also each command's params JSON Schema).
+fn list_commands_cmd(args: &Args, json_out: bool) -> Result<(), Failure> {
+    let mut b = backend(args, false)?;
+    let v = tool(&mut b, "list_commands", json!({"filter": args.opt("--filter"), "enabled_only": args.flag("--enabled"), "schemas": args.flag("--schemas")}))?;
+    if json_out {
+        emit(&v, true);
+    } else {
+        for c in v.as_array().into_iter().flatten() {
+            println!(
+                "{:<36} {:<36} {:<16} {}",
+                c["id"].as_str().unwrap_or(""),
+                c["label"].as_str().unwrap_or(""),
+                c["shortcut"].as_str().unwrap_or(""),
+                c["params"].as_str().unwrap_or("")
+            );
+        }
     }
     Ok(())
 }

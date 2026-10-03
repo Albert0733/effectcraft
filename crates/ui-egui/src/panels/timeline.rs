@@ -839,6 +839,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         p.rect_filled(Rect::from_min_max(pos2(x - 3.0, nav.min.y - 1.0), pos2(x + 3.0, nav.max.y + 1.0)), 3.0, t.accent);
     }
     let nresp = ui.interact(nav, egui::Id::new("tl-nav"), Sense::drag());
+    app.auto.add("timeline.navigator", nav, "Time navigator");
     if nresp.dragged() {
         let d = nresp.drag_delta().x as f64 / nav.width() as f64 * comp.duration.seconds();
         app.ui.timeline.start = (app.ui.timeline.start + d).clamp(0.0, comp.duration.seconds());
@@ -1159,6 +1160,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     let lr = Rect::from_center_size(pos2(cw.label + 10.0, cy), vec2(12.0, 12.0));
                     lp.rect_filled(lr, 2.0, t.label(layer.label));
                     let lresp = ui.interact(lr, egui::Id::new(("label", layer.id.0)), Sense::click());
+                    app.auto.add(&format!("timeline.layer.{}.label", layer.id.0), lr, layer.label.name());
                     lresp.context_menu(|ui| {
                         for lab in effectcraft_engine::color::Label::ALL {
                             let name = if lab == effectcraft_engine::color::Label::None { lab.name().to_string() } else { app.session.prefs.label_name(lab) };
@@ -1403,10 +1405,12 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     // Interactions: move body, trim edges.
                     let edge_w = 6.0;
                     let body = ui.interact(bar.shrink2(vec2(edge_w, 0.0)), egui::Id::new(("bar", layer.id.0)), Sense::click_and_drag());
-                    let lin =
-                        ui.interact(Rect::from_min_max(bar.min, pos2(bar.min.x + edge_w, bar.max.y)), egui::Id::new(("bar-in", layer.id.0)), Sense::drag());
-                    let lout =
-                        ui.interact(Rect::from_min_max(pos2(bar.max.x - edge_w, bar.min.y), bar.max), egui::Id::new(("bar-out", layer.id.0)), Sense::drag());
+                    let (in_r, out_r) =
+                        (Rect::from_min_max(bar.min, pos2(bar.min.x + edge_w, bar.max.y)), Rect::from_min_max(pos2(bar.max.x - edge_w, bar.min.y), bar.max));
+                    let lin = ui.interact(in_r, egui::Id::new(("bar-in", layer.id.0)), Sense::drag());
+                    let lout = ui.interact(out_r, egui::Id::new(("bar-out", layer.id.0)), Sense::drag());
+                    app.auto.add(&format!("timeline.layer.{}.bar.in", layer.id.0), in_r, "Trim In");
+                    app.auto.add(&format!("timeline.layer.{}.bar.out", layer.id.0), out_r, "Trim Out");
                     if lin.hovered() || lout.hovered() || lin.dragged() || lout.dragged() {
                         ctx.set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
                     }
@@ -1496,7 +1500,9 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     }
                     lp.text(pos2(ir.max.x + 4.0, cy), Align2::LEFT_CENTER, "Inverted", Tokens::ui(11.0), t.text_dim);
                 }
-                let gr = ui.interact(Rect::from_min_max(pos2(indent + 8.0, r.min.y), pos2(cw.switches, r.max.y)), egui::Id::new(("grow", uid)), Sense::click());
+                let gr_rect = Rect::from_min_max(pos2(indent + 8.0, r.min.y), pos2(cw.switches, r.max.y));
+                let gr = ui.interact(gr_rect, egui::Id::new(("grow", uid)), Sense::click());
+                app.auto.add(&format!("timeline.group.{uid}.name"), gr_rect, name);
                 if gr.clicked() && uid & WAVE_BIT == 0 {
                     actions.push(("prop.select".into(), json!({"layer": layer.id.0, "prop": uid, "selectKeys": false})));
                 }
@@ -1710,11 +1716,9 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     Tokens::ui(12.0),
                     if prop.has_expression() { Color32::from_rgb(0xe8, 0x7c, 0x5c) } else { t.text },
                 );
-                let name_resp = ui.interact(
-                    Rect::from_min_max(pos2(name_x, r.min.y), pos2(cw.switches - 2.0, r.max.y)),
-                    egui::Id::new(("pname", uid)),
-                    Sense::click_and_drag(),
-                );
+                let name_rect = Rect::from_min_max(pos2(name_x, r.min.y), pos2(cw.switches - 2.0, r.max.y));
+                let name_resp = ui.interact(name_rect, egui::Id::new(("pname", uid)), Sense::click_and_drag());
+                app.auto.add(&format!("timeline.prop.{uid}.name"), name_rect, &prop.name);
                 if name_resp.drag_started() {
                     // Drop on the Essential Graphics panel to expose the property.
                     egui::DragAndDrop::set_payload(&ctx, crate::panels::DragPayload::Property { layer: layer.id.0, prop: *uid });

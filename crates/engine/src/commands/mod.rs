@@ -213,7 +213,16 @@ pub fn text_preset_list() -> Vec<(String, String)> {
 }
 
 pub fn find(id: &str) -> Option<&'static CommandSpec> {
-    command_specs().iter().find(|c| c.id == id)
+    // Every command execution looks its spec up: index the ~2,000 ids once.
+    static INDEX: OnceLock<std::collections::HashMap<&'static str, usize>> = OnceLock::new();
+    let index = INDEX.get_or_init(|| {
+        let mut m = std::collections::HashMap::new();
+        for (i, c) in command_specs().iter().enumerate() {
+            m.entry(c.id).or_insert(i);
+        }
+        m
+    });
+    index.get(id).map(|&i| &command_specs()[i])
 }
 
 // ---------- parameter validation (agents) ----------
@@ -254,6 +263,63 @@ pub fn accepted_params(doc: &str) -> Option<Vec<String>> {
         }
     }
     None
+}
+
+/// Top-level pieces of a params doc (split at depth-0 commas), e.g. `{layer?, path|prop, value}`
+/// → `["layer?", "path|prop", "value"]`.
+fn doc_pieces(doc: &str) -> Option<Vec<String>> {
+    let body = doc.trim().strip_prefix('{')?;
+    let (mut out, mut cur, mut depth) = (Vec::new(), String::new(), 0i32);
+    for c in body.chars() {
+        match c {
+            '{' | '[' | '(' => depth += 1,
+            ']' | ')' => depth -= 1,
+            '}' if depth == 0 => {
+                if !cur.trim().is_empty() {
+                    out.push(cur.trim().to_string());
+                }
+                return Some(out);
+            }
+            '}' => depth -= 1,
+            ',' if depth == 0 => {
+                if !cur.trim().is_empty() {
+                    out.push(cur.trim().to_string());
+                }
+                cur.clear();
+                continue;
+            }
+            _ => {}
+        }
+        cur.push(c);
+    }
+    None
+}
+
+/// The JSON Schema of a command's parameters, derived from its params doc: one property per
+/// accepted key (described by its piece of the doc), no others. MCP `describe_command` and
+/// `list_commands {schemas: true}` serve it.
+pub fn params_schema(spec: &CommandSpec) -> Value {
+    let mut props = serde_json::Map::new();
+    let mut required = vec![];
+    for piece in doc_pieces(spec.params).unwrap_or_default() {
+        let keys = accepted_params(&format!("{{{piece}}}")).unwrap_or_default();
+        let alternatives = keys.len() > 1;
+        for k in keys {
+            // `key?` is optional; so is any key with alternatives (`path|prop`).
+            let optional = alternatives || piece.contains(&format!("{k}?"));
+            if !optional && !required.contains(&k) {
+                required.push(k.clone());
+            }
+            props.insert(k, serde_json::json!({"description": piece}));
+        }
+    }
+    serde_json::json!({
+        "type": "object",
+        "description": spec.params,
+        "properties": props,
+        "required": required,
+        "additionalProperties": accepted_params(spec.params).is_none(),
+    })
 }
 
 /// Keys every command understands (comp targeting, gesture merging) and accepted aliases.

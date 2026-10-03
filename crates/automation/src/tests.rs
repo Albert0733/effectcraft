@@ -317,3 +317,58 @@ fn run_script_round_trip() {
     let (c, err) = call(&mut bare, "run_script", json!({"code": "1"}));
     assert!(err && c[0]["text"].as_str().unwrap().contains("not available"), "{c:?}");
 }
+
+/// The agent-interface audit (MCP side): every registered engine command is listed by
+/// `list_commands` with a label, params doc and JSON Schema, described by `describe_command`,
+/// and routed by `execute_command` (an unknown parameter is rejected by that very command
+/// without running it).
+#[test]
+fn every_engine_command_is_reachable_over_mcp() {
+    let mut s = server();
+    let tools = rpc(&mut s, 1, "tools/list", json!({}))["tools"].as_array().unwrap().clone();
+    let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
+    for want in ["list_commands", "describe_command", "execute_command", "add_effect", "list_effects", "get_state", "render_frame", "get_layer", "set_property"]
+    {
+        assert!(names.contains(&want), "{want}");
+    }
+    let listed = call_json(&mut s, "list_commands", json!({"schemas": true}));
+    let listed: std::collections::HashMap<&str, &Value> = listed.as_array().unwrap().iter().map(|c| (c["id"].as_str().unwrap(), c)).collect();
+    let specs = effectcraft_engine::command_specs();
+    assert_eq!(listed.len(), specs.len());
+    for spec in specs {
+        let c = listed.get(spec.id).unwrap_or_else(|| panic!("{} not listed", spec.id));
+        assert!(!spec.label.trim().is_empty(), "{}: no label", spec.id);
+        assert!(spec.params.trim_start().starts_with('{'), "{}: params doc {:?}", spec.id, spec.params);
+        assert_eq!(c["schema"]["type"], "object", "{}", spec.id);
+        assert!(c["schema"]["properties"].is_object(), "{}", spec.id);
+        let d = call_json(&mut s, "describe_command", json!({"command": spec.id}));
+        assert_eq!(d["schema"], c["schema"], "{}", spec.id);
+        let (content, err) = call(&mut s, "execute_command", json!({"command": spec.id, "params": {"__audit": 1}}));
+        let text = content[0]["text"].as_str().unwrap_or_default();
+        assert!(err && text.contains("unknown parameter") && text.contains(spec.id), "{}: {text}", spec.id);
+    }
+}
+
+#[test]
+fn high_level_tools_add_effect_and_report_state() {
+    let mut s = server();
+    call_json(&mut s, "execute_command", json!({"command": "comp.new", "params": {"name": "A", "width": 64, "height": 48, "duration": 1}}));
+    let l = call_json(&mut s, "execute_command", json!({"command": "layer.newSolid", "params": {"color": "#808080"}}))["layer"].clone();
+    let fx = call_json(&mut s, "list_effects", json!({"filter": "gaussian"}));
+    assert!(fx.as_array().unwrap().iter().any(|e| e["id"] == "ec.blur.gaussian" && e["gpu"].is_boolean()), "{fx}");
+    let r = call_json(&mut s, "add_effect", json!({"layer": l, "effect": "Gaussian Blur", "values": {"blurriness": 7}}));
+    assert_eq!(r["path"], "effects/#1", "{r}");
+    assert!(r["params"].as_array().unwrap().iter().any(|p| p["path"] == "effects/#1/blurriness" && p["value"] == 7.0), "{r}");
+    // A second effect lands at #2.
+    let r = call_json(&mut s, "add_effect", json!({"layer": l, "effect": "ec.color.levels"}));
+    assert_eq!(r["path"], "effects/#2", "{r}");
+    let p = call_json(&mut s, "get_property", json!({"layer": l, "path": "effects/#1/blurriness"}));
+    assert_eq!(p["value"], 7.0, "{p}");
+    let st = call_json(&mut s, "get_state", json!({}));
+    assert!(st["state"].is_object() && st["app"]["commands"].as_u64().unwrap() > 500, "{st}");
+    assert!(st["app"]["effects"]["total"].as_u64().unwrap() > 200, "{st}");
+    assert!(st["app"]["parity"]["summary"].as_str().unwrap().contains("parity"), "{st}");
+    // Unknown effects fail cleanly.
+    let (c, err) = call(&mut s, "add_effect", json!({"layer": l, "effect": "No Such Effect"}));
+    assert!(err && c[0]["text"].as_str().unwrap().contains("unknown effect"), "{c:?}");
+}
