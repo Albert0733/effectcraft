@@ -7,7 +7,7 @@ use crate::{CATEGORIES, registry};
 /// Effects whose implementation is known to fall short of the reference behaviour:
 /// `(effect id, what is missing)`. Everything else in the registry is implemented in full as far
 /// as the public behaviour documentation describes it.
-pub const PARTIAL: &[(&str, &str)] = &[("ec.vr.digitalglitch", "reduced control set"), ("ec.vr.converter", "common layouts only")];
+pub const PARTIAL: &[(&str, &str)] = &[];
 
 /// Whether Effect Controls shows parameter (or twirl-down group) `param` (spec id path,
 /// `group/param`) of an instance of effect `effect`, given the instance's current values

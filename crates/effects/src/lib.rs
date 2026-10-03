@@ -601,6 +601,8 @@ pub const PARAM_GROUPS: &[(&str, &str)] = &[
     ("heightMapControls", "Height Map Controls"),
     ("wireframeControls", "Wireframe Controls"),
     ("ground", "Ground"),
+    ("geometric", "Geometric Distortion"),
+    ("target", "Target Point"),
     ("simulation", "Simulation"),
     ("producer1", "Producer 1"),
     ("producer2", "Producer 2"),

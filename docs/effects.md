@@ -3,11 +3,11 @@
 <!-- Generated from the effect registry (crates/effects/src/catalog.rs); do not edit by hand.
      Regenerate: UPDATE_DOCS=1 cargo test -p effectcraft-effects --lib effects_doc_is_current -->
 
-EffectCraft ships 303 effects with 2942 parameters in total, grouped into the same categories as the Effects & Presets panel. Every effect is our own implementation, written from public behaviour descriptions and standard image-processing literature. Parameter names, order, popup options, units, defaults and ranges follow the reference application so that projects, expressions and muscle memory carry over.
+EffectCraft ships 303 effects with 2955 parameters in total, grouped into the same categories as the Effects & Presets panel. Every effect is our own implementation, written from public behaviour descriptions and standard image-processing literature. Parameter names, order, popup options, units, defaults and ranges follow the reference application so that projects, expressions and muscle memory carry over.
 
 - **GPU**: 24 effects also run on the GPU compositor with identical results.
 - **32**: 303 effects process 32-bit float (HDR, overbright) pixels without clamping.
-- **Status**: 301 implemented in full, 2 partial (what is missing is listed).
+- **Status**: 303 implemented in full, 0 partial (what is missing is listed).
 
 Effects are addressed by id (`ec.<category>.<name>`) or display name in commands, scripts and the control channel, and every parameter by its id (`effects/#1/blurriness`).
 
@@ -221,9 +221,9 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 | VR Blur | `ec.vr.blur` | 2 |  | 32 | Implemented |
 | VR Chromatic Aberrations | `ec.vr.chromaticaberrations` | 8 |  | 32 | Implemented |
 | VR Color Gradients | `ec.vr.colorgradients` | 19 |  | 32 | Implemented |
-| VR Converter | `ec.vr.converter` | 8 |  | 32 | Partial: common layouts only |
+| VR Converter | `ec.vr.converter` | 8 |  | 32 | Implemented |
 | VR De-Noise | `ec.vr.denoise` | 4 |  | 32 | Implemented |
-| VR Digital Glitch | `ec.vr.digitalglitch` | 8 |  | 32 | Partial: reduced control set |
+| VR Digital Glitch | `ec.vr.digitalglitch` | 21 |  | 32 | Implemented |
 | VR Fractal Noise | `ec.vr.fractalnoise` | 16 |  | 32 | Implemented |
 | VR Glow | `ec.vr.glow` | 7 |  | 32 | Implemented |
 | VR Plane to Sphere | `ec.vr.planetosphere` | 6 |  | 32 | Implemented |
