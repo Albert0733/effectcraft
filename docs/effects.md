@@ -3,11 +3,11 @@
 <!-- Generated from the effect registry (crates/effects/src/catalog.rs); do not edit by hand.
      Regenerate: UPDATE_DOCS=1 cargo test -p effectcraft-effects --lib effects_doc_is_current -->
 
-EffectCraft ships 303 effects with 2872 parameters in total, grouped into the same categories as the Effects & Presets panel. Every effect is our own implementation, written from public behaviour descriptions and standard image-processing literature. Parameter names, order, popup options, units, defaults and ranges follow the reference application so that projects, expressions and muscle memory carry over.
+EffectCraft ships 303 effects with 2892 parameters in total, grouped into the same categories as the Effects & Presets panel. Every effect is our own implementation, written from public behaviour descriptions and standard image-processing literature. Parameter names, order, popup options, units, defaults and ranges follow the reference application so that projects, expressions and muscle memory carry over.
 
 - **GPU**: 24 effects also run on the GPU compositor with identical results.
 - **32**: 303 effects process 32-bit float (HDR, overbright) pixels without clamping.
-- **Status**: 292 implemented in full, 11 partial (what is missing is listed).
+- **Status**: 296 implemented in full, 7 partial (what is missing is listed).
 
 Effects are addressed by id (`ec.<category>.<name>`) or display name in commands, scripts and the control channel, and every parameter by its id (`effects/#1/blurriness`).
 
@@ -157,9 +157,9 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 | Optics Compensation | `ec.distort.opticscompensation` | 6 |  | 32 | Implemented |
 | Polar Coordinates | `ec.distort.polar` | 2 |  | 32 | Implemented |
 | Puppet | `ec.distort.puppet` | 1 |  | 32 | Implemented |
-| Reshape | `ec.distort.reshape` | 6 |  | 32 | Partial: no correspondence points |
+| Reshape | `ec.distort.reshape` | 6 |  | 32 | Implemented |
 | Ripple | `ec.distort.ripple` | 7 |  | 32 | Implemented |
-| Rolling Shutter Repair | `ec.distort.rollingshutterrepair` | 5 |  | 32 | Partial: Pixel Motion Detail has no effect |
+| Rolling Shutter Repair | `ec.distort.rollingshutterrepair` | 5 |  | 32 | Implemented |
 | Smear | `ec.distort.smear` | 8 |  | 32 | Implemented |
 | Spherize | `ec.distort.spherize` | 2 |  | 32 | Implemented |
 | Transform | `ec.distort.transform` | 12 | GPU | 32 | Implemented |
@@ -188,7 +188,7 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 | Effect | Id | Params | GPU | 32 | Status |
 |---|---|---:|:-:|:-:|---|
 | 4-Color Gradient | `ec.generate.fourcolor` | 12 |  | 32 | Implemented |
-| Advanced Lightning | `ec.generate.advancedlightning` | 16 |  | 32 | Partial: no Alpha Obstacle; most Expert Settings missing |
+| Advanced Lightning | `ec.generate.advancedlightning` | 24 |  | 32 | Implemented |
 | Audio Spectrum | `ec.generate.audiospectrum` | 23 |  | 32 | Implemented |
 | Audio Waveform | `ec.generate.audiowaveform` | 17 |  | 32 | Implemented |
 | Beam | `ec.generate.beam` | 11 |  | 32 | Implemented |
@@ -287,7 +287,7 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 | Gaussian Blur (Legacy) | `ec.obsolete.gaussianlegacy` | 2 |  | 32 | Implemented |
 | Lightning | `ec.obsolete.lightning` | 25 |  | 32 | Implemented |
 | Luma Key | `ec.key.luma` | 5 |  | 32 | Implemented |
-| Path Text | `ec.obsolete.pathtext` | 21 |  | 32 | Partial: no kerning, shear/scale, line spacing, fade time or jitter |
+| Path Text | `ec.obsolete.pathtext` | 32 |  | 32 | Implemented |
 | Reduce Interlace Flicker | `ec.blur.reduceflicker` | 1 |  | 32 | Implemented |
 | Spill Suppressor | `ec.key.spill` | 3 |  | 32 | Implemented |
 

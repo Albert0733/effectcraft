@@ -657,6 +657,7 @@ pub const PARAM_GROUPS: &[(&str, &str)] = &[
     ("orientation", "Orientation"),
     ("paragraph", "Paragraph"),
     ("preview", "Preview"),
+    ("jitterSettings", "Jitter Settings"),
     // Generate.
     ("positionsColors", "Positions & Colors"),
     ("feather", "Feather"),
@@ -737,6 +738,8 @@ pub const TIME_DEPENDENT: &[&str] = &[
     "ec.obsolete.lightning",
     "ec.text.timecode",
     "ec.text.numbers",
+    // Path Text's jitter changes every frame.
+    "ec.obsolete.pathtext",
     // Time effects read neighbouring frames of the layer.
     "ec.time.echo",
     "ec.time.posterizetime",
