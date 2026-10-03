@@ -22,9 +22,13 @@ Tracking 88%, Effects 85%, Web 65%.
 What is left, in priority order: the web app's depth (threads, storage, audio, non-blocking
 renders); stroke taper/wave and multi-segment dashes; variable mask feather points; camera iris/bokeh and focus-link commands; Render Queue field render, crop/resize and templates;
 approximated effects (Subspace Warp, Key Cleaner) and Liquify's viewer brush; OpenType features and variable
-font axes; AI/EPS/PDF import; more codecs; 59 preferences not yet wired; ScriptUI;
-Lumetri Scopes, Footage, Media Browser and Metadata panels; Content-Aware Fill; face tracking; and
-the "better than After Effects" items (a plug-in API, branching history; GPU particles landed in M12.7).
+font axes; AI/EPS/PDF import; more codecs; 59 preferences not yet wired;
+Lumetri Scopes, Footage, Media Browser and Metadata panels; Content-Aware Fill; and face tracking.
+ScriptUI (dialogs that block `show()`, palettes, dockable ScriptUI panels, File ▸ Scripts install
+and sample scripts), puppet pin recording and the remaining "better than After Effects" items — a
+versioned effect plug-in API with sandboxed WebAssembly plug-ins ([plugins.md](plugins.md)),
+branching undo history in the History panel, and a bit-identical rendering test across runs and
+thread counts — landed in M13.1 (GPU particles landed in M12.7).
 
 The sections below are the original audit (morning of 2 October, ≈ 64%) and its updates, kept for
 history.
@@ -112,10 +116,10 @@ the disk cache in the formats wave; the 3D Camera Tracker in M12.6.)
 | Output | 90% | 3.0 | multiple output modules, pre-render (WebM with VP9 alpha + Opus and WAV/AIFF audio-only landed: VP9 is intra-only, Opus CELT-only) |
 | Audio | 85% | 0.5 | audio to keyframes |
 | Import | 88% | 2.0 | AI/EPS/PDF vector footage, PSD smart objects and 3D layers (PSD as footage/composition/retain layer sizes, SVG footage and Create Shapes from Vector Layer landed) |
-| Automation | ≈ 90% | 0.8 | scripting covers the documented core object model (AUT-2, M14.4: `app`, project items, comps, layers, properties and keyframes, text documents, markers, render queue, Script Console, `effectcraft-cli script`, MCP `run_script`); still missing: ScriptUI panels/dialogs, `.jsxbin`, sockets |
+| Automation | ≈ 97% | 0.3 | `.jsxbin`, sockets, ScriptUI resource strings and custom `onDraw` graphics (the core object model landed in M14.4; ScriptUI windows/dialogs/dockable panels with `scriptui.*` agent commands, File ▸ Scripts install + sample scripts, and the effect plug-in API (EFF-6, WebAssembly) landed in M13.1) |
 | Shapes | ≈ 80% | 1.5 | Lottie can't carry stroke taper/wave (stroke Taper and Wave, Dash 2/Gap 2/Dash 3/Gap 3 and radial-gradient Highlight Length/Angle landed in M13.5; pen tool for shape paths and vertex editing in M6.5) |
 | Compositions | ≈ 80% | 3.5 | Mocha-style planar tracks for templates, Essential Graphics' rare controls (font menus, mirrored properties) (the marker dialog, Composition Flowchart, Essential Graphics with master properties, `.ectemplate` templates and Responsive Design — Time landed: CMP-6, CMP-7) |
-| Animation | 67% | 10.0 | puppet, Wiggler/Smoother/Motion Sketch (motion-path handles and the graph editor transform box landed in M5.8; keyframe colour labels and Select Keyframe Label Group, Graph Editor snapping to markers / layer ends in M13.5) |
+| Animation | 70% | 9.0 | puppet depth beyond pins and recording (puppet pin recording with Record Options landed in M13.1), Wiggler/Smoother/Motion Sketch (motion-path handles and the graph editor transform box landed in M5.8; keyframe colour labels and Select Keyframe Label Group, Graph Editor snapping to markers / layer ends in M13.5) |
 | Text | ≈ 91% | 0.8 | no OpenType feature panel, no extruded strokes, variable-axis animation changes outlines but not advances (vertical Roman / Tate-Chu-Yoko, forced LTR paragraphs, caret on animated and path text, Variable Font Axes and Lottie style runs landed in M13.5; extruded, bevelled text in M7.6; per-character styles, paragraph settings, on-canvas editing and the `sourceText` style API in M9.9–M9.10) |
 | Web | 85% | 1.0 | viewer frames and Roto Brush propagation still on the page's thread; GPU effects in the browser (browser storage, Web Audio, Web Worker renders/analyses, WebGPU viewer and offline install landed in M15.2) |
 | 3D | 85% | 6.5 | multi-view layouts, iris shapes in Advanced 3D's depth of field, collapsed 3D precomps in Advanced 3D, the Extended Viewer; stereo rigs, orbit nulls, lights controlled by the camera, cameras/lights from glTF models, environment backgrounds, Advanced 3D motion blur, blend modes and track mattes landed in M7.7; Classic 3D iris-shaped bokeh with highlights, progressive depth of field on tilted layers and the focus-link commands landed in M13.5; Advanced 3D (glTF/OBJ models, primitives, extruded text and shapes, PBR, image-based light, shadow maps, GPU rasteriser) in M7.4–M7.6 |

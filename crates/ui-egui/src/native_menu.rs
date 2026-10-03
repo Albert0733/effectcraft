@@ -154,7 +154,31 @@ pub fn build(app: &EffectcraftApp) -> NativeMenu {
                             kids.push(NativeNode::Separator);
                         }
                     }
+                    let dynamic = |kids: &mut Vec<NativeNode>, menu: &str| {
+                        for (k, (label, command, params)) in crate::menus::dynamic_entries(app, menu).into_iter().enumerate() {
+                            kids.push(NativeNode::Item(NativeItem {
+                                id: format!("{id}.d{k}"),
+                                label,
+                                command,
+                                params,
+                                shortcut: None,
+                                accelerator: None,
+                                enabled: true,
+                                checked: None,
+                            }));
+                        }
+                    };
+                    if label == "Scripts" {
+                        dynamic(&mut kids, "Scripts");
+                        if !kids.is_empty() {
+                            kids.push(NativeNode::Separator);
+                        }
+                    }
                     rec(app, children, &id, &mut kids);
+                    if label == "Window" && !crate::menus::dynamic_entries(app, "Window").is_empty() {
+                        kids.push(NativeNode::Separator);
+                        dynamic(&mut kids, "Window");
+                    }
                     out.push(NativeNode::Submenu { label: label.clone(), children: kids });
                 }
                 MenuNode::Item(e) => {

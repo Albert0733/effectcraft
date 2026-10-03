@@ -36,6 +36,8 @@ pub enum PanelKind {
     MaskInterpolation,
     ScriptConsole,
     EssentialGraphics,
+    /// A dockable ScriptUI panel (a script from the ScriptUI Panels folder), by script window id.
+    ScriptPanel(u32),
 }
 
 impl PanelKind {
@@ -95,6 +97,7 @@ impl PanelKind {
             PanelKind::MaskInterpolation => "Mask Interpolation",
             PanelKind::ScriptConsole => "Script Console",
             PanelKind::EssentialGraphics => "Essential Graphics",
+            PanelKind::ScriptPanel(_) => "ScriptUI Panel",
         }
     }
     pub fn id(self) -> String {

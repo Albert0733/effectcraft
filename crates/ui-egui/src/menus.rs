@@ -456,6 +456,12 @@ pub fn frontend(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, p: Valu
             app.dialog = Some(crate::Dialog::About);
             Value::Null
         }
+        // Window ▸ <ScriptUI panel>: dock (or bring forward) the panel the script built.
+        "window.scriptPanel" => {
+            let id = p.get("window").and_then(Value::as_u64).ok_or("no ScriptUI panel window")? as u32;
+            app.show_panel(PanelKind::ScriptPanel(id));
+            json!({"window": id})
+        }
         "layer.style.options" => {
             crate::panels::layer_styles_dialog::open(app, &p)?;
             Value::Null
@@ -791,7 +797,9 @@ fn file_dialog(app: &mut EffectcraftApp, id: &str, params: &Value) -> Option<Res
         "file.exportLottie" => ("path", Ask::Save("Animation.json")),
         "file.importLottie" => ("path", Ask::Open(&["json", "lottie"])),
         "render.saveCurrentPreview" => ("path", Ask::Save("Preview.mp4")),
-        "file.runScript" => ("path", Ask::Open(&["jsx", "js", "jsonl", "json", "txt"])),
+        "file.runScript" if params.get("name").is_none() => ("path", Ask::Open(&["jsx", "js", "jsonl", "json", "txt"])),
+        "file.installScript" | "file.installScriptUIPanel" => ("path", Ask::Open(&["jsx", "js"])),
+        "effect.plugins.load" if params.get("folder").is_none() => ("path", Ask::Open(&["wasm", "wat"])),
         "file.replaceFootage" => ("path", Ask::Import),
         "file.collectFiles" => ("folder", Ask::Save("Collected Files")),
         "essential.exportTemplate" => ("path", Ask::Save("Template.ectemplate")),
@@ -1106,6 +1114,39 @@ pub fn handle_shortcuts(app: &mut EffectcraftApp, ctx: &egui::Context) {
     }
 }
 
+/// Menu entries listed from the session: (label, command, params). File ▸ Scripts starts with
+/// the installed and sample scripts; the Window menu ends with the ScriptUI panels (as in After
+/// Effects, by file name).
+pub fn dynamic_entries(app: &EffectcraftApp, menu: &str) -> Vec<(String, String, Value)> {
+    let panels = match menu {
+        "Scripts" => false,
+        "Window" => true,
+        _ => return vec![],
+    };
+    effectcraft_engine::commands::scripts::scripts(&app.session)
+        .into_iter()
+        .filter(|e| e.panel == panels)
+        .map(|e| {
+            let cmd = if panels { "window.scriptPanel" } else { "file.runScript" };
+            let params = json!({"name": e.name});
+            (e.name, cmd.to_string(), params)
+        })
+        .collect()
+}
+
+fn dynamic_rows(app: &mut EffectcraftApp, ui: &mut egui::Ui, menu: &str, clicked: &mut Option<(String, Value)>) -> usize {
+    let rows = dynamic_entries(app, menu);
+    for (i, (label, cmd, params)) in rows.iter().enumerate() {
+        let r = ui.add(egui::Button::new((gutter(false), label.as_str())));
+        app.auto.add(&format!("menu.{}.{i}", if menu == "Window" { "scriptPanels" } else { "scripts" }), r.rect, label);
+        if r.clicked() {
+            *clicked = Some((cmd.clone(), params.clone()));
+            ui.close();
+        }
+    }
+    rows.len()
+}
+
 /// Draw the in-window menu bar (the engine's AE menu tree).
 pub fn menu_bar(app: &mut EffectcraftApp, ui: &mut egui::Ui) {
     let ctx = ui.ctx().clone();
@@ -1118,6 +1159,10 @@ pub fn menu_bar(app: &mut EffectcraftApp, ui: &mut egui::Ui) {
                     let r = ui.menu_button(label, |ui| {
                         ui.set_min_width(if label == "Effect" { 200.0 } else { 280.0 });
                         menu_nodes(app, ui, children, &mut clicked);
+                        if label == "Window" && !dynamic_entries(app, "Window").is_empty() {
+                            ui.separator();
+                            dynamic_rows(app, ui, "Window", &mut clicked);
+                        }
                     });
                     app.auto.add(&format!("menu.{label}"), r.response.rect, label);
                 }
@@ -1155,6 +1200,16 @@ fn menu_nodes(app: &mut EffectcraftApp, ui: &mut egui::Ui, nodes: &[MenuNode], c
                         }
                     }
                     ui.separator();
+                    menu_nodes(app, ui, children, clicked);
+                });
+            }
+            MenuNode::Submenu { label, children } if label == "Scripts" => {
+                // File ▸ Scripts: installed and sample scripts, then Install… / Run Script File….
+                ui.menu_button((gutter(false), label.as_str()), |ui| {
+                    ui.set_min_width(280.0);
+                    if dynamic_rows(app, ui, "Scripts", clicked) > 0 {
+                        ui.separator();
+                    }
                     menu_nodes(app, ui, children, clicked);
                 });
             }

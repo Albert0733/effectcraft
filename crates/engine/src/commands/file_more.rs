@@ -828,7 +828,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Run Script File...",
             ["File", "Scripts"],
             None,
-            "{path (.jsx/.js JavaScript, or a .jsonl/.json command script) | steps: [{command, params}] | name (an installed or sample script, see file.scripts.list)}",
+            "{path (.jsx/.js JavaScript, or a .jsonl/.json command script) | name (an installed or sample script, see file.scripts.list) | steps: [{command, params}]}",
             always,
             run_script
         ),

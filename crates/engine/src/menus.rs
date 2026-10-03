@@ -757,6 +757,7 @@ Effect
   Remove All | effect.removeAll
   ---
   Manage Effects... | effect.manage
+  Load Effect Plug-in... | effect.plugins.load
   ---
   @effects
 Animation

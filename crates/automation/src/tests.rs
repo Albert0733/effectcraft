@@ -266,6 +266,32 @@ fn bridge_rejects_non_loopback() {
 }
 
 #[test]
+fn script_ui_and_history_tools() {
+    let mut sess = Session::default();
+    effectcraft_script::install(&mut sess);
+    let mut s = McpServer::new(Backend::headless(sess));
+    let code = "var d = new Window('dialog', 'Ask'); var g = d.add('group'); g.add('button', undefined, 'OK', {name: 'ok'}); \
+                if (d.show() == 1) app.project.items.addComp('Answered', 64, 64, 1, 1, 24); 'done'";
+    let r = call_json(&mut s, "run_script", json!({"code": code}));
+    assert_eq!(r["waiting"], json!(true), "{r}");
+    let list = call_json(&mut s, "script_ui", json!({}));
+    assert_eq!(list[0]["title"], "Ask");
+    let tree = call_json(&mut s, "script_ui", json!({"action": "get"}));
+    assert_eq!(tree["root"]["children"][0]["children"][0]["name"], "ok");
+    let r = call_json(&mut s, "script_ui", json!({"action": "click", "widget": "ok"}));
+    assert_eq!(r["result"], json!("done"), "{r}");
+    // History: undo the comp, make another, and jump back to the first on its branch.
+    call_json(&mut s, "undo", json!({}));
+    call_json(&mut s, "execute_command", json!({"command": "comp.new", "params": {"name": "Other", "width": 64, "height": 64}}));
+    let h = call_json(&mut s, "history", json!({}));
+    let branch = h["states"].as_array().unwrap().iter().find(|n| n["depth"] == 1).unwrap()["index"].clone();
+    let h = call_json(&mut s, "history", json!({"goto": branch}));
+    let cur = h["current"].as_u64().unwrap() as usize;
+    assert_eq!(h["states"][cur]["depth"], 0, "the jumped-to state is now the working line");
+    assert!(call_json(&mut s, "get_project", json!({})).to_string().contains("Answered"));
+}
+
+#[test]
 fn run_script_round_trip() {
     let mut sess = Session::default();
     effectcraft_script::install(&mut sess);

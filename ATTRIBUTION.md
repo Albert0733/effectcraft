@@ -61,6 +61,11 @@ Screenshots of EffectCraft itself, rendered headlessly, showing only procedurall
 - Procedural demo content (solids, shapes, gradients, text animations): `crates/engine/src/demo.rs`.
 - Text animator presets (Typewriter, Fade Up Characters, Bounce In Words, Tracking In, Scramble, Blur In, Jitter,
   Drop In Lines): `crates/engine/presets/text_animators.json` (sidecar `.attribution`).
+- Sample scripts (File ▸ Scripts) and ScriptUI panel: `crates/engine/scripts/Rename Layers.jsx`,
+  `crates/engine/scripts/Sort Layers by In Point.jsx`, `crates/engine/scripts/Create Null at Selected Layers.jsx`,
+  `crates/engine/scripts/Render Queue Batch.jsx`, `crates/engine/scripts/ScriptUI Panels/Layer Tools.jsx`
+  (sidecars `.attribution`).
+- Example effect plug-in: `examples/plugins/posterize-bands` (plug-in API v1, WebAssembly).
 
 ## First-party brand marks
 
