@@ -173,7 +173,25 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     crate::header::paint_logo(&p, Rect::from_min_size(pos2(x0, y), vec2(40.0, 40.0)));
     p.text(pos2(x0 + 52.0, y + 12.0), Align2::LEFT_CENTER, "EffectCraft", Tokens::semibold(22.0), Color32::WHITE);
     p.text(pos2(x0 + 52.0, y + 32.0), Align2::LEFT_CENTER, format!("Version {}", env!("CARGO_PKG_VERSION")), Tokens::ui(11.0), t.text_faint);
-    y += 64.0;
+    y += 56.0;
+    // Home / Learn tabs.
+    for (k, (label, learn)) in [("Home", false), ("Learn", true)].into_iter().enumerate() {
+        let r = Rect::from_min_size(pos2(x0 + k as f32 * 84.0, y), vec2(78.0, 28.0));
+        let resp = ui.interact(r, egui::Id::new(("home-tab", label)), Sense::click());
+        let on = app.ui.home_learn == learn;
+        if on || resp.hovered() {
+            p.rect_filled(r, 6.0, if on { Color32::from_rgb(0x2e, 0x31, 0x3b) } else { t.hover });
+        }
+        p.text(r.center(), Align2::CENTER_CENTER, label, Tokens::medium(13.0), if on { Color32::WHITE } else { t.text_dim });
+        if on {
+            p.line_segment([pos2(r.min.x + 12.0, r.max.y - 1.0), pos2(r.max.x - 12.0, r.max.y - 1.0)], Stroke::new(2.0, t.accent));
+        }
+        app.auto.add(&format!("home.tab.{}", label.to_ascii_lowercase()), r, label);
+        if resp.clicked() {
+            app.ui.home_learn = learn;
+        }
+    }
+    y += 40.0;
     for (label, id, primary) in [
         ("New Project", "file.newProject", true),
         ("Open Project…", "file.open", false),
@@ -239,13 +257,18 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     }
     let community_bottom = cy + sib.len().div_ceil(per_row) as f32 * 28.0;
 
-    // ---- recent projects.
+    // ---- recent projects (or the Learn tab's tutorials).
     let (rx, mut ry, rw) = if wide {
         let rx = x0 + left_w + 40.0;
         (rx, rect.min.y + pad + 6.0, rect.max.x - pad - rx)
     } else {
         (x0, community_bottom + 24.0, left_w)
     };
+    if app.ui.home_learn {
+        super::learn::home_tab(app, ui, Rect::from_min_max(pos2(rx, ry), pos2(rx + rw, rect.max.y - 8.0)));
+        run_actions(app, &ctx, actions);
+        return;
+    }
     p.text(pos2(rx, ry + 6.0), Align2::LEFT_CENTER, "Recent", Tokens::semibold(16.0), Color32::WHITE);
     let entries = recent_entries(&app.session.prefs);
     if !entries.is_empty() {
@@ -304,9 +327,13 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         ry += row_h;
     }
 
+    run_actions(app, &ctx, actions);
+}
+
+fn run_actions(app: &mut EffectcraftApp, ctx: &egui::Context, actions: Vec<(&str, serde_json::Value)>) {
     for (id, params) in actions {
         let before = (app.session.path.clone(), app.session.revision);
-        match crate::menus::invoke(app, &ctx, id, params) {
+        match crate::menus::invoke(app, ctx, id, params) {
             Err(e) => app.ui.status = e,
             // Leave Home unless only the list changed or a file dialog was cancelled.
             Ok(_) => {
@@ -382,8 +409,46 @@ mod tests {
             "home.help.discord",
             "home.help.github",
             "home.recent.0",
+            "home.tab.home",
+            "home.tab.learn",
         ] {
             assert!(app.auto.find(id).is_some(), "{id}");
         }
+    }
+
+    #[test]
+    fn learn_tab_lists_and_starts_tutorials() {
+        let mut app = EffectcraftApp::new(effectcraft_engine::Session::default());
+        app.ui.start_screen = true;
+        app.ui.home_learn = true;
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx, &app.tokens);
+        let frame = |app: &mut EffectcraftApp| {
+            ctx.run_ui(Default::default(), |ui| {
+                app.auto.begin_frame();
+                show(app, ui, Rect::from_min_size(pos2(0.0, 0.0), vec2(1200.0, 800.0)));
+                crate::panels::learn::coach(app, ui.ctx());
+            })
+            .textures_delta
+            .clear();
+        };
+        frame(&mut app);
+        frame(&mut app);
+        for t in effectcraft_engine::learn::tutorials() {
+            assert!(app.auto.find(&format!("home.learn.{}.start", t.id)).is_some(), "{}", t.id);
+        }
+        assert!(app.auto.find("home.recent.0").is_none());
+        // Start through the session (as the Start button does); the coach card appears.
+        app.session.execute("learn.start", json!({"id": "animate-title"})).unwrap();
+        app.ui.start_screen = false;
+        frame(&mut app);
+        frame(&mut app);
+        for id in ["learn.coach", "learn.showMe", "learn.next", "learn.close"] {
+            assert!(app.auto.find(id).is_some(), "{id}");
+        }
+        // Show me performs the step and the coach moves on.
+        app.session.execute("learn.step", json!({"action": "showMe"})).unwrap();
+        assert_eq!(app.session.learn.as_ref().unwrap().step, 1);
+        assert!(app.session.active_comp().is_some());
     }
 }

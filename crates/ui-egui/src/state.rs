@@ -597,6 +597,9 @@ pub struct UiState {
     #[serde(default = "yes")]
     pub preview_audio: bool,
     pub start_screen: bool,
+    /// The Home screen shows its Learn tab (tutorials) instead of the recent projects.
+    #[serde(default)]
+    pub home_learn: bool,
     /// Composition ▸ Preview ▸ Cache Frames When Idle.
     pub cache_when_idle: bool,
     /// Tracker panel ▸ Motion Source chosen without a tracker yet (layer id).
@@ -666,6 +669,7 @@ impl Default for UiState {
             preview_cache_first: false,
             preview_audio: true,
             start_screen: false,
+            home_learn: false,
             cache_when_idle: false,
             tracker_source: None,
             layer_panel: None,

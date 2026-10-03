@@ -14,6 +14,7 @@ pub mod commands;
 pub mod config;
 pub mod demo;
 pub mod jobs;
+pub mod learn;
 pub mod links;
 pub mod logging;
 pub mod mask_track;
@@ -351,6 +352,8 @@ pub struct Session {
     /// Finished tasks, newest last (Progress panel, `jobs.list`).
     pub job_log: Vec<jobs::JobRecord>,
     pub next_task_id: u64,
+    /// The running Learn tutorial (Home ▸ Learn), see [`learn`].
+    pub learn: Option<learn::Progress>,
 }
 
 /// A script to run (see [`Session::script`]).
@@ -412,6 +415,7 @@ impl Default for Session {
             tasks: vec![],
             job_log: vec![],
             next_task_id: 1,
+            learn: None,
         }
     }
 }
@@ -433,6 +437,7 @@ impl Session {
             }
         }
         let r = (spec.run)(self, &params)?;
+        self.learn_observe(id, &params);
         if spec.journal {
             self.journal.push((id.to_string(), params));
             if self.journal.len() > 10_000 {
