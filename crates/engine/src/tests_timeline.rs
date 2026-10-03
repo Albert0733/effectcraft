@@ -594,3 +594,27 @@ fn arrange_above_moves_layers_to_a_place_in_the_stack() {
     assert!(s.execute("layer.arrange", json!({"layers": ["B"], "above": "B"})).is_err());
     assert!(s.execute("layer.arrange", json!({"layers": ["B"], "above": "Nope"})).is_err());
 }
+
+#[test]
+fn toggle_transform_key_covers_selected_layers_separated_position_and_3d_rotation() {
+    let mut s = Session::default();
+    s.execute("comp.new", json!({"name": "K", "width": 100, "height": 100, "duration": 2})).unwrap();
+    let a = s.execute("layer.newSolid", json!({"name": "A", "width": 10, "height": 10})).unwrap()["layer"].as_u64().unwrap();
+    let b = s.execute("layer.newSolid", json!({"name": "B", "width": 10, "height": 10})).unwrap()["layer"].as_u64().unwrap();
+    s.execute("layer.select", json!({"layers": [a, b]})).unwrap();
+    let keys = |s: &Session, l: u64, path: &str| prop(s, l, path).keys.len();
+    // Both selected layers get an Opacity key, in one undo step; again removes them.
+    let steps = s.history.undo.len();
+    s.execute("keys.toggleTransform", json!({"prop": "opacity"})).unwrap();
+    assert_eq!((keys(&s, a, "transform/opacity"), keys(&s, b, "transform/opacity")), (1, 1));
+    assert_eq!(s.history.undo.len(), steps + 1);
+    s.execute("keys.toggleTransform", json!({"prop": "opacity"})).unwrap();
+    assert_eq!(keys(&s, a, "transform/opacity"), 0);
+    // A 3D layer's Rotation key covers Orientation and X/Y/Z Rotation.
+    s.execute("layer.setSwitch", json!({"layers": [a], "switch": "threeD", "value": true})).unwrap();
+    s.execute("keys.toggleTransform", json!({"layers": [a], "prop": "rotation"})).unwrap();
+    for p in ["orientation", "rotationX", "rotationY", "rotation"] {
+        assert_eq!(keys(&s, a, &format!("transform/{p}")), 1, "{p}");
+    }
+    assert!(s.execute("keys.toggleTransform", json!({"prop": "skew"})).is_err());
+}

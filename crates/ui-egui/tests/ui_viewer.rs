@@ -646,3 +646,100 @@ fn timeline_rename_commits_on_enter_and_on_click_away() {
     key(&mut h, egui::Key::Escape, Default::default());
     assert_eq!(name(&h), "Hand");
 }
+
+/// Press `k` twice within one frame (a quick double press: the harness' frames are long).
+fn key_twice(h: &mut Harness<'_, EffectcraftApp>, k: egui::Key) {
+    for _ in 0..2 {
+        h.input_mut().events.push(Event::Key { key: k, physical_key: None, pressed: true, repeat: false, modifiers: Default::default() });
+        h.input_mut().events.push(Event::Key { key: k, physical_key: None, pressed: false, repeat: false, modifiers: Default::default() });
+    }
+    h.run_steps(2);
+}
+
+#[test]
+fn property_shortcuts_reveal_and_key_transform_properties() {
+    let mut h = harness();
+    h.state_mut().session.execute("layer.select", json!({"layers": ["Box"]})).unwrap();
+    h.run_steps(2);
+    let t = |h: &Harness<'_, EffectcraftApp>, p: &str| shown(h, prop_uid(h, "Box", &format!("transform/{p}")));
+    let only = |h: &Harness<'_, EffectcraftApp>, want: &[&str]| {
+        for p in ["anchor", "position", "scale", "rotation", "opacity"] {
+            assert_eq!(t(h, p), want.contains(&p), "{p} shown? want {want:?}");
+        }
+    };
+    let none = egui::Modifiers::default();
+    // P, then T: one property at a time; Shift+S adds Scale; P again hides.
+    key(&mut h, egui::Key::P, none);
+    only(&h, &["position"]);
+    key(&mut h, egui::Key::T, none);
+    only(&h, &["opacity"]);
+    key(&mut h, egui::Key::S, egui::Modifiers::SHIFT);
+    only(&h, &["scale", "opacity"]);
+    key(&mut h, egui::Key::A, none);
+    only(&h, &["anchor"]);
+    key(&mut h, egui::Key::R, none);
+    only(&h, &["rotation"]);
+    // Alt+Shift+P: a Position keyframe at the current time; again removes it.
+    let pos_keys = |h: &Harness<'_, EffectcraftApp>| {
+        let id = layer_id(h, "Box");
+        h.state().session.active_comp().unwrap().layer(LayerId(id)).unwrap().props.prop("transform/position").unwrap().keys.len()
+    };
+    let alt_shift = egui::Modifiers { alt: true, shift: true, ..Default::default() };
+    key(&mut h, egui::Key::P, alt_shift);
+    assert_eq!(pos_keys(&h), 1);
+    key(&mut h, egui::Key::P, alt_shift);
+    assert_eq!(pos_keys(&h), 0);
+    // U: only keyframed properties (Opacity animated); U again later hides; UU modified ones.
+    h.state_mut().session.execute("prop.addKey", json!({"layer": "Box", "path": "transform/opacity", "time": 0, "value": 50})).unwrap();
+    h.state_mut().session.execute("prop.addKey", json!({"layer": "Box", "path": "transform/opacity", "time": 1, "value": 100})).unwrap();
+    h.run_steps(2);
+    key(&mut h, egui::Key::U, none);
+    only(&h, &["opacity"]);
+    h.run_steps(40);
+    key(&mut h, egui::Key::U, none);
+    only(&h, &[]);
+    h.state_mut().session.execute("prop.set", json!({"layer": "Box", "path": "transform/rotation", "value": 30})).unwrap();
+    h.run_steps(40);
+    key_twice(&mut h, egui::Key::U);
+    assert!(t(&h, "opacity") && t(&h, "rotation"), "UU: animated and changed properties");
+    assert!(!t(&h, "scale"), "an untouched property stays hidden");
+    // Ctrl+`: twirl the selected layer open, then closed.
+    h.run_steps(40);
+    key(&mut h, egui::Key::Backtick, egui::Modifiers::COMMAND);
+    let id = layer_id(&h, "Box");
+    assert!(h.state().ui.timeline.open_layers.contains(&id) && h.state().ui.timeline.reveal.is_empty());
+    key(&mut h, egui::Key::Backtick, egui::Modifiers::COMMAND);
+    assert!(!h.state().ui.timeline.open_layers.contains(&id));
+}
+
+#[test]
+fn double_press_shortcuts_reveal_their_second_set() {
+    let mut h = harness();
+    h.state_mut().session.execute("layer.select", json!({"layers": ["Box"]})).unwrap();
+    h.state_mut().session.execute("prop.setExpression", json!({"layer": "Box", "path": "transform/scale", "expression": "value"})).unwrap();
+    h.run_steps(2);
+    let reveal = |h: &Harness<'_, EffectcraftApp>| h.state().ui.timeline.reveal.clone();
+    // EE: properties with expressions (Scale), replacing E's effects.
+    key_twice(&mut h, egui::Key::E);
+    assert_eq!(reveal(&h), vec!["expressions"]);
+    assert!(shown(&h, prop_uid(&h, "Box", "transform/scale")));
+    h.run_steps(40);
+    // TT: Mask Opacity; MM: every mask property; a single M: Mask Path.
+    key_twice(&mut h, egui::Key::T);
+    assert_eq!(reveal(&h), vec!["maskOpacity"]);
+    h.run_steps(40);
+    key(&mut h, egui::Key::M, Default::default());
+    assert_eq!(reveal(&h), vec!["maskPath"]);
+    h.run_steps(40);
+    key_twice(&mut h, egui::Key::M);
+    assert_eq!(reveal(&h), vec!["masks"]);
+    h.run_steps(40);
+    // RR Time Remap, AA Material Options, PP paint/puppet, SS selected properties, FF missing effects.
+    for (k, want) in
+        [(egui::Key::R, "timeRemap"), (egui::Key::A, "material"), (egui::Key::P, "paint"), (egui::Key::S, "selected"), (egui::Key::F, "missingEffects")]
+    {
+        key_twice(&mut h, k);
+        assert_eq!(reveal(&h), vec![want], "{k:?}{k:?}");
+        h.run_steps(40);
+    }
+}

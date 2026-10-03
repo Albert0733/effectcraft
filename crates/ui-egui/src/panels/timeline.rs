@@ -423,6 +423,7 @@ fn prop_visible(p: &Property, layer: &Layer) -> bool {
 fn reveal_matches(p: &Property, path_matches: &[&str], kind: &str) -> bool {
     match kind {
         "animated" => p.is_animated() || p.has_expression(),
+        "expressions" => p.has_expression(),
         _ => path_matches.contains(&p.match_id.as_str()),
     }
 }
@@ -497,8 +498,11 @@ fn reveal_targets(kind: &str) -> Option<(&'static str, &'static [&'static str])>
         "opacity" => ("transform", &["opacity"]),
         "anchor" => ("transform", &["anchor"]),
         "feather" => ("masks", &["feather"]),
+        "maskPath" => ("masks", &["path"]),
+        "maskOpacity" => ("masks", &["opacity"]),
         "levels" => ("audio", &["levels"]),
-        "animated" => ("", &[]),
+        "timeRemap" => ("", &["timeRemap"]),
+        "animated" | "expressions" => ("", &[]),
         _ => return None,
     })
 }
@@ -620,6 +624,28 @@ fn reveal_rows(app: &EffectcraftApp, l: &Layer, rows: &mut Vec<Row>) {
     {
         group_rows(rows, fx, true);
     }
+    // PP: paint, Roto Brush and Puppet effects; FF: effects whose plug-in is missing.
+    for (k, keep) in [
+        ("paint", &(|id: &str| matches!(id, "ec.paint.paint" | "ec.matte.rotobrush" | "ec.distort.puppet")) as &dyn Fn(&str) -> bool),
+        ("missingEffects", &|id: &str| effectcraft_engine::effects::find(id).is_none()),
+    ] {
+        if has(k)
+            && let Some(fx) = l.effects()
+        {
+            let mut only = fx.clone();
+            only.children.retain(|c| matches!(c, Node::Group(g) if matches!(&g.kind, GroupKind::Effect { effect } if keep(effect))));
+            group_rows(rows, &only, true);
+        }
+    }
+    // AA: Material Options (3D layers).
+    if has("material")
+        && let Some(m) = l.props.sub("materialOptions")
+        && l.is_3d()
+    {
+        let mut only = PropGroup::new(0, "", "");
+        only.children.push(Node::Group(m.clone()));
+        group_rows(rows, &only, false);
+    }
     // P/S/R/T/A/F/L/animated: matching properties, in tree order, each once.
     let mut wanted = std::collections::BTreeSet::new();
     for kind in &tl.reveal {
@@ -640,7 +666,12 @@ fn reveal_rows(app: &EffectcraftApp, l: &Layer, rows: &mut Vec<Row>) {
         collect_props(&l.props, &mut found, &|p| wanted.contains(&p.uid));
         rows.extend(found.into_iter().map(|uid| Row { layer: l.id, depth: 1, kind: RowKind::Prop { uid } }));
     }
-    if has("props") {
+    // SS: the selected properties and groups (as Animation ▸ Reveal Properties shows them).
+    let selected: std::collections::BTreeSet<u64> = app.session.state.selected_props.iter().filter(|(lid, _)| *lid == l.id).map(|(_, u)| *u).collect();
+    if has("props") || has("selected") {
+        let picked: std::collections::BTreeSet<u64> =
+            if has("props") { tl.reveal_props.iter().copied().chain(selected.iter().copied().filter(|_| has("selected"))).collect() } else { selected };
+        let reveal_props = &picked;
         // Animation ▸ Reveal Properties…: the engine picked the uids.
         fn groups_in<'a>(g: &'a PropGroup, set: &std::collections::BTreeSet<u64>, out: &mut Vec<&'a PropGroup>) {
             for sg in g.groups() {
@@ -652,7 +683,7 @@ fn reveal_rows(app: &EffectcraftApp, l: &Layer, rows: &mut Vec<Row>) {
             }
         }
         let mut groups = vec![];
-        groups_in(&l.props, &tl.reveal_props, &mut groups);
+        groups_in(&l.props, reveal_props, &mut groups);
         for g in groups {
             let open = tl.open_groups.contains(&g.uid);
             rows.push(Row {
@@ -665,7 +696,7 @@ fn reveal_rows(app: &EffectcraftApp, l: &Layer, rows: &mut Vec<Row>) {
             }
         }
         let mut found = vec![];
-        collect_props(&l.props, &mut found, &|p| prop_visible(p, l) && tl.reveal_props.contains(&p.uid) && !wanted.contains(&p.uid));
+        collect_props(&l.props, &mut found, &|p| prop_visible(p, l) && reveal_props.contains(&p.uid) && !wanted.contains(&p.uid));
         rows.extend(found.into_iter().map(|uid| Row { layer: l.id, depth: 1, kind: RowKind::Prop { uid } }));
     }
     if has("waveform")

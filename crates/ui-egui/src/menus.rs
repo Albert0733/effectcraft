@@ -61,6 +61,14 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("timeline.reveal.masks", "Reveal Masks", [], Some("M")),
     uic!("timeline.reveal.feather", "Reveal Mask Feather", [], Some("F")),
     uic!("timeline.reveal.levels", "Reveal Audio Levels (press twice: Waveform)", [], Some("L")),
+    uic!("timeline.reveal.timeRemap", "Reveal Time Remap", [], None),
+    uic!("timeline.reveal.expressions", "Reveal Expressions", [], None),
+    uic!("timeline.reveal.maskOpacity", "Reveal Mask Opacity", [], None),
+    uic!("timeline.reveal.maskPath", "Reveal Mask Path", [], None),
+    uic!("timeline.reveal.material", "Reveal Material Options", [], None),
+    uic!("timeline.reveal.paint", "Reveal Paint, Roto Brush and Puppet", [], None),
+    uic!("timeline.reveal.selected", "Reveal Selected Properties", [], None),
+    uic!("timeline.reveal.missingEffects", "Reveal Missing Effects", [], None),
     uic!("timeline.reveal.waveform", "Reveal Audio Waveform", [], None),
     uic!("timeline.revealAdd.position", "Add Position to Revealed Properties", [], Some("Shift+P")),
     uic!("timeline.revealAdd.scale", "Add Scale to Revealed Properties", [], Some("Shift+S")),
@@ -77,7 +85,13 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("timeline.search", "Search Timeline", [], None),
     uic!("flowchart.options", "Flowchart Options", [], None),
     uic!("flowchart.graph", "Flowchart Graph", [], None),
-    uic!("timeline.collapseAll", "Collapse All", [], Some("Cmd+`")),
+    uic!("timeline.collapseAll", "Collapse All", [], None),
+    uic!("timeline.twirlSelected", "Twirl Selected Layers Open / Closed", [], Some("Cmd+`")),
+    uic!("timeline.keyAt.anchor", "Add or Remove Anchor Point Keyframe", [], Some("Alt+Shift+A")),
+    uic!("timeline.keyAt.position", "Add or Remove Position Keyframe", [], Some("Alt+Shift+P")),
+    uic!("timeline.keyAt.scale", "Add or Remove Scale Keyframe", [], Some("Alt+Shift+S")),
+    uic!("timeline.keyAt.rotation", "Add or Remove Rotation Keyframe", [], Some("Alt+Shift+R")),
+    uic!("timeline.keyAt.opacity", "Add or Remove Opacity Keyframe", [], Some("Alt+Shift+T")),
     uic!("tool.selection", "Selection Tool", [], Some("V")),
     uic!("tool.hand", "Hand Tool", [], Some("H")),
     uic!("tool.zoom", "Zoom Tool", [], Some("Z")),
@@ -110,12 +124,38 @@ pub fn panel_command_id(p: PanelKind) -> String {
 /// The reveal shortcuts (P, S, R, T, A, E, M, F, L…). `add` (Shift+key) adds the property to
 /// (or removes it from) those already revealed instead of replacing them.
 pub fn reveal(app: &mut EffectcraftApp, kind: &str, now: f64, add: bool) {
-    // AE's double-press shortcuts: L then L again quickly reveals the Waveform (LL).
-    let kind = match app.last_reveal.take() {
-        Some((k, t)) if k == "levels" && kind == "levels" && now - t < 0.6 => "waveform",
-        _ => kind,
+    // The double-press shortcuts: the same key again within 0.6 s reveals its second set (LL
+    // Waveform, TT Mask Opacity, MM all mask properties, EE Expressions, RR Time Remap, AA
+    // Material Options, PP paint / Roto Brush / Puppet, SS selected properties, FF missing
+    // effects). A single M shows Mask Path.
+    let double = |k: &str| -> Option<&'static str> {
+        Some(match k {
+            "levels" => "waveform",
+            "opacity" => "maskOpacity",
+            "masks" => "masks",
+            "effects" => "expressions",
+            "rotation" => "timeRemap",
+            "anchor" => "material",
+            "position" => "paint",
+            "scale" => "selected",
+            "feather" => "missingEffects",
+            _ => return None,
+        })
     };
-    app.last_reveal = Some((kind.to_string(), now));
+    let pressed = kind;
+    // (With Shift a second press removes the property again instead.)
+    let again = !add && matches!(app.last_reveal.take(), Some((k, t)) if k == pressed && now - t < 0.6);
+    app.last_reveal = Some((if again { String::new() } else { pressed.to_string() }, now));
+    let kind = match (again, double(pressed)) {
+        (true, Some(d)) => {
+            // The second press replaces what the first one revealed.
+            let first = if pressed == "masks" { "maskPath" } else { pressed };
+            app.ui.timeline.reveal.retain(|k| k != first);
+            d
+        }
+        _ if pressed == "masks" => "maskPath",
+        _ => pressed,
+    };
     let tl = &mut app.ui.timeline;
     let present = tl.reveal.iter().any(|k| k == kind);
     let sel: Vec<u64> = if app.session.state.selected_layers.is_empty() {
@@ -207,6 +247,9 @@ pub fn invoke(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, params: V
         }
         reveal(app, k, now, false);
         return Ok(Value::Null);
+    }
+    if let Some(k) = id.strip_prefix("timeline.keyAt.") {
+        return run_engine(app, ctx, "keys.toggleTransform", json!({"prop": k}));
     }
     if let Some(k) = id.strip_prefix("timeline.revealAdd.") {
         reveal(app, k, now, true);
@@ -357,6 +400,21 @@ pub fn invoke(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, params: V
             app.ui.timeline.open_layers.clear();
             app.ui.timeline.open_groups.clear();
             app.ui.timeline.reveal.clear();
+        }
+        // Ctrl+`: twirl the selected layers open (all closed ones) or closed (all open). From a
+        // reveal shortcut's view it opens their full property trees.
+        "timeline.twirlSelected" => {
+            let sel: Vec<u64> = app.session.state.selected_layers.iter().map(|l| l.0).collect();
+            let tl = &mut app.ui.timeline;
+            let revealing = !tl.reveal.is_empty();
+            tl.reveal.clear();
+            if !revealing && sel.iter().all(|l| tl.open_layers.contains(l)) {
+                for l in &sel {
+                    tl.open_layers.remove(l);
+                }
+            } else {
+                tl.open_layers.extend(sel);
+            }
         }
         "timeline.workAreaBegin" => return app.session.execute("comp.workArea", json!({"set": "begin"})).map_err(|e| e.to_string()),
         "timeline.workAreaEnd" => return app.session.execute("comp.workArea", json!({"set": "end"})).map_err(|e| e.to_string()),
