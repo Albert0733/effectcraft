@@ -5,7 +5,7 @@
 
 EffectCraft ships 303 effects with 2434 parameters in total, grouped into the same categories as the Effects & Presets panel. Every effect is our own implementation, written from public behaviour descriptions and standard image-processing literature. Parameter names, order, popup options, units, defaults and ranges follow the reference application so that projects, expressions and muscle memory carry over.
 
-- **GPU**: 24 effects also run on the GPU compositor with identical results.
+- **GPU**: 34 effects also run on the GPU compositor with identical results.
 - **32**: 303 effects process 32-bit float (HDR, overbright) pixels without clamping.
 - **Status**: 261 implemented in full, 42 partial (what is missing is listed).
 
@@ -88,7 +88,7 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 | Auto Color | `ec.color.autocolor` | 6 |  | 32 | Implemented |
 | Auto Contrast | `ec.color.autocontrast` | 5 |  | 32 | Implemented |
 | Auto Levels | `ec.color.autolevels` | 5 |  | 32 | Implemented |
-| Black & White | `ec.color.blackwhite` | 8 |  | 32 | Implemented |
+| Black & White | `ec.color.blackwhite` | 8 | GPU | 32 | Implemented |
 | Brightness & Contrast | `ec.color.brightnesscontrast` | 3 | GPU | 32 | Implemented |
 | Broadcast Colors | `ec.color.broadcast` | 3 |  | 32 | Implemented |
 | CC Color Neutralizer | `ec.color.cccolorneutralizer` | 11 |  | 32 | Implemented |
@@ -97,12 +97,12 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 | CC Toner | `ec.color.cctoner` | 7 |  | 32 | Implemented |
 | Change Color | `ec.color.changecolor` | 9 |  | 32 | Implemented |
 | Change to Color | `ec.color.changetocolor` | 9 |  | 32 | Implemented |
-| Channel Mixer | `ec.color.channelmixer` | 13 |  | 32 | Implemented |
-| Color Balance | `ec.color.colorbalance` | 10 |  | 32 | Implemented |
+| Channel Mixer | `ec.color.channelmixer` | 13 | GPU | 32 | Implemented |
+| Color Balance | `ec.color.colorbalance` | 10 | GPU | 32 | Implemented |
 | Color Balance (HLS) | `ec.color.colorbalancehls` | 3 |  | 32 | Implemented |
 | Color Link | `ec.color.colorlink` | 6 |  | 32 | Implemented |
 | Color Stabilizer | `ec.color.colorstabilizer` | 6 |  | 32 | Implemented |
-| Colorama | `ec.color.colorama` | 5 |  | 32 | Partial: no Add Phase, editable Output Cycle, Modify, Pixel Selection or Masking |
+| Colorama | `ec.color.colorama` | 5 | GPU | 32 | Partial: no Add Phase, editable Output Cycle, Modify, Pixel Selection or Masking |
 | Curves | `ec.color.curves` | 0 | GPU | 32 | Partial: no Channel popup |
 | Equalize | `ec.color.equalize` | 2 |  | 32 | Implemented |
 | Exposure | `ec.color.exposure` | 14 | GPU | 32 | Implemented |
@@ -111,7 +111,7 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 | Leave Color | `ec.color.leavecolor` | 5 |  | 32 | Implemented |
 | Levels | `ec.color.levels` | 7 | GPU | 32 | Partial: master channel only (no Channel popup) |
 | Levels (Individual Controls) | `ec.color.levelsic` | 27 |  | 32 | Implemented |
-| Lumetri Color | `ec.color.lumetri` | 38 |  | 32 | Partial: no HSL Secondary, hue/saturation curves, HDR mode or look files |
+| Lumetri Color | `ec.color.lumetri` | 38 | GPU | 32 | Partial: no HSL Secondary, hue/saturation curves, HDR mode or look files |
 | OCIO CDL Transform | `ec.color.ociocdl` | 12 |  | 32 | Implemented |
 | OCIO Color Space Transform | `ec.color.ociocolorspace` | 4 |  | 32 | Implemented |
 | OCIO Display Transform | `ec.color.ociodisplay` | 5 |  | 32 | Implemented |
@@ -119,11 +119,11 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 | OCIO Look Transform | `ec.color.ociolook` | 6 |  | 32 | Implemented |
 | PS Arbitrary Map | `ec.color.psarbitrarymap` | 2 |  | 32 | Implemented |
 | Photo Filter | `ec.color.photofilter` | 4 |  | 32 | Implemented |
-| Selective Color | `ec.color.selectivecolor` | 37 |  | 32 | Partial: simplified Colors / Details layout |
+| Selective Color | `ec.color.selectivecolor` | 37 | GPU | 32 | Partial: simplified Colors / Details layout |
 | Shadow/Highlight | `ec.color.shadowhighlight` | 14 |  | 32 | Implemented |
 | Tint | `ec.color.tint` | 3 | GPU | 32 | Implemented |
-| Tritone | `ec.color.tritone` | 4 |  | 32 | Implemented |
-| Vibrance | `ec.color.vibrance` | 2 |  | 32 | Implemented |
+| Tritone | `ec.color.tritone` | 4 | GPU | 32 | Implemented |
+| Vibrance | `ec.color.vibrance` | 2 | GPU | 32 | Implemented |
 | Video Limiter | `ec.color.videolimiter` | 5 |  | 32 | Implemented |
 
 ## Distort
@@ -243,8 +243,8 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 | Extract | `ec.key.extract` | 6 |  | 32 | Implemented |
 | Inner/Outer Key | `ec.key.innerouter` | 10 |  | 32 | Partial: one additional mask per side; no cleanup strokes |
 | Key Cleaner | `ec.key.keycleaner` | 4 |  | 32 | Implemented |
-| Key Light | `ec.keying.keylight` | 42 |  | 32 | Partial: no Source Crops X/Y Method or Edge Colour; no colour suppression / balancing |
-| Linear Color Key | `ec.key.linearcolor` | 6 |  | 32 | Implemented |
+| Key Light | `ec.keying.keylight` | 42 | GPU | 32 | Partial: no Source Crops X/Y Method or Edge Colour; no colour suppression / balancing |
+| Linear Color Key | `ec.key.linearcolor` | 6 | GPU | 32 | Implemented |
 | Screen Key | `ec.key.screen` | 11 |  | 32 | Implemented |
 | Unmult | `ec.key.unmult` | 6 |  | 32 | Implemented |
 
