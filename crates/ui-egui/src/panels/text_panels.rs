@@ -257,6 +257,29 @@ pub fn character(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
             p.text(pos2(cr.max.x + 6.0, y + 7.0), Align2::LEFT_CENTER, label, Tokens::ui(11.0), t.text_dim);
         }
     }
+    // Variable Font Axes: one value per axis of a variable font (`character.axis.<tag>`).
+    let face = effectcraft_engine::text::resolve(&doc.font, &doc.style).face;
+    let axes = effectcraft_engine::text::variable::font_axes(face);
+    if !axes.is_empty() {
+        y += 26.0;
+        p.text(pos2(x0, y + 7.0), Align2::LEFT_CENTER, "Variable Font Axes", Tokens::semibold(11.0), t.text_dim);
+        for (i, a) in axes.iter().enumerate() {
+            let (col, row) = (i % 2, i / 2);
+            let fx = x0 + col as f32 * (w / 2.0);
+            let fy = y + 20.0 + row as f32 * 24.0;
+            let tag = a.tag.trim_end().to_string();
+            let v = doc.variations.iter().find(|(t2, _)| t2.trim_end() == tag).map(|(_, v)| *v).unwrap_or(a.default);
+            p.text(pos2(fx, fy + 9.0), Align2::LEFT_CENTER, &tag, Tokens::semibold(10.5), t.text_dim);
+            let (r, nv, _) =
+                widgets::hot_number_at(ui, pos2(fx + 34.0, fy), egui::Id::new(("char-axis", &tag)), v as f64, 1.0, (a.min as f64, a.max as f64), 0, "", &t);
+            app.auto.add(&format!("character.axis.{tag}"), r, &a.name);
+            if let Some(nv) = nv
+                && enabled
+            {
+                actions.push(json!({"variations": {tag.clone(): nv}, "merge": format!("char-axis-{tag}")}));
+            }
+        }
+    }
     match &target {
         None => {
             p.text(pos2(rect.center().x, rect.max.y - 20.0), Align2::CENTER_CENTER, "Select a text layer", Tokens::ui(11.0), t.text_faint);
