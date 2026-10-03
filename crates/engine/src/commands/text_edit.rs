@@ -465,6 +465,38 @@ pub(crate) fn sanitize(s: &mut Session) {
     }
 }
 
+/// The OpenType features of a font (`font` / `style`, else the target text layer's style at the
+/// caret or its first character), and which Character panel options it sets with its own glyphs
+/// (the others are synthesized or have no effect).
+pub fn font_features(s: &mut Session, p: &Value) -> Result<Value> {
+    let (family, style) = match p.get("font").and_then(Value::as_str) {
+        Some(f) => (f.to_string(), p.get("style").and_then(Value::as_str).unwrap_or("Regular").to_string()),
+        None => {
+            let lid = target(s, p, "text.fontFeatures")?;
+            let doc = layer_doc(s, lid).ok_or_else(|| bad("text.fontFeatures", "not a text layer"))?;
+            let at = s.state.text_edit.as_ref().filter(|e| e.layer == lid).map_or(0, |e| e.range().start);
+            let st = doc.style_at(at);
+            (st.font, st.style)
+        }
+    };
+    let r = effectcraft_text::resolve(&family, &style);
+    let face = effectcraft_text::fonts::face(r.face);
+    let feats = face.features();
+    let has = |t: &str| feats.iter().any(|f| f == t);
+    let sets: Vec<u32> = (1..=20u32).filter(|n| has(&format!("ss{n:02}"))).collect();
+    Ok(json!({
+        "family": face.info.family, "style": face.info.style, "missing": r.missing,
+        "features": feats,
+        "options": {
+            "kerning": has("kern"), "ligatures": has("liga") || has("clig"), "discretionaryLigatures": has("dlig"),
+            "contextualAlternates": has("calt"), "stylisticAlternates": has("salt"), "stylisticSets": sets,
+            "swash": has("swsh"), "titling": has("titl"), "ordinals": has("ordn"), "fractions": has("frac"),
+            "smallCaps": has("smcp"), "allSmallCaps": has("c2sc"), "superscript": has("sups"), "subscript": has("subs"),
+            "oldStyleFigures": has("onum"), "liningFigures": has("lnum"), "tabularFigures": has("tnum"), "proportionalFigures": has("pnum"),
+        },
+    }))
+}
+
 fn always_ok(_: &Session) -> std::result::Result<(), String> {
     Ok(())
 }
@@ -485,6 +517,15 @@ pub fn specs() -> Vec<CommandSpec> {
             edit
         ),
         cmd!("text.endEdit", "Exit Text Editing", [], None, "{}", always_ok, end_edit),
+        cmd!(
+            "text.fontFeatures",
+            "OpenType Features",
+            [],
+            None,
+            "{layer?, font?, style?} → {family, style, features: [tags], options: {smallCaps, superscript, stylisticSets: [n], fractions, …}} (what the font sets with its own glyphs)",
+            always_ok,
+            font_features
+        ),
         cmd!(
             "text.setSelection",
             "Set Text Selection",
