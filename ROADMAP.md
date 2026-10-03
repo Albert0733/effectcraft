@@ -25,13 +25,12 @@ once.
 
 ## How far from full parity
 
-Measured feature by feature in [docs/parity.md](docs/parity.md) (end of 2 October 2026):
+Measured feature by feature in [docs/parity.md](docs/parity.md) (late 2 October 2026):
 
-- **≈ 79% of After Effects' features, weighted by importance** (87% of the essentials, 67% of
-  professional daily-use features, 21% of the long tail); 298 of 298 effects, 16 of them on the GPU.
-- **≈ 100 agent-hours of work remain by the audit's estimate.** With five Claude Opus 5.5 agents in
-  parallel that is **≈ 8–10 hours of wall-clock time at the pace measured so far, up to ≈ 25 hours**
-  by the audit's conservative per-feature figures.
-- Hardest remaining pieces: Advanced 3D, a scripting object model (Roto Brush & Refine Edge landed in M6.7, the 3D Camera Tracker in M12.6).
+- **≈ 93% of After Effects' features, weighted by importance** (96% of the essentials, 90% of
+  professional daily-use features, 65% of the long tail); all 298 After Effects effects.
+- **≈ 50–55 agent-hours of work remain**: about **11–14 hours of wall-clock time** with five Claude
+  Opus 5.5 agents in parallel, ≈ 6–8 hours for the essentials and daily-use features.
+- Hardest remaining pieces: the web app's depth, GPU 3D, Content-Aware Fill, a plug-in API.
 
 Come tell us what matters most to you on [Discord](https://discord.gg/artcraft).

@@ -1,9 +1,36 @@
 # Parity with After Effects
 
 How close EffectCraft is to After Effects 2026, feature by feature, and how much work is left.
-Audited against the code at commit `5273f1b` (2 October 2026). Every feature in our catalog was
-graded from the code itself: a disabled menu entry, or a setting that is stored but never
-rendered, does not count as done.
+
+## Current status (audit at commit `fa26ad9`, 2 October 2026, late)
+
+| Measure | Value |
+|---|---|
+| **Feature parity, weighted by tier** (P0 ×3, P1 ×2, P2 ×1) | **≈ 93%** |
+| Unweighted | ≈ 91% |
+| P0 / P1 / P2 | ≈ 96% / 90% / 65% |
+| Features done / partial / missing | 41 / 50 / 1 of 92 (missing: a plug-in API) |
+| **Effects** | **298 of 298** After Effects 2026 effects exist (some still simplified) |
+| Disabled menu entries left | 26 commands (31 menu items) |
+| Remaining work | ≈ 50–55 agent-hours at the pace measured so far (≈ 150 by the original conservative audit scale) |
+| **Wall-clock estimate** | **≈ 11–14 hours** with five agents in parallel; ≈ 6–8 hours for 100% of P0 + P1 |
+
+By area: Layers 98%, Output 95%, Compositions 95%, Automation 96%, Paint 95%, Text 95%, Import 96%,
+Animation 94%, Masks 94%, Preview 94%, Interface 93%, Shapes 93%, 3D 91%, Audio 90%, Project 90%,
+Tracking 88%, Effects 85%, Web 65%.
+
+What is left, in priority order: the web app's depth (threads, storage, audio, non-blocking
+renders); stroke taper/wave and multi-segment dashes; variable mask feather points; real
+`sampleImage` and `footage()` in expressions; camera iris/bokeh and focus-link commands; GPU
+rendering of 3D runs and adjustment layers; Render Queue field render, crop/resize and templates;
+approximated effects (Subspace Warp, Key Cleaner) and Liquify's viewer brush; Advanced 3D motion blur
+and blend modes; a few viewer and colour-management menu items; OpenType features and variable
+font axes; AI/EPS/PDF import; more codecs; 59 preferences not yet wired; proxies; ScriptUI;
+Lumetri Scopes, Footage, Media Browser and Metadata panels; Content-Aware Fill; face tracking; and
+the "better than After Effects" items (a plug-in API, branching history, GPU particles).
+
+The sections below are the original audit (morning of 2 October, ≈ 64%) and its updates, kept for
+history.
 
 ## Summary
 
