@@ -566,6 +566,9 @@ pub const PARAM_GROUPS: &[(&str, &str)] = &[
     ("fineTuning", "Fine Tuning"),
     ("unsharpMask", "Unsharp Mask"),
     ("noiseOptions", "Noise Options (Animation)"),
+    ("previewRegion", "Preview Region"),
+    ("sampling", "Sampling"),
+    ("temporalFiltering", "Temporal Filtering"),
     // Time: Timewarp.
     ("tuning", "Tuning"),
     ("motionBlur", "Motion Blur"),
@@ -733,6 +736,8 @@ pub const TIME_DEPENDENT: &[&str] = &[
     "ec.stylize.strobe",
     "ec.noise.noise",
     "ec.noise.addgrain",
+    // Remove Grain's temporal filtering reads neighbouring frames.
+    "ec.noise.removegrain",
     "ec.noise.noisealpha",
     "ec.noise.noisehlsauto",
     "ec.obsolete.lightning",

@@ -7,7 +7,7 @@ use effectcraft_project::ParamUi;
 use effectcraft_raster::Image;
 use rayon::prelude::*;
 
-use crate::noise::{GrainLook, fbm, grain_params, median_image};
+use crate::noise::{GrainLook, draw_boxes, fbm, grain_params, median_image, preview_params, sampling_boxes, sampling_params};
 use crate::util::{Plane, gauss_plane, layer_or_self, premul, unpremul};
 use crate::{Buf, EffectCtx, EffectSpec, num, p, popup, slider};
 
@@ -29,7 +29,14 @@ pub(crate) struct GrainStats {
     pub size: f32,
 }
 
+#[cfg(test)]
 pub(crate) fn grain_stats(img: &Image) -> GrainStats {
+    grain_stats_masked(img, None)
+}
+
+/// [`grain_stats`] over the pixels `mask` selects (all opaque pixels without one).
+pub(crate) fn grain_stats_masked(img: &Image, mask: Option<&[bool]>) -> GrainStats {
+    let sel = |i: usize| mask.is_none_or(|m| m[i]);
     let (w, h) = (img.width as usize, img.height as usize);
     if w < 3 || h < 3 {
         return GrainStats::default();
@@ -44,7 +51,7 @@ pub(crate) fn grain_stats(img: &Image) -> GrainStats {
         let hp: Vec<f32> = pl.data.iter().zip(low.data.iter()).map(|(a, b)| a - b).collect();
         let (mut sum, mut sq, mut n) = (0.0f64, 0.0f64, 0.0f64);
         for (i, v) in hp.iter().enumerate() {
-            if straight[i].1 > 0.5 {
+            if straight[i].1 > 0.5 && sel(i) {
                 sum += *v as f64;
                 sq += (*v as f64) * (*v as f64);
                 n += 1.0;
@@ -57,7 +64,7 @@ pub(crate) fn grain_stats(img: &Image) -> GrainStats {
         for y in 0..h {
             for x in 0..w - 1 {
                 let i = y * w + x;
-                if straight[i].1 > 0.5 && straight[i + 1].1 > 0.5 {
+                if straight[i].1 > 0.5 && straight[i + 1].1 > 0.5 && sel(i) && sel(i + 1) {
                     rho_num += (hp[i] * hp[i + 1]) as f64;
                     rho_den += (hp[i] * hp[i]) as f64;
                 }
@@ -68,15 +75,45 @@ pub(crate) fn grain_stats(img: &Image) -> GrainStats {
     GrainStats { std, size: (1.0 / (1.0 - rho as f32)).clamp(0.5, 20.0) * 0.6 }
 }
 
+/// Match Grain's Viewing Mode options.
+const MATCH_GRAIN_VIEWS: [&str; 5] = ["Preview", "Noise Samples", "Compensation Samples", "Blending Matte", "Final Output"];
+
 fn match_grain(ctx: &EffectCtx, mut b: Buf) -> Buf {
     if ctx.params.get("noiseSourceLayer").and_then(Value::as_layer).is_none() {
         return b;
     }
+    // MATCH_GRAIN_VIEWS order.
     let view = ctx.params.e("viewingMode");
     let source = layer_or_self(ctx, &b, "noiseSourceLayer", false, false);
-    let src_stats = grain_stats(&source);
+    let src_boxes = sampling_boxes(ctx, &source, b.scale);
+    let own_boxes = sampling_boxes(ctx, &b.img, b.scale);
+    let box_col = ctx.params.get("sampling/sampleBoxColor").map(|v| v.as_color()).unwrap_or([1.0, 1.0, 0.0, 1.0]);
+    if view == 1 || view == 2 {
+        // Noise Samples (on the source) / Compensation Samples (on this layer).
+        let (mut img, boxes) = if view == 1 { (source, src_boxes) } else { (b.img.clone(), own_boxes) };
+        draw_boxes(&mut img, &boxes, box_col);
+        b.img = img;
+        return b;
+    }
+    let mask_of = |img: &Image, boxes: &[(usize, usize, usize)]| -> Option<Vec<bool>> {
+        if boxes.is_empty() {
+            return None;
+        }
+        let w = img.width as usize;
+        let mut m = vec![false; img.data.len()];
+        for &(x, y, s) in boxes {
+            for yy in y..y + s {
+                for xx in x..x + s {
+                    m[yy * w + xx] = true;
+                }
+            }
+        }
+        Some(m)
+    };
+    let src_stats = grain_stats_masked(&source, mask_of(&source, &src_boxes).as_deref());
     let comp = (ctx.params.f("compensateForExistingNoise") / 100.0) as f32;
-    let own = if comp > 0.0 { grain_stats(&b.img) } else { GrainStats::default() };
+    let own = if comp > 0.0 { grain_stats_masked(&b.img, mask_of(&b.img, &own_boxes).as_deref()) } else { GrainStats::default() };
+    let orig = b.img.clone();
     let look = GrainLook::from_params(ctx);
     let amp: [f32; 3] = [0, 1, 2].map(|k| {
         let s = src_stats.std[k];
@@ -100,11 +137,7 @@ fn match_grain(ctx: &EffectCtx, mut b: Buf) -> Buf {
         let g = look.color(raw);
         let weight = look.weight(c);
         match view {
-            1 => {
-                let o = [0, 1, 2].map(|k| (0.5 + g[k] * amp[k]).clamp(0.0, 1.0));
-                *px = [o[0], o[1], o[2], 1.0];
-            }
-            2 => *px = [weight.clamp(0.0, 1.0), weight.clamp(0.0, 1.0), weight.clamp(0.0, 1.0), 1.0],
+            3 => *px = [weight.clamp(0.0, 1.0), weight.clamp(0.0, 1.0), weight.clamp(0.0, 1.0), 1.0],
             _ => {
                 if a <= 0.0 {
                     return;
@@ -114,6 +147,9 @@ fn match_grain(ctx: &EffectCtx, mut b: Buf) -> Buf {
             }
         }
     });
+    if view == 0 {
+        crate::noise::preview_compose(ctx, &mut b, &orig);
+    }
     b
 }
 
@@ -214,13 +250,13 @@ pub fn specs() -> Vec<EffectSpec> {
             "ec.noise.matchgrain",
             "Match Grain",
             vec![
-                p("viewingMode", "Viewing Mode", Value::Enum(0), popup(&["Final Output", "Noise Samples", "Blending Matte"])),
+                p("viewingMode", "Viewing Mode", Value::Enum(4), popup(&MATCH_GRAIN_VIEWS)),
                 p("noiseSourceLayer", "Noise Source Layer", Value::Layer(None), ParamUi::Layer),
                 p("noiseSourceLayerSource", "Noise Source Layer Source", Value::Enum(0), ParamUi::Hidden),
                 p("compensateForExistingNoise", "Compensate for Existing Noise", num(0.0), pct()),
             ]
             .into_iter()
-            .chain([tweaking, color, application, animation].into_iter().flatten())
+            .chain([preview_params(), sampling_params(), tweaking, color, application, animation].into_iter().flatten())
             .collect(),
             match_grain,
         ),

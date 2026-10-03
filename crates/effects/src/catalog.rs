@@ -8,9 +8,6 @@ use crate::{CATEGORIES, registry};
 /// `(effect id, what is missing)`. Everything else in the registry is implemented in full as far
 /// as the public behaviour documentation describes it.
 pub const PARTIAL: &[(&str, &str)] = &[
-    ("ec.noise.addgrain", "no preview region, presets, channel balance or temporal controls"),
-    ("ec.noise.matchgrain", "no preview region, presets, sampling or temporal controls"),
-    ("ec.noise.removegrain", "no preview region, sampling or temporal filtering"),
     ("ec.vr.digitalglitch", "reduced control set"),
     ("ec.vr.converter", "common layouts only"),
     ("ec.sim.caustics", "no Sky group or light type"),

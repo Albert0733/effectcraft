@@ -59,6 +59,8 @@ pub(crate) struct GrainLook {
     /// Grain time (frames of grain at the animation speed) and whether it interpolates.
     pub frame: f32,
     pub seed: u32,
+    /// Color ▸ Red / Green / Blue Balance.
+    pub balance: [f32; 3],
 }
 
 impl GrainLook {
@@ -84,7 +86,28 @@ impl GrainLook {
             midpoint: pr.get("application/midpoint").map(Value::as_f64).unwrap_or(0.5).clamp(0.01, 0.99) as f32,
             frame: if smooth && ft.fract() != 0.0 { ft as f32 } else { ft.floor() as f32 },
             seed: (pr.f("animation/randomSeed") as i64 as u32) ^ ctx.seed.wrapping_mul(0x9e37),
+            balance: ch("color/", "redBalance", "greenBalance", "blueBalance"),
         }
+        .with_preset(pr.e("preset"))
+    }
+
+    /// Apply Add Grain's Preset (a film-stock look on top of the controls).
+    fn with_preset(mut self, preset: u32) -> GrainLook {
+        // (intensity ×, size ×, softness +, saturation ×, monochrome)
+        let (ki, ks, soft, ksat, mono) = match preset {
+            1 => (0.6, 0.7, 0.2, 0.6, false),
+            2 => (1.3, 1.8, 0.4, 0.8, false),
+            3 => (1.8, 2.5, 0.8, 0.5, false),
+            4 => (1.0, 0.6, 0.0, 1.0, false),
+            5 => (1.6, 1.4, 0.3, 1.0, true),
+            _ => return self,
+        };
+        self.intensity *= ki;
+        self.size *= ks;
+        self.softness += soft;
+        self.saturation *= ksat;
+        self.mono |= mono;
+        self
     }
 
     /// Zero-mean noise planes (one, or one per channel) of grain `size` pixels (times each
@@ -129,7 +152,7 @@ impl GrainLook {
             let l = luminance(self.tint[0], self.tint[1], self.tint[2]).max(1e-3);
             g = [0, 1, 2].map(|k| g[k] * ((1.0 - self.tint_amount) + self.tint_amount * self.tint[k] / l));
         }
-        g
+        [g[0] * self.balance[0], g[1] * self.balance[1], g[2] * self.balance[2]]
     }
 
     /// Combine source channel `c` with signed grain `n` by the Blending Mode.
@@ -171,6 +194,9 @@ pub(crate) fn grain_params() -> (Vec<crate::ParamSpec>, Vec<crate::ParamSpec>, V
         p("color/saturation", "Saturation", num(1.0), mult()),
         p("color/tintAmount", "Tint Amount", num(0.0), slider(0.0, 1.0, 0.0, 1.0, 2)),
         p("color/tintColor", "Tint Color", crate::col(1.0, 1.0, 1.0), ParamUi::Color),
+        p("color/redBalance", "Red Balance", num(1.0), mult()),
+        p("color/greenBalance", "Green Balance", num(1.0), mult()),
+        p("color/blueBalance", "Blue Balance", num(1.0), mult()),
     ];
     let application = vec![
         p("application/blendingMode", "Blending Mode", Value::Enum(0), popup(&GRAIN_BLEND_MODES)),
@@ -187,27 +213,124 @@ pub(crate) fn grain_params() -> (Vec<crate::ParamSpec>, Vec<crate::ParamSpec>, V
     (tweaking, color, application, animation)
 }
 
+/// Add Grain's Viewing Mode options.
+pub(crate) const ADD_GRAIN_VIEWS: [&str; 3] = ["Preview", "Blending Matte", "Final Output"];
+/// Add Grain's Preset options (our own film-stock looks).
+pub(crate) const GRAIN_PRESETS: [&str; 6] = ["None", "Fine 35mm", "Coarse 16mm", "Vintage 8mm", "Video Noise", "Monochrome High Speed"];
+
+/// The Preview Region controls of the grain effects (centre, size, box display).
+pub(crate) fn preview_params() -> Vec<crate::ParamSpec> {
+    vec![
+        p("previewRegion/center", "Center", Value::Vec2([0.5, 0.5]), ParamUi::Point),
+        p("previewRegion/width", "Width", num(200.0), slider(1.0, 10000.0, 1.0, 1000.0, 0)),
+        p("previewRegion/height", "Height", num(200.0), slider(1.0, 10000.0, 1.0, 1000.0, 0)),
+        p("previewRegion/showBox", "Show Box", Value::Bool(true), ParamUi::Checkbox),
+        p("previewRegion/boxColor", "Box Color", crate::col(1.0, 1.0, 1.0), ParamUi::Color),
+    ]
+}
+
+/// Preview viewing mode: the processed pixels inside the Preview Region, the original
+/// outside, and (Show Box) the region's outline.
+pub(crate) fn preview_compose(ctx: &EffectCtx, b: &mut Buf, orig: &Image) {
+    let c = b.to_px(ctx.params.v2("previewRegion/center"));
+    let (hw, hh) = (ctx.params.f("previewRegion/width") * b.scale * 0.5, ctx.params.f("previewRegion/height") * b.scale * 0.5);
+    let (x0, x1, y0, y1) = (c.0 - hw, c.0 + hw, c.1 - hh, c.1 + hh);
+    let show = ctx.params.b("previewRegion/showBox");
+    let col = ctx.params.color("previewRegion/boxColor");
+    let w = b.img.width as usize;
+    b.img.data.par_iter_mut().zip(orig.data.par_iter()).enumerate().for_each(|(i, (px, o))| {
+        let (x, y) = ((i % w) as f64 + 0.5, (i / w) as f64 + 0.5);
+        let inside = x >= x0 && x < x1 && y >= y0 && y < y1;
+        if !inside {
+            *px = *o;
+        }
+        if show {
+            let near = |v: f64, e: f64| (v - e).abs() < 0.75;
+            let on = ((near(x, x0) || near(x, x1)) && y >= y0 - 0.75 && y < y1 + 0.75) || ((near(y, y0) || near(y, y1)) && x >= x0 - 0.75 && x < x1 + 0.75);
+            if on {
+                *px = [col[0], col[1], col[2], 1.0];
+            }
+        }
+    });
+}
+
+/// Boxes (x, y, size in buffer px) where grain is sampled: the flattest of a grid of
+/// candidate boxes (real grain shows best where the picture has no detail).
+pub(crate) fn sample_boxes(img: &Image, count: usize, size: usize) -> Vec<(usize, usize, usize)> {
+    let (w, h) = (img.width as usize, img.height as usize);
+    let size = size.clamp(3, w.min(h).max(3));
+    if w < size || h < size || count == 0 {
+        return vec![];
+    }
+    let low = Plane::luma(img);
+    let step = (size / 2).max(1);
+    let mut cands: Vec<(f32, usize, usize)> = Vec::new();
+    for y in (0..=h - size).step_by(step) {
+        for x in (0..=w - size).step_by(step) {
+            // Variance of the picture inside the box (the flattest boxes hold the least detail).
+            let (mut s, mut sq, mut n, mut opaque) = (0.0f32, 0.0f32, 0.0f32, true);
+            for yy in y..y + size {
+                for xx in x..x + size {
+                    let v = low.data[yy * w + xx];
+                    s += v;
+                    sq += v * v;
+                    n += 1.0;
+                    opaque &= img.data[yy * w + xx][3] > 0.5;
+                }
+            }
+            if opaque {
+                cands.push((sq / n - (s / n).powi(2), x, y));
+            }
+        }
+    }
+    cands.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.2.cmp(&b.2)).then(a.1.cmp(&b.1)));
+    cands.into_iter().take(count).map(|(_, x, y)| (x, y, size)).collect()
+}
+
+/// Draw sample boxes' outlines (Noise Samples viewing mode).
+pub(crate) fn draw_boxes(img: &mut Image, boxes: &[(usize, usize, usize)], c: [f32; 4]) {
+    for &(x, y, s) in boxes {
+        for k in 0..s {
+            for (px, py) in [(x + k, y), (x + k, y + s - 1), (x, y + k), (x + s - 1, y + k)] {
+                img.set(px as u32, py as u32, [c[0], c[1], c[2], 1.0]);
+            }
+        }
+    }
+}
+
 // ---- Add Grain ----
 
 fn add_grain(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let look = GrainLook::from_params(ctx);
-    if look.intensity <= 0.0 {
+    // Viewing Mode (Final Output for projects saved before it existed).
+    let view = ctx.params.get("viewingMode").map(|v| v.as_enum()).unwrap_or(2);
+    if look.intensity <= 0.0 && view != 1 {
         return b;
     }
+    let orig = b.img.clone();
     let (w, h) = (b.img.width as usize, b.img.height as usize);
     let planes = look.planes(w, h, look.size * b.scale as f32, b.scale, 101);
     let amp = look.intensity * 0.25;
     b.img.data.par_iter_mut().enumerate().for_each(|(i, px)| {
         let (c, a) = unpremul(*px);
+        let weight = look.weight(c);
+        if view == 1 {
+            // Blending Matte: where (and how strongly) the grain applies.
+            let v = weight.clamp(0.0, 1.0);
+            *px = [v, v, v, 1.0];
+            return;
+        }
         if a <= 0.0 {
             return;
         }
         let raw = if look.mono { [planes[0].data[i]; 3] } else { [planes[0].data[i], planes[1].data[i], planes[2].data[i]] };
         let g = look.color(raw);
-        let weight = look.weight(c);
         let o = [0, 1, 2].map(|k| look.blend(c[k], g[k] * amp * look.channel_intensity[k] * weight));
         *px = premul(o, a);
     });
+    if view == 0 {
+        preview_compose(ctx, &mut b, &orig);
+    }
     b
 }
 
@@ -333,18 +456,104 @@ fn dust_scratches(ctx: &EffectCtx, mut b: Buf) -> Buf {
     b
 }
 
+/// Remove Grain's Viewing Mode options.
+pub(crate) const REMOVE_GRAIN_VIEWS: [&str; 4] = ["Preview", "Noise Samples", "Blending Matte", "Final Output"];
+
+/// Grain sampling controls (Match Grain, Remove Grain): how many flat boxes of what size the
+/// grain is measured in.
+pub(crate) fn sampling_params() -> Vec<crate::ParamSpec> {
+    vec![
+        p("sampling/samplingProcess", "Sampling Process", Value::Enum(0), popup(&["Automatic"])),
+        p("sampling/numberOfSamples", "Number of Samples", num(80.0), slider(1.0, 500.0, 1.0, 200.0, 0)),
+        p("sampling/sampleSize", "Sample Size", num(9.0), slider(3.0, 64.0, 3.0, 32.0, 0)),
+        p("sampling/sampleBoxColor", "Sample Box Color", crate::col(1.0, 1.0, 0.0), ParamUi::Color),
+    ]
+}
+
+/// The sample boxes for the effect's Sampling settings.
+pub(crate) fn sampling_boxes(ctx: &EffectCtx, img: &Image, scale: f64) -> Vec<(usize, usize, usize)> {
+    let n = ctx.params.get("sampling/numberOfSamples").map(Value::as_f64).unwrap_or(80.0).clamp(1.0, 500.0) as usize;
+    let s = (ctx.params.get("sampling/sampleSize").map(Value::as_f64).unwrap_or(9.0) * scale).round().max(3.0) as usize;
+    sample_boxes(img, n, s)
+}
+
 fn remove_grain(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let pr = ctx.params;
     let amt = pr.f("noiseReductionSettings/noiseReduction") as f32;
     let um_amount = pr.f("unsharpMask/amount") as f32 / 100.0;
-    if amt <= 0.0 && um_amount <= 0.0 {
+    let view = pr.get("viewingMode").map(|v| v.as_enum()).unwrap_or(3);
+    let boxes = sampling_boxes(ctx, &b.img, b.scale);
+    if view == 1 {
+        let c = pr.get("sampling/sampleBoxColor").map(|v| v.as_color()).unwrap_or([1.0, 1.0, 0.0, 1.0]);
+        draw_boxes(&mut b.img, &boxes, c);
         return b;
     }
+    if view == 2 {
+        b.img.data.iter_mut().for_each(|p| *p = [1.0, 1.0, 1.0, 1.0]);
+        return b;
+    }
+    let temporal = pr.b("temporalFiltering/enabled");
+    if amt <= 0.0 && um_amount <= 0.0 && !temporal {
+        return b;
+    }
+    let before = b.img.clone();
+    // Temporal Filtering: steady pixels average with the neighbouring frames (grain changes
+    // every frame, the picture does not); Motion Sensitivity keeps moving areas out of it.
+    if temporal {
+        let fps = ctx.fps();
+        let host = ctx.env.host;
+        let at = |t: f64| host.and_then(|h| h.self_at(t, ctx.env.effect_index)).filter(|o| o.img.width == b.img.width && o.img.height == b.img.height);
+        let (prev, next) = (at(ctx.time - 1.0 / fps), at(ctx.time + 1.0 / fps));
+        let k = (pr.get("temporalFiltering/amount").map(Value::as_f64).unwrap_or(100.0) / 100.0).clamp(0.0, 1.0) as f32;
+        let sens = pr.get("temporalFiltering/motionSensitivity").map(Value::as_f64).unwrap_or(0.5).clamp(0.0, 1.0) as f32;
+        let thr = 0.02 + (1.0 - sens) * 0.2;
+        if prev.is_some() || next.is_some() {
+            b.img.data.par_iter_mut().enumerate().for_each(|(i, px)| {
+                let mut acc = *px;
+                let mut n = 1.0;
+                for o in [&prev, &next].into_iter().flatten() {
+                    let q = o.img.data[i];
+                    let d = (0..3).map(|c| (q[c] - px[c]).abs()).fold(0.0f32, f32::max);
+                    if d < thr {
+                        let wgt = 1.0 - d / thr;
+                        for c in 0..4 {
+                            acc[c] += q[c] * wgt;
+                        }
+                        n += wgt;
+                    }
+                }
+                for c in 0..4 {
+                    px[c] += (acc[c] / n - px[c]) * k;
+                }
+            });
+        }
+        if amt <= 0.0 && um_amount <= 0.0 {
+            if view == 0 {
+                preview_compose(ctx, &mut b, &before);
+            }
+            return b;
+        }
+    }
+    // The grain level measured in the sample boxes scales the smoothing.
+    let level = {
+        let mut m = vec![false; b.img.data.len()];
+        let w = b.img.width as usize;
+        for &(x, y, s) in &boxes {
+            for yy in y..y + s {
+                for xx in x..x + s {
+                    m[yy * w + xx] = true;
+                }
+            }
+        }
+        let st = crate::noise2::grain_stats_masked(&b.img, Some(&m));
+        let s = (st.std[0] + st.std[1] + st.std[2]) / 3.0;
+        if boxes.is_empty() { 1.0 } else { (s / 0.02).clamp(0.5, 2.0) }
+    };
     let passes = pr.f("noiseReductionSettings/passes").round().clamp(1.0, 8.0) as usize;
     let multichannel = pr.e("noiseReductionSettings/mode") == 0;
     let texture = (pr.f("fineTuning/texture") as f32).clamp(0.0, 1.0);
     let r = (2.0 * b.scale).round().max(1.0) as usize;
-    let eps = (0.02 * amt).powi(2);
+    let eps = (0.02 * amt * level).powi(2);
     let orig = split(&b.img);
     let mut ch = orig.clone();
     if amt > 0.0 {
@@ -387,6 +596,9 @@ fn remove_grain(ctx: &EffectCtx, mut b: Buf) -> Buf {
         p[3] = a;
     });
     b.img = out;
+    if view == 0 {
+        preview_compose(ctx, &mut b, &before);
+    }
     b
 }
 
@@ -533,7 +745,9 @@ pub fn specs() -> Vec<EffectSpec> {
     vec![
         {
             let (tweaking, color, application, animation) = grain_params();
-            spec("ec.noise.addgrain", "Add Grain", [tweaking, color, application, animation].into_iter().flatten().collect(), add_grain)
+            let head =
+                vec![p("viewingMode", "Viewing Mode", Value::Enum(2), popup(&ADD_GRAIN_VIEWS)), p("preset", "Preset", Value::Enum(0), popup(&GRAIN_PRESETS))];
+            spec("ec.noise.addgrain", "Add Grain", [head, preview_params(), tweaking, color, application, animation].into_iter().flatten().collect(), add_grain)
         },
         spec(
             "ec.noise.median",
@@ -557,15 +771,26 @@ pub fn specs() -> Vec<EffectSpec> {
         spec(
             "ec.noise.removegrain",
             "Remove Grain",
-            vec![
-                p("noiseReductionSettings/noiseReduction", "Noise Reduction", num(1.0), slider(0.0, 5.0, 0.0, 5.0, 2)),
-                p("noiseReductionSettings/passes", "Passes", num(1.0), slider(1.0, 8.0, 1.0, 4.0, 0)),
-                p("noiseReductionSettings/mode", "Mode", Value::Enum(0), popup(&["Multichannel", "Single Channel"])),
-                p("fineTuning/texture", "Texture", num(0.0), slider(0.0, 1.0, 0.0, 1.0, 2)),
-                p("unsharpMask/amount", "Amount", num(0.0), slider(0.0, 500.0, 0.0, 200.0, 1)),
-                p("unsharpMask/radius", "Radius", num(1.0), slider(0.1, 100.0, 0.1, 10.0, 1)),
-                p("unsharpMask/threshold", "Threshold", num(0.0), slider(0.0, 255.0, 0.0, 255.0, 0)),
-            ],
+            [
+                vec![p("viewingMode", "Viewing Mode", Value::Enum(3), popup(&REMOVE_GRAIN_VIEWS))],
+                preview_params(),
+                vec![
+                    p("noiseReductionSettings/noiseReduction", "Noise Reduction", num(1.0), slider(0.0, 5.0, 0.0, 5.0, 2)),
+                    p("noiseReductionSettings/passes", "Passes", num(1.0), slider(1.0, 8.0, 1.0, 4.0, 0)),
+                    p("noiseReductionSettings/mode", "Mode", Value::Enum(0), popup(&["Multichannel", "Single Channel"])),
+                    p("fineTuning/texture", "Texture", num(0.0), slider(0.0, 1.0, 0.0, 1.0, 2)),
+                    p("unsharpMask/amount", "Amount", num(0.0), slider(0.0, 500.0, 0.0, 200.0, 1)),
+                    p("unsharpMask/radius", "Radius", num(1.0), slider(0.1, 100.0, 0.1, 10.0, 1)),
+                    p("unsharpMask/threshold", "Threshold", num(0.0), slider(0.0, 255.0, 0.0, 255.0, 0)),
+                    p("temporalFiltering/enabled", "Enabled", Value::Bool(false), ParamUi::Checkbox),
+                    p("temporalFiltering/amount", "Amount", num(100.0), pct()),
+                    p("temporalFiltering/motionSensitivity", "Motion Sensitivity", num(0.5), slider(0.0, 1.0, 0.0, 1.0, 2)),
+                ],
+                sampling_params(),
+            ]
+            .into_iter()
+            .flatten()
+            .collect(),
             remove_grain,
         ),
         spec(
@@ -766,6 +991,71 @@ mod tests {
         );
         assert!(tinted.img.data.iter().all(|p| (p[1] - 0.4).abs() < 1e-6));
         assert!(tinted.img.data.iter().any(|p| (p[0] - 0.4).abs() > 1e-3));
+    }
+
+    #[test]
+    fn grain_preview_presets_balance_and_views() {
+        let base = gray(64, 64, 0.5);
+        let grain = [("tweaking/intensity", num(3.0))];
+        let with = |extra: &[(&str, Value)]| run("ec.noise.addgrain", &[grain.as_slice(), extra].concat(), base.clone(), 0.0).img;
+        // Preview: grain only inside the region; its box outline drawn.
+        let prev = with(&[
+            ("viewingMode", Value::Enum(0)),
+            ("previewRegion/center", Value::Vec2([32.0, 32.0])),
+            ("previewRegion/width", num(20.0)),
+            ("previewRegion/height", num(20.0)),
+        ]);
+        assert_eq!(prev.get(2, 2), base.get(2, 2));
+        assert_ne!(prev.get(32, 32), base.get(32, 32));
+        assert_eq!(prev.get(22, 32), [1.0, 1.0, 1.0, 1.0], "box outline");
+        // Blending Matte shows the tonal weight (1 at mid grey with the defaults).
+        assert_eq!(with(&[("viewingMode", Value::Enum(1))]).get(5, 5), [1.0, 1.0, 1.0, 1.0]);
+        // Presets and channel balance change the grain.
+        let plain = with(&[]);
+        assert_ne!(with(&[("preset", Value::Enum(3))]), plain);
+        let no_red = with(&[("color/redBalance", num(0.0))]);
+        assert!(no_red.data.iter().all(|p| (p[0] - 0.5).abs() < 1e-6));
+        // Sample boxes sit in the flat part of a picture.
+        let mut half = gray(64, 64, 0.5);
+        for y in 0..64 {
+            for x in 32..64 {
+                half.set(x, y, if (x + y) % 2 == 0 { [1.0; 4] } else { [0.0, 0.0, 0.0, 1.0] });
+            }
+        }
+        let boxes = sample_boxes(&half, 4, 8);
+        assert_eq!(boxes.len(), 4);
+        assert!(boxes.iter().all(|(x, _, s)| x + s <= 32), "{boxes:?}");
+        // Remove Grain's Noise Samples view draws them.
+        let shown = run("ec.noise.removegrain", &[("viewingMode", Value::Enum(1))], gray(64, 64, 0.5), 0.0).img;
+        assert!(shown.data.iter().any(|p| p == &[1.0, 1.0, 0.0, 1.0]));
+    }
+
+    #[test]
+    fn remove_grain_temporal_filtering_averages_steady_frames() {
+        /// Flat grey with per-frame grain.
+        struct Grainy;
+        impl crate::EffectHost for Grainy {
+            fn layer(&self, _: u64, _: bool) -> Option<crate::LayerPixels> {
+                None
+            }
+            fn audio(&self, _: u64, _: f64, _: usize, _: u32) -> Option<Vec<f32>> {
+                None
+            }
+            fn self_at(&self, t: f64, _: usize) -> Option<Buf> {
+                Some(Buf { img: frame((t * 10.0).round() as u32), offset: [0.0; 2], scale: 1.0 })
+            }
+        }
+        fn frame(f: u32) -> Image {
+            crate::util::gen_image(32, 32, |x, y| {
+                let n = (hash1(x as u32, y as u32, f.wrapping_mul(977)) - 0.5) * 0.06;
+                [0.5 + n, 0.5 + n, 0.5 + n, 1.0]
+            })
+        }
+        let env = crate::EffectEnv { host: Some(&Grainy), frame_rate: 10.0, ..Default::default() };
+        let vals = [("noiseReductionSettings/noiseReduction", num(0.0)), ("temporalFiltering/enabled", Value::Bool(true))];
+        let out = crate::run_fx("ec.noise.removegrain", &vals, frame(5), 0.5, env).img;
+        let dev = |i: &Image| i.data.iter().map(|p| (p[0] - 0.5).abs()).sum::<f32>();
+        assert!(dev(&out) < dev(&frame(5)) * 0.75, "{} vs {}", dev(&out), dev(&frame(5)));
     }
 
     #[test]

@@ -455,4 +455,16 @@ mod tests {
         assert!(g.get("additionalForeground").is_none());
         assert_eq!(prop_at(&mut g, "additionalForeground/foreground1").unwrap().value, Value::Enum(3));
     }
+
+    #[test]
+    fn match_grain_viewing_modes_remap_by_label() {
+        let spec = find("ec.noise.matchgrain").unwrap();
+        let mut next = 1;
+        let mut g = instantiate(spec, &mut Ids(&mut next), "Match Grain", [100.0, 50.0]);
+        let pr = g.get_mut("viewingMode").unwrap();
+        pr.ui = ParamUi::Popup { options: vec!["Final Output".into(), "Noise Samples".into(), "Blending Matte".into()] };
+        pr.value = Value::Enum(0);
+        assert!(upgrade_instance(spec, &mut g, &mut Ids(&mut next), [100.0, 50.0]));
+        assert_eq!(g.get("viewingMode").unwrap().value, Value::Enum(4), "Final Output");
+    }
 }

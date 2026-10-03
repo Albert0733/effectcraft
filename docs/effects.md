@@ -3,11 +3,11 @@
 <!-- Generated from the effect registry (crates/effects/src/catalog.rs); do not edit by hand.
      Regenerate: UPDATE_DOCS=1 cargo test -p effectcraft-effects --lib effects_doc_is_current -->
 
-EffectCraft ships 303 effects with 2892 parameters in total, grouped into the same categories as the Effects & Presets panel. Every effect is our own implementation, written from public behaviour descriptions and standard image-processing literature. Parameter names, order, popup options, units, defaults and ranges follow the reference application so that projects, expressions and muscle memory carry over.
+EffectCraft ships 303 effects with 2927 parameters in total, grouped into the same categories as the Effects & Presets panel. Every effect is our own implementation, written from public behaviour descriptions and standard image-processing literature. Parameter names, order, popup options, units, defaults and ranges follow the reference application so that projects, expressions and muscle memory carry over.
 
 - **GPU**: 24 effects also run on the GPU compositor with identical results.
 - **32**: 303 effects process 32-bit float (HDR, overbright) pixels without clamping.
-- **Status**: 296 implemented in full, 7 partial (what is missing is listed).
+- **Status**: 299 implemented in full, 4 partial (what is missing is listed).
 
 Effects are addressed by id (`ec.<category>.<name>`) or display name in commands, scripts and the control channel, and every parameter by its id (`effects/#1/blurriness`).
 
@@ -263,18 +263,18 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 
 | Effect | Id | Params | GPU | 32 | Status |
 |---|---|---:|:-:|:-:|---|
-| Add Grain | `ec.noise.addgrain` | 22 |  | 32 | Partial: no preview region, presets, channel balance or temporal controls |
+| Add Grain | `ec.noise.addgrain` | 32 |  | 32 | Implemented |
 | Curl Noise | `ec.noise.curlnoise` | 10 |  | 32 | Implemented |
 | Dust & Scratches | `ec.noise.dustscratches` | 3 |  | 32 | Implemented |
 | Fractal Noise | `ec.noise.fractal` | 26 | GPU | 32 | Implemented |
-| Match Grain | `ec.noise.matchgrain` | 25 |  | 32 | Partial: no preview region, presets, sampling or temporal controls |
+| Match Grain | `ec.noise.matchgrain` | 37 |  | 32 | Implemented |
 | Median | `ec.noise.median` | 2 |  | 32 | Implemented |
 | Median (Legacy) | `ec.noise.medianlegacy` | 2 |  | 32 | Implemented |
 | Noise | `ec.noise.noise` | 3 |  | 32 | Implemented |
 | Noise Alpha | `ec.noise.noisealpha` | 8 |  | 32 | Implemented |
 | Noise HLS | `ec.noise.noisehls` | 6 |  | 32 | Implemented |
 | Noise HLS Auto | `ec.noise.noisehlsauto` | 6 |  | 32 | Implemented |
-| Remove Grain | `ec.noise.removegrain` | 7 |  | 32 | Partial: no preview region, sampling or temporal filtering |
+| Remove Grain | `ec.noise.removegrain` | 20 |  | 32 | Implemented |
 | Turbulent Noise | `ec.noise.turbulent` | 22 |  | 32 | Implemented |
 
 ## Obsolete
