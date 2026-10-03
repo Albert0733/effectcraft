@@ -40,7 +40,8 @@ pub enum Kind {
 }
 
 impl Kind {
-    fn dir(self) -> &'static str {
+    /// The kind's folder name.
+    pub fn dir(self) -> &'static str {
         match self {
             Kind::Frame => "frames",
             Kind::Layer => "layers",
@@ -80,11 +81,96 @@ struct Meta {
     last_use: u64,
 }
 
+/// The cache's index: entry sizes and least-recently-used order under a size limit. Portable
+/// (no file system): [`DiskCache`] keeps one over its folder, and the browser keeps one over the
+/// Origin Private File System (`apps/effectcraft-web`, where the files are written by workers).
 #[derive(Default)]
-struct Index {
+pub struct DiskIndex {
     map: HashMap<(Kind, u128), Meta>,
     total: u64,
     clock: u64,
+}
+
+impl DiskIndex {
+    /// Record an entry (`bytes` on disk) as the most recently used; replaces an older record.
+    pub fn insert(&mut self, kind: Kind, key: u128, bytes: u64) {
+        self.clock += 1;
+        let c = self.clock;
+        if let Some(old) = self.map.insert((kind, key), Meta { bytes, last_use: c }) {
+            self.total -= old.bytes;
+        }
+        self.total += bytes;
+    }
+
+    /// Mark an entry as just used (a read). `false` when it is not indexed.
+    pub fn touch(&mut self, kind: Kind, key: u128) -> bool {
+        self.clock += 1;
+        let c = self.clock;
+        match self.map.get_mut(&(kind, key)) {
+            Some(m) => {
+                m.last_use = c;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Forget an entry; its size, if it was indexed.
+    pub fn remove(&mut self, kind: Kind, key: u128) -> Option<u64> {
+        let m = self.map.remove(&(kind, key))?;
+        self.total -= m.bytes;
+        Some(m.bytes)
+    }
+
+    pub fn contains(&self, kind: Kind, key: u128) -> bool {
+        self.map.contains_key(&(kind, key))
+    }
+
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+
+    /// Bytes of every indexed entry.
+    pub fn total(&self) -> u64 {
+        self.total
+    }
+
+    /// Keys of one kind (unordered).
+    pub fn keys(&self, kind: Kind) -> Vec<u128> {
+        self.map.keys().filter(|k| k.0 == kind).map(|k| k.1).collect()
+    }
+
+    /// Entries from least to most recently used.
+    pub fn lru_order(&self) -> Vec<(Kind, u128)> {
+        let mut v: Vec<(u64, (Kind, u128))> = self.map.iter().map(|(k, m)| (m.last_use, *k)).collect();
+        v.sort_unstable_by_key(|e| e.0);
+        v.into_iter().map(|e| e.1).collect()
+    }
+
+    /// Remove least recently used entries until the total fits `max` bytes; returns them (the
+    /// caller deletes their files).
+    pub fn evict(&mut self, max: u64) -> Vec<(Kind, u128)> {
+        if self.total <= max {
+            return vec![];
+        }
+        let mut out = vec![];
+        for k in self.lru_order() {
+            if self.total <= max {
+                break;
+            }
+            self.remove(k.0, k.1);
+            out.push(k);
+        }
+        out
+    }
+
+    pub fn clear(&mut self) {
+        *self = DiskIndex::default();
+    }
 }
 
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
@@ -99,7 +185,7 @@ struct Queue {
 
 pub struct DiskCache {
     dir: PathBuf,
-    index: Mutex<Index>,
+    index: Mutex<DiskIndex>,
     max_bytes: AtomicU64,
     hits: AtomicU64,
     misses: AtomicU64,
@@ -172,7 +258,7 @@ impl DiskCache {
         std::fs::create_dir_all(&dir)?;
         let dc = Arc::new(DiskCache {
             dir,
-            index: Mutex::new(Index::default()),
+            index: Mutex::new(DiskIndex::default()),
             max_bytes: AtomicU64::new(max_bytes),
             hits: AtomicU64::new(0),
             misses: AtomicU64::new(0),
@@ -223,12 +309,9 @@ impl DiskCache {
             }
         }
         found.sort_by_key(|e| e.0);
-        let mut idx = Index::default();
+        let mut idx = DiskIndex::default();
         for (_, kind, key, bytes) in found {
-            idx.clock += 1;
-            let clock = idx.clock;
-            idx.total += bytes;
-            idx.map.insert((kind, key), Meta { bytes, last_use: clock });
+            idx.insert(kind, key, bytes);
         }
         if let Ok(mut g) = self.index.lock() {
             *g = idx;
@@ -260,16 +343,16 @@ impl DiskCache {
     }
 
     pub fn contains(&self, kind: Kind, key: u128) -> bool {
-        self.index.lock().is_ok_and(|g| g.map.contains_key(&(kind, key)))
+        self.index.lock().is_ok_and(|g| g.contains(kind, key))
     }
 
     /// Keys of one kind (unordered).
     pub fn keys(&self, kind: Kind) -> Vec<u128> {
-        self.index.lock().map(|g| g.map.keys().filter(|k| k.0 == kind).map(|k| k.1).collect()).unwrap_or_default()
+        self.index.lock().map(|g| g.keys(kind)).unwrap_or_default()
     }
 
     pub fn stats(&self) -> DiskStats {
-        let (entries, bytes) = self.index.lock().map(|g| (g.map.len(), g.total)).unwrap_or_default();
+        let (entries, bytes) = self.index.lock().map(|g| (g.len(), g.total())).unwrap_or_default();
         DiskStats {
             entries,
             bytes,
@@ -286,7 +369,7 @@ impl DiskCache {
     pub fn clear(&self) {
         self.flush();
         if let Ok(mut g) = self.index.lock() {
-            *g = Index::default();
+            g.clear();
         }
         for kind in [Kind::Frame, Kind::Layer] {
             let _ = std::fs::remove_dir_all(self.dir.join(kind.dir()));
@@ -322,11 +405,7 @@ impl DiskCache {
                 let payload = payload.to_vec();
                 self.hits.fetch_add(1, Ordering::Relaxed);
                 if let Ok(mut g) = self.index.lock() {
-                    g.clock += 1;
-                    let c = g.clock;
-                    if let Some(m) = g.map.get_mut(&(kind, key)) {
-                        m.last_use = c;
-                    }
+                    g.touch(kind, key);
                 }
                 // Persist the recency for the next session (best effort).
                 if let Ok(f) = std::fs::File::options().append(true).open(&path) {
@@ -347,10 +426,8 @@ impl DiskCache {
     }
 
     fn forget(&self, kind: Kind, key: u128) {
-        if let Ok(mut g) = self.index.lock()
-            && let Some(m) = g.map.remove(&(kind, key))
-        {
-            g.total -= m.bytes;
+        if let Ok(mut g) = self.index.lock() {
+            g.remove(kind, key);
         }
     }
 
@@ -382,13 +459,7 @@ impl DiskCache {
         if std::fs::create_dir_all(parent).is_err() {
             return;
         }
-        let mut data = Vec::with_capacity(payload.len() + 16);
-        data.extend_from_slice(MAGIC);
-        data.push(kind.tag());
-        data.extend_from_slice(&[0, 0, 0]);
-        data.extend_from_slice(payload);
-        let sum = checksum(&data);
-        data.extend_from_slice(&sum.to_le_bytes());
+        let data = seal(kind, payload);
         let n = self.tmp_counter.fetch_add(1, Ordering::Relaxed);
         let tmp = parent.join(format!("{key:032x}.tmp.{}.{n}", std::process::id()));
         if std::fs::write(&tmp, &data).is_err() {
@@ -401,13 +472,7 @@ impl DiskCache {
         }
         self.writes.fetch_add(1, Ordering::Relaxed);
         if let Ok(mut g) = self.index.lock() {
-            g.clock += 1;
-            let c = g.clock;
-            let bytes = data.len() as u64;
-            if let Some(old) = g.map.insert((kind, key), Meta { bytes, last_use: c }) {
-                g.total -= old.bytes;
-            }
-            g.total += bytes;
+            g.insert(kind, key, data.len() as u64);
         }
         self.evict();
     }
@@ -415,23 +480,9 @@ impl DiskCache {
     /// Remove least recently used entries until the cache fits its limit.
     fn evict(&self) {
         let max = self.max_bytes();
-        let victims: Vec<(Kind, u128)> = {
-            let Ok(mut g) = self.index.lock() else { return };
-            if g.total <= max {
-                return;
-            }
-            let mut by_age: Vec<(u64, (Kind, u128), u64)> = g.map.iter().map(|(k, m)| (m.last_use, *k, m.bytes)).collect();
-            by_age.sort_unstable_by_key(|e| e.0);
-            let mut out = vec![];
-            for (_, k, bytes) in by_age {
-                if g.total <= max {
-                    break;
-                }
-                g.map.remove(&k);
-                g.total -= bytes;
-                out.push(k);
-            }
-            out
+        let victims = match self.index.lock() {
+            Ok(mut g) => g.evict(max),
+            Err(_) => return,
         };
         for (kind, key) in victims {
             let _ = std::fs::remove_file(self.path(kind, key));
@@ -508,6 +559,40 @@ fn writer(dc: std::sync::Weak<DiskCache>, q: Arc<(Mutex<Queue>, Condvar)>) {
         }
         cv.notify_all();
     }
+}
+
+/// An entry file's bytes: header (magic, kind), payload, checksum.
+pub fn seal(kind: Kind, payload: &[u8]) -> Vec<u8> {
+    let mut data = Vec::with_capacity(payload.len() + 16);
+    data.extend_from_slice(MAGIC);
+    data.push(kind.tag());
+    data.extend_from_slice(&[0, 0, 0]);
+    data.extend_from_slice(payload);
+    let sum = checksum(&data);
+    data.extend_from_slice(&sum.to_le_bytes());
+    data
+}
+
+/// A sealed frame entry ([`seal`] of the encoded frame): what the browser's frame workers
+/// write to the Origin Private File System.
+pub fn frame_entry(width: u32, height: u32, rgba: &[u8]) -> Vec<u8> {
+    seal(Kind::Frame, &encode_frame(width, height, rgba))
+}
+
+/// A frame from a sealed entry's bytes (`None` when damaged).
+pub fn read_frame_entry(data: &[u8]) -> Option<Frame8> {
+    decode_frame(verify(data, Kind::Frame)?)
+}
+
+/// An entry's file name in its kind's folder (`<32 hex>.ecc`).
+pub fn entry_name(key: u128) -> String {
+    format!("{key:032x}.ecc")
+}
+
+/// The key of an entry file name (`None` for temporaries and other files).
+pub fn parse_entry_name(name: &str) -> Option<u128> {
+    let hex = name.strip_suffix(".ecc")?;
+    (hex.len() == 32).then(|| u128::from_str_radix(hex, 16).ok()).flatten()
 }
 
 /// Check magic, kind and checksum; returns the payload.
@@ -705,6 +790,40 @@ mod tests {
             *p = [v, v * 0.5, 1.0 - v, if i % 7 == 0 { 0.0 } else { 1.0 }];
         }
         Buf { img, offset: [1.5, -2.25], scale: 0.5 }
+    }
+
+    #[test]
+    fn index_evicts_least_recently_used() {
+        let mut ix = DiskIndex::default();
+        ix.insert(Kind::Frame, 1, 100);
+        ix.insert(Kind::Frame, 2, 100);
+        ix.insert(Kind::Layer, 3, 100);
+        assert_eq!((ix.len(), ix.total()), (3, 300));
+        assert!(ix.touch(Kind::Frame, 1));
+        assert!(!ix.touch(Kind::Frame, 3));
+        assert_eq!(ix.lru_order(), vec![(Kind::Frame, 2), (Kind::Layer, 3), (Kind::Frame, 1)]);
+        assert_eq!(ix.evict(250), vec![(Kind::Frame, 2)]);
+        assert!(ix.evict(250).is_empty());
+        ix.insert(Kind::Frame, 1, 50);
+        assert_eq!(ix.total(), 150);
+        assert_eq!(ix.remove(Kind::Layer, 3), Some(100));
+        assert_eq!(ix.keys(Kind::Frame), vec![1]);
+        ix.clear();
+        assert!(ix.is_empty() && ix.total() == 0);
+    }
+
+    #[test]
+    fn frame_entries_round_trip_and_names_parse() {
+        let rgba: Vec<u8> = (0..4 * 6 * 3).map(|i| (i * 7 % 256) as u8).collect();
+        let e = frame_entry(6, 3, &rgba);
+        assert_eq!(read_frame_entry(&e), Some(Frame8 { width: 6, height: 3, rgba: rgba.clone() }));
+        let mut bad = e.clone();
+        bad[20] ^= 1;
+        assert!(read_frame_entry(&bad).is_none());
+        let key = 0x0123_4567_89ab_cdef_0011_2233_4455_6677u128;
+        assert_eq!(parse_entry_name(&entry_name(key)), Some(key));
+        assert_eq!(parse_entry_name("abc.ecc"), None);
+        assert_eq!(parse_entry_name(&format!("{key:032x}.tmp.1")), None);
     }
 
     #[test]

@@ -32,6 +32,8 @@ use crate::eval::EvalCtx;
 pub struct LayerCache {
     inner: Mutex<Inner>,
     disk: Mutex<Option<(Arc<crate::disk_cache::DiskCache>, u64)>>,
+    /// While set, inserts are dropped (see [`LayerCache::set_gate`]).
+    gate: Mutex<Option<Arc<std::sync::atomic::AtomicBool>>>,
 }
 
 struct Entry {
@@ -72,7 +74,22 @@ impl LayerCache {
         LayerCache {
             inner: Mutex::new(Inner { map: HashMap::new(), bytes: 0, budget, clock: 0, hits: 0, misses: 0, missed_at: HashMap::new() }),
             disk: Mutex::new(None),
+            gate: Mutex::new(None),
         }
+    }
+
+    /// Drop inserts while `gate` is set. A render whose GPU readbacks are still in flight (the
+    /// browser's deferred readbacks, see [`crate::Accelerator::pass_missed`]) computes some
+    /// buffers from placeholders; the accelerator raises the gate from its first missing
+    /// readback to the end of the pass, so none of them is kept (in memory or on disk).
+    pub fn set_gate(&self, gate: Option<Arc<std::sync::atomic::AtomicBool>>) {
+        if let Ok(mut g) = self.gate.lock() {
+            *g = gate;
+        }
+    }
+
+    fn gated(&self) -> bool {
+        self.gate.lock().ok().and_then(|g| g.as_ref().map(|g| g.load(std::sync::atomic::Ordering::Relaxed))).unwrap_or(false)
     }
 
     /// Attach (or detach) the disk cache. `salt` separates projects and footage versions (see
@@ -130,6 +147,9 @@ impl LayerCache {
     }
 
     pub fn insert(&self, key: u64, buf: Arc<Buf>) {
+        if self.gated() {
+            return;
+        }
         let started = self.inner.lock().ok().and_then(|mut g| g.missed_at.remove(&key));
         if let Some((dc, dk)) = self.disk_key(key) {
             let slow = started.is_some_and(|t| t.elapsed().as_secs_f64() * 1e3 >= dc.min_layer_ms() as f64);

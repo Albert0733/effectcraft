@@ -172,6 +172,9 @@ pub struct RemoteJob {
     pub comp: ItemId,
     pub t: Tick,
     pub opts: RenderOpts,
+    /// The frame's disk-cache key, when the renderer keeps a disk cache
+    /// ([`RemoteFrames::disk`]): served from it on a hit, stored there after a render.
+    pub disk_key: Option<u128>,
 }
 
 /// Premultiplied RGBA8 pixels from a [`RemoteFrames`] renderer.
@@ -195,6 +198,31 @@ pub trait RemoteFrames: Send + Sync {
     fn start(&self, job: RemoteJob, done: RemoteDone);
     /// Drop cached intermediate results (Edit ▸ Purge).
     fn purge(&self) {}
+    /// It renders GPU effects (its own GPU device): frames with effects go to it rather than
+    /// the UI thread's GPU compositor, which would run their effects on the CPU.
+    fn gpu(&self) -> bool {
+        false
+    }
+    /// It keeps a disk cache of frames (the browser's Origin Private File System).
+    fn disk(&self) -> bool {
+        false
+    }
+    /// The disk cache holds the frame of this key (the blue cache bar).
+    fn disk_contains(&self, _key: u128) -> bool {
+        false
+    }
+}
+
+/// Whether a comp (or a comp it nests) has a layer with enabled effects.
+pub fn comp_has_effects(project: &Project, comp: ItemId) -> bool {
+    fn walk(p: &Project, comp: ItemId, depth: usize) -> bool {
+        let Some(c) = p.comp(comp) else { return false };
+        c.layers.iter().any(|l| {
+            l.switches.effects && l.effects().is_some_and(|fx| fx.groups().any(|g| g.enabled))
+                || depth < 16 && matches!(l.source, effectcraft_engine::project::LayerSource::Comp { item } if walk(p, item, depth + 1))
+        })
+    }
+    walk(project, comp, 0)
 }
 
 pub struct Frames {
@@ -283,14 +311,22 @@ impl Frames {
     /// Frames of (revision, comp, scale) in the disk cache but not in RAM — the blue cache bar.
     /// `opts` are the viewer's render options (part of the disk key).
     pub fn disk_frames(&self, src: &RenderSource, revision: u64, comp: u64, scale: u32, view: u64, frames: i64, opts: &RenderOpts) -> Vec<i64> {
-        let Some(dc) = &src.disk else { return vec![] };
+        let remote = self.remote.as_ref().filter(|r| r.disk());
+        let contains = |k: u128| match (&src.disk, remote) {
+            (Some(dc), _) => dc.contains(disk_cache::Kind::Frame, k),
+            (None, Some(r)) => r.disk_contains(k),
+            (None, None) => false,
+        };
+        if src.disk.is_none() && remote.is_none() {
+            return vec![];
+        }
         let ram: HashSet<i64> = self.cached_frames(revision, comp, scale).into_iter().collect();
         let oh = opts_hash(opts);
         (0..frames.clamp(0, 100_000))
             .filter(|f| !ram.contains(f))
             .filter(|f| {
                 let key = FrameKey { revision, comp, frame: *f, scale, view };
-                dc.contains(disk_cache::Kind::Frame, frame_disk_key(&self.content_keys, &src.project, &key, oh))
+                contains(frame_disk_key(&self.content_keys, &src.project, &key, oh))
             })
             .collect()
     }
@@ -396,6 +432,11 @@ impl Frames {
         self.remote = remote;
     }
 
+    /// The remote renderer keeps a disk cache (the browser's).
+    pub fn remote_disk(&self) -> bool {
+        self.remote.as_ref().is_some_and(|r| r.disk())
+    }
+
     /// Whether frames go to a usable [`RemoteFrames`].
     pub fn remote_active(&self) -> bool {
         self.remote.as_ref().is_some_and(|r| r.slots() > 0)
@@ -435,7 +476,11 @@ impl Frames {
                 }
                 job
             };
-            if job.src.gpu.is_some() && job.src.gpu_display {
+            // The GPU compositor here keeps the frame on the GPU, but runs layer effects on the
+            // CPU (this thread can't wait for readbacks): frames with effects go to workers
+            // that render them on their own GPU.
+            let gpu_here = job.src.gpu.is_some() && job.src.gpu_display && !(remote.gpu() && comp_has_effects(&job.src.project, job.comp));
+            if gpu_here {
                 let t0 = web_time::Instant::now();
                 if let Some(img) = w.render_gpu(&job) {
                     w.finish(&job, img, t0);
@@ -450,7 +495,8 @@ impl Frames {
             let fw = self.worker();
             let busy = self.remote_busy.clone();
             let t0 = web_time::Instant::now();
-            let rj = RemoteJob { project: job.src.project.clone(), revision: key.revision, comp: job.comp, t: job.t, opts: job.opts };
+            let disk_key = remote.disk().then(|| frame_disk_key(&w.content_keys, &job.src.project, &key, opts_hash(&job.opts)));
+            let rj = RemoteJob { project: job.src.project.clone(), revision: key.revision, comp: job.comp, t: job.t, opts: job.opts, disk_key };
             remote.start(
                 rj,
                 Box::new(move |r: Result<RemoteFrame, String>| {

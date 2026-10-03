@@ -126,7 +126,17 @@ preview frame are written (LZ4, atomic rename, checksummed) under 128-bit conten
 comp's content hash (the comp, what it uses, footage file size and time) plus frame, scale and
 view for frames; the layer key salted with the footage fingerprint for layers — so entries
 survive restarts and never go stale. LRU eviction keeps it under the size limit; Edit ▸ Purge
-empties it, `cache.diskStats` reports it, and the timeline draws disk-only frames in blue.
+empties it, `cache.diskStats` reports it, and the timeline draws disk-only frames in blue. In the
+browser the frames live in the Origin Private File System: frame workers write them, the page
+keeps the index (`DiskIndex`) and reads hits ([web.md](web.md#disk-cache)).
+
+**Deferred readbacks** (`effectcraft-gpu` `deferred`): where a readback can't be waited for (WebGPU
+in a browser worker) a frame renders in passes. `Accelerator::frame_begin` / `pass_begin` /
+`pass_missed` / `miss_gate`: a readback not there yet starts asynchronously and the step returns a
+placeholder; the pass is missed, the layer cache's gate drops inserts until the pass ends, and the
+caller (`remote::FrameServer::resume`) renders again once the device delivered. Readbacks are keyed
+by content (a chain's input pixels and parameters; the frame's comp, time and options), so later
+passes are served from them; a pass without a miss is the frame.
 
 **Time effects** (Echo, Posterize Time, Timewarp…) read the layer at other times through
 `EffectHost::self_at`: the renderer renders the layer's source and masks (plus, optionally, the
