@@ -64,7 +64,7 @@ pub fn probe_model(path: &str, bytes: &[u8], resolve: &dyn Fn(&str) -> Option<Ve
         missing: false,
         sequence: Vec::new(),
         color_profile: None,
-        layer: None,
+        ..Default::default()
     })
 }
 
@@ -115,7 +115,7 @@ pub(crate) fn footage_from_info(path: &str, info: &filmcraft_media::MediaInfo) -
         missing: false,
         sequence: Vec::new(),
         color_profile: v.and_then(|v| profile_of(&v.color)),
-        layer: None,
+        ..Default::default()
     }
 }
 
@@ -158,7 +158,7 @@ pub(crate) fn still_footage(path: &str, w: u32, h: u32, fmt: image::ImageFormat,
         missing: false,
         sequence: Vec::new(),
         color_profile: None,
-        layer: None,
+        ..Default::default()
     }
 }
 

@@ -20,12 +20,11 @@ Animation 94%, Masks 94%, Preview 94%, Interface 93%, Shapes 93%, 3D 91%, Audio 
 Tracking 88%, Effects 85%, Web 65%.
 
 What is left, in priority order: the web app's depth (threads, storage, audio, non-blocking
-renders); stroke taper/wave and multi-segment dashes; variable mask feather points; real
-`sampleImage` and `footage()` in expressions; camera iris/bokeh and focus-link commands; GPU
+renders); stroke taper/wave and multi-segment dashes; variable mask feather points; camera iris/bokeh and focus-link commands; GPU
 rendering of 3D runs and adjustment layers; Render Queue field render, crop/resize and templates;
 approximated effects (Subspace Warp, Key Cleaner) and Liquify's viewer brush; Advanced 3D motion blur
 and blend modes; a few viewer and colour-management menu items; OpenType features and variable
-font axes; AI/EPS/PDF import; more codecs; 59 preferences not yet wired; proxies; ScriptUI;
+font axes; AI/EPS/PDF import; more codecs; 59 preferences not yet wired; ScriptUI;
 Lumetri Scopes, Footage, Media Browser and Metadata panels; Content-Aware Fill; face tracking; and
 the "better than After Effects" items (a plug-in API, branching history, GPU particles).
 
@@ -117,14 +116,14 @@ the disk cache in the formats wave; the 3D Camera Tracker in M12.6.)
 | Import | 88% | 2.0 | AI/EPS/PDF vector footage, PSD smart objects and 3D layers (PSD as footage/composition/retain layer sizes, SVG footage and Create Shapes from Vector Layer landed) |
 | Automation | ≈ 90% | 0.8 | scripting covers the documented core object model (AUT-2, M14.4: `app`, project items, comps, layers, properties and keyframes, text documents, markers, render queue, Script Console, `effectcraft-cli script`, MCP `run_script`); still missing: ScriptUI panels/dialogs, `.jsxbin`, sockets |
 | Shapes | 68% | 3.9 | taper and wave strokes (pen tool for shape paths and vertex editing landed in M6.5) |
-| Compositions | 72% | 6.0 | Essential Graphics panel (the marker dialog and Composition Flowchart landed) |
+| Compositions | ≈ 80% | 3.5 | Mocha-style planar tracks for templates, Essential Graphics' rare controls (font menus, mirrored properties) (the marker dialog, Composition Flowchart, Essential Graphics with master properties, `.ectemplate` templates and Responsive Design — Time landed: CMP-6, CMP-7) |
 | Animation | 65% | 10.4 | puppet, Wiggler/Smoother/Motion Sketch (motion-path handles and the graph editor transform box landed in M5.8) |
 | Text | ≈ 86% | 1.3 | vertical type is basic (upright characters, no tate-chu-yoko), no OpenType feature panel, no extruded strokes (extruded, bevelled text landed in M7.6); per-character styles, paragraph settings, on-canvas editing and the `sourceText` style API landed (M9.9–M9.10) |
 | Web | 60% | 2.5 | threads, browser storage, audio |
 | 3D | 76% | 10.0 | multi-view layouts, Advanced 3D motion blur and blend modes, cameras/lights from models; Advanced 3D (glTF/OBJ models, primitives, extruded text and shapes, PBR, image-based light, shadow maps, GPU rasteriser) landed in M7.4–M7.6 |
 | Effects | ≈ 75% | 5.0 | GPU versions of more effects (every After Effects effect exists since M9.11, M12.5 and M12.6) |
 | Interface | 70% | 6.0 | Timeline horizontal scrolling of many columns, a richer Learn area (native macOS menu bar, Timeline columns/search/reveal-add, Home screen with recent projects and all AE workspaces landed; viewer rulers/snapping/channels/snapshots landed in M0.13) |
-| Project | 53% | 8.1 | 8/16/32-bit pipeline and colour management, auto-save, proxies, folder moves |
+| Project | ≈ 60% | 6.5 | 8/16/32-bit pipeline and colour management, auto-save, folder moves (proxies and Interpret Footage fields / pixel aspect / alpha guess landed: PRJ-8, PRJ-3) |
 | Masks & roto | 68% | 6.0 | variable-width mask feather points, Roto Brush's learned (3.0) segmentation model (mask tracking and Mask Interpolation landed in M6.6; Roto Brush & Refine Edge with graph-cut segmentation, flow propagation, edge matting, decontamination and Freeze in M6.7) |
 | Preview | 62% | 5.0 | GPU 3D and adjustment layers (persistent disk cache with the blue cache bar landed; region of interest, snapshots, exposure and Fast Previews landed in M0.13) |
 | Tracking | ≈ 85% | 2.5 | face tracking, Subspace Warp's mesh warp, lens distortion in the camera solve (Rolling Shutter Repair landed in M9.11; point tracker, mask tracking, Warp Stabilizer and the 3D Camera Tracker landed in M6.x / M12.5 / M12.6) |
@@ -164,7 +163,7 @@ Mocha and Cineware are third-party and not counted.
 9. A real 8/16/32-bit pipeline with linear blending and colour management.
 10. ~~Drag-to-dock and floating panels, saved workspaces, native macOS menus.~~
 11. Auto-save, crash recovery, recent projects (in progress).
-12. Expression gaps: `sampleImage`, `footage()` (the `sourceText` style API landed in M9.9).
+12. ~~Expression gaps: `sampleImage`, `footage()`~~ (landed with data footage, the error bar and the Expression Language menu; the `sourceText` style API landed in M9.9).
 13. ~~Lottie, WebM, SVG and PSD import~~ (landed; a disk cache too).
 14. Puppet and paint tools (in progress).
 15. Preferences and a shortcut editor that can rebind (in progress); real Wiggler, Smoother and Motion Sketch; the marker dialog.

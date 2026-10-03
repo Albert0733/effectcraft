@@ -101,6 +101,7 @@ fn footage_changes_change_the_salt() {
             sequence: vec![],
             color_profile: None,
             layer: None,
+            ..Default::default()
         };
         p.add_item("f.png", effectcraft_color::Label::Lavender, None, effectcraft_project::ItemKind::Footage(f));
         Ok(())

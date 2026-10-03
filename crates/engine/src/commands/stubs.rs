@@ -17,12 +17,6 @@ macro_rules! stub {
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
-        // Render queue / export (export milestone).
-        stub!("file.createProxy", "Create Proxy", [], "{kind: still|movie}"),
-        // Proxies (no proxy model yet).
-        stub!("file.setProxy", "File...", ["File", "Set Proxy"], "{path}"),
-        stub!("file.setProxyNone", "None", ["File", "Set Proxy"], "{}"),
-        stub!("file.interpretProxy", "Proxy...", ["File", "Interpret Footage"], "{}"),
         stub!("keys.selectLabelGroup", "Select Keyframe Label Group", [], "{scope}"),
         // Layer ▸ New (3D / content-aware fill).
         stub!("layer.newContentAwareFill", "Content-Aware Fill Layer...", ["Layer", "New"], "{}"),

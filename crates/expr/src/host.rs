@@ -52,6 +52,93 @@ pub enum Req {
     /// A Source Text value as JSON `{doc, text, runs: [{len, style}], paras}` (styles as
     /// `layer.setText` keys), or null for other properties.
     Doc { comp: u64, layer: u64, path: String, t: Secs, pre: bool },
+    /// `footage(name)`: `[name, width, height, duration, frameDuration, pixelAspect, kind,
+    /// sourceText|null, dataFormat|null]` or null.
+    Footage { name: String },
+    /// A data footage item's parsed data as JSON `{data, rows, header}` (`rows`/`header` for
+    /// CSV/TSV), or null.
+    FootageData { name: String },
+    /// `sampleImage`: the average straight `[r, g, b, a]` of the layer's pixels in the box
+    /// `point ± radius` (layer space) at comp time `t`, after masks and effects when `post`.
+    Sample { comp: u64, layer: u64, x: Secs, y: Secs, rx: Secs, ry: Secs, post: bool, t: Secs },
+    /// `thisProject`: `[bitsPerChannel, linearBlending, workingSpace]`.
+    Project,
+}
+
+/// Parse CSV/TSV text (RFC 4180 quoting) into rows of cells.
+pub fn parse_delimited(text: &str, sep: char) -> Vec<Vec<String>> {
+    let mut rows = vec![];
+    let mut row = vec![];
+    let mut cell = String::new();
+    let mut quoted = false;
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if quoted {
+            match c {
+                '"' if chars.peek() == Some(&'"') => {
+                    chars.next();
+                    cell.push('"');
+                }
+                '"' => quoted = false,
+                _ => cell.push(c),
+            }
+            continue;
+        }
+        match c {
+            '"' if cell.is_empty() => quoted = true,
+            c if c == sep => row.push(std::mem::take(&mut cell)),
+            '\r' => {}
+            '\n' => {
+                row.push(std::mem::take(&mut cell));
+                rows.push(std::mem::take(&mut row));
+            }
+            _ => cell.push(c),
+        }
+    }
+    if !cell.is_empty() || !row.is_empty() {
+        row.push(cell);
+        rows.push(row);
+    }
+    rows.retain(|r| !(r.len() == 1 && r[0].trim().is_empty()));
+    rows
+}
+
+/// A CSV/TSV cell as JSON: numbers become numbers.
+fn cell_json(c: &str) -> serde_json::Value {
+    let t = c.trim();
+    match t.parse::<f64>() {
+        Ok(x) if x.is_finite() && !t.is_empty() => serde_json::json!(x),
+        _ => serde_json::json!(c),
+    }
+}
+
+/// The data of a data footage item as `{data, rows, header}` JSON (see [`Req::FootageData`]).
+pub fn footage_data_json(f: &effectcraft_project::Footage) -> Option<String> {
+    let text = f.data.as_deref()?;
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    Some(match f.data_format()? {
+        "json" => {
+            let v: serde_json::Value = serde_json::from_str(text).ok()?;
+            serde_json::json!({"data": v, "rows": null, "header": null}).to_string()
+        }
+        fmt => {
+            let rows = parse_delimited(text, if fmt == "tsv" { '\t' } else { ',' });
+            let (header, body) = match rows.split_first() {
+                Some((h, b)) => (h.clone(), b.to_vec()),
+                None => (vec![], vec![]),
+            };
+            let objects: Vec<serde_json::Value> = body
+                .iter()
+                .map(|r| {
+                    serde_json::Value::Object(
+                        header.iter().enumerate().map(|(i, k)| (k.clone(), r.get(i).map(|c| cell_json(c)).unwrap_or(serde_json::Value::Null))).collect(),
+                    )
+                })
+                .collect();
+            let cells: Vec<Vec<serde_json::Value>> = body.iter().map(|r| r.iter().map(|c| cell_json(c)).collect()).collect();
+            serde_json::json!({"data": objects, "rows": cells, "header": header}).to_string()
+        }
+    })
 }
 
 /// A text document as the style API's JSON.
@@ -192,7 +279,7 @@ impl<'a> Resolver<'a> {
     }
     fn ctx_at(&self, c: u64, t: f64) -> Option<EvalCtx<'a>> {
         let comp = self.comp(c)?;
-        Some(EvalCtx { project: self.ctx.project, comp_id: ItemId(c), comp, time: Tick::from_seconds_f64(t), expr: self.ctx.expr })
+        Some(EvalCtx { project: self.ctx.project, comp_id: ItemId(c), comp, time: Tick::from_seconds_f64(t), expr: self.ctx.expr, footage: self.ctx.footage })
     }
     fn prop(&self, c: u64, l: u64, path: &str) -> Option<(&'a Layer, &'a Property)> {
         let layer = self.layer(c, l)?;
@@ -345,6 +432,36 @@ impl<'a> Resolver<'a> {
                 };
                 Resp::nums(r)
             }
+            Req::Footage { name } => {
+                let it = project.items.values().find(|i| &i.name == name && matches!(i.kind, ItemKind::Footage(_)))?;
+                let ItemKind::Footage(f) = &it.kind else { return None };
+                Resp::List(vec![
+                    Resp::Str(it.name.clone()),
+                    Resp::Num(f.width as f64),
+                    Resp::Num(f.height as f64),
+                    Resp::Num(f.duration.seconds()),
+                    Resp::Num(f.frame_rate.frame_duration().seconds()),
+                    Resp::Num(f.pixel_aspect),
+                    Resp::Str(it.type_name().into()),
+                    f.data.clone().map_or(Resp::Null, Resp::Str),
+                    f.data_format().map_or(Resp::Null, |x| Resp::Str(x.into())),
+                ])
+            }
+            Req::FootageData { name } => {
+                let it = project.items.values().find(|i| &i.name == name && matches!(i.kind, ItemKind::Footage(_)))?;
+                let ItemKind::Footage(f) = &it.kind else { return None };
+                Resp::Str(footage_data_json(f)?)
+            }
+            Req::Project => Resp::List(vec![
+                Resp::Num(project.settings.bit_depth.bits() as f64),
+                Resp::Bool(project.settings.blend_linear || project.settings.linearize),
+                Resp::Str(project.settings.working_space.map(|w| format!("{w:?}")).unwrap_or_default()),
+            ]),
+            Req::Sample { comp, layer, x, y, rx, ry, post, t } => {
+                let l = self.layer(*comp, *layer)?;
+                let f = |b: &Secs| f64::from_bits(*b);
+                Resp::nums(crate::sample::sample_image(self.ctx, ItemId(*comp), l, [f(x), f(y)], [f(rx), f(ry)], *post, f(t))?.map(|v| v as f64))
+            }
             Req::Markers { comp, layer } => {
                 let marks: Vec<(f64, &effectcraft_project::Marker)> = match layer {
                     Some(l) => {
@@ -363,6 +480,17 @@ impl<'a> Resolver<'a> {
                                 Resp::Str(m.comment.clone()),
                                 Resp::Str(m.chapter.clone()),
                                 Resp::Str(m.url.clone()),
+                                Resp::Str(m.frame_target.clone()),
+                                Resp::Bool(m.cue_point.as_ref().is_some_and(|c| !c.navigation)),
+                                Resp::Str(m.cue_point.as_ref().map(|c| c.name.clone()).unwrap_or_default()),
+                                Resp::List(
+                                    m.cue_point
+                                        .iter()
+                                        .flat_map(|c| c.params.iter())
+                                        .map(|(k, v)| Resp::List(vec![Resp::Str(k.clone()), Resp::Str(v.clone())]))
+                                        .collect(),
+                                ),
+                                Resp::Bool(m.protected),
                             ])
                         })
                         .collect(),

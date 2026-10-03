@@ -186,7 +186,8 @@ mod tests {
         let cid = s.active_comp_id().unwrap();
         let comp = s.project.comp(cid).unwrap();
         let layer = comp.layer(effectcraft_engine::project::LayerId(l)).unwrap();
-        let ctx = effectcraft_engine::render::EvalCtx { project: &s.project, comp_id: cid, comp, time: Default::default(), expr: s.expr.as_deref() };
+        let ctx =
+            effectcraft_engine::render::EvalCtx { project: &s.project, comp_id: cid, comp, time: Default::default(), expr: s.expr.as_deref(), footage: None };
         ctx.value(layer, layer.props.prop(path).unwrap())
     }
 
@@ -222,6 +223,134 @@ mod tests {
         s.execute("prop.separateDimensions", json!({"layer": b})).unwrap();
         link(&mut s, "transform/rotation", "transform/positionX");
         assert_eq!(value(&s, a, "transform/rotation").as_f64(), 12.0);
+    }
+
+    /// The expression error bar's list: evaluation errors and syntax errors, with the layer and
+    /// property they belong to.
+    #[test]
+    fn expression_errors_are_collected() {
+        let mut s = super::session();
+        s.execute("comp.new", json!({"name": "C", "width": 100, "height": 100, "frameRate": 30, "duration": 2})).unwrap();
+        let a = s.execute("layer.newSolid", json!({"name": "Box", "color": "#ffffff"})).unwrap()["layer"].as_u64().unwrap();
+        s.execute("prop.setExpression", json!({"layer": a, "path": "transform/opacity", "expression": "50"})).unwrap();
+        assert_eq!(s.execute("expr.errors", json!({})).unwrap()["count"], 0);
+        s.execute("prop.setExpression", json!({"layer": a, "path": "transform/rotation", "expression": "thisComp.layer(\"Nope\").rotation"})).unwrap();
+        s.execute("prop.setExpression", json!({"layer": a, "path": "transform/opacity", "expression": "1 +* ("})).unwrap();
+        let r = s.execute("expr.errors", json!({})).unwrap();
+        assert_eq!(r["count"], 2, "{r}");
+        let errs = r["errors"].as_array().unwrap();
+        let rot = errs.iter().find(|e| e["path"] == "transform/rotation").unwrap();
+        assert!(rot["message"].as_str().unwrap().contains("Nope"), "{rot}");
+        assert_eq!(rot["layerIndex"], 1);
+        assert_eq!(rot["layerName"], "Box");
+        assert_eq!(rot["disabled"], false);
+        let op = errs.iter().find(|e| e["path"] == "transform/opacity").unwrap();
+        assert_eq!(op["disabled"], true);
+        assert!(r["text"][0].as_str().unwrap().contains("of layer 1 ('Box') in comp 'C'"), "{r}");
+        // A user-disabled (but valid) expression is not an error.
+        s.execute("prop.setExpression", json!({"layer": a, "path": "transform/rotation", "expression": "45"})).unwrap();
+        s.execute("prop.setExpression", json!({"layer": a, "path": "transform/rotation", "enabled": false})).unwrap();
+        assert_eq!(s.execute("expr.errors", json!({})).unwrap()["count"], 1);
+        // The Expression Language menu is categorised.
+        let m = s.execute("expr.languageMenu", json!({})).unwrap();
+        assert!(m.as_array().unwrap().iter().any(|c| c["category"] == "Footage" && c["items"].as_array().unwrap().iter().any(|i| i["text"] == "sourceData")));
+    }
+
+    /// File ▸ Import of JSON/CSV data files as data footage, read by expressions.
+    #[test]
+    fn imported_data_files_drive_expressions() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/test-out/host-data");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("levels.csv"), "label,value\nlow,10\nhigh,90\n").unwrap();
+        std::fs::write(dir.join("cfg.json"), r#"{"angle": 33}"#).unwrap();
+        std::fs::write(dir.join("broken.json"), "{nope").unwrap();
+        let mut s = super::session();
+        s.execute("comp.new", json!({"name": "C", "width": 100, "height": 100, "frameRate": 30, "duration": 2})).unwrap();
+        let paths: Vec<String> = ["levels.csv", "cfg.json", "broken.json"].iter().map(|n| dir.join(n).to_string_lossy().to_string()).collect();
+        let r = s.execute("file.import", json!({"paths": paths})).unwrap();
+        assert_eq!(r["items"].as_array().unwrap().len(), 2, "{r}");
+        assert_eq!(r["errors"].as_array().unwrap().len(), 1, "{r}");
+        let csv = r["items"][0].as_u64().unwrap();
+        assert_eq!(s.project.item(effectcraft_engine::project::ItemId(csv)).unwrap().type_name(), "Data");
+        assert!(s.execute("layer.addItem", json!({"item": csv})).is_err(), "data files are not layers");
+        let a = s.execute("layer.newSolid", json!({"color": "#ffffff"})).unwrap()["layer"].as_u64().unwrap();
+        s.execute("prop.setExpression", json!({"layer": a, "path": "transform/opacity", "expression": "footage(\"levels.csv\").sourceData[1].value"})).unwrap();
+        s.execute("prop.setExpression", json!({"layer": a, "path": "transform/rotation", "expression": "footage(\"cfg.json\").sourceData.angle"})).unwrap();
+        assert_eq!(value(&s, a, "transform/opacity").as_f64(), 90.0);
+        assert_eq!(value(&s, a, "transform/rotation").as_f64(), 33.0);
+    }
+
+    /// sampleImage through the renderer: a box's Fill colour follows the solid under it.
+    #[test]
+    fn sample_image_drives_a_colour() {
+        let mut s = super::session();
+        s.execute("comp.new", json!({"name": "C", "width": 100, "height": 100, "frameRate": 30, "duration": 2})).unwrap();
+        s.execute("layer.newSolid", json!({"name": "Bg", "color": "#00ff00"})).unwrap();
+        let a = s.execute("layer.newSolid", json!({"name": "Fg", "color": "#ffffff", "width": 20, "height": 20})).unwrap()["layer"].as_u64().unwrap();
+        s.execute("effect.apply", json!({"layer": a, "effect": "Fill"})).unwrap();
+        s.execute(
+            "prop.setExpression",
+            json!({"layer": a, "path": "effects/#1/color", "expression": "thisComp.layer(\"Bg\").sampleImage(thisComp.layer(\"Bg\").fromComp(toComp(anchorPoint)))"}),
+        )
+        .unwrap();
+        let cid = s.active_comp_id().unwrap();
+        let img = s.render(cid, s.time(), effectcraft_engine::render::RenderOpts::default());
+        let px = img.get(50, 50);
+        assert!(px[1] > 0.99 && px[0] < 0.01, "the box is filled with the sampled green: {px:?}");
+    }
+
+    /// Proxies through the real media and export layers: Render Settings ▸ Proxy Use decides
+    /// whether an export uses the proxy, and Create Proxy renders and attaches one.
+    #[test]
+    fn proxies_in_exports_and_create_proxy() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/test-out/host-proxy");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = |n: &str| dir.join(n).to_string_lossy().to_string();
+        let mut s = super::session();
+        // Source and proxy stills, written by the app itself.
+        s.execute("comp.new", json!({"name": "Red", "width": 16, "height": 16, "frameRate": 10, "duration": 1})).unwrap();
+        let red = s.active_comp_id().unwrap();
+        s.execute("layer.newSolid", json!({"color": "#ff0000"})).unwrap();
+        s.execute("comp.saveFrameAs", json!({"path": p("red.png")})).unwrap();
+        s.execute("comp.new", json!({"name": "Blue", "width": 8, "height": 8, "frameRate": 10, "duration": 1})).unwrap();
+        s.execute("layer.newSolid", json!({"color": "#0000ff"})).unwrap();
+        s.execute("comp.saveFrameAs", json!({"path": p("blue.png")})).unwrap();
+        let foot = s.execute("file.import", json!({"paths": [p("red.png")]})).unwrap()["items"][0].as_u64().unwrap();
+        s.execute("file.setProxy", json!({"item": foot, "path": p("blue.png")})).unwrap();
+        s.execute("comp.new", json!({"name": "Out", "width": 16, "height": 16, "frameRate": 10, "duration": 1})).unwrap();
+        let out = s.active_comp_id().unwrap();
+        s.execute("layer.addItem", json!({"item": foot})).unwrap();
+        // Export one frame with each Proxy Use.
+        for (name, using) in [("all", "use_all_[#].png"), ("none", "use_none_[#].png")] {
+            s.execute(
+                "renderQueue.add",
+                json!({"comp": out.0, "format": "png", "output": p(using), "timeSpan": "custom", "start": 0.0, "end": 0.1, "proxyUse": name}),
+            )
+            .unwrap();
+        }
+        s.execute("renderQueue.render", json!({"wait": true})).unwrap();
+        s.poll_render();
+        let centre = |s: &mut effectcraft_engine::Session, path: &str| {
+            let id = s.execute("file.import", json!({"paths": [path]})).unwrap()["items"][0].as_u64().unwrap();
+            s.execute("comp.new", json!({"name": "Probe", "width": 16, "height": 16, "frameRate": 10, "duration": 1})).unwrap();
+            s.execute("layer.addItem", json!({"item": id})).unwrap();
+            let c = s.active_comp_id().unwrap();
+            s.render(c, Default::default(), Default::default()).get(8, 8)
+        };
+        let all = centre(&mut s, &p("use_all_0.png"));
+        assert!(all[2] > 0.99 && all[0] < 0.01, "Use All Proxies renders the blue proxy: {all:?}");
+        let none = centre(&mut s, &p("use_none_0.png"));
+        assert!(none[0] > 0.99 && none[2] < 0.01, "Use No Proxies renders the red source: {none:?}");
+        // Create Proxy ▸ Still: rendered at half size and attached to the comp.
+        s.execute("file.createProxy", json!({"kind": "still", "comp": red.0, "path": p("red_proxy_[#####].png")})).unwrap();
+        s.execute("renderQueue.render", json!({"wait": true})).unwrap();
+        s.poll_render();
+        let px = s.project.item(red).unwrap().proxy.clone().expect("Create Proxy attached the rendered still");
+        assert!(px.enabled);
+        assert_eq!((px.footage.width, px.footage.height), (8, 8));
+        assert!(std::path::Path::new(&px.footage.path).exists(), "{}", px.footage.path);
     }
 
     /// A script builds a comp, queues it and renders it through the Render Queue.

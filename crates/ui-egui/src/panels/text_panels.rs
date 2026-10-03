@@ -56,7 +56,7 @@ pub fn text_target(app: &EffectcraftApp) -> Option<TextTarget> {
         .iter()
         .filter_map(|id| comp.layer(*id))
         .find(|l| matches!(l.source, effectcraft_engine::project::LayerSource::Text))?;
-    let ectx = EvalCtx { project: &app.session.project, comp_id: cid, comp, time: app.session.time(), expr: app.session.expr.as_deref() };
+    let ectx = EvalCtx { project: &app.session.project, comp_id: cid, comp, time: app.session.time(), expr: app.session.expr.as_deref(), footage: None };
     effectcraft_engine::render::text::source_text(&ectx, layer).map(|d| TextTarget { layer: layer.id.0, doc: d, range: None })
 }
 
@@ -453,7 +453,7 @@ pub fn align_layers(app: &mut EffectcraftApp, op: &str) {
     let time = app.session.time();
     let mut moves = vec![];
     {
-        let ectx = EvalCtx { project: &app.session.project, comp_id: cid, comp: &comp, time, expr: app.session.expr.as_deref() };
+        let ectx = EvalCtx { project: &app.session.project, comp_id: cid, comp: &comp, time, expr: app.session.expr.as_deref(), footage: None };
         for l in comp.layers.iter().filter(|l| app.session.state.selected_layers.contains(&l.id)) {
             let Some(b) = effectcraft_engine::render::content_bounds(&ectx, l) else { continue };
             let (m, _) = ectx.layer_to_comp(l);

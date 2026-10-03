@@ -35,10 +35,11 @@ pub enum PanelKind {
     Markers,
     MaskInterpolation,
     ScriptConsole,
+    EssentialGraphics,
 }
 
 impl PanelKind {
-    pub const ALL: [PanelKind; 25] = [
+    pub const ALL: [PanelKind; 26] = [
         PanelKind::Project,
         PanelKind::EffectControls,
         PanelKind::Composition,
@@ -64,6 +65,7 @@ impl PanelKind {
         PanelKind::Markers,
         PanelKind::MaskInterpolation,
         PanelKind::ScriptConsole,
+        PanelKind::EssentialGraphics,
     ];
     pub fn title(self) -> &'static str {
         match self {
@@ -92,6 +94,7 @@ impl PanelKind {
             PanelKind::Markers => "Markers",
             PanelKind::MaskInterpolation => "Mask Interpolation",
             PanelKind::ScriptConsole => "Script Console",
+            PanelKind::EssentialGraphics => "Essential Graphics",
         }
     }
     pub fn id(self) -> String {

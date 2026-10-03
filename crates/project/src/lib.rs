@@ -5,6 +5,7 @@
 //! change.
 
 pub mod build;
+pub mod essential;
 pub mod props;
 pub mod render_queue;
 pub mod styles;
@@ -214,6 +215,9 @@ pub struct Comp {
     /// Viewer guides (View ▸ Add Guide…), in comp pixels.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub guides: Vec<Guide>,
+    /// Essential Graphics: the controls this comp exposes to instances and templates.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub essential: Option<essential::EssentialGraphics>,
 }
 
 /// A viewer guide line: vertical guides sit at an x position, horizontal ones at a y position.
@@ -251,6 +255,7 @@ impl Comp {
             poster_time: Tick::ZERO,
             guides: vec![],
             global_light: styles::GlobalLight::default(),
+            essential: None,
         }
     }
     pub fn layer(&self, id: LayerId) -> Option<&Layer> {
@@ -590,6 +595,38 @@ pub enum FootageKind {
     Audio,
     /// A 3D model (glTF 2.0 / OBJ), placed as a model layer.
     Model,
+    /// A data file (JSON, CSV, TSV) for data-driven animation: read by expressions through
+    /// `footage(name).sourceData` / `sourceText` / `dataValue`; it has no pixels.
+    Data,
+}
+
+/// Interpret Footage ▸ Fields and Pulldown ▸ Separate Fields.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum FieldOrder {
+    /// Progressive frames.
+    #[default]
+    Off,
+    /// Interlaced, upper (odd) field first: each field becomes a frame at twice the rate.
+    UpperFirst,
+    LowerFirst,
+}
+
+impl FieldOrder {
+    pub fn label(self) -> &'static str {
+        match self {
+            FieldOrder::Off => "Off",
+            FieldOrder::UpperFirst => "Upper Field First",
+            FieldOrder::LowerFirst => "Lower Field First",
+        }
+    }
+    pub fn parse(s: &str) -> Option<FieldOrder> {
+        match s.to_ascii_lowercase().replace([' ', '_', '-'], "").as_str() {
+            "off" | "none" | "progressive" => Some(FieldOrder::Off),
+            "upper" | "upperfirst" | "upperfieldfirst" => Some(FieldOrder::UpperFirst),
+            "lower" | "lowerfirst" | "lowerfieldfirst" => Some(FieldOrder::LowerFirst),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -632,6 +669,78 @@ pub struct Footage {
     /// One layer of a layered file (Photoshop) instead of its merged image.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub layer: Option<SourceLayer>,
+    /// Interpret Footage ▸ Fields and Pulldown ▸ Separate Fields.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub fields: FieldOrder,
+    /// Interpret Footage ▸ Alpha ▸ Invert Alpha.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub invert_alpha: bool,
+    /// Interpret Footage ▸ Color ▸ Interpret As Linear Light: the file's values are linear.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub linear_light: bool,
+    /// Data footage ([`FootageKind::Data`]): the file's text (JSON, CSV or TSV), kept in the
+    /// project so expressions read it everywhere (and on the web).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<String>,
+}
+
+fn is_default<T: Default + PartialEq>(v: &T) -> bool {
+    *v == T::default()
+}
+
+impl Default for Footage {
+    fn default() -> Self {
+        Footage {
+            path: String::new(),
+            kind: FootageKind::Still,
+            width: 0,
+            height: 0,
+            pixel_aspect: 1.0,
+            frame_rate: FrameRate::FPS_30,
+            native_rate: None,
+            duration: Tick::ZERO,
+            has_video: false,
+            has_audio: false,
+            alpha: AlphaMode::Straight,
+            premul_color: [0.0; 3],
+            loop_count: 1,
+            codec: String::new(),
+            missing: false,
+            sequence: vec![],
+            color_profile: None,
+            fields: FieldOrder::Off,
+            invert_alpha: false,
+            linear_light: false,
+            data: None,
+            layer: None,
+        }
+    }
+}
+
+impl Footage {
+    /// The data format of data footage: `json`, `csv` or `tsv` (from the file extension).
+    pub fn data_format(&self) -> Option<&'static str> {
+        if self.kind != FootageKind::Data {
+            return None;
+        }
+        let ext = std::path::Path::new(&self.path).extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+        Some(match ext.as_str() {
+            "csv" => "csv",
+            "tsv" | "tab" => "tsv",
+            _ => "json",
+        })
+    }
+}
+
+/// A proxy: a stand-in file used instead of a footage item or composition (File ▸ Set Proxy /
+/// Create Proxy), when its Use Proxy switch is on and the render's Proxy Use allows it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Proxy {
+    /// The proxy's footage (path, size, rate…; File ▸ Interpret Footage ▸ Proxy edits it).
+    pub footage: Footage,
+    /// Use Proxy (the Project panel's proxy indicator: filled = in use, hollow = set but off).
+    #[serde(default = "yes")]
+    pub enabled: bool,
 }
 
 /// A layer of a layered still (a Photoshop document) used as footage
@@ -678,6 +787,9 @@ pub struct Item {
     #[serde(default)]
     pub parent: Option<ItemId>,
     pub kind: ItemKind,
+    /// The item's proxy (footage and compositions).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy: Option<Box<Proxy>>,
 }
 
 impl Item {
@@ -691,6 +803,7 @@ impl Item {
                 FootageKind::Sequence => "Image Sequence",
                 FootageKind::Audio => "Audio",
                 FootageKind::Model => "3D Model",
+                FootageKind::Data => "Data",
             },
             ItemKind::Solid(_) => "Solid",
         }
@@ -768,7 +881,7 @@ impl Project {
     }
     pub fn add_item(&mut self, name: &str, label: Label, parent: Option<ItemId>, kind: ItemKind) -> ItemId {
         let id = ItemId(self.alloc());
-        self.items.insert(id, Item { id, name: name.into(), label, comment: String::new(), parent, kind });
+        self.items.insert(id, Item { id, name: name.into(), label, comment: String::new(), parent, kind, proxy: None });
         id
     }
     /// Children of a folder (None = root), folders first then by name.

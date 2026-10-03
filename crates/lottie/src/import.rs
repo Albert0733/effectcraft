@@ -171,7 +171,7 @@ pub fn import(
                 missing: false,
                 sequence: vec![],
                 color_profile: None,
-                layer: None,
+                ..Default::default()
             };
             let item = project.add_item(&nm, Label::Lavender, Some(folder), ItemKind::Footage(foot));
             cx.items.push(item);

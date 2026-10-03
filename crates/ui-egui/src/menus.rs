@@ -786,6 +786,9 @@ fn file_dialog(app: &mut EffectcraftApp, id: &str, params: &Value) -> Option<Res
         "file.runScript" => ("path", Ask::Open(&["jsx", "js", "jsonl", "json", "txt"])),
         "file.replaceFootage" => ("path", Ask::Import),
         "file.collectFiles" => ("folder", Ask::Save("Collected Files")),
+        "essential.exportTemplate" => ("path", Ask::Save("Template.ectemplate")),
+        "essential.importTemplate" => ("path", Ask::Open(&["ectemplate"])),
+        "file.setProxy" => ("path", Ask::Open(&["mp4", "mov", "m4v", "mkv", "webm", "png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "bmp", "exr"])),
         _ => return None,
     };
     if params.get(key).is_some()
@@ -802,7 +805,7 @@ fn file_dialog(app: &mut EffectcraftApp, id: &str, params: &Value) -> Option<Res
             let Some(f) = app.hooks.pick_files.as_ref() else { return Some(Err("no file dialog available (pass `paths`)".into())) };
             let paths = f(&[
                 "mp4", "mov", "m4v", "mkv", "webm", "png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "bmp", "exr", "wav", "aif", "aiff", "mp3", "flac",
-                "ogg", "opus", "svg", "psd", "psb", "gltf", "glb", "obj",
+                "ogg", "opus", "svg", "psd", "psb", "gltf", "glb", "obj", "json", "csv", "tsv",
             ]);
             match (paths.is_empty(), key) {
                 (true, _) => None,
