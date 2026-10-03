@@ -54,6 +54,7 @@ fn initialize_and_list_tools() {
     for want in [
         "list_commands",
         "execute_command",
+        "run_script",
         "get_project",
         "get_comp",
         "get_layer",
@@ -262,4 +263,31 @@ fn bridge_forwards_to_control_channel() {
 fn bridge_rejects_non_loopback() {
     assert!(Backend::bridge("10.0.0.1:9877").is_err());
     assert!(Backend::bridge("localhost:9877").is_ok());
+}
+
+#[test]
+fn run_script_round_trip() {
+    let mut sess = Session::default();
+    effectcraft_script::install(&mut sess);
+    let mut s = McpServer::new(Backend::headless(sess));
+    let r = call_json(
+        &mut s,
+        "run_script",
+        json!({"code": "var c = app.project.items.addComp('Scripted', 320, 180, 1, 2, 24);\nc.layers.addText('Hi');\nwriteLn('made ' + c.name);\nc.numLayers"}),
+    );
+    assert_eq!(r["ok"], json!(true), "{r}");
+    assert_eq!(r["result"], json!(1));
+    assert_eq!(r["output"], json!("made Scripted"));
+    // The edit is visible to the other tools.
+    let p = call_json(&mut s, "get_project", json!({}));
+    assert!(p.to_string().contains("Scripted"), "{p}");
+    // Errors come back with their line.
+    let r = call_json(&mut s, "run_script", json!({"code": "var a = 1;\nundefinedFn();", "name": "bad.jsx"}));
+    assert_eq!(r["ok"], json!(false));
+    assert_eq!(r["error"]["line"], json!(2));
+    assert_eq!(r["error"]["file"], json!("bad.jsx"));
+    // Without a scripting engine the command explains itself.
+    let mut bare = server();
+    let (c, err) = call(&mut bare, "run_script", json!({"code": "1"}));
+    assert!(err && c[0]["text"].as_str().unwrap().contains("not available"), "{c:?}");
 }

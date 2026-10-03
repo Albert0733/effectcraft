@@ -40,6 +40,7 @@ const LAYERS: &[(&str, u8)] = &[
     ("lottie", 3),
     ("format", 3),
     ("engine", 4),
+    ("script", 4),
     ("host", 4),
     ("ui-egui", 5),
     ("automation", 5),
@@ -64,6 +65,8 @@ const SAME_LAYER: &[(&str, &str)] = &[
     ("gpu", "render"),
     ("lottie", "format"),
     ("host", "engine"),
+    ("script", "engine"),
+    ("host", "script"),
     ("cli", "effectcraft"),
 ];
 

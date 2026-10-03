@@ -75,9 +75,9 @@ library groundwork for mask tracking and Warp Stabilizer.
 
 What is left is concentrated in large systems: Roto Brush and Refine Edge, the 3D camera tracker,
 the Warp Stabilizer and mask-tracking UI on top of
-the new tracking library, a JavaScript scripting object model, SVG/PSD import, WebM, a disk cache,
+the new tracking library, SVG/PSD import, WebM, a disk cache,
 native macOS menus, and wasm threads. (The missing effect categories, 3D Channel, Immersive Video
-and OCIO, landed in M9.11.)
+and OCIO, landed in M9.11; the scripting object model in M14.4.)
 
 ## By area
 
@@ -87,7 +87,7 @@ and OCIO, landed in M9.11.)
 | Output | 85% | 4.2 | multiple output modules, pre-render, WebM, audio-only |
 | Audio | 85% | 0.5 | audio to keyframes |
 | Import | 78% | 4.5 | PSD, SVG as shapes, Lottie |
-| Automation | 76% | 3.3 | a JavaScript scripting object model |
+| Automation | ≈ 90% | 0.8 | scripting covers the documented core object model (AUT-2, M14.4: `app`, project items, comps, layers, properties and keyframes, text documents, markers, render queue, Script Console, `effectcraft-cli script`, MCP `run_script`); still missing: ScriptUI panels/dialogs, `.jsxbin`, sockets |
 | Shapes | 68% | 3.9 | taper and wave strokes (pen tool for shape paths and vertex editing landed in M6.5) |
 | Compositions | 67% | 7.4 | marker dialog, flowchart, Essential Graphics |
 | Animation | 65% | 10.4 | puppet, Wiggler/Smoother/Motion Sketch (motion-path handles and the graph editor transform box landed in M5.8) |
