@@ -107,6 +107,14 @@ fn draw_3d<'a>(e: &mut Enc, r: &Renderer<'a>, ctx: &EvalCtx<'a>, run: &[&'a Laye
     if run.is_empty() {
         return Some(());
     }
+    // Advanced 3D: rendered and composited on the GPU (`adv3d`).
+    if let Some(prep) = r.prepare_adv_run(ctx, run, (canvas.width, canvas.height)) {
+        match crate::adv3d::draw_run(e, &prep, canvas) {
+            Some(img) => *canvas = img,
+            None => on_cpu(e, canvas, |img| r.draw_3d_run(ctx, run, img))?,
+        }
+        return Some(());
+    }
     match r.prepare_3d_run(ctx, run, (canvas.width, canvas.height)).and_then(|prep| crate::classic3d::draw_run(e, &prep, canvas)) {
         Some(img) => *canvas = img,
         None => on_cpu(e, canvas, |img| r.draw_3d_run(ctx, run, img))?,
@@ -139,9 +147,10 @@ fn draw_layer(e: &mut Enc, r: &Renderer, ctx: &EvalCtx, layer: &Layer, canvas: &
         }
         return on_cpu(e, canvas, |img| r.draw_layer_cpu(ctx, layer, img));
     }
-    if layer.switches.quality == Quality::Wireframe {
-        // Wireframes draw outlines on the CPU.
-        return on_cpu(e, canvas, |img| r.draw_layer_cpu(ctx, layer, img));
+    if r.quality(layer) == Quality::Wireframe {
+        // The layer's bounds as a one-pixel outline (the CPU's pixels).
+        *canvas = crate::adv3d::wireframe(e, canvas, &r.wireframe_pixels(ctx, layer, (canvas.width, canvas.height)));
+        return Some(());
     }
     let opacity = r.layer_opacity(ctx, layer);
     if opacity <= 0.0 {

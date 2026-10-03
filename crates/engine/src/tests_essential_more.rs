@@ -16,10 +16,20 @@ fn font_and_scale_controls_override_per_instance() {
     let t = s.execute("essential.addProperty", json!({"layer": text, "path": "text/sourceText"})).unwrap()["controls"][0].as_u64().unwrap();
     let f = s.execute("essential.addProperty", json!({"layer": text, "path": "text/sourceText", "as": "font"})).unwrap()["controls"][0].as_u64().unwrap();
     let sc = s.execute("essential.addProperty", json!({"layer": text, "path": "transform/scale", "as": "scale"})).unwrap()["controls"][0].as_u64().unwrap();
-    // Adding the same font control again is a no-op; opacity can't be a font.
+    // Adding the same font control again adds nothing with `mirror: false` (else a mirror of
+    // it); opacity can't be a font.
     assert!(
-        s.execute("essential.addProperty", json!({"layer": text, "path": "text/sourceText", "as": "font"})).unwrap()["controls"].as_array().unwrap().is_empty()
+        s.execute("essential.addProperty", json!({"layer": text, "path": "text/sourceText", "as": "font", "mirror": false})).unwrap()["controls"]
+            .as_array()
+            .unwrap()
+            .is_empty()
     );
+    let m = s.execute("essential.addProperty", json!({"layer": text, "path": "text/sourceText", "as": "font"})).unwrap();
+    assert_eq!(m["mirrors"].as_array().unwrap().len(), 1);
+    let ml = s.execute("essential.list", json!({})).unwrap();
+    let mirror = ml["controls"].as_array().unwrap().iter().find(|c| c["kind"] == "mirror").unwrap().clone();
+    assert_eq!((mirror["of"].as_u64(), mirror["type"].as_str()), (Some(f), Some("font")));
+    s.execute("edit.undo", json!({})).unwrap();
     assert!(s.execute("essential.addProperty", json!({"layer": text, "path": "transform/opacity", "as": "font"})).is_err());
     assert_eq!(s.execute("essential.canAdd", json!({"layer": text, "path": "transform/opacity", "as": "font"})).unwrap()["ok"], false);
     assert_eq!(s.execute("essential.canAdd", json!({"layer": text, "path": "transform/scale", "as": "scale"})).unwrap()["type"], "scale");

@@ -175,7 +175,15 @@ fragment sort (intersecting planes, coplanar stack order), Blinn-Phong lighting,
 against the caster planes (Shadow Diffusion, Light Transmission) and blending. Adjustment layers
 run their effect stacks on the GPU-resident comp (`Renderer::run_effects_on` with an `FxTarget`):
 runs of GPU effects stay on the device and only non-GPU effects read back and upload. Advanced 3D
-compositing and wireframes still run on the CPU between GPU steps (read back, draw, upload). GPU
+runs render on the GPU end to end (`gpu::adv3d`, `Renderer::prepare_adv_run` /
+`Accelerator::render_3d`): each motion-blur sub-sample's scene is rasterised (`advanced3d.wgsl`),
+then compute kernels (`adv3d.wgsl`) resolve the 2×2 supersampling, average the sub-samples
+(nearest depth), apply the depth-based iris depth of field with the Classic 3D bokeh spans
+(`three_d::bokeh::kernel_spans`, highlight boost, progressive blur levels) and composite over the
+GPU canvas; only the depth of field reads back its 8-byte radius range. Advanced 3D layers with
+blend modes, track mattes or Preserve Transparency and environment backgrounds take the CPU's
+2D compositing path (their scenes still render through `render_3d`). Wireframe outlines draw on
+the GPU from the CPU's pixel list (`Renderer::wireframe_pixels`). GPU
 effects (`effects::GPU_EFFECTS`, 152 of them: blurs, colour correction, keying incl. Key Light,
 mattes, channel, stylize, distortion, transitions, generators, noise, grain and time; see
 [effects.md](effects.md)) repeat the CPU effect's steps (padding, box radii, parameters, hashes)

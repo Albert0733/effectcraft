@@ -15,7 +15,7 @@
 //!     [--profile main|main10] [--level auto|4.1] [--rate-control bitrate|quality] [--video-quality 1-100]
 //!     [--keyint FRAMES] [--webm-codec vp9|av1] [--audio-bitrate KBPS] [--opus-app audio|voice]
 //! effectcraft-cli render F.ecproj --queue                    render the project's Render Queue
-//! effectcraft-cli bench [--comp C] [--time S] [--scale K] [--n N] [--play N] [--gpu]   render timings
+//! effectcraft-cli bench [--comp C] [--time S] [--scale K] [--n N] [--play N] [--gpu [--adv3d]]   render timings
 //!     (--gpu: CPU vs GPU ms/frame for every comp at Full and Half)
 //! effectcraft-cli script FILE.jsx [F.ecproj] | --eval CODE    run an After Effects-style script
 //! effectcraft-cli mcp [--bridge PORT]                         MCP server on stdio
@@ -51,7 +51,7 @@ const USAGE: &str = "usage: effectcraft-cli <info|commands|exec|run|props|get|se
          [--keyint FRAMES] [--webm-codec vp9|av1] [--audio-bitrate KBPS] [--opus-app audio|voice] | --queue
                                            (formats h264|hevc|av1|prores|webm|png|jpeg|tiff|exr|gif|wav|aiff;
                                            --profile..--keyint: HEVC / AV1, --audio-bitrate/--opus-app: WebM Opus)
-  bench [--comp C] [--time S] [--scale K] [--n N] [--play N] [--gpu]   per-layer/effect render timings;
+  bench [--comp C] [--time S] [--scale K] [--n N] [--play N] [--gpu [--adv3d]]   per-layer/effect render timings;
                                            --play N renders N consecutive frames with/without the layer cache;
                                            --gpu compares CPU and GPU ms/frame for every comp at Full and Half
   script FILE.jsx [F.ecproj] | --eval CODE run JavaScript with the After Effects-style object model
@@ -816,6 +816,109 @@ fn adjustment_bench_comp(p: &mut effectcraft_engine::project::Project) -> Option
     Some(p.add_item("Adjustment Layers (bench)", effectcraft_engine::color::Label::None, None, ItemKind::Comp(comp.into())))
 }
 
+/// `bench --gpu`'s Advanced 3D comp (1920×1080): a ground plane, PBR primitives, extruded
+/// bevelled text, a shadow-casting spot light, a point light and an environment light, seen
+/// through a depth-of-field camera (hexagonal iris, highlights) with a motion-blurred sphere.
+fn adv3d_bench_comp(p: &mut effectcraft_engine::project::Project) -> Option<ItemId> {
+    use effectcraft_engine::keyframe::{Keyframe, TextDoc, Value};
+    use effectcraft_engine::project::build::{self, Ids};
+    use effectcraft_engine::project::{Comp, ItemKind, Layer, LayerSource, LightKind, PrimitiveKind, Renderer as R3, Solid};
+    let (w, h) = (1920u32, 1080u32);
+    let mut comp = Comp::new(w, h, effectcraft_time::FrameRate::FPS_30, Tick::from_seconds_f64(10.0));
+    comp.renderer = R3::Advanced3D;
+    comp.enable_motion_blur = true;
+    comp.motion_blur_samples = 8;
+    let mut layers: Vec<Layer> = vec![];
+    let mut add = |p: &mut effectcraft_engine::project::Project, comp: &Comp, src: LayerSource, edit: &dyn Fn(&mut Layer)| {
+        let mut l = build::layer(p, comp, "L", src, (w, h), None);
+        edit(&mut l);
+        layers.insert(0, l);
+    };
+    fn set(l: &mut Layer, path: &str, v: Value) {
+        if let Some(pr) = l.props.prop_mut(path) {
+            pr.value = v;
+        }
+    }
+    add(p, &comp, LayerSource::Primitive { kind: PrimitiveKind::Plane }, &|l| {
+        set(l, "geometryOptions/width", Value::Scalar(6000.0));
+        set(l, "geometryOptions/height", Value::Scalar(6000.0));
+        set(l, "transform/position", Value::Vec3([960.0, 800.0, 0.0]));
+        set(l, "transform/rotationX", Value::Scalar(90.0));
+    });
+    for (i, kind) in [PrimitiveKind::Sphere, PrimitiveKind::Torus, PrimitiveKind::Cube, PrimitiveKind::Sphere].into_iter().enumerate() {
+        add(p, &comp, LayerSource::Primitive { kind }, &|l| {
+            let x = 400.0 + 380.0 * i as f64;
+            set(l, "geometryOptions/radius", Value::Scalar(140.0));
+            set(l, "geometryOptions/tubeRadius", Value::Scalar(45.0));
+            for k in ["width", "height", "depth"] {
+                set(l, &format!("geometryOptions/{k}"), Value::Scalar(220.0));
+            }
+            set(l, "transform/position", Value::Vec3([x, 640.0, 300.0 * i as f64 - 300.0]));
+            set(l, "transform/rotationX", Value::Scalar(35.0));
+            set(l, "transform/rotationY", Value::Scalar(25.0));
+            set(l, "materialOptions/metallic", Value::Scalar(if i % 2 == 1 { 100.0 } else { 0.0 }));
+            set(l, "materialOptions/roughness", Value::Scalar(30.0));
+            set(l, "materialOptions/castsShadows", Value::Enum(1));
+            if i == 0 {
+                l.switches.motion_blur = true;
+                if let Some(pr) = l.props.prop_mut("transform/position") {
+                    pr.keys = vec![
+                        Keyframe::new(Tick::ZERO, Value::Vec3([x, 640.0, -300.0])),
+                        Keyframe::new(Tick::from_seconds_f64(10.0), Value::Vec3([x + 300.0 * 60.0, 640.0, -300.0])),
+                    ];
+                }
+            }
+        });
+    }
+    add(p, &comp, LayerSource::Text, &|l| {
+        l.switches.three_d = true;
+        let doc = TextDoc { text: "EffectCraft".into(), size: 180.0, fill: [0.95, 0.75, 0.2, 1.0], apply_fill: true, ..Default::default() };
+        set(l, "text/sourceText", Value::Text(Box::new(doc)));
+        let mut next = 900_000u64;
+        l.props.children.push(build::extrusion_geometry_options(&mut Ids(&mut next)).into());
+        set(l, "geometryOptions/extrusionDepth", Value::Scalar(40.0));
+        set(l, "geometryOptions/bevelStyle", Value::Enum(1));
+        set(l, "transform/position", Value::Vec3([960.0, 260.0, 200.0]));
+        set(l, "transform/rotationY", Value::Scalar(-15.0));
+    });
+    let env = p.add_item(
+        "Environment (bench)",
+        effectcraft_engine::color::Label::None,
+        None,
+        ItemKind::Solid(Solid { color: [0.55, 0.65, 0.9], width: 64, height: 32, pixel_aspect: 1.0 }),
+    );
+    add(p, &comp, LayerSource::Solid { item: env }, &|l| {
+        l.environment = true;
+        l.switches.three_d = true;
+    });
+    add(p, &comp, LayerSource::Light { kind: LightKind::Environment }, &|l| set(l, "lightOptions/intensity", Value::Scalar(40.0)));
+    add(p, &comp, LayerSource::Light { kind: LightKind::Spot }, &|l| {
+        set(l, "transform/position", Value::Vec3([500.0, -600.0, -900.0]));
+        set(l, "transform/poi", Value::Vec3([960.0, 640.0, 0.0]));
+        set(l, "lightOptions/castsShadows", Value::Bool(true));
+        set(l, "lightOptions/coneAngle", Value::Scalar(100.0));
+        set(l, "lightOptions/shadowDiffusion", Value::Scalar(8.0));
+    });
+    add(p, &comp, LayerSource::Light { kind: LightKind::Point }, &|l| {
+        set(l, "transform/position", Value::Vec3([1500.0, 200.0, -500.0]));
+        set(l, "lightOptions/intensity", Value::Scalar(50.0));
+    });
+    add(p, &comp, LayerSource::Camera, &|l| {
+        let zoom = match l.props.prop_mut("cameraOptions/zoom").map(|pr| pr.value.clone()) {
+            Some(Value::Scalar(z)) => z,
+            _ => 2666.7,
+        };
+        set(l, "cameraOptions/dof", Value::Bool(true));
+        set(l, "cameraOptions/focusDistance", Value::Scalar(zoom));
+        set(l, "cameraOptions/aperture", Value::Scalar(120.0));
+        set(l, "cameraOptions/irisShape", Value::Enum(4));
+        set(l, "cameraOptions/highlightGain", Value::Scalar(20.0));
+        set(l, "cameraOptions/highlightThreshold", Value::Scalar(200.0));
+    });
+    comp.layers = layers;
+    Some(p.add_item("Advanced 3D (bench)", effectcraft_engine::color::Label::None, None, ItemKind::Comp(comp.into())))
+}
+
 /// `bench --gpu`: CPU vs GPU ms/frame for every comp (or `--comp`) at Full and Half. "cold"
 /// renders everything (no layer cache); "warm" reuses the layer cache (playback / scrubbing of
 /// unchanged layers: compositing cost); "viewer" is the GPU display path without readback.
@@ -824,13 +927,16 @@ fn bench_gpu(s: &Session, args: &Args) -> Result<(), Failure> {
     let gpu = effectcraft_gpu::Gpu::headless().ok_or_else(|| Failure::Error("--gpu: no usable GPU adapter".into()))?;
     let n = args.num("--n")?.unwrap_or(10.0).max(1.0) as usize;
     // Every comp, plus an adjustment-layer comp built for the benchmark (the main comp under a
-    // full-frame adjustment layer with a GPU effect stack).
+    // full-frame adjustment layer with a GPU effect stack) and an Advanced 3D comp (`--adv3d`:
+    // that one only).
     let mut project = (*s.project).clone();
     let comps: Vec<ItemId> = match args.opt("--comp") {
+        _ if args.flag("--adv3d") => adv3d_bench_comp(&mut project).into_iter().collect(),
         Some(_) => s.active_comp_id().into_iter().collect(),
         None => {
             let mut v: Vec<ItemId> = s.project.comps().map(|(id, _)| *id).collect();
             v.extend(adjustment_bench_comp(&mut project));
+            v.extend(adv3d_bench_comp(&mut project));
             v
         }
     };
@@ -878,7 +984,17 @@ fn bench_gpu(s: &Session, args: &Args) -> Result<(), Failure> {
             // Agreement: share of pixels where the GPU frame differs from the CPU reference by
             // more than 1/255 on any channel.
             let (a, b) = (mk(Backend::Cpu, Some(&cache)), mk(Backend::Gpu, Some(&gcache)));
-            let off = a.data.iter().zip(&b.data).filter(|(p, q)| (0..4).any(|c| (p[c] - q[c]).abs() > 1.0 / 255.0 + 1e-6)).count();
+            let off = a
+                .data
+                .iter()
+                .zip(&b.data)
+                .filter(|(p, q)| {
+                    (0..4).any(|c| {
+                        let d = (p[c] - q[c]).abs();
+                        d.is_nan() || d > 1.0 / 255.0 + 1e-6
+                    })
+                })
+                .count();
             let pct = 100.0 * off as f64 / a.data.len().max(1) as f64;
             let speedup = cpu_warm / gpu_warm.max(1e-9);
             eprintln!(

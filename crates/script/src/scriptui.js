@@ -287,8 +287,33 @@ function DropDownList() {}
 function ListBox() {}
 function TabbedPanel() {}
 function Tab() {}
-function ScriptUIImage() {}
+// ScriptUIImage: an image file (`src`) or embedded image bytes (`data`, a binary string as in
+// resource-string images: one character per byte).
+function ScriptUIImage(src, data, name) {
+  this.__img = true;
+  this.src = src || null;
+  this.data = data || null;
+  this.name = name || (src ? String(src).replace(/^.*[\\/]/, "") : "");
+  this.pathname = src || "";
+  this.format = data ? (data.charCodeAt(0) === 0x89 ? "png" : "jpeg") : String(src || "").replace(/^.*\./, "").toLowerCase();
+}
+ScriptUIImage.prototype.toString = function () { return "[object ScriptUIImage]"; };
 function ListItem() {}
+
+// Anything ScriptUI accepts as an image: a ScriptUIImage, a File, a path (or resource name), or
+// a binary string holding PNG / JPEG bytes.
+function __uiImage(v) {
+  if (v === undefined || v === null || typeof v === "number" || typeof v === "boolean") return null;
+  if (v.__img) return v;
+  if (v.fsName !== undefined) return new ScriptUIImage(String(v.fsName), null, String(v.name || ""));
+  var s = String(v);
+  if ((s.charCodeAt(0) === 0x89 && s.substr(1, 3) === "PNG") || (s.charCodeAt(0) === 0xff && s.charCodeAt(1) === 0xd8)) return new ScriptUIImage(null, s, "");
+  return s ? new ScriptUIImage(s, null, "") : null;
+}
+function __uiImageJson(v) {
+  var img = __uiImage(v);
+  return img ? { src: img.src, data: img.data, name: img.name } : null;
+}
 
 var ScriptUI = {
   version: "6.2.2",
@@ -299,7 +324,7 @@ var ScriptUI = {
   PenType: { SOLID_COLOR: 0, THEME_COLOR: 1 },
   Alignment: { LEFT: "left", RIGHT: "right", TOP: "top", BOTTOM: "bottom", CENTER: "center", FILL: "fill" },
   newFont: function (name, style, size) { return { name: name, style: style, size: size }; },
-  newImage: function () { return {}; },
+  newImage: function (normal) { return __uiImage(normal); },
   getResourceText: function (t) { return t; },
   events: { createEvent: function (t) { return { type: t }; } }
 };
@@ -353,7 +378,7 @@ function __uiGraphics() {
       this.__push({ op: "text", text: String(text), color: pen ? pen.color : null, x: __num(x || 0), y: __num(y || 0), size: __uiFontSize(f, this), style: String(f && f.style !== undefined ? f.style : "") });
     },
     drawOSControl: function () { this.__push({ op: "os" }); },
-    drawImage: function (img, x, y, w, h) { this.__push({ op: "image", x: __num(x || 0), y: __num(y || 0), w: w === undefined ? 0 : __num(w), h: h === undefined ? 0 : __num(h) }); },
+    drawImage: function (img, x, y, w, h) { this.__push({ op: "image", image: __uiImageJson(img), x: __num(x || 0), y: __num(y || 0), w: w === undefined ? 0 : __num(w), h: h === undefined ? 0 : __num(h) }); },
     drawFocusRing: function () {},
     measureString: function (s, font, boundaryWidth) {
       var size = __uiFontSize(font, this);
@@ -403,6 +428,11 @@ function __uiInit(o, type, win, parent, bounds, text, props) {
     o.__wid = __uiNewId();
   }
   o.properties = props || {};
+  // Image controls and icon buttons take an image where other controls take their text.
+  if ((type === "image" || type === "iconbutton") && __uiImage(text)) {
+    o.image = __uiImage(text);
+    text = "";
+  }
   o.text = text === undefined || text === null ? "" : String(text);
   o.enabled = true;
   o.visible = true;
@@ -465,7 +495,8 @@ function __uiProto() {
       if (!ctor || t === "window") throw __err("add(): unknown control type " + type);
       var c = Object.create(__ecGlobal[ctor].prototype);
       // Value arguments after `text`: slider (value, min, max), progressbar (value, max), lists (items).
-      __uiInit(c, t, this.window, this, bounds, typeof text === "object" && text !== null && !(text instanceof Array) ? "" : text, props);
+      var arg = t === "image" || t === "iconbutton" ? text : typeof text === "object" && text !== null && !(text instanceof Array) ? "" : text;
+      __uiInit(c, t, this.window, this, bounds, arg, props);
       if ((t === "dropdownlist" || t === "listbox") && text instanceof Array) {
         for (var i = 0; i < text.length; i++) c.add("item", text[i]);
         c.text = "";
@@ -724,6 +755,7 @@ function __uiJson(c) {
   }
   if (c.type === "tabbedpanel") o.activeTab = c.__sel.length ? c.__sel[0] : 0;
   if (c.__draw && typeof c.onDraw === "function") o.draw = c.__draw;
+  if ((c.type === "image" || c.type === "iconbutton") && c.image) o.image = __uiImageJson(c.image);
   if (c.type === "edittext") {
     o.multiline = !!c.__multiline;
     o.readOnly = !!c.__readonly;

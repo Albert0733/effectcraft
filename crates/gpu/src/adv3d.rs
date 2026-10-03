@@ -2,19 +2,33 @@
 //! (`Depth32Float`, Greater), the scene's materials, textures, lights and shadow maps in
 //! storage buffers, and `advanced3d.wgsl`'s physically based fragment shader. Opaque triangles
 //! are drawn with depth writes, then the sorted transparent ones blended over (premultiplied).
-//! Colour (`Rgba16Float`) and camera depth (`R32Float`) are read back for the CPU's resolve,
-//! depth of field and encoding.
+//! Colour (`Rgba16Float`) and camera depth (`R32Float`) stay on the GPU for `adv3d.wgsl`'s
+//! compute kernels, which run the rest of `effectcraft_render::three_d::adv::render_prepared`:
+//! the 2×2 supersampling resolve, the motion-blur sub-sample average (nearest depth), the
+//! depth-based iris depth of field (the Classic 3D bokeh kernel's row spans and prefix-sum
+//! gather, highlight boost, progressive blend between blur levels), the sRGB encode and the
+//! premultiplied "over" onto the compositor's canvas. Only the depth of field reads anything
+//! back (its 8-byte radius range, to choose the blur levels as the CPU does).
+//!
+//! Wireframe-quality layers draw their outlines here too ([`wireframe`]).
 
-use effectcraft_render::three_d::adv::{Scene, Target};
+use effectcraft_render::three_d::Dof;
+use effectcraft_render::three_d::adv::{Prepared, Rendered, Scene, Target};
+use effectcraft_render::three_d::bokeh;
 use wgpu::util::DeviceExt;
 
-use crate::context::{Enc, GpuContext};
+use crate::context::{Enc, GpuContext, GpuImage};
 
 /// Pipelines (built on first use).
 pub(crate) struct Pipes {
     bgl: wgpu::BindGroupLayout,
     opaque: wgpu::RenderPipeline,
     transparent: wgpu::RenderPipeline,
+    post: Post,
+}
+
+fn pipes(g: &GpuContext) -> &Pipes {
+    g.adv3d.get_or_init(|| Pipes::new(&g.device))
 }
 
 const COLOR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
@@ -96,7 +110,7 @@ impl Pipes {
                 cache: None,
             })
         };
-        Pipes { opaque: make(false), transparent: make(true), bgl }
+        Pipes { opaque: make(false), transparent: make(true), bgl, post: Post::new(device) }
     }
 }
 
@@ -208,9 +222,12 @@ fn half_to_f32(h: u16) -> f32 {
     }
 }
 
-/// Rasterise a scene. `None` when the device can't (no readback, size or buffer limits).
-pub(crate) fn render(g: &GpuContext, s: &Scene) -> Option<Target> {
-    if !g.can_readback() || !g.fits(s.width, s.height) || s.indices.is_empty() {
+/// Record the render pass of one scene into `e`: (colour `Rgba16Float`, camera depth `R32Float`
+/// with −1 where nothing was drawn) at the scene's raster size. `None` when the device can't
+/// (size or buffer limits).
+fn raster_into(e: &mut Enc, s: &Scene) -> Option<(wgpu::Texture, wgpu::Texture)> {
+    let g = e.g;
+    if !g.fits(s.width, s.height) || s.indices.is_empty() {
         return None;
     }
     let limits = g.device.limits();
@@ -218,7 +235,7 @@ pub(crate) fn render(g: &GpuContext, s: &Scene) -> Option<Target> {
     if bufs.iter().any(|b| b.len() as u64 > limits.max_storage_buffer_binding_size) {
         return None;
     }
-    let p = g.adv3d.get_or_init(|| Pipes::new(&g.device));
+    let p = pipes(g);
     let dev = &g.device;
     let vb: Vec<u8> = s
         .vertices
@@ -257,12 +274,12 @@ pub(crate) fn render(g: &GpuContext, s: &Scene) -> Option<Target> {
             view_formats: &[],
         })
     };
-    let rt = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC;
+    let rt = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::TEXTURE_BINDING;
     let color = tex(COLOR, rt);
     let zout = tex(DEPTH_OUT, rt);
     let depth = tex(DEPTH, wgpu::TextureUsages::RENDER_ATTACHMENT);
     let (cv, zv, dv) = (color.create_view(&Default::default()), zout.create_view(&Default::default()), depth.create_view(&Default::default()));
-    let mut enc = dev.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("adv3d") });
+    let enc = e.encoder();
     {
         let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("adv3d"),
@@ -302,8 +319,17 @@ pub(crate) fn render(g: &GpuContext, s: &Scene) -> Option<Target> {
             pass.draw_indexed(s.opaque_count..n, 0, 0..1);
         }
     }
-    g.queue.submit([enc.finish()]);
+    Some((color, zout))
+}
+
+/// Rasterise a scene and read it back ([`effectcraft_render::Accelerator::raster_3d`]). `None`
+/// when the device can't (no readback, size or buffer limits).
+pub(crate) fn render(g: &GpuContext, s: &Scene) -> Option<Target> {
+    if !g.can_readback() {
+        return None;
+    }
     let mut e = Enc::new(g);
+    let (color, zout) = raster_into(&mut e, s)?;
     let cb = e.read_texture(&color, s.width, s.height, 8)?;
     let zb = e.read_texture(&zout, s.width, s.height, 4)?;
     let color = cb.chunks_exact(8).map(|c| [0, 1, 2, 3].map(|k| half_to_f32(u16::from_le_bytes([c[2 * k], c[2 * k + 1]])))).collect();
@@ -315,4 +341,382 @@ pub(crate) fn render(g: &GpuContext, s: &Scene) -> Option<Target> {
         })
         .collect();
     Some(Target { width: s.width, height: s.height, color, depth })
+}
+
+// ---------------------------------------------------------------- after the rasteriser
+
+/// Compute kernels of `adv3d.wgsl` (resolve, motion-blur accumulation, depth of field,
+/// encoding, compositing, wireframes) with their shared bind group layout and the placeholder
+/// resources bound to the slots a kernel doesn't use.
+pub(crate) struct Post {
+    bgl: wgpu::BindGroupLayout,
+    kernels: Vec<(&'static str, wgpu::ComputePipeline)>,
+    /// Placeholders for bindings 3–9 (distinct buffers: writable bindings must not alias).
+    dummy_bufs: Vec<wgpu::Buffer>,
+    dummy_color: wgpu::TextureView,
+    dummy_z: wgpu::TextureView,
+    dummy_out: wgpu::TextureView,
+}
+
+const KERNELS: &[&str] = &["resolve", "radius_of", "boost", "prefix_rows", "gather", "finish", "wire"];
+
+impl Post {
+    fn new(device: &wgpu::Device) -> Post {
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("effectcraft advanced 3d post"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/adv3d.wgsl").into()),
+        });
+        let tex = |binding| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        };
+        let buf = |binding, read_only| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only }, has_dynamic_offset: false, min_binding_size: None },
+            count: None,
+        };
+        let entries = [
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                count: None,
+            },
+            tex(1),
+            tex(2),
+            buf(3, false),
+            buf(4, false),
+            buf(5, false),
+            buf(6, true),
+            buf(7, false),
+            buf(8, false),
+            buf(9, false),
+            wgpu::BindGroupLayoutEntry {
+                binding: 10,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::StorageTexture {
+                    access: wgpu::StorageTextureAccess::WriteOnly,
+                    format: crate::context::FORMAT,
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                },
+                count: None,
+            },
+        ];
+        let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("advanced 3d post"), entries: &entries });
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("advanced 3d post"),
+            bind_group_layouts: &[Some(&bgl)],
+            immediate_size: 0,
+        });
+        let kernels = KERNELS
+            .iter()
+            .map(|k| {
+                let p = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                    label: Some(k),
+                    layout: Some(&layout),
+                    module: &module,
+                    entry_point: Some(k),
+                    compilation_options: Default::default(),
+                    cache: None,
+                });
+                (*k, p)
+            })
+            .collect();
+        let dummy_bufs = (3..=9)
+            .map(|_| {
+                device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("adv3d dummy"),
+                    size: 16,
+                    usage: wgpu::BufferUsages::STORAGE,
+                    mapped_at_creation: false,
+                })
+            })
+            .collect();
+        let tex1 = |format, usage| {
+            device
+                .create_texture(&wgpu::TextureDescriptor {
+                    label: Some("adv3d dummy"),
+                    size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format,
+                    usage,
+                    view_formats: &[],
+                })
+                .create_view(&Default::default())
+        };
+        Post {
+            bgl,
+            kernels,
+            dummy_bufs,
+            dummy_color: tex1(COLOR, wgpu::TextureUsages::TEXTURE_BINDING),
+            dummy_z: tex1(DEPTH_OUT, wgpu::TextureUsages::TEXTURE_BINDING),
+            dummy_out: tex1(crate::context::FORMAT, wgpu::TextureUsages::STORAGE_BINDING),
+        }
+    }
+}
+
+/// The resources of one post kernel dispatch (unset slots get placeholders).
+#[derive(Default)]
+struct Binds<'b> {
+    color: Option<&'b wgpu::TextureView>,
+    z: Option<&'b wgpu::TextureView>,
+    /// Bindings 3–9: acc, depth, src, table, radius, range, prefix.
+    bufs: [Option<&'b wgpu::Buffer>; 7],
+    out: Option<&'b wgpu::TextureView>,
+}
+
+/// Uniform block of the post kernels (`Post` in `adv3d.wgsl`).
+fn params(u0: [u32; 4], f0: [f32; 4]) -> Vec<u8> {
+    let mut v: Vec<u8> = u0.iter().flat_map(|x| x.to_le_bytes()).collect();
+    v.extend([0u8; 16]);
+    v.extend(f0.iter().flat_map(|x| x.to_le_bytes()));
+    v.extend([0u8; 16]);
+    v
+}
+
+fn dispatch(e: &mut Enc, kernel: &str, u0: [u32; 4], f0: [f32; 4], b: Binds, groups: (u32, u32)) {
+    let g = e.g;
+    let post = &pipes(g).post;
+    let Some((_, pipe)) = post.kernels.iter().find(|(k, _)| *k == kernel) else { return };
+    let ub = g.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: &params(u0, f0), usage: wgpu::BufferUsages::UNIFORM });
+    let mut entries = vec![
+        wgpu::BindGroupEntry { binding: 0, resource: ub.as_entire_binding() },
+        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(b.color.unwrap_or(&post.dummy_color)) },
+        wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(b.z.unwrap_or(&post.dummy_z)) },
+    ];
+    for (i, buf) in b.bufs.iter().enumerate() {
+        entries.push(wgpu::BindGroupEntry { binding: 3 + i as u32, resource: buf.unwrap_or(&post.dummy_bufs[i]).as_entire_binding() });
+    }
+    entries.push(wgpu::BindGroupEntry { binding: 10, resource: wgpu::BindingResource::TextureView(b.out.unwrap_or(&post.dummy_out)) });
+    let bg = g.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some(kernel), layout: &post.bgl, entries: &entries });
+    let enc = e.encoder();
+    let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some(kernel), timestamp_writes: None });
+    pass.set_pipeline(pipe);
+    pass.set_bind_group(0, &bg, &[]);
+    pass.dispatch_workgroups(groups.0.max(1), groups.1.max(1), 1);
+}
+
+fn pixel_groups(w: u32, h: u32) -> (u32, u32) {
+    (w.div_ceil(16), h.div_ceil(16))
+}
+
+fn storage_buf(g: &GpuContext, size: u64, label: &str) -> wgpu::Buffer {
+    g.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some(label),
+        size: size.max(16),
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}
+
+/// Read a storage buffer back (submits and waits).
+fn read_buffer(e: &mut Enc, buf: &wgpu::Buffer, size: u64) -> Option<Vec<u8>> {
+    if !e.g.can_readback() {
+        return None;
+    }
+    let rb = e.g.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("adv3d readback"),
+        size,
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    e.encoder().copy_buffer_to_buffer(buf, 0, &rb, 0, size);
+    e.submit();
+    let (tx, rx) = std::sync::mpsc::channel();
+    rb.map_async(wgpu::MapMode::Read, .., move |r| {
+        let _ = tx.send(r);
+    });
+    e.g.device.poll(wgpu::PollType::wait_indefinitely()).ok()?;
+    rx.recv().ok()?.ok()?;
+    let out = rb.get_mapped_range(..).ok()?.to_vec();
+    rb.unmap();
+    Some(out)
+}
+
+/// A resolved run on the GPU: premultiplied linear (or working-space) colour and camera depth
+/// (`BIG` where nothing was drawn), one entry per output pixel.
+struct Resolved {
+    acc: wgpu::Buffer,
+    depth: wgpu::Buffer,
+    width: u32,
+    height: u32,
+}
+
+/// The rasteriser's "nothing drawn" depth on the GPU (∞ on the CPU).
+const BIG: f32 = 3.0e38;
+
+/// Rasterise every motion-blur sub-sample of a prepared run, resolve and average them, then
+/// apply the depth of field (`render_prepared`'s steps). `None` = can't run here (sizes,
+/// limits, or a depth of field without readback); `Some(None)` = nothing drawn.
+fn resolve_run(e: &mut Enc, prep: &Prepared) -> Option<Option<Resolved>> {
+    let (w, h) = prep.out;
+    let g = e.g;
+    if !g.fits(w, h) || (prep.dof.is_some() && !g.can_readback()) {
+        return None;
+    }
+    let px = w as u64 * h as u64;
+    let max = g.device.limits().max_storage_buffer_binding_size;
+    if px * 16 > max {
+        return None;
+    }
+    let acc = storage_buf(g, px * 16, "adv3d acc");
+    let depth = storage_buf(g, px * 4, "adv3d depth");
+    let n = prep.samples.max(1);
+    let weight = if n <= 1 { 1.0 } else { 1.0 / n as f32 };
+    let mut first = true;
+    for i in 0..n {
+        let s = prep.scene(i);
+        if s.indices.is_empty() {
+            continue;
+        }
+        if s.width != w * s.ssaa.max(1) || s.height != h * s.ssaa.max(1) {
+            return None;
+        }
+        let (color, zout) = raster_into(e, &s)?;
+        let (cv, zv) = (color.create_view(&Default::default()), zout.create_view(&Default::default()));
+        let b = Binds { color: Some(&cv), z: Some(&zv), bufs: [Some(&acc), Some(&depth), None, None, None, None, None], out: None };
+        dispatch(e, "resolve", [w, h, s.ssaa.max(1), first as u32], [weight, 0.0, 0.0, 0.0], b, pixel_groups(w, h));
+        first = false;
+        // One sub-sample's targets alive at a time.
+        e.submit();
+    }
+    if first {
+        return Some(None);
+    }
+    if let Some(dof) = &prep.dof {
+        depth_of_field(e, &acc, &depth, (w, h), dof, prep.scale)?;
+    }
+    Some(Some(Resolved { acc, depth, width: w, height: h }))
+}
+
+/// `adv::depth_of_field` on the resolved buffers: radii, highlights, prefix sums, the iris
+/// gather at the levels around each pixel's radius. The result replaces `acc`.
+fn depth_of_field(e: &mut Enc, acc: &wgpu::Buffer, depth: &wgpu::Buffer, (w, h): (u32, u32), dof: &Dof, scale: f64) -> Option<()> {
+    let g = e.g;
+    let px = w as u64 * h as u64;
+    if (w as u64 + 1) * h as u64 * 16 > g.device.limits().max_storage_buffer_binding_size {
+        return None;
+    }
+    let radius = storage_buf(g, px * 4, "adv3d radius");
+    let mut init = Vec::with_capacity(16);
+    for v in [f32::INFINITY.to_bits(), 0, 0, 0] {
+        init.extend_from_slice(&v.to_le_bytes());
+    }
+    let range = g.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("adv3d radius range"),
+        contents: &init,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+    });
+    let f0 = [dof.focus as f32, dof.aperture as f32, dof.blur_level as f32, scale as f32];
+    let b = Binds { bufs: [None, Some(depth), None, None, Some(&radius), Some(&range), None], ..Default::default() };
+    dispatch(e, "radius_of", [w, h, 0, 0], f0, b, pixel_groups(w, h));
+    let rb = read_buffer(e, &range, 16)?;
+    let lo = f32::from_bits(u32::from_le_bytes([rb[0], rb[1], rb[2], rb[3]]));
+    let hi = f32::from_bits(u32::from_le_bytes([rb[4], rb[5], rb[6], rb[7]]));
+    if hi < 0.5 {
+        return Some(());
+    }
+    let Some(levels) = bokeh::blur_levels(&[lo, hi]) else { return Some(()) };
+    // Level headers, then every level's weighted spans.
+    let mut heads: Vec<[f32; 4]> = vec![];
+    let mut spans: Vec<[f32; 4]> = vec![];
+    for &r in &levels {
+        match bokeh::kernel_spans(&dof.iris, r as f64) {
+            Some((kernels, norm)) => {
+                let first = levels.len() + spans.len();
+                for (wt, sp) in &kernels {
+                    spans.extend(sp.iter().map(|&(dy, x0, x1)| [dy as f32, x0 as f32, x1 as f32, *wt]));
+                }
+                let count = levels.len() + spans.len() - first;
+                heads.push([first as f32, count as f32, 1.0 / norm, 0.0]);
+            }
+            None => heads.push([0.0, 0.0, 0.0, 1.0]),
+        }
+    }
+    let table: Vec<u8> = heads.iter().chain(&spans).flatten().flat_map(|x| x.to_le_bytes()).collect();
+    if table.len() as u64 > g.device.limits().max_storage_buffer_binding_size {
+        return None;
+    }
+    let table = e.bytes(table);
+    let src = storage_buf(g, px * 16, "adv3d dof source");
+    let prefix = storage_buf(g, (w as u64 + 1) * h as u64 * 16, "adv3d prefix");
+    let hl = dof.highlight;
+    let b = Binds { bufs: [Some(acc), None, Some(&src), None, Some(&radius), None, None], ..Default::default() };
+    dispatch(e, "boost", [w, h, 0, 0], [hl.gain as f32, hl.threshold as f32, hl.saturation as f32, 0.0], b, pixel_groups(w, h));
+    let b = Binds { bufs: [None, None, Some(&src), None, None, None, Some(&prefix)], ..Default::default() };
+    dispatch(e, "prefix_rows", [w, h, 0, 0], [0.0; 4], b, (h.div_ceil(64), 1));
+    let b = Binds { bufs: [Some(acc), None, Some(&src), Some(&table), Some(&radius), None, Some(&prefix)], ..Default::default() };
+    dispatch(e, "gather", [w, h, levels.len() as u32, 0], [lo, hi, 0.0, 0.0], b, pixel_groups(w, h));
+    e.submit();
+    Some(())
+}
+
+/// The resolved run as an image in the canvas's encoding, composited over `canvas` when given.
+fn finish(e: &mut Enc, r: &Resolved, encode: bool, canvas: Option<&GpuImage>) -> GpuImage {
+    let out = e.image(r.width, r.height);
+    let ov = out.texture.create_view(&Default::default());
+    let cv = canvas.map(|c| c.texture.create_view(&Default::default()));
+    let b = Binds { color: cv.as_ref(), bufs: [Some(&r.acc), None, None, None, None, None, None], out: Some(&ov), ..Default::default() };
+    dispatch(e, "finish", [r.width, r.height, encode as u32, canvas.is_some() as u32], [0.0; 4], b, pixel_groups(r.width, r.height));
+    out
+}
+
+/// [`effectcraft_render::Accelerator::render_3d`]: the whole prepared run on the GPU, read
+/// back.
+pub(crate) fn render_prepared(g: &GpuContext, prep: &Prepared) -> Option<Rendered> {
+    if !g.can_readback() {
+        return None;
+    }
+    let mut e = Enc::new(g);
+    let Some(r) = resolve_run(&mut e, prep)? else { return Some(None) };
+    let img = finish(&mut e, &r, !prep.linear, None);
+    let img = e.download(&img)?;
+    let px = r.width as u64 * r.height as u64;
+    let db = read_buffer(&mut e, &r.depth, px * 4)?;
+    let depth = db
+        .chunks_exact(4)
+        .map(|c| {
+            let z = f32::from_le_bytes([c[0], c[1], c[2], c[3]]);
+            if z >= BIG * 0.5 { f32::INFINITY } else { z }
+        })
+        .collect();
+    Some(Some((img, depth)))
+}
+
+/// Draw a prepared run over the GPU canvas (the compositor's walk; no readback unless the
+/// depth of field needs its radius range). `None` = render it on the CPU.
+pub(crate) fn draw_run(e: &mut Enc, prep: &Prepared, canvas: &GpuImage) -> Option<GpuImage> {
+    if (canvas.width, canvas.height) != prep.out {
+        return None;
+    }
+    match resolve_run(e, prep)? {
+        None => Some(canvas.clone()),
+        Some(r) => Some(finish(e, &r, !prep.linear, Some(canvas))),
+    }
+}
+
+/// Wireframe-quality layer outlines: `canvas` with `pixels` set to opaque white
+/// ([`effectcraft_render::Renderer::wireframe_pixels`]).
+pub(crate) fn wireframe(e: &mut Enc, canvas: &GpuImage, pixels: &[(u32, u32)]) -> GpuImage {
+    let out = e.image(canvas.width, canvas.height);
+    e.copy_into(canvas, &out, 0, 0);
+    if pixels.is_empty() {
+        return out;
+    }
+    let table: Vec<u8> = pixels.iter().flat_map(|&(x, y)| [x as f32, y as f32, 0.0, 0.0]).flat_map(f32::to_le_bytes).collect();
+    let table = e.bytes(table);
+    let ov = out.texture.create_view(&Default::default());
+    let b = Binds { bufs: [None, None, None, Some(&table), None, None, None], out: Some(&ov), ..Default::default() };
+    let n = pixels.len() as u32;
+    dispatch(e, "wire", [n, 0, 0, 0], [0.0; 4], b, (n.div_ceil(64), 1));
+    out
 }
