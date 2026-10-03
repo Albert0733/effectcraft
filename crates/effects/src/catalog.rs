@@ -9,13 +9,8 @@ use crate::{CATEGORIES, registry};
 /// as the public behaviour documentation describes it.
 pub const PARTIAL: &[(&str, &str)] = &[
     ("ec.blur.cameralens", "no Diffraction Fringe or Blur Map layer"),
-    ("ec.channel.minimax", "no Don't Shrink Edges option"),
-    ("ec.channel.combiner", "no Saturation Multiplied target"),
-    ("ec.3d.channelextract", "no anti-alias option"),
     ("ec.color.colorama", "no Add Phase, editable Output Cycle, Modify, Pixel Selection or Masking"),
     ("ec.color.selectivecolor", "simplified Colors / Details layout"),
-    ("ec.distort.turbulentdisplace", "no locked pinning variants"),
-    ("ec.distort.opticscompensation", "no Optimal Pixels"),
     ("ec.distort.transform", "no shutter-angle motion blur"),
     ("ec.distort.reshape", "no correspondence points"),
     ("ec.distort.rollingshutterrepair", "Pixel Motion Detail has no effect"),
@@ -35,7 +30,6 @@ pub const PARTIAL: &[(&str, &str)] = &[
     ("ec.sim.waveworld", "no wireframe controls, dry-area rendering or ground group"),
     ("ec.stylize.glow", "no Glow Operation or arbitrary colour map"),
     ("ec.stylize.cartoon", "no Edge Enhancement"),
-    ("ec.transition.blockdissolve", "no Soft Edges option"),
 ];
 
 /// Whether Effect Controls shows parameter (or twirl-down group) `param` (spec id path,

@@ -62,14 +62,21 @@ fn block_dissolve(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let feather = ctx.params.f("feather") * b.scale;
     let (ox, oy) = (b.offset[0], b.offset[1]);
     let seed = ctx.seed ^ 0xb10c;
+    // Soft Edges (Best Quality): block edges falling between pixels are anti-aliased (4×4
+    // sub-pixel samples); off, each pixel takes its centre's block.
+    let soft = ctx.params.b("softEdges");
+    let subs: Vec<f64> = if soft { (0..4).map(|k| (k as f64 + 0.5) / 4.0).collect() } else { vec![0.5] };
+    let kept = |x: f64, y: f64| {
+        let (bx, by) = (((x - ox) / bw).floor() as i64, ((y - oy) / bh).floor() as i64);
+        hash1(bx as u32, by as u32, seed) >= done
+    };
     let mut mask = Plane::new(b.img.width as usize, b.img.height as usize);
     let w = mask.w;
+    let n = (subs.len() * subs.len()) as f32;
     mask.data.par_chunks_mut(w.max(1)).enumerate().for_each(|(y, row)| {
-        let by = ((y as f64 + 0.5 - oy) / bh).floor() as i64;
         for (x, m) in row.iter_mut().enumerate() {
-            let bx = ((x as f64 + 0.5 - ox) / bw).floor() as i64;
-            let r = hash1(bx as u32, by as u32, seed);
-            *m = if r >= done { 1.0 } else { 0.0 };
+            let hits = subs.iter().flat_map(|sy| subs.iter().map(move |sx| (*sx, *sy))).filter(|(sx, sy)| kept(x as f64 + sx, y as f64 + sy)).count();
+            *m = hits as f32 / n;
         }
     });
     if feather > 0.0 {
@@ -466,6 +473,7 @@ pub fn specs() -> Vec<EffectSpec> {
                 p("blockWidth", "Block Width", num(1.0), slider(1.0, 4000.0, 1.0, 100.0, 1)),
                 p("blockHeight", "Block Height", num(1.0), slider(1.0, 4000.0, 1.0, 100.0, 1)),
                 p("feather", "Feather", num(0.0), slider(0.0, 400.0, 0.0, 50.0, 1)),
+                p("softEdges", "Soft Edges (Best Quality)", Value::Bool(true), ParamUi::Checkbox),
             ],
             block_dissolve,
         ),
@@ -865,5 +873,16 @@ mod tests {
         // Camera Position rotation tilts the whole wipe in perspective.
         let tilt = run_t(&img, &[("completion", num(0.0)), ("cameraPosition/yRotation", num(40.0))], 0.0, None);
         assert_eq!(tilt.get(0, 0)[3], 0.0);
+    }
+
+    #[test]
+    fn block_dissolve_soft_edges_antialias_blocks() {
+        let img = Image::filled(40, 4, [1.0, 1.0, 1.0, 1.0]);
+        let v = [("completion", num(50.0)), ("blockWidth", num(2.5)), ("blockHeight", num(4.0))];
+        let frac = |o: &Image| o.data.iter().filter(|p| p[3] > 0.01 && p[3] < 0.99).count();
+        let hard = run("ec.transition.blockdissolve", &img, &[v.as_slice(), &[("softEdges", Value::Bool(false))]].concat());
+        let soft = run("ec.transition.blockdissolve", &img, &v);
+        assert_eq!(frac(&hard), 0);
+        assert!(frac(&soft) > 0);
     }
 }

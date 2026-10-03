@@ -153,6 +153,8 @@ pub fn legacy_default(effect: &str, param: &str) -> Option<Value> {
         ("ec.noise.removegrain", "noiseReductionSettings/mode") => Value::Enum(1),
         // Audio: the Compressor's release was always manual.
         ("ec.audio.compressor", "autoRelease") => Value::Bool(false),
+        // Transition: Block Dissolve's blocks had hard edges.
+        ("ec.transition.blockdissolve", "softEdges") => Value::Bool(false),
         _ => return None,
     })
 }

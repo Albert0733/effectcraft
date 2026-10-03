@@ -3,11 +3,11 @@
 <!-- Generated from the effect registry (crates/effects/src/catalog.rs); do not edit by hand.
      Regenerate: UPDATE_DOCS=1 cargo test -p effectcraft-effects --lib effects_doc_is_current -->
 
-EffectCraft ships 303 effects with 2742 parameters in total, grouped into the same categories as the Effects & Presets panel. Every effect is our own implementation, written from public behaviour descriptions and standard image-processing literature. Parameter names, order, popup options, units, defaults and ranges follow the reference application so that projects, expressions and muscle memory carry over.
+EffectCraft ships 303 effects with 2746 parameters in total, grouped into the same categories as the Effects & Presets panel. Every effect is our own implementation, written from public behaviour descriptions and standard image-processing literature. Parameter names, order, popup options, units, defaults and ranges follow the reference application so that projects, expressions and muscle memory carry over.
 
 - **GPU**: 24 effects also run on the GPU compositor with identical results.
 - **32**: 303 effects process 32-bit float (HDR, overbright) pixels without clamping.
-- **Status**: 275 implemented in full, 28 partial (what is missing is listed).
+- **Status**: 281 implemented in full, 22 partial (what is missing is listed).
 
 Effects are addressed by id (`ec.<category>.<name>`) or display name in commands, scripts and the control channel, and every parameter by its id (`effects/#1/blurriness`).
 
@@ -15,7 +15,7 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 
 | Effect | Id | Params | GPU | 32 | Status |
 |---|---|---:|:-:|:-:|---|
-| 3D Channel Extract | `ec.3d.channelextract` | 5 |  | 32 | Partial: no anti-alias option |
+| 3D Channel Extract | `ec.3d.channelextract` | 6 |  | 32 | Implemented |
 | Cryptomatte | `ec.3d.cryptomatte` | 4 |  | 32 | Implemented |
 | Depth Matte | `ec.3d.depthmatte` | 3 |  | 32 | Implemented |
 | Depth of Field | `ec.3d.depthoffield` | 4 |  | 32 | Implemented |
@@ -71,10 +71,10 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 | Blend | `ec.channel.blend` | 4 |  | 32 | Implemented |
 | CC Composite | `ec.channel.cccomposite` | 3 |  | 32 | Implemented |
 | Calculations | `ec.channel.calculations` | 9 |  | 32 | Implemented |
-| Channel Combiner | `ec.channel.combiner` | 6 |  | 32 | Partial: no Saturation Multiplied target |
+| Channel Combiner | `ec.channel.combiner` | 6 |  | 32 | Implemented |
 | Compound Arithmetic | `ec.channel.compoundarithmetic` | 6 |  | 32 | Implemented |
 | Invert | `ec.channel.invert` | 2 | GPU | 32 | Implemented |
-| Minimax | `ec.channel.minimax` | 4 |  | 32 | Partial: no Don't Shrink Edges option |
+| Minimax | `ec.channel.minimax` | 5 |  | 32 | Implemented |
 | Remove Color Matting | `ec.channel.removecolormatting` | 2 |  | 32 | Implemented |
 | Set Channels | `ec.channel.setchannels` | 9 |  | 32 | Implemented |
 | Set Matte | `ec.channel.setmatte` | 6 |  | 32 | Implemented |
@@ -154,7 +154,7 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 | Mesh Warp | `ec.distort.meshwarp` | 3 |  | 32 | Implemented |
 | Mirror | `ec.distort.mirror` | 2 |  | 32 | Implemented |
 | Offset | `ec.distort.offset` | 2 |  | 32 | Implemented |
-| Optics Compensation | `ec.distort.opticscompensation` | 5 |  | 32 | Partial: no Optimal Pixels |
+| Optics Compensation | `ec.distort.opticscompensation` | 6 |  | 32 | Implemented |
 | Polar Coordinates | `ec.distort.polar` | 2 |  | 32 | Implemented |
 | Puppet | `ec.distort.puppet` | 1 |  | 32 | Implemented |
 | Reshape | `ec.distort.reshape` | 6 |  | 32 | Partial: no correspondence points |
@@ -163,7 +163,7 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 | Smear | `ec.distort.smear` | 8 |  | 32 | Implemented |
 | Spherize | `ec.distort.spherize` | 2 |  | 32 | Implemented |
 | Transform | `ec.distort.transform` | 10 | GPU | 32 | Partial: no shutter-angle motion blur |
-| Turbulent Displace | `ec.distort.turbulentdisplace` | 11 |  | 32 | Partial: no locked pinning variants |
+| Turbulent Displace | `ec.distort.turbulentdisplace` | 11 |  | 32 | Implemented |
 | Twirl | `ec.distort.twirl` | 3 |  | 32 | Implemented |
 | Twirl (Legacy) | `ec.distort.twirllegacy` | 3 |  | 32 | Implemented |
 | Warp | `ec.distort.warp` | 5 |  | 32 | Implemented |
@@ -389,7 +389,7 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 
 | Effect | Id | Params | GPU | 32 | Status |
 |---|---|---:|:-:|:-:|---|
-| Block Dissolve | `ec.transition.blockdissolve` | 4 |  | 32 | Partial: no Soft Edges option |
+| Block Dissolve | `ec.transition.blockdissolve` | 5 |  | 32 | Implemented |
 | CC Glass Wipe | `ec.transition.ccglasswipe` | 5 |  | 32 | Implemented |
 | CC Grid Wipe | `ec.transition.ccgridwipe` | 7 |  | 32 | Implemented |
 | CC Image Wipe | `ec.transition.ccimagewipe` | 7 |  | 32 | Implemented |
