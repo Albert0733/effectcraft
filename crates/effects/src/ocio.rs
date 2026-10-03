@@ -905,6 +905,46 @@ fn curve3(xs: [f64; 3], ys: [f64; 3], v: f64) -> f64 {
     a.1 + (c.1 - a.1) * (v - a.0) / (c.0 - a.0).max(1e-9)
 }
 
+/// Color Stabilizer's correction of buffer `b` as one piecewise-linear map per channel (points
+/// with increasing x; the end segments extend), the same maps [`color_stabilizer`] applies.
+/// `None` without a host or reference frame (the layer passes through). (The GPU effect.)
+pub fn color_stabilizer_maps(ctx: &EffectCtx, b: &Buf) -> Option<[Vec<(f64, f64)>; 3]> {
+    let reference = ctx.env.host?.self_at(ctx.params.f("referenceFrame"), ctx.env.effect_index)?;
+    let r = ctx.params.f("sampleSize").max(0.5);
+    let pts = [ctx.params.v2("blackPoint"), ctx.params.v2("midPoint"), ctx.params.v2("whitePoint")];
+    let cur = pts.map(|pt| sample_mean(b, pt, r));
+    let refv = pts.map(|pt| sample_mean(&reference, pt, r));
+    let mode = ctx.params.e("stabilize");
+    Some([0, 1, 2].map(|k| {
+        let offset = |c0: f64, r0: f64| vec![(0.0, r0 - c0), (1.0, 1.0 + r0 - c0)];
+        match mode {
+            0 => offset(cur[0][k], refv[0][k]),
+            1 => {
+                let (c0, c1, r0, r1) = (cur[0][k], cur[2][k], refv[0][k], refv[2][k]);
+                if (c1 - c0).abs() < 1e-6 {
+                    offset(c0, r0)
+                } else if c0 < c1 {
+                    vec![(c0, r0), (c1, r1)]
+                } else {
+                    vec![(c1, r1), (c0, r0)]
+                }
+            }
+            _ => {
+                let mut v = vec![(0.0, 0.0)];
+                let mut pairs: Vec<(f64, f64)> = (0..3).map(|i| (cur[i][k], refv[i][k])).collect();
+                pairs.sort_by(|a, b| a.0.total_cmp(&b.0));
+                for (x, y) in pairs {
+                    if x > v.last().expect("non-empty").0 + 1e-4 && x < 1.0 - 1e-4 {
+                        v.push((x, y));
+                    }
+                }
+                v.push((1.0, 1.0));
+                v
+            }
+        }
+    }))
+}
+
 fn color_stabilizer(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let Some(host) = ctx.env.host else { return b };
     let Some(reference) = host.self_at(ctx.params.f("referenceFrame"), ctx.env.effect_index) else { return b };
