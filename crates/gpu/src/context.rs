@@ -26,7 +26,12 @@ const ENTRIES: &[&str] = &[
     "shadow_make",
     "shadow_combine",
     "pointwise",
+    "adjust_mix",
 ];
+
+/// Entry points that also bind group 1 (four read-only storage buffers; see
+/// [`Enc::dispatch_ext`]).
+const EXT_ENTRIES: &[&str] = &["classic3d"];
 
 /// Pixel format of every working texture: premultiplied RGBA, 32-bit float (32 bpc headroom;
 /// 8/16 bpc are emulated by clamping and quantising, as on the CPU).
@@ -88,6 +93,7 @@ pub struct GpuContext {
     pub(crate) name: String,
     pub(crate) max_dim: u32,
     bgl: wgpu::BindGroupLayout,
+    bgl_ext: wgpu::BindGroupLayout,
     pipelines: HashMap<&'static str, wgpu::ComputePipeline>,
     display_bgl: wgpu::BindGroupLayout,
     display: wgpu::ComputePipeline,
@@ -96,6 +102,9 @@ pub struct GpuContext {
     uploads: Mutex<Uploads>,
     /// Advanced 3D render pipelines (built on first use).
     pub(crate) adv3d: std::sync::OnceLock<crate::adv3d::Pipes>,
+    /// GPU particle pipeline (built on first use) and simulation checkpoints.
+    pub(crate) particles: crate::particles::PipesCell,
+    pub(crate) particle_states: crate::particles::StatesCell,
 }
 
 fn tex_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
@@ -135,7 +144,15 @@ impl GpuContext {
             }
         }
         let name = format!("{} ({:?})", info.name, info.backend);
-        let src = [include_str!("shaders/common.wgsl"), include_str!("shaders/kernels.wgsl")].concat();
+        let src = [
+            include_str!("shaders/common.wgsl"),
+            include_str!("shaders/kernels.wgsl"),
+            include_str!("shaders/classic3d.wgsl"),
+            include_str!("shaders/fx_color.wgsl"),
+            include_str!("shaders/fx_distort.wgsl"),
+            include_str!("shaders/fx_generate.wgsl"),
+        ]
+        .concat();
         let module =
             device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("effectcraft kernels"), source: wgpu::ShaderSource::Wgsl(src.into()) });
         let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -167,12 +184,32 @@ impl GpuContext {
             bind_group_layouts: &[Some(&bgl)],
             immediate_size: 0,
         });
+        let storage = |binding: u32| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None },
+            count: None,
+        };
+        let bgl_ext = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("effectcraft kernels (ext)"),
+            entries: &[storage(0), storage(1), storage(2), storage(3)],
+        });
+        let layout_ext = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("effectcraft kernels (ext)"),
+            bind_group_layouts: &[Some(&bgl), Some(&bgl_ext)],
+            immediate_size: 0,
+        });
         let pipelines = ENTRIES
             .iter()
-            .map(|e| {
+            .chain(crate::fx_color::KERNELS)
+            .chain(crate::fx_distort::KERNELS)
+            .chain(crate::fx_generate::KERNELS)
+            .map(|e| (e, &layout))
+            .chain(EXT_ENTRIES.iter().map(|e| (e, &layout_ext)))
+            .map(|(e, layout)| {
                 let p = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                     label: Some(e),
-                    layout: Some(&layout),
+                    layout: Some(layout),
                     module: &module,
                     entry_point: Some(e),
                     compilation_options: Default::default(),
@@ -221,6 +258,7 @@ impl GpuContext {
             name,
             max_dim,
             bgl,
+            bgl_ext,
             pipelines,
             display_bgl,
             display,
@@ -228,6 +266,8 @@ impl GpuContext {
             dummy_buf,
             uploads: Mutex::new(Uploads::default()),
             adv3d: std::sync::OnceLock::new(),
+            particles: Default::default(),
+            particle_states: Default::default(),
         })
     }
 
@@ -375,6 +415,22 @@ impl<'g> Enc<'g> {
         data: Option<&wgpu::Buffer>,
         groups: (u32, u32),
     ) {
+        self.dispatch_ext(entry, p, src, aux, out, data, groups, None);
+    }
+
+    /// [`Enc::dispatch`] for the kernels in `EXT_ENTRIES`, with their group 1 storage buffers.
+    #[allow(clippy::too_many_arguments)]
+    pub fn dispatch_ext(
+        &mut self,
+        entry: &str,
+        p: &Params,
+        src: &GpuImage,
+        aux: Option<&GpuImage>,
+        out: &GpuImage,
+        data: Option<&wgpu::Buffer>,
+        groups: (u32, u32),
+        ext: Option<[&wgpu::Buffer; 4]>,
+    ) {
         let g = self.g;
         let Some(pipe) = g.pipelines.get(entry) else {
             log::error!("gpu: no kernel {entry}");
@@ -395,11 +451,26 @@ impl<'g> Enc<'g> {
                 wgpu::BindGroupEntry { binding: 4, resource: data.unwrap_or(&g.dummy_buf).as_entire_binding() },
             ],
         });
+        let bg_ext = ext.map(|b| {
+            g.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout: &g.bgl_ext,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: b[0].as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: b[1].as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 2, resource: b[2].as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 3, resource: b[3].as_entire_binding() },
+                ],
+            })
+        });
         let enc = self.encoder();
         {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some(entry), timestamp_writes: None });
             pass.set_pipeline(pipe);
             pass.set_bind_group(0, &bg, &[]);
+            if let Some(b) = &bg_ext {
+                pass.set_bind_group(1, b, &[]);
+            }
             pass.dispatch_workgroups(groups.0.max(1), groups.1.max(1), 1);
         }
         self.pending += 1;
@@ -525,7 +596,33 @@ impl<'g> Enc<'g> {
         for x in v {
             bytes.extend_from_slice(&x.to_le_bytes());
         }
-        while bytes.len() < 16 {
+        self.bytes(bytes)
+    }
+
+    /// Copy an image into a storage buffer (RGBA f32 rows) for kernels that read a third image
+    /// through `data`: (buffer, row length in pixels).
+    pub fn image_rows(&mut self, img: &GpuImage) -> (wgpu::Buffer, u32) {
+        let row = (img.width * 16).div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let buf = self.g.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("image rows"),
+            size: row as u64 * img.height as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.encoder().copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo { texture: &img.texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buf,
+                layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: Some(img.height) },
+            },
+            wgpu::Extent3d { width: img.width, height: img.height, depth_or_array_layers: 1 },
+        );
+        (buf, row / 16)
+    }
+
+    /// A read-only storage buffer holding `bytes` (padded to 16 bytes).
+    pub fn bytes(&self, mut bytes: Vec<u8>) -> wgpu::Buffer {
+        while bytes.len() < 16 || !bytes.len().is_multiple_of(4) {
             bytes.push(0);
         }
         self.g.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("data"), contents: &bytes, usage: wgpu::BufferUsages::STORAGE })

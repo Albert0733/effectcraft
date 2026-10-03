@@ -16,6 +16,12 @@ pub trait ConfigStore: Send + Sync {
     fn read(&self, name: &str) -> Option<String>;
     fn write(&self, name: &str, data: &str) -> std::io::Result<()>;
     fn remove(&self, name: &str) -> std::io::Result<()>;
+    /// Names of the entries directly in `dir` (a `/`-separated name prefix such as `Scripts`),
+    /// sorted. Stores that can't list return nothing.
+    fn list(&self, dir: &str) -> Vec<String> {
+        let _ = dir;
+        vec![]
+    }
     /// The folder next to the configuration (default Auto-Save folder for untitled projects),
     /// in the namespace of [`ConfigStore::files`]; `None` when there is none.
     fn dir(&self) -> Option<PathBuf> {
@@ -86,6 +92,11 @@ impl ConfigStore for MemoryConfig {
         }
         Ok(())
     }
+    fn list(&self, dir: &str) -> Vec<String> {
+        let pre = format!("{}/", dir.trim_end_matches('/'));
+        let Ok(m) = self.files.lock() else { return vec![] };
+        m.keys().filter_map(|k| k.strip_prefix(&pre)).filter(|n| !n.is_empty() && !n.contains('/')).map(str::to_string).collect()
+    }
 }
 
 /// Files in one directory, written atomically.
@@ -104,8 +115,15 @@ impl ConfigStore for DirConfig {
         std::fs::read_to_string(self.dir.join(name)).ok()
     }
     fn write(&self, name: &str, data: &str) -> std::io::Result<()> {
-        std::fs::create_dir_all(&self.dir)?;
-        atomic_write(&self.dir.join(name), data.as_bytes())
+        let path = self.dir.join(name);
+        std::fs::create_dir_all(path.parent().unwrap_or(&self.dir))?;
+        atomic_write(&path, data.as_bytes())
+    }
+    fn list(&self, dir: &str) -> Vec<String> {
+        let Ok(rd) = std::fs::read_dir(self.dir.join(dir)) else { return vec![] };
+        let mut v: Vec<String> = rd.flatten().filter(|e| e.path().is_file()).map(|e| e.file_name().to_string_lossy().to_string()).collect();
+        v.sort();
+        v
     }
     fn remove(&self, name: &str) -> std::io::Result<()> {
         match std::fs::remove_file(self.dir.join(name)) {

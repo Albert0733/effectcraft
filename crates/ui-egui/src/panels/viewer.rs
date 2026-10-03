@@ -121,6 +121,17 @@ enum Gesture {
         pin: u64,
         inv: Mat3,
     },
+    /// Puppet tool Record mode (⌘/Ctrl-drag a pin): the drag is sampled in real time (seconds
+    /// since it began, layer space) and becomes keyframes on release (`puppet.recordPin`); the
+    /// current time runs along while recording.
+    PuppetRecord {
+        layer: LayerId,
+        pin: u64,
+        inv: Mat3,
+        began: f64,
+        cti: Tick,
+        samples: Vec<(f64, [f64; 2])>,
+    },
     /// Pen tool: pulling the tangents of the vertex just placed.
     Pen {
         layer: LayerId,
@@ -312,6 +323,70 @@ fn aux_views(
     main
 }
 
+/// View ▸ Split with New Locked Viewer: the locked viewer on the left of the Composition panel
+/// (its comp and 3D view stay put whatever comp is active). Returns the main viewer's rectangle.
+fn locked_pane(app: &mut EffectcraftApp, ui: &mut egui::Ui, full: Rect, bg: Color32) -> Rect {
+    let Some(lv) = app.session.state.locked_viewer else { return full };
+    let Some(comp) = app.session.project.comp(lv.comp).cloned() else { return full };
+    let name = app.session.project.item(lv.comp).map(|i| i.name.clone()).unwrap_or_default();
+    let gap = 2.0;
+    let mid = full.center().x;
+    let r = Rect::from_min_max(full.min, pos2(mid - gap / 2.0, full.max.y));
+    let main = Rect::from_min_max(pos2(mid + gap / 2.0, full.min.y), full.max);
+    let ctx = ui.ctx().clone();
+    let p = ui.painter().clone();
+    p.rect_filled(Rect::from_min_max(pos2(r.max.x, full.min.y), pos2(main.min.x, full.max.y)), 0.0, Color32::from_black_alpha(200));
+    p.rect_filled(r, 0.0, bg);
+    let (cw, ch) = (comp.width as f32, comp.height as f32);
+    let fit = ((r.width() - 20.0) / cw).min((r.height() - 44.0) / ch).max(0.01);
+    let cr = Rect::from_center_size(r.center(), vec2(cw * fit, ch * fit));
+    let scale = (fit * ctx.pixels_per_point()).min(1.0) as f64;
+    let t = app.session.time_of(lv.comp);
+    let cam = (lv.view != View3D::ActiveCamera && comp.has_3d())
+        .then(|| app.session.state.views3d.get(&lv.comp).cloned().unwrap_or_default().cam(lv.view, comp.width as f64, comp.height as f64).state());
+    let dc = effectcraft_engine::viewer::DisplayColor::of(&app.session);
+    let key = {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (app.session.revision, lv.comp.0, t.0, scale.to_bits(), format!("{cam:?}{}", dc.is_some())).hash(&mut h);
+        h.finish()
+    };
+    let id = egui::Id::new("viewer-locked");
+    let cached: Option<(u64, egui::TextureHandle)> = ctx.data(|d| d.get_temp(id));
+    let tex = match cached {
+        Some((k, tex)) if k == key => tex,
+        _ => {
+            let opts = effectcraft_engine::render::RenderOpts { scale, view: cam, ..Default::default() };
+            let img = app.session.render(lv.comp, t, opts);
+            let mut ci = crate::frames::to_color_image(&img);
+            if let Some(dc) = dc {
+                let mut px: Vec<[u8; 4]> = ci.pixels.iter().map(|c| c.to_array()).collect();
+                dc.apply(&mut px);
+                ci = egui::ColorImage::new(ci.size, px.into_iter().map(|a| Color32::from_rgba_premultiplied(a[0], a[1], a[2], a[3])).collect());
+            }
+            let tex = ctx.load_texture("viewer-locked", ci, egui::TextureOptions::LINEAR);
+            ctx.data_mut(|d| d.insert_temp(id, (key, tex.clone())));
+            tex
+        }
+    };
+    let b = comp.background;
+    p.rect_filled(cr, 0.0, Color32::from_rgb((b[0] * 255.0) as u8, (b[1] * 255.0) as u8, (b[2] * 255.0) as u8));
+    p.image(tex.id(), cr, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+    p.rect_stroke(cr, 0.0, Stroke::new(1.0, Color32::from_black_alpha(160)), StrokeKind::Outside);
+    let label = format!("Locked: {name} \u{2014} {}", if comp.has_3d() { lv.view.label() } else { "Active Camera" });
+    p.text(r.left_top() + vec2(8.0, 8.0), Align2::LEFT_TOP, &label, Tokens::ui(11.0), Color32::from_white_alpha(210));
+    app.auto.add("viewer.locked", r, &label);
+    // Close the locked viewer.
+    let close = Rect::from_min_size(pos2(r.max.x - 26.0, r.min.y + 4.0), vec2(20.0, 20.0));
+    let resp = ui.interact(close, egui::Id::new("viewer-locked-close"), Sense::click());
+    p.text(close.center(), Align2::CENTER_CENTER, "\u{00d7}", Tokens::ui(14.0), if resp.hovered() { Color32::WHITE } else { Color32::from_white_alpha(170) });
+    app.auto.add("viewer.locked.close", close, "Close Locked Viewer");
+    if resp.clicked() {
+        let _ = app.session.execute("view.closeLockedViewer", serde_json::json!({}));
+    }
+    main
+}
+
 pub(crate) fn checker(p: &egui::Painter, r: Rect) {
     let s = 10.0;
     p.rect_filled(r, 0.0, Color32::from_gray(0xcc));
@@ -340,11 +415,14 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let p = ui.painter().clone();
     VIEW_CAM.with(|c| c.set(app.session.view_camera(cid)));
 
-    // Navigator bar (open comps as breadcrumbs).
-    let nav = Rect::from_min_size(rect.min, vec2(rect.width(), 24.0));
+    // Navigator bar (open comps as breadcrumbs). After Effects shows a single breadcrumb row:
+    // when the Composition Navigator (nested comp flow) is above the viewer, this row is left
+    // out.
+    let nav_h = if super::precomp::has_flow(app) { 0.0 } else { 24.0 };
+    let nav = Rect::from_min_size(rect.min, vec2(rect.width(), nav_h));
     p.rect_filled(nav, 0.0, t.panel_bg);
     let mut x = nav.min.x + 10.0;
-    let open = app.session.state.open_comps.clone();
+    let open = if nav_h > 0.0 { app.session.state.open_comps.clone() } else { vec![] };
     for oc in open {
         let name = app.session.project.item(oc).map(|i| i.name.clone()).unwrap_or_default();
         let g = p.layout_no_wrap(name.clone(), Tokens::ui(11.5), t.text);
@@ -380,6 +458,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let pasteboard = app.ui.viewer.pasteboard.map(|[r, g, b]| Color32::from_rgb(r, g, b)).unwrap_or(t.pasteboard);
     // View ▸ Switch View Layout: extra views (Top / Front / Right) beside the main view, which
     // keeps the overlays and the interaction.
+    let full = locked_pane(app, ui, full, pasteboard);
     let area = aux_views(app, ui, &comp, cid, full, pasteboard);
     p.rect_filled(area, 0.0, pasteboard);
     // View ▸ Show Rulers takes a strip on the top and left.
@@ -396,6 +475,9 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     ctx.data_mut(|d| d.insert_temp(map_id(), map));
     let comp_rect = Rect::from_min_size(origin, vec2(cw * zoom, ch * zoom));
     let painter = p.with_clip_rect(area);
+    // Settings ▸ 3D ▸ Extended Viewer: custom 3D views (and Draft 3D) render the visible
+    // pasteboard too, so 3D layers reaching past the comp frame stay visible there.
+    app.ui.viewer.extended = extended_region(app, &comp, cid, map);
 
     // Frame.
     let ppp = ctx.pixels_per_point();
@@ -426,7 +508,13 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let ectx = EvalCtx { project: &snap_project, comp_id: cid, comp: &comp, time, expr: snap_expr.as_deref(), footage: None };
     // The frame (or snapshot) through Show Channel and exposure; ROI frames cover the region.
     vt::draw_frame(app, &ctx, &painter, comp_rect, cid, &ectx);
-    painter.rect_stroke(comp_rect, 0.0, Stroke::new(1.0, Color32::from_black_alpha(160)), StrokeKind::Outside);
+    if app.ui.viewer.extended.is_some() {
+        // The comp frame outlined over the extended render.
+        painter.rect_stroke(comp_rect, 0.0, Stroke::new(1.0, Color32::from_gray(150)), StrokeKind::Outside);
+        app.auto.add("viewer.extendedArea", rect_of(&map, app.ui.viewer.extended), "Extended Viewer area");
+    } else {
+        painter.rect_stroke(comp_rect, 0.0, Stroke::new(1.0, Color32::from_black_alpha(160)), StrokeKind::Outside);
+    }
     app.auto.add("viewer.comp", comp_rect, &comp_name);
     app.auto.add("viewer.area", area, "Composition viewer");
 
@@ -452,12 +540,14 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         let sub = g.grid_subdivisions.max(1) as f32;
         let sstep = step / sub;
         let draw_minor = sstep >= 4.0;
+        // Settings ▸ Grids & Guides ▸ Grid Style (lines, dashed lines or dots).
+        let style = g.grid_style.clone();
         let mut i = 0u32;
         let mut gx = comp_rect.min.x;
         while gx <= comp_rect.max.x {
             let is_major = i.is_multiple_of(g.grid_subdivisions.max(1));
             if is_major || draw_minor {
-                painter.line_segment([pos2(gx, comp_rect.min.y), pos2(gx, comp_rect.max.y)], if is_major { major } else { minor });
+                styled_line(&painter, [pos2(gx, comp_rect.min.y), pos2(gx, comp_rect.max.y)], if is_major { major } else { minor }, &style);
             }
             gx += sstep;
             i += 1;
@@ -467,7 +557,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         while gy <= comp_rect.max.y {
             let is_major = i.is_multiple_of(g.grid_subdivisions.max(1));
             if is_major || draw_minor {
-                painter.line_segment([pos2(comp_rect.min.x, gy), pos2(comp_rect.max.x, gy)], if is_major { major } else { minor });
+                styled_line(&painter, [pos2(comp_rect.min.x, gy), pos2(comp_rect.max.x, gy)], if is_major { major } else { minor }, &style);
             }
             gy += sstep;
             i += 1;
@@ -480,13 +570,15 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     if app.ui.viewer.guides {
         let [r, gg, b] = hex_rgb(&app.session.prefs.grids.guide_color).unwrap_or([0x3c, 0xc8, 0xf0]);
         let stroke = Stroke::new(1.0, Color32::from_rgb(r, gg, b));
+        // Settings ▸ Grids & Guides ▸ Guide Style.
+        let style = app.session.prefs.grids.guide_style.clone();
         for g in &comp.guides {
             if g.vertical {
                 let x = comp_rect.min.x + g.position as f32 * zoom;
-                painter.line_segment([pos2(x, area.min.y), pos2(x, area.max.y)], stroke);
+                styled_line(&painter, [pos2(x, area.min.y), pos2(x, area.max.y)], stroke, &style);
             } else {
                 let y = comp_rect.min.y + g.position as f32 * zoom;
-                painter.line_segment([pos2(area.min.x, y), pos2(area.max.x, y)], stroke);
+                styled_line(&painter, [pos2(area.min.x, y), pos2(area.max.x, y)], stroke, &style);
             }
         }
     }
@@ -548,6 +640,28 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 let hover = ui.input(|i| i.pointer.hover_pos());
                 ov::draw_paths(app, &painter, &map, &ectx, l, col, &sel_vertices, pen, hover, &mut vertex_hits, &mut paths);
             }
+            // Settings ▸ Previews ▸ Show Internal Wireframes: outlines of the layers inside a
+            // selected collapsed precomp.
+            if app.session.prefs.previews.show_internal_wireframes
+                && l.switches.collapse
+                && let effectcraft_engine::project::LayerSource::Comp { item } = &l.source
+                && let Some(nc) = app.session.project.comp(*item)
+            {
+                let (outer, _) = l2c(&ectx, l);
+                let nctx = EvalCtx::new(&app.session.project, *item, nc, ectx.source_time(l));
+                for nl in nc.layers.iter().filter(|nl| nl.is_active_at(nctx.time) && !nl.is_3d()) {
+                    if let Some((_, q, _)) = layer_quad(&nctx, nl) {
+                        let sq: Vec<Pos2> = q
+                            .iter()
+                            .map(|p| {
+                                let c = outer.apply(gv2(p[0], p[1]));
+                                map.to_screen([c.x, c.y])
+                            })
+                            .collect();
+                        painter.add(egui::Shape::closed_line(sq, Stroke::new(1.0, col.gamma_multiply(0.6))));
+                    }
+                }
+            }
             let Some((m, q, _)) = layer_quad(&ectx, l) else {
                 // Cameras, lights, empty layers: just the anchor.
                 if let Some(tr) = l.transform() {
@@ -595,6 +709,41 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
             }
         }
     }
+
+    // Settings ▸ 3D: Extended Viewer (3D layers outlined beyond the comp frame) and Show 3D
+    // Reference Axes (world X/Y/Z in the corner, turning with the view).
+    let has_3d = comp.layers.iter().any(|l| l.is_3d() && l.is_active_at(time));
+    if has_3d && app.session.prefs.three_d.extended_viewer {
+        for l in comp.layers.iter().filter(|l| l.is_3d() && l.is_active_at(time) && l.has_video()) {
+            if let Some((_, q, _)) = layer_quad(&ectx, l) {
+                let sq: Vec<Pos2> = q.iter().map(|p| map.to_screen(*p)).collect();
+                let outside = sq.iter().any(|p| !comp_rect.contains(*p));
+                if outside {
+                    painter.add(egui::Shape::closed_line(sq, Stroke::new(1.0, t.label(l.label).gamma_multiply(0.55))));
+                }
+            }
+        }
+    }
+    if has_3d && app.session.prefs.three_d.show_reference_axes {
+        let pc = cam_state(&ectx).projection(cw as f64, ch as f64);
+        let o3 = effectcraft_engine::geom::vec3(cw as f64 / 2.0, ch as f64 / 2.0, 0.0);
+        let o = pc.apply(o3);
+        let corner = pos2(area.min.x + 34.0, area.max.y - 34.0);
+        for (axis, col, name) in [
+            (effectcraft_engine::geom::vec3(1.0, 0.0, 0.0), Color32::from_rgb(0xe0, 0x50, 0x50), "X"),
+            (effectcraft_engine::geom::vec3(0.0, 1.0, 0.0), Color32::from_rgb(0x60, 0xd0, 0x60), "Y"),
+            (effectcraft_engine::geom::vec3(0.0, 0.0, 1.0), Color32::from_rgb(0x50, 0x8c, 0xf0), "Z"),
+        ] {
+            let e = pc.apply(o3 + axis * 10.0);
+            let d = vec2((e.x - o.x) as f32, (e.y - o.y) as f32);
+            let d = if d.length() > 1e-4 { d.normalized() * 22.0 } else { vec2(0.0, 0.0) };
+            painter.arrow(corner, d, Stroke::new(1.5, col));
+            painter.text(corner + d * 1.25, Align2::CENTER_CENTER, name, Tokens::ui(10.0), col);
+        }
+        app.auto.add("viewer.referenceAxes", Rect::from_center_size(corner, vec2(56.0, 56.0)), "3D reference axes");
+    }
+
+    super::expr_editor::error_banner(app, ui, area);
 
     // Track points of the current track (Tracker panel) on its layer, while that layer is selected.
     let mut track_hits = vec![];
@@ -796,7 +945,13 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
             t if t.is_shape() => Some(Gesture::Create { tool: t, start: cpt }),
             t if t.puppet_kind().is_some() => pin_hits.iter().rev().find(|h| h.pos.distance(press) < 8.0).and_then(|h| {
                 let l = comp.layer(h.layer)?;
-                Some(Gesture::PuppetPin { layer: h.layer, pin: h.pin, inv: l2c(&ectx, l).0.inverse()? })
+                let inv = l2c(&ectx, l).0.inverse()?;
+                if mods.command {
+                    let lp = inv.apply(gv2(cpt[0], cpt[1]));
+                    let began = ui.input(|i| i.time);
+                    return Some(Gesture::PuppetRecord { layer: h.layer, pin: h.pin, inv, began, cti: time, samples: vec![(0.0, [lp.x, lp.y])] });
+                }
+                Some(Gesture::PuppetPin { layer: h.layer, pin: h.pin, inv })
             }),
             Tool::Orbit | Tool::PanCamera | Tool::Dolly => Some(Gesture::Camera { tool }),
             Tool::Selection if super::tracker::hit_at(&track_hits, press).is_some() => {
@@ -1032,6 +1187,20 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 }
                 let _ = app.session.execute("mask.setVertex", params);
             }
+            Gesture::PuppetRecord { layer, pin, inv, began, cti, mut samples } => {
+                let lp = inv.apply(gv2(cpt[0], cpt[1]));
+                let now = ui.input(|i| i.time) - began;
+                if samples.last().is_none_or(|s| now > s.0) {
+                    samples.push((now, [lp.x, lp.y]));
+                }
+                // The current time runs with the recording (Record Options ▸ Speed).
+                let speed = app.session.state.puppet.record_speed.max(1.0) / 100.0;
+                app.session.set_time(cti + Tick::from_seconds_f64(now / speed));
+                painter.circle_filled(pos, 6.0, Color32::from_rgb(0xe0, 0x30, 0x30));
+                painter.text(pos + vec2(10.0, -10.0), Align2::LEFT_BOTTOM, "Recording", Tokens::ui(11.0), Color32::from_rgb(0xff, 0x60, 0x60));
+                ui.data_mut(|dd| dd.insert_temp(gid, Gesture::PuppetRecord { layer, pin, inv, began, cti, samples }));
+                ui.ctx().request_repaint();
+            }
             Gesture::PuppetPin { layer, pin, inv } => {
                 let lp = inv.apply(gv2(cpt[0], cpt[1]));
                 if let Err(e) = app.session.execute("puppet.movePin", json!({"layer": layer.0, "pin": pin, "position": [lp.x, lp.y], "merge": merge})) {
@@ -1064,6 +1233,12 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     if resp.drag_stopped() {
         if let (Some(g), Some(pos)) = (gesture, resp.interact_pointer_pos()) {
             match g {
+                Gesture::PuppetRecord { layer, pin, cti, samples, .. } => {
+                    let pts: Vec<serde_json::Value> = samples.iter().map(|(t, p)| json!([t, p[0], p[1]])).collect();
+                    if let Err(e) = app.session.execute("puppet.recordPin", json!({"layer": layer.0, "pin": pin, "samples": pts, "start": cti.seconds()})) {
+                        app.ui.status = e.to_string();
+                    }
+                }
                 Gesture::Create { tool, start } => {
                     let end = map.to_comp(pos);
                     create_shape(app, tool, start, end, mods.shift);
@@ -1499,6 +1674,26 @@ fn empty_state(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
 }
 
 /// `#rrggbb` → sRGB bytes.
+/// A grid or guide line in the Grids & Guides style: `lines`, `dashed` or `dots`.
+pub(crate) fn styled_line(painter: &egui::Painter, pts: [Pos2; 2], stroke: Stroke, style: &str) {
+    match style {
+        "dashed" => {
+            painter.add(egui::Shape::dashed_line(&pts, stroke, 6.0, 4.0));
+        }
+        "dots" => {
+            painter.add(egui::Shape::dotted_line(&pts, stroke.color, 4.0, stroke.width.max(1.0) * 0.75));
+        }
+        _ => {
+            painter.line_segment(pts, stroke);
+        }
+    }
+}
+
+/// Texture filtering for Viewer Zoom Quality: More Accurate = bilinear, Faster = nearest.
+pub(crate) fn zoom_texture_options(smooth: bool) -> egui::TextureOptions {
+    if smooth { egui::TextureOptions::LINEAR } else { egui::TextureOptions::NEAREST }
+}
+
 pub(crate) fn hex_rgb(s: &str) -> Option<[u8; 3]> {
     let h = s.trim().trim_start_matches('#');
     if h.len() != 6 || !h.is_ascii() {
@@ -1508,33 +1703,65 @@ pub(crate) fn hex_rgb(s: &str) -> Option<[u8; 3]> {
     Some([p(0)?, p(2)?, p(4)?])
 }
 
+/// The Extended Viewer's render region for this frame (see [`ViewerState::extended`]):
+/// Settings ▸ 3D ▸ Extended Viewer on, the comp has 3D layers and the view is a custom 3D view
+/// (or Draft 3D is on), and part of the visible viewer lies outside the comp frame.
+///
+/// [`ViewerState::extended`]: crate::state::ViewerState::extended
+pub(crate) fn extended_region(
+    app: &EffectcraftApp,
+    comp: &effectcraft_engine::project::Comp,
+    cid: effectcraft_engine::project::ItemId,
+    map: ViewerMap,
+) -> Option<[f64; 4]> {
+    if !app.session.prefs.three_d.extended_viewer || !comp.has_3d() || app.session.state.region_of_interest.is_some() {
+        return None;
+    }
+    let view = app.session.state.views3d.get(&cid).map(|v| v.current).unwrap_or_default();
+    if view == View3D::ActiveCamera && !comp.draft_3d {
+        return None;
+    }
+    let a = map.to_comp(map.area.min);
+    let b = map.to_comp(map.area.max);
+    effectcraft_engine::render::extended_region(comp.width, comp.height, [a[0], a[1], b[0], b[1]], 1.0)
+}
+
+fn rect_of(map: &ViewerMap, r: Option<[f64; 4]>) -> Rect {
+    let [x, y, w, h] = r.unwrap_or_default();
+    Rect::from_min_max(map.to_screen([x, y]), map.to_screen([x + w, y + h]))
+}
+
 /// Put a rendered frame on screen: CPU pixels go into an egui texture; GPU frames are drawn
 /// straight from their wgpu texture (registered with egui-wgpu, no readback).
 fn show_frame(app: &mut EffectcraftApp, ctx: &egui::Context, key: crate::frames::FrameKey, img: crate::frames::FrameImage) {
     use crate::frames::FrameImage;
+    // Settings ▸ Previews ▸ Viewer Zoom Quality.
+    let smooth = app.session.prefs.viewer_zoom_smooth();
+    let opts = zoom_texture_options(smooth);
     match img {
         FrameImage::Cpu(img) => {
             match &mut app.viewer_tex {
                 Some((tex, k)) if tex.size() == img.size => {
-                    tex.set((*img).clone(), egui::TextureOptions::LINEAR);
+                    tex.set((*img).clone(), opts);
                     *k = key;
                 }
-                _ => app.viewer_tex = Some((ctx.load_texture("viewer-frame", (*img).clone(), egui::TextureOptions::LINEAR), key)),
+                _ => app.viewer_tex = Some((ctx.load_texture("viewer-frame", (*img).clone(), opts), key)),
             }
             app.viewer_shown = app.viewer_tex.as_ref().map(|(t, k)| (t.id(), *k));
             app.viewer_image = Some(img);
-            vt::set_texture_roi(ctx, app.session.state.region_of_interest);
+            vt::set_texture_roi(ctx, app.session.state.region_of_interest.or(app.ui.viewer.extended));
         }
         FrameImage::Gpu(f) => {
             let Some(rs) = &app.wgpu else { return };
             let view = f.texture.create_view(&Default::default());
             let mut ren = rs.renderer.write();
+            let filter = if smooth { eframe::wgpu::FilterMode::Linear } else { eframe::wgpu::FilterMode::Nearest };
             let id = match &app.viewer_native {
                 Some((id, _, _)) => {
-                    ren.update_egui_texture_from_wgpu_texture(&rs.device, &view, eframe::wgpu::FilterMode::Linear, *id);
+                    ren.update_egui_texture_from_wgpu_texture(&rs.device, &view, filter, *id);
                     *id
                 }
-                None => ren.register_native_texture(&rs.device, &view, eframe::wgpu::FilterMode::Linear),
+                None => ren.register_native_texture(&rs.device, &view, filter),
             };
             drop(ren);
             app.viewer_native = Some((id, key, f));

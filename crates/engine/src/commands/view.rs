@@ -89,6 +89,18 @@ fn share_view_options(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!(s.state.share_view_options))
 }
 
+/// Settings ▸ 3D ▸ Extended Viewer: 3D views (custom views, or Draft 3D) show the pasteboard
+/// around the comp frame with the layers that reach onto it.
+fn extended_viewer(s: &mut Session, p: &Value) -> Result<Value> {
+    let v = super::b_p(p, "value").unwrap_or(!s.prefs.three_d.extended_viewer);
+    if v != s.prefs.three_d.extended_viewer {
+        s.prefs.three_d.extended_viewer = v;
+        s.prefs_changed();
+        s.save_prefs();
+    }
+    Ok(json!(v))
+}
+
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!("view.addGuide", "Add Guide...", ["View"], None, "{orientation?: vertical|horizontal, position? (comp px)}", has_comp, add_guide),
@@ -97,6 +109,7 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!("view.exportGuides", "Export Guides...", ["View"], None, "{path}", has_guides, export_guides),
         cmd!("view.layout", "Switch View Layout", [], None, "{views: 1|2|4}", has_comp, view_layout),
         cmd!("view.shareViewOptions", "Share View Options", ["View", "Switch View Layout"], None, "{value?}", has_comp, share_view_options),
+        cmd!("view.extendedViewer", "Extended Viewer", [], None, "{value?}", always, extended_viewer),
         cmd!("view.setRegionOfInterest", "Region of Interest", [], None, "{rect?: [x, y, w, h] | null}", always, region_of_interest),
     ]
 }

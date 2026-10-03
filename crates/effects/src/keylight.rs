@@ -198,6 +198,11 @@ fn crop_source(ctx: &EffectCtx, b: &Buf) -> Image {
     let methods = [pr.e("sourceCrops/xMethod"), pr.e("sourceCrops/yMethod")];
     let ec = pr.color("sourceCrops/edgeColour");
     let ea = (pr.f("sourceCrops/edgeColourAlpha") / 100.0) as f32;
+    if methods == [0, 0] && ea <= 0.0 {
+        // Transparent edge colour: the borders are cut from the result instead (keying sees
+        // the whole picture).
+        return b.img.clone();
+    }
     let edge = premul([ec[0], ec[1], ec[2]], ea);
     // Fold a coordinate into [lo, hi) by a method; None = outside with Colour.
     let fold = |v: f64, lo: f64, hi: f64, m: u32| -> Option<f64> {

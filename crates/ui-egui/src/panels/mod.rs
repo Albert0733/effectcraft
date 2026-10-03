@@ -3,13 +3,16 @@
 pub mod anim_tools;
 pub mod camera_tracker_ui;
 pub mod comp_settings;
+pub mod content_fill_panel;
 pub mod dialogs;
 pub mod dialogs_3d;
 pub mod effect_controls;
 pub mod effects_presets;
 pub mod essential;
 pub mod expr_bar;
+pub mod expr_editor;
 pub mod flowchart;
+pub mod footage_panel;
 pub mod forms;
 pub mod fx_widgets;
 pub mod graph;
@@ -19,16 +22,22 @@ pub mod info;
 pub mod key_dialogs;
 pub mod layer_panel;
 pub mod layer_styles_dialog;
+pub mod learn;
 pub mod markers_ui;
+pub mod media_panels;
 pub mod misc;
 pub mod paint_panels;
+pub mod panel_kit;
 pub mod precomp;
 pub mod project;
 pub mod properties;
 pub mod puppet_tool;
 pub mod render_queue;
 pub mod roto_tool;
+pub mod rq_templates;
+pub mod scopes_panel;
 pub mod script_console;
+pub mod scriptui_view;
 pub mod settings;
 pub mod shortcut_editor;
 pub mod text_panels;
@@ -41,7 +50,7 @@ pub mod viewer_tools;
 pub mod waveform;
 
 use effectcraft_engine::Session;
-use effectcraft_engine::project::{Comp, TimeDisplayStyle};
+use effectcraft_engine::project::Comp;
 use effectcraft_engine::time::Tick;
 use egui::Rect;
 
@@ -57,16 +66,14 @@ pub enum DragPayload {
     Effect(String),
     /// A property dragged from the timeline (to the Essential Graphics panel).
     Property { layer: u64, prop: u64 },
+    /// Files from the Media Browser (import; into the timeline: import and add).
+    Files(Vec<String>),
 }
 
-/// The current time formatted per project settings (timecode with `;` for drop-frame, or frames).
+/// The current time formatted per project settings (timecode with `;` for drop-frame, frames
+/// or Feet + Frames).
 pub fn timecode(session: &Session, comp: &Comp, t: Tick) -> String {
-    let fr = comp.frame_rate;
-    match session.project.settings.time_display {
-        TimeDisplayStyle::Frames => format!("{:05}", fr.frame_at(t) + session.project.settings.frame_start),
-        // AE's display: `0:00:02:15` (non-drop-frame counting, as AE shows new comps).
-        TimeDisplayStyle::Timecode => effectcraft_engine::time::format_timecode_ae(fr.frame_at(t + comp.display_start), fr, false),
-    }
+    effectcraft_engine::commands::time::display_time(session, comp, t)
 }
 
 pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: PanelKind, rect: Rect) {
@@ -102,7 +109,14 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: PanelKind, rect: Rec
         PanelKind::Paint => paint_panels::paint(app, ui, rect),
         PanelKind::Brushes => paint_panels::brushes(app, ui, rect),
         PanelKind::EssentialGraphics => essential::show(app, ui, rect),
+        PanelKind::ScriptPanel(id) => scriptui_view::panel(app, ui, rect, id),
         PanelKind::Flowchart => flowchart::show(app, ui, rect),
+        PanelKind::LumetriScopes => scopes_panel::show(app, ui, rect),
+        PanelKind::Footage => footage_panel::show(app, ui, rect),
+        PanelKind::MediaBrowser => media_panels::media_browser(app, ui, rect),
+        PanelKind::Metadata => media_panels::metadata(app, ui, rect),
+        PanelKind::Progress => media_panels::progress(app, ui, rect),
+        PanelKind::ContentAwareFill => content_fill_panel::show(app, ui, rect),
     }
 }
 

@@ -47,6 +47,22 @@ enum RowKind {
 /// Synthetic group uid for a layer's Audio > Waveform twirl (never a real property uid).
 const WAVE_BIT: u64 = 1 << 60;
 
+/// Time navigator's visible-span bar and the work area bar.
+const NAV_BAR: Color32 = Color32::from_rgb(0x55, 0x55, 0x55);
+const WORK_AREA_BAR: Color32 = Color32::from_rgb(0x5c, 0x5c, 0x5c);
+/// Fill of the timeline's switch / A/V boxes (dark wells, as in After Effects).
+const SWITCH_BOX: Color32 = Color32::from_rgb(0x19, 0x19, 0x19);
+/// Background of the selected layer's name cell.
+const SELECTED_NAME_BG: Color32 = Color32::from_rgb(0xa6, 0xa6, 0xa6);
+
+/// A layer bar's fill: the label colour muted toward grey (a little brighter when selected).
+pub(crate) fn bar_color(label: Color32, selected: bool) -> Color32 {
+    let k = if selected { 0.62 } else { 0.45 };
+    let g = 0x3a as f32;
+    let mix = |c: u8| (c as f32 * k + g * (1.0 - k)).round() as u8;
+    Color32::from_rgb(mix(label.r()), mix(label.g()), mix(label.b()))
+}
+
 /// Row height (expression editors grow with their text).
 fn row_height(row: &Row, rh: f32) -> f32 {
     match row.kind {
@@ -756,7 +772,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let tc = crate::panels::timecode(&app.session, &comp, time);
     let tc_rect = Rect::from_min_size(pos2(rect.min.x + 12.0, top + 6.0), vec2(150.0, 24.0));
     let tc_resp = ui.interact(tc_rect, egui::Id::new("tl-timecode"), Sense::click_and_drag());
-    p.text(tc_rect.left_center(), Align2::LEFT_CENTER, &tc, Tokens::semibold(20.0), t.timecode);
+    p.text(tc_rect.left_center(), Align2::LEFT_CENTER, &tc, Tokens::semibold(16.0), t.timecode);
     let sub = format!("{:05} ({:.2} fps)", fr.frame_at(time) + app.session.project.settings.frame_start, fr.as_f64());
     p.text(pos2(tc_rect.min.x, tc_rect.max.y + 8.0), Align2::LEFT_CENTER, sub, Tokens::ui(10.5), t.text_faint);
     app.auto.add("timeline.timecode", tc_rect, &tc);
@@ -770,7 +786,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     }
     if let Some(mut buf) = ctx.data(|d| d.get_temp::<String>(egui::Id::new("tl-tc-edit"))) {
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(tc_rect));
-        let r = child.add(egui::TextEdit::singleline(&mut buf).font(Tokens::semibold(18.0)).desired_width(150.0));
+        let r = child.add(egui::TextEdit::singleline(&mut buf).font(Tokens::semibold(16.0)).desired_width(150.0));
         r.request_focus();
         if r.lost_focus() {
             let _ = app.session.execute("time.set", json!({"timecode": buf}));
@@ -810,14 +826,18 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
 
     // ---- ruler (right).
     let ruler = Rect::from_min_max(pos2(graph_x0, top + header_h - ruler_h), pos2(rect.max.x, top + header_h));
-    let nav = Rect::from_min_max(pos2(graph_x0 + 6.0, top + 6.0), pos2(graph_x1, top + 12.0));
-    // Time navigator.
-    p.rect_filled(nav, 3.0, t.field_bg);
+    let nav = Rect::from_min_max(pos2(graph_x0 + 6.0, top + 6.0), pos2(graph_x1, top + 14.0));
+    // Time navigator: the visible span as a grey bar with blue end handles (as in After
+    // Effects), over a dark track.
+    p.rect_filled(nav, 1.0, t.field_bg);
     let vis0 = (tm.start / comp.duration.seconds()) as f32;
     let vis1 = (tm.t(graph_x1) / comp.duration.seconds()) as f32;
     let nav_vis =
         Rect::from_min_max(pos2(nav.min.x + nav.width() * vis0.clamp(0.0, 1.0), nav.min.y), pos2(nav.min.x + nav.width() * vis1.clamp(0.0, 1.0), nav.max.y));
-    p.rect_filled(nav_vis, 3.0, t.work_area);
+    p.rect_filled(nav_vis, 0.0, NAV_BAR);
+    for x in [nav_vis.min.x, nav_vis.max.x] {
+        p.rect_filled(Rect::from_min_max(pos2(x - 3.0, nav.min.y - 1.0), pos2(x + 3.0, nav.max.y + 1.0)), 3.0, t.accent);
+    }
     let nresp = ui.interact(nav, egui::Id::new("tl-nav"), Sense::drag());
     if nresp.dragged() {
         let d = nresp.drag_delta().x as f64 / nav.width() as f64 * comp.duration.seconds();
@@ -828,12 +848,19 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     }
     p.rect_filled(ruler, 0.0, t.tl_ruler_bg);
     app.auto.add("timeline.ruler", ruler, &format!("{},{}", tm.start, tm.pps));
-    // Work area bar.
-    let wa = Rect::from_min_max(pos2(tm.x(comp.work_area.0.seconds()), ruler.min.y + 2.0), pos2(tm.x(comp.work_area.1.seconds()), ruler.min.y + 10.0));
-    p.rect_filled(wa, 2.0, t.work_area);
+    // Work area bar: below the ruler, beside the column headers (After Effects' layout), with
+    // blue begin / end handles; the cache bar runs under it.
+    let wa_row = Rect::from_min_max(pos2(graph_x0, top + header_h), pos2(rect.max.x, top + header_h + colhdr_h));
+    let wa = Rect::from_min_max(pos2(tm.x(comp.work_area.0.seconds()), wa_row.min.y + 3.0), pos2(tm.x(comp.work_area.1.seconds()), wa_row.max.y - 6.0));
+    p.with_clip_rect(wa_row).rect_filled(wa, 0.0, WORK_AREA_BAR);
     for (hx, set) in [(wa.min.x, "begin"), (wa.max.x, "end")] {
-        let hr = Rect::from_center_size(pos2(hx, wa.center().y), vec2(8.0, 12.0));
-        p.rect_filled(Rect::from_center_size(pos2(hx, wa.center().y), vec2(3.0, 10.0)), 1.0, t.text_dim);
+        let hr = Rect::from_center_size(pos2(hx, wa.center().y), vec2(8.0, 14.0));
+        let handle = if set == "begin" {
+            Rect::from_min_max(pos2(hx - 1.0, wa.min.y), pos2(hx + 4.0, wa.max.y))
+        } else {
+            Rect::from_min_max(pos2(hx - 4.0, wa.min.y), pos2(hx + 1.0, wa.max.y))
+        };
+        p.rect_filled(handle, 2.0, t.accent);
         let resp = ui.interact(hr, egui::Id::new(("wa", set)), Sense::drag());
         app.auto.add(&format!("timeline.workArea.{set}"), hr, set);
         if resp.dragged()
@@ -848,7 +875,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let scale_key = app.viewer_shown.as_ref().map(|(_, k)| k.scale).unwrap_or(1000);
     let cached = app.frames.cached_frames(app.session.revision, cid.0, scale_key);
     let fd = comp.frame_duration().seconds();
-    let cy0 = ruler.min.y + 11.0;
+    let cy0 = wa_row.max.y - 4.0;
     let mut run: Option<(i64, i64)> = None;
     let draw_run = |a: i64, b: i64| {
         let x0 = tm.x(a as f64 * fd);
@@ -1100,19 +1127,13 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         let cy = r.min.y + rh / 2.0;
         match &row.kind {
             RowKind::Layer => {
-                lp.rect_filled(
-                    left,
-                    0.0,
-                    if is_sel {
-                        t.row_selected
-                    } else if ri % 2 == 0 {
-                        t.row
-                    } else {
-                        t.row_alt
-                    },
-                );
-                gp.rect_filled(Rect::from_min_max(pos2(graph_x0, r.min.y), r.max), 0.0, if is_sel { Color32::from_rgb(0x26, 0x26, 0x26) } else { t.tl_bg });
-                lp.line_segment([pos2(rect.min.x, r.max.y), pos2(graph_x0, r.max.y)], Stroke::new(1.0, Color32::from_black_alpha(80)));
+                // After Effects draws layer rows as one flat tone separated by dark hairlines
+                // (outline and time graph alike), not as alternating stripes.
+                let _ = ri;
+                lp.rect_filled(left, 0.0, if is_sel { t.row_selected } else { t.row_alt });
+                gp.rect_filled(Rect::from_min_max(pos2(graph_x0, r.min.y), r.max), 0.0, if is_sel { Color32::from_rgb(0x2a, 0x2a, 0x2a) } else { t.tl_bg });
+                lp.line_segment([pos2(rect.min.x, r.max.y - 0.5), pos2(graph_x0, r.max.y - 0.5)], Stroke::new(1.0, t.app_bg));
+                gp.line_segment([pos2(graph_x0, r.max.y - 0.5), pos2(r.max.x, r.max.y - 0.5)], Stroke::new(1.0, t.app_bg));
                 // A/V features.
                 let sw = &layer.switches;
                 let av_items: [(Icon, bool, &str, bool); 4] = [
@@ -1122,11 +1143,11 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     (Icon::Lock, sw.locked, "lock", true),
                 ];
                 for (i, (icon, on, name, applicable)) in av_items.into_iter().enumerate() {
-                    let br = Rect::from_center_size(pos2(cw.av + 10.0 + 18.0 * i as f32, cy), vec2(17.0, 17.0));
+                    let br = Rect::from_center_size(pos2(cw.av + 10.0 + 18.0 * i as f32, cy), vec2(15.0, 15.0));
                     if !applicable || !vis.av {
                         continue;
                     }
-                    lp.rect_stroke(br.shrink(1.5), 2.0, Stroke::new(1.0, t.separator), StrokeKind::Inside);
+                    lp.rect_filled(br.shrink(0.5), 1.0, SWITCH_BOX);
                     let resp = widgets::icon_toggle(ui, br, icon, on, &t, egui::Id::new(("av", layer.id.0, i)), None);
                     app.auto.add(&format!("timeline.layer.{}.{name}", layer.id.0), br, name);
                     if resp.clicked() {
@@ -1176,7 +1197,16 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                         ctx.data_mut(|d| d.insert_temp(rename_id, (rl, buf)));
                     }
                 } else {
-                    let name_col = if is_sel { Color32::WHITE } else { t.text };
+                    // The selected layer's name sits in a light cell with dark text.
+                    let name_col = if is_sel { Color32::from_gray(0x16) } else { t.text };
+                    if is_sel {
+                        let g = lp.layout_no_wrap(display_name(app, layer), Tokens::ui(12.0), name_col);
+                        let cell = Rect::from_min_max(
+                            pos2(name_rect.min.x - 3.0, r.min.y + 1.0),
+                            pos2((name_rect.min.x + g.size().x + 4.0).max(cw.name_end - 4.0).min(cw.name_end - 2.0), r.max.y - 1.0),
+                        );
+                        lp.rect_filled(cell, 0.0, SELECTED_NAME_BG);
+                    }
                     let lpn = lp.with_clip_rect(name_rect.intersect(lp.clip_rect()));
                     lpn.text(pos2(name_rect.min.x, cy), Align2::LEFT_CENTER, display_name(app, layer), Tokens::ui(12.0), name_col);
                 }
@@ -1223,7 +1253,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                         continue;
                     }
                     let br = Rect::from_center_size(pos2(cw.switches + SW * i as f32 + SW / 2.0, cy), vec2(16.0, 16.0));
-                    lp.rect_stroke(br.shrink(1.5), 2.0, Stroke::new(1.0, t.separator), StrokeKind::Inside);
+                    lp.rect_filled(br.shrink(1.0), 1.0, SWITCH_BOX);
                     let resp = widgets::icon_toggle(ui, br, icon, on, &t, egui::Id::new(("sw", layer.id.0, i)), None);
                     app.auto.add(&format!("timeline.layer.{}.switch.{name}", layer.id.0), br, name);
                     if resp.clicked() {
@@ -1321,12 +1351,12 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 if !graph_on {
                     let x_in = tm.x(layer.in_point.seconds());
                     let x_out = tm.x(layer.out_point.seconds());
-                    let bar = Rect::from_min_max(pos2(x_in, r.min.y + 3.0), pos2(x_out, r.max.y - 3.0));
+                    let bar = Rect::from_min_max(pos2(x_in, r.min.y + 1.0), pos2(x_out, r.max.y - 1.0));
                     let lc = t.label(layer.label);
-                    let fill = if is_sel { lc.gamma_multiply(0.85) } else { lc.gamma_multiply(0.55) };
-                    gp.rect_filled(bar, 2.0, fill);
+                    let fill = bar_color(lc, is_sel);
+                    gp.rect_filled(bar, 0.0, fill);
                     if is_sel {
-                        gp.rect_stroke(bar, 2.0, Stroke::new(1.0, Color32::from_white_alpha(120)), StrokeKind::Inside);
+                        gp.rect_stroke(bar, 0.0, Stroke::new(1.0, Color32::from_white_alpha(90)), StrokeKind::Inside);
                     }
                     // Source extent (e.g. trimmed footage) shown faint.
                     if let LayerSource::Footage { .. } | LayerSource::Comp { .. } = layer.source
@@ -1437,7 +1467,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 }
                 if let Some(en) = eye {
                     // Layer style eye switch in the A/V column, like AE.
-                    let er = Rect::from_center_size(pos2(cw.av + 10.0, cy), vec2(17.0, 17.0));
+                    let er = Rect::from_center_size(pos2(cw.av + 10.0, cy), vec2(15.0, 15.0));
                     lp.rect_stroke(er.shrink(1.5), 2.0, Stroke::new(1.0, t.separator), StrokeKind::Inside);
                     if widgets::icon_toggle(ui, er, Icon::Eye, *en, &t, egui::Id::new(("geye", uid)), None).clicked() {
                         actions.push(("layer.style.toggle".into(), json!({"layer": layer.id.0, "style": uid})));
@@ -1573,15 +1603,17 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 let er = Rect::from_min_max(pos2(graph_x0 + 8.0, r.min.y + 3.0), pos2(rect.max.x - 14.0, r.max.y - 3.0));
                 let buf_id = egui::Id::new(("expr-buf", uid));
                 let mut buf: String = ctx.data(|d| d.get_temp(buf_id)).unwrap_or_else(|| ex.text.clone());
-                let mut child = ui.new_child(egui::UiBuilder::new().max_rect(er));
-                let resp = child.add(
-                    egui::TextEdit::multiline(&mut buf)
-                        .id(egui::Id::new(("expr-edit", uid)))
-                        .font(Tokens::mono(11.5))
-                        .text_color(if ex.enabled { expr_col } else { t.text_dim })
-                        .desired_width(er.width())
-                        .desired_rows((*lines).clamp(1, 8))
-                        .frame(egui::Frame::NONE),
+                // Settings ▸ Scripting & Expressions ▸ Expressions Editor.
+                let sp = app.session.prefs.scripting.clone();
+                let resp = super::expr_editor::editor(
+                    ui,
+                    egui::Id::new(("expr-edit", uid)),
+                    &mut buf,
+                    er,
+                    &sp,
+                    if ex.enabled { expr_col } else { t.text_dim },
+                    (*lines).clamp(1, 8),
+                    &t,
                 );
                 app.auto.add(&format!("timeline.prop.{uid}.expression"), er, &prop.name);
                 let commit = resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter) && (i.modifiers.command || i.modifiers.ctrl));
@@ -1986,6 +2018,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                         actions.push(("effect.apply".into(), json!({"effect": e, "layers": [l.0]})));
                     }
                 }
+                crate::panels::DragPayload::Files(paths) => actions.push(("mediaBrowser.import".into(), json!({"paths": paths, "addToComp": true}))),
                 crate::panels::DragPayload::Property { .. } => {}
             }
             egui::DragAndDrop::clear_payload(&ctx);
@@ -2606,5 +2639,18 @@ mod tests {
         let comp = app.session.active_comp().unwrap().clone();
         let c = snap_candidates(&comp, &build_rows(&app, &comp));
         assert!(c.contains(&comp.duration.seconds()) && c.contains(&0.0));
+    }
+
+    /// UI fidelity (M13.5): compact After Effects-like rows and muted label-coloured bars.
+    #[test]
+    fn rows_and_bars_follow_after_effects_proportions() {
+        let t = crate::theme::Tokens::for_kind(crate::theme::ThemeKind::Dark);
+        assert_eq!(t.row_h, 19.0);
+        let red = t.label(effectcraft_engine::color::Label::Red);
+        let bar = bar_color(red, false);
+        // Muted: darker and less saturated than the label, still reddish.
+        assert!(bar.r() < red.r() && bar.r() > bar.g() + 30 && bar.g() >= red.g().min(0x3a) - 1);
+        let sel = bar_color(red, true);
+        assert!(sel.r() > bar.r());
     }
 }

@@ -47,10 +47,25 @@ pub fn summary(app: &EffectcraftApp, ctx: &egui::Context, item: ItemId) -> Optio
     let ItemKind::Footage(f) = &app.session.project.item(item)?.kind else { return None };
     m.insert(item.0, None);
     let (f, footage, map, ctx) = (f.clone(), app.session.footage.clone(), app.waveforms.map.clone(), ctx.clone());
+    // Settings ▸ Disk ▸ Database and Cache Folder: summaries are kept on disk between sessions.
+    let cache = app.session.media_cache_folder();
     std::thread::Builder::new()
         .name("ec-waveform".into())
         .spawn(move || {
-            let peaks = effectcraft_engine::render::audio::footage_peaks(footage.as_ref(), item, &f, f.duration, BINS_PER_SEC);
+            use effectcraft_engine::media_cache;
+            let file = cache.and_then(|d| media_cache::peaks_path(&d, &f.path, BINS_PER_SEC));
+            let peaks = match file.as_deref().and_then(media_cache::load_peaks) {
+                Some(p) => p,
+                None => {
+                    let p = effectcraft_engine::render::audio::footage_peaks(footage.as_ref(), item, &f, f.duration, BINS_PER_SEC);
+                    if let Some(file) = &file
+                        && let Err(e) = media_cache::store_peaks(file, &p)
+                    {
+                        log::warn!("media cache: {}: {e}", file.display());
+                    }
+                    p
+                }
+            };
             if let Ok(mut m) = map.lock() {
                 m.insert(item.0, Some(Arc::new(Summary { bins_per_sec: BINS_PER_SEC, peaks })));
             }

@@ -184,3 +184,153 @@ fn svg_footage_continuously_rasterizes() {
     assert!(sharp < 0.004, "continuously rasterised diff {sharp}");
     assert!(sharp < soft, "sharper than the upscaled pixels ({sharp} vs {soft})");
 }
+
+/// A two-layer Illustrator-style PDF (optional-content layers "Sky" and "Art"): a gradient sky,
+/// a red curved shape with a dark outline, and a clipped green bar.
+fn layered_pdf() -> Vec<u8> {
+    let content = "/OC /L0 BDC\n/Pattern cs /P0 scn 0 0 120 80 re f\nEMC\n\
+/OC /L1 BDC\n1 0 0 rg 0.1 0.1 0.1 RG 3 w 20 20 m 20 60 l 60 70 100 60 v 100 20 l h B\n\
+q 30 0 40 80 re W n 0 0.8 0 rg 0 35 120 10 re f Q\nEMC\n";
+    let page = "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 120 80] /Resources << /Properties << /L0 5 0 R /L1 6 0 R >> /Pattern << /P0 7 0 R >> >> /Contents 4 0 R >>";
+    let pattern = "<< /PatternType 2 /Shading << /ShadingType 2 /ColorSpace /DeviceRGB /Coords [0 0 0 80] /Function << /FunctionType 2 /Domain [0 1] /C0 [0.9 0.9 1] /C1 [0.2 0.4 0.9] /N 1 >> /Extend [true true] >> >>";
+    effectcraft_pdf::write::pdf(
+        &[
+            (1, "<< /Type /Catalog /Pages 2 0 R >>".into(), None),
+            (2, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into(), None),
+            (3, page.into(), None),
+            (4, "<< >>".into(), Some(content.as_bytes().to_vec())),
+            (5, "<< /Type /OCG /Name (Sky) >>".into(), None),
+            (6, "<< /Type /OCG /Name (Art) >>".into(), None),
+            (7, pattern.into(), None),
+        ],
+        1,
+    )
+}
+
+#[test]
+fn pdf_and_ai_footage_layers_and_shapes_from_vector_layer() {
+    let bytes = layered_pdf();
+    let doc = effectcraft_pdf::parse(&bytes).unwrap();
+    let (w, h) = doc.pixel_size();
+    assert_eq!((w, h), (120, 80));
+    let direct = effectcraft_svg::rasterize(&doc, w, h, 1.0);
+    for name in ["art.pdf", "art.ai"] {
+        let path = tmp(name);
+        std::fs::write(&path, &bytes).unwrap();
+        let mut s = effectcraft_host::session();
+        let r = s.execute_checked("file.import", json!({"paths": [path]})).unwrap();
+        assert_eq!(r["errors"], json!([]), "{r}");
+        let item = r["items"][0].as_u64().unwrap();
+        let effectcraft_project::ItemKind::Footage(f) = &s.project.item(ItemId(item)).unwrap().kind else { panic!() };
+        assert_eq!(f.codec, if name.ends_with(".ai") { "AI" } else { "PDF" });
+        assert_eq!((f.width, f.height), (120, 80));
+        s.execute("comp.new", json!({"name": "V", "width": w, "height": h, "frameRate": 30, "duration": 1})).unwrap();
+        let lid = s.execute_checked("layer.addItem", json!({"item": item})).unwrap()["layer"].as_u64().unwrap();
+        let cid = s.active_comp_id().unwrap();
+        let t = effectcraft_time::Tick::ZERO;
+        let foot = s.render(cid, t, RenderOpts::default());
+        assert!(mean_diff(&foot, &direct) < 1.0 / 255.0, "{name}: footage = rasterised page");
+        // Continuously Rasterize at 300 %.
+        for (k, v) in [("transform/anchor", json!([0, 0])), ("transform/position", json!([0, 0])), ("transform/scale", json!([300, 300]))] {
+            s.execute("prop.set", json!({"layer": lid, "path": k, "value": v})).unwrap();
+        }
+        let want = effectcraft_svg::rasterize(&doc, w, h, 3.0);
+        let soft = mean_diff(&s.render(cid, t, RenderOpts::default()), &want);
+        s.execute("layer.setSwitch", json!({"layers": [lid], "switch": "collapse", "value": true})).unwrap();
+        let sharp = mean_diff(&s.render(cid, t, RenderOpts::default()), &want);
+        assert!(sharp < 0.004 && sharp < soft, "{name}: continuously rasterised {sharp} vs {soft}");
+        s.execute("prop.set", json!({"layer": lid, "path": "transform/scale", "value": [100, 100]})).unwrap();
+        // Create Shapes from Vector Layer.
+        s.execute("layer.select", json!({"layers": [lid]})).unwrap();
+        let r = s.execute_checked("layer.create", json!({"op": "shapesFromVector"})).unwrap();
+        let sid = r["layers"][0].as_u64().unwrap();
+        let c = s.active_comp().unwrap();
+        assert_eq!(c.layers[0].id.0, sid);
+        let shapes = s.render(cid, t, RenderOpts::default());
+        // Clipping groups are not shape-layer features: the clipped bar (rows 33–47) draws in
+        // full; everything else matches.
+        let rows = |img: &Image| Image {
+            width: w,
+            height: h - 15,
+            data: img.data.iter().enumerate().filter(|(i, _)| !(33..48).contains(&(*i as u32 / w))).map(|(_, p)| *p).collect(),
+        };
+        let d = mean_diff(&rows(&shapes), &rows(&direct));
+        assert!(d < 0.01, "{name}: shapes vs page mean diff {d}");
+        let fill = shapes.get(60, 30);
+        assert!(fill[0] > 0.9 && fill[1] < 0.1, "red shape {fill:?}");
+    }
+    // Import As: Composition — one layer per file layer, top first, together like the page.
+    let path = tmp("layers.ai");
+    std::fs::write(&path, &bytes).unwrap();
+    let mut s = effectcraft_host::session();
+    let r = s.execute_checked("file.import", json!({"paths": [path], "importAs": "composition"})).unwrap();
+    let cid = ItemId(r["comps"][0].as_u64().unwrap());
+    let comp = s.project.comp(cid).unwrap();
+    let names: Vec<&str> = comp.layers.iter().map(|l| l.name.as_str()).collect();
+    assert_eq!(names, vec!["Art", "Sky"]);
+    assert_eq!((comp.width, comp.height), (120, 80));
+    let art = comp.layers[0].id.0;
+    let img = s.render(cid, effectcraft_time::Tick::ZERO, RenderOpts::default());
+    let d = mean_diff(&img, &direct);
+    assert!(d < 1.0 / 255.0, "layered comp vs page {d}");
+    // Each layer's footage shows only its layer.
+    s.execute("layer.setSwitch", json!({"layers": [art], "switch": "video", "value": false})).unwrap();
+    let sky = s.render(cid, effectcraft_time::Tick::ZERO, RenderOpts::default());
+    assert_eq!(sky.get(5, 5), img.get(5, 5));
+    let p = sky.get(60, 30);
+    assert!(p[2] > p[0], "only sky under the art {p:?}");
+}
+
+#[test]
+fn psd_smart_object_imports_its_embedded_document() {
+    // The embedded document: red left half, green right half (20×10).
+    let mut inner = WDoc::new(20, 10);
+    inner.layers =
+        vec![WLayer::solid("Red", Rect::new(0, 0, 10, 10), [1.0, 0.0, 0.0, 1.0]), WLayer::solid("Green", Rect::new(10, 0, 10, 10), [0.0, 1.0, 0.0, 1.0])];
+    let inner_bytes = write(&inner);
+    let mut d = WDoc::new(64, 48);
+    // Placed at 2× and turned a quarter clockwise: the content's top-left corner at (40, 4).
+    let quad = [[40.0, 4.0], [40.0, 44.0], [20.0, 44.0], [20.0, 4.0]];
+    d.layers = vec![
+        WLayer::solid("Back", Rect::new(0, 0, 64, 48), [0.0, 0.0, 0.0, 1.0]),
+        // Placeholder pixels (grey) that the embedded file replaces.
+        WLayer::solid("Placed", Rect::new(20, 4, 20, 40), [0.5, 0.5, 0.5, 1.0]).with_block(smart_object_block("so-1", quad, [20.0, 10.0])),
+    ];
+    d.linked = vec![("so-1".into(), "inner.psd".into(), *b"8BPS", inner_bytes)];
+    let path = tmp("smart.psd");
+    std::fs::write(&path, write(&d)).unwrap();
+    let mut s = effectcraft_host::session();
+    let r = s.execute_checked("file.import", json!({"paths": [path], "importAs": "composition"})).unwrap();
+    assert_eq!(r["errors"], json!([]), "{r}");
+    let cid = ItemId(r["comps"][0].as_u64().unwrap());
+    let comp = s.project.comp(cid).unwrap();
+    let placed = comp.layers.iter().find(|l| l.name == "Placed").unwrap();
+    let effectcraft_project::LayerSource::Footage { item } = placed.source else { panic!("footage layer") };
+    let effectcraft_project::ItemKind::Footage(f) = &s.project.item(item).unwrap().kind else { panic!() };
+    assert_eq!((f.width, f.height), (20, 10));
+    assert_eq!(f.layer.as_ref().unwrap().embedded.as_deref(), Some("so-1"));
+    assert!(s.project.item(item).unwrap().name.contains("inner.psd"));
+    let img = s.render(cid, effectcraft_time::Tick::ZERO, RenderOpts::default());
+    // Rotated a quarter clockwise: the red half is on top (rows 4–24), green below.
+    let (red, green) = (img.get(30, 14), img.get(30, 34));
+    assert!(red[0] > 0.95 && red[1] < 0.05, "{red:?}");
+    assert!(green[1] > 0.95 && green[0] < 0.05, "{green:?}");
+    assert!(img.get(10, 24)[0] < 0.01 && img.get(10, 24)[3] > 0.99, "background outside");
+}
+
+#[test]
+fn eps_footage_imports() {
+    let eps =
+        b"%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 40 20\n1 0 0 setrgbcolor 0 0 20 20 rectfill 0 0 1 setrgbcolor newpath 30 10 8 0 360 arc fill\n%%EOF\n";
+    let path = tmp("shape.eps");
+    std::fs::write(&path, eps).unwrap();
+    let mut s = effectcraft_host::session();
+    let r = s.execute_checked("file.import", json!({"paths": [path]})).unwrap();
+    assert_eq!(r["errors"], json!([]), "{r}");
+    let item = r["items"][0].as_u64().unwrap();
+    s.execute("comp.new", json!({"name": "E", "width": 40, "height": 20, "frameRate": 30, "duration": 1})).unwrap();
+    s.execute_checked("layer.addItem", json!({"item": item})).unwrap();
+    let cid = s.active_comp_id().unwrap();
+    let img = s.render(cid, effectcraft_time::Tick::ZERO, RenderOpts::default());
+    assert!(img.get(10, 10)[0] > 0.99 && img.get(30, 10)[2] > 0.99, "{:?} {:?}", img.get(10, 10), img.get(30, 10));
+}

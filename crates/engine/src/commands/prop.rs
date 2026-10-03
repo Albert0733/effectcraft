@@ -184,7 +184,7 @@ fn set_expr(s: &mut Session, p: &Value) -> Result<Value> {
         enabled = Some(false);
     }
     // Alt-click on a stopwatch starts with the property's own reference (`transform.opacity`).
-    let def = s.project.comp(cid).and_then(|c| c.layer(lid).and_then(|l| super::link::reference(c, l, l, uid))).unwrap_or_else(|| "value".into());
+    let def = s.project.comp(cid).and_then(|c| c.layer(lid).and_then(|l| super::link::reference(c, l, l, uid, true))).unwrap_or_else(|| "value".into());
     let r = with_prop(s, "Expression", merge_p(p), cid, lid, uid, |pr, _| {
         match (&text, enabled) {
             (Some(t), _) if t.trim().is_empty() => pr.expr = None,

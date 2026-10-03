@@ -17,6 +17,7 @@ mod tests;
 mod tests_orient;
 
 pub use camera::{CameraState, Dof, Rig, View3D, ViewCam, Views3D, active_camera, default_camera, default_view_cam};
+pub use compose::{Geo as PlaneGeo, Plane3d, Run3d};
 pub use light::{LightState, Material, lights_at};
 
 use effectcraft_geom::Mat3;

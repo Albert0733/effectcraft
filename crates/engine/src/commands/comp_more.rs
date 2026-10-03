@@ -82,7 +82,37 @@ pub(crate) fn encode_png(rgba: &[u8], w: u32, h: u32) -> std::result::Result<Vec
     Ok(out)
 }
 
+/// Save Frame As ▸ File with `queue`: a Render Queue item for the current frame, from the Frame
+/// Default templates (Edit ▸ Templates).
+fn queue_frame(s: &mut Session, p: &Value) -> Result<Value> {
+    use effectcraft_project::render_queue::{RenderQueueItem, TimeSpan};
+    use effectcraft_project::render_templates::TemplateSlot;
+    let cid = comp_id(s, p)?;
+    let comp = s.project.comp(cid).ok_or(EngineError::NoComp)?;
+    let t = f_p(p, "time").map(Tick::from_seconds_f64).unwrap_or(s.time());
+    let mut it = RenderQueueItem::new(0, cid);
+    it.settings = s.project.render_templates.default_render_settings(TemplateSlot::Still);
+    it.settings.time_span = TimeSpan::Custom { start: t, end: t + comp.frame_duration() };
+    it.output = s.project.render_templates.default_output_module(TemplateSlot::Still);
+    if let Some(path) = str_p(p, "path") {
+        it.output.output = path.to_string();
+    } else if !it.output.format.is_sequence() {
+        it.output.output = "[compName]_frame.[fileExtension]".into();
+    }
+    let id = s.edit("Save Frame As", None, |proj, _| {
+        it.id = proj.render_queue.iter().map(|i| i.id).max().unwrap_or(0) + 1;
+        let id = it.id;
+        proj.render_queue.push(it);
+        Ok(id)
+    })?;
+    let path = s.project.render_queue.last().and_then(|i| s.resolve_output(i));
+    Ok(json!({"item": id, "queued": true, "output": path, "time": t.seconds()}))
+}
+
 fn save_frame(s: &mut Session, p: &Value) -> Result<Value> {
+    if p.get("queue").and_then(Value::as_bool) == Some(true) {
+        return queue_frame(s, p);
+    }
     let path = str_p(p, "path").ok_or_else(|| bad("comp.saveFrameAs", "missing `path` (.png)"))?.to_string();
     let cid = comp_id(s, p)?;
     let comp = s.project.comp(cid).ok_or(EngineError::NoComp)?;
@@ -124,7 +154,15 @@ pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!("comp.cropToRegionOfInterest", "Crop Comp to Region of Interest", ["Composition"], None, "{comp?}", has_roi, crop_to_roi),
         cmd!("comp.cropToLayerBounds", "Crop Comp to Selected Layer(s) Bounds", ["Composition"], None, "{layers?}", has_layers, crop_to_layers),
-        cmd!("comp.saveFrameAs", "File...", ["Composition", "Save Frame As"], Some("Cmd+Alt+S"), "{path (.png), time?, scale?}", has_comp, save_frame),
+        cmd!(
+            "comp.saveFrameAs",
+            "File...",
+            ["Composition", "Save Frame As"],
+            Some("Cmd+Alt+S"),
+            "{path (.png; with queue: an output path or template), time?, scale?, queue?: bool (add a Render Queue item from the Frame Default templates instead of writing now)}",
+            has_comp,
+            save_frame
+        ),
         cmd!("comp.responsiveTime", "Responsive Design — Time", [], None, "{op: intro|outro|workArea}", has_comp, responsive_time),
     ]
 }

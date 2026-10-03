@@ -28,11 +28,19 @@ pub struct TrackAnalyzer {
     frame: u32,
     size: [f64; 2],
     factor: f64,
+    /// (analysis long side, wanted features) overriding the options' defaults.
+    budget: Option<(u32, usize)>,
 }
 
 impl TrackAnalyzer {
     pub fn new(size: [f64; 2], opts: AnalyzeOpts) -> TrackAnalyzer {
-        TrackAnalyzer { opts, prev: None, active: vec![], tracks: vec![], frame: 0, size, factor: 1.0 }
+        TrackAnalyzer { opts, prev: None, active: vec![], tracks: vec![], frame: 0, size, factor: 1.0, budget: None }
+    }
+
+    /// An analyzer working at most at `max_side` pixels with about `want` live features (the
+    /// Warp Stabilizer's trajectories for Subspace Warp).
+    pub fn with_budget(size: [f64; 2], max_side: u32, want: usize) -> TrackAnalyzer {
+        TrackAnalyzer { budget: Some((max_side, want.max(8))), ..TrackAnalyzer::new(size, AnalyzeOpts::default()) }
     }
 
     pub fn frames(&self) -> u32 {
@@ -45,6 +53,9 @@ impl TrackAnalyzer {
     }
 
     fn params(&self) -> (u32, usize) {
+        if let Some(b) = self.budget {
+            return b;
+        }
         if self.opts.detailed { (1280, 900) } else { (720, 500) }
     }
 

@@ -202,3 +202,28 @@ fn edit_state_round_trips_through_serde() {
     let back: crate::EditorState = serde_json::from_value(j).unwrap();
     assert_eq!(back.text_edit, s.state.text_edit);
 }
+
+#[test]
+fn opentype_features_per_range_render_and_query() {
+    let (mut s, t) = session("Office 1/2");
+    s.execute("layer.setText", json!({"layer": t, "range": [7, 10], "fractions": true, "ss01": true})).unwrap();
+    let d = doc(&s, t);
+    assert!(!d.style_at(0).opentype.fractions);
+    assert!(d.style_at(8).opentype.fractions && d.style_at(8).opentype.stylistic_set(1));
+    // The laid-out glyphs change (frac turns 1/2 into a fraction).
+    let plain = effectcraft_text::layout_doc(&TextDoc { text: "1/2".into(), ..Default::default() });
+    let frac = effectcraft_text::layout_doc(&d.slice(7..10));
+    let ids = |l: &effectcraft_text::TextLayout| l.glyphs.iter().map(|g| g.gid).collect::<Vec<_>>();
+    assert_ne!(ids(&plain), ids(&frac));
+    // Undo restores the uniform style.
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(doc(&s, t).is_uniform());
+    // Font feature query (font by name, or the layer's).
+    let f = s.execute("text.fontFeatures", json!({"font": "Noto Serif"})).unwrap();
+    assert_eq!(f["options"]["smallCaps"], true);
+    assert!(f["features"].as_array().unwrap().iter().any(|t| t == "onum"));
+    let f = s.execute("text.fontFeatures", json!({"layer": t})).unwrap();
+    assert_eq!(f["family"], "Inter");
+    assert!(f["options"]["stylisticSets"].as_array().unwrap().contains(&json!(1)));
+    assert_eq!(f["options"]["smallCaps"], false);
+}

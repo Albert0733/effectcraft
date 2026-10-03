@@ -13,7 +13,7 @@ pub mod value;
 
 use effectcraft_time::{TICKS_PER_SECOND, Tick};
 use serde::{Deserialize, Serialize};
-pub use text_doc::{BaselineOption, CharStyle, Composer, Direction, Kerning, ParaStyle, StyleRun};
+pub use text_doc::{BaselineOption, CharStyle, Composer, Direction, FigureStyle, FigureWidth, Kerning, OpenType, ParaStyle, StyleRun};
 pub use value::{FeatherPoint, Gradient, Justify, ShapePath, TextDoc, Value};
 
 /// Temporal interpolation on one side of a keyframe.
@@ -520,6 +520,7 @@ pub fn set_key(keys: &mut Vec<Keyframe>, key: Keyframe) -> usize {
             k.spatial_in = old.spatial_in;
             k.spatial_out = old.spatial_out;
             k.spatial_auto = old.spatial_auto;
+            k.label = old.label;
             keys[i] = k;
             i
         }

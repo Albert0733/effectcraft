@@ -40,9 +40,26 @@ impl Exporter for FileExporter {
             output: &job.item.output,
             path: job.path,
             sink: self.sink.as_deref(),
+            options: effectcraft_export::JobOptions {
+                log: job.item.log,
+                label: job.label.clone(),
+                storage: job.storage,
+                overflow: job.project.render_prefs.overflow_folders.clone(),
+            },
+            nested_switches: job.nested_switches,
         };
         match effectcraft_export::export(&j, &mut |p| progress(p.done, p.total)) {
-            Ok(r) => Ok(ExportResult { path: r.path, frames: r.frames, width: r.width, height: r.height, bytes: r.bytes, seconds: r.seconds, audio: r.audio }),
+            Ok(r) => Ok(ExportResult {
+                path: r.path,
+                frames: r.frames,
+                width: r.width,
+                height: r.height,
+                bytes: r.bytes,
+                seconds: r.seconds,
+                audio: r.audio,
+                log: r.log,
+                overflow: r.overflow,
+            }),
             Err(effectcraft_export::ExportError::Cancelled) => Err(effectcraft_engine::render_queue::CANCELLED.into()),
             Err(e) => Err(e.to_string()),
         }
@@ -58,6 +75,8 @@ pub fn session() -> Session {
         expr: Some(Arc::new(effectcraft_expr::Expressions)),
         expr_check: Some(effectcraft_expr::check_syntax),
         script: Some(effectcraft_script::runner),
+        script_ui: effectcraft_engine::scriptui::ScriptUi { dispatch: Some(effectcraft_script::dispatch_ui), ..Default::default() },
+        plugin_loader: effectcraft_plugin::wasm_available().then_some(effectcraft_plugin::loader as effectcraft_engine::PluginLoader),
         ..Default::default()
     }
 }
@@ -467,5 +486,47 @@ mod tests {
         assert_eq!(value(&s, a, "transform/opacity").as_f64(), 100.0);
         s.execute("prop.setExpression", json!({"layer": a, "path": "transform/opacity", "expression": "50"})).unwrap();
         assert_eq!(value(&s, a, "transform/opacity").as_f64(), 50.0);
+    }
+    /// Create Stereo 3D Rig: the eye cameras' expressions follow the master camera and the
+    /// Stereo 3D Controls (and agree with the values the command wrote).
+    #[test]
+    fn stereo_rig_expressions_follow_the_master_camera() {
+        let mut s = super::session();
+        s.execute("comp.new", json!({"name": "Shot", "width": 640, "height": 360, "frameRate": 30, "duration": 2})).unwrap();
+        let src = s.active_comp_id().unwrap();
+        let cam = s.execute("layer.newCamera", json!({"name": "Main", "position": [320, 180, -800], "poi": [320, 180, 0], "zoom": 900})).unwrap()["layer"]
+            .as_u64()
+            .unwrap();
+        let r = s.execute("camera.stereoRig", json!({"sceneDepth": 4})).unwrap();
+        let ctl = r["controls"].as_u64().unwrap();
+        let left = effectcraft_engine::project::ItemId(r["leftComp"].as_u64().unwrap());
+        // The left eye camera's evaluated value (expressions on).
+        let v3 = |s: &effectcraft_engine::Session, path: &str| {
+            let comp = s.project.comp(left).unwrap();
+            let layer = &comp.layers[0];
+            let ctx = effectcraft_engine::render::EvalCtx {
+                project: &s.project,
+                comp_id: left,
+                comp,
+                time: Default::default(),
+                expr: s.expr.as_deref(),
+                footage: None,
+            };
+            ctx.value(layer, layer.props.prop(path).unwrap()).as_vec3()
+        };
+        let close = |a: [f64; 3], b: [f64; 3]| (0..3).all(|i| (a[i] - b[i]).abs() < 1e-6);
+        let d = 0.04 * 640.0;
+        assert!(close(v3(&s, "transform/position"), [320.0 - d / 2.0, 180.0, -800.0]), "{:?}", v3(&s, "transform/position"));
+        assert!(close(v3(&s, "transform/poi"), [320.0 - d / 2.0, 180.0, 0.0]), "{:?}", v3(&s, "transform/poi"));
+        // Moving the master moves the eyes.
+        s.execute("comp.open", json!({"comp": src.0})).unwrap();
+        s.execute("prop.set", json!({"layer": cam, "path": "transform/position", "value": [300, 180, -800]})).unwrap();
+        s.execute("prop.set", json!({"layer": cam, "path": "transform/poi", "value": [300, 180, 0]})).unwrap();
+        assert!(close(v3(&s, "transform/position"), [300.0 - d / 2.0, 180.0, -800.0]), "{:?}", v3(&s, "transform/position"));
+        // Controls: Center & Left puts the left eye a full separation left; convergence toes in.
+        s.execute("prop.set", json!({"layer": ctl, "path": "effects/#1/configuration", "value": 2})).unwrap();
+        s.execute("prop.set", json!({"layer": ctl, "path": "effects/#1/convergence", "value": true})).unwrap();
+        assert!(close(v3(&s, "transform/position"), [300.0 - d, 180.0, -800.0]), "{:?}", v3(&s, "transform/position"));
+        assert!(close(v3(&s, "transform/poi"), [300.0, 180.0, 0.0]), "{:?}", v3(&s, "transform/poi"));
     }
 }

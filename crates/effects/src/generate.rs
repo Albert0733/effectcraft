@@ -75,7 +75,7 @@ pub(crate) const GEN_BLEND_MODES: [&str; 20] = [
     "Silhouette Alpha",
 ];
 
-fn gen_mode(i: u32) -> Option<BlendMode> {
+pub fn gen_mode(i: u32) -> Option<BlendMode> {
     Some(match i {
         0 => return None,
         2 => BlendMode::Add,

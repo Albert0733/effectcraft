@@ -456,6 +456,12 @@ pub fn frontend(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, p: Valu
             app.dialog = Some(crate::Dialog::About);
             Value::Null
         }
+        // Window ▸ <ScriptUI panel>: dock (or bring forward) the panel the script built.
+        "window.scriptPanel" => {
+            let id = p.get("window").and_then(Value::as_u64).ok_or("no ScriptUI panel window")? as u32;
+            app.show_panel(PanelKind::ScriptPanel(id));
+            json!({"window": id})
+        }
         "layer.style.options" => {
             crate::panels::layer_styles_dialog::open(app, &p)?;
             Value::Null
@@ -506,8 +512,18 @@ pub fn frontend(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, p: Valu
         }
         "app.templates" => {
             let kind = p.get("kind").and_then(Value::as_str).unwrap_or("renderSettings");
-            let title = if kind == "outputModule" { "Output Module Templates" } else { "Render Settings Templates" };
-            crate::panels::dialogs::info(app, title, "Render and output templates are managed from the Render Queue panel (Window ▸ Render Queue).");
+            crate::panels::rq_templates::open(app, ctx, kind);
+            Value::Null
+        }
+        "renderQueue.notify" => {
+            // Render finished with Notify on: a toast, the dock/taskbar attention request, and the
+            // host's system sound (the desktop app handles `renderQueue.notify`).
+            let msg = p.get("message").and_then(Value::as_str).unwrap_or("Render finished").to_string();
+            app.toast = Some((msg, now));
+            ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(egui::UserAttentionType::Informational));
+            if let Some(f) = app.hooks.app_action.as_ref() {
+                f("renderQueue.notify");
+            }
             Value::Null
         }
         "app.find" => {
@@ -754,6 +770,37 @@ pub fn frontend(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, p: Valu
             app.show_panel(PanelKind::Layer);
             Value::Null
         }
+        "app.confirmExecute" => {
+            // Settings ▸ Scripting ▸ Warn User When Executing Files.
+            let path = p.get("path").and_then(Value::as_str).unwrap_or_default().to_string();
+            crate::panels::forms::form(
+                app,
+                "A script wants to open a file",
+                "file.executeFile",
+                json!({"path": path, "confirmed": true}),
+                vec![crate::panels::forms::Field::text("path", "Open", &path)],
+            );
+            Value::Null
+        }
+        "app.showReport" => {
+            let title = p.get("title").and_then(Value::as_str).unwrap_or("Report").to_string();
+            let text = p.get("text").and_then(Value::as_str).unwrap_or_default().to_string();
+            crate::panels::dialogs::info(app, &title, &text);
+            Value::Null
+        }
+        "window.assignWorkspaceShortcut" => {
+            let mut q = p.clone();
+            q["workspace"] = json!(app.ui.workspace);
+            return run_engine(app, ctx, "window.assignWorkspaceShortcut", q);
+        }
+        "file.interpretFootage" => {
+            // Import ▸ Interpret Unlabeled Alpha As: Ask User.
+            if let Some(i) = p.get("item").and_then(Value::as_u64) {
+                app.session.state.project_selection = vec![effectcraft_engine::project::ItemId(i)];
+            }
+            crate::panels::dialogs::open_form(app, "file.interpretFootage", &json!({}));
+            Value::Null
+        }
         "effect.manage" | "anim.browsePresets" => {
             app.show_panel(PanelKind::EffectsPresets);
             Value::Null
@@ -791,9 +838,13 @@ fn file_dialog(app: &mut EffectcraftApp, id: &str, params: &Value) -> Option<Res
         "file.exportLottie" => ("path", Ask::Save("Animation.json")),
         "file.importLottie" => ("path", Ask::Open(&["json", "lottie"])),
         "render.saveCurrentPreview" => ("path", Ask::Save("Preview.mp4")),
-        "file.runScript" => ("path", Ask::Open(&["jsx", "js", "jsonl", "json", "txt"])),
+        "file.runScript" if params.get("name").is_none() => ("path", Ask::Open(&["jsx", "js", "jsonl", "json", "txt"])),
+        "file.installScript" | "file.installScriptUIPanel" => ("path", Ask::Open(&["jsx", "js"])),
+        "effect.plugins.load" if params.get("folder").is_none() => ("path", Ask::Open(&["wasm", "wat"])),
         "file.replaceFootage" => ("path", Ask::Import),
         "file.collectFiles" => ("folder", Ask::Save("Collected Files")),
+        "file.saveCopyAsXml" => ("path", Ask::Save("Untitled Project.ecprojx")),
+        "keys.rpfCameraImport" => ("path", Ask::Open(&["json", "csv", "txt"])),
         "essential.exportTemplate" => ("path", Ask::Save("Template.ectemplate")),
         "essential.importTemplate" => ("path", Ask::Open(&["ectemplate"])),
         "file.setProxy" => ("path", Ask::Open(&["mp4", "mov", "m4v", "mkv", "webm", "png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "bmp", "exr"])),
@@ -813,7 +864,7 @@ fn file_dialog(app: &mut EffectcraftApp, id: &str, params: &Value) -> Option<Res
             let Some(f) = app.hooks.pick_files.as_ref() else { return Some(Err("no file dialog available (pass `paths`)".into())) };
             let paths = f(&[
                 "mp4", "mov", "m4v", "mkv", "webm", "png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "bmp", "exr", "wav", "aif", "aiff", "mp3", "flac",
-                "ogg", "opus", "svg", "psd", "psb", "gltf", "glb", "obj", "json", "csv", "tsv",
+                "ogg", "opus", "svg", "pdf", "ai", "eps", "psd", "psb", "gltf", "glb", "obj", "json", "csv", "tsv",
             ]);
             match (paths.is_empty(), key) {
                 (true, _) => None,
@@ -873,6 +924,15 @@ pub(crate) fn entry_label(app: &EffectcraftApp, e: &MenuEntry) -> String {
     match e.command.as_str() {
         "edit.undo" => app.session.history.undo.last().map(|u| format!("Undo {}", u.0)).unwrap_or_else(|| "Can't Undo".into()),
         "edit.redo" => app.session.history.redo.last().map(|u| format!("Redo {}", u.0)).unwrap_or_else(|| "Can't Redo".into()),
+        // Window ▸ Layer: the layer open in the Layer panel.
+        "window.panel" if e.params.get("panel").and_then(Value::as_str) == Some("layer") => {
+            let name = app
+                .ui
+                .layer_panel
+                .and_then(|id| app.session.active_comp().and_then(|c| c.layer(effectcraft_engine::project::LayerId(id))))
+                .map(|l| l.name.clone());
+            format!("Layer: {}", name.unwrap_or_else(|| "(none)".into()))
+        }
         _ => effectcraft_engine::menus::entry_label(&app.session, e),
     }
 }
@@ -1137,29 +1197,38 @@ fn menu_nodes(app: &mut EffectcraftApp, ui: &mut egui::Ui, nodes: &[MenuNode], c
             MenuNode::Separator => {
                 ui.separator();
             }
-            MenuNode::Submenu { label, children } if label == "Open Recent" => {
-                // File ▸ Open Recent: the recent projects (Settings), then the static entries.
-                ui.menu_button((gutter(false), label.as_str()), |ui| {
-                    ui.set_min_width(320.0);
-                    let recent = app.session.prefs.recent_projects.clone();
-                    if recent.is_empty() {
-                        ui.add_enabled(false, egui::Button::new((gutter(false), "No Recent Projects")));
+            MenuNode::Dynamic { name } => {
+                // Recent projects / footage / presets, undo history, shortcut slots, viewers.
+                let ws = app.ui.workspace.clone();
+                let (entries, empty) = effectcraft_engine::menus::dynamic(&app.session, name, &dyn_ctx(&ws));
+                if entries.is_empty()
+                    && let Some(e) = empty
+                {
+                    ui.add_enabled(false, egui::Button::new((gutter(false), e)));
+                }
+                for (i, e) in entries.iter().enumerate() {
+                    let tip = match name.as_str() {
+                        "recentProjects" => app.session.prefs.recent_projects.get(i).cloned(),
+                        "recentFootage" => app.session.prefs.recent_footage.get(i).cloned(),
+                        "recentPresets" => app.session.prefs.recent_presets.get(i).cloned(),
+                        _ => None,
+                    };
+                    let r = ui.add_enabled(entry_enabled(app, e), egui::Button::new((gutter(false), e.label.as_str())));
+                    let r = match &tip {
+                        Some(t) => r.on_hover_text(t),
+                        None => r,
+                    };
+                    app.auto.add(&format!("menu.{name}.{i}"), r.rect, &e.label);
+                    if r.clicked() {
+                        *clicked = Some((e.command.clone(), e.params.clone()));
+                        ui.close();
                     }
-                    for (i, path) in recent.iter().enumerate() {
-                        let name = std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or(path.clone());
-                        let r = ui.add(egui::Button::new((gutter(false), name))).on_hover_text(path);
-                        app.auto.add(&format!("menu.openRecent.{i}"), r.rect, path);
-                        if r.clicked() {
-                            *clicked = Some(("file.openRecent".into(), json!({"index": i})));
-                            ui.close();
-                        }
-                    }
-                    ui.separator();
-                    menu_nodes(app, ui, children, clicked);
-                });
+                }
             }
             MenuNode::Submenu { label, children } => {
-                ui.menu_button((gutter(false), label.as_str()), |ui| {
+                let ws = app.ui.workspace.clone();
+                let shown = effectcraft_engine::menus::submenu_label(&app.session, label, &dyn_ctx(&ws));
+                ui.menu_button((gutter(false), shown.as_str()), |ui| {
                     ui.set_min_width(if children.len() > 30 { 200.0 } else { 240.0 });
                     // Long submenus (Blending Mode, effect categories) scroll instead of running
                     // off the screen.
@@ -1175,6 +1244,11 @@ fn menu_nodes(app: &mut EffectcraftApp, ui: &mut egui::Ui, nodes: &[MenuNode], c
             }
         }
     }
+}
+
+/// Frontend state for dynamic menus (the current workspace).
+pub(crate) fn dyn_ctx(workspace: &str) -> effectcraft_engine::menus::DynCtx<'_> {
+    effectcraft_engine::menus::DynCtx { workspace: Some(workspace) }
 }
 
 /// The check-mark column every menu row reserves (like macOS / After Effects menus).

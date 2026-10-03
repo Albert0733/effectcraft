@@ -322,7 +322,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let searching = !query.is_empty();
     let mut y = list.min.y - scroll;
     let mut apply: Option<Apply> = None;
-    let reg = effectcraft_engine::effects::registry();
+    let reg = effectcraft_engine::effects::all();
     let keep = |e: &effectcraft_engine::effects::EffectSpec| depth_keeps(&view.depth, e) && (query.is_empty() || e.name.to_lowercase().contains(&query));
     let lookup = |id: &str| reg.iter().find(|e| e.id == id);
 
@@ -381,7 +381,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
             effect_row(app, ui, &lp, list, &mut y, e, -16.0, &query, "effects.item", &mut apply);
         }
     } else {
-        let mut cats: Vec<&str> = effectcraft_engine::effects::CATEGORIES.to_vec();
+        let mut cats: Vec<&str> = effectcraft_engine::effects::categories();
         cats.retain(|c| reg.iter().any(|e| e.category == *c));
         for cat in cats {
             let items: Vec<_> = reg.iter().filter(|e| e.category == cat && keep(e)).collect();

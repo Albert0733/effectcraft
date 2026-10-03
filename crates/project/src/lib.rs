@@ -8,6 +8,7 @@ pub mod build;
 pub mod essential;
 pub mod props;
 pub mod render_queue;
+pub mod render_templates;
 pub mod styles;
 pub mod tracking;
 
@@ -95,6 +96,62 @@ pub enum TimeDisplayStyle {
     #[default]
     Timecode,
     Frames,
+    /// Feet + Frames, 35 mm film (16 frames per foot).
+    Feet35,
+    /// Feet + Frames, 16 mm film (40 frames per foot).
+    Feet16,
+}
+
+impl TimeDisplayStyle {
+    /// Frames per foot of the Feet + Frames styles.
+    pub fn frames_per_foot(self) -> Option<i64> {
+        match self {
+            TimeDisplayStyle::Feet35 => Some(16),
+            TimeDisplayStyle::Feet16 => Some(40),
+            _ => None,
+        }
+    }
+    pub fn id(self) -> &'static str {
+        match self {
+            TimeDisplayStyle::Timecode => "timecode",
+            TimeDisplayStyle::Frames => "frames",
+            TimeDisplayStyle::Feet35 => "feet35",
+            TimeDisplayStyle::Feet16 => "feet16",
+        }
+    }
+    pub fn parse(s: &str) -> Option<TimeDisplayStyle> {
+        let k: String = s.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>().to_ascii_lowercase();
+        match k.as_str() {
+            "timecode" => Some(TimeDisplayStyle::Timecode),
+            "frames" => Some(TimeDisplayStyle::Frames),
+            "feet35" | "feetframes" | "feetandframes" | "feet35mm" | "35mm" | "feetframes35mm" => Some(TimeDisplayStyle::Feet35),
+            "feet16" | "feet16mm" | "16mm" | "feetframes16mm" => Some(TimeDisplayStyle::Feet16),
+            _ => None,
+        }
+    }
+}
+
+/// Project Settings ▸ Color ▸ Color Engine.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ColorEngine {
+    /// Built-in colour management (ICC-style working spaces).
+    #[default]
+    Adobe,
+    /// OCIO managed, with the built-in configuration (ACES working spaces).
+    Ocio,
+}
+
+/// Project Settings ▸ Color ▸ HDR: how over-range (HDR) values reach a standard-dynamic-range
+/// display or output.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum HdrMode {
+    /// Values above 1.0 clip.
+    #[default]
+    Clip,
+    /// Highlights above 80% are companded (an exponential knee) into the remaining range.
+    Compand,
+    /// Extended Reinhard tone mapping of luminance (white at 4.0).
+    ToneMap,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -118,6 +175,19 @@ pub struct ProjectSettings {
     /// when a GPU adapter exists) or Mercury Software Only (`false`, the CPU compositor).
     #[serde(default = "yes")]
     pub gpu_acceleration: bool,
+    /// The project's comment (Metadata panel).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub comment: String,
+    /// Color Engine (Adobe-style built-in or OCIO with ACES working spaces).
+    #[serde(default)]
+    pub color_engine: ColorEngine,
+    /// HDR handling for standard-dynamic-range output (display and renders).
+    #[serde(default)]
+    pub hdr: HdrMode,
+    /// The space the top-level comp is output in (renders and the viewer's source). `None` =
+    /// sRGB; Rec. 2100 PQ / HLG give HDR output.
+    #[serde(default)]
+    pub output_space: Option<ColorSpace>,
 }
 
 impl Default for ProjectSettings {
@@ -131,6 +201,10 @@ impl Default for ProjectSettings {
             frame_start: 0,
             audio_sample_rate: 48_000,
             gpu_acceleration: true,
+            comment: String::new(),
+            color_engine: ColorEngine::Adobe,
+            hdr: HdrMode::Clip,
+            output_space: None,
         }
     }
 }
@@ -552,6 +626,10 @@ pub struct Layer {
     /// reflections) of Advanced 3D comps instead of being drawn.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub environment: bool,
+    /// Layer ▸ Light ▸ Create Environment Light Background Layer: the layer's (equirectangular)
+    /// image is drawn as the 3D scene's backdrop, seen through the camera, instead of as a card.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub environment_background: bool,
     /// The property tree (Masks, Effects, Transform, Text, Contents, Camera/Light options…).
     pub props: PropGroup,
 }
@@ -753,9 +831,9 @@ pub struct Proxy {
     pub enabled: bool,
 }
 
-/// A layer of a layered still (a Photoshop document) used as footage
-/// (File ▸ Import ▸ Composition / Composition – Retain Layer Sizes, or Choose Layer).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// A layer of a layered still (a Photoshop document, or a PDF / Illustrator / EPS file) used as
+/// footage (File ▸ Import ▸ Composition / Composition – Retain Layer Sizes, or Choose Layer).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceLayer {
     /// Layer record index in the file (bottom of the stack = 0).
     pub index: u32,
@@ -763,6 +841,10 @@ pub struct SourceLayer {
     /// The footage is the layer's own bounds (Retain Layer Sizes) rather than the document size.
     #[serde(default)]
     pub layer_size: bool,
+    /// A Photoshop smart object: the unique id of its embedded file (linked layer data), which
+    /// is the footage instead of the layer's pixels.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embedded: Option<String>,
 }
 
 fn one() -> u32 {
@@ -779,6 +861,7 @@ pub struct Solid {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type")]
+#[allow(clippy::large_enum_variant)]
 pub enum ItemKind {
     Folder,
     Comp(Arc<Comp>),
@@ -858,11 +941,25 @@ pub struct Project {
     /// The Render Queue (Composition ▸ Add to Render Queue).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub render_queue: Vec<render_queue::RenderQueueItem>,
+    /// Render Settings / Output Module templates and their defaults.
+    #[serde(default, skip_serializing_if = "render_templates::RenderTemplates::is_default")]
+    pub render_templates: render_templates::RenderTemplates,
+    /// Render Queue preferences (Notify, storage overflow folders).
+    #[serde(default, skip_serializing_if = "render_queue::RenderQueuePrefs::is_default")]
+    pub render_prefs: render_queue::RenderQueuePrefs,
 }
 
 impl Default for Project {
     fn default() -> Self {
-        Project { schema: SCHEMA_VERSION, settings: ProjectSettings::default(), items: BTreeMap::new(), next_id: 1, render_queue: Vec::new() }
+        Project {
+            schema: SCHEMA_VERSION,
+            settings: ProjectSettings::default(),
+            items: BTreeMap::new(),
+            next_id: 1,
+            render_queue: Vec::new(),
+            render_templates: Default::default(),
+            render_prefs: Default::default(),
+        }
     }
 }
 

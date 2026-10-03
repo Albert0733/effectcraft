@@ -60,6 +60,52 @@ pub fn param_shown(effect: &str, param: &str, value: &dyn Fn(&str) -> Option<eff
     }
 }
 
+/// Controls of GPU-accelerated effects that only the CPU implements: while any of them is away
+/// from its default the effect renders on the CPU. (Prefixes ending in `/` cover a whole group.)
+const CPU_ONLY_CONTROLS: &[(&str, &[&str])] = &[
+    (
+        "ec.color.lumetri",
+        &["highDynamicRange", "basicCorrection/inputLut", "creative/look", "curves/rgbCurves/", "curves/hueSaturationCurves/", "hslSecondary/"],
+    ),
+    (
+        "ec.color.colorama",
+        &["inputPhase/addPhase", "outputCycle/usePresetPalette", "modify/", "pixelSelection/matchingMode", "masking/maskingMode", "masking/compositeOverLayer"],
+    ),
+    (
+        "ec.keying.keylight",
+        &[
+            "foregroundColourCorrection/colourSuppression",
+            "foregroundColourCorrection/suppressionAmount",
+            "foregroundColourCorrection/colourBalanceSaturation",
+            "edgeColourCorrection/edgeColourSuppression",
+            "edgeColourCorrection/edgeSuppressionAmount",
+            "edgeColourCorrection/edgeColourBalanceSaturation",
+            "sourceCrops/xMethod",
+            "sourceCrops/yMethod",
+            "sourceCrops/edgeColourAlpha",
+        ],
+    ),
+    ("ec.noise.addgrain", &["viewingMode", "preset", "color/redBalance", "color/greenBalance", "color/blueBalance", "previewRegion/"]),
+    ("ec.blur.cameralens", &["irisProperties/diffractionFringe", "blurMap/blurMapLayer"]),
+];
+
+/// Whether the GPU kernel of effect `id` covers the instance's current settings (see
+/// [`CPU_ONLY_CONTROLS`]; plus Cell Pattern's HQ variants and Turbulent Displace's locked
+/// pinning).
+pub fn gpu_supported(id: &str, ctx: &crate::EffectCtx) -> bool {
+    match id {
+        "ec.generate.cellpattern" if (6..=10).contains(&ctx.params.e("cellPattern")) => return false,
+        "ec.distort.turbulentdisplace" if ctx.params.e("pinning") >= 8 => return false,
+        _ => {}
+    }
+    let Some((_, controls)) = CPU_ONLY_CONTROLS.iter().find(|(e, _)| *e == id) else { return true };
+    let Some(spec) = crate::find(id) else { return true };
+    spec.params
+        .iter()
+        .filter(|ps| controls.iter().any(|c| if c.ends_with('/') { ps.id.starts_with(c) } else { ps.id == *c }))
+        .all(|ps| ctx.params.get(ps.id).is_none_or(|v| *v == crate::default_value(ps, ctx.layer_size)))
+}
+
 /// Implementation status of effect `id` (`Implemented` or `Partial: …`).
 pub fn status(id: &str) -> String {
     match PARTIAL.iter().find(|(e, _)| *e == id) {
@@ -128,6 +174,32 @@ mod tests {
         }
         let have = std::fs::read_to_string(path).unwrap_or_default();
         assert!(have == want, "docs/effects.md is stale: UPDATE_DOCS=1 cargo test -p effectcraft-effects --lib effects_doc_is_current");
+    }
+
+    #[test]
+    fn cpu_only_controls_keep_effects_off_the_gpu() {
+        use effectcraft_keyframe::Value;
+        let ctx_with = |id: &str, set: &[(&str, Value)]| {
+            let s = crate::find(id).unwrap();
+            let mut values: std::collections::HashMap<String, Value> =
+                s.params.iter().map(|p| (p.id.to_string(), crate::default_value(p, [64.0, 64.0]))).collect();
+            for (k, v) in set {
+                values.insert(k.to_string(), v.clone());
+            }
+            crate::Params { values }
+        };
+        let ok = |id: &str, set: &[(&str, Value)]| {
+            let params = ctx_with(id, set);
+            let ctx = crate::EffectCtx { params: &params, time: 0.0, layer_size: [64.0, 64.0], seed: 0, adjustment: false, env: Default::default() };
+            super::gpu_supported(id, &ctx)
+        };
+        assert!(ok("ec.color.lumetri", &[]));
+        assert!(!ok("ec.color.lumetri", &[("hslSecondary/correction/saturation", Value::Scalar(50.0))]));
+        assert!(!ok("ec.noise.addgrain", &[("preset", Value::Enum(2))]));
+        assert!(ok("ec.generate.cellpattern", &[("cellPattern", Value::Enum(3))]));
+        assert!(!ok("ec.generate.cellpattern", &[("cellPattern", Value::Enum(9))]));
+        assert!(!ok("ec.distort.turbulentdisplace", &[("pinning", Value::Enum(9))]));
+        assert!(ok("ec.blur.gaussian", &[]));
     }
 
     #[test]

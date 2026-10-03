@@ -26,6 +26,7 @@ cpal or muda. Everything in L0 to L4, the egui UI and the web app also build for
 | L2 | `text` | Fonts, shaping, layout, per-glyph geometry, text animators and selectors |
 | L2 | `effects` | The effect registry (241 effects) and their CPU implementations |
 | L2 | `svg` | SVG import (W3C SVG 1.1/2 static subset: shapes, paths, transforms, `use`, CSS, gradients) and rasterisation at any scale |
+| L2 | `pdf` | PDF, PDF-compatible Illustrator (`.ai`) and EPS (PostScript subset) vector footage into the `svg` render tree: paths, fills, strokes, shadings, clipping, optional-content layers |
 | L2 | `model` | 3D models for Advanced 3D: glTF 2.0 (`.gltf`/`.glb`) and OBJ/MTL import (meshes, PBR metallic-roughness materials and textures, node hierarchy, skins, animations), parametric primitives, extruded/bevelled outline meshes and polygon triangulation |
 | L2 | `track` | Motion tracking: feature/search region point tracking (pyramid normalized cross-correlation, Lucas–Kanade sub-pixel refinement), confidence, homography/affine/similarity solves |
 | L3 | `render` | Evaluation and compositing: sources, masks, effects, transforms, 3D, motion blur, mattes, blending, layer cache, audio mixdown |
@@ -34,9 +35,10 @@ cpal or muda. Everything in L0 to L4, the egui UI and the web app also build for
 | L3 | `export` | Render queue encoding: H.264, ProRes, WebM (VP9 + alpha, Opus), PNG/JPEG/TIFF/EXR sequences, GIF, WAV/AIFF |
 | L3 | `gpu` | The GPU compositor and GPU effects on wgpu compute shaders (Metal, Vulkan, Direct3D 12, WebGPU), checked against the CPU renderer |
 | L3 | `lottie` | Lottie JSON / dotLottie import and export (layers, precomps, eased and spatial keyframes, shapes, masks, mattes) with a warnings list for what Lottie cannot express |
-| L4 | `engine` | `Session`: project, undo history, editor state, the command registry and menus |
-| L4 | `script` | Scripting: JavaScript (boa) with an After Effects-style object model (`app.project`, comps, layers, properties, render queue) whose edits run engine commands; AE match names |
-| L4 | `host` | A fully wired `Session` (media, expressions, scripting, exporter) for the frontends |
+| L3 | `plugin` | Effect plug-ins: loads sandboxed WebAssembly effect modules (plug-in API v1; the wasmi interpreter behind the `wasm` feature, on for native hosts) into the effect registry ([plugins.md](plugins.md)) |
+| L4 | `engine` | `Session`: project, branching undo history, editor state, the command registry and menus, the ScriptUI window model (`scriptui`) |
+| L4 | `script` | Scripting: JavaScript (boa) with an After Effects-style object model (`app.project`, comps, layers, properties, render queue) and ScriptUI (dialogs, palettes, dockable panels; script-host threads so dialogs block `show()`), whose edits run engine commands; AE match names |
+| L4 | `host` | A fully wired `Session` (media, expressions, scripting, WebAssembly plug-ins, exporter) for the frontends |
 | L5 | `ui-egui` | The desktop interface: docking, panels, viewer, timeline, graph editor, dialogs, control channel |
 | L5 | `automation` | The MCP server, headless or bridged to the running app |
 | L6 | apps `effectcraft`, `effectcraft-cli`, `effectcraft-web` | Desktop app; command-line tool (render, exec, get/set, MCP); the browser app (wasm32, [web.md](web.md)) |
@@ -101,9 +103,15 @@ transparent ones are sorted back to front and blended. The software rasteriser
 `Accelerator::raster_3d` with a wgpu render pipeline (`advanced3d.wgsl`) that repeats the
 shading step for step, and tests compare the two. Resolve, depth of field (a gather blur by
 each pixel's circle of confusion from the camera's Depth of Field settings) and the conversion
-back to the working encoding run on the CPU for both. Not yet: motion blur, track mattes and
-blend modes inside an Advanced 3D run, collapsed 3D precomps (drawn flattened), morph targets,
-extruded strokes.
+back to the working encoding run on the CPU for both. **Motion blur** renders the scene at
+sub-samples spread over the comp's shutter (angle, phase, samples per frame) — layers with the
+Motion Blur switch, the camera and the lights at the sub-sample time, other layers at the frame
+time — and averages them. Layers with a **blend mode, a track matte or Preserve Transparency**
+are rendered on their own through the same camera and lights, hidden where the rest of the run
+is nearer, and composited from the farthest to the nearest through the 2D path (a 3D matte is
+itself drawn through the camera). **Environment Light Background** layers (Layer ▸ Light) draw
+their equirectangular image behind the run, looked up by each pixel's view direction. Not yet:
+collapsed 3D precomps (drawn flattened), morph targets, extruded strokes.
 
 A **layer cache** keeps each layer's finished pixels (source, masks and effects) keyed by a hash of
 its evaluated inputs, excluding the transform. Static and transform-only layers render once;
@@ -157,17 +165,31 @@ accelerator is attached and the project's renderer is the GPU). A GPU frame walk
 sampling (nearest, bilinear, Catmull-Rom bicubic, the same minification pre-filter), motion-blur
 sub-samples are accumulated, and track mattes, Preserve Transparency, layer style passes,
 knockout, all 38 blend modes (a WGSL port of `color::blend`), the 8/16 bpc clamp-and-quantise steps
-and colour-space conversions run on the GPU. 3D runs, adjustment layers and wireframes run on the
-CPU between GPU steps (read back, draw, upload). GPU effects (`effects::GPU_EFFECTS`: Gaussian,
-Fast Box and Directional Blur, Glow, Levels, Curves, Hue/Saturation, Tint, Fill, Gradient Ramp,
-Fractal Noise, Drop Shadow, Brightness & Contrast, Exposure, Invert, Transform) repeat the CPU
-effect's steps (padding, box radii, parameters) as kernels; consecutive GPU effects run as one
+and colour-space conversions run on the GPU. Classic 3D runs composite on the GPU too
+(`gpu::classic3d`): the render crate prepares the planes (`Renderer::prepare_3d_run`: layer buffers
+with their bokeh depth of field, homographies per motion-blur sub-sample, materials, lights, track
+mattes), the GPU packs the buffers into one atlas texture and one kernel does the per-pixel
+fragment sort (intersecting planes, coplanar stack order), Blinn-Phong lighting, ray-cast shadows
+against the caster planes (Shadow Diffusion, Light Transmission) and blending. Adjustment layers
+run their effect stacks on the GPU-resident comp (`Renderer::run_effects_on` with an `FxTarget`):
+runs of GPU effects stay on the device and only non-GPU effects read back and upload. Advanced 3D
+compositing and wireframes still run on the CPU between GPU steps (read back, draw, upload). GPU
+effects (`effects::GPU_EFFECTS`, 58 of them: blurs, colour, keying incl. Key Light, distortion,
+transitions, generators, noise and grain; see [effects.md](effects.md)) repeat the CPU effect's
+steps (padding, box radii, parameters, hashes) as kernels; consecutive GPU effects run as one
 chain with one upload and one readback. Tests render scenes on both paths and compare them
 (≤ 1/255 at 8 bpc, ≤ 1e-3 at 32 bpc); they skip without an adapter. The desktop viewer builds the
 `Gpu` on egui-wgpu's device and shows frames from GPU textures without reading them back
 (`ui-egui::frames`); headless renders, the CLI (unless `--gpu`) and CI use the CPU. On the web
 (WebGPU) the GPU composites viewer frames; steps that need a readback fall back to the CPU (the
-Info panel's pixel readout reads GPU frames back asynchronously).
+Info panel's pixel readout reads GPU frames back asynchronously). **GPU particles**
+(`effects::psim`, `gpu::particles`): CC Particle World, CC Particle Systems II and Particle
+Playground cannons without interacting forces evolve every particle independently, so the GPU
+backend (reached through `EffectHost::particles` when the GPU compositor is active) simulates one
+particle per invocation from the CPU's birth schedule and keeps per-key state checkpoints on the
+GPU, like `SimCache`; the CPU simulation stays the oracle (tests compare ids and positions).
+`effectcraft-cli bench --gpu` reports CPU vs GPU ms/frame, speed-up and pixel agreement for every
+comp plus an adjustment-layer comp.
 
 **Colour and bit depth** (`crates/render/src/color.rs`, `crates/color/src/space.rs`). Pixels are
 `f32`, but 8 and 16 bpc projects clamp and quantise each layer after its source and masks and
@@ -208,6 +230,13 @@ tracks them with pyramidal Lucas–Kanade and fits the chosen model (position �
 RANSAC; the motion moves the Mask Path's vertices and tangents and is keyed per frame. **Mask
 Interpolation** (`mask.interpolate`) uses `effectcraft-path`'s smart interpolation (arc-length
 vertex insertion, shape-context matching, rigid in-betweens) to key in-between shapes.
+The two **Face Tracking** methods (`effectcraft_track::face`) fit a face inside the mask instead:
+a skin colour model from the first frame, the face outline along rays from the skin component's
+centre (an area-moment ellipse gives centre, size and roll), facial features as the non-skin
+components inside it, and an active-shape point distribution model trained on synthetic face
+shapes (our own generator, no external weights) that fills and checks the landmarks. The outline
+keys the Mask Path; Detailed Features keys a Face Track Points effect, and
+`track.extractFaceMeasurements` derives a keyed Face Measurements effect (and copies its keys).
 
 **Warp Stabilizer** (`effects::warp_stab`, `engine::warp`): `warp.analyze` renders the layer's
 input to the effect (`Renderer::layer_input`: source, masks and the effects above it) for every
@@ -216,7 +245,10 @@ translation / similarity / homography fits) as JSON in the effect's hidden Analy
 with a key of the layer's source, In/Out, start, stretch and Time Remap. `Session::edit` clears
 analyses whose key no longer matches and queues them; the desktop app re-analyses them in the
 background. Rendering derives the stabilization plan (smoothed camera path or No Motion, framing,
-auto-scale; cached per analysis and settings) and warps each frame; Synthesize Edges fills the
+auto-scale; cached per analysis and settings) and warps each frame. Subspace Warp also stores long
+feature trajectories in the analysis, smooths them in a low-rank subspace (Liu et al. 2011) and
+warps each frame with a content-preserving mesh (Liu et al. 2009) fitted to the smoothed
+positions, rendered as a per-pixel mesh lookup; Synthesize Edges fills the
 borders from neighbouring frames read with `EffectHost::self_at`. The effect lives in the
 effects crate, hence the `effects → track` edge.
 
@@ -247,7 +279,10 @@ the essential matrix (normalised 8-point in RANSAC) or a planar homography decom
 resection and triangulation; a sparse Levenberg–Marquardt bundle adjustment (Schur complement over
 the points, Huber loss) with the focal length fixed, shared, or per frame; a log-spaced and
 golden-section focal search for Fixed Angle of View / Variable Zoom; a rotation-only model for tripod
-pans, chosen by Auto Detect when it explains the tracks as well. Tracks and solve are stored as JSON
+pans, chosen by Auto Detect when it explains the tracks as well; with Solve Lens Distortion (or
+Detailed Analysis) radial distortion `k1, k2` is adjusted jointly in a final bundle adjustment on
+the raw tracks and the solve repeated on tracks undistorted with that estimate; Undistort Footage
+renders the input through the inverse model. Tracks and solve are stored as JSON
 in hidden effect parameters with keys: changing the layer's frames clears both, changing Shot Type,
 Angle of View, Solve Method or deleting points only re-solves. The solve's canonical frame maps to
 comp space so the first frame's camera is the default comp camera (or so a chosen ground plane is
@@ -266,6 +301,42 @@ Key, settings, strokes from the base frame out) indexes a process-wide cache tha
 demand (`self_at`) and `roto.propagate` fills in the background; `Session::edit` keeps the Input
 Key in step with the layer's source, masks and upstream effects. Freeze stores final 8-bit mattes
 in the effect.
+
+**Content-Aware Fill** (`raster::inpaint`, `engine::commands::content_fill`): the hole is
+where the layer's masked source (`Renderer::layer_input` with no effects) is under half
+opacity, grown by Alpha Expansion. Optical flow between neighbouring membrane-filled frames is
+*completed* inside the holes (membrane interpolation of the surrounding tiles' motion); each
+missing pixel follows it forwards and backwards to the nearest frame (or reference frame) where
+it is visible, the two candidates blended by temporal distance, with Lighting Correction adding
+the membrane of the border mismatch (Poisson-style). What no frame shows is synthesised by
+PatchMatch (Barnes et al. 2009) inside Wexler et al.'s (2007) multi-scale EM: Object refines each
+frame starting from the previous result warped along the flow; Surface carries one synthesised
+fill through the range; Edge Blend is the membrane fill alone. The frames are written as a PNG
+sequence and imported into a "Fill" layer above the source. It runs as a generic **background
+task** (`engine::jobs`: a closure with progress and cancel on a thread, inline on wasm32 or
+with `wait`, whose result is applied on the UI thread as one undo step); the Progress panel and
+`jobs.list` / `jobs.cancel` show these tasks together with the render queue and the analyses.
+
+**Scene Edit Detection** (`raster::cuts`) compares consecutive frames by colour-histogram
+distance and motion-compensated (block-flow warped) luma error, takes their geometric mean and
+marks frames that exceed a threshold and several times their neighbours' median; the cuts
+become layer markers, split layers, or split-and-precomposed layers. **Auto-trace**
+(`path::trace`) runs marching squares on the chosen channel, Douglas–Peucker simplification and
+cubic fitting with Corner Roundness blending chord and smooth tangents; holes become Subtract
+masks, and a work-area trace keys Mask Path per frame.
+
+**Align Video to Data** reads data footage (File ▸ Import of `.json`, `.csv`, `.tsv`, kept as
+text in the project). Supported data: JSON as an array of objects or an object holding one
+(`{"samples": [...]}`), CSV/TSV with a header row (quoted fields allowed). The time key is the
+`key` parameter or the first field named `time`, `timestamp`, `t`, `date`, `datetime`, `utc`,
+`gps_time`, `seconds` or `time_s`; values may be ISO 8601 date-times (with `Z` or `±hh:mm`),
+times of day (`hh:mm:ss.sss`), timecode (`hh:mm:ss:ff` at the footage rate), Unix seconds or
+Unix milliseconds. The layer's Start Time becomes `dataStart + videoStart − firstSample`
+(`videoStart` given, or the file's creation date on the desktop; reduced to a time of day when
+the data has no dates).
+
+**Lumetri Scopes** (`raster::scopes`) are density plots of the viewer frame (rendered over the
+comp background) with BT.601 / BT.709 / BT.2020 luma and colour-difference coefficients.
 
 ## 5. Expressions
 

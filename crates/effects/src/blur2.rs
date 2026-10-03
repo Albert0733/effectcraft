@@ -277,6 +277,30 @@ fn iris_spans(r: f64, sides: u32, rotation_deg: f64, roundness: f64) -> Vec<(i64
     spans
 }
 
+/// Camera Lens Blur's iris spans at blur radius `r` pixels (shape, rotation, roundness and
+/// aspect ratio applied) and the iris' horizontal reach (shared with the GPU kernel).
+pub fn camera_lens_spans(ctx: &EffectCtx, r: f64) -> (Vec<(i64, i64, i64)>, f64) {
+    let shape = ctx.params.e("irisProperties/irisShape");
+    let sides = if shape >= 8 { 0 } else { shape + 3 };
+    let roundness = ctx.params.f("irisProperties/irisRoundness").clamp(0.0, 100.0) / 100.0;
+    // Aspect Ratio stretches the iris horizontally (> 1) or squeezes it (< 1).
+    let aspect = ctx.params.f("irisProperties/irisAspectRatio");
+    let mut spans = iris_spans(r, sides, ctx.params.f("irisProperties/irisRotation"), roundness);
+    if aspect > 0.0 && (aspect - 1.0).abs() > 1e-6 {
+        for s in spans.iter_mut() {
+            s.1 = (s.1 as f64 * aspect).round() as i64;
+            s.2 = (s.2 as f64 * aspect).round() as i64;
+        }
+    }
+    (spans, r * aspect.max(1.0))
+}
+
+/// Whether Camera Lens Blur needs more than plain iris spans (Diffraction Fringe or a Blur
+/// Map): the GPU kernel handles the plain blur only.
+pub fn camera_lens_plain(ctx: &EffectCtx) -> bool {
+    ctx.params.f("irisProperties/diffractionFringe") <= 0.0 && ctx.params.get("blurMap/blurMapLayer").and_then(|v| v.as_layer()).is_none()
+}
+
 fn camera_lens_blur(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let r = ctx.params.f("blurRadius").max(0.0) * b.scale;
     if r < 0.5 {

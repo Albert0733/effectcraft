@@ -1,8 +1,9 @@
 //! The per-frame compositing walk on the GPU: the same steps as `Renderer::draw_comp` (layer
 //! order, 3D runs, collapsed precomps, track mattes, Preserve Transparency, layer styles, motion
 //! blur, bit-depth quantisation, colour conversions), with layer pixels taken from the CPU
-//! renderer and its layer cache. Steps without a GPU implementation (3D runs, adjustment and
-//! wireframe layers) read the canvas back, run on the CPU and upload the result.
+//! renderer and its layer cache. Classic 3D runs and adjustment layers run on the GPU; steps
+//! without a GPU implementation (Advanced 3D runs, wireframes, anything a kernel declines) read
+//! the canvas back, run on the CPU and upload the result.
 
 use std::sync::Arc;
 
@@ -48,6 +49,14 @@ pub(crate) fn render<'g>(e: &mut Enc<'g>, r: &Renderer, comp_id: ItemId, t: Tick
             canvas = ops::quantize(e, &canvas, l);
         }
     }
+    if r.depth() == 0
+        && let Some((lin, mode, enc)) = pipe.output_hdr()
+    {
+        on_cpu(e, &mut canvas, |img| {
+            effectcraft_render::color::output_hdr(img, lin, mode, enc);
+            pipe.quantize(img);
+        })?;
+    }
     Some(canvas)
 }
 
@@ -69,7 +78,7 @@ fn draw_comp<'a>(e: &mut Enc, r: &Renderer<'a>, ctx: &EvalCtx<'a>, canvas: &mut 
             while j < visible.len() && visible[j].is_3d() {
                 j += 1;
             }
-            on_cpu(e, canvas, |img| r.draw_3d_run(ctx, &visible[i..j], img))?;
+            draw_3d(e, r, ctx, &visible[i..j], canvas)?;
             i = j;
         } else {
             match r.collapsed(ctx, visible[i]) {
@@ -82,6 +91,25 @@ fn draw_comp<'a>(e: &mut Enc, r: &Renderer<'a>, ctx: &EvalCtx<'a>, canvas: &mut 
         if let Some(l) = levels {
             *canvas = ops::quantize(e, canvas, l);
         }
+    }
+    Some(())
+}
+
+/// A run of consecutive 3D layers: Classic 3D on the GPU (`classic3d`), with 3D adjustment
+/// layers splitting the run as on the CPU; Advanced 3D, wireframes and runs the kernel cannot
+/// hold draw on the CPU.
+fn draw_3d<'a>(e: &mut Enc, r: &Renderer<'a>, ctx: &EvalCtx<'a>, run: &[&'a Layer], canvas: &mut GpuImage) -> Option<()> {
+    if let Some(k) = run.iter().position(|l| l.switches.adjustment) {
+        draw_3d(e, r, ctx, &run[..k], canvas)?;
+        draw_layer(e, r, ctx, run[k], canvas)?;
+        return draw_3d(e, r, ctx, &run[k + 1..], canvas);
+    }
+    if run.is_empty() {
+        return Some(());
+    }
+    match r.prepare_3d_run(ctx, run, (canvas.width, canvas.height)).and_then(|prep| crate::classic3d::draw_run(e, &prep, canvas)) {
+        Some(img) => *canvas = img,
+        None => on_cpu(e, canvas, |img| r.draw_3d_run(ctx, run, img))?,
     }
     Some(())
 }
@@ -105,9 +133,14 @@ fn draw_collapsed<'a>(e: &mut Enc, r: &Renderer<'a>, ctx: &EvalCtx<'a>, layer: &
 }
 
 fn draw_layer(e: &mut Enc, r: &Renderer, ctx: &EvalCtx, layer: &Layer, canvas: &mut GpuImage) -> Option<()> {
-    if layer.switches.adjustment || layer.switches.quality == Quality::Wireframe {
-        // Adjustment layers run their effects on the comp below (CPU, with GPU effects where
-        // available); wireframes draw outlines.
+    if layer.switches.adjustment {
+        if draw_adjustment(e, r, ctx, layer, canvas).is_some() {
+            return Some(());
+        }
+        return on_cpu(e, canvas, |img| r.draw_layer_cpu(ctx, layer, img));
+    }
+    if layer.switches.quality == Quality::Wireframe {
+        // Wireframes draw outlines on the CPU.
         return on_cpu(e, canvas, |img| r.draw_layer_cpu(ctx, layer, img));
     }
     let opacity = r.layer_opacity(ctx, layer);
@@ -140,6 +173,33 @@ fn draw_layer(e: &mut Enc, r: &Renderer, ctx: &EvalCtx, layer: &Layer, canvas: &
     }
     tmp = place(e, r, ctx, layer, &st.body, &tmp, layer.blend_mode, 1.0)?;
     *canvas = ops::channel_mix(e, canvas, &tmp, bl.channels, opacity);
+    Some(())
+}
+
+/// Adjustment layer (`Renderer::draw_adjustment`): the effect stack runs on the comp below,
+/// resident on the GPU (non-GPU effects read back, run on the CPU and upload), and the result
+/// replaces the canvas inside the layer's footprint × opacity. `None` = draw it on the CPU.
+fn draw_adjustment(e: &mut Enc, r: &Renderer, ctx: &EvalCtx, layer: &Layer, canvas: &mut GpuImage) -> Option<()> {
+    let opacity = r.layer_opacity(ctx, layer);
+    let Some(foot) = r.adjustment_footprint(ctx, layer) else { return Some(()) };
+    let (w, h) = (canvas.width, canvas.height);
+    let matte = place(e, r, ctx, layer, &Arc::new(foot), &e.image(w, h), BlendMode::Normal, 1.0)?;
+    let pipe = r.pipe();
+    // Effects run in the working space, not the linear blending space.
+    let below = match pipe.from_blend() {
+        Some(c) => ops::convert(e, canvas, &c),
+        None => canvas.clone(),
+    };
+    let mut fx = crate::effects::GpuFx::new(e, below, [0.0; 2], r.opts.scale, pipe.levels);
+    r.run_effects_on(ctx, layer, true, &mut fx);
+    let (mut adjusted, _, _) = fx.finish()?;
+    if adjusted.width != w || adjusted.height != h {
+        return Some(());
+    }
+    if let Some(c) = pipe.to_blend() {
+        adjusted = ops::convert(e, &adjusted, &c);
+    }
+    *canvas = ops::adjust_mix(e, canvas, &adjusted, &matte, opacity);
     Some(())
 }
 

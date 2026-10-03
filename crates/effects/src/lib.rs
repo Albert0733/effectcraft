@@ -18,11 +18,12 @@ mod channel3d;
 mod color2;
 mod color3;
 mod color_fx;
-mod controls;
+pub mod controls;
 mod distort;
 mod distort2;
 mod distort3;
 pub mod distort4;
+pub mod face_track;
 mod generate;
 mod generate2;
 mod generate3;
@@ -38,9 +39,12 @@ mod noise2;
 mod noise3;
 mod obsolete;
 mod ocio;
+pub mod ocio_config;
 pub mod paint;
 mod perspective;
 mod perspective2;
+pub mod plugin;
+pub mod psim;
 pub mod puppet;
 pub mod roto;
 mod sim;
@@ -67,11 +71,20 @@ pub use color_fx::{
 };
 pub use color2::Curve;
 pub use distort::transform_shutter;
+pub use distort2::parse_mesh;
 use effectcraft_keyframe::Value;
 use effectcraft_project::build::Ids;
 use effectcraft_project::{GroupKind, ParamUi, PropGroup, Property};
 pub use effectcraft_raster::{AuxChannels, Image};
 pub use misc::{INVERT_ALPHA, INVERT_CHANNELS, glow_operation};
+pub use sim::particle_state;
+pub use sim3::playground_state;
+// CPU helpers the GPU kernels share (effectcraft-gpu).
+pub use blur2::{camera_lens_plain, camera_lens_spans};
+pub use generate::gen_mode;
+pub use generate2::pattern_kind as cell_pattern_kind;
+pub use noise::GrainLook;
+pub use transition::place_layer;
 
 /// Effect categories in Effects & Presets order.
 pub const CATEGORIES: &[&str] = &[
@@ -275,6 +288,11 @@ pub trait EffectHost: Sync {
     fn params_at(&self, _layer_time: f64) -> Option<Params> {
         None
     }
+    /// A particle simulation backend (GPU particles; see [`psim`]). `None` = simulate on the
+    /// CPU.
+    fn particles(&self) -> Option<&dyn psim::ParticleSim> {
+        None
+    }
 }
 
 /// Extra context the renderer may supply (all optional; `Default` is "nothing known").
@@ -415,6 +433,7 @@ pub fn registry() -> &'static [EffectSpec] {
         v.extend(puppet::specs());
         v.extend(warp_stab::specs());
         v.extend(camera_tracker::specs());
+        v.extend(face_track::specs());
         v.extend(roto::specs());
         v.sort_by(|a, b| a.category.cmp(b.category).then(a.name.cmp(b.name)));
         for s in v.iter_mut() {
@@ -426,14 +445,37 @@ pub fn registry() -> &'static [EffectSpec] {
     })
 }
 
+/// A built-in effect or a registered plug-in by id.
 pub fn find(id: &str) -> Option<&'static EffectSpec> {
-    registry().iter().find(|s| s.id == id)
+    registry().iter().find(|s| s.id == id).or_else(|| plugin::plugins().into_iter().find(|s| s.id == id))
+}
+
+/// Every effect: the built-ins ([`registry`]) and the registered plug-ins
+/// ([`plugin::register_plugin`]), sorted by category then name.
+pub fn all() -> Vec<&'static EffectSpec> {
+    let plugins = plugin::plugins();
+    let mut v: Vec<&'static EffectSpec> = registry().iter().collect();
+    if !plugins.is_empty() {
+        v.extend(plugins);
+        v.sort_by(|a, b| a.category.cmp(b.category).then(a.name.cmp(b.name)));
+    }
+    v
+}
+
+/// Effects & Presets categories: [`CATEGORIES`] then the plug-ins' own, alphabetically.
+pub fn categories() -> Vec<&'static str> {
+    let mut v: Vec<&'static str> = CATEGORIES.to_vec();
+    let mut extra: Vec<&'static str> = plugin::plugins().iter().map(|s| s.category).filter(|c| !CATEGORIES.contains(c)).collect();
+    extra.sort_unstable();
+    extra.dedup();
+    v.extend(extra);
+    v
 }
 
 /// Find by id or (case-insensitive) display name.
 pub fn lookup(name_or_id: &str) -> Option<&'static EffectSpec> {
     find(name_or_id)
-        .or_else(|| registry().iter().find(|s| s.name.eq_ignore_ascii_case(name_or_id)))
+        .or_else(|| all().into_iter().find(|s| s.name.eq_ignore_ascii_case(name_or_id)))
         .or_else(|| {
             // After Effects' third-party display names we register under a generic name.
             keylight::KEYLIGHT_ALIASES.iter().any(|a| a.eq_ignore_ascii_case(name_or_id)).then(|| find("ec.keying.keylight")).flatten()
@@ -728,6 +770,42 @@ pub const GPU_EFFECTS: &[&str] = &[
     "ec.color.exposure",
     "ec.channel.invert",
     "ec.distort.transform",
+    "ec.distort.turbulentdisplace",
+    "ec.distort.displacementmap",
+    "ec.distort.wavewarp",
+    "ec.distort.ripple",
+    "ec.distort.twirl",
+    "ec.distort.bulge",
+    "ec.distort.cclens",
+    "ec.distort.meshwarp",
+    "ec.stylize.mosaic",
+    "ec.stylize.findedges",
+    "ec.stylize.emboss",
+    // Blur, transition and generate family (effectcraft-gpu `fx_generate`).
+    "ec.blur.radial",
+    "ec.blur.cameralens",
+    "ec.blur.ccradialfast",
+    "ec.transition.venetian",
+    "ec.transition.linearwipe",
+    "ec.transition.radialwipe",
+    "ec.transition.gradientwipe",
+    "ec.generate.cellpattern",
+    "ec.generate.checkerboard",
+    "ec.generate.grid",
+    "ec.generate.fourcolor",
+    "ec.noise.noise",
+    "ec.noise.addgrain",
+    // effectcraft-gpu fx_color
+    "ec.color.colorbalance",
+    "ec.color.vibrance",
+    "ec.color.lumetri",
+    "ec.color.blackwhite",
+    "ec.color.tritone",
+    "ec.color.colorama",
+    "ec.color.channelmixer",
+    "ec.color.selectivecolor",
+    "ec.key.linearcolor",
+    "ec.keying.keylight",
 ];
 
 /// Effects whose output depends on [`EffectCtx::time`] directly (not only through animated

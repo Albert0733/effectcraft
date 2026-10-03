@@ -207,5 +207,3 @@ every request and reply, a render through an in-process offload).
 - Cancelling an analysis drops its partial result (the worker is terminated).
 - Stored media count against the origin's storage quota; `effectcraft.listStored()` shows usage,
   `removeStored` frees it (there is no storage manager in the UI yet).
-- `engine.execute` rejects the spread Render Settings / Output Module keys of `renderQueue.add`
-  (`resolution`, `timeSpan`…) through its strict parameter check; use `ui.menu.invoke` as above.

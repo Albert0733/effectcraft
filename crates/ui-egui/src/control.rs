@@ -204,6 +204,10 @@ pub fn handle(app: &mut EffectcraftApp, ctx: &egui::Context, req: &ControlReques
             if let Some(b) = p.get("home").and_then(Value::as_bool) {
                 app.ui.start_screen = b;
             }
+            // Home screen tab: "home" or "learn".
+            if let Some(tab) = p.get("homeTab").and_then(Value::as_str) {
+                app.ui.home_learn = tab == "learn";
+            }
             ok(Value::Null)
         }
         "ui.panel.show" | "ui.panel.close" => {

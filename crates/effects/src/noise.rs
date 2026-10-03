@@ -41,7 +41,7 @@ pub(crate) const GRAIN_BLEND_MODES: [&str; 5] = ["Film", "Multiply", "Add", "Scr
 
 /// The Tweaking / Color / Application / Animation controls Add Grain and Match Grain share
 /// (twirl-down groups with the same ids in both effects).
-pub(crate) struct GrainLook {
+pub struct GrainLook {
     pub intensity: f32,
     pub channel_intensity: [f32; 3],
     pub size: f32,
@@ -64,7 +64,7 @@ pub(crate) struct GrainLook {
 }
 
 impl GrainLook {
-    pub(crate) fn from_params(ctx: &EffectCtx) -> GrainLook {
+    pub fn from_params(ctx: &EffectCtx) -> GrainLook {
         let pr = ctx.params;
         let ch = |pre: &str, a: &str, b: &str, c: &str| [a, b, c].map(|k| pr.get(&format!("{pre}{k}")).map(Value::as_f64).unwrap_or(1.0) as f32);
         let ft = ctx.time * 24.0 * pr.f("animation/animationSpeed");

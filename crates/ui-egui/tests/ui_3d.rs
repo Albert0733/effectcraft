@@ -116,3 +116,51 @@ fn snapshot() {
         img.save(format!("{d}/ui3d_reveal_rotation.png")).unwrap();
     }
 }
+
+/// Settings ▸ 3D ▸ Extended Viewer: a custom 3D view renders the pasteboard around the comp
+/// frame, and 3D layers reaching past the frame draw pixels there.
+#[test]
+fn extended_viewer_renders_past_the_comp_frame() {
+    let mut h = Harness::builder().with_size(egui::vec2(1600.0, 1000.0)).build_eframe(|_| app());
+    h.state_mut().session.execute("view.3d.custom1", json!({})).unwrap();
+    // Zoom out so the viewer shows plenty of pasteboard.
+    h.state_mut().ui.viewer.zoom = Some(0.15);
+    settle(&mut h);
+    assert!(h.state().ui.viewer.extended.is_none(), "off by default");
+    let ids: Vec<String> = h.state().auto.previous.iter().chain(h.state().auto.elements.iter()).map(|e| e.id.clone()).collect();
+    assert!(ids.iter().any(|i| i == "viewer.extendedViewer"), "toggle registered");
+    assert_eq!(h.state_mut().session.execute("view.extendedViewer", json!({"value": true})).unwrap(), json!(true));
+    h.step();
+    settle(&mut h);
+    h.step();
+    settle(&mut h);
+    let region = h.state().ui.viewer.extended.expect("extended region in a custom view");
+    let (cw, ch) = {
+        let c = h.state().session.active_comp().unwrap();
+        (c.width as f64, c.height as f64)
+    };
+    assert!(region[0] < 0.0 && region[1] < 0.0 && region[0] + region[2] > cw && region[1] + region[3] > ch, "{region:?}");
+    let ids: Vec<String> = h.state().auto.previous.iter().chain(h.state().auto.elements.iter()).map(|e| e.id.clone()).collect();
+    assert!(ids.iter().any(|i| i == "viewer.extendedArea"));
+    let img = h.state_mut().viewer_pixels().expect("frame");
+    let s = img.size[0] as f64 / region[2];
+    assert!((img.size[1] as f64 / region[3] - s).abs() < 0.05, "frame covers the region");
+    // Opaque pixels outside the comp rectangle.
+    let (fx0, fy0) = (-region[0] * s, -region[1] * s);
+    let (fx1, fy1) = (fx0 + cw * s, fy0 + ch * s);
+    let mut outside = 0;
+    for y in 0..img.size[1] {
+        for x in 0..img.size[0] {
+            let (xf, yf) = (x as f64 + 0.5, y as f64 + 0.5);
+            if (xf < fx0 - 1.0 || xf > fx1 + 1.0 || yf < fy0 - 1.0 || yf > fy1 + 1.0) && img.pixels[y * img.size[0] + x].a() > 0 {
+                outside += 1;
+            }
+        }
+    }
+    assert!(outside > 50, "pixels drawn on the pasteboard: {outside}");
+    // The Active Camera view (Draft 3D off) shows just the frame.
+    h.state_mut().session.execute("view.3d.activeCamera", json!({})).unwrap();
+    h.step();
+    h.step();
+    assert!(h.state().ui.viewer.extended.is_none());
+}

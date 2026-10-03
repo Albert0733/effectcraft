@@ -131,6 +131,12 @@ struct Inner {
     hits: AtomicU64,
     misses: AtomicU64,
     prefetched: AtomicU64,
+    /// Settings ▸ Disk ▸ Conformed Audio Folder: decoded audio tracks written once per file and
+    /// rate, read back instead of decoding again (`None` = off).
+    conform: Mutex<Option<std::path::PathBuf>>,
+    /// Conformed files being written right now.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    conforming: Mutex<HashSet<std::path::PathBuf>>,
 }
 
 /// Decodes footage for the renderer: stills, image sequences and movies (FilmCraft codecs), plus
@@ -193,6 +199,8 @@ impl MediaPool {
                 hits: AtomicU64::new(0),
                 misses: AtomicU64::new(0),
                 prefetched: AtomicU64::new(0),
+                conform: Mutex::default(),
+                conforming: Mutex::default(),
             }),
         }
     }
@@ -257,14 +265,108 @@ impl MediaPool {
         Inner::frame_at(&self.inner, footage, t, true)
     }
 
+    /// Settings ▸ Disk ▸ Conformed Audio Folder: write each footage file's decoded audio there
+    /// once per sample rate (raw interleaved stereo `f32`) and read it back instead of decoding
+    /// again. `None` turns it off.
+    pub fn set_conform_folder(&self, folder: Option<std::path::PathBuf>) {
+        *lock(&self.inner.conform) = folder;
+    }
+
+    /// The conformed-audio file of `path` at `rate` (named by a hash of the path, size and
+    /// modification time, so an edited file conforms again).
+    pub fn conformed_path(&self, path: &str, rate: u32) -> Option<std::path::PathBuf> {
+        use std::hash::{Hash, Hasher};
+        let folder = lock(&self.inner.conform).clone()?;
+        let meta = std::fs::metadata(path).ok()?;
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (path, meta.len(), meta.modified().ok()).hash(&mut h);
+        Some(folder.join(format!("{:016x}_{rate}.ecaf", h.finish())))
+    }
+
+    /// Samples from a conformed file: `Some` when it exists and covers the request.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    fn read_conformed(file: &std::path::Path, s0: usize, frames: usize) -> Option<Vec<f32>> {
+        use std::io::{Read, Seek, SeekFrom};
+        let mut f = std::fs::File::open(file).ok()?;
+        let len = f.metadata().ok()?.len() as usize / 8;
+        let mut out = vec![0.0f32; frames * 2];
+        if s0 >= len {
+            return Some(out);
+        }
+        let n = frames.min(len - s0);
+        f.seek(SeekFrom::Start(s0 as u64 * 8)).ok()?;
+        let mut bytes = vec![0u8; n * 8];
+        f.read_exact(&mut bytes).ok()?;
+        for (o, c) in out.iter_mut().zip(bytes.chunks_exact(4)) {
+            *o = f32::from_le_bytes([c[0], c[1], c[2], c[3]]);
+        }
+        Some(out)
+    }
+
+    /// Conform `footage`'s audio at `rate` into `file` on a worker thread (once).
+    #[cfg(not(target_arch = "wasm32"))]
+    fn conform(&self, footage: &Footage, file: std::path::PathBuf, rate: u32) {
+        if !lock(&self.inner.conforming).insert(file.clone()) {
+            return;
+        }
+        let (pool, f) = (self.clone(), footage.clone());
+        let spawned = std::thread::Builder::new().name("ec-conform-audio".into()).spawn(move || {
+            let frames = f.duration.to_units_floor(rate as i64).max(0) as usize;
+            let mut bytes = Vec::with_capacity(frames * 8);
+            let mut at = 0usize;
+            while at < frames {
+                let n = (frames - at).min(1 << 16);
+                let t = Tick(at as i64 * TICKS_PER_SECOND / rate as i64);
+                for v in pool.decode_audio(&f, t, n, rate) {
+                    bytes.extend_from_slice(&v.to_le_bytes());
+                }
+                at += n;
+            }
+            let ok = file.parent().is_some_and(|d| std::fs::create_dir_all(d).is_ok()) && {
+                let tmp = file.with_extension("tmp");
+                std::fs::write(&tmp, &bytes).is_ok() && std::fs::rename(&tmp, &file).is_ok()
+            };
+            if !ok {
+                log::warn!("media: could not write conformed audio {}", file.display());
+            }
+            lock(&pool.inner.conforming).remove(&file);
+        });
+        if spawned.is_err() {
+            lock(&self.inner.conforming).clear();
+        }
+    }
+
     /// `frames` stereo sample frames of `footage`'s audio starting at source time `start`, at
     /// `rate` Hz, interleaved (L R L R …). Mono is duplicated to both channels; channels beyond
     /// the first two are dropped. Silence where there is no audio (or before the media starts).
+    /// With a conformed audio folder, reads come from the conformed file once it is written.
     pub fn audio_samples(&self, footage: &Footage, start: Tick, frames: usize, rate: u32) -> Vec<f32> {
-        let mut out = vec![0.0; frames * 2];
         if !footage.has_audio || footage.missing || rate == 0 || frames == 0 {
-            return out;
+            return vec![0.0; frames * 2];
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(file) = self.conformed_path(&footage.path, rate) {
+            let s0 = start.to_units_floor(rate as i64);
+            if file.exists() && !lock(&self.inner.conforming).contains(&file) {
+                let skip = (-s0).max(0) as usize;
+                if skip >= frames {
+                    return vec![0.0; frames * 2];
+                }
+                if let Some(v) = Self::read_conformed(&file, s0.max(0) as usize, frames - skip) {
+                    let mut out = vec![0.0; skip * 2];
+                    out.extend(v);
+                    return out;
+                }
+            } else {
+                self.conform(footage, file, rate);
+            }
+        }
+        self.decode_audio(footage, start, frames, rate)
+    }
+
+    /// [`MediaPool::audio_samples`] straight from the decoder.
+    fn decode_audio(&self, footage: &Footage, start: Tick, frames: usize, rate: u32) -> Vec<f32> {
+        let mut out = vec![0.0; frames * 2];
         let path: Arc<str> = footage.path.as_str().into();
         let Some(src) = self.inner.source(&path) else { return out };
         let s0 = start.to_units_floor(rate as i64);
@@ -386,9 +488,10 @@ impl Inner {
                 let i = Self::frame_index(footage.frame_rate, t, footage.sequence.len() as i64, footage.loop_count);
                 Loc { key: key(&footage.sequence[i as usize], 0), media_t: None }
             }
-            // A layer of a layered still is keyed by its layer index and size mode.
+            // A layer of a layered still is keyed by its layer index and size mode (smart objects
+            // by their embedded file).
             FootageKind::Still if footage.layer.is_some() => {
-                let l = footage.layer.as_ref().map_or(0, |l| 1 + l.index as i64 * 2 + l.layer_size as i64);
+                let l = footage.layer.as_ref().map_or(0, |l| 1 + l.index as i64 * 2 + l.layer_size as i64 + if l.embedded.is_some() { 1 << 40 } else { 0 });
                 Loc { key: key(&footage.path, l), media_t: None }
             }
             FootageKind::Still | FootageKind::Sequence | FootageKind::Model | FootageKind::Data => Loc { key: key(&footage.path, 0), media_t: None },
@@ -486,6 +589,9 @@ impl Inner {
 }
 
 impl FootageSource for MediaPool {
+    fn set_conform_folder(&self, folder: Option<std::path::PathBuf>) {
+        MediaPool::set_conform_folder(self, folder);
+    }
     fn model(&self, _item: ItemId, footage: &Footage) -> Option<Arc<effectcraft_model::Model>> {
         if footage.missing || footage.kind != FootageKind::Model {
             return None;
@@ -516,7 +622,7 @@ impl FootageSource for MediaPool {
             return None;
         }
         let bytes = self.inner.read(&footage.path).ok()?;
-        crate::layered::rasterize_svg(&bytes, scale).map(Arc::new)
+        crate::layered::rasterize_vector(&footage.path, &bytes, footage.layer.as_ref(), scale).map(Arc::new)
     }
 
     fn aux(&self, _item: ItemId, footage: &Footage, t: Tick) -> Option<Arc<effectcraft_raster::AuxChannels>> {

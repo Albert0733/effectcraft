@@ -134,7 +134,9 @@ fn double_click_enters_editing_and_selects_words() {
     assert_eq!(edited(&h).1, "alpha gamma");
     key(&mut h, Key::Z, Modifiers::COMMAND);
     assert_eq!(edited(&h).1, "alpha beta");
-    // Paragraph panel: alignment applies to the edited paragraph.
+    // Paragraph panel: alignment applies to the edited paragraph (the South Asian and Middle
+    // Eastern text engine shows the direction popup too).
+    h.state_mut().session.prefs.type_.text_engine = "southAsian".into();
     h.state_mut().show_panel(PanelKind::Paragraph);
     h.run_steps(3);
     let r = rect(&h, "paragraph.right");

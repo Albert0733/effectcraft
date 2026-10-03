@@ -26,6 +26,9 @@ pub struct Outcome {
     /// `writeLn` / `$.writeln` / `alert` output, one entry per line.
     pub output: Vec<String>,
     pub error: Option<ScriptError>,
+    /// The script is waiting in a modal ScriptUI dialog's `show()` (it goes on when the dialog
+    /// closes; see [`crate::dispatch_ui`]).
+    pub waiting: bool,
 }
 
 /// An uncaught script error.
@@ -42,36 +45,49 @@ impl Outcome {
         self.error.is_none()
     }
     pub fn to_json(&self) -> J {
-        json!({
+        let mut j = json!({
             "ok": self.ok(),
             "result": self.result,
             "output": self.output.join("\n"),
             "error": self.error.as_ref().map(|e| json!({"message": e.message, "line": e.line, "column": e.column, "file": e.file})),
-        })
+        });
+        if self.waiting {
+            j["waiting"] = json!(true);
+        }
+        j
     }
 }
 
 /// The session and per-run state while a script runs (the natives reach it here; nothing
 /// borrowed ever enters the JS heap).
-struct Active {
-    session: Session,
-    output: Vec<String>,
+pub(crate) struct Active {
+    pub(crate) session: Session,
+    pub(crate) output: Vec<String>,
     /// Open undo groups: (name, project snapshot when the outermost group began).
-    groups: Vec<(String, Arc<Project>)>,
+    pub(crate) groups: Vec<(String, Arc<Project>)>,
     /// `app.scheduleTask` queue: (id, code, repeat).
-    tasks: Vec<(u32, String, bool)>,
-    next_task: u32,
-    name: String,
+    pub(crate) tasks: Vec<(u32, String, bool)>,
+    pub(crate) next_task: u32,
+    pub(crate) name: String,
+    /// Running on a script-host thread: modal dialogs hand the session back to the caller
+    /// through this link while they wait.
+    pub(crate) link: Option<crate::ui::Link>,
+}
+
+impl Active {
+    pub(crate) fn new(session: Session, name: &str) -> Active {
+        Active { session, output: vec![], groups: vec![], tasks: vec![], next_task: 0, name: name.to_string(), link: None }
+    }
 }
 
 thread_local! {
-    static ACTIVE: RefCell<Option<Active>> = const { RefCell::new(None) };
+    pub(crate) static ACTIVE: RefCell<Option<Active>> = const { RefCell::new(None) };
     /// The Script Console's persistent context (never dropped, like the expression runtime: boa's
     /// own thread-local heap may be torn down first at thread exit).
-    static CONSOLE: RefCell<Option<ManuallyDrop<Context>>> = const { RefCell::new(None) };
+    pub(crate) static CONSOLE: RefCell<Option<ManuallyDrop<Context>>> = const { RefCell::new(None) };
 }
 
-fn with_active<T>(f: impl FnOnce(&mut Active) -> Result<T, String>) -> Result<T, String> {
+pub(crate) fn with_active<T>(f: impl FnOnce(&mut Active) -> Result<T, String>) -> Result<T, String> {
     ACTIVE.with(|a| match a.try_borrow_mut() {
         Ok(mut g) => match g.as_mut() {
             Some(act) => f(act),
@@ -81,11 +97,11 @@ fn with_active<T>(f: impl FnOnce(&mut Active) -> Result<T, String>) -> Result<T,
     })
 }
 
-fn throw(msg: impl Into<String>) -> boa_engine::JsError {
+pub(crate) fn throw(msg: impl Into<String>) -> boa_engine::JsError {
     JsNativeError::error().with_message(msg.into()).into()
 }
 
-fn arg_string(args: &[JsValue], i: usize, ctx: &mut Context) -> JsResult<String> {
+pub(crate) fn arg_string(args: &[JsValue], i: usize, ctx: &mut Context) -> JsResult<String> {
     Ok(args.get(i).cloned().unwrap_or_default().to_string(ctx)?.to_std_string_escaped())
 }
 
@@ -97,7 +113,7 @@ fn arg_json(args: &[JsValue], i: usize, ctx: &mut Context) -> JsResult<J> {
     serde_json::from_str(&s).map_err(|e| throw(format!("bad parameters: {e}")))
 }
 
-fn js_str(s: &str) -> JsValue {
+pub(crate) fn js_str(s: &str) -> JsValue {
     JsValue::from(JsString::from(s))
 }
 
@@ -205,7 +221,7 @@ fn native_undo(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsV
 }
 
 /// Fold the undo steps recorded since the project was `snap` into one step called `name`.
-fn collapse(s: &mut Session, name: &str, snap: &Arc<Project>) {
+pub(crate) fn collapse(s: &mut Session, name: &str, snap: &Arc<Project>) {
     let h = &mut s.history;
     let Some(start) = h.undo.iter().rposition(|(_, p)| Arc::ptr_eq(p, snap)) else {
         // Nothing was recorded (or history was reset by New / Open Project).
@@ -294,6 +310,11 @@ fn native_file(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsV
     let path = arg_string(args, 1, ctx)?;
     let data = if args.len() > 2 { arg_string(args, 2, ctx)? } else { String::new() };
     let r: Result<J, String> = with_active(|a| {
+        // File.execute(): opened with its default application through `file.executeFile`
+        // (Allow Scripts to Write Files gate, Warn User When Executing Files confirmation).
+        if op == "execute" {
+            return exec(&mut a.session, "file.executeFile", json!({"path": path})).map(|v| json!(v.get("opened").is_some()));
+        }
         let s = &a.session;
         match op.as_str() {
             "access" => Ok(json!(check_access(s, &path, false)?.exists())),
@@ -349,28 +370,32 @@ fn native_file(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsV
     }
 }
 
-fn new_context() -> Result<Context, String> {
+pub(crate) fn new_context() -> Result<Context, String> {
     let mut ctx = Context::default();
     let limits = ctx.runtime_limits_mut();
     limits.set_loop_iteration_limit(200_000_000);
     limits.set_recursion_limit(2000);
-    let natives: [(JsString, usize, fn(&JsValue, &[JsValue], &mut Context) -> JsResult<JsValue>); 6] = [
+    let natives: [(JsString, usize, fn(&JsValue, &[JsValue], &mut Context) -> JsResult<JsValue>); 9] = [
         (js_string!("__exec"), 2, native_exec),
         (js_string!("__query"), 2, native_query),
         (js_string!("__print"), 1, native_print),
         (js_string!("__undo"), 2, native_undo),
         (js_string!("__task"), 3, native_task),
         (js_string!("__file"), 3, native_file),
+        (js_string!("__uiNewId"), 0, crate::ui::native_new_id),
+        (js_string!("__uiModal"), 1, crate::ui::native_modal),
+        (js_string!("__uiLayoutNative"), 1, crate::ui::native_layout),
     ];
     for (name, len, f) in natives {
         ctx.register_global_callable(name, len, NativeFunction::from_fn_ptr(f)).map_err(|e| e.to_string())?;
     }
     ctx.eval(Source::from_bytes(PRELUDE)).map_err(|e| format!("script prelude: {e}"))?;
+    ctx.eval(Source::from_bytes(crate::ui::SCRIPTUI)).map_err(|e| format!("ScriptUI prelude: {e}"))?;
     Ok(ctx)
 }
 
 /// Turn a boa error into a message with line and column (`code` is the user's script).
-fn script_error(e: &boa_engine::JsError, ctx: &mut Context, file: &str, code: &str) -> ScriptError {
+pub(crate) fn script_error(e: &boa_engine::JsError, ctx: &mut Context, file: &str, code: &str) -> ScriptError {
     // Thrown values: `throw new Error("x")`, `throw "x"`, native errors.
     let display = e.to_string();
     let message = match e.as_opaque() {
@@ -442,7 +467,7 @@ fn position(msg: &str, file: &str, code: &str) -> (Option<u32>, Option<u32>) {
 }
 
 /// Evaluate `code` in `ctx` and convert the result.
-fn eval_in(ctx: &mut Context, code: &str, file: &str) -> Result<J, ScriptError> {
+pub(crate) fn eval_in(ctx: &mut Context, code: &str, file: &str) -> Result<J, ScriptError> {
     let src = Source::from_bytes(code.as_bytes()).with_path(std::path::Path::new(file));
     let script = boa_engine::Script::parse(src, None, ctx).map_err(|e| script_error(&e, ctx, file, code))?;
     let v = script.evaluate(ctx).map_err(|e| script_error(&e, ctx, file, code))?;
@@ -466,8 +491,8 @@ fn result_json(v: &JsValue, ctx: &mut Context) -> J {
 }
 
 /// Restores the caller's session when a run ends (on every exit path).
-struct Restore<'a> {
-    target: &'a mut Session,
+pub(crate) struct Restore<'a> {
+    pub(crate) target: &'a mut Session,
 }
 
 impl Drop for Restore<'_> {
@@ -478,8 +503,54 @@ impl Drop for Restore<'_> {
     }
 }
 
+/// End of a script step: close undo groups left open, drop selections that no longer exist,
+/// and take the output so far.
+pub(crate) fn settle() -> Vec<String> {
+    with_active(|a| {
+        if let Some((name, snap)) = a.groups.first().cloned() {
+            collapse(&mut a.session, &name, &snap);
+            a.groups.clear();
+        }
+        a.session.sanitize_state();
+        Ok(std::mem::take(&mut a.output))
+    })
+    .unwrap_or_default()
+}
+
+/// Evaluate a script file's code, then the one-shot tasks it scheduled (`app.scheduleTask`).
+pub(crate) fn eval_with_tasks(ctx: &mut Context, code: &str, file: &str) -> Result<J, ScriptError> {
+    let mut r = eval_in(ctx, code, file);
+    let tasks = with_active(|a| Ok(std::mem::take(&mut a.tasks))).unwrap_or_default();
+    for (_, code, repeat) in tasks {
+        if repeat {
+            continue;
+        }
+        if let Err(e) = eval_in(ctx, &code, "scheduled task")
+            && r.is_ok()
+        {
+            r = Err(e);
+        }
+    }
+    r
+}
+
+pub(crate) fn outcome(output: Vec<String>, result: Result<J, ScriptError>) -> Outcome {
+    let mut out = Outcome { output, ..Default::default() };
+    match result {
+        Ok(v) => out.result = v,
+        Err(e) => out.error = Some(e),
+    }
+    out
+}
+
 /// Run a script against `session`: the object model sees and edits that session through engine
 /// commands. Script errors come back in [`Outcome::error`].
+///
+/// On native builds a script file runs on its own script-host thread, so a ScriptUI dialog's
+/// `show()` can wait for the user (the session comes back here meanwhile, and the dialog's
+/// events reach the host through [`crate::dispatch_ui`]); palettes and panels keep their host
+/// alive for their handlers. The Script Console (and the web build) run inline, where dialogs
+/// don't block.
 pub fn run(session: &mut Session, req: &ScriptRequest) -> Outcome {
     let running = ACTIVE.with(|a| a.try_borrow().map(|g| g.is_some()).unwrap_or(true));
     if running {
@@ -488,59 +559,49 @@ pub fn run(session: &mut Session, req: &ScriptRequest) -> Outcome {
             ..Default::default()
         };
     }
+    #[cfg(not(target_arch = "wasm32"))]
+    if !req.console {
+        return crate::ui::run_threaded(session, req);
+    }
+    run_inline(session, req)
+}
+
+/// Run on this thread (the Script Console's persistent context, or a fresh one).
+pub(crate) fn run_inline(session: &mut Session, req: &ScriptRequest) -> Outcome {
+    let host = if req.console { crate::ui::CONSOLE_HOST } else { crate::ui::new_host_id() };
     let s = std::mem::take(session);
-    ACTIVE.with(|a| *a.borrow_mut() = Some(Active { session: s, output: vec![], groups: vec![], tasks: vec![], next_task: 0, name: req.name.to_string() }));
+    ACTIVE.with(|a| *a.borrow_mut() = Some(Active::new(s, req.name)));
     let guard = Restore { target: session };
     let file = if req.name.is_empty() { "script" } else { req.name };
-    let mut result = if req.console {
+    let (result, windows) = if req.console {
         CONSOLE.with(|c| {
             let mut c = c.borrow_mut();
             if c.is_none() {
                 match new_context() {
                     Ok(ctx) => *c = Some(ManuallyDrop::new(ctx)),
-                    Err(e) => return Err(ScriptError { message: e, file: file.into(), ..Default::default() }),
+                    Err(e) => return (Err(ScriptError { message: e, file: file.into(), ..Default::default() }), vec![]),
                 }
             }
             let ctx = c.as_mut().map(|m| &mut **m).expect("console context");
-            eval_in(ctx, req.code, file)
+            let r = eval_in(ctx, req.code, file);
+            (r, crate::ui::snapshot(ctx))
         })
     } else {
         match new_context() {
             Ok(mut ctx) => {
-                let r = eval_in(&mut ctx, req.code, file);
-                // app.scheduleTask: run the queued one-shot tasks after the script, in order.
-                let tasks = with_active(|a| Ok(std::mem::take(&mut a.tasks))).unwrap_or_default();
-                let mut r = r;
-                for (_, code, repeat) in tasks {
-                    if repeat {
-                        continue;
-                    }
-                    if let Err(e) = eval_in(&mut ctx, &code, "scheduled task")
-                        && r.is_ok()
-                    {
-                        r = Err(e);
-                    }
+                let r = eval_with_tasks(&mut ctx, req.code, file);
+                let windows = crate::ui::snapshot(&mut ctx);
+                if windows.iter().any(|w| w.visible) {
+                    // Palettes and panels outlive the run: keep their context for the handlers.
+                    crate::ui::keep_inline(host, ctx);
                 }
-                r
+                (r, windows)
             }
-            Err(e) => Err(ScriptError { message: e, file: file.into(), ..Default::default() }),
+            Err(e) => (Err(ScriptError { message: e, file: file.into(), ..Default::default() }), vec![]),
         }
     };
-    // Close undo groups left open; drop selections that no longer exist.
-    let output = with_active(|a| {
-        if let Some((name, snap)) = a.groups.first().cloned() {
-            collapse(&mut a.session, &name, &snap);
-            a.groups.clear();
-        }
-        a.session.sanitize_state();
-        Ok(std::mem::take(&mut a.output))
-    })
-    .unwrap_or_default();
+    let output = settle();
     drop(guard);
-    let mut out = Outcome { output, ..Default::default() };
-    match result.as_mut() {
-        Ok(v) => out.result = std::mem::take(v),
-        Err(e) => out.error = Some(e.clone()),
-    }
-    out
+    crate::ui::publish(session, host, req.name, windows);
+    outcome(output, result)
 }

@@ -29,6 +29,7 @@ effectcraft-media = { path = "crates/media" }
 effectcraft-export = { path = "crates/export" }
 effectcraft-expr = { path = "crates/expr" }
 effectcraft-lottie = { path = "crates/lottie" }
+effectcraft-pdf = { path = "crates/pdf" }
 effectcraft-psd = { path = "crates/psd" }
 effectcraft-vp9enc = { path = "crates/vp9enc" }
 effectcraft-svg = { path = "crates/svg" }
@@ -38,6 +39,7 @@ effectcraft-ui-egui = { path = "crates/ui-egui" }
 effectcraft-automation = { path = "crates/automation" }
 effectcraft-opusenc = { path = "crates/opusenc" }
 effectcraft-script = { path = "crates/script" }
+effectcraft-plugin = { path = "crates/plugin" }
 
 # foundation
 thiserror = "2"
@@ -52,6 +54,8 @@ proptest = "1"
 
 # scripting (expressions)
 boa_engine = { version = "0.22", default-features = false }
+# WebAssembly effect plug-ins (sandboxed interpreter; MIT/Apache-2.0, pure Rust)
+wasmi = { version = "2", default-features = false, features = ["std", "validate", "wat", "deterministic", "portable-dispatch"] }
 
 # geometry / fonts
 kurbo = { version = "0.13", features = ["serde"] }

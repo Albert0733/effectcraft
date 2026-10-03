@@ -16,19 +16,19 @@ pub fn supports(id: &str) -> bool {
 }
 
 /// A layer buffer on the GPU (see [`Buf`]).
-struct GBuf {
-    img: GpuImage,
-    offset: [f64; 2],
-    scale: f64,
+pub(crate) struct GBuf {
+    pub img: GpuImage,
+    pub offset: [f64; 2],
+    pub scale: f64,
 }
 
 impl GBuf {
-    fn to_px(&self, p: [f64; 2]) -> (f64, f64) {
+    pub fn to_px(&self, p: [f64; 2]) -> (f64, f64) {
         (p[0] * self.scale + self.offset[0], p[1] * self.scale + self.offset[1])
     }
 
     /// Buf::pad: grow by `pad` transparent pixels on every side.
-    fn pad(&mut self, e: &mut Enc, pad: u32) -> Option<()> {
+    pub fn pad(&mut self, e: &mut Enc, pad: u32) -> Option<()> {
         if pad == 0 {
             return Some(());
         }
@@ -62,7 +62,53 @@ pub(crate) fn run_chain(e: &mut Enc, chain: &[FxStep], buf: &Buf, levels: Option
     Some(Buf { img, offset: b.offset, scale: b.scale })
 }
 
+/// An effect stack running on a GPU-resident image (adjustment layers): GPU chains stay on
+/// the device; CPU effects read the image back, run, and upload the result.
+pub(crate) struct GpuFx<'e, 'g> {
+    e: &'e mut Enc<'g>,
+    b: Option<GBuf>,
+    levels: Option<f32>,
+}
+
+impl<'e, 'g> GpuFx<'e, 'g> {
+    pub fn new(e: &'e mut Enc<'g>, img: GpuImage, offset: [f64; 2], scale: f64, levels: Option<f32>) -> Self {
+        GpuFx { e, b: Some(GBuf { img, offset, scale }), levels }
+    }
+
+    /// The result: (image, offset, scale); `None` when a step failed.
+    pub fn finish(self) -> Option<(GpuImage, [f64; 2], f64)> {
+        self.b.map(|b| (b.img, b.offset, b.scale))
+    }
+}
+
+impl effectcraft_render::FxTarget for GpuFx<'_, '_> {
+    fn gpu(&mut self, steps: &[FxStep]) -> bool {
+        let Some(b) = &self.b else { return false };
+        let mut cur = GBuf { img: b.img.clone(), offset: b.offset, scale: b.scale };
+        for step in steps {
+            let Some(next) = apply(self.e, step.spec.id, &step.ctx, cur) else { return false };
+            cur = next;
+            if let Some(l) = self.levels {
+                cur.img = ops::quantize(self.e, &cur.img, l);
+            }
+        }
+        self.b = Some(cur);
+        true
+    }
+
+    fn cpu(&mut self, f: &mut dyn FnMut(Buf) -> Buf) {
+        let Some(b) = self.b.take() else { return };
+        let Some(img) = self.e.download(&b.img) else { return };
+        let out = f(Buf { img, offset: b.offset, scale: b.scale });
+        self.b = self.e.g.upload_image(&out.img).map(|img| GBuf { img, offset: out.offset, scale: out.scale });
+    }
+}
+
 fn apply(e: &mut Enc, id: &str, ctx: &EffectCtx, b: GBuf) -> Option<GBuf> {
+    // Controls the kernels do not implement render on the CPU.
+    if !effectcraft_effects::catalog::gpu_supported(id, ctx) {
+        return None;
+    }
     match id {
         "ec.blur.gaussian" => gaussian(e, ctx, b),
         "ec.blur.fastbox" => box_blur(e, ctx, b),
@@ -72,6 +118,9 @@ fn apply(e: &mut Enc, id: &str, ctx: &EffectCtx, b: GBuf) -> Option<GBuf> {
         "ec.distort.transform" => transform(e, ctx, b),
         "ec.color.curves" => curves(e, ctx, b),
         _ if id.starts_with("ec.control.") => Some(b),
+        _ if crate::fx_color::IDS.contains(&id) => crate::fx_color::apply(e, id, ctx, b),
+        _ if crate::fx_distort::IDS.contains(&id) => crate::fx_distort::apply(e, id, ctx, b),
+        _ if crate::fx_generate::IDS.contains(&id) => crate::fx_generate::apply(e, id, ctx, b),
         _ => pointwise(e, id, ctx, b),
     }
 }
@@ -79,7 +128,7 @@ fn apply(e: &mut Enc, id: &str, ctx: &EffectCtx, b: GBuf) -> Option<GBuf> {
 // ---------------------------------------------------------------- blurs
 
 /// raster::blur::box_radii.
-fn box_radii(sigma: f64, n: usize) -> Vec<usize> {
+pub(crate) fn box_radii(sigma: f64, n: usize) -> Vec<usize> {
     if sigma <= 0.0 {
         return vec![0; n];
     }
@@ -95,7 +144,7 @@ fn box_radii(sigma: f64, n: usize) -> Vec<usize> {
 }
 
 /// Horizontal passes with radii `rx`, then vertical passes with radii `ry` (raster::blur).
-fn box_passes(e: &mut Enc, img: &GpuImage, rx: &[usize], ry: &[usize], repeat: bool) -> GpuImage {
+pub(crate) fn box_passes(e: &mut Enc, img: &GpuImage, rx: &[usize], ry: &[usize], repeat: bool) -> GpuImage {
     let mut cur = img.clone();
     let passes = rx.iter().map(|&r| (false, r)).chain(ry.iter().map(|&r| (true, r))).filter(|p| p.1 > 0);
     for (vertical, r) in passes {
@@ -111,7 +160,7 @@ fn box_passes(e: &mut Enc, img: &GpuImage, rx: &[usize], ry: &[usize], repeat: b
 }
 
 /// raster::gaussian_blur (3 box passes per axis).
-fn gaussian_blur(e: &mut Enc, img: &GpuImage, sx: f64, sy: f64, repeat: bool) -> GpuImage {
+pub(crate) fn gaussian_blur(e: &mut Enc, img: &GpuImage, sx: f64, sy: f64, repeat: bool) -> GpuImage {
     let rx = if sx > 0.05 { box_radii(sx, 3) } else { vec![] };
     let ry = if sy > 0.05 { box_radii(sy, 3) } else { vec![] };
     box_passes(e, img, &rx, &ry, repeat)

@@ -1,5 +1,6 @@
-//! Mask tracking (Layer ▸ Mask ▸ Track Mask, the Tracker panel in mask mode) and Smart Mask
-//! Interpolation (Window ▸ Mask Interpolation).
+//! Mask tracking (Layer ▸ Mask ▸ Track Mask, the Tracker panel in mask mode, including the Face
+//! Tracking methods and Extract & Copy Face Measurements) and Smart Mask Interpolation
+//! (Window ▸ Mask Interpolation).
 
 use effectcraft_keyframe::{Keyframe, ShapePath, Value as KV};
 use effectcraft_path::interp::{self, AddVertices, InterpOpts, Matching};
@@ -20,7 +21,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Track Mask",
             ["Animation"],
             None,
-            "{layer?, mask?: uid|index|name, method?: position|positionScale|positionScaleRotation|positionScaleRotationSkew|perspective, direction?: forward|backward|frameForward|frameBackward, start? (s), end? (s), wait?: block until done}",
+            "{layer?, mask?: uid|index|name, method?: position|positionScale|positionScaleRotation|positionScaleRotationSkew|perspective|faceOutline|faceDetailed, direction?: forward|backward|frameForward|frameBackward, start? (s), end? (s), wait?: block until done}",
             has_mask,
             track_mask
         ),
@@ -29,9 +30,18 @@ pub fn specs() -> Vec<CommandSpec> {
             "Mask Tracking Method",
             [],
             None,
-            "{method: position|positionScale|positionScaleRotation|positionScaleRotationSkew|perspective}",
+            "{method: position|positionScale|positionScaleRotation|positionScaleRotationSkew|perspective|faceOutline|faceDetailed}",
             super::always,
             mask_method
+        ),
+        cmd!(
+            "track.extractFaceMeasurements",
+            "Extract & Copy Face Measurements",
+            [],
+            None,
+            "{layer?} → keys a Face Measurements effect from the layer's Face Track Points (one key per tracked frame) and copies those keys",
+            has_face_points,
+            extract_face
         ),
         cmd!(
             "mask.interpolate",
@@ -116,9 +126,12 @@ fn has_mask(s: &Session) -> std::result::Result<(), String> {
 
 fn method_p(p: &Value, cmd: &str) -> Result<Option<MaskMethod>> {
     match str_p(p, "method") {
-        Some(m) => MaskMethod::from_name(m)
-            .map(Some)
-            .ok_or_else(|| bad(cmd, format!("unknown method `{m}` (position|positionScale|positionScaleRotation|positionScaleRotationSkew|perspective)"))),
+        Some(m) => MaskMethod::from_name(m).map(Some).ok_or_else(|| {
+            bad(
+                cmd,
+                format!("unknown method `{m}` (position|positionScale|positionScaleRotation|positionScaleRotationSkew|perspective|faceOutline|faceDetailed)"),
+            )
+        }),
         None => Ok(None),
     }
 }
@@ -188,6 +201,112 @@ fn track_mask(s: &mut Session, p: &Value) -> Result<Value> {
         "running": s.is_mask_tracking(),
         "progress": prog,
     }))
+}
+
+// ---------------------------------------------------------------- face measurements
+
+fn face_points_layer(s: &Session, p: &Value) -> Option<(effectcraft_project::ItemId, LayerId)> {
+    use effectcraft_effects::face_track::POINTS_ID;
+    let has = |l: &Layer| l.effects().is_some_and(|fx| fx.groups().any(|g| g.match_id == POINTS_ID));
+    if p.get("layer").is_some() {
+        return layer_p(s, p, "track.extractFaceMeasurements").ok();
+    }
+    let cid = s.active_comp_id()?;
+    let comp = s.project.comp(cid)?;
+    let sel = s.state.selected_layers.iter().filter_map(|l| comp.layer(*l)).find(|l| has(l));
+    sel.or_else(|| comp.layers.iter().find(|l| has(l))).map(|l| (cid, l.id))
+}
+
+fn has_face_points(s: &Session) -> std::result::Result<(), String> {
+    has_comp(s)?;
+    face_points_layer(s, &json!({})).map(|_| ()).ok_or_else(|| "no Face Track Points: track a mask with Face Tracking (Detailed Features) first".into())
+}
+
+/// Extract & Copy Face Measurements: measure the Face Track Points at every keyed time, key them
+/// into the layer's Face Measurements effect and put those keys on the keyframe clipboard.
+fn extract_face(s: &mut Session, p: &Value) -> Result<Value> {
+    use effectcraft_effects::face_track::{MEASUREMENTS_ID, POINTS_ID};
+    use effectcraft_track::face::{LANDMARKS, MEASUREMENTS, N, face_frame, measure};
+    const CMD: &str = "track.extractFaceMeasurements";
+    let (cid, lid) = face_points_layer(s, p).ok_or_else(|| bad(CMD, "no Face Track Points: track a mask with Face Tracking (Detailed Features) first"))?;
+    let comp = s.project.comp(cid).ok_or(EngineError::NoComp)?;
+    let layer = comp.layer(lid).ok_or(EngineError::NoComp)?;
+    let g = layer.effects().and_then(|fx| fx.groups().find(|g| g.match_id == POINTS_ID)).ok_or_else(|| bad(CMD, "the layer has no Face Track Points"))?;
+    let mut times: Vec<Tick> = LANDMARKS.iter().filter_map(|l| g.get(l.0)).flat_map(|pr| pr.keys.iter().map(|k| k.time)).collect();
+    times.sort();
+    times.dedup();
+    if times.is_empty() {
+        times.push(layer.layer_time(s.time_of(cid)));
+    }
+    let rows: Vec<(Tick, [f64; 14])> = {
+        let pts_at = |t: Tick| {
+            let mut l = [[0.0; 2]; N];
+            for (i, (id, _, _)) in LANDMARKS.iter().enumerate() {
+                if let Some(KV::Vec2(v)) = g.get(id).map(|pr| pr.value_at(t)) {
+                    l[i] = v;
+                }
+            }
+            l
+        };
+        let reference = face_frame(&pts_at(times[0])).1;
+        times.iter().map(|t| (*t, measure(&pts_at(*t), reference))).collect()
+    };
+    let comp_times: Vec<Tick> = times.iter().map(|t| layer.comp_time(*t)).collect();
+    let fd = comp.frame_duration();
+    let uid = s.edit("Extract Face Measurements", None, |proj, _| {
+        let uid = crate::mask_track::face_effect(proj, cid, lid, MEASUREMENTS_ID).ok_or_else(|| bad(CMD, "Face Measurements is not available"))?;
+        let g = proj.comp_mut(cid).and_then(|c| c.layer_mut(lid)).and_then(|l| l.props.find_group_mut(uid)).ok_or(EngineError::NoComp)?;
+        for (k, (id, _)) in MEASUREMENTS.iter().enumerate() {
+            let Some(pr) = g.get_mut(id) else { continue };
+            pr.keys.clear();
+            for (t, m) in &rows {
+                effectcraft_keyframe::set_key(&mut pr.keys, Keyframe::new(*t, KV::Scalar(m[k])));
+            }
+        }
+        Ok(uid)
+    })?;
+    // Copy the keys (Edit ▸ Paste pastes them at the CTI, like copied keyframes).
+    let comp = s.project.comp(cid).ok_or(EngineError::NoComp)?;
+    let layer = comp.layer(lid).ok_or(EngineError::NoComp)?;
+    let mg = layer.props.find_group(uid).ok_or(EngineError::NoComp)?;
+    let earliest = comp_times.iter().copied().min().unwrap_or(Tick::ZERO);
+    let mut clip = vec![];
+    for (id, _) in MEASUREMENTS {
+        let Some(pr) = mg.get(id) else { continue };
+        let Some(path) = layer.props.match_path_of(pr.uid) else { continue };
+        let keys = pr
+            .keys
+            .iter()
+            .map(|k| {
+                let mut k = k.clone();
+                k.time = layer.comp_time(k.time) - earliest;
+                k
+            })
+            .collect();
+        clip.push(crate::KeyClip { layer: lid, path, keys });
+    }
+    s.state.key_clipboard = clip;
+    s.state.clip_is_keys = true;
+    // The same data as text (tab-separated, one row per frame) for other applications.
+    let mut text = String::from("EffectCraft Face Measurements\n\nFrame\tTime");
+    for (_, name) in MEASUREMENTS {
+        text.push('\t');
+        text.push_str(name);
+    }
+    text.push('\n');
+    let mut table = vec![];
+    for ((_, m), ct) in rows.iter().zip(&comp_times) {
+        let frame = if fd > Tick::ZERO { (ct.seconds() / fd.seconds()).round() as i64 } else { 0 };
+        text.push_str(&format!("{frame}\t{:.4}", ct.seconds()));
+        for v in m {
+            text.push_str(&format!("\t{v:.3}"));
+        }
+        text.push('\n');
+        let obj: serde_json::Map<String, Value> = MEASUREMENTS.iter().zip(m).map(|((id, _), v)| (id.to_string(), json!(v))).collect();
+        table.push(json!({"time": ct.seconds(), "frame": frame, "values": obj}));
+    }
+    s.bump();
+    Ok(json!({"layer": lid.0, "effect": uid, "frames": rows.len(), "measurements": table, "clipboard": text}))
 }
 
 // ---------------------------------------------------------------- mask interpolation

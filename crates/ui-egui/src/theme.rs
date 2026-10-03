@@ -75,6 +75,29 @@ pub struct Tokens {
     pub gap: f32,
     pub tab_h: f32,
     pub row_h: f32,
+    /// Settings ▸ Appearance ▸ Use Gradients: panel tab strips and buttons get a soft vertical
+    /// gradient (off: flat fills).
+    pub gradients: bool,
+}
+
+/// A vertical gradient fill (`top` → `bottom`) over `rect`.
+pub fn gradient_rect(painter: &egui::Painter, rect: egui::Rect, top: Color32, bottom: Color32) {
+    let mut m = egui::Mesh::default();
+    m.colored_vertex(rect.left_top(), top);
+    m.colored_vertex(rect.right_top(), top);
+    m.colored_vertex(rect.right_bottom(), bottom);
+    m.colored_vertex(rect.left_bottom(), bottom);
+    m.add_triangle(0, 1, 2);
+    m.add_triangle(0, 2, 3);
+    painter.add(egui::Shape::mesh(m));
+}
+
+impl Tokens {
+    /// The gradient top colour for a fill (a little lighter), or the fill itself when gradients
+    /// are off.
+    pub fn grad_top(&self, c: Color32) -> Color32 {
+        if self.gradients { c.lerp_to_gamma(Color32::WHITE, 0.06) } else { c }
+    }
 }
 
 impl Tokens {
@@ -122,7 +145,8 @@ impl Tokens {
             radius_sm: 3.0,
             gap: 4.0,
             tab_h: 30.0,
-            row_h: 22.0,
+            row_h: 19.0,
+            gradients: true,
         };
         match kind {
             ThemeKind::Dark => dark,
@@ -192,6 +216,7 @@ impl Tokens {
             let [r, g, b] = p.label_rgb(*l);
             t.labels[i] = Color32::from_rgb(r, g, b);
         }
+        t.gradients = p.appearance.use_gradients;
         t
     }
 

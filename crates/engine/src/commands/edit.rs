@@ -384,6 +384,8 @@ fn paste(s: &mut Session, p: &Value) -> Result<Value> {
 fn split(s: &mut Session, p: &Value) -> Result<Value> {
     let (cid, ids) = layers_p(s, p)?;
     let t = s.time();
+    // Settings ▸ General ▸ Create Split Layers Above Original Layer.
+    let above = s.prefs.general.create_split_layers_above;
     let new = s.edit("Split Layer", None, |proj, st| {
         let mut next = proj.next_id;
         let comp = proj.comp_mut(cid).ok_or(crate::EngineError::NoComp)?;
@@ -398,7 +400,7 @@ fn split(s: &mut Session, p: &Value) -> Result<Value> {
             b.in_point = t;
             comp.layers[i].out_point = t;
             created.push(b.id);
-            comp.layers.insert(i, b);
+            comp.layers.insert(if above { i } else { i + 1 }, b);
         }
         proj.next_id = next;
         st.selected_layers = created.clone();
@@ -408,6 +410,11 @@ fn split(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 fn label(s: &mut Session, p: &Value) -> Result<Value> {
+    // Keyframe colour labels: selected keyframes take the label (unless layers are named).
+    let explicit_layers = p.get("layers").is_some() || p.get("layer").is_some();
+    if p.get("keys").is_some() || (!s.state.selected_keys.is_empty() && !explicit_layers && str_p(p, "target") != Some("layers")) {
+        return super::keys_more::label_keys(s, p);
+    }
     let name = str_p(p, "label").unwrap_or("Red");
     let lab = s.prefs.label_from_name(name).ok_or_else(|| super::bad("edit.label", format!("unknown label `{name}`")))?;
     let (cid, ids) = layers_p(s, p)?;
@@ -584,8 +591,7 @@ fn edit_original(s: &mut Session, _: &Value) -> Result<Value> {
 }
 
 fn purge(s: &mut Session, _: &Value) -> Result<Value> {
-    s.history.undo.clear();
-    s.history.redo.clear();
+    s.history.clear();
     s.toast("Purged undo history");
     Ok(Value::Null)
 }
@@ -624,13 +630,64 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!("edit.extractWorkArea", "Extract Work Area", ["Edit"], None, "{layers?}", has_comp, extract),
         cmd!("edit.selectAll", "Select All", ["Edit"], Some("Cmd+A"), "{}", has_comp, select_all),
         cmd!("edit.deselectAll", "Deselect All", ["Edit"], Some("Cmd+Shift+A"), "{}", always_ok, deselect_all),
-        cmd!("edit.label", "Label", ["Edit", "Label"], None, "{label: Red|Yellow|Aqua|…, layers?}", always_ok, label),
+        cmd!("edit.label", "Label", ["Edit", "Label"], None, "{label: Red|Yellow|Aqua|…, layers?, keys?, target?: layers}", always_ok, label),
         cmd!("edit.selectLabelGroup", "Select Label Group", ["Edit", "Label"], None, "{}", has_props_or_layers_or_items, select_label_group),
         cmd!("edit.purgeUndo", "Undo", ["Edit", "Purge"], None, "{}", always_ok, purge),
         cmd!("edit.purge", "Purge", [], None, "{what?: all|memoryAndDisk|memory|disk|3d|image|snapshot}", always_ok, purge_caches),
         crate::query!("cache.diskStats", "Disk Cache Statistics", "{}", disk_stats),
         cmd!("edit.editOriginal", "Edit Original...", ["Edit"], Some("Cmd+E"), "{}", has_selected_footage, edit_original),
+        crate::query!(
+            "edit.history.list",
+            "History",
+            "{} → {states: [{index, id, label, parent, depth, current, line, future}], current, branches}",
+            history_list
+        ),
+        cmd!(
+            "edit.history.goto",
+            "Go to History State",
+            [],
+            None,
+            "{index? (from edit.history.list) | id? | steps? (negative = back along the line)}",
+            always_ok,
+            history_goto
+        ),
     ]
+}
+
+// ---------------------------------------------------------------- History panel
+
+/// `edit.history.list`: every state of the (branching) undo history.
+fn history_list(s: &mut Session, _: &Value) -> Result<Value> {
+    let nodes = s.history_tree();
+    let current = nodes.iter().position(|n| n.current);
+    Ok(json!({"states": nodes, "current": current, "branches": s.history.branches.len()}))
+}
+
+/// `edit.history.goto`: jump to a state by `index` (from `edit.history.list`), `id`, or
+/// `steps` along the working line (negative = back, like Undo).
+fn history_goto(s: &mut Session, p: &Value) -> Result<Value> {
+    let c = "edit.history.goto";
+    if let Some(n) = p.get("steps").and_then(Value::as_i64) {
+        for _ in 0..n.unsigned_abs() {
+            let moved = if n < 0 { s.undo() } else { s.redo() };
+            if !moved {
+                break;
+            }
+        }
+    } else {
+        let nodes = s.history_tree();
+        let id = match (p.get("id").and_then(Value::as_str), p.get("index").and_then(Value::as_u64)) {
+            (Some(id), _) => id.to_string(),
+            (None, Some(i)) => nodes.get(i as usize).map(|n| n.id.clone()).ok_or_else(|| super::bad(c, format!("no state {i} (0..{})", nodes.len())))?,
+            _ => return Err(super::bad(c, "give `index`, `id` or `steps`")),
+        };
+        if !s.goto_history(&id) {
+            return Err(super::bad(c, format!("no history state `{id}`")));
+        }
+    }
+    let nodes = s.history_tree();
+    let cur = nodes.iter().find(|n| n.current).cloned();
+    Ok(json!({"current": cur.as_ref().map(|n| n.index), "label": cur.map(|n| n.label)}))
 }
 
 fn layers_or_keys(s: &Session) -> std::result::Result<(), String> {

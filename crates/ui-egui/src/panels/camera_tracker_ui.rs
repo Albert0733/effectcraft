@@ -38,6 +38,8 @@ struct Active {
     show_3d: bool,
     point_size: f64,
     target_size: f64,
+    /// Undistort Footage is on: points project without the lens distortion.
+    undistort: bool,
     /// Layer pixels → comp pixels.
     l2c: Mat3,
     frame: usize,
@@ -66,6 +68,7 @@ fn active(s: &Session, comp: &Comp, ectx: &EvalCtx, l2c: &dyn Fn(&EvalCtx, &Laye
             let t = tracks.as_ref()?;
             (t.frame_duration > 0.0).then(|| ((lt - t.start) / t.frame_duration).round().clamp(0.0, t.frames.saturating_sub(1) as f64) as usize)
         });
+        let undistort = solve.as_ref().is_some_and(|sv| ct::undistorts(&params, sv));
         return Some(Active {
             layer: *lid,
             uid: *uid,
@@ -74,6 +77,7 @@ fn active(s: &Session, comp: &Comp, ectx: &EvalCtx, l2c: &dyn Fn(&EvalCtx, &Laye
             show_3d: val("showTrackPoints").map(|v| v.as_enum()).unwrap_or(1) == 1,
             point_size: val("trackPointSize").map(|v| v.as_f64()).unwrap_or(100.0),
             target_size: val("targetSize").map(|v| v.as_f64()).unwrap_or(100.0),
+            undistort,
             l2c: l2c(ectx, l),
             frame: frame.unwrap_or(0),
         });
@@ -98,18 +102,20 @@ fn l2c_scale(m: &Mat3) -> f32 {
 
 /// Draw the target disc (concentric rings in perspective) of `t` on frame `k`.
 fn draw_target(p: &egui::Painter, a: &Active, map: &ViewerMap, sv: &CameraSolve, t: &Target) {
-    let Some(cam) = sv.frames.get(a.frame) else { return };
+    if sv.frames.get(a.frame).is_none() {
+        return;
+    }
     let r = t.size * 0.5 * a.target_size / 100.0;
     for (i, frac) in [1.0, 0.66, 0.33].into_iter().enumerate() {
         let ring = ct::target_circle(t.center, t.normal, r * frac, 48);
-        let pts: Vec<Pos2> = ring.iter().filter_map(|x| cam.project(sv.size, *x)).map(|q| to_screen(a, map, q)).collect();
+        let pts: Vec<Pos2> = ring.iter().filter_map(|x| sv.project(a.frame, *x, a.undistort)).map(|q| to_screen(a, map, q)).collect();
         if pts.len() < 3 {
             return;
         }
         let fill = if i % 2 == 0 { Color32::from_rgba_unmultiplied(0xd0, 0x30, 0x30, 70) } else { Color32::from_rgba_unmultiplied(0xff, 0xff, 0xff, 50) };
         p.add(egui::Shape::convex_polygon(pts.clone(), fill, Stroke::new(1.0, Color32::from_rgb(0xe0, 0x40, 0x40))));
     }
-    if let Some(c) = cam.project(sv.size, t.center) {
+    if let Some(c) = sv.project(a.frame, t.center, a.undistort) {
         let c = to_screen(a, map, c);
         p.circle_filled(c, 3.0, Color32::from_rgb(0xff, 0xd0, 0x40));
     }
@@ -168,7 +174,7 @@ pub fn viewer_hook(
     let mut hits: Vec<Hit> = vec![];
     match (&a.solve, a.show_3d) {
         (Some(sv), true) => {
-            let pts = ct::projected(sv, a.frame);
+            let pts = ct::projected_with(sv, a.frame, a.undistort);
             let med = ct::median_depth(&pts);
             for (id, q, z) in pts {
                 let sp = to_screen(&a, map, q);

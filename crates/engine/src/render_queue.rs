@@ -10,7 +10,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use effectcraft_project::render_queue::{OutputFormat, PostRenderAction, RenderQueueItem, RenderStatus, TemplateVars, expand_template};
+use effectcraft_project::render_queue::{OutputFormat, OutputModule, PostRenderAction, RenderQueueItem, RenderStatus, TemplateVars, expand_template};
 use effectcraft_project::{ItemId, ItemKind, LayerSource, Project};
 use effectcraft_render::{ExprHost, FootageSource};
 use serde::{Deserialize, Serialize};
@@ -27,6 +27,12 @@ pub struct ExportJob<'a> {
     pub accel: Option<&'a dyn effectcraft_render::Accelerator>,
     /// Resolved output path (templates expanded except the `#` frame-number run).
     pub path: &'a str,
+    /// Free-space hook (Use Storage Overflow).
+    pub storage: Option<&'a dyn effectcraft_project::render_queue::StorageQuota>,
+    /// "#n Comp Name", for the render log.
+    pub label: String,
+    /// Settings ▸ General ▸ Switches Affect Nested Comps.
+    pub nested_switches: bool,
 }
 
 /// What an export wrote.
@@ -39,6 +45,12 @@ pub struct ExportResult {
     pub bytes: u64,
     pub seconds: f64,
     pub audio: bool,
+    /// The render log written next to the output, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub log: Option<String>,
+    /// Files that went to storage overflow folders.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub overflow: Vec<String>,
 }
 
 /// Encodes render queue items (implemented by the export layer).
@@ -127,8 +139,57 @@ struct Work {
     expr: Option<Arc<dyn ExprHost>>,
     accel: Option<Arc<dyn effectcraft_render::Accelerator>>,
     exporter: Arc<dyn Exporter>,
-    /// Per queue item: one (item with that output module, resolved path) per output module.
+    storage: Option<Arc<dyn effectcraft_project::render_queue::StorageQuota>>,
+    /// Per queue item: one (item with that output module, resolved path) per output module
+    /// (and per segment, see [`Session::segments`]).
     items: Vec<Vec<(RenderQueueItem, String)>>,
+    /// Settings ▸ General ▸ Switches Affect Nested Comps.
+    nested_switches: bool,
+}
+
+/// Bits per channel an output format writes for a project bit depth (named in the file when
+/// Settings ▸ Export ▸ Append Bit Depth to File Name is on).
+pub fn output_bits(format: OutputFormat, depth: effectcraft_project::BitDepth) -> u32 {
+    use effectcraft_project::BitDepth;
+    let project = match depth {
+        BitDepth::Bpc8 => 8,
+        BitDepth::Bpc16 => 16,
+        BitDepth::Bpc32 => 32,
+    };
+    match format {
+        OutputFormat::ExrSequence => 32,
+        OutputFormat::PngSequence | OutputFormat::TiffSequence => project.min(16),
+        OutputFormat::ProRes => 10,
+        OutputFormat::Wav | OutputFormat::Aiff => 16,
+        _ => 8,
+    }
+}
+
+/// The bytes an output writes per frame, estimated from its data rate (H.264 bitrate, Apple's
+/// published ProRes target rates at 1080p29.97 scaled by frame size, typical rates otherwise).
+pub fn bytes_per_frame(om: &OutputModule, w: u32, h: u32, fps: f64) -> f64 {
+    use effectcraft_project::render_queue::ProResProfile::*;
+    let fps = fps.max(1.0);
+    let px = (w as f64 * h as f64) / (1920.0 * 1080.0);
+    let mbps = |m: f64| m * 1_000_000.0 / 8.0;
+    match om.format {
+        OutputFormat::H264 => om.bitrate_kbps as f64 * 1000.0 / 8.0 / fps,
+        OutputFormat::ProRes => {
+            let rate = match om.prores_profile {
+                Proxy => 45.0,
+                Lt => 102.0,
+                Standard => 147.0,
+                Hq => 220.0,
+                P4444 => 330.0,
+                P4444Xq => 500.0,
+            };
+            mbps(rate) * px / 29.97
+        }
+        OutputFormat::WebM => mbps(8.0) * px / fps,
+        OutputFormat::Gif => w as f64 * h as f64 * 0.5,
+        OutputFormat::Wav | OutputFormat::Aiff => om.audio_sample_rate as f64 * 4.0 / fps,
+        _ => w as f64 * h as f64 * 3.0,
+    }
 }
 
 fn unix_now() -> u64 {
@@ -143,7 +204,16 @@ pub(crate) fn run_items(
     shared: &JobShared,
     notify: &mut dyn FnMut(&JobShared),
 ) {
-    let work = Work { project: s.project.clone(), footage: s.footage.clone(), expr: s.expr.clone(), accel: s.accel.clone(), exporter, items };
+    let work = Work {
+        project: s.project.clone(),
+        footage: s.footage.clone(),
+        expr: s.expr.clone(),
+        accel: s.accel.clone(),
+        exporter,
+        storage: s.storage_quota.clone(),
+        items,
+        nested_switches: s.prefs.general.switches_affect_nested_comps,
+    };
     run_work(work, shared, notify);
 }
 
@@ -174,7 +244,19 @@ fn run_work(w: Work, shared: &JobShared, notify: &mut dyn FnMut(&JobShared)) {
         // first module's file is the item's output.
         let mut r: Result<ExportResult, String> = Err("no output module".into());
         for (mi, (mitem, path)) in modules.iter().enumerate() {
-            let job = ExportJob { project: &w.project, footage: w.footage.as_ref(), expr: w.expr.as_deref(), accel: w.accel.as_deref(), item: mitem, path };
+            let name = w.project.item(mitem.comp).map(|i| i.name.clone()).unwrap_or_default();
+            let index = w.project.render_queue.iter().position(|i| i.id == mitem.id).map_or(0, |i| i + 1);
+            let job = ExportJob {
+                project: &w.project,
+                footage: w.footage.as_ref(),
+                expr: w.expr.as_deref(),
+                accel: w.accel.as_deref(),
+                item: mitem,
+                path,
+                storage: w.storage.as_deref(),
+                label: format!("#{index} {name} (output module {})", mi + 1),
+                nested_switches: w.nested_switches,
+            };
             let rr = w.exporter.export(&job, &mut |done, total| {
                 {
                     let mut s = lock(&shared.state);
@@ -235,8 +317,7 @@ impl Session {
         if tpl.is_empty() {
             return None;
         }
-        let (w, h) = item.settings.output_size(comp);
-        let (w, h) = item.output.format.coded_size(w, h);
+        let (w, h) = item.output.output_size(comp, &item.settings);
         let rate = item.settings.rate(comp);
         let n = item.settings.frame_count(comp) as i64;
         let f0 = item.settings.first_frame(comp);
@@ -248,10 +329,56 @@ impl Session {
         if path.is_absolute() {
             return Some(p);
         }
-        let base = self.path.as_deref().and_then(|s| std::path::Path::new(s).parent().map(|d| d.to_path_buf())).filter(|d| !d.as_os_str().is_empty());
+        // Settings ▸ Export ▸ Default Output Folder, else the project's folder.
+        let folder = self.prefs.export.default_output_folder.trim();
+        let base = (!folder.is_empty()).then(|| std::path::PathBuf::from(folder));
+        let base =
+            base.or_else(|| self.path.as_deref().and_then(|s| std::path::Path::new(s).parent().map(|d| d.to_path_buf())).filter(|d| !d.as_os_str().is_empty()));
         // (the web has no working directory: relative outputs land in its virtual root)
         let base = base.or_else(|| std::env::current_dir().ok()).or_else(|| cfg!(target_arch = "wasm32").then(|| "/".into()))?;
         Some(base.join(path).to_string_lossy().to_string())
+    }
+
+    /// Settings ▸ Export ▸ Segment Sequences / Segment Movie Files: the (item, path) outputs one
+    /// output module writes. Sequences go into numbered folders of Files per Segment frames each
+    /// (`out/Comp 1_001/Comp 1_00000.png`…); movies into numbered files of about Segment Size MB
+    /// each (`Comp 1_001.mp4`…), cut at the frame count the output's data rate gives.
+    pub fn segments(&self, item: &RenderQueueItem, path: &str) -> Vec<(RenderQueueItem, String)> {
+        let Some(comp) = self.project.comp(item.comp) else { return vec![(item.clone(), path.to_string())] };
+        let fmt = item.output.format;
+        let frames = item.settings.frame_count(comp);
+        let (w, h) = item.settings.output_size(comp);
+        let bpf = bytes_per_frame(&item.output, w, h, item.settings.rate(comp).as_f64());
+        let Some(per) = self.prefs.segment_frames(frames, fmt.is_sequence(), bpf) else { return vec![(item.clone(), path.to_string())] };
+        let p = std::path::Path::new(path);
+        let dir = p.parent().map(|d| d.to_path_buf()).unwrap_or_default();
+        let stem = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        let ext = p.extension().map(|s| s.to_string_lossy().to_string());
+        let rate = item.settings.rate(comp);
+        let f0 = item.settings.first_frame(comp);
+        let mut out = vec![];
+        let mut i = 0;
+        let mut k = 1;
+        while i < frames {
+            let n = per.min(frames - i);
+            let mut m = item.clone();
+            let (start, end) = (rate.tick_of(f0 + i as i64), rate.tick_of(f0 + (i + n) as i64));
+            m.settings.time_span = effectcraft_project::render_queue::TimeSpan::Custom { start, end };
+            let seg = if fmt.is_sequence() {
+                let base = stem.trim_end_matches(['#', '[', ']', '_']).to_string();
+                let folder = dir.join(format!("{base}_{k:03}"));
+                folder.join(p.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default())
+            } else {
+                dir.join(match &ext {
+                    Some(e) => format!("{stem}_{k:03}.{e}"),
+                    None => format!("{stem}_{k:03}"),
+                })
+            };
+            out.push((m, seg.to_string_lossy().to_string()));
+            i += n;
+            k += 1;
+        }
+        out
     }
 
     /// Whether a render job is running.
@@ -286,7 +413,13 @@ impl Session {
                 let mut m = it.clone();
                 m.output = om.clone();
                 match self.resolve_output(&m) {
-                    Some(p) if formats.contains(&om.format) => modules.push((m, p)),
+                    Some(p) if formats.contains(&om.format) => {
+                        // Settings ▸ Export: Append Bit Depth to File Name, Segment Sequences /
+                        // Movie Files.
+                        let bits = output_bits(om.format, self.project.settings.bit_depth);
+                        let p = self.prefs.output_name(&p, bits);
+                        modules.extend(self.segments(&m, &p));
+                    }
                     Some(_) => problem = Some(RenderStatus::Failed(format!("{} export is not available", om.format.label()))),
                     None if self.project.comp(it.comp).is_none() => problem = Some(RenderStatus::Failed("composition missing".into())),
                     None => problem = Some(RenderStatus::NeedsOutput),
@@ -329,7 +462,16 @@ impl Session {
             self.poll_render();
             return Ok(ids);
         }
-        let work = Work { project: self.project.clone(), footage: self.footage.clone(), expr: self.expr.clone(), accel: self.accel.clone(), exporter, items };
+        let work = Work {
+            project: self.project.clone(),
+            footage: self.footage.clone(),
+            expr: self.expr.clone(),
+            accel: self.accel.clone(),
+            exporter,
+            storage: self.storage_quota.clone(),
+            items,
+            nested_switches: self.prefs.general.switches_affect_nested_comps,
+        };
         let shared = Arc::new(JobShared::default());
         if wait {
             run_work(work, &shared, &mut |_| {});
@@ -426,6 +568,10 @@ impl Session {
             } else {
                 format!("Rendered {} item(s) in {:.1} s", st.items_total, st.elapsed)
             };
+            if self.project.render_prefs.notify {
+                // Notify: the frontend plays a sound and shows a system notification.
+                self.events.push(Event::Frontend { command: "renderQueue.notify".into(), params: serde_json::json!({"message": msg, "error": failed > 0}) });
+            }
             self.events.push(Event::Toast { message: msg, error: failed > 0 });
         }
         for (id, path) in post {

@@ -70,71 +70,80 @@ Commands (CLI, MCP, control channel):
 - `threeD.defaultRenderer`: Default 3D Renderer
 - `labels.N.name` / `labels.N.color`: the 16 label names and colours, used by the Label menu,
   the timeline, project panel, render queue and viewer handles
+- `general.switchesAffectNestedComps`: a precomp layer's Quality (Draft / Wireframe) and Motion
+  Blur switches limit the layers of the nested comp (viewer, Render Queue, `render`)
+- `general.preserveConstantVertexCount`: adding or deleting mask / shape path vertices at one
+  keyframe does the same on every other keyframe (added vertices split the matching segment)
+- `general.syncTimeRelatedItems`: moving the current time moves it in the comps nested in this
+  one and in the comps that nest it (through the precomp layers' timing)
+- `general.expressionPickWhipCompact`: off, the pick whip writes match names
+  (`thisComp.layer("A")("transform")("opacity")`)
+- `general.createSplitLayersAbove`: where Edit ▸ Split Layer puts the new layer
+- `startup.showHomeOnOpenProject`: the Home screen comes up after File ▸ Open / Open Recent
+- `composition.motionPath`, `composition.motionPathSeconds`, `composition.motionPathKeyframes`:
+  how much of a position motion path the viewer draws (all, none, N seconds or N keyframes
+  around the current time)
+- `previews.showInternalWireframes`: outlines of the layers inside a selected collapsed precomp
+- `previews.zoomQuality`: Faster = nearest-neighbour viewer scaling, More Accurate = bilinear
+- `previews.displayProfile`: the monitor's colour space for View ▸ Use Display Color Management
+- `appearance.useLabelColorForTabs`: Composition / Timeline tabs show the comp's label colour,
+  Effect Controls / Properties the layer's
+- `appearance.cycleMaskColors`: new masks cycle through the mask colours (off: all the first)
+- `appearance.useGradients`: soft gradient on panel tab strips
+- `grids.gridStyle`, `grids.guideStyle`: lines, dashed lines or dots (grid, proportional grid,
+  guides); `grids.proportionalHorizontal` / `grids.proportionalVertical`: View ▸ Show
+  Proportional Grid divisions
+- `type.textEngine`: South Asian and Middle Eastern shows the paragraph direction and the
+  World-Ready composers in the Paragraph panel
+- `type.fontPreview`: a "Sample" preview in each font of the Character panel's font menu
+- `type.recentFonts`: how many recently used fonts head the font menu
+- `type.fontNamesInEnglish`: off, fonts with a native-language family name show it
+- `import.reportMissingFrames`: gaps in an image sequence's numbering are reported on import
+- `import.unlabeledAlpha`: alpha of TGA / TIFF / movie footage (Ask opens Interpret Footage;
+  Guess takes premultiplied for movies, straight for stills)
+- `import.dragImportAs`: layered files dropped on the window import as footage or a comp
+- `export.defaultOutputFolder`: where relative Render Queue outputs go
+- `export.segmentSequences`, `export.segmentSequenceFiles`: sequences split into numbered
+  folders of N files; `export.segmentMovies`, `export.segmentMovieMb`: movies split into
+  numbered files of about N MB (cut at the frame count the output's data rate gives)
+- `export.appendBitsToName`: `Comp 1.png` → `Comp 1_16bpc.png`
+- `audio.previewSampleRate`: the rate previews are mixed at (and the device is opened at, when
+  it supports it)
+- `disk.diskCacheEnabled`, `disk.diskCacheMaxGb`, `disk.diskCacheFolder`: the persistent disk
+  cache of processed layers
+- `disk.mediaCacheFolder`: audio waveform summaries kept between sessions (`Peaks/`)
+- `disk.conformedMediaFolder`: decoded (conformed) footage audio, written once per file and
+  sample rate and read back instead of decoding again
+- `memory.ramReservedGb`: the cache budgets together leave this much physical memory free
+- `memory.reduceCacheWhenLow`: cache budgets halve while the system is low on memory (checked
+  every 10 s by the desktop app)
+- `video.enableOutput`, `video.device`, `video.outputDuringPlayback`, `video.mirrorOnMonitor`,
+  `video.disableWhenBackground`: Video Preview, a second window (or full screen on the display
+  it is on) showing the composition frame, Mercury Transmit-style
+- `threeD.showReferenceAxes`: world X/Y/Z axes in the viewer corner of comps with 3D layers
+- `threeD.extendedViewer`: 3D layers reaching beyond the comp frame are outlined on the
+  pasteboard
+- `threeD.realtimeShadows`: draft (Fast Previews) renders keep 3D shadows
+- `scripting.allowScriptsWriteFiles`: the scripting file / network gate (and `File.execute()`)
+- `scripting.warnExecutingFiles`: `File.execute()` asks before opening a file
+- `scripting.editorFontSize`, `scripting.syntaxHighlighting`, `scripting.lineNumbers`,
+  `scripting.autoComplete` (Tab accepts), `scripting.bracketMatching`, `scripting.wordWrap`:
+  the Timeline's expression editor
+- `scripting.errorBanner`: a banner along the bottom of the Composition panel names the first
+  failing expression (click: reveal it)
 
-### Not wired yet (TODO)
+### Display-only settings
 
-These rows are in the dialog for After Effects parity and are stored, but nothing reads them yet.
-`prefs.pages` reports them with `"live": false`. A test keeps this list in step with the schema.
+These rows are in the dialog for After Effects parity and are stored, but have no EffectCraft
+behaviour to change. `prefs.pages` reports them with `"live": false`; a test keeps this list in
+step with the schema.
 
-- `general.switchesAffectNestedComps`: Switches Affect Nested Comps
-- `general.preserveConstantVertexCount`: Preserve Constant Vertex and Feather Point Count when Editing Masks
-- `general.syncTimeRelatedItems`: Synchronize Time of All Related Items
-- `general.expressionPickWhipCompact`: Expression Pick Whip Writes Compact English
-- `general.createSplitLayersAbove`: Create Split Layers Above Original Layer
-- `general.useSystemColorPicker`: Use System Color Picker
-- `startup.showHomeOnOpenProject`: Show Home Screen When Opening a Project
-- `composition.motionPath`: Motion Path
-- `composition.motionPathSeconds`: Seconds
-- `composition.motionPathKeyframes`: Keyframes
-- `composition.hardwareAcceleratePanels`: Hardware Accelerate Composition, Layer and Footage Panels
-- `previews.showInternalWireframes`: Show Internal Wireframes
-- `previews.zoomQuality`: Viewer Zoom Quality
-- `appearance.useLabelColorForTabs`: Use Label Color for Related Tabs
-- `appearance.cycleMaskColors`: Cycle Mask Colors
-- `appearance.useGradients`: Use Gradients
-- `grids.gridStyle`: Style
-- `grids.proportionalHorizontal`: Horizontal
-- `grids.proportionalVertical`: Vertical
-- `grids.guideStyle`: Style
-- `type.textEngine`: Text Engine
-- `type.fontPreview`: Show Font Preview
-- `type.recentFonts`: Number of Recent Fonts to Display
-- `type.fontNamesInEnglish`: Show Font Names in English
-- `import.reportMissingFrames`: Report Missing Frames
-- `import.unlabeledAlpha`: Interpret Unlabeled Alpha As
-- `import.dragImportAs`: Default Drag Import As
-- `export.defaultOutputFolder`: Default Output Folder
-- `export.segmentSequences`: Segment Sequences
-- `export.segmentSequenceFiles`: Files per Segment
-- `export.segmentMovies`: Segment Movie Files
-- `export.segmentMovieMb`: Segment Size
-- `export.appendBitsToName`: Append Bit Depth to File Name
-- `audio.previewSampleRate`: Preview Sample Rate
-- `disk.diskCacheEnabled`: Enable Disk Cache
-- `disk.diskCacheMaxGb`: Maximum Disk Cache Size
-- `disk.diskCacheFolder`: Disk Cache Folder
-- `disk.mediaCacheFolder`: Database and Cache Folder
-- `disk.conformedMediaFolder`: Conformed Audio Folder
-- `memory.ramReservedGb`: RAM Reserved for Other Applications
-- `memory.reduceCacheWhenLow`: Reduce Cache Size When System Is Low on Memory
-- `video.enableOutput`: Enable Video Preview Output
-- `video.device`: Video Device
-- `video.outputDuringPlayback`: Video Output During Playback
-- `video.mirrorOnMonitor`: Mirror on Computer Monitor
-- `video.disableWhenBackground`: Disable Video Output When in Background
-- `threeD.showReferenceAxes`: Show 3D Reference Axes
-- `threeD.extendedViewer`: Extended Viewer
-- `threeD.realtimeShadows`: Realtime Shadows in Draft
-- `scripting.allowScriptsWriteFiles`: Allow Scripts to Write Files and Access Network
-- `scripting.warnExecutingFiles`: Warn User When Executing Files
-- `scripting.enableJsDebugger`: Enable JavaScript Debugger
-- `scripting.editorFontSize`: Font Size
-- `scripting.syntaxHighlighting`: Syntax Highlighting
-- `scripting.lineNumbers`: Line Numbers
-- `scripting.autoComplete`: Auto-complete
-- `scripting.bracketMatching`: Bracket Matching
-- `scripting.wordWrap`: Word Wrap
-- `scripting.errorBanner`: Show Expression Error Banner
+- `general.useSystemColorPicker`: EffectCraft has one colour picker on every platform and the
+  web; there is no pure-Rust way to open the system colour panels.
+- `composition.hardwareAcceleratePanels`: the Composition, Layer and Footage panels are always
+  drawn by the GPU (egui on wgpu).
+- `scripting.enableJsDebugger`: the JavaScript engine has no step debugger; script errors report
+  their file and line in the Script Console.
 
 ## Keyboard shortcuts
 

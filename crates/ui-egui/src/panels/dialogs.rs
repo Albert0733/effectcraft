@@ -129,6 +129,7 @@ pub fn show(app: &mut EffectcraftApp, ctx: &egui::Context) {
         Dialog::LayerStyles => super::layer_styles_dialog::show(app, ctx, &t),
         Dialog::TrackTarget => super::tracker::target_dialog(app, ctx, &t),
         Dialog::TrackApply => super::tracker::apply_dialog(app, ctx, &t),
+        Dialog::RenderTemplates => super::rq_templates::show(app, ctx, &t),
     }
 }
 

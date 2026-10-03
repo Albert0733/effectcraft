@@ -16,6 +16,7 @@ pub mod icons;
 pub mod menus;
 pub mod native_menu;
 pub mod panels;
+pub mod prefs_live;
 pub mod state;
 pub mod theme;
 pub mod widgets;
@@ -73,6 +74,8 @@ pub enum Dialog {
     Precompose,
     /// Layer ▸ Layer Styles ▸ Layer Style Options…
     LayerStyles,
+    /// Edit ▸ Templates ▸ Render Settings… / Output Module….
+    RenderTemplates,
 }
 
 /// Host hooks provided by the native app (file pickers etc.).
@@ -255,7 +258,7 @@ impl EffectcraftApp {
         ctx.all_styles_mut(|s| s.interaction.tooltip_delay = if tips { 0.5 } else { f32::INFINITY });
         self.ui.cache_when_idle = p.previews.cache_frames_when_idle;
         self.ui.viewer.fast_preview = p.previews.fast_previews;
-        self.frames.set_budget(p.preview_cache_bytes());
+        self.frames.set_budget(p.cache_budgets(self.session.sys_memory).preview);
     }
 
     /// Change settings from the UI (applied next frame and saved).
@@ -286,9 +289,10 @@ impl EffectcraftApp {
         self.ui.dock = self.ui.saved_workspaces.get(name).cloned().unwrap_or_else(|| dock::workspace(name));
         self.ui.floating = self.ui.saved_floating.get(name).cloned().unwrap_or_else(|| dock::workspace_floating(name));
         self.ui.maximized = None;
-        // Learn: the Home screen (community links) in the Composition panel.
+        // Learn: the Home screen's Learn tab (tutorials) in the Composition panel.
         if name == "Learn" {
             self.ui.start_screen = true;
+            self.ui.home_learn = true;
         }
     }
 
@@ -343,6 +347,7 @@ impl EffectcraftApp {
             && v.channel == effectcraft_engine::viewer::Channel::Rgb
             && v.exposure == 0.0
             && self.session.state.region_of_interest.is_none()
+            && self.ui.viewer.extended.is_none()
     }
 
     /// Set up the GPU compositor on egui-wgpu's device (once). Without an adapter that runs
@@ -438,7 +443,7 @@ impl EffectcraftApp {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
         // The region of interest changes what is rendered too.
-        let roi = self.session.state.region_of_interest.filter(|_| self.session.active_comp_id() == Some(comp));
+        let roi = self.viewer_region(comp);
         if let Some(r) = roi {
             r.map(f64::to_bits).hash(&mut h);
         }
@@ -451,6 +456,15 @@ impl EffectcraftApp {
         cam.zoom.to_bits().hash(&mut h);
         cam.ortho.hash(&mut h);
         h.finish() | 1
+    }
+
+    /// The comp-space region viewer frames of `comp` cover: the region of interest, else the
+    /// Extended Viewer's area (frame plus pasteboard), else `None` (the whole frame).
+    pub fn viewer_region(&self, comp: ItemId) -> Option<[f64; 4]> {
+        if self.session.active_comp_id() != Some(comp) {
+            return None;
+        }
+        self.session.state.region_of_interest.or(self.ui.viewer.extended)
     }
 
     /// Request a prefetch frame render (no-op if cached/in flight).
@@ -466,7 +480,7 @@ impl EffectcraftApp {
     /// Render options of viewer frames of `comp` at `scale`.
     pub fn frame_opts(&self, comp: ItemId, scale: f64) -> RenderOpts {
         let (draft, _) = self.session.state.viewer.fast_previews.render(self.ui.viewer.interacting);
-        let roi = self.session.state.region_of_interest.filter(|_| self.session.active_comp_id() == Some(comp));
+        let roi = self.viewer_region(comp);
         RenderOpts {
             scale,
             motion_blur: true,
@@ -475,6 +489,8 @@ impl EffectcraftApp {
             view: self.session.view_camera(comp),
             roi,
             backend: effectcraft_engine::render::Backend::Auto,
+            nested_switches: self.session.prefs.general.switches_affect_nested_comps,
+            draft_shadows: self.session.prefs.three_d.realtime_shadows,
             proxy: Default::default(),
         }
     }
@@ -528,7 +544,8 @@ impl EffectcraftApp {
         }
         let out = audio::AudioOutput::from_prefs(&self.session.prefs);
         let Some(dev) = self.hooks.audio_device.as_ref().and_then(|f| f(&out)) else { return };
-        match audio::AudioPlayback::start(dev, self.render_source(), cid, t, c.work_area.0, c.work_area.1, self.ui.preview_loop) {
+        let mix = self.session.prefs.audio.preview_sample_rate;
+        match audio::AudioPlayback::start(dev, self.render_source(), cid, t, c.work_area.0, c.work_area.1, self.ui.preview_loop, mix) {
             Ok(a) => self.audio = Some(a),
             Err(e) => log::warn!("audio preview: {e}"),
         }
@@ -787,6 +804,11 @@ impl EffectcraftApp {
             self.session.poll_mask_track();
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
         }
+        // Background tasks (Content-Aware Fill, Scene Edit Detection).
+        if !self.session.tasks.is_empty() {
+            self.session.poll_jobs();
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
         // Analyses running in a worker (the web app).
         if !self.session.offloaded.is_empty() {
             self.session.poll_offload();
@@ -806,6 +828,7 @@ impl EffectcraftApp {
         self.apply_prefs(&ctx);
         self.handle_events(&ctx);
         self.tick_autosave(&ctx);
+        prefs_live::frame(self, &ctx);
         if let Some(rx) = self.command_inbox.take() {
             while let Ok(id) = rx.try_recv() {
                 if let Err(e) = menus::invoke(self, &ctx, &id, json!({})) {
@@ -834,6 +857,9 @@ impl EffectcraftApp {
         panels::precomp::mini_flowchart(self, &ctx);
         panels::home::capture_thumbnail(self);
         panels::dialogs::show(self, &ctx);
+        panels::scriptui_view::sync_panels(self);
+        panels::scriptui_view::show_windows(self, &ctx);
+        panels::learn::coach(self, &ctx);
         self.draw_toast(ui, full);
     }
 

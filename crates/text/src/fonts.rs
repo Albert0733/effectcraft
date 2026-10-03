@@ -48,6 +48,8 @@ pub struct FaceInfo {
     pub data: FaceData,
     /// "bundled", "system", …
     pub origin: &'static str,
+    /// The family name in the font's own (non-English) language, when it has one.
+    pub native_family: Option<String>,
 }
 
 /// Something that can list fonts (system folders, a web font picker, a project's font folder…).
@@ -121,7 +123,7 @@ impl FontSource for DirectorySource {
 }
 
 fn info_from(n: FaceNames, data: FaceData, origin: &'static str) -> FaceInfo {
-    FaceInfo { family: n.family, style: n.style, weight: n.weight, italic: n.italic, index: n.index, data, origin }
+    FaceInfo { family: n.family, style: n.style, weight: n.weight, italic: n.italic, index: n.index, data, origin, native_family: n.native_family }
 }
 
 /// A loaded (or loadable) face.
@@ -212,6 +214,21 @@ impl Face {
             underline_thickness: m.underline.map_or(px * 0.06, |u| u.thickness.max(px * 0.03)),
         }
     }
+    /// The OpenType layout features the face offers (GSUB and GPOS tags, sorted, deduplicated).
+    pub fn features(&self) -> Vec<String> {
+        use skrifa::raw::TableProvider;
+        let Some(f) = self.font() else { return vec![] };
+        let mut out: Vec<String> = vec![];
+        if let Ok(list) = f.gsub().and_then(|g| g.feature_list()) {
+            out.extend(list.feature_records().iter().map(|r| String::from_utf8_lossy(&r.feature_tag().to_be_bytes()).into_owned()));
+        }
+        if let Ok(list) = f.gpos().and_then(|g| g.feature_list()) {
+            out.extend(list.feature_records().iter().map(|r| String::from_utf8_lossy(&r.feature_tag().to_be_bytes()).into_owned()));
+        }
+        out.sort();
+        out.dedup();
+        out
+    }
     /// Whether the face's GSUB offers an OpenType feature (e.g. `smcp`).
     pub fn has_feature(&self, tag: &[u8; 4]) -> bool {
         use skrifa::raw::TableProvider;
@@ -298,6 +315,12 @@ pub fn face(id: FaceId) -> Arc<Face> {
 /// All faces (bundled first).
 pub fn all_faces() -> Vec<Arc<Face>> {
     db().read().unwrap_or_else(|e| e.into_inner()).faces.clone()
+}
+
+/// Family names in the fonts' own languages: English family → native family (only families
+/// that have one).
+pub fn native_families() -> std::collections::BTreeMap<String, String> {
+    all_faces().into_iter().filter_map(|f| Some((f.info.family.clone(), f.info.native_family.clone()?))).collect()
 }
 
 /// Families with their style names, sorted by family; styles in weight order.

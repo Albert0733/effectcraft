@@ -526,6 +526,8 @@ Layer.prototype = {
   get opacity() { return this.transform.opacity; },
   get anchorPoint() { return this.transform.anchorPoint; },
   get text() { return this.__group('text'); },
+  get cameraOption() { return this.__group('cameraOptions'); },
+  get lightOption() { return this.__group('lightOptions'); },
   get marker() { return new Markers(this.__c, this.__l); },
   effect: function (k) {
     var g = __child(this.__c, this.__l, '', 'effects');

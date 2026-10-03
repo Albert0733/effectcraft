@@ -14,6 +14,9 @@ use crate::panels::DragPayload;
 use crate::theme::Tokens;
 use crate::{EffectcraftApp, widgets};
 
+/// Item row height (After Effects' Project panel rows are compact, about 19 pt).
+const ROW_H: f32 = 19.0;
+
 fn item_icon(it: &Item) -> Icon {
     match &it.kind {
         ItemKind::Folder => Icon::Folder,
@@ -323,8 +326,8 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let mut actions: Vec<(String, serde_json::Value)> = vec![];
     for (i, (id, depth)) in rows.iter().enumerate() {
         let Some(it) = app.session.project.item(*id).cloned() else { continue };
-        let r = Rect::from_min_size(pos2(list.min.x, y), vec2(list.width(), 22.0));
-        y += 22.0;
+        let r = Rect::from_min_size(pos2(list.min.x, y), vec2(list.width(), ROW_H));
+        y += ROW_H;
         if r.min.y > list.max.y {
             break;
         }
@@ -335,14 +338,10 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         lp.rect_filled(
             r,
             0.0,
-            if selected {
-                t.row_selected
-            } else if i % 2 == 0 {
-                t.row
-            } else {
-                t.row_alt
-            },
+            // Flat rows like After Effects' Project panel (no stripes).
+            if selected { t.row_selected } else { t.row },
         );
+        let _ = i;
         let x0 = r.min.x + 8.0 + 14.0 * *depth as f32;
         if it.is_folder() {
             let open = app.ui.project_open_folders.contains(&id.0);
@@ -400,12 +399,18 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
             true
         };
         if !cell_edit(app, ui, &mut actions, "name", name_rect) {
+            // The selected item's name sits in a light cell with dark text.
+            if selected {
+                let g = lp.layout_no_wrap(it.name.clone(), Tokens::ui(12.0), Color32::BLACK);
+                let cell = Rect::from_min_max(pos2(x0 + 27.0, r.min.y + 1.0), pos2((x0 + 33.0 + g.size().x).min(name_clip.max.x), r.max.y - 1.0));
+                lp.with_clip_rect(name_clip.expand2(vec2(3.0, 0.0))).rect_filled(cell, 0.0, Color32::from_rgb(0xa6, 0xa6, 0xa6));
+            }
             lp.with_clip_rect(name_clip).text(
                 pos2(x0 + 30.0, r.center().y),
                 Align2::LEFT_CENTER,
                 &it.name,
                 Tokens::ui(12.0),
-                if selected { Color32::WHITE } else { t.text },
+                if selected { Color32::from_gray(0x16) } else { t.text },
             );
         }
         // Label swatch: click for the label colour menu.
@@ -481,6 +486,11 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 ItemKind::Folder if !app.ui.project_open_folders.remove(&id.0) => {
                     app.ui.project_open_folders.insert(id.0);
                 }
+                // Footage (not data) and solids open in the Footage panel.
+                ItemKind::Footage(f) if f.kind != effectcraft_engine::project::FootageKind::Data => {
+                    actions.push(("footage.open".into(), json!({"item": id.0})))
+                }
+                ItemKind::Solid(_) => actions.push(("footage.open".into(), json!({"item": id.0}))),
                 _ => {}
             }
         }
@@ -536,6 +546,16 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     app.ui.project_open_folders.insert(f.0);
                 }
             }
+            egui::DragAndDrop::clear_payload(&ctx);
+        }
+    }
+    // Files dragged from the Media Browser: import.
+    if let Some(DragPayload::Files(paths)) = egui::DragAndDrop::payload::<DragPayload>(&ctx).as_deref()
+        && hover_y.is_some()
+    {
+        lp.rect_stroke(list.shrink(1.0), 0.0, Stroke::new(1.0, t.accent.gamma_multiply(0.6)), egui::StrokeKind::Inside);
+        if ctx.input(|i| i.pointer.any_released()) {
+            actions.push(("mediaBrowser.import".into(), json!({"paths": paths})));
             egui::DragAndDrop::clear_payload(&ctx);
         }
     }

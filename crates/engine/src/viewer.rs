@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 
+use effectcraft_color::{ColorSpace, space};
 use effectcraft_geom::vec2;
 use effectcraft_project::{Layer, LayerId};
 use effectcraft_raster::Image;
@@ -356,6 +357,273 @@ pub fn display_transform(px: &mut [[u8; 4]], channel: Channel, colorized: bool, 
                 [ex(un(r)), ex(un(g)), ex(un(b)), 255]
             }
         };
+    }
+}
+
+// ---------------------------------------------------------------- display colour management
+
+/// View ▸ Simulate Output: the output device a preview imitates.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SimProfile {
+    #[default]
+    None,
+    /// HDTV (Rec. 709): ITU-R BT.709 primaries, BT.1886 gamma 2.4.
+    Rec709,
+    /// UHDTV (Rec. 2020): ITU-R BT.2020 primaries, gamma 2.4.
+    Rec2020,
+    /// Display P3: SMPTE EG 432-1 primaries, D65, the sRGB curve.
+    P3,
+    /// Internet Standard RGB (sRGB, IEC 61966-2-1).
+    Srgb,
+    /// Linear light with Rec. 709 primaries (no transfer curve).
+    Linear,
+    /// SDTV NTSC: SMPTE 170M primaries, gamma 2.4.
+    Ntsc,
+    /// SDTV PAL: EBU Tech 3213 primaries, gamma 2.4.
+    Pal,
+    /// Legacy Macintosh RGB: Rec. 709 primaries, gamma 1.8.
+    Mac18,
+}
+
+/// A transfer curve of a simulated or display profile.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Curve {
+    Srgb,
+    Gamma(f32),
+    Linear,
+    /// A colour space's own curve (PQ, HLG…).
+    Space(space::Curve),
+}
+
+impl Curve {
+    fn decode(self, v: f32) -> f32 {
+        let a = v.abs();
+        let l = match self {
+            Curve::Srgb => srgb_to_linear(a),
+            Curve::Gamma(g) => a.powf(g),
+            Curve::Linear => a,
+            Curve::Space(c) => c.decode(a),
+        };
+        l.copysign(v)
+    }
+    fn encode(self, v: f32) -> f32 {
+        let a = v.abs();
+        let e = match self {
+            Curve::Srgb => linear_to_srgb(a),
+            Curve::Gamma(g) => a.powf(1.0 / g),
+            Curve::Linear => a,
+            Curve::Space(c) => c.encode(a),
+        };
+        e.copysign(v)
+    }
+}
+
+const P709: [[f64; 2]; 3] = [[0.640, 0.330], [0.300, 0.600], [0.150, 0.060]];
+
+impl SimProfile {
+    pub const ALL: [SimProfile; 9] = [
+        SimProfile::None,
+        SimProfile::Rec709,
+        SimProfile::Ntsc,
+        SimProfile::Pal,
+        SimProfile::Mac18,
+        SimProfile::Srgb,
+        SimProfile::Rec2020,
+        SimProfile::P3,
+        SimProfile::Linear,
+    ];
+
+    pub fn id(self) -> &'static str {
+        match self {
+            SimProfile::None => "none",
+            SimProfile::Rec709 => "rec709",
+            SimProfile::Rec2020 => "rec2020",
+            SimProfile::P3 => "p3",
+            SimProfile::Srgb => "srgb",
+            SimProfile::Linear => "linear",
+            SimProfile::Ntsc => "ntsc",
+            SimProfile::Pal => "pal",
+            SimProfile::Mac18 => "mac18",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SimProfile::None => "No Output Simulation",
+            SimProfile::Rec709 => "HDTV (Rec. 709)",
+            SimProfile::Rec2020 => "UHDTV (Rec. 2020)",
+            SimProfile::P3 => "Display P3",
+            SimProfile::Srgb => "Internet Standard RGB (sRGB)",
+            SimProfile::Linear => "Linear (1.0 Gamma)",
+            SimProfile::Ntsc => "SDTV NTSC",
+            SimProfile::Pal => "SDTV PAL",
+            SimProfile::Mac18 => "Legacy Macintosh RGB (Gamma 1.8)",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<SimProfile> {
+        let k: String = s.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>().to_ascii_lowercase();
+        SimProfile::ALL
+            .into_iter()
+            .find(|p| p.id() == k || p.label().chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>().to_ascii_lowercase() == k)
+            .or(match k.as_str() {
+                "off" => Some(SimProfile::None),
+                "hdtv" | "bt709" => Some(SimProfile::Rec709),
+                "bt2020" | "uhdtv" => Some(SimProfile::Rec2020),
+                "displayp3" => Some(SimProfile::P3),
+                "lin" | "linearlight" => Some(SimProfile::Linear),
+                _ => None,
+            })
+    }
+
+    /// (primaries, curve); `None` for No Output Simulation.
+    pub fn space(self) -> Option<([[f64; 2]; 3], Curve)> {
+        Some(match self {
+            SimProfile::None => return None,
+            SimProfile::Rec709 => (P709, Curve::Gamma(2.4)),
+            SimProfile::Rec2020 => (ColorSpace::Rec2020.primaries(), Curve::Gamma(2.4)),
+            SimProfile::P3 => (ColorSpace::DisplayP3.primaries(), Curve::Srgb),
+            SimProfile::Srgb => (P709, Curve::Srgb),
+            SimProfile::Linear => (P709, Curve::Linear),
+            SimProfile::Ntsc => ([[0.630, 0.340], [0.310, 0.595], [0.155, 0.070]], Curve::Gamma(2.4)),
+            SimProfile::Pal => ([[0.640, 0.330], [0.290, 0.600], [0.150, 0.060]], Curve::Gamma(2.4)),
+            SimProfile::Mac18 => (P709, Curve::Gamma(1.8)),
+        })
+    }
+}
+
+/// View ▸ Simulate Output setting: the profile, and Preserve RGB (the output numbers are sent
+/// to the display unconverted, as on a device that doesn't colour-manage).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Simulation {
+    pub profile: SimProfile,
+    pub preserve_rgb: bool,
+}
+
+/// An RGB space for viewer conversions: primaries (D65) and curve.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Prof {
+    /// Linear RGB → XYZ D65.
+    xyz: [[f64; 3]; 3],
+    curve: Curve,
+}
+
+impl Prof {
+    fn new(prims: [[f64; 2]; 3], curve: Curve) -> Prof {
+        Prof { xyz: space::rgb_to_xyz(prims, D65), curve }
+    }
+    /// A colour space (linear when `linear`).
+    fn of(cs: ColorSpace, linear: bool) -> Prof {
+        let curve = if linear { Curve::Linear } else { Curve::Space(cs.curve()) };
+        Prof { xyz: cs.to_xyz(), curve }
+    }
+}
+
+/// A linear-RGB matrix plus curves between two profiles.
+#[derive(Clone, Copy, Debug)]
+struct Conv {
+    from: Curve,
+    m: Option<[[f32; 3]; 3]>,
+    to: Curve,
+}
+
+impl Conv {
+    fn new(a: Prof, b: Prof) -> Conv {
+        let m = (a.xyz != b.xyz).then(|| {
+            let m = space::mul(&space::invert(&b.xyz), &a.xyz);
+            m.map(|r| r.map(|v| v as f32))
+        });
+        Conv { from: a.curve, m, to: b.curve }
+    }
+    fn apply(&self, c: [f32; 3]) -> [f32; 3] {
+        let l = c.map(|v| self.from.decode(v));
+        let l = match &self.m {
+            Some(m) => [0, 1, 2].map(|i| m[i][0] * l[0] + m[i][1] * l[1] + m[i][2] * l[2]),
+            None => l,
+        };
+        l.map(|v| self.to.encode(v))
+    }
+}
+
+const D65: [f64; 2] = [0.3127, 0.3290];
+
+/// The viewer's colour conversion from the rendered frame (sRGB-encoded display pixels) to
+/// what the monitor shows (View ▸ Use Display Color Management, View ▸ Simulate Output and
+/// the display profile in Settings ▸ Previews). `None` when nothing changes.
+#[derive(Clone, Copy, Debug)]
+pub struct DisplayColor {
+    sim: Option<(Conv, Option<Conv>)>,
+    display: Option<Conv>,
+}
+
+impl DisplayColor {
+    /// `working`: the project working space (None = unmanaged: nothing is converted, as in
+    /// After Effects); `linear`: the working space is linear; `source`: the space rendered
+    /// frames are in (the project's output space, sRGB by default); `dcm`: Use Display Color
+    /// Management; `display`: the monitor's space.
+    pub fn new(working: Option<ColorSpace>, linear: bool, source: ColorSpace, dcm: bool, display: ColorSpace, sim: Simulation) -> Option<DisplayColor> {
+        let ws = working?;
+        let src = Prof::of(source, false);
+        if !dcm {
+            // Without display colour management the working space's numbers go to the screen.
+            let raw = Conv::new(src, Prof::of(ws, linear));
+            return Some(DisplayColor { sim: None, display: Some(raw) });
+        }
+        let sim = sim.profile.space().map(|(prims, curve)| {
+            let out = Prof::new(prims, curve);
+            (
+                Conv::new(src, out),
+                Some(if sim.preserve_rgb {
+                    Conv::new(Prof::new(P709, Curve::Srgb), Prof::of(display, false))
+                } else {
+                    Conv::new(out, Prof::of(display, false))
+                }),
+            )
+        });
+        let display = (display != source).then(|| Conv::new(src, Prof::of(display, false)));
+        (sim.is_some() || display.is_some()).then_some(DisplayColor { sim, display })
+    }
+
+    /// The conversion a session's viewer uses.
+    pub fn of(s: &crate::Session) -> Option<DisplayColor> {
+        let st = &s.project.settings;
+        let display = ColorSpace::parse(&s.prefs.previews.display_profile).unwrap_or(ColorSpace::Srgb);
+        let v = &s.state.viewer;
+        let linear = st.working_space.is_some_and(|w| st.linearize || w.is_linear());
+        DisplayColor::new(st.working_space, linear, st.output_space.unwrap_or(ColorSpace::Srgb), v.display_color_management, display, v.simulation)
+    }
+
+    /// One straight colour (0..1 floats).
+    pub fn apply_straight(&self, c: [f32; 3]) -> [f32; 3] {
+        let c = match &self.sim {
+            // Through the output's 8-bit encoding (clipped and quantised like the real output),
+            // then shown on the display: converted from the output profile, or — Preserve RGB —
+            // the output numbers taken as if they were sRGB.
+            Some((to, show)) => {
+                let o = to.apply(c).map(|v| (v.clamp(0.0, 1.0) * 255.0).round() / 255.0);
+                show.map_or(o, |b| b.apply(o))
+            }
+            None => self.display.map_or(c, |d| d.apply(c)),
+        };
+        c.map(|v| v.clamp(0.0, 1.0))
+    }
+
+    /// Premultiplied 8-bit RGBA pixels in place.
+    pub fn apply(&self, px: &mut [[u8; 4]]) {
+        use rayon::prelude::*;
+        px.par_iter_mut().for_each(|p| {
+            let a = p[3];
+            if a == 0 {
+                return;
+            }
+            let af = a as f32 / 255.0;
+            let c = [0, 1, 2].map(|i| (p[i] as f32 / 255.0 / af).min(1.0));
+            let o = self.apply_straight(c);
+            for i in 0..3 {
+                p[i] = (o[i] * af * 255.0 + 0.5) as u8;
+            }
+        });
     }
 }
 

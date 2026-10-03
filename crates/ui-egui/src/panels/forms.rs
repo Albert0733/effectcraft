@@ -136,6 +136,19 @@ pub fn open_form(app: &mut EffectcraftApp, id: &str, p: &Value) -> bool {
                 1,
             )],
         ),
+        // Puppet tool ▸ Record Options.
+        "puppet.recordOptions" if !has(p, &["speed", "smoothing", "useDraftDeformation", "showMesh"]) => {
+            let o = &s.state.puppet;
+            (
+                "Puppet Record Options".into(),
+                vec![
+                    Field::num("speed", "Speed (%)", o.record_speed),
+                    Field::num("smoothing", "Smoothing", o.record_smoothing),
+                    Field::bool("useDraftDeformation", "Use Draft Deformation", o.record_draft),
+                    Field::bool("showMesh", "Show Mesh", o.record_show_mesh),
+                ],
+            )
+        }
         "layer.setTransform" if !has(p, &["value"]) => {
             let prop = p.get("prop").and_then(Value::as_str).unwrap_or("position");
             let cur = layer.and_then(|l| l.transform()).and_then(|tr| tr.get(if prop == "anchorPoint" { "anchor" } else { prop })).map(|pr| pr.value_at(lt));
@@ -286,6 +299,10 @@ pub fn open_form(app: &mut EffectcraftApp, id: &str, p: &Value) -> bool {
                             ("HDTV (Rec. 709)", json!("rec709")),
                             ("Rec. 2020", json!("rec2020")),
                             ("Display P3", json!("p3")),
+                            ("ACEScg", json!("acescg")),
+                            ("ACES2065-1", json!("aces2065")),
+                            ("Rec. 2100 PQ", json!("rec2100pq")),
+                            ("Rec. 2100 HLG", json!("rec2100hlg")),
                         ],
                         f.color_profile.map_or(0, |c| 1 + effectcraft_engine::project::ColorSpace::ALL.iter().position(|x| *x == c).unwrap_or(0)),
                     ),
@@ -316,8 +333,27 @@ pub fn open_form(app: &mut EffectcraftApp, id: &str, p: &Value) -> bool {
                     Field::choice(
                         "timeDisplay",
                         "Time display style",
-                        &[("Timecode", json!("timecode")), ("Frames", json!("frames"))],
-                        usize::from(matches!(st.time_display, effectcraft_engine::project::TimeDisplayStyle::Frames)),
+                        &[
+                            ("Timecode", json!("timecode")),
+                            ("Frames", json!("frames")),
+                            ("Feet + Frames (35mm)", json!("feet35")),
+                            ("Feet + Frames (16mm)", json!("feet16")),
+                        ],
+                        {
+                            use effectcraft_engine::project::TimeDisplayStyle as T;
+                            match st.time_display {
+                                T::Timecode => 0,
+                                T::Frames => 1,
+                                T::Feet35 => 2,
+                                T::Feet16 => 3,
+                            }
+                        },
+                    ),
+                    Field::choice(
+                        "colorEngine",
+                        "Color engine",
+                        &[("Adobe-style built-in", json!("adobe")), ("OCIO (built-in ACES config)", json!("ocio"))],
+                        usize::from(st.color_engine == effectcraft_engine::project::ColorEngine::Ocio),
                     ),
                     Field::choice(
                         "workingSpace",
@@ -328,11 +364,42 @@ pub fn open_form(app: &mut EffectcraftApp, id: &str, p: &Value) -> bool {
                             ("HDTV (Rec. 709)", json!("rec709")),
                             ("Rec. 2020", json!("rec2020")),
                             ("Display P3", json!("p3")),
+                            ("ACEScg", json!("acescg")),
+                            ("ACES2065-1", json!("aces2065")),
                         ],
-                        st.working_space.map_or(0, |c| 1 + effectcraft_engine::project::ColorSpace::ALL.iter().position(|x| *x == c).unwrap_or(0)),
+                        st.working_space.map_or(0, |c| 1 + effectcraft_engine::project::ColorSpace::WORKING.iter().position(|x| *x == c).unwrap_or(0)),
                     ),
                     Field::bool("linearize", "Linearize working space", st.linearize),
                     Field::bool("blendLinear", "Blend colors using 1.0 gamma", st.blend_linear),
+                    Field::choice(
+                        "hdr",
+                        "HDR on SDR displays and outputs",
+                        &[("Clip", json!("clip")), ("Compand", json!("compand")), ("Tone map", json!("toneMap"))],
+                        st.hdr as usize,
+                    ),
+                    Field::choice(
+                        "outputSpace",
+                        "Output color space",
+                        &[
+                            ("sRGB IEC61966-2.1 (default)", json!("default")),
+                            ("HDTV (Rec. 709)", json!("rec709")),
+                            ("Rec. 2020", json!("rec2020")),
+                            ("Display P3", json!("p3")),
+                            ("Rec. 2100 PQ (HDR)", json!("rec2100pq")),
+                            ("Rec. 2100 HLG (HDR)", json!("rec2100hlg")),
+                        ],
+                        {
+                            use effectcraft_engine::project::ColorSpace as C;
+                            match st.output_space {
+                                Some(C::Rec709) => 1,
+                                Some(C::Rec2020) => 2,
+                                Some(C::DisplayP3) => 3,
+                                Some(C::Rec2100Pq) => 4,
+                                Some(C::Rec2100Hlg) => 5,
+                                _ => 0,
+                            }
+                        },
+                    ),
                     // Video Rendering and Effects ▸ Use.
                     Field::choice(
                         "renderer",
@@ -340,6 +407,60 @@ pub fn open_form(app: &mut EffectcraftApp, id: &str, p: &Value) -> bool {
                         &[(gpu_label.as_str(), json!("gpu")), ("Mercury Software Only", json!("software"))],
                         usize::from(!st.gpu_acceleration),
                     ),
+                ],
+            )
+        }
+        "layer.autoTrace" if !has(p, &["channel", "timeSpan", "threshold"]) => (
+            "Auto-trace".into(),
+            vec![
+                Field::choice("timeSpan", "Time Span", &[("Current Frame", json!("currentFrame")), ("Work Area", json!("workArea"))], 0),
+                Field::choice(
+                    "channel",
+                    "Channel",
+                    &[("Alpha", json!("alpha")), ("Red", json!("red")), ("Green", json!("green")), ("Blue", json!("blue")), ("Luminance", json!("luminance"))],
+                    0,
+                ),
+                Field::bool("invert", "Invert", false),
+                Field::num("blur", "Blur (pixels before auto-trace)", 1.0),
+                Field::num("tolerance", "Tolerance (pixels)", 1.0),
+                Field::num("threshold", "Threshold (%)", 50.0),
+                Field::num("minimumArea", "Minimum Area (pixels)", 10.0),
+                Field::num("cornerRoundness", "Corner Roundness (%)", 50.0),
+                Field::bool("applyToNewLayer", "Apply To New Layer", false),
+            ],
+        ),
+        "layer.sceneEditDetection" if !has(p, &["mode"]) => (
+            "Scene Edit Detection".into(),
+            vec![
+                Field::choice(
+                    "mode",
+                    "Action",
+                    &[("Create Markers", json!("markers")), ("Split Layers", json!("split")), ("Split and Precompose", json!("splitPrecompose"))],
+                    0,
+                ),
+                Field::num("threshold", "Sensitivity threshold (0–1, lower finds more)", 0.25),
+            ],
+        ),
+        "layer.alignVideoToData" if !has(p, &["data", "videoStart"]) => {
+            let data: Vec<(String, Value)> = s
+                .project
+                .items
+                .values()
+                .filter(|i| matches!(&i.kind, effectcraft_engine::project::ItemKind::Footage(f) if f.kind == effectcraft_engine::project::FootageKind::Data))
+                .map(|i| (i.name.clone(), json!(i.id.0)))
+                .collect();
+            if data.is_empty() {
+                info(app, "Align Video to Data", "Import a data file (JSON, CSV or TSV with a time column) first: File ▸ Import.");
+                return true;
+            }
+            let opts: Vec<(&str, Value)> = data.iter().map(|(n, v)| (n.as_str(), v.clone())).collect();
+            (
+                "Align Video to Data".into(),
+                vec![
+                    Field::choice("data", "Data", &opts, 0),
+                    Field::text("key", "Time field (empty: automatic)", ""),
+                    Field::text("videoStart", "Video start (ISO date-time, hh:mm:ss, timecode; empty: file date)", ""),
+                    Field::num("dataStart", "First sample at (comp seconds)", 0.0),
                 ],
             )
         }

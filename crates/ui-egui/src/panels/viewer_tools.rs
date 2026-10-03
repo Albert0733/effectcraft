@@ -282,11 +282,11 @@ pub(crate) fn proportional_grid(app: &EffectcraftApp, painter: &egui::Painter, c
     let (nx, ny) = (g.proportional_horizontal.max(1), g.proportional_vertical.max(1));
     for i in 1..nx {
         let x = comp_rect.min.x + comp_rect.width() * i as f32 / nx as f32;
-        painter.line_segment([pos2(x, comp_rect.min.y), pos2(x, comp_rect.max.y)], s);
+        super::viewer::styled_line(painter, [pos2(x, comp_rect.min.y), pos2(x, comp_rect.max.y)], s, &g.grid_style);
     }
     for i in 1..ny {
         let y = comp_rect.min.y + comp_rect.height() * i as f32 / ny as f32;
-        painter.line_segment([pos2(comp_rect.min.x, y), pos2(comp_rect.max.x, y)], s);
+        super::viewer::styled_line(painter, [pos2(comp_rect.min.x, y), pos2(comp_rect.max.x, y)], s, &g.grid_style);
     }
 }
 
@@ -307,8 +307,13 @@ pub(crate) fn showing_snapshot(app: &EffectcraftApp, ctx: &egui::Context) -> boo
     app.session.snapshot.is_some() && (app.session.state.viewer.show_snapshot || f5)
 }
 
-fn transformed(img: &egui::ColorImage, ch: Channel, colorized: bool, stops: f32) -> egui::ColorImage {
+/// Show Channel and exposure, then the display colour conversion (View ▸ Use Display Color
+/// Management / Simulate Output).
+fn transformed(img: &egui::ColorImage, ch: Channel, colorized: bool, stops: f32, dc: Option<vw::DisplayColor>) -> egui::ColorImage {
     let mut px: Vec<[u8; 4]> = img.pixels.iter().map(|c| c.to_array()).collect();
+    if let Some(dc) = dc.filter(|_| matches!(ch, Channel::Rgb | Channel::RgbStraight)) {
+        dc.apply(&mut px);
+    }
     vw::display_transform(&mut px, ch, colorized, stops);
     egui::ColorImage::new(img.size, px.into_iter().map(|a| Color32::from_rgba_premultiplied(a[0], a[1], a[2], a[3])).collect())
 }
@@ -319,6 +324,11 @@ fn transformed(img: &egui::ColorImage, ch: Channel, colorized: bool, stops: f32)
 pub(crate) fn draw_frame(app: &mut EffectcraftApp, ctx: &egui::Context, painter: &egui::Painter, comp_rect: Rect, cid: ItemId, ectx: &EvalCtx) {
     let opts = app.session.state.viewer.clone();
     let snap = showing_snapshot(app, ctx);
+    // Settings ▸ Video ▸ Mirror on Computer Monitor off: playback goes to Video Preview only.
+    if crate::prefs_live::main_viewer_hidden(app) && !snap {
+        painter.text(comp_rect.center(), Align2::CENTER_CENTER, "Playing on Video Preview", Tokens::ui(13.0), Color32::from_gray(150));
+        return;
+    }
     if opts.fast_previews == FastPreviews::Wireframe && !snap {
         let zoom = comp_rect.width() / ectx.comp.width.max(1) as f32;
         let map = ViewerMap { origin: comp_rect.min, zoom, comp: [ectx.comp.width as f32, ectx.comp.height as f32], area: comp_rect };
@@ -336,14 +346,18 @@ pub(crate) fn draw_frame(app: &mut EffectcraftApp, ctx: &egui::Context, painter:
         }
         return;
     }
-    let plain = opts.channel == Channel::Rgb && opts.exposure == 0.0;
+    let dc = vw::DisplayColor::of(&app.session);
+    // The display conversion's inputs, for the texture caches.
+    let dc_key = format!("{:?}{:?}{}", dc.is_some(), opts.simulation, app.session.prefs.previews.display_profile)
+        + &format!("{:?}{:?}{}", app.session.project.settings.working_space, app.session.project.settings.output_space, opts.display_color_management);
+    let plain = opts.channel == Channel::Rgb && opts.exposure == 0.0 && dc.is_none();
     let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
     if snap {
         let Some(s) = app.session.snapshot.clone() else { return };
         let key = {
             use std::hash::{Hash, Hasher};
             let mut h = std::collections::hash_map::DefaultHasher::new();
-            (std::sync::Arc::as_ptr(&s.image) as usize, opts.channel.id(), opts.colorized, opts.exposure.to_bits()).hash(&mut h);
+            (std::sync::Arc::as_ptr(&s.image) as usize, opts.channel.id(), opts.colorized, opts.exposure.to_bits(), &dc_key).hash(&mut h);
             h.finish()
         };
         let id = egui::Id::new("viewer-snapshot-tex");
@@ -351,7 +365,7 @@ pub(crate) fn draw_frame(app: &mut EffectcraftApp, ctx: &egui::Context, painter:
             Some((k, tex)) if k == key => tex,
             _ => {
                 let img = crate::frames::to_color_image(&s.image);
-                let img = if plain { img } else { transformed(&img, opts.channel, opts.colorized, opts.exposure) };
+                let img = if plain { img } else { transformed(&img, opts.channel, opts.colorized, opts.exposure, dc) };
                 let tex = ctx.load_texture("viewer-snapshot", img, egui::TextureOptions::LINEAR);
                 ctx.data_mut(|d| d.insert_temp(id, (key, tex.clone())));
                 tex
@@ -391,17 +405,18 @@ pub(crate) fn draw_frame(app: &mut EffectcraftApp, ctx: &egui::Context, painter:
         rect
     };
     let Some(src) = app.viewer_image.clone() else { return };
+    let zoom_opts = super::viewer::zoom_texture_options(app.session.prefs.viewer_zoom_smooth());
     let key = {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
-        (std::sync::Arc::as_ptr(&src) as usize, opts.channel.id(), opts.colorized, opts.exposure.to_bits()).hash(&mut h);
+        (std::sync::Arc::as_ptr(&src) as usize, opts.channel.id(), opts.colorized, opts.exposure.to_bits(), &dc_key).hash(&mut h);
         h.finish()
     };
     let id = egui::Id::new("viewer-display-tex");
     let tex = match ctx.data(|d| d.get_temp::<(u64, egui::TextureHandle)>(id)) {
         Some((k, tex)) if k == key => tex,
         _ => {
-            let tex = ctx.load_texture("viewer-display", transformed(&src, opts.channel, opts.colorized, opts.exposure), egui::TextureOptions::LINEAR);
+            let tex = ctx.load_texture("viewer-display", transformed(&src, opts.channel, opts.colorized, opts.exposure, dc), zoom_opts);
             ctx.data_mut(|d| d.insert_temp(id, (key, tex.clone())));
             tex
         }
@@ -679,7 +694,13 @@ pub(crate) fn bottom_bar(app: &mut EffectcraftApp, ui: &mut egui::Ui, bar: Rect,
         if let Some(i) = popup(app, ui, "vw-cam-pop", r, &items, "view3dItem") {
             let _ = app.session.execute("view.set3DView", json!({"view": View3D::ALL[i].id()}));
         }
-        x = r.max.x + 6.0;
+        x = r.max.x + 4.0;
+        // Extended Viewer (Settings ▸ 3D): custom views and Draft 3D show past the comp frame.
+        let on = app.session.prefs.three_d.extended_viewer;
+        if tog(ui, &mut app.auto, &mut x, Icon::ExtendedViewer, on, "extendedViewer", "Extended Viewer").0 {
+            let _ = app.session.execute("view.extendedViewer", json!({}));
+        }
+        x += 2.0;
     }
     // Current time.
     let tc = crate::panels::timecode(&app.session, comp, time);
