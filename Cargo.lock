@@ -1327,6 +1327,7 @@ dependencies = [
  "effectcraft-raster",
  "effectcraft-render",
  "effectcraft-time",
+ "exr",
  "filmcraft-codecs",
  "filmcraft-color",
  "filmcraft-frame",
@@ -1335,6 +1336,7 @@ dependencies = [
  "image",
  "log",
  "rayon",
+ "serde_json",
  "thiserror 2.0.21",
 ]
 
@@ -1768,6 +1770,7 @@ dependencies = [
  "miniz_oxide 0.8.9",
  "num-complex",
  "pulp",
+ "rayon-core",
  "smallvec",
  "zune-inflate",
 ]

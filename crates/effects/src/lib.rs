@@ -11,6 +11,7 @@ mod blur2;
 mod blur3;
 mod channel;
 mod channel2;
+mod channel3d;
 mod color2;
 mod color3;
 mod color_fx;
@@ -57,7 +58,7 @@ pub use color2::Curve;
 use effectcraft_keyframe::Value;
 use effectcraft_project::build::Ids;
 use effectcraft_project::{GroupKind, ParamUi, PropGroup, Property};
-pub use effectcraft_raster::Image;
+pub use effectcraft_raster::{AuxChannels, Image};
 
 /// Effect categories in Effects & Presets order.
 pub const CATEGORIES: &[&str] = &[
@@ -238,6 +239,13 @@ pub trait EffectHost: Sync {
     fn layer_at(&self, _id: u64, _comp_time: f64, _masks_and_effects: bool) -> Option<LayerPixels> {
         None
     }
+    /// Auxiliary 3D channels (depth, object / material IDs, normals, Cryptomatte, any named
+    /// EXR channel) of the effect's own layer source at the current time, in layer space (see
+    /// [`AuxChannels`]). `None` when the source has none (the 3D Channel effects then pass the
+    /// layer through).
+    fn aux(&self) -> Option<std::sync::Arc<AuxChannels>> {
+        None
+    }
 }
 
 /// Extra context the renderer may supply (all optional; `Default` is "nothing known").
@@ -366,6 +374,7 @@ pub fn registry() -> &'static [EffectSpec] {
         v.extend(keylight::specs());
         v.extend(mocha_shape::specs());
         v.extend(sim3::specs());
+        v.extend(channel3d::specs());
         v.extend(time_fx::specs());
         v.extend(audio_fx::specs());
         v.extend(paint::specs());
