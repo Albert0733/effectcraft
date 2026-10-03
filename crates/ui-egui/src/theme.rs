@@ -145,7 +145,7 @@ impl Tokens {
             radius_sm: 3.0,
             gap: 4.0,
             tab_h: 30.0,
-            row_h: 22.0,
+            row_h: 19.0,
             gradients: true,
         };
         match kind {

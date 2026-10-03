@@ -184,6 +184,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(align_data::specs());
         v.extend(content_fill::specs());
         v.extend(stubs::specs());
+        v.extend(crate::learn::specs());
         v
     })
 }

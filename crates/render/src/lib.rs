@@ -363,6 +363,9 @@ pub struct Renderer<'a> {
     /// Switches inherited from the precomp layers this comp is rendered through (see
     /// [`RenderOpts::nested_switches`]): the worst quality and whether motion blur is allowed.
     pub(crate) inherited: Option<(Quality, bool)>,
+    /// This renderer draws into the top-level frame's canvas (the top comp, or a collapsed
+    /// precomp drawn straight into it): the region of interest's offset applies.
+    top: bool,
 }
 
 /// How a collapsed precomp's 3D layers are placed in the parent (see `Renderer::collapse_into`).
@@ -407,6 +410,7 @@ impl<'a> Renderer<'a> {
             opacity_mul: 1.0,
             collapse3d: None,
             inherited: None,
+            top: true,
         }
     }
 
@@ -441,7 +445,7 @@ impl<'a> Renderer<'a> {
 
     /// A renderer for nested work (precomps, layers read by effects): one level deeper.
     fn nested(&self) -> Renderer<'a> {
-        Renderer { depth: self.depth + 1, outer: None, opacity_mul: 1.0, collapse3d: None, ..*self }
+        Renderer { depth: self.depth + 1, outer: None, opacity_mul: 1.0, collapse3d: None, top: false, ..*self }
     }
 
     /// The nested comp of a precomp layer whose transformations collapse into this comp: the
@@ -604,18 +608,28 @@ impl<'a> Renderer<'a> {
         let s = self.opts.scale;
         let w = ((comp.width as f64 * s).round() as u32).max(1);
         let h = ((comp.height as f64 * s).round() as u32).max(1);
-        // Region of interest on a comp with 3D layers: render the frame and crop it.
+        // Region of interest on a comp with 3D layers: render the frame and crop it. A region
+        // reaching past the comp frame (the Extended Viewer) renders Classic 3D natively — the
+        // planes project through the offset camera — and Advanced 3D as the frame, padded.
         if self.depth == 0
             && let Some(r) = self.opts.roi
             && comp.has_3d()
+            && (roi_inside(r, comp.width, comp.height) || comp.renderer == effectcraft_project::Renderer::Advanced3D)
         {
             let full = Renderer { opts: RenderOpts { roi: None, ..self.opts }, ..*self }.comp_frame(comp_id, t);
-            let (x0, y0) = ((r[0] * s).round().max(0.0) as u32, (r[1] * s).round().max(0.0) as u32);
+            let (x0, y0) = ((r[0] * s).round() as i64, (r[1] * s).round() as i64);
             let (rw, rh) = (((r[2] * s).round() as u32).max(1), ((r[3] * s).round() as u32).max(1));
             let mut out = Image::new(rw, rh);
-            for y in 0..rh.min(full.height.saturating_sub(y0)) {
-                for x in 0..rw.min(full.width.saturating_sub(x0)) {
-                    out.data[(y * rw + x) as usize] = full.data[((y + y0) * full.width + x + x0) as usize];
+            for y in 0..rh as i64 {
+                let sy = y + y0;
+                if sy < 0 || sy >= full.height as i64 {
+                    continue;
+                }
+                for x in 0..rw as i64 {
+                    let sx = x + x0;
+                    if sx >= 0 && sx < full.width as i64 {
+                        out.data[(y * rw as i64 + x) as usize] = full.data[(sy * full.width as i64 + sx) as usize];
+                    }
                 }
             }
             return out;
@@ -1124,12 +1138,17 @@ impl<'a> Renderer<'a> {
     /// The region of interest of a top-level 2D frame: (x, y) offset of the output in output
     /// pixels and its size. `None` renders the whole comp (no ROI, or a nested comp).
     pub(crate) fn roi_offset(&self) -> Option<(f64, f64, u32, u32)> {
-        let r = self.opts.roi.filter(|_| self.depth == 0)?;
+        let r = self.opts.roi.filter(|_| self.top)?;
         let s = self.opts.scale;
         if r[2] <= 0.0 || r[3] <= 0.0 {
             return None;
         }
         Some(((r[0] * s).round(), (r[1] * s).round(), ((r[2] * s).round() as u32).max(1), ((r[3] * s).round() as u32).max(1)))
+    }
+
+    /// The region of interest's offset in output pixels for 3D projection (0 without one).
+    pub(crate) fn out_offset(&self) -> (f64, f64) {
+        self.roi_offset().map_or((0.0, 0.0), |(x, y, _, _)| (x, y))
     }
 
     /// Scaled comp pixel → output pixel: the region of interest's offset.
@@ -1643,6 +1662,30 @@ pub fn adaptive_samples(travel: f64, per_frame: u32, limit: u32) -> usize {
     let lo = per_frame.clamp(2, 64) as f64;
     let hi = (limit.clamp(16, 256) as f64).max(lo);
     travel.ceil().clamp(lo, hi) as usize
+}
+
+/// A region of interest `[x, y, w, h]` lies within a `w`×`h` comp frame.
+pub fn roi_inside(r: [f64; 4], w: u32, h: u32) -> bool {
+    r[0] >= 0.0 && r[1] >= 0.0 && r[0] + r[2] <= w as f64 + 1e-6 && r[1] + r[3] <= h as f64 + 1e-6
+}
+
+/// The Extended Viewer's region of interest: the comp frame grown by `margin` × its size on every
+/// side (`margin` = 1 shows a pasteboard one comp wide around the frame), intersected with the
+/// `visible` comp-space rectangle `[x0, y0, x1, y1]` and snapped outward to whole 16 px steps from the frame edges
+/// so panning re-renders rarely. `None` when the visible area lies inside the frame.
+pub fn extended_region(w: u32, h: u32, visible: [f64; 4], margin: f64) -> Option<[f64; 4]> {
+    let (w, h) = (w as f64, h as f64);
+    let (mx, my) = (w * margin, h * margin);
+    let snap_lo = |v: f64| (v / 16.0).floor() * 16.0;
+    let snap_hi = |v: f64| (v / 16.0).ceil() * 16.0;
+    let x0 = snap_lo(visible[0].max(-mx)).min(0.0);
+    let y0 = snap_lo(visible[1].max(-my)).min(0.0);
+    let x1 = w + snap_hi(visible[2].min(w + mx) - w).max(0.0);
+    let y1 = h + snap_hi(visible[3].min(h + my) - h).max(0.0);
+    if x0 >= 0.0 && y0 >= 0.0 && x1 <= w && y1 <= h {
+        return None;
+    }
+    Some([x0, y0, x1 - x0, y1 - y0])
 }
 
 pub fn render_frame(project: &Project, comp: ItemId, t: Tick, scale: f64) -> Image {

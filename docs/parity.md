@@ -131,9 +131,9 @@ the disk cache in the formats wave; the 3D Camera Tracker in M12.6.)
 | Animation | 70% | 9.0 | puppet depth beyond pins and recording (puppet pin recording with Record Options landed in M13.1), Wiggler/Smoother/Motion Sketch (motion-path handles and the graph editor transform box landed in M5.8; keyframe colour labels and Select Keyframe Label Group, Graph Editor snapping to markers / layer ends in M13.5) |
 | Text | ≈ 94% | 0.5 | no extruded strokes, variable-axis animation changes outlines but not advances (OpenType features — stylistic sets, discretionary ligatures, contextual / stylistic alternates, swash, titling, ordinals, fractions, figure styles, true small caps / all small caps and superior / inferior glyphs with faux fallback — per character with the Character panel's OpenType popup and `text.fontFeatures` landed in M13.2; vertical Roman / Tate-Chu-Yoko, forced LTR paragraphs, caret on animated and path text, Variable Font Axes and Lottie style runs landed in M13.5; extruded, bevelled text in M7.6; per-character styles, paragraph settings, on-canvas editing and the `sourceText` style API in M9.9–M9.10) |
 | Web | 85% | 1.0 | viewer frames and Roto Brush propagation still on the page's thread; GPU effects in the browser (browser storage, Web Audio, Web Worker renders/analyses, WebGPU viewer and offline install landed in M15.2) |
-| 3D | 85% | 6.5 | multi-view layouts, iris shapes in Advanced 3D's depth of field, collapsed 3D precomps in Advanced 3D, the Extended Viewer; collapsed precomps of another size seen through the parent's camera render (fixed in M13.2); stereo rigs, orbit nulls, lights controlled by the camera, cameras/lights from glTF models, environment backgrounds, Advanced 3D motion blur, blend modes and track mattes landed in M7.7; Classic 3D iris-shaped bokeh with highlights, progressive depth of field on tilted layers and the focus-link commands landed in M13.5; Advanced 3D (glTF/OBJ models, primitives, extruded text and shapes, PBR, image-based light, shadow maps, GPU rasteriser) in M7.4–M7.6 |
+| 3D | 85% | 6.5 | multi-view layouts, iris shapes in Advanced 3D's depth of field, collapsed 3D precomps in Advanced 3D, the Extended Viewer for Advanced 3D comps (Classic 3D Extended Viewer landed in M13.5 UI completion); collapsed precomps of another size seen through the parent's camera render (fixed in M13.2); stereo rigs, orbit nulls, lights controlled by the camera, cameras/lights from glTF models, environment backgrounds, Advanced 3D motion blur, blend modes and track mattes landed in M7.7; Classic 3D iris-shaped bokeh with highlights, progressive depth of field on tilted layers and the focus-link commands landed in M13.5; Advanced 3D (glTF/OBJ models, primitives, extruded text and shapes, PBR, image-based light, shadow maps, GPU rasteriser) in M7.4–M7.6 |
 | Effects | ≈ 80% | 4.0 | GPU versions of the remaining effects (58 run on the GPU since M12.7) and the missing controls listed as partial in [effects.md](effects.md) (every After Effects effect exists since M9.11, M12.5 and M12.6; parameter names, order, twirl-downs, popups, units and defaults were aligned in M9.12) |
-| Interface | 74% | 5.0 | a richer Learn area (Timeline outline and Project panel columns scroll horizontally, the Layer Style dialog, ROI resize handles, Pan Behind snapping and 3D Reference Axes landed in M13.5; native macOS menu bar, Timeline columns/search/reveal-add, Home screen with recent projects and all AE workspaces landed; viewer rulers/snapping/channels/snapshots landed in M0.13) |
+| Interface | 74% | 5.0 | more Learn tutorials and pixel-level fidelity of dialogs (the Home ▸ Learn tab with interactive tutorials and a UI fidelity pass landed in M13.5 UI completion; Timeline outline and Project panel columns scroll horizontally, the Layer Style dialog, ROI resize handles, Pan Behind snapping and 3D Reference Axes landed in M13.5; native macOS menu bar, Timeline columns/search/reveal-add, Home screen with recent projects and all AE workspaces landed; viewer rulers/snapping/channels/snapshots landed in M0.13) |
 | Project | ≈ 68% | 5.5 | auto-save, folder moves, OCIO displays beyond the built-in tone map (Color Engine with OCIO/ACES working spaces, HDR compand/tone mapping, Rec. 2100 PQ/HLG output, Feet + Frames, display colour management, Simulate Output and the locked viewer landed in M7.7; proxies and Interpret Footage fields / pixel aspect / alpha guess landed: PRJ-8, PRJ-3) |
 | Masks & roto | 74% | 5.0 | Roto Brush's learned (3.0) segmentation model (variable-width mask feather points with the Mask Feather tool landed in M13.5; mask tracking and Mask Interpolation landed in M6.6; Roto Brush & Refine Edge with graph-cut segmentation, flow propagation, edge matting, decontamination and Freeze in M6.7) |
 | Preview | 66% | 4.0 | GPU bokeh depth of field, wireframes and Advanced 3D compositing (Classic 3D runs and adjustment layers composite on the GPU since M12.7; persistent disk cache with the blue cache bar landed; region of interest, snapshots, exposure and Fast Previews landed in M0.13) |
@@ -177,6 +177,24 @@ style runs; the Layer Style dialog (LYR-9); Graph Editor snapping to markers and
 (ANM-4; the reference graph existed); viewer ROI resize handles, Pan Behind snapping and 3D
 Reference Axes; Animate Text ▸ Variable Font Axes. Remaining in these rows: Lottie can't carry
 taper/wave, Advanced 3D's DOF has no iris shapes, and variable axes don't change advances.
+
+## Update: M13.5 UI completion & fidelity
+
+**Extended Viewer** (Settings ▸ 3D, the viewer's Extended Viewer button, `view.extendedViewer`):
+custom 3D views (and the Active Camera view with Draft 3D on) render the visible pasteboard
+around the comp frame (the frame is outlined) so 3D layers reaching past the frame stay
+visible; Classic 3D planes project through the offset canvas natively, Advanced 3D comps show
+the frame only. **Home ▸ Learn**: three original interactive tutorials (Animate a title, Track
+and attach, Make a 3D scene) whose steps highlight their UI target by automation id, advance when
+the user runs the step's command, and can be performed with Show me (`learn.list`,
+`learn.start`, `learn.step`, `learn.stop`, `learn.state`). **UI fidelity pass** against After
+Effects 2026 captures: compact 19 pt Timeline / Project rows, flat rows with dark hairlines,
+dark switch wells, the selected layer / item name in a light cell, label-coloured bars muted
+toward grey, the time navigator with blue end handles and the work area bar (with the cache
+bar under it) below the ruler, open twirl chevrons, a 16 pt current-time display, the
+workspace bar order (Default, Review, Learn, Small Screen, Standard) and a single breadcrumb row
+above the viewer. Not yet: Composition Settings / Render Queue / Settings dialogs compared
+pixel by pixel (no reference captures of them yet).
 
 ## Update: M13.6 panels and content tools
 

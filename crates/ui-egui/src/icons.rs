@@ -89,6 +89,8 @@ pub enum Icon {
     MaskVis,
     Checker,
     Region,
+    /// Extended Viewer: a small frame with corner ticks reaching outward.
+    ExtendedViewer,
     Plus,
     Minus,
     Close,
@@ -512,6 +514,12 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
         Region => {
             pen.rect(2.5, 2.5, 13.5, 13.5);
             pen.rect(5.5, 5.5, 10.5, 10.5);
+        }
+        ExtendedViewer => {
+            pen.rect(5.0, 5.0, 11.0, 11.0);
+            for (x, y, dx, dy) in [(2.0, 2.0, 1.0, 1.0), (14.0, 2.0, -1.0, 1.0), (2.0, 14.0, 1.0, -1.0), (14.0, 14.0, -1.0, -1.0)] {
+                pen.line(&[(x + dx * 3.0, y), (x, y), (x, y + dy * 3.0)]);
+            }
         }
         Plus => {
             pen.line(&[(8.0, 3.0), (8.0, 13.0)]);
