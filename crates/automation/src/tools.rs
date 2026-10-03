@@ -140,6 +140,15 @@ fn execute_command(b: &mut Backend, a: &Value) -> Result<Reply> {
     json_reply(b.exec(id, params)?)
 }
 
+fn run_script(b: &mut Backend, a: &Value) -> Result<Reply> {
+    let code = get(a, "code").and_then(Value::as_str).ok_or_else(|| Error::BadArgs("missing `code` (JavaScript)".into()))?;
+    let mut p = json!({"code": code});
+    if let Some(n) = get(a, "name") {
+        p["name"] = n.clone();
+    }
+    json_reply(b.exec("script.run", p)?)
+}
+
 fn get_project(b: &mut Backend, _: &Value) -> Result<Reply> {
     json_reply(b.exec("project.summary", json!({}))?)
 }
@@ -385,6 +394,21 @@ static TOOLS: &[ToolDef] = &[
             )
         },
         run: execute_command,
+    },
+    ToolDef {
+        name: "run_script",
+        description: "Run JavaScript with an After Effects-style scripting object model (app, app.project, items.addComp, comp.layers.addSolid/addText/addShape/addNull/addCamera/addLight, layer.property(\"ADBE Transform Group\").property(\"ADBE Position\").setValueAtTime(t, v), Effects.addProperty(\"ADBE Gaussian Blur 2\"), expressions, markers, renderQueue…). Every edit is an undoable engine command; app.beginUndoGroup/endUndoGroup make one undo step. Returns {ok, result (last expression value), output (writeLn/$.writeln/alert text), error: {message, line, column} | null}. File access is limited to the project folder unless the user allows scripts to write files.",
+        bridge_only: false,
+        schema: || {
+            schema(
+                json!({
+                    "code": {"type": "string", "description": "JavaScript source, e.g. `var c = app.project.items.addComp(\"Main\", 1920, 1080, 1, 5, 30); c.layers.addText(\"Hi\"); c.numLayers`."},
+                    "name": {"type": "string", "description": "Script name used in error messages (default `script`)."}
+                }),
+                &["code"],
+            )
+        },
+        run: run_script,
     },
     ToolDef {
         name: "get_project",

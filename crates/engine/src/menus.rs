@@ -949,6 +949,7 @@ Window
   Preview | window.panel {"panel":"preview"} | Cmd+3
   Progress | window.unavailablePanel {"panel":"progress"}
   Properties | window.panel {"panel":"properties"}
+  Script Console | window.panel {"panel":"scriptConsole"}
   Smoother | window.panel {"panel":"smoother"}
   Tools | window.panel {"panel":"tools"} | Cmd+1
   Tracker | window.panel {"panel":"tracker"}

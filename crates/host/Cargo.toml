@@ -1,6 +1,6 @@
 [package]
 name = "effectcraft-host"
-description = "Builds a fully wired EffectCraft session: media decoding (FilmCraft codecs), importer and the expression engine"
+description = "Builds a fully wired EffectCraft session: media decoding (FilmCraft codecs), importer, the expression engine and scripting"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -14,6 +14,7 @@ effectcraft-engine = { workspace = true }
 effectcraft-project = { workspace = true }
 effectcraft-media = { workspace = true }
 effectcraft-expr = { workspace = true }
+effectcraft-script = { workspace = true }
 effectcraft-export = { workspace = true }
 
 [dev-dependencies]

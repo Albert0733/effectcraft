@@ -1,5 +1,5 @@
-//! Audio effects (Effect > Audio): Backwards, Bass & Treble, Delay, Flange & Chorus,
-//! High-Low Pass, Modulator, Parametric EQ, Reverb, Stereo Mixer and Tone.
+//! Audio effects (Effect > Audio): Backwards, Bass & Treble, Compressor, Delay, Distortion,
+//! Flange & Chorus, Gate, High-Low Pass, Modulator, Parametric EQ, Reverb, Stereo Mixer and Tone.
 //!
 //! They are ordinary effect instances on a layer (so their parameters animate and show in
 //! Effect Controls), pass video through unchanged, and are applied to the layer's audio by the
@@ -12,7 +12,10 @@
 //! DSP is textbook: second-order sections use the public RBJ "Audio EQ Cookbook" formulas;
 //! Reverb is a Schroeder/Moorer network (parallel low-pass feedback combs into series
 //! all-passes, as in the published Freeverb description); chorus/flange/vibrato are modulated
-//! fractional delay lines.
+//! fractional delay lines. Compressor and Gate are feed-forward dynamics processors on a
+//! stereo-linked peak envelope (one-pole attack/release smoothing, the textbook quadratic soft-knee
+//! gain computer); Distortion is a static waveshaper (soft clip, hard clip, fold-back, bit crush)
+//! followed by a one-pole tone filter.
 
 use std::f64::consts::PI;
 
@@ -61,6 +64,20 @@ pub fn specs() -> Vec<EffectSpec> {
             ],
         ),
         spec(
+            "ec.audio.compressor",
+            "Compressor",
+            vec![
+                p("threshold", "Threshold (dB)", num(-20.0), slider(-60.0, 0.0, -60.0, 0.0, 2)),
+                p("ratio", "Ratio", num(4.0), slider(1.0, 30.0, 1.0, 20.0, 2)),
+                p("attack", "Attack (ms)", num(10.0), slider(0.0, 500.0, 0.0, 200.0, 2)),
+                p("release", "Release (ms)", num(100.0), slider(1.0, 5000.0, 1.0, 1000.0, 2)),
+                p("knee", "Knee (dB)", num(0.0), slider(0.0, 24.0, 0.0, 24.0, 2)),
+                p("makeupGain", "Makeup Gain (dB)", num(0.0), slider(-24.0, 36.0, 0.0, 24.0, 2)),
+                pp("dryOut", "Dry Out", pct(0.0)),
+                pp("wetOut", "Wet Out", pct(100.0)),
+            ],
+        ),
+        spec(
             "ec.audio.delay",
             "Delay",
             vec![
@@ -69,6 +86,19 @@ pub fn specs() -> Vec<EffectSpec> {
                 pp("feedback", "Feedback", pct(50.0)),
                 pp("dryOut", "Dry Out", pct(75.0)),
                 pp("wetOut", "Wet Out", pct(75.0)),
+            ],
+        ),
+        spec(
+            "ec.audio.distortion",
+            "Distortion",
+            vec![
+                p("distortionType", "Distortion Type", Value::Enum(0), popup(&["Soft Clip", "Hard Clip", "Fold Back", "Bit Crush"])),
+                p("drive", "Drive (dB)", num(12.0), slider(0.0, 48.0, 0.0, 48.0, 2)),
+                p("bitDepth", "Bit Depth", num(8.0), slider(1.0, 16.0, 1.0, 16.0, 0)),
+                p("tone", "Tone (Hz)", num(8000.0), slider(200.0, 20000.0, 200.0, 20000.0, 1)),
+                p("outputGain", "Output Gain (dB)", num(-6.0), slider(-48.0, 12.0, -24.0, 12.0, 2)),
+                pp("dryOut", "Dry Out", pct(0.0)),
+                pp("wetOut", "Wet Out", pct(100.0)),
             ],
         ),
         spec(
@@ -84,6 +114,17 @@ pub fn specs() -> Vec<EffectSpec> {
                 p("stereoVoices", "Stereo Voices", Value::Bool(false), ParamUi::Checkbox),
                 pp("dryOut", "Dry Out", pct(50.0)),
                 pp("wetOut", "Wet Out", pct(50.0)),
+            ],
+        ),
+        spec(
+            "ec.audio.gate",
+            "Gate",
+            vec![
+                p("threshold", "Threshold (dB)", num(-40.0), slider(-90.0, 0.0, -80.0, 0.0, 2)),
+                p("attack", "Attack (ms)", num(1.0), slider(0.0, 500.0, 0.0, 100.0, 2)),
+                p("hold", "Hold (ms)", num(50.0), slider(0.0, 5000.0, 0.0, 500.0, 2)),
+                p("release", "Release (ms)", num(100.0), slider(1.0, 5000.0, 1.0, 1000.0, 2)),
+                p("range", "Range (dB)", num(-80.0), slider(-120.0, 0.0, -90.0, 0.0, 2)),
             ],
         ),
         spec(
@@ -167,6 +208,14 @@ pub fn preroll(id: &str, params: &Params) -> f64 {
     match id {
         "ec.audio.basstreble" | "ec.audio.highlowpass" | "ec.audio.parametriceq" => 0.05,
         "ec.audio.flangechorus" | "ec.audio.modulator" => 0.06,
+        "ec.audio.distortion" => 0.01,
+        // The envelope settles within a few attack/release time constants.
+        "ec.audio.compressor" | "ec.audio.gate" => {
+            let rel = params.f("release").max(1.0) / 1000.0;
+            let att = params.f("attack").max(0.0) / 1000.0;
+            let hold = if id == "ec.audio.gate" { params.f("hold").max(0.0) / 1000.0 } else { 0.0 };
+            (9.0 * rel + 9.0 * att + hold + 0.01).min(10.0)
+        }
         "ec.audio.delay" => {
             let d = params.f("delayTime").max(1.0) / 1000.0;
             let fb = (params.f("feedback") / 100.0).clamp(0.0, 0.99);
@@ -231,6 +280,9 @@ pub fn process(id: &str, params: &Params, buf: &mut [f32], rate: u32, start: f64
             }
         }
         "ec.audio.delay" => delay(params, buf, sr),
+        "ec.audio.compressor" => compressor(params, buf, sr),
+        "ec.audio.distortion" => distortion(params, buf, sr),
+        "ec.audio.gate" => gate(params, buf, sr),
         "ec.audio.flangechorus" => flange_chorus(params, buf, sr, start),
         "ec.audio.modulator" => modulator(params, buf, sr, start),
         "ec.audio.reverb" => reverb(params, buf, sr),
@@ -359,6 +411,126 @@ fn delay(params: &Params, buf: &mut [f32], sr: f64) {
     }
     for (o, v) in buf.iter_mut().zip(&e) {
         *o = *o * dry + v * wet * amount;
+    }
+}
+
+#[inline]
+fn db_to_lin(db: f64) -> f64 {
+    10f64.powf(db / 20.0)
+}
+
+#[inline]
+fn lin_to_db(v: f64) -> f64 {
+    20.0 * v.max(1e-12).log10()
+}
+
+/// One-pole smoothing coefficient for a time constant of `ms` milliseconds.
+fn smoothing(ms: f64, sr: f64) -> f64 {
+    if ms <= 0.0 { 0.0 } else { (-1.0 / (ms / 1000.0 * sr)).exp() }
+}
+
+/// Static compressor curve: gain change (dB, ≤ 0) for an input level `x` dB (quadratic soft
+/// knee of width `knee` around the threshold).
+pub fn compressor_gain_db(x: f64, threshold: f64, ratio: f64, knee: f64) -> f64 {
+    let r = ratio.max(1.0);
+    let over = x - threshold;
+    let y = if knee > 0.0 && 2.0 * over.abs() <= knee {
+        x + (1.0 / r - 1.0) * (over + knee / 2.0).powi(2) / (2.0 * knee)
+    } else if over > 0.0 {
+        threshold + over / r
+    } else {
+        x
+    };
+    y - x
+}
+
+fn compressor(params: &Params, buf: &mut [f32], sr: f64) {
+    let th = params.f("threshold");
+    let ratio = params.f("ratio").max(1.0);
+    let knee = params.f("knee").max(0.0);
+    let att = smoothing(params.f("attack"), sr);
+    let rel = smoothing(params.f("release").max(0.001), sr);
+    let makeup = params.f("makeupGain");
+    let dry = (params.f("dryOut") / 100.0) as f32;
+    let wet = (params.f("wetOut") / 100.0) as f32;
+    // Smoothed gain change in dB (≤ 0): attack while the reduction grows, release as it shrinks.
+    let mut g = 0.0f64;
+    for f in buf.chunks_exact_mut(2) {
+        let peak = f[0].abs().max(f[1].abs()) as f64;
+        let target = compressor_gain_db(lin_to_db(peak), th, ratio, knee);
+        let k = if target < g { att } else { rel };
+        g = target + (g - target) * k;
+        let lin = db_to_lin(g + makeup) as f32;
+        for v in f.iter_mut() {
+            *v = *v * dry + *v * lin * wet;
+        }
+    }
+}
+
+fn gate(params: &Params, buf: &mut [f32], sr: f64) {
+    let th = db_to_lin(params.f("threshold"));
+    let att = smoothing(params.f("attack"), sr);
+    let rel = smoothing(params.f("release").max(0.001), sr);
+    let hold = (params.f("hold").max(0.0) / 1000.0 * sr) as usize;
+    let floor = db_to_lin(params.f("range").min(0.0));
+    // Openness 0..1 (closed..open), mapped to floor..1.
+    let mut g = 0.0f64;
+    let mut held = 0usize;
+    for f in buf.chunks_exact_mut(2) {
+        let peak = f[0].abs().max(f[1].abs()) as f64;
+        let open = if peak >= th {
+            held = hold;
+            true
+        } else if held > 0 {
+            held -= 1;
+            true
+        } else {
+            false
+        };
+        let target = if open { 1.0 } else { 0.0 };
+        let k = if target > g { att } else { rel };
+        g = target + (g - target) * k;
+        let lin = (floor + (1.0 - floor) * g) as f32;
+        f[0] *= lin;
+        f[1] *= lin;
+    }
+}
+
+/// The Distortion effect's waveshaper for one sample (`drive` linear gain, `bits` for Bit Crush).
+pub fn distort_sample(kind: u32, x: f32, drive: f32, bits: f32) -> f32 {
+    let v = x * drive;
+    match kind {
+        1 => v.clamp(-1.0, 1.0),
+        2 => {
+            // Fold back: reflect at ±1 (a triangle function of the input).
+            let t = (v + 1.0).rem_euclid(4.0);
+            if t < 2.0 { t - 1.0 } else { 3.0 - t }
+        }
+        3 => {
+            let q = 2f32.powf(bits.clamp(1.0, 16.0) - 1.0);
+            (v.clamp(-1.0, 1.0) * q).round() / q
+        }
+        _ => v.tanh(),
+    }
+}
+
+fn distortion(params: &Params, buf: &mut [f32], sr: f64) {
+    let kind = params.e("distortionType");
+    let drive = db_to_lin(params.f("drive")) as f32;
+    let bits = params.f("bitDepth") as f32;
+    let out = db_to_lin(params.f("outputGain")) as f32;
+    let dry = (params.f("dryOut") / 100.0) as f32;
+    let wet = (params.f("wetOut") / 100.0) as f32;
+    let fc = params.f("tone").clamp(20.0, sr * 0.49);
+    let a = (-2.0 * PI * fc / sr).exp() as f32;
+    let mut lp = [0.0f32; 2];
+    for f in buf.chunks_exact_mut(2) {
+        for ch in 0..2 {
+            let x = f[ch];
+            let y = distort_sample(kind, x, drive, bits);
+            lp[ch] = y + (lp[ch] - y) * a;
+            f[ch] = x * dry + lp[ch] * out * wet;
+        }
     }
 }
 
@@ -546,7 +718,10 @@ mod tests {
         for id in [
             "ec.audio.backwards",
             "ec.audio.basstreble",
+            "ec.audio.compressor",
             "ec.audio.delay",
+            "ec.audio.distortion",
+            "ec.audio.gate",
             "ec.audio.flangechorus",
             "ec.audio.highlowpass",
             "ec.audio.modulator",
@@ -678,5 +853,65 @@ mod tests {
         process("ec.audio.backwards", &p, &mut b, 48000, 0.0);
         assert_eq!(b, vec![2.0, 1.0]);
         assert!(reverses("ec.audio.backwards"));
+    }
+
+    #[test]
+    fn compressor_reduces_gain_above_threshold() {
+        // Static curve: 10 dB over a −20 dB threshold at 4:1 comes out 7.5 dB lower.
+        assert!((compressor_gain_db(-10.0, -20.0, 4.0, 0.0) + 7.5).abs() < 1e-9);
+        assert_eq!(compressor_gain_db(-30.0, -20.0, 4.0, 0.0), 0.0);
+        // The soft knee meets the hard curve at its edges.
+        let k = 6.0;
+        assert!(compressor_gain_db(-23.0, -20.0, 4.0, k).abs() < 1e-9);
+        assert!((compressor_gain_db(-17.0, -20.0, 4.0, k) - compressor_gain_db(-17.0, -20.0, 4.0, 0.0)).abs() < 1e-9);
+        let sr = 48000.0;
+        let mut p = defaults("ec.audio.compressor");
+        p.values.insert("attack".into(), num(1.0));
+        let mut loud = sine(1000.0, sr, 9600);
+        process("ec.audio.compressor", &p, &mut loud, 48000, 0.0);
+        // A full-scale sine (peak 0 dB) is pulled down by ~15 dB once the envelope settles.
+        let peak = loud[18000..].iter().fold(0.0f32, |m, v| m.max(v.abs()));
+        let want = db_to_lin(compressor_gain_db(0.0, -20.0, 4.0, 0.0)) as f32;
+        assert!((peak - want).abs() < 0.05, "{peak} vs {want}");
+        // Quiet input passes untouched.
+        let mut quiet: Vec<f32> = sine(1000.0, sr, 4800).iter().map(|v| v * 0.01).collect();
+        let orig = quiet.clone();
+        process("ec.audio.compressor", &p, &mut quiet, 48000, 0.0);
+        assert!(quiet.iter().zip(&orig).all(|(a, b)| (a - b).abs() < 1e-6));
+    }
+
+    #[test]
+    fn gate_mutes_below_threshold() {
+        let sr = 48000.0;
+        let p = defaults("ec.audio.gate");
+        // A −60 dB signal under the −40 dB threshold is attenuated by the −80 dB range.
+        let mut quiet: Vec<f32> = sine(500.0, sr, 9600).iter().map(|v| v * 0.001).collect();
+        process("ec.audio.gate", &p, &mut quiet, 48000, 0.0);
+        assert!(rms(&quiet, 4800) < 1e-6, "{}", rms(&quiet, 4800));
+        // A loud signal opens the gate.
+        let mut loud: Vec<f32> = sine(500.0, sr, 9600).iter().map(|v| v * 0.5).collect();
+        let r0 = rms(&loud, 4800);
+        process("ec.audio.gate", &p, &mut loud, 48000, 0.0);
+        assert!((rms(&loud, 4800) - r0).abs() < 0.01);
+        // Deterministic.
+        let mut a = sine(300.0, sr, 2000);
+        let mut b = a.clone();
+        process("ec.audio.gate", &p, &mut a, 48000, 0.0);
+        process("ec.audio.gate", &p, &mut b, 48000, 0.0);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn distortion_shapes_and_bounds() {
+        assert!((distort_sample(0, 0.5, 1.0, 8.0) - 0.5f32.tanh()).abs() < 1e-6);
+        assert_eq!(distort_sample(1, 0.8, 2.0, 8.0), 1.0);
+        assert!((distort_sample(2, 0.7, 2.0, 8.0) - 0.6).abs() < 1e-5);
+        assert_eq!(distort_sample(3, 0.3, 1.0, 2.0), 0.5);
+        let p = defaults("ec.audio.distortion");
+        let mut b = sine(200.0, 48000.0, 4800);
+        process("ec.audio.distortion", &p, &mut b, 48000, 0.0);
+        assert!(b.iter().all(|v| v.abs() <= 1.0));
+        assert!(rms(&b, 100) > 0.1);
+        assert!(preroll("ec.audio.compressor", &defaults("ec.audio.compressor")) > 0.4);
     }
 }

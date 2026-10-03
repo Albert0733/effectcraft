@@ -503,6 +503,18 @@ impl FootageSource for MediaPool {
         }
     }
 
+    fn aux(&self, _item: ItemId, footage: &Footage, t: Tick) -> Option<Arc<effectcraft_raster::AuxChannels>> {
+        if footage.missing || !footage.has_video {
+            return None;
+        }
+        let loc = Inner::locate(footage, t);
+        if loc.media_t.is_some() || !loc.key.path.to_ascii_lowercase().ends_with(".exr") {
+            return None;
+        }
+        let path = loc.key.path.clone();
+        crate::exr_channels::cached(&path, || self.inner.read(&path).ok())
+    }
+
     fn audio(&self, _item: ItemId, footage: &Footage, t: Tick, frames: usize, rate: u32) -> Option<Vec<f32>> {
         if !footage.has_audio || footage.missing {
             return None;

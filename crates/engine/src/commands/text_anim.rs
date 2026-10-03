@@ -114,7 +114,8 @@ fn add_animator(s: &mut Session, p: &Value) -> Result<Value> {
         let name = str_p(p, "name").map(str::to_string).unwrap_or_else(|| format!("Animator {}", anims.children.len() + 1));
         let mut g = build::text_animator(&mut ids, &name, vec![]);
         let added: usize = kinds.iter().map(|k| add_props(&mut ids, &mut g, k, three)).sum();
-        if added == 0 {
+        // `properties: []` adds an empty animator (scripting's addProperty("ADBE Text Animator")).
+        if added == 0 && !kinds.is_empty() {
             return Err(bad(C, "unknown animator property"));
         }
         let uid = g.uid;
