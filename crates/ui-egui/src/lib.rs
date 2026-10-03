@@ -192,6 +192,10 @@ pub struct EffectcraftApp {
     pub(crate) home_thumbs: std::collections::HashMap<String, Option<egui::TextureHandle>>,
     /// The (project path, saved revision) whose thumbnail was stored last.
     pub(crate) home_thumb_saved: Option<(String, u64)>,
+    /// Home ▸ Templates: thumbnail textures by template id (None = not renderable).
+    pub(crate) template_thumbs: std::collections::HashMap<String, Option<egui::TextureHandle>>,
+    /// Home ▸ Templates: the gallery, and the user template files it was listed from.
+    pub(crate) template_list: Option<(Vec<String>, Vec<effectcraft_engine::templates::TemplateInfo>)>,
 }
 
 impl EffectcraftApp {
@@ -240,6 +244,8 @@ impl EffectcraftApp {
             dock_rects: vec![],
             home_thumbs: Default::default(),
             home_thumb_saved: None,
+            template_thumbs: Default::default(),
+            template_list: None,
         }
         .with_ui_commands()
     }
@@ -311,6 +317,7 @@ impl EffectcraftApp {
         if name == "Learn" {
             self.ui.start_screen = true;
             self.ui.home_learn = true;
+            self.ui.home_templates = false;
         }
     }
 

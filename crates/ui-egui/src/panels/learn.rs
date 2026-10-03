@@ -187,6 +187,7 @@ pub fn coach(app: &mut EffectcraftApp, ctx: &egui::Context) {
         Some("more") => {
             let _ = app.session.execute("learn.stop", json!({}));
             app.ui.home_learn = true;
+            app.ui.home_templates = false;
             app.ui.start_screen = true;
         }
         Some(a) => {

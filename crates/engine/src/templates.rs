@@ -32,8 +32,8 @@ pub const TEMPLATES_DIR: &str = "Templates";
 /// Template file extension.
 pub const EXT: &str = "ectemplate";
 /// Gallery thumbnail size (RGB, letterboxed).
-pub const THUMB_W: usize = 160;
-pub const THUMB_H: usize = 90;
+pub const THUMB_W: usize = 256;
+pub const THUMB_H: usize = 144;
 
 /// One gallery entry.
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -731,7 +731,7 @@ pub fn specs() -> Vec<CommandSpec> {
         query!(
             "templates.list",
             "Project Templates",
-            "{thumbnails?: bool} → [{id, name, description, category, builtin, width, height, frameRate, duration, controls, thumbnail? (hex RGB 160×90)}]",
+            "{thumbnails?: bool} → [{id, name, description, category, builtin, width, height, frameRate, duration, controls, thumbnail? (hex RGB 256×144)}]",
             list_cmd
         ),
         query!("templates.thumbnail", "Template Thumbnail", "{id} → {id, width, height, rgb (hex)}", thumb_cmd),
