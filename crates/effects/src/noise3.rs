@@ -326,6 +326,89 @@ impl Fractal {
     }
 }
 
+/// Fractal / Turbulent Noise resolved for the GPU kernel (effectcraft-gpu `fx_noise`): the
+/// per-pixel constants and, per octave, the terms [`Fractal::raw`] computes before touching the
+/// pixel, in the same f32 order.
+pub struct FractalGpu {
+    pub kind: u32,
+    pub noise_type: u32,
+    pub seed: u32,
+    pub invert: bool,
+    pub overflow: u32,
+    pub contrast: f32,
+    pub brightness: f32,
+    /// Rotation (sin, cos).
+    pub rot: (f32, f32),
+    pub size: [f32; 2],
+    /// Cycle Evolution: (t, cycle, t / cycle).
+    pub cycle: Option<[f32; 3]>,
+    pub sub_rotation: bool,
+    /// Σ amplitude × weight (the normaliser).
+    pub norm: f32,
+    /// Per octave: origin x, y, sub-rotation sin, cos, frequency, amplitude, weight, evolution
+    /// (turbulence applied), z offset, Dynamic Progressive warp factor.
+    pub octaves: Vec<[f32; 10]>,
+    /// Blending Mode (`None` = the noise alone), Opacity and Blend With Original.
+    pub mode: Option<BlendMode>,
+    pub opacity: f32,
+    pub blend: f32,
+}
+
+/// [`FractalGpu`] for a buffer with `offset` / `scale`.
+pub fn fractal_gpu(ctx: &EffectCtx, offset: [f64; 2], scale: f64, turbulent: bool) -> FractalGpu {
+    let b = Buf { img: effectcraft_raster::Image::new(0, 0), offset, scale };
+    let fr = Fractal::from_params(ctx, &b, turbulent);
+    let n_oct = fr.octaves.ceil() as usize;
+    let frac = fr.octaves - fr.octaves.floor();
+    let (mut norm, mut amp, mut f, mut depth) = (0.0f32, 1.0f32, 1.0f32, 1.0f32);
+    let mut octaves = Vec::with_capacity(n_oct);
+    for o in 0..n_oct {
+        let w = if o + 1 == n_oct && frac > 0.0 { frac } else { 1.0 };
+        let of = o as f32;
+        let k = if fr.perspective { depth } else { 1.0 } * (1.0 + fr.turbulence * of);
+        let mut org = fr.origin;
+        if k != 1.0 {
+            org = [fr.center[0] + (fr.origin[0] - fr.center[0]) * k, fr.center[1] + (fr.origin[1] - fr.center[1]) * k];
+        }
+        if !fr.center_subscale {
+            org = [org[0] + fr.sub_offset[0] * of, org[1] + fr.sub_offset[1] * of];
+        }
+        let (s, c) = (fr.sub_rotation * of).sin_cos();
+        let evo = fr.evolution * (1.0 + fr.turbulence * of);
+        let dk = if fr.kind == 6 { 0.5 + of * 0.35 } else { 1.0 };
+        octaves.push([org[0], org[1], s, c, f, amp, w, evo, of * 7.31, dk]);
+        norm += amp * w;
+        amp *= fr.influence;
+        f /= fr.sub_scaling;
+        depth *= fr.sub_scaling;
+    }
+    let cycle = fr.cycle.map(|c| {
+        let t = fr.evolution.rem_euclid(c);
+        [t, c, t / c]
+    });
+    FractalGpu {
+        kind: fr.kind,
+        noise_type: fr.noise_type,
+        seed: fr.seed,
+        invert: fr.invert,
+        overflow: fr.overflow,
+        contrast: fr.contrast,
+        brightness: fr.brightness,
+        rot: fr.rot,
+        size: fr.size,
+        cycle,
+        sub_rotation: fr.sub_rotation != 0.0,
+        norm,
+        octaves,
+        mode: match ctx.params.get("blendingMode").map(Value::as_enum).unwrap_or(BLEND_NONE) {
+            BLEND_NONE => None,
+            m => Some(BLEND_MODES.get(m as usize).and_then(|l| BlendMode::from_name(l)).unwrap_or(BlendMode::Normal)),
+        },
+        opacity: (ctx.params.f("opacity") as f32 / 100.0).clamp(0.0, 1.0),
+        blend: ctx.params.f("blend") as f32 / 100.0,
+    }
+}
+
 /// Map a value by an [`OVERFLOWS`] option.
 pub fn overflow(v: f32, mode: u32) -> f32 {
     match mode {

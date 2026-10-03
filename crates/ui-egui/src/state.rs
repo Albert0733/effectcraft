@@ -533,6 +533,10 @@ pub struct UiState {
     /// The panel maximized to fill the dock area (`~`), if any.
     #[serde(default)]
     pub maximized: Option<PanelKind>,
+    /// Locked Composition / Timeline tabs (panel ids): opening another composition does not
+    /// bring a locked panel forward (the tab's lock icon, as After Effects' viewer lock).
+    #[serde(default)]
+    pub locked_tabs: BTreeSet<String>,
     pub focused: PanelKind,
     pub viewer: ViewerState,
     pub timeline: TimelineState,
@@ -634,6 +638,7 @@ impl Default for UiState {
             floating: vec![],
             saved_floating: Default::default(),
             maximized: None,
+            locked_tabs: BTreeSet::new(),
             focused: PanelKind::Composition,
             viewer: ViewerState::default(),
             timeline: TimelineState::default(),

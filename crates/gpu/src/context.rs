@@ -154,6 +154,10 @@ impl GpuContext {
             include_str!("shaders/fx_color.wgsl"),
             include_str!("shaders/fx_distort.wgsl"),
             include_str!("shaders/fx_generate.wgsl"),
+            include_str!("shaders/fx_key.wgsl"),
+            include_str!("shaders/fx_stylize.wgsl"),
+            include_str!("shaders/fx_noise.wgsl"),
+            include_str!("shaders/fx_tone.wgsl"),
         ]
         .concat();
         let module =
@@ -207,6 +211,10 @@ impl GpuContext {
             .chain(crate::fx_color::KERNELS)
             .chain(crate::fx_distort::KERNELS)
             .chain(crate::fx_generate::KERNELS)
+            .chain(crate::fx_key::KERNELS)
+            .chain(crate::fx_stylize::KERNELS)
+            .chain(crate::fx_noise::KERNELS)
+            .chain(crate::fx_tone::KERNELS)
             .map(|e| (e, &layout))
             .chain(EXT_ENTRIES.iter().map(|e| (e, &layout_ext)))
             .map(|(e, layout)| {

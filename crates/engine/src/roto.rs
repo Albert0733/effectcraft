@@ -3,7 +3,8 @@
 //!
 //! Segmentations are derived data in `effectcraft_effects::roto`'s content-keyed cache (see that
 //! module). `roto.propagate` fills it at full resolution in the background (or blocking with
-//! `wait`), frame by frame outward from the base frame, rendering the effect's input
+//! `wait`; in the browser the background is a Web Worker whose segmentations stream back,
+//! [`crate::offload`]), frame by frame outward from the base frame, rendering the effect's input
 //! (`Renderer::layer_input`, source → masks → the effects above it). `roto.freeze` runs the same
 //! pass and stores the final mattes in the effect (one undo step). [`sync`], run after every
 //! edit, keeps each instance's hidden Input Key equal to a signature of what its frames are made
@@ -403,16 +404,21 @@ pub(crate) fn job_frames(d: &effectcraft_track::roto::RotoData, dir: Direction) 
 }
 
 impl Session {
+    /// The Roto Brush job running in a worker (Freeze or propagation), with its task.
+    fn offloaded_roto(&self) -> Option<(&crate::offload::OffloadedJob, RotoTask)> {
+        self.offloaded(JobKind::RotoFreeze).map(|j| (j, RotoTask::Freeze)).or_else(|| self.offloaded(JobKind::RotoPropagate).map(|j| (j, RotoTask::Propagate)))
+    }
+
     pub fn is_roto_running(&self) -> bool {
-        self.roto_job.as_ref().is_some_and(|j| !j.is_finished()) || self.offloaded(JobKind::RotoFreeze).is_some()
+        self.roto_job.as_ref().is_some_and(|j| !j.is_finished()) || self.offloaded_roto().is_some()
     }
 
     pub fn roto_progress(&self) -> Option<RotoProgress> {
         self.roto_job.as_ref().map(|j| j.progress()).or_else(|| {
-            self.offloaded(JobKind::RotoFreeze).map(|j| {
+            self.offloaded_roto().map(|(j, task)| {
                 let p = &j.progress;
                 RotoProgress {
-                    task: Some(RotoTask::Freeze),
+                    task: Some(task),
                     done: p.done,
                     total: p.total,
                     elapsed: p.elapsed,
@@ -425,14 +431,22 @@ impl Session {
 
     /// (comp, layer, effect uid, task) of the running job.
     pub fn roto_target(&self) -> Option<(ItemId, LayerId, Uid, RotoTask)> {
-        self.roto_job
-            .as_ref()
-            .map(|j| (j.comp, j.layer, j.effect, j.task))
-            .or_else(|| self.offloaded(JobKind::RotoFreeze).map(|j| (j.comp, j.layer, j.uid, RotoTask::Freeze)))
+        self.roto_job.as_ref().map(|j| (j.comp, j.layer, j.effect, j.task)).or_else(|| self.offloaded_roto().map(|(j, task)| (j.comp, j.layer, j.uid, task)))
+    }
+
+    /// The segmentation chain a propagation of `effect` computes (its frames' cache keys).
+    pub fn roto_chain(&self, comp: ItemId, layer: LayerId, effect: Uid) -> Option<fx::Chain> {
+        let c = self.project.comp(comp)?;
+        let l = c.layer(layer)?;
+        let g = l.effects()?.groups().find(|g| g.uid == effect && is_roto(g))?;
+        let d = fx::data(&params_static(g));
+        let t = comp_time_of(c, l, d.base?);
+        let params = params_at(&self.project, comp, l, g, t, self.expr.as_deref());
+        Some(fx::Chain::new(&params, layer_size(&self.project, c, l), c.frame_rate.as_f64(), 1.0))
     }
 
     pub fn stop_roto(&mut self) -> bool {
-        if self.cancel_offloaded(JobKind::RotoFreeze) {
+        if self.cancel_offloaded(JobKind::RotoFreeze) || self.cancel_offloaded(JobKind::RotoPropagate) {
             return true;
         }
         match &self.roto_job {
@@ -491,9 +505,12 @@ impl Session {
             task,
         };
         let strokes = str_of(g, fx::STROKES);
-        if !wait && task == RotoTask::Freeze && self.offloads() {
+        if !wait && self.offloads() {
             drop(work);
-            self.offload_analysis(crate::offload::WorkerJob::RotoFreeze { comp, layer, effect })?;
+            self.offload_analysis(match task {
+                RotoTask::Freeze => crate::offload::WorkerJob::RotoFreeze { comp, layer, effect },
+                RotoTask::Propagate => crate::offload::WorkerJob::RotoPropagate { comp, layer, effect, direction: dir },
+            })?;
             return Ok(n);
         }
         let wait = wait || cfg!(target_arch = "wasm32");
@@ -567,7 +584,7 @@ impl Session {
     /// instances in the background.
     pub fn poll_roto(&mut self, auto: bool) -> bool {
         let changed = self.poll_roto_job();
-        if auto && self.roto_job.is_none() && self.state.roto.auto_propagate {
+        if auto && self.roto_job.is_none() && self.offloaded_roto().is_none() && self.state.roto.auto_propagate {
             while let Some((c, l, e)) = self.roto_pending.first().copied() {
                 self.roto_pending.remove(0);
                 if self.start_roto(c, l, e, RotoTask::Propagate, Direction::Both, false).is_ok() {

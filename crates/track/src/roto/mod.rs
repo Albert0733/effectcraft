@@ -230,6 +230,61 @@ impl FrameSeg {
         }
         (n > 0.0).then(|| [sx / n, sy / n])
     }
+
+    /// A compact binary form (to ship a segmentation between engine instances, e.g. from a Web
+    /// Worker to the page): `ECSG`, width, height (u32 LE), the colour models as JSON (length
+    /// prefixed), then the matte and the Refine Edge band run-length encoded (u16 LE run, byte).
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let models = serde_json::to_vec(&(&self.fg, &self.bg)).unwrap_or_default();
+        let mut out = Vec::with_capacity(16 + models.len() + 64);
+        out.extend_from_slice(b"ECSG");
+        out.extend_from_slice(&(self.w as u32).to_le_bytes());
+        out.extend_from_slice(&(self.h as u32).to_le_bytes());
+        out.extend_from_slice(&(models.len() as u32).to_le_bytes());
+        out.extend_from_slice(&models);
+        for plane in [&self.matte, &self.refine] {
+            let mut i = 0;
+            while i < plane.len() {
+                let v = plane[i];
+                let mut n = 1;
+                while i + n < plane.len() && plane[i + n] == v && n < u16::MAX as usize {
+                    n += 1;
+                }
+                out.extend_from_slice(&(n as u16).to_le_bytes());
+                out.push(v);
+                i += n;
+            }
+        }
+        out
+    }
+
+    /// Inverse of [`FrameSeg::to_bytes`] (`None` for malformed input).
+    pub fn from_bytes(b: &[u8]) -> Option<FrameSeg> {
+        if b.len() < 16 || &b[..4] != b"ECSG" {
+            return None;
+        }
+        let u = |i: usize| u32::from_le_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]]) as usize;
+        let (w, h, ml) = (u(4), u(8), u(12));
+        let n = w.checked_mul(h)?;
+        let models = b.get(16..16 + ml)?;
+        let (fg, bg): (Gmm, Gmm) = serde_json::from_slice(models).ok()?;
+        let mut rest = &b[16 + ml..];
+        let mut plane = || -> Option<Vec<u8>> {
+            let mut v = Vec::with_capacity(n);
+            while v.len() < n {
+                if rest.len() < 3 {
+                    return None;
+                }
+                let run = u16::from_le_bytes([rest[0], rest[1]]) as usize;
+                v.resize(v.len() + run, rest[2]);
+                rest = &rest[3..];
+            }
+            (v.len() == n).then_some(v)
+        };
+        let matte = plane()?;
+        let refine = plane()?;
+        Some(FrameSeg { w, h, matte, refine, fg, bg })
+    }
 }
 
 /// Straight RGB of an image (transparent pixels are black).

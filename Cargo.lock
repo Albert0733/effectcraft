@@ -1165,6 +1165,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "effectcraft-av1enc"
+version = "0.1.0"
+dependencies = [
+ "filmcraft-av1",
+]
+
+[[package]]
 name = "effectcraft-cli"
 version = "0.1.0"
 dependencies = [
@@ -1238,7 +1245,9 @@ dependencies = [
 name = "effectcraft-export"
 version = "0.1.0"
 dependencies = [
+ "effectcraft-av1enc",
  "effectcraft-color",
+ "effectcraft-hevcenc",
  "effectcraft-keyframe",
  "effectcraft-media",
  "effectcraft-opusenc",
@@ -1303,6 +1312,13 @@ dependencies = [
  "log",
  "pollster 0.4.0",
  "wgpu",
+]
+
+[[package]]
+name = "effectcraft-hevcenc"
+version = "0.1.0"
+dependencies = [
+ "filmcraft-hevc",
 ]
 
 [[package]]
@@ -1393,6 +1409,9 @@ dependencies = [
 [[package]]
 name = "effectcraft-opusenc"
 version = "0.1.0"
+dependencies = [
+ "filmcraft-opus",
+]
 
 [[package]]
 name = "effectcraft-path"

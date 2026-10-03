@@ -516,3 +516,64 @@ fn panels_commands_are_wired() {
         assert!(s.is_enabled(id), "{id}");
     }
 }
+
+/// A browser like the web app's: a virtual tree whose files are read on demand.
+#[derive(Default)]
+struct VirtualBrowser {
+    tree: Mutex<crate::media_browser::VirtualTree>,
+    fetched: Mutex<Vec<String>>,
+    actions: Mutex<Vec<String>>,
+}
+
+impl crate::media_browser::Browser for VirtualBrowser {
+    fn home(&self) -> String {
+        "/Browser Storage".into()
+    }
+    fn places(&self) -> Vec<(String, String)> {
+        vec![("Browser Storage".into(), self.home()), ("Shoot".into(), "/Folders/Shoot".into())]
+    }
+    fn list(&self, dir: &str, only: bool) -> Result<Vec<crate::media_browser::Entry>, String> {
+        self.tree.lock().unwrap().list(dir, only)
+    }
+    fn fetch(&self, paths: &[String], _: &Value) -> bool {
+        // Opened folders' files arrive later.
+        let pending: Vec<String> = paths.iter().filter(|p| p.starts_with("/Folders/")).cloned().collect();
+        self.fetched.lock().unwrap().extend(pending.iter().cloned());
+        pending.is_empty()
+    }
+    fn actions(&self) -> Vec<(String, String)> {
+        vec![("openFolder".into(), "Open Folder…".into())]
+    }
+    fn action(&self, id: &str) -> Result<Value, String> {
+        self.actions.lock().unwrap().push(id.into());
+        Ok(json!({"pending": true}))
+    }
+}
+
+#[test]
+fn media_browser_over_a_virtual_tree() {
+    let b = Arc::new(VirtualBrowser::default());
+    {
+        let mut t = b.tree.lock().unwrap();
+        t.add_dir("/Browser Storage");
+        t.add_file("/Folders/Shoot/a.csv", "/Folders/Shoot/a.csv", 12, Some(1));
+    }
+    let mut s = Session { browser: Some(b.clone()), ..Default::default() };
+    let r = s.execute("mediaBrowser.list", json!({})).unwrap();
+    assert_eq!(r["path"], "/Browser Storage");
+    assert_eq!(r["places"][1]["path"], "/Folders/Shoot");
+    assert_eq!(r["actions"][0]["id"], "openFolder");
+    let r = s.execute("mediaBrowser.go", json!({"path": "/Folders/Shoot"})).unwrap();
+    assert_eq!(r["entries"][0]["name"], "a.csv");
+    assert_eq!(r["parent"], "/Folders");
+    assert!(s.execute("mediaBrowser.go", json!({"path": "/Nope"})).is_err());
+    // Importing a file that is not read yet: pending (the host imports it once it arrives).
+    let r = s.execute("mediaBrowser.import", json!({"paths": ["/Folders/Shoot/a.csv"]})).unwrap();
+    assert_eq!(r["pending"], true);
+    assert_eq!(*b.fetched.lock().unwrap(), ["/Folders/Shoot/a.csv"]);
+    assert!(s.project.items.values().all(|i| !matches!(i.kind, ItemKind::Footage(_))));
+    let r = s.execute("mediaBrowser.action", json!({"action": "openFolder"})).unwrap();
+    assert_eq!(r["pending"], true);
+    assert_eq!(*b.actions.lock().unwrap(), ["openFolder"]);
+    assert!(s.execute("mediaBrowser.action", json!({})).is_err());
+}

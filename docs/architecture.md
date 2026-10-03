@@ -17,7 +17,9 @@ cpal or muda. Everything in L0 to L4, the egui UI and the web app also build for
 | L0 | `geom` | Vectors, matrices, quaternions, the layer transform (anchor, position, scale, orientation, rotation) |
 | L0 | `color` | sRGB and linear, HSL/HSV, luminance, the 38 blend modes, label colors |
 | L0 | `vp9enc` | VP9 intra-frame encoder (profile 0, 8-bit 4:2:0; lossless at quality 100) for WebM export, from the VP9 bitstream specification |
-| L0 | `opusenc` | Opus (CELT) encoder: RFC 6716 CELT-only fullband 48 kHz 20 ms packets, mono/stereo, and the RFC 7845 `OpusHead`, for WebM export audio |
+| L0 | `opusenc` | Opus encoder: RFC 6716 SILK (NB/MB/WB), hybrid (SWB/FB) and CELT (FB) modes chosen by bitrate and application (audio / voice), 48 kHz 20 ms packets, mono/stereo, and the RFC 7845 `OpusHead`, for WebM export audio |
+| L0 | `hevcenc` | HEVC (H.265) encoder from ITU-T H.265: Main / Main 10 4:2:0, IDR + P slices (quarter-pel motion, merge/AMVP), CABAC, deblocking, bitrate or constant-QP rate control, for MP4 (`hvc1`) export |
+| L0 | `av1enc` | AV1 encoder from the AV1 bitstream specification: Main profile 8/10-bit 4:2:0, key + inter frames (quarter-pel motion), deblocking, for MP4 (`av01`) and WebM export |
 | L1 | `raster` | Premultiplied float images, sampling, affine and projective warps, blurs, compositing (parallel with rayon) |
 | L1 | `keyframe` | Animated values, keyframes with temporal ease and spatial Bezier, roving, hold, velocity |
 | L1 | `psd` | Photoshop PSD/PSB reader (layers, groups, masks, blend modes, text, layer effects, adjustment layers; 8/16/32-bit; RGB/CMYK/Gray/Lab) and a minimal writer, from Adobe's published format specification |
@@ -32,7 +34,7 @@ cpal or muda. Everything in L0 to L4, the egui UI and the web app also build for
 | L3 | `render` | Evaluation and compositing: sources, masks, effects, transforms, 3D, motion blur, mattes, blending, layer cache, audio mixdown |
 | L3 | `media` | Footage decoding (FilmCraft's pure-Rust codecs), image sequences, Photoshop and SVG stills, frame cache |
 | L3 | `expr` | The expression engine (JavaScript via boa) with the After Effects object model |
-| L3 | `export` | Render queue encoding: H.264, ProRes, WebM (VP9 + alpha, Opus), PNG/JPEG/TIFF/EXR sequences, GIF, WAV/AIFF |
+| L3 | `export` | Render queue encoding: H.264, HEVC and AV1 MP4, ProRes, WebM (VP9 + alpha or AV1, Opus), PNG/JPEG/TIFF/EXR sequences, GIF, WAV/AIFF |
 | L3 | `gpu` | The GPU compositor and GPU effects on wgpu compute shaders (Metal, Vulkan, Direct3D 12, WebGPU), checked against the CPU renderer |
 | L3 | `lottie` | Lottie JSON / dotLottie import and export (layers, precomps, eased and spatial keyframes, shapes, masks, mattes) with a warnings list for what Lottie cannot express |
 | L3 | `plugin` | Effect plug-ins: loads sandboxed WebAssembly effect modules (plug-in API v1; the wasmi interpreter behind the `wasm` feature, on for native hosts) into the effect registry ([plugins.md](plugins.md)) |
@@ -174,10 +176,15 @@ against the caster planes (Shadow Diffusion, Light Transmission) and blending. A
 run their effect stacks on the GPU-resident comp (`Renderer::run_effects_on` with an `FxTarget`):
 runs of GPU effects stay on the device and only non-GPU effects read back and upload. Advanced 3D
 compositing and wireframes still run on the CPU between GPU steps (read back, draw, upload). GPU
-effects (`effects::GPU_EFFECTS`, 58 of them: blurs, colour, keying incl. Key Light, distortion,
-transitions, generators, noise and grain; see [effects.md](effects.md)) repeat the CPU effect's
-steps (padding, box radii, parameters, hashes) as kernels; consecutive GPU effects run as one
-chain with one upload and one readback. Tests render scenes on both paths and compare them
+effects (`effects::GPU_EFFECTS`, 152 of them: blurs, colour correction, keying incl. Key Light,
+mattes, channel, stylize, distortion, transitions, generators, noise, grain and time; see
+[effects.md](effects.md)) repeat the CPU effect's steps (padding, box radii, parameters, hashes)
+as kernels, in one module per family (`gpu::fx_*` with `shaders/fx_*.wgsl`); consecutive GPU
+effects run as one chain with one upload and one readback. Statistics that need the whole frame
+(Auto Levels / Contrast / Color, Equalize, Shadow/Highlight, Color Stabilizer, Remove Grain's
+noise level) are measured on the CPU from one readback and applied on the GPU; effects reading
+other frames (Echo, Posterize Time) upload the frames the host renders. Settings a kernel cannot
+match render on the CPU (`effects::catalog::gpu_supported`). Tests render scenes on both paths and compare them
 (≤ 1/255 at 8 bpc, ≤ 1e-3 at 32 bpc); they skip without an adapter. The desktop viewer builds the
 `Gpu` on egui-wgpu's device and shows frames from GPU textures without reading them back
 (`ui-egui::frames`); headless renders, the CLI (unless `--gpu`) and CI use the CPU. On the web

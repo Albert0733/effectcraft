@@ -65,13 +65,13 @@ pub fn media_browser(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let ctx = ui.ctx().clone();
     let p = ui.painter().with_clip_rect(rect);
     p.rect_filled(rect, 0.0, t.panel_bg);
-    if !mb::available() {
-        p.text(rect.center(), Align2::CENTER_CENTER, "The Media Browser needs the desktop app (use File ▸ Import here)", Tokens::ui(12.0), t.text_faint);
+    let Some(b) = app.session.media_browser() else {
+        p.text(rect.center(), Align2::CENTER_CENTER, "The Media Browser is not available here (use File ▸ Import)", Tokens::ui(12.0), t.text_faint);
         app.auto.add("mediaBrowser.unavailable", rect, "Media Browser unavailable");
         return;
-    }
+    };
     let st = app.session.state.media_browser.clone();
-    let dir = st.folder.clone().unwrap_or_else(mb::home);
+    let dir = st.folder.clone().unwrap_or_else(|| b.home());
     // Listing cached per folder for a second.
     let lid = egui::Id::new(("mb-list", dir.clone(), st.importable_only));
     let now = ctx.input(|i| i.time);
@@ -79,7 +79,7 @@ pub fn media_browser(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let entries = match listing {
         Some((at, l)) if now - at < 1.0 => l,
         _ => {
-            let l = mb::list(&dir, st.importable_only);
+            let l = b.list(&dir, st.importable_only);
             ctx.data_mut(|d| d.insert_temp(lid, (now, l.clone())));
             l
         }
@@ -104,6 +104,20 @@ pub fn media_browser(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     if only != st.importable_only {
         kit::exec(app, "mediaBrowser.go", json!({"path": dir, "importableOnly": only}));
     }
+    // The browser's own actions (web: Open Folder…, Add Files…), right-aligned.
+    let mut ax = rect.max.x - 8.0;
+    for (id, label) in b.actions().iter().rev() {
+        let w = 14.0 + label.chars().count() as f32 * 6.4;
+        ax -= w;
+        if ax < x + 96.0 {
+            break;
+        }
+        if kit::button(app, ui, Rect::from_min_size(pos2(ax, y), vec2(w, 20.0)), &format!("mediaBrowser.action.{id}"), label, false) {
+            kit::exec(app, "mediaBrowser.action", json!({"action": id}));
+            ctx.data_mut(|d| d.remove::<(f64, Result<Vec<mb::Entry>, String>)>(lid));
+        }
+        ax -= 6.0;
+    }
     // The path on its own row.
     let _ = x;
     let py = y + 24.0;
@@ -114,7 +128,7 @@ pub fn media_browser(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     p.line_segment([side.right_top(), side.right_bottom()], Stroke::new(1.0, t.separator));
     p.text(pos2(side.min.x + 10.0, side.min.y + 10.0), Align2::LEFT_CENTER, "Favorites", Tokens::semibold(11.5), t.text_dim);
     let mut fy = side.min.y + 22.0;
-    let mut places: Vec<(String, String)> = vec![("Home".into(), mb::home())];
+    let mut places: Vec<(String, String)> = b.places();
     places.extend(
         st.favorites.iter().map(|f| (std::path::Path::new(f).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| f.clone()), f.clone())),
     );
