@@ -34,6 +34,7 @@ pub enum Tool {
     Clone,
     Eraser,
     RotoBrush,
+    RefineEdge,
     Puppet,
     PuppetStarch,
     PuppetBend,
@@ -58,10 +59,10 @@ impl Tool {
         &[Tool::Brush],
         &[Tool::Clone],
         &[Tool::Eraser],
-        &[Tool::RotoBrush],
+        &[Tool::RotoBrush, Tool::RefineEdge],
         &[Tool::Puppet, Tool::PuppetStarch, Tool::PuppetBend, Tool::PuppetAdvanced, Tool::PuppetOverlap],
     ];
-    pub const ALL: [Tool; 29] = [
+    pub const ALL: [Tool; 30] = [
         Tool::Selection,
         Tool::Hand,
         Tool::Zoom,
@@ -86,6 +87,7 @@ impl Tool {
         Tool::Clone,
         Tool::Eraser,
         Tool::RotoBrush,
+        Tool::RefineEdge,
         Tool::Puppet,
         Tool::PuppetStarch,
         Tool::PuppetBend,
@@ -118,6 +120,7 @@ impl Tool {
             Tool::Clone => "Clone Stamp Tool",
             Tool::Eraser => "Eraser Tool",
             Tool::RotoBrush => "Roto Brush Tool",
+            Tool::RefineEdge => "Refine Edge Tool",
             Tool::Puppet => "Puppet Position Pin Tool",
             Tool::PuppetStarch => "Puppet Starch Pin Tool",
             Tool::PuppetBend => "Puppet Bend Pin Tool",
@@ -139,7 +142,7 @@ impl Tool {
             Tool::Pen | Tool::PenAdd | Tool::PenDelete | Tool::PenConvert | Tool::MaskFeather => Some("G"),
             Tool::Type | Tool::TypeVertical => Some("Cmd+T"),
             Tool::Brush | Tool::Clone | Tool::Eraser => Some("Cmd+B"),
-            Tool::RotoBrush => Some("Alt+W"),
+            Tool::RotoBrush | Tool::RefineEdge => Some("Alt+W"),
             Tool::Puppet | Tool::PuppetStarch | Tool::PuppetBend | Tool::PuppetAdvanced | Tool::PuppetOverlap => Some("Cmd+P"),
         }
     }
@@ -169,6 +172,7 @@ impl Tool {
             Tool::Clone => Icon::Clone,
             Tool::Eraser => Icon::Eraser,
             Tool::RotoBrush => Icon::RotoBrush,
+            Tool::RefineEdge => Icon::RefineEdge,
             Tool::Puppet | Tool::PuppetStarch | Tool::PuppetBend | Tool::PuppetAdvanced | Tool::PuppetOverlap => Icon::Puppet,
         }
     }
@@ -184,6 +188,17 @@ impl Tool {
             Tool::PuppetBend => "bend",
             Tool::PuppetAdvanced => "advanced",
             Tool::PuppetOverlap => "overlap",
+            _ => return None,
+        })
+    }
+    /// Roto Brush / Refine Edge: the stroke kind they paint (`roto.stroke` kind), without and
+    /// with Alt/Option.
+    pub fn roto_kind(self, alt: bool) -> Option<&'static str> {
+        Some(match (self, alt) {
+            (Tool::RotoBrush, false) => "fg",
+            (Tool::RotoBrush, true) => "bg",
+            (Tool::RefineEdge, false) => "refine",
+            (Tool::RefineEdge, true) => "refineErase",
             _ => return None,
         })
     }

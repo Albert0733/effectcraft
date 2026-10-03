@@ -378,14 +378,12 @@ fn status(s: &mut Session, p: &Value) -> Result<Value> {
     let (layer, g) = group(s, cid, lid, uid)?;
     let (layer, g) = (layer.clone(), g.clone());
     let d = data_of(&g);
-    let computed = s.roto_computed(cid, lid, uid);
     out["layer"] = json!(lid.0);
     out["effect"] = json!(uid);
     out["base"] = json!(d.base);
     out["span"] = json!(d.span);
     out["strokes"] = json!(d.strokes.len());
     out["strokeFrames"] = json!(d.stroke_frames());
-    out["computed"] = json!(computed.iter().filter(|(_, c)| **c).map(|(f, _)| *f).collect::<Vec<_>>());
     out["frozen"] = json!(frozen_of(&g));
     out["pending"] = json!(s.roto_pending.contains(&(cid, lid, uid)));
     out["limits"] = json!(rt::frame_limits(&comp, &layer));
@@ -420,5 +418,7 @@ fn status(s: &mut Session, p: &Value) -> Result<Value> {
             }
         }
     }
+    let computed = s.roto_computed(cid, lid, uid);
+    out["computed"] = json!(computed.iter().filter(|(_, c)| **c).map(|(f, _)| *f).collect::<Vec<_>>());
     Ok(out)
 }

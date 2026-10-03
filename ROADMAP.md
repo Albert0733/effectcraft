@@ -32,6 +32,6 @@ Measured feature by feature in [docs/parity.md](docs/parity.md) (end of 2 Octobe
 - **≈ 100 agent-hours of work remain by the audit's estimate.** With five Claude Opus 5.5 agents in
   parallel that is **≈ 8–10 hours of wall-clock time at the pace measured so far, up to ≈ 25 hours**
   by the audit's conservative per-feature figures.
-- Hardest remaining pieces: Roto Brush, the 3D camera tracker, Advanced 3D, a scripting object model.
+- Hardest remaining pieces: the 3D camera tracker, Advanced 3D, a scripting object model (Roto Brush & Refine Edge landed in M6.7).
 
 Come tell us what matters most to you on [Discord](https://discord.gg/artcraft).

@@ -537,6 +537,35 @@ fn warp_editor(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: &egui::Painter, l
     p.text(pos2(r.min.x + 24.0, r.min.y + 38.0), Align2::LEFT_CENTER, status, Tokens::ui(11.5), t.text_dim);
 }
 
+/// Roto Brush & Refine Edge: Freeze / Unfreeze and Propagate buttons and the segmentation status.
+fn roto_editor(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: &egui::Painter, layer: &Layer, g: &PropGroup, r: Rect, actions: &mut Actions) {
+    use effectcraft_engine::effects::roto as fx;
+    let t = app.tokens;
+    let params = effectcraft_engine::effects::flatten_params(g, &mut |pr| pr.value.clone());
+    let frozen = fx::is_frozen(&params);
+    let d = fx::data(&params);
+    let running = app.session.roto_target().is_some_and(|(_, l, u, _)| l == layer.id && u == g.uid) && app.session.is_roto_running();
+    let b1 = Rect::from_min_size(pos2(r.min.x + 24.0, r.min.y + 4.0), vec2(84.0, 22.0));
+    let b2 = Rect::from_min_size(pos2(b1.max.x + 8.0, b1.min.y), vec2(84.0, 22.0));
+    let label = if frozen { "Unfreeze" } else { "Freeze" };
+    if widgets::text_button(ui, b1, label, frozen, &t, egui::Id::new(("roto-freeze-ec", g.uid))).clicked() && !running {
+        let id = if frozen { "roto.unfreeze" } else { "roto.freeze" };
+        actions.push((id.into(), json!({"layer": layer.id.0, "effect": g.uid})));
+    }
+    app.auto.add(&format!("effectControls.roto.{}.freeze", g.uid), b1, label);
+    let (l2, id2) = if running { ("Stop", "roto.cancel") } else { ("Propagate", "roto.propagate") };
+    if widgets::text_button(ui, b2, l2, false, &t, egui::Id::new(("roto-prop-ec", g.uid))).clicked() && !frozen {
+        actions.push((id2.into(), json!({"layer": layer.id.0, "effect": g.uid})));
+    }
+    app.auto.add(&format!("effectControls.roto.{}.propagate", g.uid), b2, l2);
+    let status = match (app.session.roto_progress(), d.base) {
+        (Some(pr), _) if running => pr.banner(),
+        (_, None) => "No strokes: paint with the Roto Brush tool (Alt+W) in the Layer panel".to_string(),
+        (_, Some(b)) => format!("Base frame {b}, span {}–{}{}", d.span[0], d.span[1], if frozen { " (frozen)" } else { "" }),
+    };
+    p.text(pos2(r.min.x + 24.0, r.min.y + 38.0), Align2::LEFT_CENTER, status, Tokens::ui(11.5), t.text_dim);
+}
+
 // ---------------------------------------------------------------------------------------------
 // Curves / Levels editors
 
@@ -545,6 +574,7 @@ fn editor_height(effect: &str, width: f32) -> f32 {
     match effect {
         "ec.color.curves" => 34.0 + curves_size(width) + 26.0,
         effectcraft_engine::effects::warp_stab::ID => 50.0,
+        effectcraft_engine::effects::roto::ID => 50.0,
         "ec.color.levels" | "ec.color.levelsic" => 34.0 + 80.0 + 58.0,
         "ec.color.autolevels" | "ec.color.autocontrast" | "ec.color.autocolor" => 24.0 + 80.0 + 12.0,
         _ => 0.0,
@@ -920,6 +950,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     match effect.as_str() {
                         "ec.color.curves" => curves_editor(app, ui, &bp, &layer, g, &ectx, er, &mut actions),
                         effectcraft_engine::effects::warp_stab::ID => warp_editor(app, ui, &bp, &layer, g, er, &mut actions),
+                        effectcraft_engine::effects::roto::ID => roto_editor(app, ui, &bp, &layer, g, er, &mut actions),
                         "ec.color.levels" | "ec.color.levelsic" => levels_editor(app, ui, &bp, &layer, g, effect, &ectx, er, &mut actions),
                         _ => histogram_only(app, ui, &bp, g, er),
                     }
