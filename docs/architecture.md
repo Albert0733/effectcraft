@@ -174,10 +174,15 @@ against the caster planes (Shadow Diffusion, Light Transmission) and blending. A
 run their effect stacks on the GPU-resident comp (`Renderer::run_effects_on` with an `FxTarget`):
 runs of GPU effects stay on the device and only non-GPU effects read back and upload. Advanced 3D
 compositing and wireframes still run on the CPU between GPU steps (read back, draw, upload). GPU
-effects (`effects::GPU_EFFECTS`, 58 of them: blurs, colour, keying incl. Key Light, distortion,
-transitions, generators, noise and grain; see [effects.md](effects.md)) repeat the CPU effect's
-steps (padding, box radii, parameters, hashes) as kernels; consecutive GPU effects run as one
-chain with one upload and one readback. Tests render scenes on both paths and compare them
+effects (`effects::GPU_EFFECTS`, 152 of them: blurs, colour correction, keying incl. Key Light,
+mattes, channel, stylize, distortion, transitions, generators, noise, grain and time; see
+[effects.md](effects.md)) repeat the CPU effect's steps (padding, box radii, parameters, hashes)
+as kernels, in one module per family (`gpu::fx_*` with `shaders/fx_*.wgsl`); consecutive GPU
+effects run as one chain with one upload and one readback. Statistics that need the whole frame
+(Auto Levels / Contrast / Color, Equalize, Shadow/Highlight, Color Stabilizer, Remove Grain's
+noise level) are measured on the CPU from one readback and applied on the GPU; effects reading
+other frames (Echo, Posterize Time) upload the frames the host renders. Settings a kernel cannot
+match render on the CPU (`effects::catalog::gpu_supported`). Tests render scenes on both paths and compare them
 (≤ 1/255 at 8 bpc, ≤ 1e-3 at 32 bpc); they skip without an adapter. The desktop viewer builds the
 `Gpu` on egui-wgpu's device and shows frames from GPU textures without reading them back
 (`ui-egui::frames`); headless renders, the CLI (unless `--gpu`) and CI use the CPU. On the web
