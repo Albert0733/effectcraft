@@ -3,11 +3,11 @@
 <!-- Generated from the effect registry (crates/effects/src/catalog.rs); do not edit by hand.
      Regenerate: UPDATE_DOCS=1 cargo test -p effectcraft-effects --lib effects_doc_is_current -->
 
-EffectCraft ships 303 effects with 2746 parameters in total, grouped into the same categories as the Effects & Presets panel. Every effect is our own implementation, written from public behaviour descriptions and standard image-processing literature. Parameter names, order, popup options, units, defaults and ranges follow the reference application so that projects, expressions and muscle memory carry over.
+EffectCraft ships 303 effects with 2751 parameters in total, grouped into the same categories as the Effects & Presets panel. Every effect is our own implementation, written from public behaviour descriptions and standard image-processing literature. Parameter names, order, popup options, units, defaults and ranges follow the reference application so that projects, expressions and muscle memory carry over.
 
 - **GPU**: 24 effects also run on the GPU compositor with identical results.
 - **32**: 303 effects process 32-bit float (HDR, overbright) pixels without clamping.
-- **Status**: 281 implemented in full, 22 partial (what is missing is listed).
+- **Status**: 284 implemented in full, 19 partial (what is missing is listed).
 
 Effects are addressed by id (`ec.<category>.<name>`) or display name in commands, scripts and the control channel, and every parameter by its id (`effects/#1/blurriness`).
 
@@ -162,7 +162,7 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 | Rolling Shutter Repair | `ec.distort.rollingshutterrepair` | 5 |  | 32 | Partial: Pixel Motion Detail has no effect |
 | Smear | `ec.distort.smear` | 8 |  | 32 | Implemented |
 | Spherize | `ec.distort.spherize` | 2 |  | 32 | Implemented |
-| Transform | `ec.distort.transform` | 10 | GPU | 32 | Partial: no shutter-angle motion blur |
+| Transform | `ec.distort.transform` | 12 | GPU | 32 | Implemented |
 | Turbulent Displace | `ec.distort.turbulentdisplace` | 11 |  | 32 | Implemented |
 | Twirl | `ec.distort.twirl` | 3 |  | 32 | Implemented |
 | Twirl (Legacy) | `ec.distort.twirllegacy` | 3 |  | 32 | Implemented |
@@ -351,11 +351,11 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 | CC Threshold | `ec.stylize.ccthreshold` | 4 |  | 32 | Implemented |
 | CC Threshold RGB | `ec.stylize.ccthresholdrgb` | 7 |  | 32 | Implemented |
 | CC Vignette | `ec.stylize.ccvignette` | 4 |  | 32 | Implemented |
-| Cartoon | `ec.stylize.cartoon` | 11 |  | 32 | Partial: no Edge Enhancement |
+| Cartoon | `ec.stylize.cartoon` | 12 |  | 32 | Implemented |
 | Color Emboss | `ec.stylize.coloremboss` | 4 |  | 32 | Implemented |
 | Emboss | `ec.stylize.emboss` | 4 |  | 32 | Implemented |
 | Find Edges | `ec.stylize.findedges` | 2 |  | 32 | Implemented |
-| Glow | `ec.stylize.glow` | 13 | GPU | 32 | Partial: no Glow Operation or arbitrary colour map |
+| Glow | `ec.stylize.glow` | 14 | GPU | 32 | Implemented |
 | Mosaic | `ec.stylize.mosaic` | 3 |  | 32 | Implemented |
 | Motion Tile | `ec.stylize.motiontile` | 8 |  | 32 | Implemented |
 | Posterize | `ec.stylize.posterize` | 1 |  | 32 | Implemented |

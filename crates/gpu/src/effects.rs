@@ -173,6 +173,10 @@ fn directional(e: &mut Enc, ctx: &EffectCtx, mut b: GBuf) -> Option<GBuf> {
 }
 
 fn glow(e: &mut Enc, ctx: &EffectCtx, mut b: GBuf) -> Option<GBuf> {
+    // Other Glow Operations and the Arbitrary Map render on the CPU.
+    if ctx.params.e("colors") == 2 || effectcraft_effects::glow_operation(ctx) != effectcraft_color::BlendMode::Add {
+        return None;
+    }
     let thr = ctx.params.f("threshold") as f32 / 100.0;
     let radius = ctx.params.f("radius") * b.scale;
     let intensity = ctx.params.f("intensity") as f32;
@@ -231,6 +235,10 @@ fn drop_shadow(e: &mut Enc, ctx: &EffectCtx, mut b: GBuf) -> Option<GBuf> {
 }
 
 fn transform(e: &mut Enc, ctx: &EffectCtx, mut b: GBuf) -> Option<GBuf> {
+    // Motion blur (shutter angle) renders on the CPU.
+    if ctx.env.host.is_some() && effectcraft_effects::transform_shutter(ctx).is_some() {
+        return None;
+    }
     let anchor = b.to_px(ctx.params.v2("anchor"));
     let pos = b.to_px(ctx.params.v2("position"));
     let sh = ctx.params.f("scaleHeight");

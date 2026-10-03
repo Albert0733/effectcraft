@@ -653,6 +653,11 @@ impl<'a> Renderer<'a> {
             effect_index: 0,
             working_space: self.pipe.space,
             working_linear: self.pipe.linear,
+            shutter: (ctx.comp.enable_motion_blur && layer.switches.motion_blur).then_some((
+                ctx.comp.shutter_angle,
+                ctx.comp.shutter_phase,
+                ctx.comp.motion_blur_samples,
+            )),
         };
         // Video effects in stack order (index, group, spec); disabled and audio effects skipped.
         let stack: Vec<(usize, &effectcraft_project::PropGroup, &'static effectcraft_effects::EffectSpec)> = fx

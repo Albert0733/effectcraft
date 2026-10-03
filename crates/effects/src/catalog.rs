@@ -11,7 +11,6 @@ pub const PARTIAL: &[(&str, &str)] = &[
     ("ec.blur.cameralens", "no Diffraction Fringe or Blur Map layer"),
     ("ec.color.colorama", "no Add Phase, editable Output Cycle, Modify, Pixel Selection or Masking"),
     ("ec.color.selectivecolor", "simplified Colors / Details layout"),
-    ("ec.distort.transform", "no shutter-angle motion blur"),
     ("ec.distort.reshape", "no correspondence points"),
     ("ec.distort.rollingshutterrepair", "Pixel Motion Detail has no effect"),
     ("ec.generate.advancedlightning", "no Alpha Obstacle; most Expert Settings missing"),
@@ -28,8 +27,6 @@ pub const PARTIAL: &[(&str, &str)] = &[
     ("ec.vr.converter", "common layouts only"),
     ("ec.sim.caustics", "no Sky group or light type"),
     ("ec.sim.waveworld", "no wireframe controls, dry-area rendering or ground group"),
-    ("ec.stylize.glow", "no Glow Operation or arbitrary colour map"),
-    ("ec.stylize.cartoon", "no Edge Enhancement"),
 ];
 
 /// Whether Effect Controls shows parameter (or twirl-down group) `param` (spec id path,

@@ -66,11 +66,12 @@ pub use color_fx::{
     HUESAT_CHANNELS, LEVELS_CHANNELS, exposure_settings, fill_uses_masks, huesat_ranges_identity, levels_channel_ids, levels_channels_identity, levels_clip,
 };
 pub use color2::Curve;
+pub use distort::transform_shutter;
 use effectcraft_keyframe::Value;
 use effectcraft_project::build::Ids;
 use effectcraft_project::{GroupKind, ParamUi, PropGroup, Property};
 pub use effectcraft_raster::{AuxChannels, Image};
-pub use misc::{INVERT_ALPHA, INVERT_CHANNELS};
+pub use misc::{INVERT_ALPHA, INVERT_CHANNELS, glow_operation};
 
 /// Effect categories in Effects & Presets order.
 pub const CATEGORIES: &[&str] = &[
@@ -292,6 +293,10 @@ pub struct EffectEnv<'a> {
     pub working_space: Option<effectcraft_color::ColorSpace>,
     /// Working-space pixels are linear light (Linearize Working Space).
     pub working_linear: bool,
+    /// The composition's shutter (angle and phase in degrees, samples per frame) when both the
+    /// comp's and the layer's motion blur switches are on (Transform's Use Composition's
+    /// Shutter Angle).
+    pub shutter: Option<(f64, f64, u32)>,
 }
 
 /// What an effect gets to render with.
@@ -708,6 +713,9 @@ pub const TIME_DEPENDENT: &[&str] = &[
     "ec.matte.refinehard",
     // Card Wipe's position / rotation jitter moves with time.
     "ec.transition.cardwipe",
+    // Transform's motion blur and Radio Waves' birth parameters read the parameters at
+    // other times.
+    "ec.distort.transform",
     // Temporal Smoothing reads neighbouring frames.
     "ec.color.autolevels",
     "ec.color.autocontrast",
