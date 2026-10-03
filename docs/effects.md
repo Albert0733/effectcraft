@@ -5,7 +5,7 @@
 
 EffectCraft ships 306 effects with 3009 parameters in total, grouped into the same categories as the Effects & Presets panel. Every effect is our own implementation, written from public behaviour descriptions and standard image-processing literature. Parameter names, order, popup options, units, defaults and ranges follow the reference application so that projects, expressions and muscle memory carry over.
 
-- **GPU**: 59 effects also run on the GPU compositor with identical results.
+- **GPU**: 118 effects also run on the GPU compositor with identical results.
 - **32**: 306 effects process 32-bit float (HDR, overbright) pixels without clamping.
 - **Status**: 306 implemented in full, 0 partial (what is missing is listed).
 
@@ -46,85 +46,85 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 
 | Effect | Id | Params | GPU | 32 | Status |
 |---|---|---:|:-:|:-:|---|
-| Bilateral Blur | `ec.blur.bilateral` | 3 |  | 32 | Implemented |
+| Bilateral Blur | `ec.blur.bilateral` | 3 | GPU | 32 | Implemented |
 | CC Cross Blur | `ec.blur.cccross` | 3 |  | 32 | Implemented |
 | CC Radial Blur | `ec.blur.ccradial` | 4 |  | 32 | Implemented |
 | CC Radial Fast Blur | `ec.blur.ccradialfast` | 3 | GPU | 32 | Implemented |
 | CC Vector Blur | `ec.blur.ccvector` | 4 |  | 32 | Implemented |
 | Camera Lens Blur | `ec.blur.cameralens` | 16 | GPU | 32 | Implemented |
 | Camera-Shake Deblur | `ec.blur.camerashakedeblur` | 8 |  | 32 | Implemented |
-| Channel Blur | `ec.blur.channel` | 6 |  | 32 | Implemented |
-| Compound Blur | `ec.blur.compound` | 4 |  | 32 | Implemented |
+| Channel Blur | `ec.blur.channel` | 6 | GPU | 32 | Implemented |
+| Compound Blur | `ec.blur.compound` | 4 | GPU | 32 | Implemented |
 | Directional Blur | `ec.blur.directional` | 2 | GPU | 32 | Implemented |
 | Fast Box Blur | `ec.blur.fastbox` | 4 | GPU | 32 | Implemented |
 | Gaussian Blur | `ec.blur.gaussian` | 3 | GPU | 32 | Implemented |
 | Radial Blur | `ec.blur.radial` | 4 | GPU | 32 | Implemented |
-| Sharpen | `ec.blur.sharpen` | 1 |  | 32 | Implemented |
-| Smart Blur | `ec.blur.smart` | 3 |  | 32 | Implemented |
-| Unsharp Mask | `ec.blur.unsharp` | 3 |  | 32 | Implemented |
+| Sharpen | `ec.blur.sharpen` | 1 | GPU | 32 | Implemented |
+| Smart Blur | `ec.blur.smart` | 3 | GPU | 32 | Implemented |
+| Unsharp Mask | `ec.blur.unsharp` | 3 | GPU | 32 | Implemented |
 
 ## Channel
 
 | Effect | Id | Params | GPU | 32 | Status |
 |---|---|---:|:-:|:-:|---|
-| Arithmetic | `ec.channel.arithmetic` | 5 |  | 32 | Implemented |
-| Blend | `ec.channel.blend` | 4 |  | 32 | Implemented |
+| Arithmetic | `ec.channel.arithmetic` | 5 | GPU | 32 | Implemented |
+| Blend | `ec.channel.blend` | 4 | GPU | 32 | Implemented |
 | CC Composite | `ec.channel.cccomposite` | 3 |  | 32 | Implemented |
-| Calculations | `ec.channel.calculations` | 9 |  | 32 | Implemented |
-| Channel Combiner | `ec.channel.combiner` | 6 |  | 32 | Implemented |
-| Compound Arithmetic | `ec.channel.compoundarithmetic` | 6 |  | 32 | Implemented |
+| Calculations | `ec.channel.calculations` | 9 | GPU | 32 | Implemented |
+| Channel Combiner | `ec.channel.combiner` | 6 | GPU | 32 | Implemented |
+| Compound Arithmetic | `ec.channel.compoundarithmetic` | 6 | GPU | 32 | Implemented |
 | Invert | `ec.channel.invert` | 2 | GPU | 32 | Implemented |
-| Minimax | `ec.channel.minimax` | 5 |  | 32 | Implemented |
-| Remove Color Matting | `ec.channel.removecolormatting` | 2 |  | 32 | Implemented |
-| Set Channels | `ec.channel.setchannels` | 9 |  | 32 | Implemented |
-| Set Matte | `ec.channel.setmatte` | 6 |  | 32 | Implemented |
-| Shift Channels | `ec.channel.shiftchannels` | 4 |  | 32 | Implemented |
-| Solid Composite | `ec.channel.solidcomposite` | 4 |  | 32 | Implemented |
+| Minimax | `ec.channel.minimax` | 5 | GPU | 32 | Implemented |
+| Remove Color Matting | `ec.channel.removecolormatting` | 2 | GPU | 32 | Implemented |
+| Set Channels | `ec.channel.setchannels` | 9 | GPU | 32 | Implemented |
+| Set Matte | `ec.channel.setmatte` | 6 | GPU | 32 | Implemented |
+| Shift Channels | `ec.channel.shiftchannels` | 4 | GPU | 32 | Implemented |
+| Solid Composite | `ec.channel.solidcomposite` | 4 | GPU | 32 | Implemented |
 
 ## Color Correction
 
 | Effect | Id | Params | GPU | 32 | Status |
 |---|---|---:|:-:|:-:|---|
-| Auto Color | `ec.color.autocolor` | 6 |  | 32 | Implemented |
-| Auto Contrast | `ec.color.autocontrast` | 5 |  | 32 | Implemented |
-| Auto Levels | `ec.color.autolevels` | 5 |  | 32 | Implemented |
+| Auto Color | `ec.color.autocolor` | 6 | GPU | 32 | Implemented |
+| Auto Contrast | `ec.color.autocontrast` | 5 | GPU | 32 | Implemented |
+| Auto Levels | `ec.color.autolevels` | 5 | GPU | 32 | Implemented |
 | Black & White | `ec.color.blackwhite` | 8 | GPU | 32 | Implemented |
 | Brightness & Contrast | `ec.color.brightnesscontrast` | 3 | GPU | 32 | Implemented |
-| Broadcast Colors | `ec.color.broadcast` | 3 |  | 32 | Implemented |
-| CC Color Neutralizer | `ec.color.cccolorneutralizer` | 11 |  | 32 | Implemented |
-| CC Color Offset | `ec.color.cccoloroffset` | 4 |  | 32 | Implemented |
-| CC Kernel | `ec.color.cckernel` | 12 |  | 32 | Implemented |
-| CC Toner | `ec.color.cctoner` | 7 |  | 32 | Implemented |
-| Change Color | `ec.color.changecolor` | 9 |  | 32 | Implemented |
-| Change to Color | `ec.color.changetocolor` | 9 |  | 32 | Implemented |
+| Broadcast Colors | `ec.color.broadcast` | 3 | GPU | 32 | Implemented |
+| CC Color Neutralizer | `ec.color.cccolorneutralizer` | 11 | GPU | 32 | Implemented |
+| CC Color Offset | `ec.color.cccoloroffset` | 4 | GPU | 32 | Implemented |
+| CC Kernel | `ec.color.cckernel` | 12 | GPU | 32 | Implemented |
+| CC Toner | `ec.color.cctoner` | 7 | GPU | 32 | Implemented |
+| Change Color | `ec.color.changecolor` | 9 | GPU | 32 | Implemented |
+| Change to Color | `ec.color.changetocolor` | 9 | GPU | 32 | Implemented |
 | Channel Mixer | `ec.color.channelmixer` | 13 | GPU | 32 | Implemented |
 | Color Balance | `ec.color.colorbalance` | 10 | GPU | 32 | Implemented |
-| Color Balance (HLS) | `ec.color.colorbalancehls` | 3 |  | 32 | Implemented |
+| Color Balance (HLS) | `ec.color.colorbalancehls` | 3 | GPU | 32 | Implemented |
 | Color Link | `ec.color.colorlink` | 6 |  | 32 | Implemented |
 | Color Stabilizer | `ec.color.colorstabilizer` | 6 |  | 32 | Implemented |
 | Colorama | `ec.color.colorama` | 20 | GPU | 32 | Implemented |
 | Curves | `ec.color.curves` | 0 | GPU | 32 | Implemented |
-| Equalize | `ec.color.equalize` | 2 |  | 32 | Implemented |
+| Equalize | `ec.color.equalize` | 2 | GPU | 32 | Implemented |
 | Exposure | `ec.color.exposure` | 14 | GPU | 32 | Implemented |
-| Gamma/Pedestal/Gain | `ec.color.gammapedestalgain` | 10 |  | 32 | Implemented |
+| Gamma/Pedestal/Gain | `ec.color.gammapedestalgain` | 10 | GPU | 32 | Implemented |
 | Hue/Saturation | `ec.color.huesaturation` | 50 | GPU | 32 | Implemented |
-| Leave Color | `ec.color.leavecolor` | 5 |  | 32 | Implemented |
+| Leave Color | `ec.color.leavecolor` | 5 | GPU | 32 | Implemented |
 | Levels | `ec.color.levels` | 36 | GPU | 32 | Implemented |
-| Levels (Individual Controls) | `ec.color.levelsic` | 27 |  | 32 | Implemented |
+| Levels (Individual Controls) | `ec.color.levelsic` | 27 | GPU | 32 | Implemented |
 | Lumetri Color | `ec.color.lumetri` | 66 | GPU | 32 | Implemented |
 | OCIO CDL Transform | `ec.color.ociocdl` | 12 |  | 32 | Implemented |
 | OCIO Color Space Transform | `ec.color.ociocolorspace` | 7 |  | 32 | Implemented |
 | OCIO Display Transform | `ec.color.ociodisplay` | 9 |  | 32 | Implemented |
 | OCIO File Transform | `ec.color.ociofile` | 4 |  | 32 | Implemented |
 | OCIO Look Transform | `ec.color.ociolook` | 6 |  | 32 | Implemented |
-| PS Arbitrary Map | `ec.color.psarbitrarymap` | 2 |  | 32 | Implemented |
-| Photo Filter | `ec.color.photofilter` | 4 |  | 32 | Implemented |
+| PS Arbitrary Map | `ec.color.psarbitrarymap` | 2 | GPU | 32 | Implemented |
+| Photo Filter | `ec.color.photofilter` | 4 | GPU | 32 | Implemented |
 | Selective Color | `ec.color.selectivecolor` | 38 | GPU | 32 | Implemented |
-| Shadow/Highlight | `ec.color.shadowhighlight` | 14 |  | 32 | Implemented |
+| Shadow/Highlight | `ec.color.shadowhighlight` | 14 | GPU | 32 | Implemented |
 | Tint | `ec.color.tint` | 3 | GPU | 32 | Implemented |
 | Tritone | `ec.color.tritone` | 4 | GPU | 32 | Implemented |
 | Vibrance | `ec.color.vibrance` | 2 | GPU | 32 | Implemented |
-| Video Limiter | `ec.color.videolimiter` | 5 |  | 32 | Implemented |
+| Video Limiter | `ec.color.videolimiter` | 5 | GPU | 32 | Implemented |
 
 ## Distort
 
@@ -236,29 +236,29 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 
 | Effect | Id | Params | GPU | 32 | Status |
 |---|---|---:|:-:|:-:|---|
-| Advanced Spill Suppressor | `ec.key.advancedspill` | 8 |  | 32 | Implemented |
+| Advanced Spill Suppressor | `ec.key.advancedspill` | 8 | GPU | 32 | Implemented |
 | CC Simple Wire Removal | `ec.key.ccsimplewireremoval` | 7 |  | 32 | Implemented |
-| Color Difference Key | `ec.key.colordifference` | 16 |  | 32 | Implemented |
-| Color Range | `ec.key.colorrange` | 8 |  | 32 | Implemented |
-| Difference Matte | `ec.key.differencematte` | 6 |  | 32 | Implemented |
-| Extract | `ec.key.extract` | 6 |  | 32 | Implemented |
+| Color Difference Key | `ec.key.colordifference` | 16 | GPU | 32 | Implemented |
+| Color Range | `ec.key.colorrange` | 8 | GPU | 32 | Implemented |
+| Difference Matte | `ec.key.differencematte` | 6 | GPU | 32 | Implemented |
+| Extract | `ec.key.extract` | 6 | GPU | 32 | Implemented |
 | Inner/Outer Key | `ec.key.innerouter` | 88 |  | 32 | Implemented |
-| Key Cleaner | `ec.key.keycleaner` | 4 |  | 32 | Implemented |
+| Key Cleaner | `ec.key.keycleaner` | 4 | GPU | 32 | Implemented |
 | Key Light | `ec.keying.keylight` | 56 | GPU | 32 | Implemented |
 | Linear Color Key | `ec.key.linearcolor` | 6 | GPU | 32 | Implemented |
-| Screen Key | `ec.key.screen` | 11 |  | 32 | Implemented |
-| Unmult | `ec.key.unmult` | 6 |  | 32 | Implemented |
+| Screen Key | `ec.key.screen` | 11 | GPU | 32 | Implemented |
+| Unmult | `ec.key.unmult` | 6 | GPU | 32 | Implemented |
 
 ## Matte
 
 | Effect | Id | Params | GPU | 32 | Status |
 |---|---|---:|:-:|:-:|---|
-| Matte Choker | `ec.matte.mattechoker` | 7 |  | 32 | Implemented |
+| Matte Choker | `ec.matte.mattechoker` | 7 | GPU | 32 | Implemented |
 | Mocha shape | `ec.obsolete.mochashape` | 6 |  | 32 | Implemented |
 | Refine Hard Matte | `ec.matte.refinehard` | 16 |  | 32 | Implemented |
 | Refine Soft Matte | `ec.matte.refinesoft` | 18 |  | 32 | Implemented |
 | Roto Brush & Refine Edge | `ec.matte.rotobrush` | 24 |  | 32 | Implemented |
-| Simple Choker | `ec.matte.simplechoker` | 2 |  | 32 | Implemented |
+| Simple Choker | `ec.matte.simplechoker` | 2 | GPU | 32 | Implemented |
 
 ## Noise & Grain
 
@@ -266,17 +266,17 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 |---|---|---:|:-:|:-:|---|
 | Add Grain | `ec.noise.addgrain` | 32 | GPU | 32 | Implemented |
 | Curl Noise | `ec.noise.curlnoise` | 10 |  | 32 | Implemented |
-| Dust & Scratches | `ec.noise.dustscratches` | 3 |  | 32 | Implemented |
+| Dust & Scratches | `ec.noise.dustscratches` | 3 | GPU | 32 | Implemented |
 | Fractal Noise | `ec.noise.fractal` | 26 | GPU | 32 | Implemented |
 | Match Grain | `ec.noise.matchgrain` | 37 |  | 32 | Implemented |
-| Median | `ec.noise.median` | 2 |  | 32 | Implemented |
-| Median (Legacy) | `ec.noise.medianlegacy` | 2 |  | 32 | Implemented |
+| Median | `ec.noise.median` | 2 | GPU | 32 | Implemented |
+| Median (Legacy) | `ec.noise.medianlegacy` | 2 | GPU | 32 | Implemented |
 | Noise | `ec.noise.noise` | 3 | GPU | 32 | Implemented |
-| Noise Alpha | `ec.noise.noisealpha` | 8 |  | 32 | Implemented |
-| Noise HLS | `ec.noise.noisehls` | 6 |  | 32 | Implemented |
-| Noise HLS Auto | `ec.noise.noisehlsauto` | 6 |  | 32 | Implemented |
-| Remove Grain | `ec.noise.removegrain` | 20 |  | 32 | Implemented |
-| Turbulent Noise | `ec.noise.turbulent` | 22 |  | 32 | Implemented |
+| Noise Alpha | `ec.noise.noisealpha` | 8 | GPU | 32 | Implemented |
+| Noise HLS | `ec.noise.noisehls` | 6 | GPU | 32 | Implemented |
+| Noise HLS Auto | `ec.noise.noisehlsauto` | 6 | GPU | 32 | Implemented |
+| Remove Grain | `ec.noise.removegrain` | 20 | GPU | 32 | Implemented |
+| Turbulent Noise | `ec.noise.turbulent` | 22 | GPU | 32 | Implemented |
 
 ## Obsolete
 
@@ -284,13 +284,13 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 |---|---|---:|:-:|:-:|---|
 | Basic 3D | `ec.obsolete.basic3d` | 5 |  | 32 | Implemented |
 | Basic Text | `ec.obsolete.basictext` | 11 |  | 32 | Implemented |
-| Color Key | `ec.key.colorkey` | 4 |  | 32 | Implemented |
+| Color Key | `ec.key.colorkey` | 4 | GPU | 32 | Implemented |
 | Gaussian Blur (Legacy) | `ec.obsolete.gaussianlegacy` | 2 |  | 32 | Implemented |
 | Lightning | `ec.obsolete.lightning` | 25 |  | 32 | Implemented |
-| Luma Key | `ec.key.luma` | 5 |  | 32 | Implemented |
+| Luma Key | `ec.key.luma` | 5 | GPU | 32 | Implemented |
 | Path Text | `ec.obsolete.pathtext` | 32 |  | 32 | Implemented |
 | Reduce Interlace Flicker | `ec.blur.reduceflicker` | 1 |  | 32 | Implemented |
-| Spill Suppressor | `ec.key.spill` | 3 |  | 32 | Implemented |
+| Spill Suppressor | `ec.key.spill` | 3 | GPU | 32 | Implemented |
 
 ## Paint
 
@@ -379,9 +379,9 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 |---|---|---:|:-:|:-:|---|
 | CC Force Motion Blur | `ec.time.ccforcemotionblur` | 4 |  | 32 | Implemented |
 | CC Wide Time | `ec.time.ccwidetime` | 3 |  | 32 | Implemented |
-| Echo | `ec.time.echo` | 5 |  | 32 | Implemented |
+| Echo | `ec.time.echo` | 5 | GPU | 32 | Implemented |
 | Pixel Motion Blur | `ec.time.pixelmotionblur` | 4 |  | 32 | Implemented |
-| Posterize Time | `ec.time.posterizetime` | 1 |  | 32 | Implemented |
+| Posterize Time | `ec.time.posterizetime` | 1 | GPU | 32 | Implemented |
 | Time Difference | `ec.time.timedifference` | 5 |  | 32 | Implemented |
 | Time Displacement | `ec.time.timedisplacement` | 4 |  | 32 | Implemented |
 | Timewarp | `ec.time.timewarp` | 28 |  | 32 | Implemented |
