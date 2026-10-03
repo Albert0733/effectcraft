@@ -210,7 +210,7 @@ fn pin_uid(s: &Session, cid: ItemId, lid: LayerId, key: &Value, cmd: &str) -> Re
 
 /// Pins named by `pin` or `pins` (uids or names) on `layer`, else the selected pins (of `layer`
 /// when given): (comp, layer, pin uid).
-fn pins_p(s: &Session, p: &Value, cmd: &str) -> Result<Vec<(ItemId, LayerId, Uid)>> {
+pub(crate) fn pins_p(s: &Session, p: &Value, cmd: &str) -> Result<Vec<(ItemId, LayerId, Uid)>> {
     let keys: Vec<Value> = match (p.get("pin"), p.get("pins")) {
         (Some(k), _) => vec![k.clone()],
         (None, Some(Value::Array(a))) => a.clone(),

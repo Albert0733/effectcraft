@@ -211,6 +211,51 @@ fn create_nulls_from_paths_expressions_evaluate() {
     assert_eq!(o.result, json!("-20,-10,0,4"), "{:?}", o.error);
 }
 
+fn pin_at(s: &mut Session, id: u64, i: usize) -> [f64; 2] {
+    let info = s.execute("puppet.info", json!({"layer": id})).unwrap();
+    let v = &info["meshes"][0]["pins"][i]["position"];
+    [v[0].as_f64().unwrap(), v[1].as_f64().unwrap()]
+}
+
+/// A layer's Position now, with its expression applied (what renders).
+fn position_now(s: &Session, layer: u64) -> [f64; 2] {
+    let cid = s.active_comp_id().unwrap();
+    let comp = s.project.comp(cid).unwrap();
+    let l = comp.layer(effectcraft_engine::project::LayerId(layer)).unwrap();
+    let ctx = effectcraft_engine::render::EvalCtx { project: &s.project, comp_id: cid, comp, time: s.time(), expr: s.expr.as_deref(), footage: None };
+    let v = ctx.value(l, l.props.prop("transform/position").unwrap()).components();
+    [v[0], v[1]]
+}
+
+fn near(a: [f64; 2], b: [f64; 2]) -> bool {
+    (a[0] - b[0]).abs() < 1e-6 && (a[1] - b[1]).abs() < 1e-6
+}
+
+#[test]
+fn puppet_pin_rigs_follow_and_lead_with_live_expressions() {
+    let mut s = session();
+    s.execute("comp.new", json!({"name": "C", "width": 200, "height": 100, "duration": 2, "frameRate": 30})).unwrap();
+    let id = s.execute("layer.newSolid", json!({"width": 100, "height": 60, "color": [0, 0, 1]})).unwrap()["layer"].as_u64().unwrap();
+    s.execute("puppet.addPin", json!({"layer": id, "position": [10, 30]})).unwrap();
+    s.execute("puppet.addPin", json!({"layer": id, "position": [90, 30]})).unwrap();
+    s.execute("puppet.selectPins", json!({"layer": id, "pins": []})).unwrap();
+    let r = s.execute("paths.pointsFollowNulls", json!({"layer": id})).unwrap();
+    let nulls: Vec<u64> = r["nulls"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap()).collect();
+    // Rigged at rest: the pins haven't moved. Layer (10, 30) is comp (60, 50).
+    assert!(near(pin_at(&mut s, id, 0), [10.0, 30.0]), "{:?}", pin_at(&mut s, id, 0));
+    // Moving the null moves its pin.
+    s.execute("prop.set", json!({"layer": nulls[0], "path": "transform/position", "value": [60, 80]})).unwrap();
+    assert!(near(pin_at(&mut s, id, 0), [10.0, 60.0]), "{:?}", pin_at(&mut s, id, 0));
+    // Parented nulls rig a limb: pin 2's null rides on pin 1's null.
+    s.execute("layer.setParent", json!({"layers": [nulls[1]], "parent": nulls[0]})).unwrap();
+    s.execute("prop.set", json!({"layer": nulls[0], "path": "transform/position", "value": [60, 90]})).unwrap();
+    assert!(near(pin_at(&mut s, id, 1), [90.0, 40.0]), "{:?}", pin_at(&mut s, id, 1));
+    // Nulls Follow Points: a null riding on pin 1, now at comp (60, 90).
+    let r = s.execute("paths.nullsFollowPoints", json!({"layer": id, "pins": ["Puppet Pin 1"]})).unwrap();
+    let rider = r["nulls"][0].as_u64().unwrap();
+    assert!(near(position_now(&s, rider), [60.0, 90.0]), "{:?}", position_now(&s, rider));
+}
+
 #[test]
 fn sockets_talk_tcp_behind_the_network_preference() {
     use std::io::{BufRead, BufReader, Write};
