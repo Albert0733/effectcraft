@@ -18,7 +18,8 @@
 //! An entry's shortcut is the command's default shortcut unless the line gives one (needed for
 //! entries with bound parameters). Adobe-service entries (Team Projects, Libraries, Bridge, Media
 //! Encoder, Behance, Creative Cloud…) are intentionally absent; the Essential Graphics workspace
-//! uses the Properties panel.
+//! uses the Properties panel and the Essential Graphics panel, whose templates use EffectCraft's
+//! own open `.ectemplate` format.
 
 use std::sync::OnceLock;
 
@@ -338,9 +339,11 @@ File
     Placeholder... | file.importPlaceholder
     Solid... | file.importSolid
     Lottie... | file.importLottie
+    Essential Graphics Template... | essential.importTemplate
   Export
     Add to Render Queue | renderQueue.add
     Lottie JSON... | file.exportLottie
+    Essential Graphics Template... | essential.exportTemplate
   ---
   Find | app.find
   ---
@@ -817,6 +820,7 @@ Animation
   Remove All Text Animators | text.removeAllAnimators
   ---
   Add Expression | prop.setExpression
+  Add Property to Essential Graphics | essential.addProperty
   Separate Dimensions | prop.separateDimensions
   Track Camera | track.camera
   Warp Stabilizer VFX | track.warpStabilizer
@@ -938,6 +942,7 @@ Window
   Character | window.panel {"panel":"character"} | Cmd+6
   Content-Aware Fill | window.unavailablePanel {"panel":"contentAwareFill"}
   Effects & Presets | window.panel {"panel":"effectsPresets"} | Cmd+5
+  Essential Graphics | window.panel {"panel":"essentialGraphics"}
   Info | window.panel {"panel":"info"} | Cmd+2
   Lumetri Scopes | window.unavailablePanel {"panel":"lumetriScopes"}
   Mask Interpolation | window.panel {"panel":"maskInterpolation"}

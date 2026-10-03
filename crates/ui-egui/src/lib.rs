@@ -473,6 +473,7 @@ impl EffectcraftApp {
             view: self.session.view_camera(comp),
             roi,
             backend: effectcraft_engine::render::Backend::Auto,
+            proxy: Default::default(),
         }
     }
 

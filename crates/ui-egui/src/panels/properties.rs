@@ -69,7 +69,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let project = app.session.project.clone();
     let expr = app.session.expr.clone();
     let now = app.session.time();
-    let ectx = EvalCtx { project: &project, comp_id: cid, comp: &comp, time: now, expr: expr.as_deref() };
+    let ectx = EvalCtx { project: &project, comp_id: cid, comp: &comp, time: now, expr: expr.as_deref(), footage: None };
     let x0 = rect.min.x + PAD;
     let w = rect.width() - 2.0 * PAD;
     // Vertical scrolling: content height is known after drawing, so clamp with last frame's.

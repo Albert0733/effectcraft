@@ -18,6 +18,7 @@ var selectorValue = [100, 100, 100];
 
 // Request ops (must match runtime.rs).
 var __COMP = 0, __COMPNAME = 1, __LAYER = 2, __LINFO = 3, __CHILD = 4, __PINFO = 5, __VALUE = 6, __XFORM = 7, __RECT = 8, __MARKERS = 9, __DOC = 10;
+var __FOOT = 11, __FDATA = 12, __SAMPLE = 13, __PROJ = 14;
 
 function __begin(t, v, c, l, path, uid, idx, fd, ti, tt, sv) {
   time = t;
@@ -29,6 +30,7 @@ function __begin(t, v, c, l, path, uid, idx, fd, ti, tt, sv) {
   __rc = 0;
   __seed = 0;
   __timeless = false;
+  __projectInfo = null;
 }
 
 function __finish(r) {
@@ -269,6 +271,18 @@ function timeToTimecode(t, base, isDuration) {
   return (neg ? '-' : '') + h + ':' + __pad(mm) + ':' + __pad(ss) + ':' + __pad(ff);
 }
 
+function timeToFeetAndFrames(t, fps, framesPerFoot, isDuration) {
+  if (t === undefined) t = time + thisComp.displayStartTime;
+  if (fps === undefined) fps = 1 / __S.fd;
+  if (framesPerFoot === undefined) framesPerFoot = 16;
+  var neg = t < 0;
+  var f = Math.floor(Math.abs(t) * fps + 1e-6);
+  var feet = Math.floor(f / framesPerFoot), fr = f % framesPerFoot;
+  var s = String(fr);
+  while (s.length < 2) s = '0' + s;
+  return (neg ? '-' : '') + feet + '+' + s;
+}
+
 function timeToCurrentFormat(t, fps) {
   if (fps === undefined) fps = Math.round(1 / __S.fd);
   return timeToTimecode(t, fps);
@@ -371,6 +385,14 @@ Comp.prototype = {
   get displayStartTime() { return this.__info[7]; },
   get bgColor() { return this.__info[8]; },
   get marker() { return new Markers(this.__c, -1); },
+  // The topmost enabled camera active at the current time.
+  get activeCamera() {
+    for (var i = 1; i <= this.numLayers; i++) {
+      var l = this.layer(i);
+      if (l.__info[10] === 'Camera' && l.active) return l;
+    }
+    __err('Composition "' + this.name + '" has no active camera');
+  },
   layer: function (a, rel) {
     if (a !== null && typeof a === 'object' && a.__isLayer) return this.layer(a.index + (rel || 0));
     var id = __h(__LAYER, this.__c, a);
@@ -385,6 +407,68 @@ function comp(name) {
   if (id === null) __err('Comp named "' + name + '" does not exist');
   return new Comp(id);
 }
+
+// Footage (data-driven animation) and the project ------------------------------------------------
+
+function Footage(info) { this.__i = info; this.__d = null; }
+Footage.prototype = {
+  __isFootage: true,
+  get name() { return this.__i[0]; },
+  get width() { return this.__i[1]; },
+  get height() { return this.__i[2]; },
+  get duration() { return this.__i[3]; },
+  get frameDuration() { return this.__i[4]; },
+  get pixelAspect() { return this.__i[5]; },
+  get ntscDropFrame() { return false; },
+  // The data file's text (JSON / CSV / TSV), or "" for media.
+  get sourceText() { return this.__i[7] === null ? '' : this.__i[7]; },
+  get __data() {
+    if (this.__d !== null) return this.__d;
+    var j = __h(__FDATA, this.__i[0]);
+    if (j === null) __err('Footage "' + this.name + '" has no data (or it could not be parsed)');
+    return (this.__d = JSON.parse(j));
+  },
+  // JSON: the parsed document; CSV/TSV: one object per row keyed by the header row.
+  get sourceData() { return this.__data.data; },
+  // CSV/TSV cell by [column, row] (0-based, rows after the header).
+  dataValue: function (idx) {
+    idx = __v(idx);
+    var rows = this.__data.rows;
+    if (rows === null) {
+      // JSON: a path of keys / indexes.
+      var v = this.__data.data;
+      for (var i = 0; i < idx.length; i++) {
+        if (v === null || v === undefined) __err('dataValue: no value at ' + JSON.stringify(idx));
+        v = v[idx[i]];
+      }
+      return v;
+    }
+    var r = rows[idx[1]];
+    if (r === undefined || r[idx[0]] === undefined) __err('dataValue: no cell at column ' + idx[0] + ', row ' + idx[1]);
+    return r[idx[0]];
+  },
+  get dataKeyCount() { var r = this.__data.rows; return r === null ? 0 : r.length; },
+  // The column names (CSV/TSV header row).
+  get dataKeyNames() { return this.__data.header || []; },
+  toString: function () { return '[object Footage]'; },
+};
+
+function footage(name) {
+  var info = __h(__FOOT, String(name));
+  if (info === null) __err('Footage named "' + name + '" does not exist');
+  return new Footage(info);
+}
+
+var __projectInfo = null;
+// The project's bits per channel (8, 16 or 32).
+__global('colorDepth', function () { return thisProject.bitsPerChannel; });
+var thisProject = {
+  get __info() { return __projectInfo || (__projectInfo = __h(__PROJ)); },
+  get fullPath() { return ''; },
+  get bitsPerChannel() { return this.__info[0]; },
+  get linearBlending() { return this.__info[1]; },
+  toString: function () { return '[object Project]'; },
+};
 
 // Layer -----------------------------------------------------------------------------------------
 
@@ -464,7 +548,14 @@ Layer.prototype = {
     var r = __h(__RECT, this.__c, this.__l, t === undefined ? time : t, !!includeExtents);
     return { top: r[0], left: r[1], width: r[2], height: r[3] };
   },
-  sampleImage: function () { return [0, 0, 0, 0]; },
+  // Average straight RGBA of the layer's pixels in `point ± radius` (layer space).
+  sampleImage: function (point, radius, postEffect, t) {
+    point = __v(point);
+    radius = radius === undefined ? [0.5, 0.5] : __v(radius);
+    if (!Array.isArray(radius)) radius = [radius, radius];
+    return __h(__SAMPLE, this.__c, this.__l, point[0], point[1], radius[0], radius.length > 1 ? radius[1] : radius[0],
+      postEffect === undefined ? true : !!__v(postEffect), t === undefined ? time : __v(t));
+  },
   toString: function () { return '[object Layer]'; },
 };
 
@@ -817,7 +908,12 @@ Markers.prototype = {
     }
     if (!(n >= 1 && n <= list.length)) __err('Marker index ' + n + ' out of range');
     var m = list[n - 1];
-    return { time: m[0], duration: m[1], comment: m[2], chapter: m[3], url: m[4], index: n };
+    var params = {};
+    for (var k = 0; k < m[8].length; k++) params[m[8][k][0]] = m[8][k][1];
+    return {
+      time: m[0], duration: m[1], comment: m[2], chapter: m[3], url: m[4], index: n,
+      frameTarget: m[5], eventCuePoint: m[6], cuePointName: m[7], parameters: params, protectedRegion: m[9],
+    };
   },
   nearestKey: function (t) {
     var list = this.__list;

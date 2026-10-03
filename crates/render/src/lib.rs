@@ -165,6 +165,22 @@ impl EffectHost for FxHost<'_, '_, '_> {
     }
 }
 
+/// The Essential Properties overrides of a precomp layer, evaluated at the context time.
+pub fn essential_overrides(ctx: &EvalCtx, layer: &Layer) -> Vec<effectcraft_project::essential::Override> {
+    use effectcraft_project::essential;
+    let over = essential::overridden(layer);
+    let Some(g) = essential::group(layer).filter(|_| !over.is_empty()) else { return vec![] };
+    let mut out = vec![];
+    g.walk("", &mut |_, p| {
+        if over.contains(&p.uid)
+            && let Some(control) = essential::control_of(&p.match_id)
+        {
+            out.push(essential::Override { control, value: ctx.value(layer, p) });
+        }
+    });
+    out
+}
+
 /// No footage available (renders footage layers as transparent).
 pub struct NoFootage;
 impl FootageSource for NoFootage {
@@ -242,11 +258,22 @@ pub struct RenderOpts {
     /// Region of interest `[x, y, w, h]` in comp pixels (viewer only): the top-level frame covers
     /// just this rectangle, and only its pixels are composited.
     pub roi: Option<[f64; 4]>,
+    /// Which proxies stand in for footage and compositions (Render Settings ▸ Proxy Use).
+    pub proxy: effectcraft_project::render_queue::ProxyUse,
 }
 
 impl Default for RenderOpts {
     fn default() -> Self {
-        RenderOpts { scale: 1.0, motion_blur: true, guides: false, draft: false, view: None, roi: None, backend: Backend::Cpu }
+        RenderOpts {
+            scale: 1.0,
+            motion_blur: true,
+            guides: false,
+            draft: false,
+            view: None,
+            roi: None,
+            backend: Backend::Cpu,
+            proxy: effectcraft_project::render_queue::ProxyUse::CurrentSettings,
+        }
     }
 }
 
@@ -341,6 +368,10 @@ impl<'a> Renderer<'a> {
             return None;
         }
         if styles::active(ctx, layer) {
+            return None;
+        }
+        // Instance overrides (Essential Properties) need the nested comp rendered on its own.
+        if !effectcraft_project::essential::overridden(layer).is_empty() {
             return None;
         }
         Some(*item)
@@ -447,7 +478,7 @@ impl<'a> Renderer<'a> {
     }
 
     fn ctx(&self, comp_id: ItemId, comp: &'a Comp, t: Tick) -> EvalCtx<'a> {
-        EvalCtx { project: self.project, comp_id, comp, time: t, expr: self.expr }
+        EvalCtx { project: self.project, comp_id, comp, time: t, expr: self.expr, footage: Some(self.footage) }
     }
 
     /// The accelerator to use for this render, if any (see [`Backend`]).
@@ -671,7 +702,22 @@ impl<'a> Renderer<'a> {
                 if self.project.comp_contains(*item, ctx.comp_id) {
                     return None;
                 }
-                let sub = self.nested();
+                // A composition proxy (a rendered still or movie) stands in for the comp.
+                if let Some(pf) = self.proxy_for(*item)
+                    && let Some(nc) = self.project.comp(*item)
+                {
+                    let img = self.footage.frame(*item, pf, ctx.source_time(layer))?;
+                    return Some(self.footage_buf(&img, pf, nc.width, nc.height));
+                }
+                // Essential Properties overrides render the nested comp with this instance's
+                // values.
+                let ov = essential_overrides(ctx, layer);
+                let tmp = if ov.is_empty() { None } else { effectcraft_project::essential::with_overrides(self.project, *item, &ov) };
+                let base = self.nested();
+                let sub = match &tmp {
+                    Some(p) => Renderer { project: p, ..base },
+                    None => base,
+                };
                 let lt = ctx.source_time(layer);
                 // Frame blending between the nested comp's frames (time-stretched/remapped).
                 let mode = frame_blend_mode(ctx, layer);
@@ -705,25 +751,41 @@ impl<'a> Renderer<'a> {
                     }
                 }
                 let lt = ctx.source_time(layer);
-                let img = self.footage_frame(ctx, layer, *item, f, lt)?;
-                let k = if img.width > 0 { f.width.max(1) as f64 / img.width as f64 } else { 1.0 };
-                // Keep native pixels when downsampling is small; resample otherwise.
-                let mut buf = if s < 0.75 {
-                    let w = ((f.width as f64 * s).round() as u32).max(1);
-                    let h = ((f.height as f64 * s).round() as u32).max(1);
-                    Buf { img: effectcraft_raster::resample(&img, w, h), offset: [0.0; 2], scale: s }
-                } else {
-                    Buf { img: (*img).clone(), offset: [0.0; 2], scale: 1.0 / k }
-                };
-                if let Some(c) = self.pipe.media_in(f.color_profile) {
-                    color::convert(&mut buf.img, &c);
-                }
-                Some(buf)
+                // The proxy is decoded instead, at its own size, and fills the footage's frame.
+                let pf = self.proxy_for(*item).unwrap_or(f);
+                let img = self.footage_frame(ctx, layer, *item, pf, lt)?;
+                Some(self.footage_buf(&img, pf, f.width, f.height))
             }
             LayerSource::Text => Some(self.authored(text::render(ctx, layer, self.raster_scale(ctx, layer)))),
             LayerSource::Shape => layer.props.sub("contents").map(|c| self.authored(shapes::render(ctx, layer, c, self.raster_scale(ctx, layer)))),
             _ => None,
         }
+    }
+
+    /// The proxy footage used for `item` under this render's Proxy Use, if any.
+    pub fn proxy_for(&self, item: ItemId) -> Option<&'a Footage> {
+        let it = self.project.item(item)?;
+        let px = it.proxy.as_deref()?;
+        (self.opts.proxy.uses(matches!(it.kind, ItemKind::Comp(_)), px.enabled) && px.footage.has_video).then_some(&px.footage)
+    }
+
+    /// A decoded frame of `f` as a layer buffer covering `w`×`h` layer pixels (the footage's
+    /// nominal size; proxies are scaled up to it), converted from its colour profile.
+    fn footage_buf(&self, img: &Image, f: &Footage, w: u32, h: u32) -> Buf {
+        let s = self.opts.scale;
+        let k = if img.width > 0 { w.max(1) as f64 / img.width as f64 } else { 1.0 };
+        // Keep native pixels when downsampling is small; resample otherwise.
+        let mut buf = if s < 0.75 && k <= 1.0 + 1e-9 {
+            let rw = ((w as f64 * s).round() as u32).max(1);
+            let rh = ((h as f64 * s).round() as u32).max(1);
+            Buf { img: effectcraft_raster::resample(img, rw, rh), offset: [0.0; 2], scale: s }
+        } else {
+            Buf { img: img.clone(), offset: [0.0; 2], scale: 1.0 / k }
+        };
+        if let Some(c) = self.pipe.media_in(f.color_profile) {
+            color::convert(&mut buf.img, &c);
+        }
+        buf
     }
 
     /// Authored colours into the working space (linear working spaces).
@@ -738,6 +800,21 @@ impl<'a> Renderer<'a> {
     /// when the layer's Frame Blending switch (and the comp's Enable Frame Blending) is on and
     /// `t` falls between frames (footage rate ≠ comp rate, time stretch, time remapping).
     fn footage_frame(&self, ctx: &EvalCtx, layer: &Layer, item: ItemId, f: &Footage, t: Tick) -> Option<Arc<Image>> {
+        // Interpret Footage ▸ Separate Fields: each field is a frame at twice the rate.
+        if f.fields != effectcraft_project::FieldOrder::Off && matches!(f.kind, FootageKind::Video | FootageKind::Sequence) {
+            let field_rate = FrameRate::new(f.frame_rate.num * 2, f.frame_rate.den);
+            let i = field_rate.frame_at(t).max(0);
+            let img = self.footage.frame(item, f, f.frame_rate.tick_of(i / 2))?;
+            let dominant_upper = f.fields == effectcraft_project::FieldOrder::UpperFirst;
+            // Upper field = even lines (0, 2, …).
+            let parity = if (i % 2 == 0) == dominant_upper { 0 } else { 1 };
+            return Some(Arc::new(interpret_pixels(&field_frame(&img, parity), f)));
+        }
+        let img = self.footage_frame_raw(ctx, layer, item, f, t)?;
+        if f.invert_alpha || f.linear_light { Some(Arc::new(interpret_pixels(&img, f))) } else { Some(img) }
+    }
+
+    fn footage_frame_raw(&self, ctx: &EvalCtx, layer: &Layer, item: ItemId, f: &Footage, t: Tick) -> Option<Arc<Image>> {
         let mode = frame_blend_mode(ctx, layer);
         if mode != FrameBlend::Off && matches!(f.kind, FootageKind::Video | FootageKind::Sequence) {
             let (i, w) = frame_position(t, f.frame_rate);
@@ -1306,6 +1383,57 @@ impl<'a> Renderer<'a> {
 }
 
 /// The layer's frame blending mode, if the comp's Enable Frame Blending switch is on.
+/// One field of an interlaced frame as a full frame: the field's lines (`parity` 0 = even /
+/// upper, 1 = odd / lower) kept, the other lines interpolated from their neighbours.
+pub fn field_frame(img: &Image, parity: usize) -> Image {
+    let (w, h) = (img.width as usize, img.height as usize);
+    let mut out = img.clone();
+    if h < 2 {
+        return out;
+    }
+    for y in 0..h {
+        if y % 2 == parity {
+            continue;
+        }
+        let above = y.checked_sub(1);
+        let below = (y + 1 < h).then_some(y + 1);
+        for x in 0..w {
+            let px = match (above, below) {
+                (Some(a), Some(b)) => {
+                    let (p, q) = (img.data[a * w + x], img.data[b * w + x]);
+                    [(p[0] + q[0]) * 0.5, (p[1] + q[1]) * 0.5, (p[2] + q[2]) * 0.5, (p[3] + q[3]) * 0.5]
+                }
+                (Some(a), None) => img.data[a * w + x],
+                (None, Some(b)) => img.data[b * w + x],
+                (None, None) => img.data[y * w + x],
+            };
+            out.data[y * w + x] = px;
+        }
+    }
+    out
+}
+
+/// Interpret Footage ▸ Invert Alpha and Interpret As Linear Light on decoded (premultiplied)
+/// pixels.
+pub fn interpret_pixels(img: &Image, f: &Footage) -> Image {
+    if !f.invert_alpha && !f.linear_light {
+        return img.clone();
+    }
+    let space = f.color_profile.unwrap_or(effectcraft_color::ColorSpace::Srgb);
+    let mut out = img.clone();
+    for p in out.data.iter_mut() {
+        let a = p[3];
+        let mut c = if a > 1e-6 { [p[0] / a, p[1] / a, p[2] / a] } else { [0.0; 3] };
+        if f.linear_light {
+            // The file's values are linear light: encode them like the rest of the footage.
+            c = c.map(|v| space.encode(v));
+        }
+        let a = if f.invert_alpha { 1.0 - a } else { a };
+        *p = [c[0] * a, c[1] * a, c[2] * a, a];
+    }
+    out
+}
+
 fn frame_blend_mode(ctx: &EvalCtx, layer: &Layer) -> FrameBlend {
     if ctx.comp.enable_frame_blending { layer.switches.frame_blend } else { FrameBlend::Off }
 }

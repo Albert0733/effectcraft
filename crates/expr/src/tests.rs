@@ -1019,7 +1019,7 @@ fn text_expression_selector_values() {
     let sel_of = |p: &Project| {
         let c = p.comp(cid).unwrap();
         let l = c.layer(lid).unwrap();
-        let ctx = EvalCtx { project: p, comp_id: cid, comp: c, time: Tick::ZERO, expr: Some(&Expressions) };
+        let ctx = EvalCtx { project: p, comp_id: cid, comp: c, time: Tick::ZERO, expr: Some(&Expressions), footage: None };
         let doc = effectcraft_render::text::source_text(&ctx, l).unwrap();
         let lay = effectcraft_text::layout_doc(&doc);
         let anim = l.props.group("text/animators/#1").unwrap();
@@ -1050,4 +1050,80 @@ fn text_expression_selector_values() {
     set_expr(&mut p, build::EXPRESSION_SELECTOR_DEFAULT);
     let v = eval_property(&p, cid, lid, "text/animators/#1/selectors/#2/amount", 0.0).unwrap();
     assert_eq!(v, Value::Vec3([100.0; 3]));
+}
+
+/// `sampleImage` reads the layer's rendered pixels (layer space, straight colour) after masks
+/// and effects, or the bare source with `postEffect = false`; the radius averages a box.
+#[test]
+fn sample_image_reads_rendered_pixels() {
+    let f = fx();
+    let code = |c: &str| format!("var c = {c}; c[0] * 1000 + c[1] * 100 + c[2] * 10 + c[3]");
+    // B: 40×40 blue solid.
+    assert_close!(f.num(&code("thisComp.layer(\"B\").sampleImage([20, 20])"), 0.0), 11.0);
+    // Half the box is outside the layer: alpha 0.5, colour still pure blue (straight).
+    assert_close!(f.num(&code("thisComp.layer(\"B\").sampleImage([0, 20], [1, 1])"), 0.0), 10.5);
+    // A: red with a mask covering 5..15: outside the mask it's transparent after masks, red before.
+    assert_close!(f.num(&code("thisComp.layer(\"A\").sampleImage([2, 2])"), 0.0), 0.0);
+    assert_close!(f.num(&code("thisComp.layer(\"A\").sampleImage([2, 2], [0.5, 0.5], false)"), 0.0), 1001.0);
+    assert_close!(f.num(&code("thisComp.layer(\"A\").sampleImage([10, 10])"), 0.0), 1001.0);
+    // The result has four values; outside the layer it's transparent.
+    assert_close!(f.num("thisComp.layer(\"B\").sampleImage([20, 20]).length", 0.0), 4.0);
+    assert_close!(f.num(&code("thisComp.layer(\"B\").sampleImage([-50, -50])"), 0.0), 0.0);
+}
+
+fn data_item(p: &mut Project, name: &str, text: &str) {
+    let f = effectcraft_project::Footage {
+        path: format!("/data/{name}"),
+        kind: effectcraft_project::FootageKind::Data,
+        data: Some(text.into()),
+        ..Default::default()
+    };
+    p.add_item(name, Label::Sandstone, None, ItemKind::Footage(f));
+}
+
+/// Data-driven animation: `footage(name)` with `sourceData` / `sourceText` / `dataValue` for
+/// JSON, CSV and TSV items.
+#[test]
+fn data_footage_json_csv_tsv() {
+    let mut f = fx();
+    data_item(&mut f.p, "stats.json", r#"{"title": "Q3", "items": [{"v": 3}, {"v": 7.5}]}"#);
+    data_item(&mut f.p, "scores.csv", "name,score\n\"Smith, J\",12\nLee,30.5\n");
+    data_item(&mut f.p, "table.tsv", "a\tb\n1\t2\n3\t4\n");
+    assert_close!(f.num("footage(\"stats.json\").sourceData.items[1].v", 0.0), 7.5);
+    assert_eq!(f.text("footage(\"stats.json\").sourceData.title", 0.0), "Q3");
+    assert_close!(f.num("footage(\"stats.json\").dataValue([\"items\", 0, \"v\"])", 0.0), 3.0);
+    assert_close!(f.num("footage(\"scores.csv\").sourceData[1].score", 0.0), 30.5);
+    assert_eq!(f.text("footage(\"scores.csv\").sourceData[0].name", 0.0), "Smith, J");
+    assert_close!(f.num("footage(\"scores.csv\").dataValue([1, 0])", 0.0), 12.0);
+    assert_close!(f.num("footage(\"scores.csv\").dataKeyCount", 0.0), 2.0);
+    assert_eq!(f.text("footage(\"scores.csv\").dataKeyNames.join('|')", 0.0), "name|score");
+    assert_close!(f.num("footage(\"table.tsv\").dataValue([1, 1])", 0.0), 4.0);
+    assert_close!(f.num("footage(\"table.tsv\").sourceText.length", 0.0), 12.0);
+    assert!(f.err("footage(\"missing.json\").sourceData").contains("does not exist"));
+    // Animated from data: the value follows the CSV row picked by time.
+    assert_close!(f.num("footage(\"scores.csv\").dataValue([1, Math.floor(time)])", 1.2), 30.5);
+}
+
+#[test]
+fn project_and_time_globals() {
+    let mut f = fx();
+    assert_close!(f.num("thisProject.bitsPerChannel", 0.0), 8.0);
+    assert_close!(f.num("colorDepth", 0.0), 8.0);
+    assert_close!(f.num("thisProject.linearBlending ? 1 : 0", 0.0), 0.0);
+    assert_eq!(f.text("timeToFeetAndFrames(2)", 0.0), "3+12");
+    assert_close!(f.num("posterizeTime(4); time", 0.6), 0.5);
+    // Path API.
+    assert_close!(f.num("createPath([[0, 0], [10, 0], [10, 10]], [], [], true).points()[2][1]", 0.0), 10.0);
+    assert_close!(f.num("createPath([[0, 0], [10, 0]], [[1, 1], [2, 2]], [], false).inTangents()[1][0]", 0.0), 2.0);
+    assert_close!(f.num("mask(\"Mask 1\").maskPath.points().length", 0.0), 4.0);
+    assert_close!(f.num("mask(\"Mask 1\").maskPath.isClosed() ? 1 : 0", 0.0), 1.0);
+    // Marker keys carry protected regions and cue points.
+    {
+        let a = f.a;
+        let l = f.layer_mut(a);
+        l.markers[0].protected = true;
+        l.markers[0].cue_point = Some(effectcraft_project::CuePoint { name: "go".into(), navigation: false, params: vec![("k".into(), "v".into())] });
+    }
+    assert_close!(f.num("thisLayer.marker.key(1).protectedRegion ? 1 : 0", 0.0), 1.0);
+    assert_eq!(f.text("thisComp.layer(\"A\").marker.key(1).cuePointName + thisComp.layer(\"A\").marker.key(1).parameters.k", 0.0), "gov");
 }

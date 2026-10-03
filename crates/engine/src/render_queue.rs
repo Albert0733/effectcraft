@@ -446,6 +446,11 @@ impl Session {
         }
         let importer = self.importer.clone().ok_or("media import is not available in this build")?;
         let footage = importer.probe(path)?;
+        if item.post_render == PostRenderAction::SetProxy {
+            crate::commands::proxy_set(self, item.comp, footage).map_err(|e| e.to_string())?;
+            self.toast(format!("Proxy set from {path}"));
+            return Ok(None);
+        }
         let name = std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| path.to_string());
         let replace = item.post_render == PostRenderAction::ImportAndReplace;
         let comp = item.comp;

@@ -181,6 +181,13 @@ pub enum GroupKind {
     },
     /// A motion tracker (Motion Trackers ▸ Tracker n) with its Tracker panel settings.
     Tracker { settings: Box<crate::tracking::TrackerSettings> },
+    /// The Essential Properties of a precomp layer (master properties): one child per control
+    /// of the nested comp's Essential Graphics; `overridden` lists the children (uids) whose
+    /// values this instance overrides.
+    Essential {
+        #[serde(default)]
+        overridden: Vec<Uid>,
+    },
 }
 
 /// Mask motion blur (sub-frame samples of an animated mask path).

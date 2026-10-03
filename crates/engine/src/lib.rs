@@ -209,6 +209,13 @@ pub struct EditorState {
     /// Composition viewer display options (Show Channel, exposure, snapshot, Fast Previews).
     #[serde(default)]
     pub viewer: commands::viewer_cmds::ViewOptions,
+    /// Essential Graphics panel ▸ Primary composition (`None` = the active comp).
+    #[serde(default)]
+    pub essential_primary: Option<ItemId>,
+    /// Essential Graphics panel ▸ Solo Supported Properties (the timeline shows only properties
+    /// Essential Graphics can expose).
+    #[serde(default)]
+    pub essential_solo: bool,
 }
 
 fn one_view() -> u8 {
@@ -385,7 +392,8 @@ impl Session {
         let spec = commands::find(id).ok_or_else(|| EngineError::UnknownCommand(id.to_string()))?;
         if let Err(why) = (spec.enabled)(self) {
             // Explicit targets (agents, scripts) don't need a UI selection.
-            let explicit = ["layer", "layers", "prop", "keys"].iter().any(|k| params.get(k).is_some()) && commands::has_comp(self).is_ok();
+            let explicit = (["layer", "layers", "prop", "keys"].iter().any(|k| params.get(k).is_some()) && commands::has_comp(self).is_ok())
+                || ["item", "items"].iter().any(|k| params.get(k).is_some());
             if !explicit {
                 return Err(EngineError::Disabled(id.to_string(), why));
             }
@@ -420,6 +428,8 @@ impl Session {
         let r = f(&mut p, &mut st)?;
         // Layer styles: one Global Light per comp, whichever layer edited it.
         effectcraft_project::styles::sync_global_light(&before, &mut p);
+        // Essential Properties of precomp layers follow their comps' Essential Graphics.
+        effectcraft_project::essential::sync_project(&before, &mut p);
         // Warp Stabilizer analyses made from other frames are cleared (and queued again).
         for w in warp::invalidate(&before, &mut p) {
             if !self.warp_pending.contains(&w) {
@@ -653,6 +663,8 @@ mod tests_disk_cache;
 #[cfg(test)]
 mod tests_effects;
 #[cfg(test)]
+mod tests_essential;
+#[cfg(test)]
 mod tests_fidelity;
 #[cfg(test)]
 mod tests_lottie;
@@ -666,6 +678,8 @@ mod tests_menu_cmds;
 mod tests_model3d;
 #[cfg(test)]
 mod tests_project_items;
+#[cfg(test)]
+mod tests_proxy;
 #[cfg(test)]
 mod tests_settings;
 #[cfg(test)]
