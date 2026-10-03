@@ -218,3 +218,69 @@ fn the_gpu_draws_classic_3d_runs_itself() {
     let d = crate::tests::diff(&cpu, &img, 1e-3);
     assert!(d.over * 200 <= d.total, "{d:?}");
 }
+
+/// Classic 3D bokeh depth of field runs on the GPU: iris shapes, highlights, fringe, Fast
+/// Rectangle and a tilted plane (progressive blur) match the CPU.
+#[test]
+fn bokeh_depth_of_field_runs_on_the_gpu() {
+    let cases: [(&str, &[(&str, Value)]); 4] = [
+        ("fast rectangle", &[]),
+        ("hexagon + highlights", &[("irisShape", Value::Enum(4)), ("irisRotation", n(15.0)), ("highlightGain", n(40.0)), ("highlightThreshold", n(150.0))]),
+        ("round + fringe", &[("irisShape", Value::Enum(6)), ("irisRoundness", n(60.0)), ("irisDiffractionFringe", n(80.0))]),
+        ("wide triangle", &[("irisShape", Value::Enum(1)), ("irisAspectRatio", n(2.0))]),
+    ];
+    for depth in [BitDepth::Bpc8, BitDepth::Bpc32] {
+        for (label, vals) in cases {
+            // The crossing planes are tilted (±35°): every plane blurs progressively.
+            let mut s = crossing(depth, BlendMode::Normal);
+            camera(&mut s, [80.0, 50.0, -220.0], Some((180.0, 40.0)));
+            for l in &mut s.p.comp_mut(s.cid).unwrap().layers {
+                if l.name == "Camera" {
+                    for (k, v) in vals {
+                        set(l, &format!("cameraOptions/{k}"), v.clone());
+                    }
+                }
+            }
+            check(&format!("bokeh {label} {depth:?}"), compare_at(&s, opts(), Tick::ZERO), 0.005);
+            // The blur is the GPU's: the prepared planes carry it unapplied.
+            if depth == BitDepth::Bpc32
+                && let Some(g) = gpu()
+            {
+                let r = Renderer::new(&s.p, &Pattern, RenderOpts { backend: Backend::Gpu, ..opts() });
+                let ctx = r.eval_ctx(s.cid, Tick::ZERO).unwrap();
+                let run: Vec<_> = r.visible_layers(&ctx).into_iter().filter(|l| l.is_3d()).collect();
+                let prep = r.prepare_3d_run(&ctx, &run, (W, H)).unwrap();
+                assert!(prep.planes.iter().filter(|p| p.draw).all(|p| p.dof.is_some()), "{label}: depth of field deferred to the GPU");
+                let mut e = crate::context::Enc::new(g.context());
+                let canvas = e.image(W, H);
+                assert!(crate::classic3d::draw_run(&mut e, &prep, &canvas).is_some(), "{label}: drawn on the GPU");
+            }
+        }
+    }
+}
+
+/// A 2D layer whose track matte is a 3D layer: the matte is drawn through the camera on the
+/// GPU walk as on the CPU.
+#[test]
+fn two_d_layer_with_a_three_d_track_matte() {
+    for depth in [BitDepth::Bpc8, BitDepth::Bpc32] {
+        for kind in [MatteKind::Alpha, MatteKind::Luma] {
+            let mut s = scene(depth);
+            let bg = s.solid([0.1, 0.12, 0.2], W, H);
+            s.push(bg);
+            let fill = s.footage(W, H);
+            let fid = s.push(fill);
+            // The matte: a solid turned in 3D, seen through a camera.
+            let m = three_d(s.solid([0.9, 0.9, 0.9], 70, 50), [80.0, 50.0, 30.0], 40.0);
+            let mid = s.push(m);
+            camera(&mut s, [40.0, 30.0, -200.0], None);
+            let layers = &mut s.p.comp_mut(s.cid).unwrap().layers;
+            let fi = layers.iter().position(|l| l.id == fid).unwrap();
+            layers[fi].track_matte = Some(TrackMatte { layer: mid, kind });
+            if let Some(ml) = layers.iter_mut().find(|l| l.id == mid) {
+                ml.switches.video = false;
+            }
+            check(&format!("3d matte {kind:?} {depth:?}"), compare_at(&s, opts(), Tick::ZERO), 0.005);
+        }
+    }
+}

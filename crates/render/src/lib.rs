@@ -363,6 +363,8 @@ pub struct Renderer<'a> {
     /// Switches inherited from the precomp layers this comp is rendered through (see
     /// [`RenderOpts::nested_switches`]): the worst quality and whether motion blur is allowed.
     pub(crate) inherited: Option<(Quality, bool)>,
+    /// Classic 3D depth of field is left to an accelerator ([`three_d::Plane3d::dof`]).
+    pub(crate) defer_dof: bool,
 }
 
 /// How a collapsed precomp's 3D layers are placed in the parent (see `Renderer::collapse_into`).
@@ -407,6 +409,7 @@ impl<'a> Renderer<'a> {
             opacity_mul: 1.0,
             collapse3d: None,
             inherited: None,
+            defer_dof: false,
         }
     }
 
@@ -441,7 +444,7 @@ impl<'a> Renderer<'a> {
 
     /// A renderer for nested work (precomps, layers read by effects): one level deeper.
     fn nested(&self) -> Renderer<'a> {
-        Renderer { depth: self.depth + 1, outer: None, opacity_mul: 1.0, collapse3d: None, ..*self }
+        Renderer { depth: self.depth + 1, outer: None, opacity_mul: 1.0, collapse3d: None, defer_dof: false, ..*self }
     }
 
     /// The nested comp of a precomp layer whose transformations collapse into this comp: the

@@ -136,11 +136,18 @@ pub(crate) fn draw_run(e: &mut Enc, run: &Run3d, canvas: &GpuImage) -> Option<Gp
     {
         return None;
     }
-    // Plane textures: the layer uploads (cached per buffer; bokeh depth of field is already in
-    // them).
+    // Plane textures: the layer uploads (cached per buffer), with bokeh depth of field blurred
+    // here when the plane has it.
     let mut texs: Vec<(GpuImage, [f64; 2])> = Vec::with_capacity(run.planes.len());
     for p in &run.planes {
-        texs.push((e.g.upload_buf(&p.buf)?, p.buf.offset));
+        let up = e.g.upload_buf(&p.buf)?;
+        match &p.dof {
+            Some(d) => {
+                let pad = d.pad as f64;
+                texs.push((crate::bokeh::apply(e, &up, d)?, [p.buf.offset[0] + pad, p.buf.offset[1] + pad]));
+            }
+            None => texs.push((up, p.buf.offset)),
+        }
     }
     let sizes: Vec<(u32, u32)> = texs.iter().map(|(t, _)| (t.width, t.height)).collect();
     let (aw, ah, pos) = pack(&sizes, e.g.max_dim)?;
