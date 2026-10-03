@@ -42,3 +42,27 @@ fn script_console_runs_scripts() {
     click(&mut h, "scriptConsole.clear");
     assert!(h.state().ui.script_console.log.is_empty());
 }
+
+/// Headless look at the panel (wgpu offscreen); run with
+/// `SC_SNAPSHOT=/abs/out.png cargo test -p effectcraft-ui-egui --test ui_script_console -- --ignored`.
+#[test]
+#[ignore]
+fn script_console_snapshot() {
+    let s = effectcraft_host::session();
+    let mut h = Harness::builder().with_size(egui::vec2(1400.0, 900.0)).build_eframe(|_| EffectcraftApp::new(s));
+    h.state_mut().show_panel(PanelKind::ScriptConsole);
+    h.run_steps(2);
+    for code in ["var c = app.project.items.addComp('Console', 320, 180, 1, 2, 24); writeLn('made ' + c.name); c.id", "c.layers.addText('Hi').name", "nope()"] {
+        h.state_mut().ui.script_console.input = code.into();
+        h.run_steps(1);
+        click(&mut h, "scriptConsole.run");
+    }
+    h.state_mut().ui.script_console.input = "app.project.numItems".into();
+    h.run_steps(3);
+    let img = h.render().expect("render");
+    let out = std::env::var("SC_SNAPSHOT").unwrap_or_else(|_| concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/test-out/script_console.png").into());
+    if let Some(d) = std::path::Path::new(&out).parent() {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    img.save(&out).unwrap();
+}

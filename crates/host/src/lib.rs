@@ -220,6 +220,35 @@ mod tests {
         assert!(bytes.starts_with(b"GIF89a"));
     }
 
+    /// importFile, layers.add(footage) and project save/open from a script.
+    #[test]
+    fn script_imports_footage_and_saves() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/test-out/host-script-import");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let q = |n: &str| serde_json::to_string(&dir.join(n).to_string_lossy()).unwrap();
+        let mut s = super::session();
+        let code = format!(
+            r#"
+            var c = app.project.items.addComp("Src", 32, 32, 1, 1, 10);
+            c.layers.addSolid([0, 1, 0], "G", 32, 32, 1);
+            app.run("comp.saveFrameAs", {{comp: c.id, path: {png}}});
+            var still = app.project.importFile(new ImportOptions(new File({png})));
+            var main = app.project.items.addComp("Main", 64, 64, 1, 1, 10);
+            var l = main.layers.add(still);
+            app.project.save(new File({proj}));
+            [still instanceof FootageItem, still.width, still.mainSource.isStill, l.source.name, app.project.file.name]
+            "#,
+            png = q("frame.png"),
+            proj = q("p.ecproj")
+        );
+        let r = s.execute("script.run", json!({"code": code})).unwrap();
+        assert_eq!(r["ok"], json!(true), "{r}");
+        assert_eq!(r["result"], json!([true, 32, true, "frame.png", "p.ecproj"]), "{r}");
+        let r = s.execute("script.run", json!({"code": format!("app.open(new File({})); app.project.numItems", q("p.ecproj"))})).unwrap();
+        assert_eq!(r["result"], json!(5), "{r}"); // Src, Solids, G, frame.png, Main
+    }
+
     #[test]
     fn expression_syntax_errors_disable_the_expression() {
         let mut s = super::session();

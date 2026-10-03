@@ -390,3 +390,59 @@ fn schedule_task_runs_after_the_script() {
     );
     assert_eq!(o.output, vec!["now", "later"]);
 }
+
+#[test]
+fn layer_switches_timing_and_comp_settings() {
+    let mut s = session();
+    let o = ok(
+        &mut s,
+        r#"
+        var c = app.project.items.addComp("S", 320, 240, 1, 5, 30);
+        var matte = c.layers.addText("M");
+        var fill = c.layers.addSolid([1, 1, 1], "Fill", 320, 240, 1);
+        fill.moveToEnd();
+        fill.setTrackMatte(matte, TrackMatteType.LUMA);
+        var t1 = fill.trackMatteType == TrackMatteType.LUMA && fill.hasTrackMatte && fill.trackMatteLayer.name == "M";
+        fill.stretch = 200;
+        fill.label = 3;
+        c.width = 400;
+        c.duration = 8;
+        c.bgColor = [0.1, 0.2, 0.3];
+        c.time = 2;
+        c.workAreaStart = 1;
+        c.workAreaDuration = 3;
+        var extra = c.layers.addNull();
+        extra.remove();
+        fill.selected = true;
+        var sel = c.selectedLayers.length;
+        fill.transform.opacity.expression = "thisLayer.nope(";
+        var err = fill.transform.opacity.expressionError;
+        fill.transform.opacity.expressionEnabled = false;
+        var copy = c.duplicate();
+        var f = app.project.items.addFolder("Bin");
+        copy.parentFolder = f;
+        [t1, fill.stretch, fill.label, c.width, c.duration, c.bgColor[2], c.time, c.workAreaStart, c.workAreaDuration,
+         c.numLayers, sel, err.length > 0, fill.transform.opacity.expressionEnabled, copy.name, f.numItems, copy.parentFolder.name]
+        "#,
+    );
+    let v = o.result;
+    assert_eq!(v[0], json!(true), "{v}");
+    assert_eq!(v[1], json!(200));
+    assert_eq!(v[2], json!(3));
+    assert_eq!(v[3], json!(400));
+    assert_eq!(v[4], json!(8));
+    assert!((v[5].as_f64().unwrap() - 0.3).abs() < 1e-6);
+    assert_eq!(v[6], json!(2));
+    assert_eq!(v[7], json!(1));
+    assert_eq!(v[8], json!(3));
+    assert_eq!(v[9], json!(2));
+    assert_eq!(v[10], json!(1));
+    assert_eq!(v[11], json!(true));
+    assert_eq!(v[12], json!(false));
+    assert_eq!(v[13], json!("S 2"));
+    assert_eq!(v[14], json!(1));
+    assert_eq!(v[15], json!("Bin"));
+    // Removing the copy through the object model.
+    let o = ok(&mut s, "var n = app.project.numItems; app.project.item(1).remove(); n - app.project.numItems");
+    assert_eq!(o.result, json!(1));
+}

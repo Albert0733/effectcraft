@@ -1571,6 +1571,7 @@ Project.prototype = {
     else __call("file.save", {});
     return true;
   },
+  saveAs: function (file) { return this.save(file); },
   saveWithDialog: function () { if (this.file) return this.save(); return false; },
   close: function (opt) {
     if (opt === CloseOptions.SAVE_CHANGES && this.file) this.save();
