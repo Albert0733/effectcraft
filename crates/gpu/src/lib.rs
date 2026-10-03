@@ -22,6 +22,7 @@
 //! egui-wgpu to draw.
 
 mod adv3d;
+mod classic3d;
 mod context;
 mod effects;
 mod ops;
@@ -139,5 +140,7 @@ impl Accelerator for Gpu {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_3d;
 #[cfg(test)]
 mod tests_adv3d;

@@ -69,7 +69,7 @@ fn draw_comp<'a>(e: &mut Enc, r: &Renderer<'a>, ctx: &EvalCtx<'a>, canvas: &mut 
             while j < visible.len() && visible[j].is_3d() {
                 j += 1;
             }
-            on_cpu(e, canvas, |img| r.draw_3d_run(ctx, &visible[i..j], img))?;
+            draw_3d(e, r, ctx, &visible[i..j], canvas)?;
             i = j;
         } else {
             match r.collapsed(ctx, visible[i]) {
@@ -82,6 +82,25 @@ fn draw_comp<'a>(e: &mut Enc, r: &Renderer<'a>, ctx: &EvalCtx<'a>, canvas: &mut 
         if let Some(l) = levels {
             *canvas = ops::quantize(e, canvas, l);
         }
+    }
+    Some(())
+}
+
+/// A run of consecutive 3D layers: Classic 3D on the GPU (`classic3d`), with 3D adjustment
+/// layers splitting the run as on the CPU; Advanced 3D, wireframes and runs the kernel cannot
+/// hold draw on the CPU.
+fn draw_3d<'a>(e: &mut Enc, r: &Renderer<'a>, ctx: &EvalCtx<'a>, run: &[&'a Layer], canvas: &mut GpuImage) -> Option<()> {
+    if let Some(k) = run.iter().position(|l| l.switches.adjustment) {
+        draw_3d(e, r, ctx, &run[..k], canvas)?;
+        draw_layer(e, r, ctx, run[k], canvas)?;
+        return draw_3d(e, r, ctx, &run[k + 1..], canvas);
+    }
+    if run.is_empty() {
+        return Some(());
+    }
+    match r.prepare_3d_run(ctx, run, (canvas.width, canvas.height)).and_then(|prep| crate::classic3d::draw_run(e, &prep, canvas)) {
+        Some(img) => *canvas = img,
+        None => on_cpu(e, canvas, |img| r.draw_3d_run(ctx, run, img))?,
     }
     Some(())
 }

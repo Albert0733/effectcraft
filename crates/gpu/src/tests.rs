@@ -26,7 +26,7 @@ use effectcraft_time::{FrameRate, Tick};
 
 use crate::Gpu;
 
-fn gpu() -> Option<&'static Gpu> {
+pub(crate) fn gpu() -> Option<&'static Gpu> {
     static G: OnceLock<Option<Gpu>> = OnceLock::new();
     G.get_or_init(|| {
         let g = Gpu::headless();
@@ -40,9 +40,9 @@ fn gpu() -> Option<&'static Gpu> {
 
 /// Procedural footage: smooth colour gradients, fine noise and an alpha with soft, opaque and
 /// fully transparent regions (different per item).
-struct Pattern;
+pub(crate) struct Pattern;
 
-fn pattern(seed: u32, w: u32, h: u32) -> Image {
+pub(crate) fn pattern(seed: u32, w: u32, h: u32) -> Image {
     let mut img = Image::new(w, h);
     let k = seed as f32 * 0.37;
     for y in 0..h {
@@ -66,14 +66,14 @@ impl FootageSource for Pattern {
     }
 }
 
-struct Scene {
-    p: Project,
-    cid: ItemId,
-    comp: Comp,
+pub(crate) struct Scene {
+    pub(crate) p: Project,
+    pub(crate) cid: ItemId,
+    pub(crate) comp: Comp,
 }
 
 impl Scene {
-    fn new(depth: BitDepth) -> Scene {
+    pub(crate) fn new(depth: BitDepth) -> Scene {
         let mut p = Project::default();
         p.settings.bit_depth = depth;
         let comp = Comp::new(97, 61, FrameRate::FPS_30, Tick::from_seconds_f64(2.0));
@@ -81,7 +81,7 @@ impl Scene {
         Scene { p, cid, comp }
     }
 
-    fn footage(&mut self, w: u32, h: u32) -> Layer {
+    pub(crate) fn footage(&mut self, w: u32, h: u32) -> Layer {
         let f = Footage {
             path: "pattern.png".into(),
             kind: FootageKind::Still,
@@ -106,19 +106,19 @@ impl Scene {
         build::layer(&mut self.p, &self.comp, "Pattern", LayerSource::Footage { item: fid }, (w, h), None)
     }
 
-    fn solid(&mut self, color: [f32; 3], w: u32, h: u32) -> Layer {
+    pub(crate) fn solid(&mut self, color: [f32; 3], w: u32, h: u32) -> Layer {
         let sid = self.p.add_item("Solid", Label::Red, None, ItemKind::Solid(Solid { color, width: w, height: h, pixel_aspect: 1.0 }));
         build::layer(&mut self.p, &self.comp, "Solid", LayerSource::Solid { item: sid }, (w, h), None)
     }
 
     /// Add on top of the stack.
-    fn push(&mut self, l: Layer) -> effectcraft_project::LayerId {
+    pub(crate) fn push(&mut self, l: Layer) -> effectcraft_project::LayerId {
         let id = l.id;
         self.p.comp_mut(self.cid).unwrap().layers.insert(0, l);
         id
     }
 
-    fn effect(&mut self, l: &mut Layer, id: &str, vals: &[(&str, Value)]) {
+    pub(crate) fn effect(&mut self, l: &mut Layer, id: &str, vals: &[(&str, Value)]) {
         let spec = effectcraft_effects::find(id).unwrap();
         let mut next = self.p.next_id;
         let size = effectcraft_render::source_size(&self.p, l);
@@ -131,27 +131,27 @@ impl Scene {
     }
 }
 
-fn set(l: &mut Layer, path: &str, v: Value) {
+pub(crate) fn set(l: &mut Layer, path: &str, v: Value) {
     l.props.prop_mut(path).unwrap_or_else(|| panic!("no {path}")).value = v;
 }
 
-fn v3(x: f64, y: f64) -> Value {
+pub(crate) fn v3(x: f64, y: f64) -> Value {
     Value::Vec3([x, y, 0.0])
 }
 
 /// Differences of a GPU render against the CPU render.
 #[derive(Debug)]
-struct Diff {
-    max: f32,
+pub(crate) struct Diff {
+    pub(crate) max: f32,
     /// Pixels over the tolerance.
-    over: usize,
-    total: usize,
-    worst: (u32, u32, [f32; 4], [f32; 4]),
+    pub(crate) over: usize,
+    pub(crate) total: usize,
+    pub(crate) worst: (u32, u32, [f32; 4], [f32; 4]),
     /// 8/16 bpc render.
-    quantized: bool,
+    pub(crate) quantized: bool,
 }
 
-fn diff(cpu: &Image, gpu: &Image, tol: f32) -> Diff {
+pub(crate) fn diff(cpu: &Image, gpu: &Image, tol: f32) -> Diff {
     assert_eq!((cpu.width, cpu.height), (gpu.width, gpu.height), "size");
     let mut d = Diff { max: 0.0, over: 0, total: cpu.data.len(), worst: (0, 0, [0.0; 4], [0.0; 4]), quantized: false };
     for (i, (a, b)) in cpu.data.iter().zip(&gpu.data).enumerate() {
@@ -169,7 +169,7 @@ fn diff(cpu: &Image, gpu: &Image, tol: f32) -> Diff {
     d
 }
 
-fn tolerance(depth: BitDepth) -> f32 {
+pub(crate) fn tolerance(depth: BitDepth) -> f32 {
     match depth {
         BitDepth::Bpc8 => 1.0 / 255.0 + 1e-6,
         _ => 1e-3,
@@ -177,7 +177,7 @@ fn tolerance(depth: BitDepth) -> f32 {
 }
 
 /// Render on the CPU and the GPU; `Some(diff)` (None without an adapter).
-fn compare_at(s: &Scene, opts: RenderOpts, t: Tick) -> Option<Diff> {
+pub(crate) fn compare_at(s: &Scene, opts: RenderOpts, t: Tick) -> Option<Diff> {
     let g = gpu()?;
     let cpu = Renderer::new(&s.p, &Pattern, RenderOpts { backend: Backend::Cpu, ..opts }).comp_frame_cpu(s.cid, t);
     let mut r = Renderer::new(&s.p, &Pattern, RenderOpts { backend: Backend::Gpu, ..opts });
@@ -188,12 +188,12 @@ fn compare_at(s: &Scene, opts: RenderOpts, t: Tick) -> Option<Diff> {
     Some(d)
 }
 
-fn opts() -> RenderOpts {
+pub(crate) fn opts() -> RenderOpts {
     RenderOpts { motion_blur: true, ..Default::default() }
 }
 
 /// Assert agreement; `allow` = fraction of pixels allowed over the tolerance.
-fn check(label: &str, d: Option<Diff>, allow: f64) {
+pub(crate) fn check(label: &str, d: Option<Diff>, allow: f64) {
     let Some(d) = d else { return };
     let frac = d.over as f64 / d.total as f64;
     // Quantised depths: rounding-boundary flips (see the module docs).
@@ -417,11 +417,11 @@ fn effect_case(id: &str, vals: &[(&str, Value)]) {
     }
 }
 
-fn n(v: f64) -> Value {
+pub(crate) fn n(v: f64) -> Value {
     Value::Scalar(v)
 }
 
-fn c(r: f64, g: f64, b: f64) -> Value {
+pub(crate) fn c(r: f64, g: f64, b: f64) -> Value {
     Value::Color([r, g, b, 1.0])
 }
 

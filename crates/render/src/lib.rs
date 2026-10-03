@@ -494,11 +494,8 @@ impl<'a> Renderer<'a> {
     /// Render a composition at comp time `t` (transparent background, comp size × scale).
     /// Top-level frames go to the GPU when [`Self::active_accel`] is set and handles them.
     pub fn comp_frame(&self, comp_id: ItemId, t: Tick) -> Image {
-        // Auto keeps comps with 3D layers on the CPU compositor: 3D runs are still composited on
-        // the CPU, and the GPU path's readback/upload around them makes such comps slower.
-        let auto_3d = self.opts.backend == Backend::Auto && self.project.comp(comp_id).is_some_and(|c| c.has_3d());
+        // Classic 3D runs composite on the GPU too (M12.7), so Auto sends 3D comps there as well.
         if self.depth == 0
-            && !auto_3d
             && let Some(a) = self.active_accel()
             && let Some(img) = a.comp_frame(self, comp_id, t)
         {
@@ -1345,6 +1342,13 @@ impl<'a> Renderer<'a> {
     /// Draw a run of consecutive 3D layers into `canvas` (CPU).
     pub fn draw_3d_run(&self, ctx: &EvalCtx<'a>, run: &[&Layer], canvas: &mut Image) {
         three_d::compose::draw_run(self, ctx, run, canvas);
+    }
+
+    /// A run of consecutive 3D layers prepared for an accelerator (planes, lights, shadow
+    /// casters; see [`three_d::Run3d`]) at output size `out`. `None` = draw it with
+    /// [`Self::draw_3d_run`] (adjustment or wireframe layers in the run, Advanced 3D).
+    pub fn prepare_3d_run(&self, ctx: &EvalCtx<'a>, run: &[&Layer], out: (u32, u32)) -> Option<three_d::Run3d> {
+        three_d::compose::gpu_run(self, ctx, run, out)
     }
 
     /// Draw one 2D layer into `canvas` on the CPU (any kind: adjustment, wireframe, styled…).

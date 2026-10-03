@@ -111,7 +111,7 @@ fn box_passes(e: &mut Enc, img: &GpuImage, rx: &[usize], ry: &[usize], repeat: b
 }
 
 /// raster::gaussian_blur (3 box passes per axis).
-fn gaussian_blur(e: &mut Enc, img: &GpuImage, sx: f64, sy: f64, repeat: bool) -> GpuImage {
+pub(crate) fn gaussian_blur(e: &mut Enc, img: &GpuImage, sx: f64, sy: f64, repeat: bool) -> GpuImage {
     let rx = if sx > 0.05 { box_radii(sx, 3) } else { vec![] };
     let ry = if sy > 0.05 { box_radii(sy, 3) } else { vec![] };
     box_passes(e, img, &rx, &ry, repeat)

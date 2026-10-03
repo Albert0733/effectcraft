@@ -29,16 +29,18 @@ use crate::{EvalCtx, Renderer};
 
 /// One position of a plane (several with motion blur).
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct Geo {
+pub struct Geo {
     /// Output pixel → homogeneous layer coordinates.
-    hinv: Mat3,
+    pub hinv: Mat3,
     /// Camera-space depth as a function of layer (u, v): `d0·u + d1·v + d2`.
-    depth: [f64; 3],
-    world: Mat4,
-    normal: Vec3,
+    pub depth: [f64; 3],
+    /// Layer → world.
+    pub world: Mat4,
+    /// Unit world normal.
+    pub normal: Vec3,
     /// Output pixel bounds [x0, y0, x1, y1) covered by the plane.
-    bbox: [i64; 4],
-    cam: CameraState,
+    pub bbox: [i64; 4],
+    pub cam: CameraState,
 }
 
 /// A prepared 3D layer.
@@ -60,6 +62,9 @@ pub(crate) struct Item<'a> {
     winv: Mat4,
     bounds: [f64; 4],
     bbox: [i64; 4],
+    /// Depth of field left to an accelerator: Gaussian sigma and padding (buffer pixels) of the
+    /// blur `buf` still needs (`None` = `buf` is final).
+    dof: Option<(f64, u32)>,
 }
 
 impl Item<'_> {
@@ -72,7 +77,7 @@ impl Item<'_> {
 }
 
 /// Build the plane geometry of a layer for a camera.
-fn geo(cam: &CameraState, world: Mat4, buf: &Buf, comp: (f64, f64), scale: f64, out: (u32, u32)) -> Option<Geo> {
+fn geo(cam: &CameraState, world: Mat4, b: [f64; 4], comp: (f64, f64), scale: f64, out: (u32, u32)) -> Option<Geo> {
     let proj = Mat4::scale(vec3(scale, scale, 1.0)) * cam.projection(comp.0, comp.1);
     let full = proj * world;
     let h = full.plane_to_mat3();
@@ -89,7 +94,6 @@ fn geo(cam: &CameraState, world: Mat4, buf: &Buf, comp: (f64, f64), scale: f64, 
         return None;
     }
     let normal = normal.normalize();
-    let b = buf_bounds(buf);
     let corners = [(b[0], b[1]), (b[2], b[1]), (b[2], b[3]), (b[0], b[3])];
     let (mut x0, mut y0, mut x1, mut y1) = (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
     let mut behind = 0;
@@ -170,20 +174,25 @@ fn mb_samples(r: &Renderer, ctx: &EvalCtx, layer: &Layer) -> usize {
 }
 
 /// Prepare a layer (buffer, geometry, material). `None` when it shows nothing.
-pub(crate) fn prepare<'a>(r: &Renderer, ctx: &EvalCtx<'a>, layer: &'a Layer, order: usize, out: (u32, u32), in_run: bool) -> Option<Item<'a>> {
+pub(crate) fn prepare<'a>(r: &Renderer, ctx: &EvalCtx<'a>, layer: &'a Layer, order: usize, out: (u32, u32), in_run: bool, defer_dof: bool) -> Option<Item<'a>> {
     let buf = r.blend_layer_buf(ctx, layer)?;
-    prepare_with(r, ctx, layer, order, out, in_run, buf, Mat4::IDENTITY)
+    prepare_with(r, ctx, layer, order, out, in_run, buf, Mat4::IDENTITY, defer_dof)
 }
 
 /// Prepare a layer as planes: one per character for per-character 3D text, else one.
 pub(crate) fn prepare_all<'a>(r: &Renderer, ctx: &EvalCtx<'a>, layer: &'a Layer, order: usize, out: (u32, u32), in_run: bool) -> Vec<Item<'a>> {
+    prepare_all_opt(r, ctx, layer, order, out, in_run, false)
+}
+
+/// [`prepare_all`], optionally leaving the depth-of-field blur to an accelerator.
+fn prepare_all_opt<'a>(r: &Renderer, ctx: &EvalCtx<'a>, layer: &'a Layer, order: usize, out: (u32, u32), in_run: bool, defer_dof: bool) -> Vec<Item<'a>> {
     if crate::text::per_char_3d(ctx, layer) {
         return crate::text::per_char_planes(ctx, layer, r.opts.scale)
             .into_iter()
-            .filter_map(|(buf, m)| prepare_with(r, ctx, layer, order, out, in_run, r.to_blend(Arc::new(buf), None), m))
+            .filter_map(|(buf, m)| prepare_with(r, ctx, layer, order, out, in_run, r.to_blend(Arc::new(buf), None), m, defer_dof))
             .collect();
     }
-    prepare(r, ctx, layer, order, out, in_run).into_iter().collect()
+    prepare(r, ctx, layer, order, out, in_run, defer_dof).into_iter().collect()
 }
 
 /// Prepare a plane showing `buf`, whose space maps into the layer through `local`.
@@ -197,6 +206,7 @@ fn prepare_with<'a>(
     in_run: bool,
     mut buf: Arc<Buf>,
     local: Mat4,
+    defer_dof: bool,
 ) -> Option<Item<'a>> {
     if buf.img.is_empty() {
         return None;
@@ -207,6 +217,8 @@ fn prepare_with<'a>(
     let outer = r.collapse3d.map_or(Mat4::IDENTITY, |c| c.world);
     let world = outer * ctx.world_matrix(layer) * local;
     // Depth of field: blur the layer by its circle of confusion at its centre.
+    let mut bounds = buf_bounds(&buf);
+    let mut deferred = None;
     if let Some(dof) = cam.dof.filter(|_| !ctx.comp.draft_3d && !r.opts.draft) {
         let b = buf_bounds(&buf);
         let centre = world.apply(vec3((b[0] + b[2]) * 0.5, (b[1] + b[3]) * 0.5, 0.0));
@@ -218,18 +230,27 @@ fn prepare_with<'a>(
         if radius > 0.3 {
             let sigma = radius / 1.5;
             let pad = (sigma * 3.0).ceil() as u32 + 1;
-            let padded = buf.img.padded(pad);
-            // The (cached, shared) layer buffer stays untouched; the blurred copy is per frame.
-            buf = Arc::new(Buf {
-                img: effectcraft_raster::gaussian_blur(&padded, sigma, sigma, false),
-                offset: [buf.offset[0] + pad as f64, buf.offset[1] + pad as f64],
-                scale: buf.scale,
-            });
+            if defer_dof {
+                let s = buf.scale.max(1e-9);
+                let (w, h) = ((buf.img.width + 2 * pad) as f64, (buf.img.height + 2 * pad) as f64);
+                let o = [buf.offset[0] + pad as f64, buf.offset[1] + pad as f64];
+                bounds = [-o[0] / s, -o[1] / s, (w - o[0]) / s, (h - o[1]) / s];
+                deferred = Some((sigma, pad));
+            } else {
+                let padded = buf.img.padded(pad);
+                // The (cached, shared) layer buffer stays untouched; the blurred copy is per frame.
+                buf = Arc::new(Buf {
+                    img: effectcraft_raster::gaussian_blur(&padded, sigma, sigma, false),
+                    offset: [buf.offset[0] + pad as f64, buf.offset[1] + pad as f64],
+                    scale: buf.scale,
+                });
+                bounds = buf_bounds(&buf);
+            }
         }
     }
     let n = if in_run { mb_samples(r, ctx, layer) } else { 1 };
     let geos: Vec<Geo> = if n <= 1 {
-        geo(&cam, world, &buf, comp, s, out).into_iter().collect()
+        geo(&cam, world, bounds, comp, s, out).into_iter().collect()
     } else {
         let fd = ctx.comp.frame_duration().seconds();
         let angle = ctx.comp.shutter_angle / 360.0;
@@ -239,7 +260,7 @@ fn prepare_with<'a>(
                 let f = phase + angle * i as f64 / (n - 1) as f64;
                 let sub = ctx.at(ctx.time + Tick::from_seconds_f64(f * fd));
                 let c = camera_for(r, &sub);
-                geo(&c, outer * sub.world_matrix(layer) * local, &buf, comp, s, out)
+                geo(&c, outer * sub.world_matrix(layer) * local, bounds, comp, s, out)
             })
             .collect()
     };
@@ -251,7 +272,6 @@ fn prepare_with<'a>(
         bbox = [bbox[0].min(g.bbox[0]), bbox[1].min(g.bbox[1]), bbox[2].max(g.bbox[2]), bbox[3].max(g.bbox[3])];
     }
     let mat = Material::of(ctx, layer);
-    let bounds = buf_bounds(&buf);
     Some(Item {
         layer,
         order,
@@ -266,6 +286,7 @@ fn prepare_with<'a>(
         winv: world.inverse().unwrap_or(Mat4::IDENTITY),
         bounds,
         bbox,
+        dof: deferred,
     })
 }
 
@@ -330,6 +351,23 @@ pub(crate) fn draw_run(r: &Renderer, ctx: &EvalCtx, run: &[&Layer], canvas: &mut
         return;
     }
     let out = (canvas.width, canvas.height);
+    let g = gather(r, ctx, run, out, false);
+    let casters: Vec<&Item> = g.items.iter().chain(g.extra.iter()).filter(|i| i.mat.casts_shadows != 0 && !i.geos.is_empty()).collect();
+    composite(canvas, &g.items, &g.lights, &casters, run[0].id.0 as u32);
+    for l in run.iter().filter(|l| l.switches.quality == effectcraft_project::Quality::Wireframe) {
+        r.draw_layer(ctx, l, canvas, false);
+    }
+}
+
+/// The prepared planes of a run: drawn items (stack order), shadow casters outside the run, and
+/// the lights.
+struct Gathered<'a> {
+    items: Vec<Item<'a>>,
+    extra: Vec<Item<'a>>,
+    lights: Vec<LightState>,
+}
+
+fn gather<'a>(r: &Renderer<'a>, ctx: &EvalCtx<'a>, run: &[&'a Layer], out: (u32, u32), defer_dof: bool) -> Gathered<'a> {
     // A collapsed precomp's 3D layers are lit by the outer comp's lights.
     let lights = scene_lights(&r.collapse3d.map_or(*ctx, |c| c.parent));
     let mut items: Vec<Item> = run
@@ -340,9 +378,9 @@ pub(crate) fn draw_run(r: &Renderer, ctx: &EvalCtx, run: &[&Layer], canvas: &mut
             // Stack order with room for a collapsed precomp's layers in between.
             let i = i * 1024;
             if let Some(item) = r.collapsed(ctx, l) {
-                return collapsed_items(r, ctx, l, item, i, out);
+                return collapsed_items(r, ctx, l, item, i, out, defer_dof);
             }
-            let mut its = prepare_all(r, ctx, l, i, out, true);
+            let mut its = prepare_all_opt(r, ctx, l, i, out, true, defer_dof);
             if !its.is_empty() {
                 let m = matte_for(r, ctx, l, out);
                 for it in &mut its {
@@ -362,15 +400,11 @@ pub(crate) fn draw_run(r: &Renderer, ctx: &EvalCtx, run: &[&Layer], canvas: &mut
             .par_iter()
             .filter(|l| l.switches.three_d && l.has_video() && l.is_active_at(ctx.time) && !in_run.contains(&l.id) && !l.switches.adjustment)
             .filter(|l| Material::of(ctx, l).casts_shadows != 0)
-            .flat_map_iter(|l| prepare_all(r, ctx, l, 0, out, false))
+            .flat_map_iter(|l| prepare_all_opt(r, ctx, l, 0, out, false, defer_dof))
             .collect();
     }
     items.sort_by_key(|i| i.order);
-    let casters: Vec<&Item> = items.iter().chain(extra.iter()).filter(|i| i.mat.casts_shadows != 0 && !i.geos.is_empty()).collect();
-    composite(canvas, &items, &lights, &casters, run[0].id.0 as u32);
-    for l in run.iter().filter(|l| l.switches.quality == effectcraft_project::Quality::Wireframe) {
-        r.draw_layer(ctx, l, canvas, false);
-    }
+    Gathered { items, extra, lights }
 }
 
 /// A collapsed 3D precomp layer inside a 3D run: its nested layers become planes in this comp's
@@ -384,6 +418,7 @@ fn collapsed_items<'a>(
     item: effectcraft_project::ItemId,
     order: usize,
     out: (u32, u32),
+    defer_dof: bool,
 ) -> Vec<Item<'a>> {
     let op = ctx.opacity(layer) as f32 * r.opacity_mul();
     let Some((sub, nctx)) = r.collapse_into(ctx, layer, item, op) else { return vec![] };
@@ -401,7 +436,7 @@ fn collapsed_items<'a>(
         if nctx.opacity(l) <= 0.0 {
             continue;
         }
-        let mut its = prepare_all(&sub, &nctx, l, order + 1 + k.min(1022), out, true);
+        let mut its = prepare_all_opt(&sub, &nctx, l, order + 1 + k.min(1022), out, true, defer_dof);
         if !its.is_empty() {
             let m = matte_for(&sub, &nctx, l, out);
             for it in &mut its {
@@ -588,6 +623,86 @@ fn occlusion(c: &Item, p: Vec3, l: &LightState) -> [f32; 3] {
         out[k] = 1.0 - dark * (1.0 - pass);
     }
     out
+}
+
+// ------------------------------------------------------------------ accelerator export
+
+/// A Classic 3D run prepared for an accelerator ([`Renderer::prepare_3d_run`]): every plane
+/// with its geometry, material and buffer, ready for the per-pixel depth sort, lighting and
+/// ray-cast shadows of [`draw_run`] on another device.
+#[derive(Clone, Debug)]
+pub struct Run3d {
+    /// Drawn planes in stack order, then shadow casters from outside the run (`draw` false).
+    pub planes: Vec<Plane3d>,
+    /// Indices (into `planes`) of the shadow casters, in the CPU's order.
+    pub casters: Vec<usize>,
+    pub lights: Vec<LightState>,
+    /// Dissolve seed of the run.
+    pub seed: u32,
+}
+
+/// One plane of a [`Run3d`].
+#[derive(Clone, Debug)]
+pub struct Plane3d {
+    /// The layer buffer (blending space). When `dof` is set, the plane shows this buffer padded
+    /// by `dof.1` pixels on every side and Gaussian-blurred with sigma `dof.0`
+    /// (`raster::gaussian_blur`, no edge repeat).
+    pub buf: Arc<Buf>,
+    pub dof: Option<(f64, u32)>,
+    pub bicubic: bool,
+    /// One per motion-blur sub-sample (equal weights).
+    pub geos: Vec<Geo>,
+    pub mat: Material,
+    pub opacity: f32,
+    pub draw: bool,
+    /// Screen-space track matte factor (output size, row-major).
+    pub matte: Option<Arc<Vec<f32>>>,
+    pub preserve: bool,
+    /// World → layer, and the (blurred) buffer's layer-space bounds.
+    pub winv: Mat4,
+    pub bounds: [f64; 4],
+    /// Output pixel bounds of all geometries.
+    pub bbox: [i64; 4],
+    /// Stack order (coplanar fragments draw lower orders first).
+    pub order: usize,
+    pub layer_id: u32,
+    pub mode: BlendMode,
+}
+
+/// Prepare a run of 3D layers for an accelerator. `None` when the run must be drawn on the CPU
+/// (adjustment or wireframe layers, Advanced 3D).
+pub(crate) fn gpu_run(r: &Renderer, ctx: &EvalCtx, run: &[&Layer], out: (u32, u32)) -> Option<Run3d> {
+    if run.is_empty() || run.iter().any(|l| l.switches.adjustment || l.switches.quality == effectcraft_project::Quality::Wireframe) {
+        return None;
+    }
+    if ctx.comp.renderer == effectcraft_project::Renderer::Advanced3D && r.collapse3d.is_none() {
+        return None;
+    }
+    let g = gather(r, ctx, run, out, true);
+    let planes: Vec<Plane3d> = g
+        .items
+        .into_iter()
+        .chain(g.extra)
+        .map(|it| Plane3d {
+            layer_id: it.layer.id.0 as u32,
+            mode: it.layer.blend_mode,
+            buf: it.buf,
+            dof: it.dof,
+            bicubic: it.bicubic,
+            geos: it.geos,
+            mat: it.mat,
+            opacity: it.opacity,
+            draw: it.draw,
+            matte: it.matte,
+            preserve: it.preserve,
+            winv: it.winv,
+            bounds: it.bounds,
+            bbox: it.bbox,
+            order: it.order,
+        })
+        .collect();
+    let casters = planes.iter().enumerate().filter(|(_, p)| p.mat.casts_shadows != 0 && !p.geos.is_empty()).map(|(i, _)| i).collect();
+    Some(Run3d { planes, casters, lights: g.lights, seed: run[0].id.0 as u32 })
 }
 
 // ------------------------------------------------------------------ auxiliary render pass

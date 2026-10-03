@@ -761,7 +761,10 @@ fn bench_gpu(s: &Session, args: &Args) -> Result<(), Failure> {
         None => s.project.comps().map(|(id, _)| *id).collect(),
     };
     eprintln!("GPU: {} — median of {n} runs (ms/frame)", effectcraft_render::Accelerator::name(&gpu));
-    eprintln!("{:<28} {:>5} {:>10} {:>9} {:>9} {:>9} {:>9} {:>9}", "comp", "res", "size", "cpu cold", "gpu cold", "cpu warm", "gpu warm", "gpu view");
+    eprintln!(
+        "{:<28} {:>5} {:>10} {:>9} {:>9} {:>9} {:>9} {:>9} {:>8} {:>9}",
+        "comp", "res", "size", "cpu cold", "gpu cold", "cpu warm", "gpu warm", "gpu view", "speedup", "gpu≠cpu"
+    );
     for cid in comps {
         let Some(comp) = s.project.comp(cid) else { continue };
         let name = s.project.item(cid).map(|i| i.name.clone()).unwrap_or_default();
@@ -797,7 +800,15 @@ fn bench_gpu(s: &Session, args: &Args) -> Result<(), Failure> {
                 gpu.wait();
             });
             let size = format!("{}x{}", (comp.width as f64 * scale).round(), (comp.height as f64 * scale).round());
-            eprintln!("{name:<28} {label:>5} {size:>10} {cpu_cold:>9.2} {gpu_cold:>9.2} {cpu_warm:>9.2} {gpu_warm:>9.2} {view:>9.2}");
+            // Agreement: share of pixels where the GPU frame differs from the CPU reference by
+            // more than 1/255 on any channel.
+            let (a, b) = (mk(Backend::Cpu, Some(&cache)), mk(Backend::Gpu, Some(&gcache)));
+            let off = a.data.iter().zip(&b.data).filter(|(p, q)| (0..4).any(|c| (p[c] - q[c]).abs() > 1.0 / 255.0 + 1e-6)).count();
+            let pct = 100.0 * off as f64 / a.data.len().max(1) as f64;
+            let speedup = cpu_warm / gpu_warm.max(1e-9);
+            eprintln!(
+                "{name:<28} {label:>5} {size:>10} {cpu_cold:>9.2} {gpu_cold:>9.2} {cpu_warm:>9.2} {gpu_warm:>9.2} {view:>9.2} {speedup:>7.2}x {pct:>8.3}%"
+            );
         }
     }
     Ok(())

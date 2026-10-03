@@ -28,6 +28,10 @@ const ENTRIES: &[&str] = &[
     "pointwise",
 ];
 
+/// Entry points that also bind group 1 (four read-only storage buffers; see
+/// [`Enc::dispatch_ext`]).
+const EXT_ENTRIES: &[&str] = &["classic3d"];
+
 /// Pixel format of every working texture: premultiplied RGBA, 32-bit float (32 bpc headroom;
 /// 8/16 bpc are emulated by clamping and quantising, as on the CPU).
 pub const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
@@ -88,6 +92,7 @@ pub struct GpuContext {
     pub(crate) name: String,
     pub(crate) max_dim: u32,
     bgl: wgpu::BindGroupLayout,
+    bgl_ext: wgpu::BindGroupLayout,
     pipelines: HashMap<&'static str, wgpu::ComputePipeline>,
     display_bgl: wgpu::BindGroupLayout,
     display: wgpu::ComputePipeline,
@@ -135,7 +140,7 @@ impl GpuContext {
             }
         }
         let name = format!("{} ({:?})", info.name, info.backend);
-        let src = [include_str!("shaders/common.wgsl"), include_str!("shaders/kernels.wgsl")].concat();
+        let src = [include_str!("shaders/common.wgsl"), include_str!("shaders/kernels.wgsl"), include_str!("shaders/classic3d.wgsl")].concat();
         let module =
             device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("effectcraft kernels"), source: wgpu::ShaderSource::Wgsl(src.into()) });
         let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -167,12 +172,29 @@ impl GpuContext {
             bind_group_layouts: &[Some(&bgl)],
             immediate_size: 0,
         });
+        let storage = |binding: u32| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None },
+            count: None,
+        };
+        let bgl_ext = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("effectcraft kernels (ext)"),
+            entries: &[storage(0), storage(1), storage(2), storage(3)],
+        });
+        let layout_ext = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("effectcraft kernels (ext)"),
+            bind_group_layouts: &[Some(&bgl), Some(&bgl_ext)],
+            immediate_size: 0,
+        });
         let pipelines = ENTRIES
             .iter()
-            .map(|e| {
+            .map(|e| (e, &layout))
+            .chain(EXT_ENTRIES.iter().map(|e| (e, &layout_ext)))
+            .map(|(e, layout)| {
                 let p = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                     label: Some(e),
-                    layout: Some(&layout),
+                    layout: Some(layout),
                     module: &module,
                     entry_point: Some(e),
                     compilation_options: Default::default(),
@@ -221,6 +243,7 @@ impl GpuContext {
             name,
             max_dim,
             bgl,
+            bgl_ext,
             pipelines,
             display_bgl,
             display,
@@ -249,7 +272,7 @@ impl GpuContext {
         let (device, queue) =
             pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor { label: Some("effectcraft gpu"), required_limits, ..Default::default() }))
                 .ok()?;
-        device.on_uncaptured_error(Arc::new(|e| log::error!("wgpu: {e}")));
+        device.on_uncaptured_error(Arc::new(|e| eprintln!("wgpu: {e}")));
         GpuContext::new(&adapter, device, queue).map_err(|e| log::info!("gpu: {e}")).ok()
     }
 
@@ -375,6 +398,22 @@ impl<'g> Enc<'g> {
         data: Option<&wgpu::Buffer>,
         groups: (u32, u32),
     ) {
+        self.dispatch_ext(entry, p, src, aux, out, data, groups, None);
+    }
+
+    /// [`Enc::dispatch`] for the kernels in `EXT_ENTRIES`, with their group 1 storage buffers.
+    #[allow(clippy::too_many_arguments)]
+    pub fn dispatch_ext(
+        &mut self,
+        entry: &str,
+        p: &Params,
+        src: &GpuImage,
+        aux: Option<&GpuImage>,
+        out: &GpuImage,
+        data: Option<&wgpu::Buffer>,
+        groups: (u32, u32),
+        ext: Option<[&wgpu::Buffer; 4]>,
+    ) {
         let g = self.g;
         let Some(pipe) = g.pipelines.get(entry) else {
             log::error!("gpu: no kernel {entry}");
@@ -395,11 +434,26 @@ impl<'g> Enc<'g> {
                 wgpu::BindGroupEntry { binding: 4, resource: data.unwrap_or(&g.dummy_buf).as_entire_binding() },
             ],
         });
+        let bg_ext = ext.map(|b| {
+            g.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout: &g.bgl_ext,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: b[0].as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: b[1].as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 2, resource: b[2].as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 3, resource: b[3].as_entire_binding() },
+                ],
+            })
+        });
         let enc = self.encoder();
         {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some(entry), timestamp_writes: None });
             pass.set_pipeline(pipe);
             pass.set_bind_group(0, &bg, &[]);
+            if let Some(b) = &bg_ext {
+                pass.set_bind_group(1, b, &[]);
+            }
             pass.dispatch_workgroups(groups.0.max(1), groups.1.max(1), 1);
         }
         self.pending += 1;
@@ -525,7 +579,12 @@ impl<'g> Enc<'g> {
         for x in v {
             bytes.extend_from_slice(&x.to_le_bytes());
         }
-        while bytes.len() < 16 {
+        self.bytes(bytes)
+    }
+
+    /// A read-only storage buffer holding `bytes` (padded to 16 bytes).
+    pub fn bytes(&self, mut bytes: Vec<u8>) -> wgpu::Buffer {
+        while bytes.len() < 16 || bytes.len() % 4 != 0 {
             bytes.push(0);
         }
         self.g.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("data"), contents: &bytes, usage: wgpu::BufferUsages::STORAGE })
