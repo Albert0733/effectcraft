@@ -90,11 +90,20 @@ pub(crate) struct Tiling {
     uncolored: Option<[f64; 3]>,
 }
 
+/// A shading pattern without a gradient equivalent (function-based or mesh shadings),
+/// rasterised when it fills a path.
+pub(crate) struct ShadingFill {
+    sh: Obj,
+    /// Shading space → page.
+    space: Affine,
+}
+
 #[derive(Clone)]
 enum Fill {
     Color([f64; 3]),
     Paint(Paint),
     Tiling(Rc<Tiling>),
+    Shading(Rc<ShadingFill>),
     None,
 }
 
@@ -650,6 +659,10 @@ impl<'a> Interp<'a> {
                 self.b.skip("tiling pattern stroke");
                 Some(Paint::Color(t.uncolored.unwrap_or([0.5; 3])))
             }
+            Fill::Shading(_) => {
+                self.b.skip("shading pattern stroke");
+                Some(Paint::Color([0.5; 3]))
+            }
             Fill::None => None,
         }
     }
@@ -680,6 +693,21 @@ impl<'a> Interp<'a> {
                     self.b.clip(page, rule);
                     self.tile(&t, area, depth);
                     self.close_to(d);
+                }
+                Fill::Shading(sf) => {
+                    let page = ctm * path.clone();
+                    let d = self.b.depth();
+                    let mut sk = vec![];
+                    let img = crate::shading::shading_image(self.file, &sf.sh, sf.space, self.page_box, &mut sk);
+                    for s in sk {
+                        self.b.skip(&s);
+                    }
+                    if let Some(mut img) = img {
+                        img.opacity = self.gs.fill_alpha;
+                        self.b.clip(page, rule);
+                        self.b.push(Node::Image(img));
+                        self.close_to(d);
+                    }
                 }
                 f => fill_paint = self.paint_of(&f).map(|p| (p, self.gs.fill_alpha, rule)),
             }
@@ -811,7 +839,11 @@ impl<'a> Interp<'a> {
         let m = f.get(p, "Matrix").map(|m| affine(&f.nums(m))).unwrap_or(Affine::IDENTITY);
         match f.get_num(p, "PatternType").unwrap_or(0.0) as i32 {
             2 => {
-                let Some(sh) = f.get(p, "Shading").and_then(Obj::dict) else { return Fill::None };
+                let Some(sh_obj) = f.get(p, "Shading") else { return Fill::None };
+                let Some(sh) = sh_obj.dict() else { return Fill::None };
+                if !matches!(f.get_num(sh, "ShadingType").unwrap_or(0.0) as i32, 2 | 3) {
+                    return Fill::Shading(Rc::new(ShadingFill { sh: sh_obj.clone(), space: base * m }));
+                }
                 let sh = sh.clone();
                 match self.shading_gradient(&sh) {
                     // Gradient space → shape user space (shapes carry the CTM).
@@ -848,7 +880,21 @@ impl<'a> Interp<'a> {
 
     fn shade(&mut self, res: &Dict, name: &str) {
         let f = self.file;
-        let Some(sh) = f.get_dict(res, "Shading").and_then(|s| f.get_dict(s, name)).cloned() else { return };
+        let Some(sh_obj) = f.get_dict(res, "Shading").and_then(|s| f.get(s, name)) else { return };
+        let Some(sh) = sh_obj.dict().cloned() else { return };
+        if !matches!(f.get_num(&sh, "ShadingType").unwrap_or(0.0) as i32, 2 | 3) {
+            // Function-based and mesh shadings paint only their own extent.
+            let mut sk = vec![];
+            let img = crate::shading::shading_image(f, sh_obj, self.gs.ctm, self.page_box, &mut sk);
+            for s in sk {
+                self.b.skip(&s);
+            }
+            if let Some(mut img) = img {
+                img.opacity = self.gs.fill_alpha;
+                self.b.push(Node::Image(img));
+            }
+            return;
+        }
         let Some(g) = self.shading_gradient(&sh) else { return };
         // Fill everything (the current clip limits it): the page box in user space.
         let inv = self.gs.ctm.inverse();
@@ -876,12 +922,33 @@ impl<'a> Interp<'a> {
         let m = f.get(d, "Matrix").map(|m| affine(&f.nums(m))).unwrap_or(Affine::IDENTITY);
         let form_res = f.get_dict(d, "Resources").cloned().unwrap_or_else(|| res.clone());
         self.saved.push((self.gs.clone(), self.b.depth()));
-        self.gs.ctm *= m;
+        // A transparency group XObject (§11.6.6) composites as one object: the current alpha
+        // (and the blend-mode and soft-mask groups already open around it) apply to its
+        // result, and its contents start from the initial alpha.
         let bb = f.get(d, "BBox").map(|b| f.nums(b)).unwrap_or_default();
-        if bb.len() == 4 {
-            let r = kurbo::Rect::new(bb[0], bb[1], bb[2], bb[3]);
-            self.b.clip(self.gs.ctm * r.to_path(0.1), FillRule::NonZero);
+        let bbox_path = |ctm: Affine| (bb.len() == 4).then(|| ctm * m * kurbo::Rect::new(bb[0], bb[1], bb[2], bb[3]).to_path(0.1));
+        let mut clipped = false;
+        if let Some(tg) = f.get_dict(d, "Group").filter(|g| f.get(g, "S").and_then(Obj::name) == Some("Transparency")) {
+            let mut grp = Group::new("Transparency Group");
+            // The bounding box clips the group itself (its children stay its direct children,
+            // as knockout needs).
+            if let Some(p) = bbox_path(self.gs.ctm) {
+                grp.clip.push((p, FillRule::NonZero));
+                clipped = true;
+            }
+            grp.opacity = self.gs.fill_alpha;
+            grp.isolated = matches!(f.get(tg, "I"), Some(Obj::Bool(true)));
+            grp.knockout = matches!(f.get(tg, "K"), Some(Obj::Bool(true)));
+            self.b.open_group(grp);
+            self.gs.fill_alpha = 1.0;
+            self.gs.stroke_alpha = 1.0;
+            self.gs.blend_depth = None;
+            self.gs.mask_depth = None;
         }
+        if !clipped && let Some(p) = bbox_path(self.gs.ctm) {
+            self.b.clip(p, FillRule::NonZero);
+        }
+        self.gs.ctm *= m;
         let base = self.gs.ctm;
         let path = std::mem::take(&mut self.path);
         let (tm, tlm) = (self.tm, self.tlm);
@@ -980,7 +1047,8 @@ impl<'a> Interp<'a> {
                     for (code, nbytes) in font.codes(s) {
                         let w0 = font.width(code);
                         let trm = self.tm * Affine::new([fs * th, 0.0, 0.0, fs, 0.0, rise]);
-                        let trm = if font.vertical { trm * Affine::translate((-w0 / 2.0, -0.88)) } else { trm };
+                        let (w1y, vx, vy) = if font.vertical { font.vmetrics(code) } else { (0.0, 0.0, 0.0) };
+                        let trm = if font.vertical { trm * Affine::translate((-vx, -vy)) } else { trm };
                         if let Some((proc_, t3res)) = font.type3_proc(code) {
                             let proc_ = proc_.to_vec();
                             let r = t3res.cloned().unwrap_or_else(|| res.clone());
@@ -993,7 +1061,7 @@ impl<'a> Interp<'a> {
                         text.push_str(&font.unicode(code));
                         let tw = if nbytes == 1 && code == 32 { self.gs.word_spacing } else { 0.0 };
                         if font.vertical {
-                            self.tm *= Affine::translate((0.0, -(fs + self.gs.char_spacing + tw)));
+                            self.tm *= Affine::translate((0.0, w1y * fs - self.gs.char_spacing - tw));
                         } else {
                             self.tm *= Affine::translate(((w0 * fs + self.gs.char_spacing + tw) * th, 0.0));
                         }

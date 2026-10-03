@@ -89,6 +89,12 @@ fn strokes_segment_the_base_frame() {
     // Deterministic.
     let again = segment(&img, &refs, None, &SegOpts::default(), 0.0);
     assert_eq!(seg, again);
+    // The binary form round-trips exactly and is compact (run-length encoded planes).
+    let bytes = seg.to_bytes();
+    assert_eq!(FrameSeg::from_bytes(&bytes).as_ref(), Some(&seg));
+    assert!(bytes.len() < seg.w * seg.h / 4, "{} bytes", bytes.len());
+    assert!(FrameSeg::from_bytes(&bytes[..bytes.len() - 1]).is_none());
+    assert!(FrameSeg::from_bytes(b"nope").is_none());
 }
 
 #[test]

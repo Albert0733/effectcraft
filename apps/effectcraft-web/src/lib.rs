@@ -9,8 +9,9 @@
 //! | file system (`FsServices`, media reads, export writes) | a virtual file table ([`files`]) persisted to the Origin Private File System / IndexedDB ([`persist`], [`store`]) |
 //! | config directory (settings, shortcuts, recent projects, auto-saves) | the same store ([`store::WebConfig`]) |
 //! | rfd file dialogs | `<input type=file>` pickers; drop files on the page |
+//! | Media Browser on the file system | browser storage and folders opened with the File System Access API ([`browse`]) |
 //! | written files (Save, Render Queue) | browser downloads (several render files as one `.zip`) |
-//! | frame render threads | `Frames::pump` on the UI thread between egui frames |
+//! | frame render threads | frame workers, each with a project replica fed by diffs ([`frames`]); `Frames::pump` on the UI thread without workers |
 //! | Render Queue / analysis threads | Web Workers running their own engine instance ([`worker`]) |
 //! | cpal audio output | Web Audio: an AudioWorklet fed from the preview mixdown ([`audio`]) |
 //! | TCP control channel / MCP | `window.effectcraft` JavaScript API ([`api`]) |
@@ -26,7 +27,11 @@ mod app;
 #[cfg(target_arch = "wasm32")]
 pub mod audio;
 #[cfg(target_arch = "wasm32")]
+pub mod browse;
+#[cfg(target_arch = "wasm32")]
 pub mod files;
+#[cfg(target_arch = "wasm32")]
+pub mod frames;
 #[cfg(target_arch = "wasm32")]
 pub mod persist;
 #[cfg(target_arch = "wasm32")]

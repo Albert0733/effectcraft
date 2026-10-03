@@ -269,7 +269,7 @@ fn parse_points(s: &str) -> Vec<(f32, f32)> {
 /// around (x = 0 and x = 1 are the same hue); the others are flat beyond their end points.
 /// Tabulated as offsets `y − 0.5`.
 #[derive(Clone, Debug)]
-pub(crate) struct OffsetCurve {
+pub struct OffsetCurve {
     lut: Vec<f32>,
 }
 
@@ -277,7 +277,7 @@ impl OffsetCurve {
     const N: usize = 512;
 
     /// `None` for an empty or flat-neutral curve.
-    pub(crate) fn parse(s: &str, periodic: bool) -> Option<OffsetCurve> {
+    pub fn parse(s: &str, periodic: bool) -> Option<OffsetCurve> {
         let pts = parse_points(s);
         if pts.is_empty() || pts.iter().all(|p| (p.1 - 0.5).abs() < 1e-6) {
             return None;
@@ -327,7 +327,7 @@ impl OffsetCurve {
     }
 
     /// Offset from neutral at `x` (clamped to 0..1).
-    pub(crate) fn at(&self, x: f32) -> f32 {
+    pub fn at(&self, x: f32) -> f32 {
         let f = x.clamp(0.0, 1.0) * Self::N as f32;
         let i = (f as usize).min(Self::N - 1);
         let t = f - i as f32;

@@ -624,7 +624,7 @@ impl<'g> Enc<'g> {
         Enc { g, enc: None, pending: 0 }
     }
 
-    fn encoder(&mut self) -> &mut wgpu::CommandEncoder {
+    pub(crate) fn encoder(&mut self) -> &mut wgpu::CommandEncoder {
         let g = self.g;
         &mut self
             .enc

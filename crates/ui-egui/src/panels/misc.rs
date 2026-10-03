@@ -21,7 +21,16 @@ pub fn preview(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let ctx = ui.ctx().clone();
     let p = ui.painter().with_clip_rect(rect);
-    let y = rect.min.y + 12.0;
+    // The panel scrolls when it is shorter than its controls (the default workspace shows just
+    // the transport row, as in After Effects).
+    let scroll_id = egui::Id::new("preview-scroll");
+    let mut scroll: f32 = ctx.data(|d| d.get_temp(scroll_id).unwrap_or(0.0));
+    if ui.rect_contains_pointer(rect) {
+        scroll = (scroll - ui.input(|i| i.smooth_scroll_delta.y)).max(0.0);
+    }
+    let panel_clip = ui.clip_rect();
+    ui.set_clip_rect(rect.intersect(panel_clip));
+    let y = rect.min.y + 12.0 - scroll;
     let bw = 30.0;
     let total = bw * 5.0 + 16.0;
     let mut x = rect.center().x - total / 2.0;
@@ -222,6 +231,18 @@ pub fn preview(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         p.rect_filled(Rect::from_min_size(bar.min, vec2(bar.width() * f, bar.height())), 3.0, t.cache_green);
         let status = if app.playback.playing && app.playback.caching { " — caching before playback" } else { "" };
         p.text(pos2(bar.min.x, bar.max.y + 12.0), Align2::LEFT_CENTER, format!("{cached} / {total} frames cached{status}"), Tokens::ui(11.0), t.text_faint);
+    }
+    ui.set_clip_rect(panel_clip);
+    let content = yy + 30.0 - (rect.min.y - scroll);
+    let max = (content - rect.height()).max(0.0);
+    scroll = scroll.min(max);
+    ctx.data_mut(|d| d.insert_temp(scroll_id, scroll));
+    if max > 0.0 {
+        // A thin scroll indicator on the right edge.
+        let h = (rect.height() * rect.height() / content).max(12.0);
+        let top = rect.min.y + (rect.height() - h) * (scroll / max);
+        p.rect_filled(Rect::from_min_size(pos2(rect.max.x - 5.0, top), vec2(3.0, h)), 1.5, t.text_faint.gamma_multiply(0.6));
+        app.auto.add("preview.scroll", Rect::from_min_size(pos2(rect.max.x - 6.0, rect.min.y), vec2(6.0, rect.height())), "Preview scroll");
     }
 }
 

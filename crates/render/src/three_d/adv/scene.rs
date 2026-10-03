@@ -311,11 +311,16 @@ impl Builder {
             let wn = n.apply_vec(vec3(nn[0] as f64, nn[1] as f64, nn[2] as f64)).normalize();
             let t = p.tangents.get(k).copied().unwrap_or([1.0, 0.0, 0.0, 1.0]);
             let wt = m.apply_vec(vec3(t[0] as f64, t[1] as f64, t[2] as f64)).normalize();
+            // Degenerate normals and tangents (zero length: NaN once normalised) get the shader's
+            // fallbacks here, so every rasteriser shades them alike (GPU compilers may not keep
+            // NaN comparisons).
+            let finite = |v: Vec3, or: [f32; 3]| if v.x.is_finite() && v.y.is_finite() && v.z.is_finite() { [v.x as f32, v.y as f32, v.z as f32] } else { or };
+            let [tx, ty, tz] = finite(wt, [1.0, 0.0, 0.0]);
             self.s.vertices.push(Vertex {
                 pos: [w.x as f32, w.y as f32, w.z as f32],
-                normal: [wn.x as f32, wn.y as f32, wn.z as f32],
+                normal: finite(wn, [0.0, 0.0, -1.0]),
                 uv: p.uvs.get(k).copied().unwrap_or([0.0, 0.0]),
-                tangent: [wt.x as f32, wt.y as f32, wt.z as f32, if det < 0.0 { -t[3] } else { t[3] }],
+                tangent: [tx, ty, tz, if det < 0.0 { -t[3] } else { t[3] }],
                 material: mat,
             });
         }

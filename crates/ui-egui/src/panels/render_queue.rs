@@ -12,8 +12,8 @@
 //! key frame interval, Make Template) open a form that runs the same command.
 
 use effectcraft_engine::project::render_queue::{
-    AlphaMode, AudioFormat, AudioOutput, Channels, ColorDepth, CurrentOrOff, EffectsMode, FieldRender, OutputFormat, PostRenderAction, ProResProfile, Pulldown,
-    RESIZE_PRESETS, RenderLog, RenderQuality, RenderQueueItem, RenderStatus, ResizeQuality, SwitchOverride, TimeSpan,
+    AlphaMode, AudioFormat, AudioOutput, Channels, ColorDepth, CurrentOrOff, EffectsMode, FieldRender, OpusApplication, OutputFormat, PostRenderAction,
+    ProResProfile, Pulldown, RESIZE_PRESETS, RenderLog, RenderQuality, RenderQueueItem, RenderStatus, ResizeQuality, SwitchOverride, TimeSpan, WebmVideoCodec,
 };
 use effectcraft_engine::project::render_templates::RenderTemplates;
 use egui::{Align2, Color32, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
@@ -144,7 +144,7 @@ fn output_menu(it: &RenderQueueItem, available: &[OutputFormat], templates: &Ren
     }
     v.push(("-".into(), Value::Null));
     v.push((mark(o.channels == Channels::Rgb, "Channels: RGB"), json!({"channels": "rgb"})));
-    if o.format.supports_alpha() {
+    if o.supports_alpha() {
         v.push((mark(o.channels == Channels::Rgba, "Channels: RGB + Alpha"), json!({"channels": "rgba"})));
     }
     if !o.format.is_audio_only() {
@@ -167,14 +167,34 @@ fn output_menu(it: &RenderQueueItem, available: &[OutputFormat], templates: &Ren
                 v.push((mark(o.bitrate_kbps == kbps, &format!("Bitrate: {} Mbps", kbps / 1000)), json!({"bitrate": kbps})));
             }
         }
-        OutputFormat::JpegSequence | OutputFormat::WebM => {
+        OutputFormat::Hevc | OutputFormat::Av1 => codec_menu(o, &mut v),
+        OutputFormat::WebM => {
             v.push(("-".into(), Value::Null));
-            for q in [60u8, 80, 90, 100] {
-                v.push((mark(o.quality == q && !o.webm_bitrate, &format!("Quality: {q}")), json!({"quality": q, "webmBitrate": false})));
+            for c in [WebmVideoCodec::Vp9, WebmVideoCodec::Av1] {
+                v.push((mark(o.webm_codec == c, &format!("Video Codec: {}", c.label())), json!({"webmCodec": c.label().to_ascii_lowercase()})));
             }
-            if o.format == OutputFormat::WebM {
+            if o.webm_codec == WebmVideoCodec::Av1 {
+                codec_menu(o, &mut v);
+            } else {
+                v.push(("-".into(), Value::Null));
+                for q in [60u8, 80, 90, 100] {
+                    v.push((mark(o.quality == q && !o.webm_bitrate, &format!("Quality: {q}")), json!({"quality": q, "webmBitrate": false})));
+                }
                 v.push((mark(o.webm_bitrate, &format!("Target Bitrate ({} kbps)…", o.bitrate_kbps)), json!({"form": "bitrate"})));
                 v.push((mark(o.keyframe_interval > 0, "Key Frame Interval…"), json!({"form": "keyframes"})));
+            }
+            v.push(("-".into(), Value::Null));
+            for kbps in [24u32, 32, 64, 96, 128, 192, 256] {
+                v.push((mark(o.opus_bitrate_kbps == kbps, &format!("Opus Bitrate: {kbps} kbps")), json!({"audioBitrate": kbps})));
+            }
+            for (a, k) in [(OpusApplication::Audio, "audio"), (OpusApplication::Voip, "voice")] {
+                v.push((mark(o.opus_application == a, &format!("Opus Tuning: {}", a.label())), json!({"opusApplication": k})));
+            }
+        }
+        OutputFormat::JpegSequence => {
+            v.push(("-".into(), Value::Null));
+            for q in [60u8, 80, 90, 100] {
+                v.push((mark(o.quality == q, &format!("Quality: {q}")), json!({"quality": q})));
             }
         }
         OutputFormat::Gif => {
@@ -236,6 +256,49 @@ fn output_menu(it: &RenderQueueItem, available: &[OutputFormat], templates: &Ren
     v
 }
 
+/// HEVC / AV1 options: profile, level, rate control (bitrate or constant quality), key frames.
+fn codec_menu(o: &effectcraft_engine::project::render_queue::OutputModule, v: &mut Vec<(String, Value)>) {
+    use effectcraft_engine::project::render_queue::{CodecProfile, RateControlMode, VideoCodecOptions};
+    let c = &o.codec;
+    v.push(("-".into(), Value::Null));
+    for p in CodecProfile::ALL {
+        v.push((mark(c.profile == p, &format!("Profile: {}", p.label())), json!({"profile": format!("{p:?}").to_ascii_lowercase()})));
+    }
+    v.push(("-".into(), Value::Null));
+    v.push((mark(c.level.is_none(), "Level: Auto"), json!({"level": "auto"})));
+    // The common HEVC / AV1 levels (every level is reachable over the control channel).
+    for l in [30u8, 31, 40, 41, 50, 51, 52] {
+        debug_assert!(VideoCodecOptions::HEVC_LEVELS.contains(&l) && VideoCodecOptions::AV1_LEVELS.contains(&l));
+        let name = format!("{}.{}", l / 10, l % 10);
+        v.push((mark(c.level == Some(l), &format!("Level: {name}")), json!({"level": name})));
+    }
+    v.push(("-".into(), Value::Null));
+    for r in [RateControlMode::Bitrate, RateControlMode::Quality] {
+        v.push((mark(c.rate_control == r, &format!("Rate Control: {}", r.label())), json!({"rateControl": format!("{r:?}").to_ascii_lowercase()})));
+    }
+    if c.rate_control == RateControlMode::Bitrate {
+        for kbps in [1_000u32, 2_000, 5_000, 10_000, 20_000, 40_000] {
+            let l = if kbps < 2_000 { format!("Bitrate: {kbps} kbps") } else { format!("Bitrate: {} Mbps", kbps / 1000) };
+            v.push((mark(o.bitrate_kbps == kbps, &l), json!({"bitrate": kbps})));
+        }
+        v.push((mark(false, "Bitrate: Custom…"), json!({"form": "codecBitrate"})));
+    } else {
+        for q in [40u8, 60, 70, 80, 90, 100] {
+            v.push((mark(c.quality == q, &format!("Quality: {q}")), json!({"quality": q})));
+        }
+    }
+    v.push(("-".into(), Value::Null));
+    for k in [0u32, 1, 30, 60, 120, 250] {
+        let l = match k {
+            0 => "Key Frames: Auto (2 s)".to_string(),
+            1 => "Key Frames: Every Frame (all intra)".to_string(),
+            k => format!("Key Frames: Every {k} Frames"),
+        };
+        v.push((mark(o.keyframe_interval == k, &l), json!({"keyframeInterval": k})));
+    }
+    v.push((mark(false, "Key Frame Interval…"), json!({"form": "keyframes"})));
+}
+
 /// Open the form behind a `{"form": …}` menu entry.
 fn open_menu_form(app: &mut EffectcraftApp, it: &RenderQueueItem, form: &str) {
     use crate::panels::forms::{Field, form as open};
@@ -295,6 +358,13 @@ fn open_menu_form(app: &mut EffectcraftApp, it: &RenderQueueItem, form: &str) {
             "WebM Target Bitrate",
             "renderQueue.setOutputModule",
             json!({"item": id, "webmBitrate": true}),
+            vec![Field::num("bitrate", "Bitrate (kbps)", o.bitrate_kbps as f64)],
+        ),
+        "codecBitrate" => open(
+            app,
+            "Target Bitrate",
+            "renderQueue.setOutputModule",
+            json!({"item": id, "rateControl": "bitrate"}),
             vec![Field::num("bitrate", "Bitrate (kbps)", o.bitrate_kbps as f64)],
         ),
         "keyframes" => open(

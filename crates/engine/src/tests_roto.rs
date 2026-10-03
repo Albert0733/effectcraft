@@ -286,3 +286,52 @@ fn propagation_is_deterministic_and_runs_in_background() {
     let r = s.execute("roto.stroke", json!({"layer": clip.0, "points": [[90, 110]]})).unwrap();
     assert_eq!(r["radius"], 15.0);
 }
+
+/// Runs offloaded jobs at once in a second session sharing the footage, through JSON (what the
+/// browser's Web Worker does, minus the thread).
+struct InlineWorker(std::sync::Arc<dyn effectcraft_render::FootageSource>);
+
+impl crate::offload::Offload for InlineWorker {
+    fn start(&self, req: crate::offload::WorkerRequest, inbox: std::sync::Arc<crate::offload::Inbox>) -> Result<(), String> {
+        let req: crate::offload::WorkerRequest = serde_json::from_str(&serde_json::to_string(&req).unwrap()).unwrap();
+        let mut w = Session { footage: self.0.clone(), ..Default::default() };
+        let post: crate::offload::Post = std::rc::Rc::new(move |r| inbox.push(serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap()));
+        crate::offload::run_request(&mut w, req, &post);
+        Ok(())
+    }
+    fn cancel(&self, _: u64) {}
+}
+
+#[test]
+fn offloaded_propagation_streams_segmentations_back() {
+    let (mut s, clip, uid) = painted(center, "disk-offload.mov");
+    s.execute("roto.span", json!({"layer": clip.0, "end": 5})).unwrap();
+    s.offload = Some(std::sync::Arc::new(InlineWorker(s.footage.clone())));
+    let r = s.execute("roto.propagate", json!({"layer": clip.0})).unwrap();
+    assert_eq!(r["frames"], 6, "{r}");
+    assert!(s.roto_job.is_none(), "offloaded, not on a thread");
+    assert!(s.is_roto_running());
+    assert_eq!(s.roto_progress().unwrap().task, Some(crate::roto::RotoTask::Propagate));
+    assert_eq!(s.roto_target().map(|t| (t.1, t.2)), Some((clip, uid)));
+    assert!(s.jobs().iter().any(|j| j.id == "roto"));
+    // The worker has its own segmentation cache: here nothing is computed until its replies
+    // are applied.
+    forget(&s, clip, uid);
+    assert_eq!(s.execute("roto.status", json!({"layer": clip.0})).unwrap()["computed"], json!([]));
+    let rev = s.revision;
+    assert!(s.poll_offload());
+    assert!(!s.is_roto_running());
+    assert!(s.revision > rev, "frames are redrawn");
+    let st = s.execute("roto.status", json!({"layer": clip.0})).unwrap();
+    assert_eq!(st["computed"], json!([0, 1, 2, 3, 4, 5]), "{st}");
+    assert!(s.events.iter().any(|e| matches!(e, crate::Event::Toast { message, error: false } if message.contains("propagated 6 frame"))));
+    // The matte matches one computed here.
+    let a = s.execute("roto.status", json!({"layer": clip.0, "frame": 5, "matte": true})).unwrap()["matte"].clone();
+    forget(&s, clip, uid);
+    let b = s.execute("roto.status", json!({"layer": clip.0, "frame": 5, "matte": true})).unwrap()["matte"].clone();
+    assert!(a.is_string());
+    assert_eq!(a, b);
+    // `wait` still runs here.
+    s.execute("roto.propagate", json!({"layer": clip.0, "wait": true})).unwrap();
+    assert!(s.offloaded.is_empty());
+}

@@ -26,6 +26,7 @@ pub mod offload;
 pub mod prefs;
 pub mod preview;
 pub mod psd_import;
+pub mod remote;
 pub mod render_queue;
 pub mod roto;
 pub mod scriptui;
@@ -353,6 +354,11 @@ pub struct Session {
     pub offload: Option<Arc<dyn offload::Offload>>,
     /// Analyses running in the [`Session::offload`] worker.
     pub offloaded: Vec<offload::OffloadedJob>,
+    /// What the Media Browser browses (`None`: the local file system where there is one).
+    pub browser: Option<Arc<dyn media_browser::Browser>>,
+    /// Offloaded jobs that ended, newest last (kind, error): how a caller waiting for one
+    /// (`wait: true` over the control channel in the browser) learns its outcome.
+    pub offload_log: Vec<(offload::JobKind, Option<String>)>,
     /// Generic background tasks (Content-Aware Fill, Scene Edit Detection), see [`jobs`].
     pub tasks: Vec<jobs::Task>,
     /// Finished tasks, newest last (Progress panel, `jobs.list`).
@@ -425,6 +431,8 @@ impl Default for Session {
             applied_nested_switches: None,
             offload: None,
             offloaded: vec![],
+            offload_log: vec![],
+            browser: None,
             tasks: vec![],
             job_log: vec![],
             next_task_id: 1,
@@ -781,6 +789,8 @@ mod tests_3d;
 mod tests_anim_tools;
 #[cfg(test)]
 mod tests_camera_track;
+#[cfg(test)]
+mod tests_codec_options;
 #[cfg(test)]
 mod tests_color_view;
 #[cfg(test)]

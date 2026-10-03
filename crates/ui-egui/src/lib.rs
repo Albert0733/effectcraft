@@ -143,6 +143,8 @@ pub struct EffectcraftApp {
     pub(crate) deferred: Vec<(ControlRequest, f64)>,
     pub(crate) synthetic: Vec<egui::Event>,
     pub(crate) input_waiters: Vec<Sender<serde_json::Value>>,
+    /// Control requests waiting for an offloaded job (`wait: true` in the browser).
+    pub(crate) job_waiters: Vec<(control::JobWaiter, Sender<serde_json::Value>)>,
     queued_screenshots: Vec<(u64, f64, u32)>,
     pending_screenshots: Vec<(u64, Option<String>, Option<[f32; 4]>, Sender<serde_json::Value>, f64)>,
     next_token: u64,
@@ -210,6 +212,7 @@ impl EffectcraftApp {
             deferred: vec![],
             synthetic: vec![],
             input_waiters: vec![],
+            job_waiters: vec![],
             queued_screenshots: vec![],
             pending_screenshots: vec![],
             next_token: 1,
@@ -847,8 +850,9 @@ impl EffectcraftApp {
 
     fn frames_parallelism(&self) -> usize {
         if cfg!(target_arch = "wasm32") {
-            // frames render one at a time on the UI thread (`Frames::pump`)
-            return 1;
+            // frame workers render one frame each; without them frames render one at a time
+            // on the UI thread (`Frames::pump`)
+            return self.frames.remote_slots().max(1);
         }
         std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4)
     }
@@ -881,6 +885,10 @@ impl EffectcraftApp {
                     }
                 }
                 control::Outcome::AfterInput => self.input_waiters.push(reply),
+                control::Outcome::AwaitJobs(w) => {
+                    self.job_waiters.push((w, reply));
+                    ctx.request_repaint();
+                }
                 control::Outcome::Screenshot { path, crop } => {
                     // A covered or minimized window presents no frames (macOS skips its redraws), so
                     // a screenshot would never arrive and nothing would tick its timeout.
@@ -897,6 +905,28 @@ impl EffectcraftApp {
             }
         }
         self.control_rx = Some(rx);
+        self.finish_job_waiters(ctx);
+    }
+
+    /// Reply to the control requests whose offloaded jobs ended.
+    fn finish_job_waiters(&mut self, ctx: &egui::Context) {
+        if self.job_waiters.is_empty() {
+            return;
+        }
+        self.session.poll_render();
+        self.session.poll_offload();
+        let waiters = std::mem::take(&mut self.job_waiters);
+        for (w, reply) in waiters {
+            if w.pending(self) {
+                self.job_waiters.push((w, reply));
+            } else {
+                let v = w.finish(self);
+                let _ = reply.send(v);
+            }
+        }
+        if !self.job_waiters.is_empty() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(50));
+        }
     }
 
     fn issue_screenshots(&mut self, ctx: &egui::Context) {
@@ -961,7 +991,9 @@ impl EffectcraftApp {
         for ev in self.session.drain_events() {
             match ev {
                 effectcraft_engine::Event::OpenComp(_) => {
-                    self.ui.dock.activate(PanelKind::Composition);
+                    if !self.ui.locked_tabs.contains(&PanelKind::Composition.id()) {
+                        self.ui.dock.activate(PanelKind::Composition);
+                    }
                     self.ui.timeline.pps = None;
                 }
                 effectcraft_engine::Event::Toast { message, .. } => self.toast = Some((message, ctx.input(|i| i.time))),

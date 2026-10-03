@@ -35,6 +35,26 @@ impl EffectcraftApp {
         out
     }
 
+    /// The Composition and Timeline tabs' close button, label-colour swatch and viewer lock.
+    fn tab_decos(&self) -> Vec<(PanelKind, dock::TabDeco)> {
+        let Some(cid) = self.session.active_comp_id() else { return vec![] };
+        let swatch = match self.session.project.item(cid).map(|i| i.label) {
+            Some(l) if l != effectcraft_engine::color::Label::None => self.tokens.label(l),
+            _ => self.tokens.text_faint,
+        };
+        let mut v: Vec<(PanelKind, dock::TabDeco)> = [PanelKind::Composition, PanelKind::Timeline]
+            .into_iter()
+            .map(|p| (p, dock::TabDeco { swatch, locked: self.ui.locked_tabs.contains(&p.id()), viewer: true }))
+            .collect();
+        // Effect Controls carries the selected layer's label colour.
+        if let Some(l) = self.session.active_comp().and_then(|c| self.session.state.selected_layers.first().and_then(|id| c.layer(*id)))
+            && l.label != effectcraft_engine::color::Label::None
+        {
+            v.push((PanelKind::EffectControls, dock::TabDeco { swatch: self.tokens.label(l.label), locked: false, viewer: false }));
+        }
+        v
+    }
+
     /// Settings ▸ Appearance ▸ Use Label Color for Related Tabs: the Composition and Timeline
     /// tabs carry their comp's label colour, Effect Controls and Properties the layer's.
     fn label_tab_marks(&self, ui: &egui::Ui) {
@@ -44,12 +64,9 @@ impl EffectcraftApp {
         let Some(cid) = self.session.active_comp_id() else { return };
         let comp_label = self.session.project.item(cid).map(|i| i.label);
         let layer_label = self.session.active_comp().and_then(|c| self.session.state.selected_layers.first().and_then(|l| c.layer(*l))).map(|l| l.label);
-        for (p, label) in [
-            (PanelKind::Composition, comp_label),
-            (PanelKind::Timeline, comp_label),
-            (PanelKind::EffectControls, layer_label),
-            (PanelKind::Properties, layer_label),
-        ] {
+        // (the Composition, Timeline and Effect Controls tabs carry their swatch already)
+        let _ = comp_label;
+        for (p, label) in [(PanelKind::Properties, layer_label)] {
             let (Some(label), Some(e)) = (label, self.auto.find(&format!("panel.tab.{}", p.id()))) else { continue };
             if label == effectcraft_engine::color::Label::None {
                 continue;
@@ -131,9 +148,10 @@ impl EffectcraftApp {
         dock::layout(ui, &mut dock, body, &t, "", &mut groups, &mut self.auto);
         let mut actions = Vec::new();
         let titles = self.tab_titles();
+        let decos = self.tab_decos();
         let title = |p: PanelKind| titles.iter().find(|(k, _)| *k == p).map(|(_, s)| s.clone()).unwrap_or_else(|| p.title().to_string());
         for g in &groups {
-            actions.extend(dock::draw_group_chrome(ui, g, self.ui.focused, &t, &mut self.auto, &title));
+            actions.extend(dock::draw_group_chrome(ui, g, self.ui.focused, &t, &mut self.auto, &title, &decos));
         }
         self.label_tab_marks(ui);
         if maximized.is_none() {
@@ -174,6 +192,11 @@ impl EffectcraftApp {
                 DockAction::BeginDrag(p) => ctx.data_mut(|d| {
                     d.insert_temp(drag_id(), p);
                 }),
+                DockAction::ToggleLock(p) => {
+                    if !self.ui.locked_tabs.remove(&p.id()) {
+                        self.ui.locked_tabs.insert(p.id().to_string());
+                    }
+                }
             }
         }
         self.tab_drag(&ctx, &groups, &float_groups);
@@ -213,7 +236,8 @@ impl EffectcraftApp {
                 active: f.active.min(f.panels.len().saturating_sub(1)),
                 stacked: None,
             };
-            actions.extend(dock::draw_group_chrome(ui, &g, self.ui.focused, &t, &mut self.auto, title));
+            let decos = self.tab_decos();
+            actions.extend(dock::draw_group_chrome(ui, &g, self.ui.focused, &t, &mut self.auto, title, &decos));
             ui.painter().rect_stroke(r, t.radius, Stroke::new(1.0, t.field_border), StrokeKind::Outside);
             if let Some(p) = g.panels.get(g.active).copied() {
                 self.panel_body(ui, p, g.content);
