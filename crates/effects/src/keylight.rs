@@ -126,6 +126,104 @@ fn correct(c: [f32; 3], sat: f32, contrast: f32, bright: f32) -> [f32; 3] {
     c.map(|v| ((v - 0.5) * contrast + 0.5) * bright)
 }
 
+/// Colour Suppression choices.
+const SUPPRESS: [&str; 7] = ["None", "Red", "Green", "Blue", "Cyan", "Magenta", "Yellow"];
+/// Source Crops' X / Y Method choices.
+const CROP_METHODS: [&str; 4] = ["Colour", "Repeat", "Reflect", "Wrap"];
+
+/// (colour, balance 0..1, amount 0..1) of a Colour Suppression setting.
+fn suppression(ctx: &EffectCtx, kind: &str, bal: &str, amt: &str) -> (u32, f32, f32) {
+    (ctx.params.e(kind), (ctx.params.get(bal).map(Value::as_f64).unwrap_or(50.0) / 100.0) as f32, (ctx.params.f(amt) / 100.0) as f32)
+}
+
+/// Colour Suppression: remove the excess of a primary (over a Balance-weighted mix of the other
+/// two) or of a secondary (the smaller of its two primaries over the third).
+fn suppress(mut c: [f32; 3], (kind, bal, amt): (u32, f32, f32)) -> [f32; 3] {
+    if kind == 0 || amt <= 0.0 {
+        return c;
+    }
+    match kind {
+        1..=3 => {
+            let k = kind as usize - 1;
+            let (a, b) = ((k + 1) % 3, (k + 2) % 3);
+            let limit = c[a] * bal + c[b] * (1.0 - bal);
+            c[k] -= (c[k] - limit).max(0.0) * amt;
+        }
+        _ => {
+            // Cyan = G + B over R, Magenta = R + B over G, Yellow = R + G over B.
+            let third = match kind {
+                4 => 0,
+                5 => 1,
+                _ => 2,
+            };
+            let (a, b) = ((third + 1) % 3, (third + 2) % 3);
+            let excess = (c[a].min(c[b]) - c[third]).max(0.0) * amt;
+            c[a] -= excess;
+            c[b] -= excess;
+        }
+    }
+    c
+}
+
+/// (tint offset) of a Colour Balancing wheel: hue (degrees) and saturation (0..1).
+fn balance(ctx: &EffectCtx, hue: &str, sat: &str) -> [f32; 3] {
+    let s = (ctx.params.f(sat) / 100.0) as f32;
+    if s <= 0.0 {
+        return [0.0; 3];
+    }
+    let (r, g, b) = effectcraft_color::hsl_to_rgb((ctx.params.f(hue) / 360.0).rem_euclid(1.0) as f32, 1.0, 0.5);
+    let l = luminance(r, g, b);
+    [(r - l) * s * 0.5, (g - l) * s * 0.5, (b - l) * s * 0.5]
+}
+
+/// Colour Balancing: shift the colour towards the wheel's hue, keeping its luminance.
+fn colour_balance(c: [f32; 3], tint: [f32; 3]) -> [f32; 3] {
+    if tint == [0.0; 3] {
+        return c;
+    }
+    [c[0] + tint[0], c[1] + tint[1], c[2] + tint[2]].map(|v| v.max(0.0))
+}
+
+/// The layer with Source Crops applied: inside the crop the picture, outside it the Edge Colour
+/// (X / Y Method Colour) or the kept picture repeated, reflected or wrapped.
+fn crop_source(ctx: &EffectCtx, b: &Buf) -> Image {
+    let pr = ctx.params;
+    let crops = [pr.f("sourceCrops/cropLeft"), pr.f("sourceCrops/cropRight"), pr.f("sourceCrops/cropTop"), pr.f("sourceCrops/cropBottom")].map(|v| v / 100.0);
+    if crops.iter().all(|c| *c <= 0.0) {
+        return b.img.clone();
+    }
+    let (lw, lh) = (ctx.layer_size[0] * b.scale, ctx.layer_size[1] * b.scale);
+    let (x0, x1) = (b.offset[0] + crops[0] * lw, b.offset[0] + (1.0 - crops[1]) * lw);
+    let (y0, y1) = (b.offset[1] + crops[2] * lh, b.offset[1] + (1.0 - crops[3]) * lh);
+    let methods = [pr.e("sourceCrops/xMethod"), pr.e("sourceCrops/yMethod")];
+    let ec = pr.color("sourceCrops/edgeColour");
+    let ea = (pr.f("sourceCrops/edgeColourAlpha") / 100.0) as f32;
+    let edge = premul([ec[0], ec[1], ec[2]], ea);
+    // Fold a coordinate into [lo, hi) by a method; None = outside with Colour.
+    let fold = |v: f64, lo: f64, hi: f64, m: u32| -> Option<f64> {
+        let span = (hi - lo).max(1.0);
+        if v >= lo && v < hi {
+            return Some(v);
+        }
+        match m {
+            1 => Some(v.clamp(lo, hi - 0.5)),
+            2 => {
+                let t = (v - lo).rem_euclid(2.0 * span);
+                Some(lo + if t >= span { 2.0 * span - t - 0.5 } else { t })
+            }
+            3 => Some(lo + (v - lo).rem_euclid(span)),
+            _ => None,
+        }
+    };
+    crate::util::gen_image(b.img.width, b.img.height, |x, y| {
+        let (fx, fy) = (x as f64 + 0.5, y as f64 + 0.5);
+        match (fold(fx, x0, x1, methods[0]), fold(fy, y0, y1, methods[1])) {
+            (Some(sx), Some(sy)) => b.img.get_clamped(sx.floor() as i64, sy.floor() as i64),
+            _ => edge,
+        }
+    })
+}
+
 fn key_light(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let pr = ctx.params;
     let view = pr.e("view");
@@ -151,7 +249,9 @@ fn key_light(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let despot_b = pr.f("screenMatte/screenDespotBlack") * b.scale;
     let despot_w = pr.f("screenMatte/screenDespotWhite") * b.scale;
 
-    let src = b.img.clone();
+    // Source Crops: the cropped borders take the Edge Colour, or repeat / reflect / wrap the
+    // kept picture (X Method / Y Method), before keying.
+    let src = crop_source(ctx, &b);
     let blurred;
     let key_src: &Image = if preblur > 0.0 {
         blurred = gaussian_blur(&src, preblur * 0.5, preblur * 0.5, true);
@@ -247,6 +347,22 @@ fn key_light(ctx: &EffectCtx, mut b: Buf) -> Buf {
         pr.f("edgeColourCorrection/edgeBrightness") as f32 / 100.0 + 1.0,
     );
     let unpremultiply = pr.b("unpremultiplyResult");
+    let (x_method, y_method) = (pr.e("sourceCrops/xMethod"), pr.e("sourceCrops/yMethod"));
+    let edge_alpha = pr.f("sourceCrops/edgeColourAlpha") as f32 / 100.0;
+    let fg_sup = suppression(
+        ctx,
+        "foregroundColourCorrection/colourSuppression",
+        "foregroundColourCorrection/suppressionBalance",
+        "foregroundColourCorrection/suppressionAmount",
+    );
+    let fg_bal = balance(ctx, "foregroundColourCorrection/colourBalanceHue", "foregroundColourCorrection/colourBalanceSaturation");
+    let edge_sup = suppression(
+        ctx,
+        "edgeColourCorrection/edgeColourSuppression",
+        "edgeColourCorrection/edgeSuppressionBalance",
+        "edgeColourCorrection/edgeSuppressionAmount",
+    );
+    let edge_bal = balance(ctx, "edgeColourCorrection/edgeColourBalanceHue", "edgeColourCorrection/edgeColourBalanceSaturation");
     let crops = [pr.f("sourceCrops/cropLeft"), pr.f("sourceCrops/cropRight"), pr.f("sourceCrops/cropTop"), pr.f("sourceCrops/cropBottom")].map(|v| v / 100.0);
     let (lw, lh) = (ctx.layer_size[0], ctx.layer_size[1]);
     let w = b.img.width as usize;
@@ -258,7 +374,7 @@ fn key_light(ctx: &EffectCtx, mut b: Buf) -> Buf {
         // Source crops (layer fractions from each edge).
         let (x, y) = ((i % w) as f64 + 0.5, (i / w) as f64 + 0.5);
         let (lx, ly) = ((x - off[0]) / scale / lw.max(1e-9), (y - off[1]) / scale / lh.max(1e-9));
-        let cropped = lx < crops[0] || lx > 1.0 - crops[1] || ly < crops[2] || ly > 1.0 - crops[3];
+        let cropped = (lx < crops[0] || lx > 1.0 - crops[1] || ly < crops[2] || ly > 1.0 - crops[3]) && edge_alpha <= 0.0 && x_method == 0 && y_method == 0;
         // Screen removal on the raw (unclipped) transparency, then despill.
         let ar = raw.data[i].max(1e-4);
         let mut fg = [0, 1, 2].map(|k| ((c[k] - (1.0 - ar) * screen[k]) / ar).max(0.0));
@@ -287,11 +403,11 @@ fn key_light(ctx: &EffectCtx, mut b: Buf) -> Buf {
         fg = apply_replace(fg, replace, rc, raised);
         fg = apply_replace(fg, in_replace, in_rc, raised_in);
         if fg_cc {
-            fg = correct(fg, fs, fc, fbr);
+            fg = colour_balance(suppress(correct(fg, fs, fc, fbr), fg_sup), fg_bal);
         }
         let edge = edges.as_ref().map_or(0.0, |e| e[i]);
         if edge > 0.0 {
-            let ce = correct(fg, es, ec, ebr);
+            let ce = colour_balance(suppress(correct(fg, es, ec, ebr), edge_sup), edge_bal);
             fg = [0, 1, 2].map(|k| fg[k] + (ce[k] - fg[k]) * edge);
         }
         let grey = |v: f32| [v, v, v, 1.0];
@@ -380,6 +496,11 @@ pub fn specs() -> Vec<EffectSpec> {
             p("foregroundColourCorrection/saturation", "Saturation", num(100.0), slider(0.0, 400.0, 0.0, 200.0, 1)),
             cc("foregroundColourCorrection/contrast", "Contrast"),
             cc("foregroundColourCorrection/brightness", "Brightness"),
+            p("foregroundColourCorrection/colourSuppression", "Colour Suppression", Value::Enum(0), popup(&SUPPRESS)),
+            pp("foregroundColourCorrection/suppressionBalance", "Suppression Balance", pct(50.0)),
+            pp("foregroundColourCorrection/suppressionAmount", "Suppression Amount", pct(0.0)),
+            p("foregroundColourCorrection/colourBalanceHue", "Colour Balance Hue", num(0.0), ParamUi::Angle),
+            pp("foregroundColourCorrection/colourBalanceSaturation", "Colour Balance Saturation", pct(0.0)),
             // Edge Colour Correction
             p("edgeColourCorrection/enableEdgeColourCorrection", "Enable Edge Colour Correction", Value::Bool(false), ParamUi::Checkbox),
             pp("edgeColourCorrection/edgeHardness", "Edge Hardness", pct(0.0)),
@@ -388,7 +509,16 @@ pub fn specs() -> Vec<EffectSpec> {
             p("edgeColourCorrection/edgeSaturation", "Saturation", num(100.0), slider(0.0, 400.0, 0.0, 200.0, 1)),
             cc("edgeColourCorrection/edgeContrast", "Contrast"),
             cc("edgeColourCorrection/edgeBrightness", "Brightness"),
+            p("edgeColourCorrection/edgeColourSuppression", "Colour Suppression", Value::Enum(0), popup(&SUPPRESS)),
+            pp("edgeColourCorrection/edgeSuppressionBalance", "Suppression Balance", pct(50.0)),
+            pp("edgeColourCorrection/edgeSuppressionAmount", "Suppression Amount", pct(0.0)),
+            p("edgeColourCorrection/edgeColourBalanceHue", "Colour Balance Hue", num(0.0), ParamUi::Angle),
+            pp("edgeColourCorrection/edgeColourBalanceSaturation", "Colour Balance Saturation", pct(0.0)),
             // Source Crops
+            p("sourceCrops/xMethod", "X Method", Value::Enum(0), popup(&CROP_METHODS)),
+            p("sourceCrops/yMethod", "Y Method", Value::Enum(0), popup(&CROP_METHODS)),
+            p("sourceCrops/edgeColour", "Edge Colour", col(0.0, 0.0, 0.0), ParamUi::Color),
+            pp("sourceCrops/edgeColourAlpha", "Edge Colour Alpha", pct(0.0)),
             pp("sourceCrops/cropLeft", "Left", pct(0.0)),
             pp("sourceCrops/cropRight", "Right", pct(0.0)),
             pp("sourceCrops/cropTop", "Top", pct(0.0)),
@@ -499,5 +629,45 @@ mod tests {
         assert_eq!(g.sub("screenMatte").and_then(|s| s.get("clipWhite")).map(|p| p.value.clone()), Some(num(42.0)));
         assert_eq!(g.sub("insideMask").and_then(|s| s.get("insideMask")).map(|p| p.name.as_str()), Some("Inside Mask"));
         assert!(g.get("clipWhite").is_none());
+    }
+
+    #[test]
+    fn colour_suppression_balancing_and_crop_methods() {
+        // Suppress Red pulls red down to the balance of green and blue; Cyan the shared G+B.
+        assert!((suppress([0.9, 0.3, 0.1], (1, 0.5, 1.0))[0] - 0.2).abs() < 1e-6);
+        let c = suppress([0.1, 0.8, 0.6], (4, 0.5, 1.0));
+        assert!((c[1] - 0.3).abs() < 1e-6 && (c[2] - 0.1).abs() < 1e-6);
+        assert_eq!(suppress([0.9, 0.3, 0.1], (1, 0.5, 0.0)), [0.9, 0.3, 0.1]);
+        // Foreground colour correction with suppression / balancing changes the keyed colour.
+        let base = [("screenColour", green()), ("foregroundColourCorrection/enableColourCorrection", Value::Bool(true))];
+        let run = |extra: &[(&str, Value)]| {
+            let mut v: Vec<(&str, Value)> = base.to_vec();
+            v.extend_from_slice(extra);
+            run_fx("ec.keying.keylight", &v, plate(), 0.0, EffectEnv::default()).img.get(15, 15)
+        };
+        let plain = run(&[]);
+        let sup = run(&[("foregroundColourCorrection/colourSuppression", Value::Enum(1)), ("foregroundColourCorrection/suppressionAmount", num(100.0))]);
+        assert!(sup[0] < plain[0] - 0.1, "{sup:?} vs {plain:?}");
+        let bal = run(&[("foregroundColourCorrection/colourBalanceHue", num(240.0)), ("foregroundColourCorrection/colourBalanceSaturation", num(100.0))]);
+        assert!(bal[2] > plain[2] + 0.05);
+        // Source Crops: Colour fills the cropped border; Repeat copies the kept edge.
+        let crop = [("screenColour", green()), ("sourceCrops/cropLeft", num(10.0)), ("view", Value::Enum(1))];
+        let filled =
+            run_fx("ec.keying.keylight", &[crop.as_slice(), &[("sourceCrops/edgeColourAlpha", num(100.0))]].concat(), plate(), 0.0, EffectEnv::default()).img;
+        assert_eq!(filled.get(1, 15)[0], 1.0, "edge colour alpha shows in the source alpha view");
+        let src = crop_source(
+            &crate::EffectCtx {
+                params: &crate::Params {
+                    values: [("sourceCrops/cropLeft".to_string(), num(25.0)), ("sourceCrops/xMethod".to_string(), Value::Enum(1))].into_iter().collect(),
+                },
+                time: 0.0,
+                layer_size: [40.0, 30.0],
+                seed: 0,
+                adjustment: false,
+                env: Default::default(),
+            },
+            &Buf { img: plate(), offset: [0.0; 2], scale: 1.0 },
+        );
+        assert_eq!(src.get(2, 15), plate().get(10, 15), "repeat");
     }
 }

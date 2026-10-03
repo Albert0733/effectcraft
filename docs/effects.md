@@ -3,11 +3,11 @@
 <!-- Generated from the effect registry (crates/effects/src/catalog.rs); do not edit by hand.
      Regenerate: UPDATE_DOCS=1 cargo test -p effectcraft-effects --lib effects_doc_is_current -->
 
-EffectCraft ships 303 effects with 2854 parameters in total, grouped into the same categories as the Effects & Presets panel. Every effect is our own implementation, written from public behaviour descriptions and standard image-processing literature. Parameter names, order, popup options, units, defaults and ranges follow the reference application so that projects, expressions and muscle memory carry over.
+EffectCraft ships 303 effects with 2872 parameters in total, grouped into the same categories as the Effects & Presets panel. Every effect is our own implementation, written from public behaviour descriptions and standard image-processing literature. Parameter names, order, popup options, units, defaults and ranges follow the reference application so that projects, expressions and muscle memory carry over.
 
 - **GPU**: 24 effects also run on the GPU compositor with identical results.
 - **32**: 303 effects process 32-bit float (HDR, overbright) pixels without clamping.
-- **Status**: 290 implemented in full, 13 partial (what is missing is listed).
+- **Status**: 292 implemented in full, 11 partial (what is missing is listed).
 
 Effects are addressed by id (`ec.<category>.<name>`) or display name in commands, scripts and the control channel, and every parameter by its id (`effects/#1/blurriness`).
 
@@ -209,7 +209,7 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 | Lens Flare | `ec.generate.lensflare` | 4 |  | 32 | Implemented |
 | Paint Bucket | `ec.generate.paintbucket` | 11 |  | 32 | Implemented |
 | Radio Waves | `ec.generate.radiowaves` | 31 |  | 32 | Implemented |
-| Scribble | `ec.generate.scribble` | 21 |  | 32 | Partial: no caps, joins or Start/End Apply To |
+| Scribble | `ec.generate.scribble` | 25 |  | 32 | Implemented |
 | Stroke | `ec.generate.stroke` | 11 |  | 32 | Implemented |
 | Vegas | `ec.generate.vegas` | 26 |  | 32 | Implemented |
 | Write-on | `ec.generate.writeon` | 10 |  | 32 | Implemented |
@@ -243,7 +243,7 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 | Extract | `ec.key.extract` | 6 |  | 32 | Implemented |
 | Inner/Outer Key | `ec.key.innerouter` | 88 |  | 32 | Implemented |
 | Key Cleaner | `ec.key.keycleaner` | 4 |  | 32 | Implemented |
-| Key Light | `ec.keying.keylight` | 42 |  | 32 | Partial: no Source Crops X/Y Method or Edge Colour; no colour suppression / balancing |
+| Key Light | `ec.keying.keylight` | 56 |  | 32 | Implemented |
 | Linear Color Key | `ec.key.linearcolor` | 6 |  | 32 | Implemented |
 | Screen Key | `ec.key.screen` | 11 |  | 32 | Implemented |
 | Unmult | `ec.key.unmult` | 6 |  | 32 | Implemented |
