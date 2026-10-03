@@ -922,6 +922,13 @@ pub const GPU_EFFECTS: &[&str] = &[
     "ec.distort.reshape",
     "ec.stylize.coloremboss",
     "ec.stylize.cartoon",
+    // effectcraft-gpu fx_extra (shapes, bevels)
+    "ec.generate.circle",
+    "ec.generate.ellipse",
+    "ec.transition.iriswipe",
+    "ec.perspective.bevelalpha",
+    "ec.perspective.beveledges",
+    "ec.obsolete.gaussianlegacy",
 ];
 
 /// Effects whose output depends on [`EffectCtx::time`] directly (not only through animated

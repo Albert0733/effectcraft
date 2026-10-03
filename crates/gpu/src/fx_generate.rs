@@ -83,7 +83,7 @@ fn hl(v: f64) -> [f32; 2] {
 }
 
 /// Generate blending mode index → `BlendMode::ALL` index (255 = None: replace).
-fn gen_mode(i: u32) -> u32 {
+pub(crate) fn gen_mode(i: u32) -> u32 {
     match effectcraft_effects::gen_mode(i) {
         None => 255,
         Some(m) => BlendMode::ALL.iter().position(|&x| x == m).unwrap_or(0) as u32,

@@ -132,6 +132,7 @@ fn apply(e: &mut Enc, id: &str, ctx: &EffectCtx, b: GBuf) -> Option<GBuf> {
         _ if crate::fx_noise::IDS.contains(&id) => crate::fx_noise::apply(e, id, ctx, b),
         _ if crate::fx_tone::IDS.contains(&id) => crate::fx_tone::apply(e, id, ctx, b),
         _ if crate::fx_warp::IDS.contains(&id) => crate::fx_warp::apply(e, id, ctx, b),
+        _ if crate::fx_extra::IDS.contains(&id) => crate::fx_extra::apply(e, id, ctx, b),
         _ => pointwise(e, id, ctx, b),
     }
 }

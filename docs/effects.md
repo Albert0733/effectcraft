@@ -5,7 +5,7 @@
 
 EffectCraft ships 306 effects with 3009 parameters in total, grouped into the same categories as the Effects & Presets panel. Every effect is our own implementation, written from public behaviour descriptions and standard image-processing literature. Parameter names, order, popup options, units, defaults and ranges follow the reference application so that projects, expressions and muscle memory carry over.
 
-- **GPU**: 160 effects also run on the GPU compositor with identical results.
+- **GPU**: 166 effects also run on the GPU compositor with identical results.
 - **32**: 306 effects process 32-bit float (HDR, overbright) pixels without clamping.
 - **Status**: 306 implemented in full, 0 partial (what is missing is listed).
 
@@ -200,8 +200,8 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 | CC Threads | `ec.generate.ccthreads` | 8 |  | 32 | Implemented |
 | Cell Pattern | `ec.generate.cellpattern` | 14 | GPU | 32 | Implemented |
 | Checkerboard | `ec.generate.checkerboard` | 10 | GPU | 32 | Implemented |
-| Circle | `ec.generate.circle` | 11 |  | 32 | Implemented |
-| Ellipse | `ec.generate.ellipse` | 8 |  | 32 | Implemented |
+| Circle | `ec.generate.circle` | 11 | GPU | 32 | Implemented |
+| Ellipse | `ec.generate.ellipse` | 8 | GPU | 32 | Implemented |
 | Eyedropper Fill | `ec.generate.eyedropperfill` | 5 |  | 32 | Implemented |
 | Fill | `ec.generate.fill` | 7 | GPU | 32 | Implemented |
 | Fractal | `ec.generate.fractal` | 21 |  | 32 | Implemented |
@@ -285,7 +285,7 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 | Basic 3D | `ec.obsolete.basic3d` | 5 |  | 32 | Implemented |
 | Basic Text | `ec.obsolete.basictext` | 11 |  | 32 | Implemented |
 | Color Key | `ec.key.colorkey` | 4 | GPU | 32 | Implemented |
-| Gaussian Blur (Legacy) | `ec.obsolete.gaussianlegacy` | 2 |  | 32 | Implemented |
+| Gaussian Blur (Legacy) | `ec.obsolete.gaussianlegacy` | 2 | GPU | 32 | Implemented |
 | Lightning | `ec.obsolete.lightning` | 25 |  | 32 | Implemented |
 | Luma Key | `ec.key.luma` | 5 | GPU | 32 | Implemented |
 | Path Text | `ec.obsolete.pathtext` | 32 |  | 32 | Implemented |
@@ -304,8 +304,8 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 |---|---|---:|:-:|:-:|---|
 | 3D Camera Tracker | `ec.perspective.cameratracker` | 12 |  | 32 | Implemented |
 | 3D Glasses | `ec.perspective.3dglasses` | 8 |  | 32 | Implemented |
-| Bevel Alpha | `ec.perspective.bevelalpha` | 4 |  | 32 | Implemented |
-| Bevel Edges | `ec.perspective.beveledges` | 4 |  | 32 | Implemented |
+| Bevel Alpha | `ec.perspective.bevelalpha` | 4 | GPU | 32 | Implemented |
+| Bevel Edges | `ec.perspective.beveledges` | 4 | GPU | 32 | Implemented |
 | CC Cylinder | `ec.perspective.cccylinder` | 12 |  | 32 | Implemented |
 | CC Environment | `ec.perspective.ccenvironment` | 4 |  | 32 | Implemented |
 | CC Sphere | `ec.perspective.ccsphere` | 14 |  | 32 | Implemented |
@@ -403,7 +403,7 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 | CC WarpoMatic | `ec.transition.ccwarpomatic` | 8 |  | 32 | Implemented |
 | Card Wipe | `ec.transition.cardwipe` | 44 |  | 32 | Implemented |
 | Gradient Wipe | `ec.transition.gradientwipe` | 5 | GPU | 32 | Implemented |
-| Iris Wipe | `ec.transition.iriswipe` | 7 |  | 32 | Implemented |
+| Iris Wipe | `ec.transition.iriswipe` | 7 | GPU | 32 | Implemented |
 | Linear Wipe | `ec.transition.linearwipe` | 3 | GPU | 32 | Implemented |
 | Radial Wipe | `ec.transition.radialwipe` | 5 | GPU | 32 | Implemented |
 | Venetian Blinds | `ec.transition.venetian` | 4 | GPU | 32 | Implemented |
