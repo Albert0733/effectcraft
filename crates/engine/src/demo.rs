@@ -146,7 +146,15 @@ fn card(p: &mut Project, comp: &Comp, folder: ItemId, name: &str, a: &str, b: &s
         &mut l,
         "ec.generate.grid",
         [w, h],
-        &[("width", Value::Scalar(w)), ("height", Value::Scalar(h)), ("border", Value::Scalar(10.0)), ("opacity", Value::Scalar(35.0))],
+        &[
+            ("sizeFrom", Value::Enum(2)),
+            ("width", Value::Scalar(w)),
+            ("height", Value::Scalar(h)),
+            ("border", Value::Scalar(10.0)),
+            ("opacity", Value::Scalar(35.0)),
+            // Normal: the grid over the gradient.
+            ("blendingMode", Value::Enum(1)),
+        ],
     );
     l.switches.three_d = true;
     set(&mut l, "transform/position", Value::Vec3(pos));
@@ -174,6 +182,7 @@ fn showcase_3d(p: &mut Project, solids: ItemId) -> Comp {
             ("border", Value::Scalar(3.0)),
             ("color", Value::Color(hex("#6F7BB8"))),
             ("opacity", Value::Scalar(45.0)),
+            ("blendingMode", Value::Enum(1)),
         ],
     );
     floor.switches.three_d = true;

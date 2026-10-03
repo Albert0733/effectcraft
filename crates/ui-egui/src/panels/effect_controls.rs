@@ -698,8 +698,9 @@ fn levels_ids(effect: &str, ch: usize) -> [String; 5] {
     if effect == "ec.color.levels" {
         return ["inBlack", "inWhite", "gamma", "outBlack", "outWhite"].map(String::from);
     }
+    // Levels (Individual Controls) nests each channel's controls in its twirl-down group.
     let pre = fw::LEVELS_CHANNELS[ch.min(4)].0;
-    ["InBlack", "InWhite", "Gamma", "OutBlack", "OutWhite"].map(|s| format!("{pre}{s}"))
+    ["InBlack", "InWhite", "Gamma", "OutBlack", "OutWhite"].map(|s| format!("{pre}/{pre}{s}"))
 }
 
 /// Levels: (channel popup,) histogram, input black/gamma/white triangles, output bar with
@@ -741,10 +742,10 @@ fn levels_editor(
     }
     app.auto.add(&format!("effectControls.effect.{euid}.levels.histogram"), hr, "Histogram");
     let ids = levels_ids(effect, ch);
-    let val = |id: &str| g.get(id).map(|pr| ectx.value(layer, pr).as_f64()).unwrap_or(0.0);
+    let val = |id: &str| g.prop(id).map(|pr| ectx.value(layer, pr).as_f64()).unwrap_or(0.0);
     let (ib, iw, gm, ob, ow) = (val(&ids[0]), val(&ids[1]), val(&ids[2]), val(&ids[3]), val(&ids[4]));
     let mut set = |ui: &egui::Ui, id: &str, v: f64, started: bool| {
-        if let Some(pr) = g.get(id) {
+        if let Some(pr) = g.prop(id) {
             let key = gesture_key(ui, egui::Id::new(("ec-lv", euid, id)), started);
             actions.push(("prop.set".into(), json!({"layer": layer.id.0, "prop": pr.uid, "value": v, "merge": key})));
         }
@@ -824,7 +825,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let comp_name = app.session.project.item(cid).map(|i| i.name.clone()).unwrap_or_default();
     let snap_project = app.session.project.clone();
     let snap_expr = app.session.expr.clone();
-    let ectx = EvalCtx { project: &snap_project, comp_id: cid, comp: &comp, time: app.session.time(), expr: snap_expr.as_deref() };
+    let ectx = EvalCtx { project: &snap_project, comp_id: cid, comp: &comp, time: app.session.time(), expr: snap_expr.as_deref(), footage: None };
     let hdr = Rect::from_min_size(rect.min, vec2(rect.width(), 24.0));
     p.text(pos2(hdr.min.x + 10.0, hdr.center().y), Align2::LEFT_CENTER, format!("{} • {}", comp_name, layer.name), Tokens::ui(11.5), t.text_dim);
     p.line_segment([hdr.left_bottom(), hdr.right_bottom()], Stroke::new(1.0, t.separator));

@@ -1,0 +1,538 @@
+//! Essential Graphics: a composition's exposed controls (the Essential Graphics panel) and the
+//! "Essential Properties" of precomp layers that nest it (per-instance override values, After
+//! Effects' Master Properties).
+//!
+//! - A comp's [`EssentialGraphics`] lists controls: properties of its layers (shown as text,
+//!   colour, slider, checkbox, point, angle or dropdown controls), Media Replacement slots for
+//!   footage layers, comments and groups.
+//! - Every layer that nests such a comp gets an **Essential Properties** group (match id
+//!   `essential`, [`GroupKind::Essential`]) mirroring the controls, one child per control with
+//!   match id `eg<control id>`. Changing a child marks it *overridden* for that instance only;
+//!   [`sync_project`] keeps the groups in step with the controls (and refreshes the values of
+//!   controls that are not overridden), [`with_overrides`] builds the project an instance renders.
+
+use serde::{Deserialize, Serialize};
+
+use crate::props::{GroupKind, Node, ParamUi, PropGroup, Property, Uid};
+use crate::{ItemId, ItemKind, Layer, LayerId, LayerSource, Project, Value};
+
+/// Match id of the Essential Properties group on precomp layers.
+pub const GROUP: &str = "essential";
+
+/// A composition's Essential Graphics definition.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct EssentialGraphics {
+    /// Template name (Essential Graphics panel ▸ name field; the exported template's title).
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub controls: Vec<EgControl>,
+}
+
+/// One entry of the Essential Graphics panel.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct EgControl {
+    pub id: u64,
+    /// Display name (renamable; defaults to the property's name).
+    pub name: String,
+    pub kind: EgKind,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum EgKind {
+    /// A property of a layer of the comp.
+    Property { layer: LayerId, prop: Uid },
+    /// Media Replacement: the footage of a footage layer can be swapped per instance.
+    Media { layer: LayerId },
+    /// A text note shown in the panel.
+    Comment { text: String },
+    /// A named, collapsible group of controls.
+    Group {
+        #[serde(default)]
+        children: Vec<EgControl>,
+    },
+}
+
+/// The kind of control a property becomes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ControlType {
+    Text,
+    Color,
+    Slider,
+    Checkbox,
+    Point,
+    Angle,
+    Dropdown,
+    Media,
+}
+
+impl ControlType {
+    pub fn label(self) -> &'static str {
+        match self {
+            ControlType::Text => "Text",
+            ControlType::Color => "Color",
+            ControlType::Slider => "Slider",
+            ControlType::Checkbox => "Checkbox",
+            ControlType::Point => "Point",
+            ControlType::Angle => "Angle",
+            ControlType::Dropdown => "Dropdown",
+            ControlType::Media => "Media",
+        }
+    }
+}
+
+/// The control a property is shown as, `None` when Essential Graphics can't expose it (paths,
+/// gradients, layer pickers, hidden data).
+pub fn control_type(p: &Property) -> Option<ControlType> {
+    if matches!(p.ui, ParamUi::Hidden) {
+        return None;
+    }
+    Some(match (&p.value, &p.ui) {
+        (Value::Text(_) | Value::Str(_), _) => ControlType::Text,
+        (Value::Color(_), _) => ControlType::Color,
+        (Value::Bool(_), _) | (_, ParamUi::Checkbox) => ControlType::Checkbox,
+        (Value::Enum(_), _) | (_, ParamUi::Popup { .. }) => ControlType::Dropdown,
+        (_, ParamUi::Angle) => ControlType::Angle,
+        (Value::Vec2(_) | Value::Vec3(_), _) => ControlType::Point,
+        (Value::Scalar(_), _) => ControlType::Slider,
+        _ => return None,
+    })
+}
+
+impl EssentialGraphics {
+    /// Every control, depth first (groups before their children).
+    pub fn flat(&self) -> Vec<&EgControl> {
+        fn go<'a>(v: &'a [EgControl], out: &mut Vec<&'a EgControl>) {
+            for c in v {
+                out.push(c);
+                if let EgKind::Group { children } = &c.kind {
+                    go(children, out);
+                }
+            }
+        }
+        let mut out = vec![];
+        go(&self.controls, &mut out);
+        out
+    }
+    pub fn find(&self, id: u64) -> Option<&EgControl> {
+        self.flat().into_iter().find(|c| c.id == id)
+    }
+    pub fn find_mut(&mut self, id: u64) -> Option<&mut EgControl> {
+        fn go(v: &mut [EgControl], id: u64) -> Option<&mut EgControl> {
+            for c in v {
+                if c.id == id {
+                    return Some(c);
+                }
+                if let EgKind::Group { children } = &mut c.kind
+                    && let Some(x) = go(children, id)
+                {
+                    return Some(x);
+                }
+            }
+            None
+        }
+        go(&mut self.controls, id)
+    }
+    /// Remove a control (anywhere) and return it.
+    pub fn remove(&mut self, id: u64) -> Option<EgControl> {
+        fn go(v: &mut Vec<EgControl>, id: u64) -> Option<EgControl> {
+            if let Some(i) = v.iter().position(|c| c.id == id) {
+                return Some(v.remove(i));
+            }
+            v.iter_mut().find_map(|c| if let EgKind::Group { children } = &mut c.kind { go(children, id) } else { None })
+        }
+        go(&mut self.controls, id)
+    }
+    /// The list a control is inserted into: a group's children or the top level.
+    pub fn list_mut(&mut self, group: Option<u64>) -> Option<&mut Vec<EgControl>> {
+        match group {
+            None => Some(&mut self.controls),
+            Some(g) => match &mut self.find_mut(g)?.kind {
+                EgKind::Group { children } => Some(children),
+                _ => None,
+            },
+        }
+    }
+    /// The control exposing property `prop` of `layer`, if any.
+    pub fn control_for(&self, layer: LayerId, prop: Uid) -> Option<&EgControl> {
+        self.flat().into_iter().find(|c| matches!(c.kind, EgKind::Property { layer: l, prop: p } if l == layer && p == prop))
+    }
+    /// Controls an instance can override (properties and media; not comments or groups).
+    pub fn has_instance_controls(&self) -> bool {
+        self.flat().iter().any(|c| matches!(c.kind, EgKind::Property { .. } | EgKind::Media { .. }))
+    }
+}
+
+/// Match id of an instance property / group for a control.
+pub fn match_id(control: u64) -> String {
+    format!("eg{control}")
+}
+
+/// Control id of an Essential Properties child (`eg42` → 42).
+pub fn control_of(match_id: &str) -> Option<u64> {
+    match_id.strip_prefix("eg")?.parse().ok()
+}
+
+/// The Essential Properties group of a layer.
+pub fn group(layer: &Layer) -> Option<&PropGroup> {
+    layer.props.sub(GROUP)
+}
+
+/// Uids of the overridden master properties of a layer.
+pub fn overridden(layer: &Layer) -> Vec<Uid> {
+    match group(layer).map(|g| &g.kind) {
+        Some(GroupKind::Essential { overridden }) => overridden.clone(),
+        _ => vec![],
+    }
+}
+
+/// The source property a control exposes, in `project`.
+pub fn source_prop<'a>(project: &'a Project, comp: ItemId, c: &EgControl) -> Option<(&'a Layer, &'a Property)> {
+    let EgKind::Property { layer, prop } = c.kind else { return None };
+    let l = project.comp(comp)?.layer(layer)?;
+    Some((l, l.props.find(prop)?))
+}
+
+/// The footage item a media control shows by default (the layer's own source).
+pub fn source_media(project: &Project, comp: ItemId, c: &EgControl) -> Option<ItemId> {
+    let EgKind::Media { layer } = c.kind else { return None };
+    match project.comp(comp)?.layer(layer)?.source {
+        LayerSource::Footage { item } => Some(item),
+        _ => None,
+    }
+}
+
+/// Build the Essential Properties group a layer nesting `comp` should have, reusing uids and
+/// override values from `old`. Uids for new nodes come from `next`.
+fn build_group(project: &Project, comp: ItemId, eg: &EssentialGraphics, old: Option<&PropGroup>, next: &mut u64) -> PropGroup {
+    let over = match old.map(|g| &g.kind) {
+        Some(GroupKind::Essential { overridden }) => overridden.clone(),
+        _ => vec![],
+    };
+    let mut alloc = || {
+        let v = *next;
+        *next += 1;
+        v
+    };
+    fn find_old<'a>(old: Option<&'a PropGroup>, m: &str) -> Option<&'a Node> {
+        let g = old?;
+        g.children.iter().find(|c| c.match_id() == m).or_else(|| g.groups().find_map(|sub| find_old(Some(sub), m)))
+    }
+    fn build(
+        project: &Project,
+        comp: ItemId,
+        list: &[EgControl],
+        old: Option<&PropGroup>,
+        over: &[Uid],
+        alloc: &mut dyn FnMut() -> u64,
+        keep: &mut Vec<Uid>,
+    ) -> Vec<Node> {
+        let mut out = vec![];
+        for c in list {
+            let m = match_id(c.id);
+            let prev = find_old(old, &m);
+            match &c.kind {
+                EgKind::Comment { .. } => {}
+                EgKind::Group { children } => {
+                    let uid = prev.map(Node::uid).unwrap_or_else(&mut *alloc);
+                    let mut g = PropGroup::new(uid, &m, &c.name);
+                    g.children = build(project, comp, children, old, over, alloc, keep);
+                    out.push(Node::Group(g));
+                }
+                EgKind::Property { .. } => {
+                    let Some((_, src)) = source_prop(project, comp, c) else { continue };
+                    let prev = prev.and_then(Node::as_prop);
+                    let uid = prev.map(|p| p.uid).unwrap_or_else(&mut *alloc);
+                    let mut p = Property { uid, match_id: m, name: c.name.clone(), keys: vec![], expr: None, ..src.clone() };
+                    // Instance properties follow the source's look but are always editable.
+                    p.static_only = false;
+                    if let Some(prev) = prev.filter(|pp| over.contains(&pp.uid)) {
+                        p.value = prev.value.clone();
+                        p.keys = prev.keys.clone();
+                        p.expr = prev.expr.clone();
+                        keep.push(uid);
+                    } else {
+                        p.value = src.value_at(effectcraft_time::Tick::ZERO);
+                    }
+                    out.push(Node::Prop(p));
+                }
+                EgKind::Media { .. } => {
+                    let Some(item) = source_media(project, comp, c) else { continue };
+                    let prev = prev.and_then(Node::as_prop);
+                    let uid = prev.map(|p| p.uid).unwrap_or_else(&mut *alloc);
+                    let mut p = Property::new(uid, &m, &c.name, Value::Scalar(item.0 as f64)).with_ui(ParamUi::Hidden);
+                    p.static_only = true;
+                    if let Some(prev) = prev.filter(|pp| over.contains(&pp.uid)) {
+                        p.value = prev.value.clone();
+                        keep.push(uid);
+                    }
+                    out.push(Node::Prop(p));
+                }
+            }
+        }
+        out
+    }
+    let uid = old.map(|g| g.uid).unwrap_or_else(&mut alloc);
+    let mut keep = vec![];
+    let children = build(project, comp, &eg.controls, old, &over, &mut alloc, &mut keep);
+    PropGroup { uid, match_id: GROUP.into(), name: "Essential Properties".into(), kind: GroupKind::Essential { overridden: keep }, enabled: true, children }
+}
+
+/// Master properties the user changed in this edit (`before` → `after`) become overridden.
+fn mark_overrides(before: &Project, after: &mut Project) {
+    let ids: Vec<ItemId> = after.comps().map(|(i, _)| *i).collect();
+    for cid in ids {
+        let Some(comp) = after.comp(cid) else { continue };
+        let Some(old_comp) = before.comp(cid) else { continue };
+        let mut changes: Vec<(LayerId, Vec<Uid>)> = vec![];
+        for l in &comp.layers {
+            let Some(g) = group(l) else { continue };
+            let Some(ol) = old_comp.layer(l.id) else { continue };
+            let Some(og) = group(ol) else { continue };
+            // Properties overridden before this edit stay as the edit left them (Revert and
+            // Push to Comp clear overrides by editing them).
+            let mut over = overridden(l);
+            over.extend(overridden(ol));
+            let mut add = vec![];
+            g.walk("", &mut |_, p| {
+                if over.contains(&p.uid) {
+                    return;
+                }
+                if let Some(op) = og.find(p.uid)
+                    && (op.value != p.value || op.keys != p.keys || op.expr != p.expr)
+                {
+                    add.push(p.uid);
+                }
+            });
+            if !add.is_empty() {
+                changes.push((l.id, add));
+            }
+        }
+        if changes.is_empty() {
+            continue;
+        }
+        let Some(c) = after.comp_mut(cid) else { continue };
+        for (lid, add) in changes {
+            if let Some(g) = c.layer_mut(lid).and_then(|l| l.props.sub_mut(GROUP))
+                && let GroupKind::Essential { overridden } = &mut g.kind
+            {
+                overridden.extend(add);
+            }
+        }
+    }
+}
+
+/// After an edit: mark changed master properties as overridden, then add, update or remove the
+/// Essential Properties groups of every precomp layer so they match their comp's controls.
+pub fn sync_project(before: &Project, after: &mut Project) {
+    mark_overrides(before, after);
+    let ids: Vec<ItemId> = after.comps().map(|(i, _)| *i).collect();
+    let mut next = after.next_id;
+    for cid in ids {
+        let Some(comp) = after.comp(cid) else { continue };
+        let mut updates: Vec<(usize, Option<PropGroup>)> = vec![];
+        for (i, l) in comp.layers.iter().enumerate() {
+            let want = match l.source {
+                LayerSource::Comp { item } => after.comp(item).and_then(|c| c.essential.as_ref()).filter(|e| e.has_instance_controls()).map(|e| (item, e)),
+                _ => None,
+            };
+            let old = group(l);
+            match want {
+                Some((item, eg)) => {
+                    let g = build_group(after, item, eg, old, &mut next);
+                    if old != Some(&g) {
+                        updates.push((i, Some(g)));
+                    }
+                }
+                None if old.is_some() => updates.push((i, None)),
+                None => {}
+            }
+        }
+        if updates.is_empty() {
+            continue;
+        }
+        let Some(c) = after.comp_mut(cid) else { continue };
+        for (i, g) in updates {
+            let l = &mut c.layers[i];
+            let pos = l.props.children.iter().position(|n| n.match_id() == GROUP);
+            match (pos, g) {
+                (Some(p), Some(g)) => l.props.children[p] = Node::Group(g),
+                (None, Some(g)) => l.props.children.insert(0, Node::Group(g)),
+                (Some(p), None) => {
+                    l.props.children.remove(p);
+                }
+                (None, None) => {}
+            }
+        }
+    }
+    after.next_id = after.next_id.max(next);
+}
+
+/// One instance override: the control and the value it takes in this instance.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Override {
+    pub control: u64,
+    pub value: Value,
+}
+
+/// The project as an instance of `comp` renders it: each overridden control's source property
+/// set to the instance value (keyframes dropped; its expression, if any, still applies) and
+/// replaced media swapped in. `None` when nothing applies.
+pub fn with_overrides(project: &Project, comp: ItemId, overrides: &[Override]) -> Option<Project> {
+    let eg = project.comp(comp)?.essential.clone()?;
+    let mut p = project.clone();
+    let c = p.comp_mut(comp)?;
+    let mut any = false;
+    for o in overrides {
+        let Some(ctl) = eg.find(o.control) else { continue };
+        match ctl.kind {
+            EgKind::Property { layer, prop } => {
+                if let Some(pr) = c.layer_mut(layer).and_then(|l| l.props.find_mut(prop)) {
+                    pr.keys.clear();
+                    pr.value = o.value.clone();
+                    any = true;
+                }
+            }
+            EgKind::Media { layer } => {
+                let item = ItemId(o.value.as_f64().max(0.0) as u64);
+                // Replacement media must be footage.
+                if !matches!(project.item(item).map(|i| &i.kind), Some(ItemKind::Footage(_))) {
+                    continue;
+                }
+                if let Some(l) = c.layer_mut(layer) {
+                    l.source = LayerSource::Footage { item };
+                    any = true;
+                }
+            }
+            _ => {}
+        }
+    }
+    any.then_some(p)
+}
+
+// ------------------------------------------------------------------------------ id remapping
+
+/// Shift every id (items, layers, property uids, Essential Graphics controls) of `p` by
+/// `offset`, keeping all references consistent: used when merging a template project into
+/// another project.
+pub fn offset_ids(p: &mut Project, offset: u64) {
+    let items = std::mem::take(&mut p.items);
+    for (_, mut it) in items {
+        it.id = ItemId(it.id.0 + offset);
+        it.parent = it.parent.map(|f| ItemId(f.0 + offset));
+        if let ItemKind::Comp(c) = &mut it.kind {
+            let c = std::sync::Arc::make_mut(c);
+            for l in &mut c.layers {
+                offset_layer(l, offset);
+            }
+            if let Some(eg) = &mut c.essential {
+                fn go(v: &mut [EgControl], o: u64) {
+                    for c in v {
+                        c.id += o;
+                        match &mut c.kind {
+                            EgKind::Property { layer, prop } => {
+                                *layer = LayerId(layer.0 + o);
+                                *prop += o;
+                            }
+                            EgKind::Media { layer } => *layer = LayerId(layer.0 + o),
+                            EgKind::Group { children } => go(children, o),
+                            EgKind::Comment { .. } => {}
+                        }
+                    }
+                }
+                go(&mut eg.controls, offset);
+            }
+        }
+        p.items.insert(it.id, it);
+    }
+    p.render_queue.clear();
+    p.next_id += offset;
+}
+
+fn offset_layer(l: &mut Layer, o: u64) {
+    l.id = LayerId(l.id.0 + o);
+    l.parent = l.parent.map(|x| LayerId(x.0 + o));
+    if let Some(tm) = &mut l.track_matte {
+        tm.layer = LayerId(tm.layer.0 + o);
+    }
+    match &mut l.source {
+        LayerSource::Footage { item } | LayerSource::Comp { item } | LayerSource::Solid { item } | LayerSource::Model { item } => *item = ItemId(item.0 + o),
+        _ => {}
+    }
+    fn group(g: &mut PropGroup, o: u64, essential_parent: bool) {
+        g.uid += o;
+        if let GroupKind::Essential { overridden } = &mut g.kind {
+            for u in overridden.iter_mut() {
+                *u += o;
+            }
+        }
+        let is_essential = matches!(g.kind, GroupKind::Essential { .. }) || essential_parent;
+        for c in &mut g.children {
+            match c {
+                Node::Prop(p) => {
+                    p.uid += o;
+                    let fix = |v: &mut Value| {
+                        if let Value::Layer(Some(id)) = v {
+                            *id += o;
+                        }
+                    };
+                    fix(&mut p.value);
+                    for k in &mut p.keys {
+                        fix(&mut k.value);
+                    }
+                    if is_essential && control_of(&p.match_id).is_some() {
+                        p.match_id = match_id(control_of(&p.match_id).unwrap_or(0) + o);
+                        // Media replacement values are item ids.
+                        if matches!(p.ui, ParamUi::Hidden)
+                            && let Value::Scalar(x) = &mut p.value
+                        {
+                            *x += o as f64;
+                        }
+                    }
+                }
+                Node::Group(sub) => {
+                    if is_essential && let Some(id) = control_of(&sub.match_id) {
+                        sub.match_id = match_id(id + o);
+                    }
+                    group(sub, o, is_essential);
+                }
+            }
+        }
+    }
+    group(&mut l.props, o, false);
+}
+
+/// The items `comp` needs (itself, nested comps, footage, solids), transitively.
+pub fn dependencies(project: &Project, comp: ItemId) -> Vec<ItemId> {
+    let mut out = vec![];
+    let mut stack = vec![comp];
+    while let Some(id) = stack.pop() {
+        if out.contains(&id) {
+            continue;
+        }
+        let Some(it) = project.item(id) else { continue };
+        out.push(id);
+        if let ItemKind::Comp(c) = &it.kind {
+            for l in &c.layers {
+                if let Some(i) = l.source.item() {
+                    stack.push(i);
+                }
+                // Media replacement candidates referenced by instances inside.
+                if let Some(g) = group(l) {
+                    g.walk("", &mut |_, p| {
+                        if matches!(p.ui, ParamUi::Hidden)
+                            && control_of(&p.match_id).is_some()
+                            && let Value::Scalar(x) = p.value
+                        {
+                            stack.push(ItemId(x as u64));
+                        }
+                    });
+                }
+            }
+        }
+    }
+    out.sort();
+    out
+}

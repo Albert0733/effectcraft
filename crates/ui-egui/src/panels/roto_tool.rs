@@ -68,7 +68,7 @@ pub fn draw_overlay(
     let ov = match cached {
         Some(c) if c.key == key => Some(c),
         _ => {
-            let ectx = EvalCtx { project: &app.session.project, comp_id: cid, comp, time, expr: app.session.expr.as_deref() };
+            let ectx = EvalCtx { project: &app.session.project, comp_id: cid, comp, time, expr: app.session.expr.as_deref(), footage: None };
             let mut r = Renderer::new(&app.session.project, &*app.session.footage, RenderOpts { scale, ..Default::default() });
             r.expr = app.session.expr.as_deref();
             r.cache = Some(&app.session.layer_cache);
@@ -87,8 +87,8 @@ pub fn draw_overlay(
             let bc = c32(o.boundary_color, 255);
             let oc = c32(o.overlay_color, (o.overlay_opacity / 100.0 * 255.0).clamp(0.0, 255.0) as u8);
             // View Search Region: the band around the boundary (yellow).
-            let search = roto_group(layer).filter(|g| g.prop("rotoBrushMatte/viewSearchRegion").is_some_and(|p| p.value.as_bool())).map(|g| {
-                let r = g.prop("rotoBrushMatte/searchRadius").map(|p| p.value.as_f64()).unwrap_or(15.0) * scale;
+            let search = roto_group(layer).filter(|g| g.prop("rotoBrushPropagation/viewSearchRegion").is_some_and(|p| p.value.as_bool())).map(|g| {
+                let r = g.prop("rotoBrushPropagation/searchRadius").map(|p| p.value.as_f64()).unwrap_or(15.0) * scale;
                 let bin: Vec<u8> = alpha.iter().map(|a| (*a >= 0.5) as u8).collect();
                 let sd = effectcraft_engine::track::roto::matting::signed_distance(&bin, w, h);
                 (sd, r as f32)

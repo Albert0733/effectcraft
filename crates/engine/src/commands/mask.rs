@@ -156,7 +156,7 @@ fn new_mask(s: &mut Session, p: &Value) -> Result<Value> {
     let mut outs = pts(p.get("outTangents"));
     ins.resize(n, [0.0; 2]);
     outs.resize(n, [0.0; 2]);
-    let path = ShapePath { vertices: v, in_tangents: ins, out_tangents: outs, closed: b_p(p, "closed").unwrap_or(false) };
+    let path = ShapePath { vertices: v, in_tangents: ins, out_tangents: outs, closed: b_p(p, "closed").unwrap_or(false), feather: Vec::new() };
     let mode = str_p(p, "mode").and_then(MaskMode::from_name).unwrap_or(MaskMode::Add);
     let cycle = s.prefs.appearance.cycle_mask_colors;
     let uid = s.edit("New Mask", None, |proj, st| {
@@ -185,6 +185,7 @@ fn add_vertex(s: &mut Session, p: &Value) -> Result<Value> {
         sp.vertices.insert(i, point);
         sp.in_tangents.insert(i, tin);
         sp.out_tangents.insert(i, tout);
+        sp.feather_after_insert(i, None);
         Ok((i, Some(CountOp::Insert(i))))
     })?;
     s.state.selected_vertices = vec![VertexRef { layer: lid, mask: uid, index: i }];
@@ -322,6 +323,7 @@ fn delete_vertices(s: &mut Session, p: &Value) -> Result<Value> {
                 sp.vertices.remove(i);
                 sp.in_tangents.remove(i);
                 sp.out_tangents.remove(i);
+                sp.feather_after_remove(i);
             }
         }
         if sp.vertices.len() < 3 {
@@ -405,7 +407,197 @@ pub(crate) fn split_segment(sp: &mut ShapePath, seg: usize, t: f64) -> Option<us
     sp.vertices.insert(at, m);
     sp.in_tangents.insert(at, [d[0] - m[0], d[1] - m[1]]);
     sp.out_tangents.insert(at, [e[0] - m[0], e[1] - m[1]]);
+    sp.feather_after_insert(at, Some(t));
     Some(at)
+}
+
+/// Nearest (segment, t, distance) of a path to a point (layer space), sampled per segment.
+pub(crate) fn nearest_on_path(sp: &ShapePath, q: [f64; 2]) -> Option<(usize, f64, f64)> {
+    let n = sp.vertices.len();
+    let mut best: Option<(usize, f64, f64)> = None;
+    for seg in 0..sp.segment_count() {
+        let j = (seg + 1) % n;
+        let p0 = sp.vertices[seg];
+        let p3 = sp.vertices[j];
+        let o = sp.out_tangents.get(seg).copied().unwrap_or([0.0; 2]);
+        let i = sp.in_tangents.get(j).copied().unwrap_or([0.0; 2]);
+        let (p1, p2) = ([p0[0] + o[0], p0[1] + o[1]], [p3[0] + i[0], p3[1] + i[1]]);
+        let at = |t: f64| {
+            let u = 1.0 - t;
+            let (a, b, c, d) = (u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t);
+            [a * p0[0] + b * p1[0] + c * p2[0] + d * p3[0], a * p0[1] + b * p1[1] + c * p2[1] + d * p3[1]]
+        };
+        let dist = |t: f64| {
+            let p = at(t);
+            (p[0] - q[0]).hypot(p[1] - q[1])
+        };
+        let (mut bt, mut bd) = (0.0, f64::INFINITY);
+        for k in 0..=64 {
+            let t = k as f64 / 64.0;
+            let d = dist(t);
+            if d < bd {
+                (bt, bd) = (t, d);
+            }
+        }
+        // Refine by bisection-style narrowing.
+        let mut step = 1.0 / 64.0;
+        for _ in 0..20 {
+            step *= 0.5;
+            for t in [bt - step, bt + step] {
+                let t = t.clamp(0.0, 1.0);
+                let d = dist(t);
+                if d < bd {
+                    (bt, bd) = (t, d);
+                }
+            }
+        }
+        if best.is_none_or(|b| bd < b.2) {
+            best = Some((seg, bt, bd));
+        }
+    }
+    best
+}
+
+/// Whether a layer-space point is inside a closed path.
+fn inside_path(sp: &ShapePath, q: [f64; 2]) -> bool {
+    sp.closed && {
+        let cov = effectcraft_path::fill_coverage(
+            &[effectcraft_path::to_kurbo(sp)],
+            &effectcraft_geom::Mat3::translate(effectcraft_geom::vec2(-q[0] + 0.5, -q[1] + 0.5)),
+            1,
+            1,
+            effectcraft_path::FillRule::NonZero,
+        );
+        cov.data[0] >= 0.5
+    }
+}
+
+/// Point of segment `seg` at parameter `t`.
+fn point_on(sp: &ShapePath, seg: usize, t: f64) -> Option<[f64; 2]> {
+    let n = sp.vertices.len();
+    if seg >= sp.segment_count() {
+        return None;
+    }
+    let j = (seg + 1) % n;
+    let (p0, p3) = (sp.vertices[seg], sp.vertices[j]);
+    let o = sp.out_tangents.get(seg).copied().unwrap_or([0.0; 2]);
+    let i = sp.in_tangents.get(j).copied().unwrap_or([0.0; 2]);
+    let (p1, p2) = ([p0[0] + o[0], p0[1] + o[1]], [p3[0] + i[0], p3[1] + i[1]]);
+    let u = 1.0 - t;
+    let (a, b, c, d) = (u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t);
+    Some([a * p0[0] + b * p1[0] + c * p2[0] + d * p3[0], a * p0[1] + b * p1[1] + c * p2[1] + d * p3[1]])
+}
+
+fn feather_index(p: &Value, sp: &ShapePath, c: &str) -> Result<usize> {
+    let i = p.get("index").and_then(Value::as_u64).ok_or_else(|| bad(c, "missing `index` (feather point, 0-based)"))? as usize;
+    if i >= sp.feather.len() {
+        return Err(bad(c, format!("no feather point {i} (the mask has {})", sp.feather.len())));
+    }
+    Ok(i)
+}
+
+/// Mask Feather tool: add a feather point on the path, by `segment`/`t` or at the path position
+/// nearest `point` (layer space). Without `radius`, a `point` off the path sets it from its
+/// distance (outside the mask = outer feather, inside = inner).
+fn feather_add(s: &mut Session, p: &Value) -> Result<Value> {
+    let c = "mask.featherPoint.add";
+    let seg = p.get("segment").and_then(Value::as_u64).map(|v| v as usize);
+    let t = super::f_p(p, "t").map(|v| v.clamp(0.0, 1.0));
+    let q = pt(p.get("point"));
+    let radius = super::f_p(p, "radius");
+    let tension = super::f_p(p, "tension").unwrap_or(0.0).clamp(0.0, 100.0) / 100.0;
+    let (uid, i) = edit_path(s, p, c, |sp| {
+        let (seg, t, r) = match (seg, q) {
+            (Some(seg), _) => {
+                if seg >= sp.segment_count() {
+                    return Err(bad(c, format!("no segment {seg}")));
+                }
+                (seg, t.unwrap_or(0.5), radius.unwrap_or(0.0))
+            }
+            (None, Some(q)) => {
+                let (seg, t, d) = nearest_on_path(sp, q).ok_or_else(|| bad(c, "the path has no segments"))?;
+                (seg, t, radius.unwrap_or(if inside_path(sp, q) { -d } else { d }))
+            }
+            (None, None) => return Err(bad(c, "give `segment` (and `t`) or `point`")),
+        };
+        sp.feather.push(effectcraft_keyframe::FeatherPoint { segment: seg, t, radius: r, tension });
+        Ok(sp.feather.len() - 1)
+    })?;
+    Ok(json!({"mask": uid, "index": i}))
+}
+
+/// Drag a feather point: move it along the path (`segment`/`t`, or nearest `point`) and/or set
+/// its `radius` (signed: negative = inner) and `tension` (%).
+fn feather_set(s: &mut Session, p: &Value) -> Result<Value> {
+    let c = "mask.featherPoint.set";
+    let seg = p.get("segment").and_then(Value::as_u64).map(|v| v as usize);
+    let t = super::f_p(p, "t").map(|v| v.clamp(0.0, 1.0));
+    let q = pt(p.get("point"));
+    let radius = super::f_p(p, "radius");
+    let tension = super::f_p(p, "tension").map(|v| v.clamp(0.0, 100.0) / 100.0);
+    let toward = pt(p.get("toward"));
+    let (_, out) = edit_path(s, p, c, |sp| {
+        let i = feather_index(p, sp, c)?;
+        if let Some(q) = q {
+            let (sg, tt, _) = nearest_on_path(sp, q).ok_or_else(|| bad(c, "the path has no segments"))?;
+            sp.feather[i].segment = sg;
+            sp.feather[i].t = tt;
+        }
+        if let Some(sg) = seg {
+            if sg >= sp.segment_count() {
+                return Err(bad(c, format!("no segment {sg}")));
+            }
+            sp.feather[i].segment = sg;
+        }
+        if let Some(t) = t {
+            sp.feather[i].t = t;
+        }
+        if let Some(r) = radius {
+            sp.feather[i].radius = r;
+        }
+        // Dragging the radius handle: the distance from the point's path position to `toward`,
+        // outer outside the mask, inner inside.
+        if let Some(w) = toward {
+            let f = sp.feather[i];
+            let at = point_on(sp, f.segment, f.t).ok_or_else(|| bad(c, "the feather point is off the path"))?;
+            let d = (w[0] - at[0]).hypot(w[1] - at[1]);
+            sp.feather[i].radius = if inside_path(sp, w) { -d } else { d };
+        }
+        if let Some(k) = tension {
+            sp.feather[i].tension = k;
+        }
+        Ok(serde_json::to_value(sp.feather[i]).unwrap_or(Value::Null))
+    })?;
+    Ok(out)
+}
+
+fn feather_remove(s: &mut Session, p: &Value) -> Result<Value> {
+    let c = "mask.featherPoint.remove";
+    let all = super::b_p(p, "all").unwrap_or(false);
+    let (_, n) = edit_path(s, p, c, |sp| {
+        if all {
+            sp.feather.clear();
+        } else {
+            let i = feather_index(p, sp, c)?;
+            sp.feather.remove(i);
+        }
+        Ok(sp.feather.len())
+    })?;
+    Ok(json!({"remaining": n}))
+}
+
+fn feather_list(s: &mut Session, p: &Value) -> Result<Value> {
+    let c = "mask.featherPoint.list";
+    let (cid, lid) = layer_p(s, p, c)?;
+    let key = p.get("mask").cloned().ok_or_else(|| bad(c, "missing `mask`"))?;
+    let t = s.time();
+    let mut props = s.project.comp(cid).and_then(|cc| cc.layer(lid)).ok_or(EngineError::NoComp)?.props.clone();
+    let lt = s.project.comp(cid).and_then(|cc| cc.layer(lid)).map(|l| l.layer_time(t)).unwrap_or(t);
+    let g = path_group(&mut props, &key).ok_or_else(|| bad(c, "no such mask"))?;
+    let Some(KV::Path(sp)) = g.get("path").map(|pr| pr.value_at(lt)) else { return Err(bad(c, "mask has no path")) };
+    Ok(
+        json!({"points": sp.feather.iter().map(|f| json!({"segment": f.segment, "t": f.t, "radius": f.radius, "tension": f.tension * 100.0})).collect::<Vec<_>>()}),
+    )
 }
 
 /// Add Vertex tool: insert a vertex on segment `segment` at parameter `t` (default 0.5).
@@ -454,6 +646,26 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!("mask.deleteVertices", "Delete Mask Vertices", [], None, "{vertices?}", has_vertices, delete_vertices),
         cmd!("mask.convertVertex", "Convert Vertex", [], None, "{layer?, mask: uid (mask or shape Path item), index, smooth?}", has_comp, convert_vertex),
         cmd!("mask.insertVertex", "Add Vertex", [], None, "{layer?, mask: uid (mask or shape Path item), segment, t?: 0..1}", has_comp, insert_vertex),
+        cmd!(
+            "mask.featherPoint.add",
+            "Add Mask Feather Point",
+            [],
+            None,
+            "{layer?, mask, segment?, t?: 0..1, point?: [x,y] (layer space), radius? (px, negative = inner), tension? (%)} → {index}",
+            has_comp,
+            feather_add
+        ),
+        cmd!(
+            "mask.featherPoint.set",
+            "Move Mask Feather Point",
+            [],
+            None,
+            "{layer?, mask, index, segment?, t?, point? (slide along the path), radius?, toward?: [x,y] (radius from the drag point, layer space), tension? (%), merge?}",
+            has_comp,
+            feather_set
+        ),
+        cmd!("mask.featherPoint.remove", "Delete Mask Feather Point", [], None, "{layer?, mask, index? | all?}", has_comp, feather_remove),
+        crate::query!("mask.featherPoint.list", "Mask Feather Points", "{layer?, mask}", feather_list),
         cmd!("mask.remove", "Remove Mask", [], None, "{layer?, mask}", has_layers, |s, p| remove_masks(s, p, false)),
         cmd!("mask.removeAll", "Remove All Masks", [], None, "{layer?}", has_layers, |s, p| remove_masks(s, p, true)),
     ]

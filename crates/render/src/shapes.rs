@@ -12,7 +12,7 @@ use effectcraft_color::{BlendMode, blend_pixel};
 use effectcraft_effects::Buf;
 use effectcraft_geom::{Mat3, vec2};
 use effectcraft_keyframe::{Gradient, Value};
-use effectcraft_path::{BezPath, Cap, FillRule, Join, StrokeStyle, ops};
+use effectcraft_path::{BezPath, Cap, FillRule, Join, StrokeStyle, ops, varstroke};
 use effectcraft_project::{Layer, Node, PropGroup};
 use effectcraft_raster::{Image, Mask};
 use rayon::prelude::*;
@@ -37,6 +37,8 @@ enum Paint {
         end: [f64; 2],
         rule: FillRule,
         stroke: Option<StrokeStyle>,
+        /// Radial gradients: Highlight Length (−100…100 %) and Highlight Angle (degrees).
+        highlight: (f64, f64),
     },
 }
 
@@ -102,7 +104,35 @@ fn stroke_style(ctx: &EvalCtx, layer: &Layer, g: &PropGroup) -> StrokeStyle {
     let dash = g.sub("dashes").and_then(|d| {
         let dash = ctx.f(layer, d, "dash", 0.0);
         let gap = ctx.f(layer, d, "gap", 0.0);
-        (dash > 0.0).then(|| (vec![dash, if gap > 0.0 { gap } else { dash }], ctx.f(layer, d, "offset", 0.0)))
+        if dash <= 0.0 {
+            return None;
+        }
+        let mut pat = vec![dash, if gap > 0.0 { gap } else { dash }];
+        // Dash 2 / Gap 2, Dash 3 / Gap 3 (added with the Dashes "+" button).
+        for (dm, gm) in effectcraft_project::build::EXTRA_DASHES {
+            if d.get(dm).is_none() {
+                break;
+            }
+            let dv = ctx.f(layer, d, dm, 0.0);
+            pat.push(dv);
+            pat.push(if d.get(gm).is_some() { ctx.f(layer, d, gm, 0.0) } else { dv });
+        }
+        Some((pat, ctx.f(layer, d, "offset", 0.0)))
+    });
+    let taper = g.sub("taper").map(|t| varstroke::Taper {
+        percent: ctx.e(layer, t, "units") == 1,
+        start_len: ctx.f(layer, t, "startLength", 0.0) / if ctx.e(layer, t, "units") == 1 { 100.0 } else { 1.0 },
+        end_len: ctx.f(layer, t, "endLength", 0.0) / if ctx.e(layer, t, "units") == 1 { 100.0 } else { 1.0 },
+        start_width: ctx.f(layer, t, "startWidth", 100.0) / 100.0,
+        end_width: ctx.f(layer, t, "endWidth", 100.0) / 100.0,
+        start_ease: ctx.f(layer, t, "startEase", 0.0) / 100.0,
+        end_ease: ctx.f(layer, t, "endEase", 0.0) / 100.0,
+    });
+    let wave = g.sub("wave").map(|w| varstroke::Wave {
+        amount: ctx.f(layer, w, "amount", 0.0) / 100.0,
+        cycles: (ctx.e(layer, w, "units") == 1).then(|| ctx.f(layer, w, "cycles", 10.0)),
+        wavelength: ctx.f(layer, w, "wavelength", 20.0),
+        phase: ctx.f(layer, w, "phase", 0.0),
     });
     StrokeStyle {
         width: ctx.f(layer, g, "width", 2.0),
@@ -110,6 +140,8 @@ fn stroke_style(ctx: &EvalCtx, layer: &Layer, g: &PropGroup) -> StrokeStyle {
         join: [Join::Miter, Join::Round, Join::Bevel][ctx.e(layer, g, "join").min(2) as usize],
         miter: ctx.f(layer, g, "miter", 4.0),
         dash,
+        taper: taper.filter(|t| t.is_active()),
+        wave: wave.filter(|w| w.is_active()),
     }
 }
 
@@ -220,6 +252,7 @@ fn collect(ctx: &EvalCtx, layer: &Layer, contents: &PropGroup, arena: &mut Vec<B
                         end: ctx.v2(layer, g, "end", [100.0, 0.0]),
                         rule: rule(ctx, layer, g),
                         stroke,
+                        highlight: (ctx.f(layer, g, "highlightLength", 0.0), ctx.f(layer, g, "highlightAngle", 0.0)),
                     },
                     slots: live.clone(),
                     xf: Mat3::IDENTITY,
@@ -359,6 +392,54 @@ fn collect(ctx: &EvalCtx, layer: &Layer, contents: &PropGroup, arena: &mut Vec<B
     (draws, live)
 }
 
+/// Gradient position of a point: linear along start→end, radial by distance from the start over
+/// the radius |end − start|. A radial Highlight shifts the focal point towards
+/// `highlight_length` % of the radius at `highlight_angle` from the start→end axis (a focal
+/// two-point gradient: t is measured from the focal point to the circle along the ray).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct GradientRamp {
+    radial: bool,
+    s: [f64; 2],
+    d: [f64; 2],
+    len2: f64,
+    focal: Option<[f64; 2]>,
+}
+
+impl GradientRamp {
+    pub(crate) fn new(radial: bool, start: [f64; 2], end: [f64; 2], highlight: (f64, f64)) -> Self {
+        let d = [end[0] - start[0], end[1] - start[1]];
+        let len2 = (d[0] * d[0] + d[1] * d[1]).max(1e-9);
+        let (hl, ha) = highlight;
+        let focal = (radial && hl.abs() > 1e-6).then(|| {
+            let r = len2.sqrt();
+            let a = d[1].atan2(d[0]) + ha.to_radians();
+            let dist = r * (hl / 100.0).clamp(-0.99, 0.99);
+            [start[0] + dist * a.cos(), start[1] + dist * a.sin()]
+        });
+        GradientRamp { radial, s: start, d, len2, focal }
+    }
+
+    pub(crate) fn t(&self, x: f64, y: f64) -> f64 {
+        let (vx, vy) = (x - self.s[0], y - self.s[1]);
+        if !self.radial {
+            return (vx * self.d[0] + vy * self.d[1]) / self.len2;
+        }
+        let Some(f) = self.focal else { return ((vx * vx + vy * vy) / self.len2).sqrt() };
+        // Ray from the focal point through p meets the circle (centre s, radius r) at λ.
+        let (px, py) = (x - f[0], y - f[1]);
+        let dist = (px * px + py * py).sqrt();
+        if dist < 1e-12 {
+            return 0.0;
+        }
+        let (ux, uy) = (px / dist, py / dist);
+        let (cx, cy) = (f[0] - self.s[0], f[1] - self.s[1]);
+        let b = ux * cx + uy * cy;
+        let c = cx * cx + cy * cy - self.len2;
+        let lambda = -b + (b * b - c).max(0.0).sqrt();
+        if lambda <= 1e-12 { 1.0 } else { dist / lambda }
+    }
+}
+
 /// Pixel rectangle of the layer buffer (`x0, y0, width, height`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct PxRect {
@@ -486,16 +567,12 @@ pub fn render(ctx: &EvalCtx, layer: &Layer, contents: &PropGroup, s: f64) -> Buf
         for ((d, _, r), cov) in jobs[i..j].iter().zip(&covs) {
             match &d.paint {
                 Paint::Fill { color, .. } | Paint::Stroke { color, .. } => paint(&mut img, *r, cov, d.opacity, d.blend, |_, _| *color),
-                Paint::Gradient { g, radial, start, end, .. } => {
+                Paint::Gradient { g, radial, start, end, highlight, .. } => {
                     let to_local = (m * d.xf).inverse().unwrap_or(Mat3::IDENTITY);
-                    let (sx, sy) = (start[0], start[1]);
-                    let (dx, dy) = (end[0] - sx, end[1] - sy);
-                    let len2 = (dx * dx + dy * dy).max(1e-9);
+                    let ramp = GradientRamp::new(*radial, *start, *end, *highlight);
                     paint(&mut img, *r, cov, d.opacity, d.blend, |x, y| {
                         let p = to_local.apply(vec2(x as f64 + 0.5, y as f64 + 0.5));
-                        let (vx, vy) = (p.x - sx, p.y - sy);
-                        let t = if *radial { ((vx * vx + vy * vy) / len2).sqrt() } else { (vx * dx + vy * dy) / len2 };
-                        g.sample(t)
+                        g.sample(ramp.t(p.x, p.y))
                     });
                 }
             }

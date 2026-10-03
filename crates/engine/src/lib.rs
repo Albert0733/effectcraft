@@ -18,6 +18,7 @@ pub mod logging;
 pub mod mask_track;
 pub mod media_cache;
 pub mod menus;
+pub mod offload;
 pub mod prefs;
 pub mod psd_import;
 pub mod render_queue;
@@ -212,6 +213,13 @@ pub struct EditorState {
     /// Composition viewer display options (Show Channel, exposure, snapshot, Fast Previews).
     #[serde(default)]
     pub viewer: commands::viewer_cmds::ViewOptions,
+    /// Essential Graphics panel ▸ Primary composition (`None` = the active comp).
+    #[serde(default)]
+    pub essential_primary: Option<ItemId>,
+    /// Essential Graphics panel ▸ Solo Supported Properties (the timeline shows only properties
+    /// Essential Graphics can expose).
+    #[serde(default)]
+    pub essential_solo: bool,
 }
 
 fn one_view() -> u8 {
@@ -318,6 +326,11 @@ pub struct Session {
     pub sys_memory: Option<sysinfo::SysMemory>,
     /// Switches Affect Nested Comps as last applied (a change empties the layer cache).
     pub applied_nested_switches: Option<bool>,
+    /// Runs renders and analyses off the UI thread where there are no threads (the web app's
+    /// Web Workers, see [`offload`]); `None` = threads (desktop) or inline (wasm32).
+    pub offload: Option<Arc<dyn offload::Offload>>,
+    /// Analyses running in the [`Session::offload`] worker.
+    pub offloaded: Vec<offload::OffloadedJob>,
 }
 
 /// A script to run (see [`Session::script`]).
@@ -374,6 +387,8 @@ impl Default for Session {
             script: None,
             sys_memory: None,
             applied_nested_switches: None,
+            offload: None,
+            offloaded: vec![],
         }
     }
 }
@@ -388,7 +403,8 @@ impl Session {
         let spec = commands::find(id).ok_or_else(|| EngineError::UnknownCommand(id.to_string()))?;
         if let Err(why) = (spec.enabled)(self) {
             // Explicit targets (agents, scripts) don't need a UI selection.
-            let explicit = ["layer", "layers", "prop", "keys"].iter().any(|k| params.get(k).is_some()) && commands::has_comp(self).is_ok();
+            let explicit = (["layer", "layers", "prop", "keys"].iter().any(|k| params.get(k).is_some()) && commands::has_comp(self).is_ok())
+                || ["item", "items"].iter().any(|k| params.get(k).is_some());
             if !explicit {
                 return Err(EngineError::Disabled(id.to_string(), why));
             }
@@ -423,6 +439,8 @@ impl Session {
         let r = f(&mut p, &mut st)?;
         // Layer styles: one Global Light per comp, whichever layer edited it.
         effectcraft_project::styles::sync_global_light(&before, &mut p);
+        // Essential Properties of precomp layers follow their comps' Essential Graphics.
+        effectcraft_project::essential::sync_project(&before, &mut p);
         // Warp Stabilizer analyses made from other frames are cleared (and queued again).
         for w in warp::invalidate(&before, &mut p) {
             if !self.warp_pending.contains(&w) {
@@ -670,6 +688,7 @@ impl Session {
         self.roto_job = None;
         self.roto_pending.clear();
         p.fix_next_id();
+        upgrade_effects(&mut p);
         self.project = Arc::new(p);
         self.history = History::default();
         self.state = EditorState { snapping: true, view_layout: 1, ..Default::default() };
@@ -681,6 +700,35 @@ impl Session {
             self.open_comp(c);
         }
     }
+}
+
+/// Bring effect instances saved by earlier versions up to date with the effect registry
+/// (renamed / regrouped / added parameters, reordered popups; see
+/// [`effectcraft_effects::migrate`]).
+pub fn upgrade_effects(p: &mut Project) {
+    let mut sizes = std::collections::HashMap::new();
+    for (cid, c) in p.comps() {
+        for l in &c.layers {
+            let (w, h) = effectcraft_render::source_size(p, l);
+            sizes.insert((*cid, l.id), if w == 0 { [c.width as f64, c.height as f64] } else { [w as f64, h as f64] });
+        }
+    }
+    let mut next = p.next_id;
+    for (cid, it) in p.items.iter_mut() {
+        let effectcraft_project::ItemKind::Comp(c) = &mut it.kind else { continue };
+        for l in &mut std::sync::Arc::make_mut(c).layers {
+            let size = sizes.get(&(*cid, l.id)).copied().unwrap_or([100.0, 100.0]);
+            let Some(fx) = l.props.sub_mut("effects") else { continue };
+            for n in &mut fx.children {
+                let effectcraft_project::Node::Group(g) = n else { continue };
+                let effectcraft_project::GroupKind::Effect { effect } = &g.kind else { continue };
+                if let Some(spec) = effectcraft_effects::find(effect) {
+                    effectcraft_effects::migrate::upgrade_instance(spec, g, &mut effectcraft_project::build::Ids(&mut next), size);
+                }
+            }
+        }
+    }
+    p.next_id = next;
 }
 
 #[cfg(test)]
@@ -698,6 +746,8 @@ mod tests_disk_cache;
 #[cfg(test)]
 mod tests_effects;
 #[cfg(test)]
+mod tests_essential;
+#[cfg(test)]
 mod tests_fidelity;
 #[cfg(test)]
 mod tests_lottie;
@@ -714,11 +764,15 @@ mod tests_model3d;
 #[cfg(test)]
 mod tests_project_items;
 #[cfg(test)]
+mod tests_proxy;
+#[cfg(test)]
 mod tests_settings;
 #[cfg(test)]
 mod tests_stubs;
 #[cfg(test)]
 mod tests_styles;
+#[cfg(test)]
+mod tests_tail;
 #[cfg(test)]
 mod tests_text;
 #[cfg(test)]

@@ -283,7 +283,7 @@ fn depth_of_field_blurs_out_of_focus_surfaces() {
         let m: f32 = im.data.iter().map(|p| p[0]).sum::<f32>() / im.data.len() as f32;
         im.data.iter().map(|p| (p[0] - m).powi(2)).sum::<f32>() / im.data.len() as f32
     };
-    let dof = crate::three_d::camera::Dof { focus: 1000.0, aperture: 40.0, blur_level: 1.0 };
+    let dof = crate::three_d::camera::Dof { focus: 1000.0, aperture: 40.0, blur_level: 1.0, iris: Default::default(), highlight: Default::default() };
     let sharp = depth_of_field(&img, &vec![1000.0; 64 * 64], &dof, 1.0);
     assert!((var(&sharp) - var(&img)).abs() < 1e-6, "in focus: unchanged");
     let blurred = depth_of_field(&img, &vec![3000.0; 64 * 64], &dof, 1.0);
@@ -303,7 +303,7 @@ fn extruded_text_renders_as_a_mesh() {
         set(l, "geometryOptions/bevelStyle", Value::Enum(1));
         set(l, "transform/rotationY", Value::Scalar(40.0));
     });
-    let ctx = crate::EvalCtx { project: &p, comp_id: cid, comp: p.comp(cid).unwrap(), time: Tick::ZERO, expr: None };
+    let ctx = crate::EvalCtx { project: &p, comp_id: cid, comp: p.comp(cid).unwrap(), time: Tick::ZERO, expr: None, footage: None };
     let l = &ctx.comp.layers[0];
     let params = scene::extrusion_params(&ctx, l).unwrap();
     let meshes = scene::extruded_meshes(&ctx, l, &params);

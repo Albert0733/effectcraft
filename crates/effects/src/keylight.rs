@@ -47,6 +47,16 @@ pub const VIEWS: [&str; 11] = [
     "Final Result",
 ];
 
+/// Display names of the effect's twirl-down groups (by match id).
+pub const GROUPS: &[(&str, &str)] = &[
+    ("screenMatte", "Screen Matte"),
+    ("insideMask", "Inside Mask"),
+    ("outsideMask", "Outside Mask"),
+    ("foregroundColourCorrection", "Foreground Colour Correction"),
+    ("edgeColourCorrection", "Edge Colour Correction"),
+    ("sourceCrops", "Source Crops"),
+];
+
 const REPLACE: [&str; 4] = ["None", "Source", "Hard Colour", "Soft Colour"];
 
 fn pct(d: f64) -> (Value, ParamUi) {
@@ -132,14 +142,14 @@ fn key_light(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let (dbias, abias) = ([dbias[0], dbias[1], dbias[2]], [abias[0], abias[1], abias[2]]);
     let s_alpha = neutralise(screen, abias);
     let sd = screen_diff(s_alpha, pi, o1, o2, bal).max(1e-3);
-    let cb = pr.f("clipBlack") as f32 / 100.0;
-    let cw = pr.f("clipWhite") as f32 / 100.0;
-    let rollback = pr.f("clipRollback") * b.scale;
+    let cb = pr.f("screenMatte/clipBlack") as f32 / 100.0;
+    let cw = pr.f("screenMatte/clipWhite") as f32 / 100.0;
+    let rollback = pr.f("screenMatte/clipRollback") * b.scale;
     let preblur = pr.f("screenPreblur") * b.scale;
-    let sg = pr.f("screenShrinkGrow") * b.scale;
-    let soft = pr.f("screenSoftness") * b.scale;
-    let despot_b = pr.f("screenDespotBlack") * b.scale;
-    let despot_w = pr.f("screenDespotWhite") * b.scale;
+    let sg = pr.f("screenMatte/screenShrinkGrow") * b.scale;
+    let soft = pr.f("screenMatte/screenSoftness") * b.scale;
+    let despot_b = pr.f("screenMatte/screenDespotBlack") * b.scale;
+    let despot_w = pr.f("screenMatte/screenDespotWhite") * b.scale;
 
     let src = b.img.clone();
     let blurred;
@@ -187,9 +197,9 @@ fn key_light(ctx: &EffectCtx, mut b: Buf) -> Buf {
         m = gauss_plane(&m, soft * 0.5, soft * 0.5);
     }
     let screen_matte = m.clone();
-    let inside = mask_coverage(ctx, &b, pr.e("insideMask"), pr.f("insideMaskSoftness"), pr.b("invertInsideMask"));
-    let outside = mask_coverage(ctx, &b, pr.e("outsideMask"), pr.f("outsideMaskSoftness"), pr.b("invertOutsideMask"));
-    let src_alpha_mode = pr.e("sourceAlpha");
+    let inside = mask_coverage(ctx, &b, pr.e("insideMask/insideMask"), pr.f("insideMask/insideMaskSoftness"), pr.b("insideMask/invertInsideMask"));
+    let outside = mask_coverage(ctx, &b, pr.e("outsideMask/outsideMask"), pr.f("outsideMask/outsideMaskSoftness"), pr.b("outsideMask/invertOutsideMask"));
+    let src_alpha_mode = pr.e("insideMask/sourceAlpha");
     let n = src.data.len();
     let combined: Vec<f32> = (0..n)
         .into_par_iter()
@@ -208,10 +218,10 @@ fn key_light(ctx: &EffectCtx, mut b: Buf) -> Buf {
             a.clamp(0.0, 1.0)
         })
         .collect();
-    let edges: Option<Vec<f32>> = pr.b("enableEdgeColourCorrection").then(|| {
-        let grow = pr.f("edgeGrow") * b.scale;
-        let hard = (pr.f("edgeHardness") / 100.0) as f32;
-        let esoft = pr.f("edgeSoftness") * b.scale;
+    let edges: Option<Vec<f32>> = pr.b("edgeColourCorrection/enableEdgeColourCorrection").then(|| {
+        let grow = pr.f("edgeColourCorrection/edgeGrow") * b.scale;
+        let hard = (pr.f("edgeColourCorrection/edgeHardness") / 100.0) as f32;
+        let esoft = pr.f("edgeColourCorrection/edgeSoftness") * b.scale;
         // Edge band: where the (grown) combined matte is partial.
         let cm = Plane { w: m.w, h: m.h, data: combined.clone() };
         let band = cm.map(|a| if a > 1e-3 && a < 0.999 { 1.0 } else { 0.0 });
@@ -221,15 +231,23 @@ fn key_light(ctx: &EffectCtx, mut b: Buf) -> Buf {
         }
         band.data.iter().map(|v| (v * (1.0 + hard * 4.0)).min(1.0)).collect()
     });
-    let replace = pr.e("replaceMethod");
-    let rc = pr.color("replaceColour");
-    let in_replace = pr.e("insideReplaceMethod");
-    let in_rc = pr.color("insideReplaceColour");
-    let fg_cc = pr.b("enableColourCorrection");
-    let (fs, fc, fbr) = (pr.f("saturation") as f32 / 100.0, pr.f("contrast") as f32 / 100.0 + 1.0, pr.f("brightness") as f32 / 100.0 + 1.0);
-    let (es, ec, ebr) = (pr.f("edgeSaturation") as f32 / 100.0, pr.f("edgeContrast") as f32 / 100.0 + 1.0, pr.f("edgeBrightness") as f32 / 100.0 + 1.0);
+    let replace = pr.e("screenMatte/replaceMethod");
+    let rc = pr.color("screenMatte/replaceColour");
+    let in_replace = pr.e("insideMask/insideReplaceMethod");
+    let in_rc = pr.color("insideMask/insideReplaceColour");
+    let fg_cc = pr.b("foregroundColourCorrection/enableColourCorrection");
+    let (fs, fc, fbr) = (
+        pr.f("foregroundColourCorrection/saturation") as f32 / 100.0,
+        pr.f("foregroundColourCorrection/contrast") as f32 / 100.0 + 1.0,
+        pr.f("foregroundColourCorrection/brightness") as f32 / 100.0 + 1.0,
+    );
+    let (es, ec, ebr) = (
+        pr.f("edgeColourCorrection/edgeSaturation") as f32 / 100.0,
+        pr.f("edgeColourCorrection/edgeContrast") as f32 / 100.0 + 1.0,
+        pr.f("edgeColourCorrection/edgeBrightness") as f32 / 100.0 + 1.0,
+    );
     let unpremultiply = pr.b("unpremultiplyResult");
-    let crops = [pr.f("cropLeft"), pr.f("cropRight"), pr.f("cropTop"), pr.f("cropBottom")].map(|v| v / 100.0);
+    let crops = [pr.f("sourceCrops/cropLeft"), pr.f("sourceCrops/cropRight"), pr.f("sourceCrops/cropTop"), pr.f("sourceCrops/cropBottom")].map(|v| v / 100.0);
     let (lw, lh) = (ctx.layer_size[0], ctx.layer_size[1]);
     let w = b.img.width as usize;
     let (scale, off) = (b.scale, b.offset);
@@ -337,44 +355,44 @@ pub fn specs() -> Vec<EffectSpec> {
             p("lockBiasesTogether", "Lock Biases Together", Value::Bool(true), ParamUi::Checkbox),
             p("screenPreblur", "Screen Pre-blur", num(0.0), slider(0.0, 100.0, 0.0, 10.0, 1)),
             // Screen Matte
-            pp("clipBlack", "Clip Black", pct(0.0)),
-            pp("clipWhite", "Clip White", pct(100.0)),
-            p("clipRollback", "Clip Rollback", num(0.0), slider(0.0, 100.0, 0.0, 20.0, 1)),
-            p("screenShrinkGrow", "Screen Shrink/Grow", num(0.0), slider(-100.0, 100.0, -10.0, 10.0, 1)),
-            p("screenSoftness", "Screen Softness", num(0.0), slider(0.0, 100.0, 0.0, 20.0, 1)),
-            p("screenDespotBlack", "Screen Despot Black", num(0.0), slider(0.0, 100.0, 0.0, 20.0, 1)),
-            p("screenDespotWhite", "Screen Despot White", num(0.0), slider(0.0, 100.0, 0.0, 20.0, 1)),
-            p("replaceMethod", "Replace Method", Value::Enum(3), popup(&REPLACE)),
-            p("replaceColour", "Replace Colour", col(0.5, 0.5, 0.5), ParamUi::Color),
+            pp("screenMatte/clipBlack", "Clip Black", pct(0.0)),
+            pp("screenMatte/clipWhite", "Clip White", pct(100.0)),
+            p("screenMatte/clipRollback", "Clip Rollback", num(0.0), slider(0.0, 100.0, 0.0, 20.0, 1)),
+            p("screenMatte/screenShrinkGrow", "Screen Shrink/Grow", num(0.0), slider(-100.0, 100.0, -10.0, 10.0, 1)),
+            p("screenMatte/screenSoftness", "Screen Softness", num(0.0), slider(0.0, 100.0, 0.0, 20.0, 1)),
+            p("screenMatte/screenDespotBlack", "Screen Despot Black", num(0.0), slider(0.0, 100.0, 0.0, 20.0, 1)),
+            p("screenMatte/screenDespotWhite", "Screen Despot White", num(0.0), slider(0.0, 100.0, 0.0, 20.0, 1)),
+            p("screenMatte/replaceMethod", "Replace Method", Value::Enum(3), popup(&REPLACE)),
+            p("screenMatte/replaceColour", "Replace Colour", col(0.5, 0.5, 0.5), ParamUi::Color),
             // Inside Mask
-            p("insideMask", "Inside Mask", Value::Enum(0), mask_popup()),
-            p("insideMaskSoftness", "Inside Mask Softness", num(0.0), slider(0.0, 100.0, 0.0, 20.0, 1)),
-            p("invertInsideMask", "Invert", Value::Bool(false), ParamUi::Checkbox),
-            p("insideReplaceMethod", "Inside Replace Method", Value::Enum(1), popup(&REPLACE)),
-            p("insideReplaceColour", "Inside Replace Colour", col(0.5, 0.5, 0.5), ParamUi::Color),
-            p("sourceAlpha", "Source Alpha", Value::Enum(2), popup(&["Ignore", "Add to Inside Mask", "Normal"])),
+            p("insideMask/insideMask", "Inside Mask", Value::Enum(0), mask_popup()),
+            p("insideMask/insideMaskSoftness", "Inside Mask Softness", num(0.0), slider(0.0, 100.0, 0.0, 20.0, 1)),
+            p("insideMask/invertInsideMask", "Invert", Value::Bool(false), ParamUi::Checkbox),
+            p("insideMask/insideReplaceMethod", "Replace Method", Value::Enum(1), popup(&REPLACE)),
+            p("insideMask/insideReplaceColour", "Replace Colour", col(0.5, 0.5, 0.5), ParamUi::Color),
+            p("insideMask/sourceAlpha", "Source Alpha", Value::Enum(2), popup(&["Ignore", "Add to Inside Mask", "Normal"])),
             // Outside Mask
-            p("outsideMask", "Outside Mask", Value::Enum(0), mask_popup()),
-            p("outsideMaskSoftness", "Outside Mask Softness", num(0.0), slider(0.0, 100.0, 0.0, 20.0, 1)),
-            p("invertOutsideMask", "Invert Outside Mask", Value::Bool(false), ParamUi::Checkbox),
+            p("outsideMask/outsideMask", "Outside Mask", Value::Enum(0), mask_popup()),
+            p("outsideMask/outsideMaskSoftness", "Outside Mask Softness", num(0.0), slider(0.0, 100.0, 0.0, 20.0, 1)),
+            p("outsideMask/invertOutsideMask", "Invert", Value::Bool(false), ParamUi::Checkbox),
             // Foreground Colour Correction
-            p("enableColourCorrection", "Enable Colour Correction", Value::Bool(false), ParamUi::Checkbox),
-            p("saturation", "Saturation", num(100.0), slider(0.0, 400.0, 0.0, 200.0, 1)),
-            cc("contrast", "Contrast"),
-            cc("brightness", "Brightness"),
+            p("foregroundColourCorrection/enableColourCorrection", "Enable Colour Correction", Value::Bool(false), ParamUi::Checkbox),
+            p("foregroundColourCorrection/saturation", "Saturation", num(100.0), slider(0.0, 400.0, 0.0, 200.0, 1)),
+            cc("foregroundColourCorrection/contrast", "Contrast"),
+            cc("foregroundColourCorrection/brightness", "Brightness"),
             // Edge Colour Correction
-            p("enableEdgeColourCorrection", "Enable Edge Colour Correction", Value::Bool(false), ParamUi::Checkbox),
-            pp("edgeHardness", "Edge Hardness", pct(0.0)),
-            p("edgeSoftness", "Edge Softness", num(0.0), slider(0.0, 100.0, 0.0, 20.0, 1)),
-            p("edgeGrow", "Edge Grow", num(1.0), slider(0.0, 100.0, 0.0, 20.0, 1)),
-            p("edgeSaturation", "Edge Saturation", num(100.0), slider(0.0, 400.0, 0.0, 200.0, 1)),
-            cc("edgeContrast", "Edge Contrast"),
-            cc("edgeBrightness", "Edge Brightness"),
+            p("edgeColourCorrection/enableEdgeColourCorrection", "Enable Edge Colour Correction", Value::Bool(false), ParamUi::Checkbox),
+            pp("edgeColourCorrection/edgeHardness", "Edge Hardness", pct(0.0)),
+            p("edgeColourCorrection/edgeSoftness", "Edge Softness", num(0.0), slider(0.0, 100.0, 0.0, 20.0, 1)),
+            p("edgeColourCorrection/edgeGrow", "Edge Grow", num(1.0), slider(0.0, 100.0, 0.0, 20.0, 1)),
+            p("edgeColourCorrection/edgeSaturation", "Saturation", num(100.0), slider(0.0, 400.0, 0.0, 200.0, 1)),
+            cc("edgeColourCorrection/edgeContrast", "Contrast"),
+            cc("edgeColourCorrection/edgeBrightness", "Brightness"),
             // Source Crops
-            pp("cropLeft", "Left", pct(0.0)),
-            pp("cropRight", "Right", pct(0.0)),
-            pp("cropTop", "Top", pct(0.0)),
-            pp("cropBottom", "Bottom", pct(0.0)),
+            pp("sourceCrops/cropLeft", "Left", pct(0.0)),
+            pp("sourceCrops/cropRight", "Right", pct(0.0)),
+            pp("sourceCrops/cropTop", "Top", pct(0.0)),
+            pp("sourceCrops/cropBottom", "Bottom", pct(0.0)),
         ],
         render: key_light,
         gpu: false,
@@ -425,7 +443,7 @@ mod tests {
     #[test]
     fn clip_gain_views_and_masks() {
         // Clip White 60 %: the half-transparent strip becomes solid.
-        let out = run_fx("ec.keying.keylight", &[("screenColour", green()), ("clipWhite", num(40.0))], plate(), 0.0, EffectEnv::default());
+        let out = run_fx("ec.keying.keylight", &[("screenColour", green()), ("screenMatte/clipWhite", num(40.0))], plate(), 0.0, EffectEnv::default());
         assert!(out.img.get(27, 5)[3] > 0.99);
         // Screen Matte and Status views are grey-scale and opaque.
         let sm = run_fx("ec.keying.keylight", &[("screenColour", green()), ("view", Value::Enum(4))], plate(), 0.0, EffectEnv::default());
@@ -444,12 +462,42 @@ mod tests {
         };
         let masks = [sq(0.0, 0.0, 6.0, 6.0), sq(12.0, 12.0, 18.0, 18.0)];
         let env = EffectEnv { masks: &masks, ..Default::default() };
-        let m = run_fx("ec.keying.keylight", &[("screenColour", green()), ("insideMask", Value::Enum(1)), ("outsideMask", Value::Enum(2))], plate(), 0.0, env);
+        let m = run_fx(
+            "ec.keying.keylight",
+            &[("screenColour", green()), ("insideMask/insideMask", Value::Enum(1)), ("outsideMask/outsideMask", Value::Enum(2))],
+            plate(),
+            0.0,
+            env,
+        );
         assert!(m.img.get(2, 2)[3] > 0.99, "{:?}", m.img.get(2, 2));
         assert!(m.img.get(15, 15)[3] < 0.01);
         // Screen gain above 100 % keys more of the strip.
         let g = run_fx("ec.keying.keylight", &[("screenColour", green()), ("screenGain", num(150.0))], plate(), 0.0, EffectEnv::default());
         assert!(g.img.get(27, 5)[3] < out.img.get(27, 5)[3]);
         assert_eq!(crate::lookup("Keylight (1.2)").map(|s| s.id), Some("ec.keying.keylight"));
+    }
+
+    /// Instances saved with the flat layout get their parameters moved into the twirl-downs.
+    #[test]
+    fn flat_instances_move_into_twirl_downs() {
+        use effectcraft_project::build::Ids;
+        let spec = crate::find("ec.keying.keylight").unwrap();
+        let mut next = 1;
+        let mut ids = Ids(&mut next);
+        let mut g = crate::instantiate(spec, &mut ids, "Key Light", [10.0, 10.0]);
+        // Flatten it the way older versions saved it.
+        let mut flat = vec![];
+        g.walk_mut(&mut |p| flat.push(p.clone()));
+        g.children = flat.into_iter().map(Into::into).collect();
+        let clip = g.children.iter_mut().find_map(|c| match c {
+            effectcraft_project::Node::Prop(p) if p.match_id == "clipWhite" => Some(p),
+            _ => None,
+        });
+        clip.unwrap().value = num(42.0);
+        assert!(crate::migrate::upgrade_instance(spec, &mut g, &mut ids, [10.0, 10.0]));
+        assert_eq!(g.sub("screenMatte").map(|s| s.name.as_str()), Some("Screen Matte"));
+        assert_eq!(g.sub("screenMatte").and_then(|s| s.get("clipWhite")).map(|p| p.value.clone()), Some(num(42.0)));
+        assert_eq!(g.sub("insideMask").and_then(|s| s.get("insideMask")).map(|p| p.name.as_str()), Some("Inside Mask"));
+        assert!(g.get("clipWhite").is_none());
     }
 }

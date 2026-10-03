@@ -1,16 +1,15 @@
 //! Keyframe features of M14.5: Animation ▸ Keyframe Assistant ▸ Convert Audio to Keyframes and
-//! RPF Camera Import, keyframe colour labels (Edit ▸ Label on selected keyframes) and Edit ▸
-//! Select Keyframe Label Group.
+//! RPF Camera Import, and Edit ▸ Label on selected keyframes.
 
 use effectcraft_color::Label;
 use effectcraft_keyframe::{Keyframe, Value as KV};
+use effectcraft_project::LayerId;
 use effectcraft_project::build::Ids;
-use effectcraft_project::{LayerId, Uid};
 use effectcraft_time::Tick;
 use serde_json::{Value, json};
 
 use super::app_more::grouped;
-use super::{CommandSpec, bad, comp_id, has_comp, has_keys, layer_mut, str_p};
+use super::{CommandSpec, bad, comp_id, has_comp, layer_mut, str_p};
 use crate::{EngineError, KeyRef, Result, Session, cmd};
 
 // ---------------------------------------------------------------- keyframe labels
@@ -28,7 +27,8 @@ fn keys_p(s: &Session, p: &Value) -> Vec<KeyRef> {
     }
 }
 
-/// Edit ▸ Label on keyframes: colour the selected (or given) keyframes.
+/// Edit ▸ Label on keyframes: colour the selected (or given) keyframes (label names as renamed
+/// in Settings ▸ Labels; `keys.setLabel` is the Timeline context menu's command).
 pub(crate) fn label_keys(s: &mut Session, p: &Value) -> Result<Value> {
     let name = str_p(p, "label").unwrap_or("Red");
     let idx = label_index(s, name).ok_or_else(|| bad("keys.label", format!("unknown label `{name}`")))?;
@@ -50,43 +50,6 @@ pub(crate) fn label_keys(s: &mut Session, p: &Value) -> Result<Value> {
         Ok(n)
     })?;
     Ok(json!({"keys": n, "label": idx}))
-}
-
-/// Edit ▸ Select Keyframe Label Group: select every keyframe with the label of a selected
-/// keyframe. `scope`: `selected` (selected layers), `all` (all layers), `visibleSelected` /
-/// `visibleAll` (only properties the frontend shows, given as `props`: [uid]; agents without a
-/// timeline may omit it, then every property counts).
-fn select_label_group(s: &mut Session, p: &Value) -> Result<Value> {
-    let scope = str_p(p, "scope").unwrap_or("selected");
-    if !matches!(scope, "selected" | "all" | "visibleSelected" | "visibleAll") {
-        return Err(bad("keys.selectLabelGroup", "scope: selected|all|visibleSelected|visibleAll"));
-    }
-    let comp = s.active_comp().ok_or(EngineError::NoComp)?;
-    let labels: Vec<u8> = s
-        .state
-        .selected_keys
-        .iter()
-        .filter_map(|k| comp.layer(k.layer).and_then(|l| l.props.find(k.prop)).and_then(|pr| pr.keys.iter().find(|x| x.time == k.time)).map(|x| x.label))
-        .collect();
-    if labels.is_empty() {
-        return Err(bad("keys.selectLabelGroup", "select a keyframe first"));
-    }
-    let visible: Option<Vec<Uid>> = p.get("props").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_u64).collect());
-    let layers: Vec<LayerId> =
-        if scope == "all" || scope == "visibleAll" { comp.layers.iter().map(|l| l.id).collect() } else { s.state.selected_layers.clone() };
-    let mut sel = vec![];
-    for l in comp.layers.iter().filter(|l| layers.contains(&l.id)) {
-        l.props.walk("", &mut |_, pr| {
-            if scope.starts_with("visible") && visible.as_ref().is_some_and(|v| !v.contains(&pr.uid)) {
-                return;
-            }
-            for k in pr.keys.iter().filter(|k| labels.contains(&k.label)) {
-                sel.push(KeyRef { layer: l.id, prop: pr.uid, time: k.time });
-            }
-        });
-    }
-    s.state.selected_keys = sel;
-    Ok(json!({"keys": s.state.selected_keys.len()}))
 }
 
 // ---------------------------------------------------------------- Convert Audio to Keyframes
@@ -284,15 +247,5 @@ pub fn specs() -> Vec<CommandSpec> {
             has_comp,
             rpf_camera_import
         ),
-        cmd!(
-            "keys.selectLabelGroup",
-            "Select Keyframe Label Group",
-            [],
-            None,
-            "{scope: selected|all|visibleSelected|visibleAll, props?: [uid]}",
-            has_keys,
-            select_label_group
-        ),
-        cmd!("keys.label", "Keyframe Label", [], None, "{label, keys?: [{layer, prop, time}]}", has_keys, label_keys),
     ]
 }

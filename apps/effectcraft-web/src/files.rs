@@ -1,39 +1,55 @@
-//! Files in the browser: an in-memory file table in place of the file system, `<input type=file>`
-//! pickers for Open/Import, and downloads for everything the app writes (projects, renders).
+//! Files in the browser: a virtual file table in place of the file system, `<input type=file>`
+//! pickers for Open/Import, and downloads for what the user saves and renders.
 //!
 //! Picked or dropped files are read into the table under `/<name>`; the engine, the media pool and
 //! the exporter read and write through it ([`WebServices`], [`WebImporter`], [`export_sink`]).
+//! The table is the persistent [`Store`]'s file namespace: imported media, saved projects and
+//! auto-saves survive reloads ([`crate::persist`]); render outputs don't (they download).
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 
 use effectcraft_engine::Services;
 use effectcraft_engine::project::Footage;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 
-static FILES: Mutex<Option<HashMap<String, Arc<[u8]>>>> = Mutex::new(None);
+use crate::store::Store;
+
+/// The page's store (each worker has its own, unpersisted).
+pub static STORE: LazyLock<Arc<Store>> = LazyLock::new(|| {
+    let s = Arc::new(Store::default());
+    let _ = s.clock.set(js_sys::Date::now);
+    s
+});
 /// Render outputs written since the last [`flush_downloads`].
 static OUTPUTS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// Saves that write to browser storage only (no download): `api.saveToBrowser`.
+static QUIET: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
-fn with_files<R>(f: impl FnOnce(&mut HashMap<String, Arc<[u8]>>) -> R) -> R {
-    f(FILES.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_default())
-}
-
-/// Store a file in the table.
+/// Store a file in the table (persisted).
 pub fn put(path: &str, data: Arc<[u8]>) {
-    with_files(|m| m.insert(path.to_string(), data));
+    STORE.put_file(path, data, true);
 }
 
 pub fn get(path: &str) -> Option<Arc<[u8]>> {
-    with_files(|m| m.get(path).cloned())
+    STORE.file(path)
 }
 
 /// `(path, size)` of every file in the table.
 pub fn list() -> Vec<(String, usize)> {
-    let mut v: Vec<(String, usize)> = with_files(|m| m.iter().map(|(k, d)| (k.clone(), d.len())).collect());
-    v.sort();
-    v
+    STORE.files().into_iter().map(|(p, n, _, _)| (p, n)).collect()
+}
+
+/// The next write of `path` goes to browser storage only (no download).
+pub fn save_quietly(path: &str) {
+    QUIET.lock().unwrap_or_else(|e| e.into_inner()).push(path.to_string());
+}
+
+/// A rendered file (from the page's exporter or a worker): kept in the table unpersisted and
+/// downloaded at the next [`flush_downloads`].
+pub fn add_output(path: &str, data: Arc<[u8]>) {
+    STORE.put_file(path, data, false);
+    OUTPUTS.lock().unwrap_or_else(|e| e.into_inner()).push(path.to_string());
 }
 
 /// The table path for a picked/dropped file name.
@@ -85,7 +101,8 @@ pub fn download(name: &str, data: &[u8]) -> Result<(), JsValue> {
     Ok(())
 }
 
-/// Engine file access (projects): reads from the table; writes go to the table and download.
+/// Engine file access (projects): reads from the table; writes go to the table (persisted) and
+/// download, except [`save_quietly`] saves.
 pub struct WebServices;
 
 impl Services for WebServices {
@@ -96,6 +113,15 @@ impl Services for WebServices {
     }
     fn write_file(&self, path: &str, data: &[u8]) -> std::io::Result<()> {
         put(path, data.into());
+        let quiet = {
+            let mut q = QUIET.lock().unwrap_or_else(|e| e.into_inner());
+            let n = q.len();
+            q.retain(|p| p != path);
+            q.len() != n
+        };
+        if quiet || crate::is_worker() {
+            return Ok(());
+        }
         download(file_name(path), data).map_err(|e| std::io::Error::other(format!("download failed: {e:?}")))
     }
 }
@@ -116,10 +142,7 @@ impl effectcraft_engine::Importer for WebImporter {
 /// Render Queue output: files land in the table and are downloaded after the render
 /// ([`flush_downloads`]; several files, e.g. an image sequence, as one `.zip`).
 pub fn export_sink() -> Arc<effectcraft_export::Sink> {
-    Arc::new(|path: &str, data: Vec<u8>| {
-        put(path, data.into());
-        OUTPUTS.lock().unwrap_or_else(|e| e.into_inner()).push(path.to_string());
-    })
+    Arc::new(|path: &str, data: Vec<u8>| add_output(path, data.into()))
 }
 
 /// Download the render outputs written since the last call.

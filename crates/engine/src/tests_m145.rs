@@ -587,7 +587,7 @@ fn keyframe_labels_and_label_groups() {
     s.execute("keys.selectLabelGroup", json!({"scope": "selected"})).unwrap();
     assert_eq!(s.state.selected_keys, vec![k(0.5)]);
     s.state.selected_keys = vec![k(0.0)];
-    let r = s.execute("keys.selectLabelGroup", json!({"scope": "visibleAll", "props": [12345]})).unwrap();
+    let r = s.execute("keys.selectLabelGroup", json!({"scope": "visibleAll", "visible": [12345]})).unwrap();
     assert_eq!(r["keys"], 0, "only the given (visible) properties");
     s.execute("edit.undo", json!({})).unwrap();
     s.execute("edit.undo", json!({})).unwrap();

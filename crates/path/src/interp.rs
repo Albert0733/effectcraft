@@ -191,7 +191,7 @@ fn from_cubics(cs: &[[P; 4]], closed: bool) -> ShapePath {
             v[j] = c[3];
         }
     }
-    ShapePath { vertices: v, in_tangents: ins, out_tangents: outs, closed }
+    ShapePath { vertices: v, in_tangents: ins, out_tangents: outs, closed, feather: Vec::new() }
 }
 
 /// Exactly the same outline with `total` vertices (≥ the current count), the extra vertices
@@ -272,7 +272,13 @@ fn rotate(p: &ShapePath, k: usize) -> ShapePath {
         return p.clone();
     }
     let r = |v: &Vec<P>| (0..n).map(|i| v[(i + k) % n]).collect();
-    ShapePath { vertices: r(&p.vertices), in_tangents: r(&p.in_tangents), out_tangents: r(&p.out_tangents), closed: p.closed }
+    ShapePath {
+        vertices: r(&p.vertices),
+        in_tangents: r(&p.in_tangents),
+        out_tangents: r(&p.out_tangents),
+        closed: p.closed,
+        feather: p.feather.iter().map(|f| effectcraft_keyframe::FeatherPoint { segment: (f.segment + n - k % n) % n, ..*f }).collect(),
+    }
 }
 
 /// The same path traversed the other way (closed paths keep vertex 0 first).
@@ -287,6 +293,8 @@ pub fn reversed(p: &ShapePath) -> ShapePath {
         in_tangents: idx.iter().map(|i| p.out_tangents[*i]).collect(),
         out_tangents: idx.iter().map(|i| p.in_tangents[*i]).collect(),
         closed: p.closed,
+        // Feather points sit on segments that reversal renumbers: they are not carried.
+        feather: Vec::new(),
     }
 }
 
@@ -447,6 +455,7 @@ pub fn interpolate(a: &ShapePath, b: &ShapePath, u: f64, o: &InterpOpts) -> Shap
             in_tangents: lin(&a.in_tangents, &b.in_tangents),
             out_tangents: lin(&a.out_tangents, &b.out_tangents),
             closed: a.closed,
+            feather: a.feather.clone(),
         };
     }
     // Procrustes: b ≈ s R (a − ca) + cb.
@@ -468,7 +477,7 @@ pub fn interpolate(a: &ShapePath, b: &ShapePath, u: f64, o: &InterpOpts) -> Shap
     let (th_u, s_u) = (theta * u, s.max(1e-9).powf(u));
     let c_u = lerp(ca, cb, u);
     let w = (o.bending_resistance / 100.0).clamp(0.0, 1.0);
-    let mut out = ShapePath { vertices: vec![], in_tangents: vec![], out_tangents: vec![], closed: a.closed };
+    let mut out = ShapePath { vertices: vec![], in_tangents: vec![], out_tangents: vec![], closed: a.closed, feather: a.feather.clone() };
     for i in 0..n {
         // Rigid path: a's vertex carried by the interpolated similarity, plus the residual
         // (b − fully transformed a) blended in linearly.

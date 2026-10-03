@@ -340,6 +340,9 @@ pub struct TimelineState {
     pub scroll_y: f32,
     /// Left column area width.
     pub columns_w: f32,
+    /// Horizontal scroll of the outline columns (pixels) when they are wider than the pane.
+    #[serde(default)]
+    pub outline_scroll: f32,
     pub show_modes: bool,
     pub graph_editor: bool,
     pub search: String,
@@ -403,6 +406,7 @@ impl Default for TimelineState {
             pps: None,
             scroll_y: 0.0,
             columns_w: 560.0,
+            outline_scroll: 0.0,
             show_modes: false,
             graph_editor: false,
             search: String::new(),
@@ -545,6 +549,9 @@ pub struct UiState {
     /// `duration`, `path`, `comment`); toggled from the column header's context menu.
     #[serde(default = "default_project_columns")]
     pub project_columns: Vec<String>,
+    /// Horizontal scroll of the Project panel's optional columns (Name and Label stay put).
+    #[serde(default)]
+    pub project_hscroll: f32,
     /// Effect Controls twirl state (group uids that are collapsed).
     pub fx_closed: BTreeSet<u64>,
     /// Slider params whose slider row is twirled open (AE hides sliders by default).
@@ -631,6 +638,7 @@ impl Default for UiState {
             project_open_folders: BTreeSet::new(),
             project_sort: default_project_sort(),
             project_sort_desc: false,
+            project_hscroll: 0.0,
             project_columns: default_project_columns(),
             fx_closed: BTreeSet::new(),
             fx_slider_open: BTreeSet::new(),

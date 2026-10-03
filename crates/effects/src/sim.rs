@@ -328,9 +328,9 @@ fn rainfall(ctx: &EffectCtx, b: Buf) -> Buf {
     let opacity = pr.f("opacity") as f32 / 100.0;
     let mode = pr.e("transferMode");
     let with_orig = pr.b("compositeWithOriginal");
-    let refract = pr.e("appearance") == 0;
-    let off = pr.v2("offset");
-    let seed = pr.f("randomSeed") as u32 ^ ctx.seed.wrapping_mul(0x9e37);
+    let refract = pr.e("extras/appearance") == 0;
+    let off = pr.v2("extras/offset");
+    let seed = pr.f("extras/randomSeed") as u32 ^ ctx.seed.wrapping_mul(0x9e37);
     let (lw, lh) = (ctx.layer_size[0] as f32, ctx.layer_size[1] as f32);
     let s = b.scale as f32;
     let t = ctx.time as f32;
@@ -382,16 +382,16 @@ fn snowfall(ctx: &EffectCtx, b: Buf) -> Buf {
     let wind = pr.f("wind") as f32;
     let wvar = pr.f("windVariation") as f32 / 100.0;
     let spread = pr.f("spread") as f32;
-    let wig = pr.f("wiggleAmount") as f32;
-    let wigvar = pr.f("wiggleAmountVariation") as f32 / 100.0;
-    let wfreq = pr.f("wiggleFrequency") as f32;
-    let wfvar = pr.f("wiggleFrequencyVariation") as f32 / 100.0;
+    let wig = pr.f("wiggle/wiggleAmount") as f32;
+    let wigvar = pr.f("wiggle/wiggleAmountVariation") as f32 / 100.0;
+    let wfreq = pr.f("wiggle/wiggleFrequency") as f32;
+    let wfvar = pr.f("wiggle/wiggleFrequencyVariation") as f32 / 100.0;
     let color = pr.color("color");
     let opacity = pr.f("opacity") as f32 / 100.0;
     let mode = pr.e("transferMode");
     let with_orig = pr.b("compositeWithOriginal");
-    let off = pr.v2("offset");
-    let seed = pr.f("randomSeed") as u32 ^ ctx.seed.wrapping_mul(0x85eb);
+    let off = pr.v2("extras/offset");
+    let seed = pr.f("extras/randomSeed") as u32 ^ ctx.seed.wrapping_mul(0x85eb);
     let (lw, lh) = (ctx.layer_size[0] as f32, ctx.layer_size[1] as f32);
     let s = b.scale as f32;
     let t = ctx.time as f32;
@@ -503,14 +503,14 @@ fn drizzle(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let disp = pr.f("displacement") as f32;
     let height = pr.f("rippleHeight") as f32 / 100.0;
     let spreading = pr.f("spreading") as f32;
-    let li = pr.f("lightIntensity") as f32 / 100.0;
-    let lc = pr.color("lightColor");
-    let lheight = pr.f("lightHeight") as f32 / 100.0;
-    let ldir = (pr.f("lightDirection") as f32).to_radians();
-    let ambient = pr.f("ambient") as f32 / 100.0;
-    let diffuse = pr.f("diffuse") as f32 / 100.0;
-    let specular = pr.f("specular") as f32 / 100.0;
-    let rough = pr.f("roughness").max(0.001) as f32;
+    let li = pr.f("light/lightIntensity") as f32 / 100.0;
+    let lc = pr.color("light/lightColor");
+    let lheight = pr.f("light/lightHeight") as f32 / 100.0;
+    let ldir = (pr.f("light/lightDirection") as f32).to_radians();
+    let ambient = pr.f("shading/ambient") as f32 / 100.0;
+    let diffuse = pr.f("shading/diffuse") as f32 / 100.0;
+    let specular = pr.f("shading/specular") as f32 / 100.0;
+    let rough = pr.f("shading/roughness").max(0.001) as f32;
     let seed = ctx.seed.wrapping_mul(0x165667b1);
     let t = ctx.time;
     let (lw, lh) = (ctx.layer_size[0] as f32, ctx.layer_size[1] as f32);
@@ -865,20 +865,21 @@ fn particle_world(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let phys = Phys {
         rate: pr.f("birthRate").max(0.0) * 120.0,
         life: pr.f("longevity").max(0.0) as f32,
-        producer: [pr.f("producerX") as f32, pr.f("producerY") as f32, pr.f("producerZ") as f32],
-        radius: [pr.f("radiusX").max(0.0) as f32, pr.f("radiusY").max(0.0) as f32, pr.f("radiusZ").max(0.0) as f32],
-        anim: pr.e("animation"),
-        speed: pr.f("velocity") as f32 * 0.5,
+        producer: [pr.f("producer/producerX") as f32, pr.f("producer/producerY") as f32, pr.f("producer/producerZ") as f32],
+        radius: [pr.f("producer/radiusX").max(0.0) as f32, pr.f("producer/radiusY").max(0.0) as f32, pr.f("producer/radiusZ").max(0.0) as f32],
+        anim: pr.e("physics/animation"),
+        speed: pr.f("physics/velocity") as f32 * 0.5,
         gravity: {
-            let g = pr.f("gravity") as f32;
-            let gv = [pr.f("gravityX") as f32, pr.f("gravityY") as f32, pr.f("gravityZ") as f32];
+            let g = pr.f("physics/gravity") as f32;
+            let gv =
+                [pr.f("physics/gravityVector/gravityX") as f32, pr.f("physics/gravityVector/gravityY") as f32, pr.f("physics/gravityVector/gravityZ") as f32];
             [gv[0] * g, gv[1] * g, gv[2] * g]
         },
-        resistance: pr.f("resistance").max(0.0) as f32,
-        axis: [pr.f("axisX") as f32, pr.f("axisY") as f32, pr.f("axisZ") as f32],
-        extra: pr.f("extra") as f32,
-        extra_angle: pr.f("extraAngle") as f32,
-        seed: (pr.f("randomSeed") as u32).wrapping_mul(0x9e3779b9) ^ ctx.seed,
+        resistance: pr.f("physics/resistance").max(0.0) as f32,
+        axis: [pr.f("physics/directionAxis/axisX") as f32, pr.f("physics/directionAxis/axisY") as f32, pr.f("physics/directionAxis/axisZ") as f32],
+        extra: pr.f("physics/extra") as f32,
+        extra_angle: pr.f("physics/extraAngle") as f32,
+        seed: (pr.f("extras/randomSeed") as u32).wrapping_mul(0x9e3779b9) ^ ctx.seed,
         max: 40_000,
         flat: false,
     };
@@ -886,12 +887,12 @@ fn particle_world(ctx: &EffectCtx, mut b: Buf) -> Buf {
         return b;
     }
     let st = simulate(&PW_CACHE, params_key(ctx, &Buf { img: Image::new(0, 0), offset: [0.0; 2], scale: 1.0 }, 1), ctx.time, &phys);
-    let kind = pr.e("particleType");
-    let birth = pr.color("birthColor");
-    let death = pr.color("deathColor");
-    let (bs, ds) = (pr.f("birthSize") as f32, pr.f("deathSize") as f32);
-    let svar = pr.f("sizeVariation") as f32 / 100.0;
-    let max_op = pr.f("maxOpacity") as f32 / 100.0;
+    let kind = pr.e("particle/particleType");
+    let birth = pr.color("particle/birthColor");
+    let death = pr.color("particle/deathColor");
+    let (bs, ds) = (pr.f("particle/birthSize") as f32, pr.f("particle/deathSize") as f32);
+    let svar = pr.f("particle/sizeVariation") as f32 / 100.0;
+    let max_op = pr.f("particle/maxOpacity") as f32 / 100.0;
     let s = b.scale as f32;
     // Camera at distance 2 (world units = layer width) looking at the origin (layer centre).
     let cam = 2.0f32;
@@ -915,7 +916,7 @@ fn particle_world(ctx: &EffectCtx, mut b: Buf) -> Buf {
         .collect();
     list.sort_by(|a, b| b.0.total_cmp(&a.0));
     let sprites: Vec<Sprite> = list.into_iter().map(|(_, s)| s).collect();
-    let mode = pr.e("transferMode");
+    let mode = pr.e("particle/transferMode");
     let fx = splat(b.img.width, b.img.height, &sprites, if mode == 2 { Acc::Add } else { Acc::Over });
     b.img = combine(
         &b.img,
@@ -939,32 +940,32 @@ fn particle_systems2(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let pr = ctx.params;
     let lh = ctx.layer_size[1] as f32;
     let unit = lh.max(1.0);
-    let pos = pr.v2("position");
-    let dir = (pr.f("direction") as f32).to_radians();
+    let pos = pr.v2("producer/position");
+    let dir = (pr.f("physics/direction") as f32).to_radians();
     let phys = Phys {
         rate: pr.f("birthRate").max(0.0) * 60.0,
         life: pr.f("longevity").max(0.0) as f32,
         producer: [pos[0] as f32 / unit, pos[1] as f32 / unit, 0.0],
-        radius: [pr.f("radiusX").max(0.0) as f32 / unit, pr.f("radiusY").max(0.0) as f32 / unit, 0.0],
-        anim: [0u32, 1, 2, 3, 4, 5, 6, 7, 8, 9][pr.e("animation").min(9) as usize],
-        speed: pr.f("velocity") as f32 * 0.25,
-        gravity: [0.0, pr.f("gravity") as f32 * 0.5, 0.0],
-        resistance: pr.f("resistance").max(0.0) as f32,
+        radius: [pr.f("producer/radiusX").max(0.0) as f32 / unit, pr.f("producer/radiusY").max(0.0) as f32 / unit, 0.0],
+        anim: [0u32, 1, 2, 3, 4, 5, 6, 7, 8, 9][pr.e("physics/animation").min(9) as usize],
+        speed: pr.f("physics/velocity") as f32 * 0.25,
+        gravity: [0.0, pr.f("physics/gravity") as f32 * 0.5, 0.0],
+        resistance: pr.f("physics/resistance").max(0.0) as f32,
         // AE angles: 0° = up, clockwise.
         axis: [dir.sin(), -dir.cos(), 0.0],
-        extra: pr.f("extra") as f32,
-        extra_angle: 45.0 * pr.f("extra") as f32,
+        extra: pr.f("physics/extra") as f32,
+        extra_angle: 45.0 * pr.f("physics/extra") as f32,
         seed: (pr.f("randomSeed") as u32).wrapping_mul(0x85ebca6b) ^ ctx.seed,
         max: 40_000,
         flat: true,
     };
     let st = simulate(&PS2_CACHE, params_key(ctx, &Buf { img: Image::new(0, 0), offset: [0.0; 2], scale: 1.0 }, 2), ctx.time, &phys);
-    let kind = pr.e("particleType");
-    let birth = pr.color("birthColor");
-    let death = pr.color("deathColor");
-    let (bs, ds) = (pr.f("birthSize") as f32, pr.f("deathSize") as f32);
-    let svar = pr.f("sizeVariation") as f32 / 100.0;
-    let max_op = pr.f("maxOpacity") as f32 / 100.0;
+    let kind = pr.e("particle/particleType");
+    let birth = pr.color("particle/birthColor");
+    let death = pr.color("particle/deathColor");
+    let (bs, ds) = (pr.f("particle/birthSize") as f32, pr.f("particle/deathSize") as f32);
+    let svar = pr.f("particle/sizeVariation") as f32 / 100.0;
+    let max_op = pr.f("particle/maxOpacity") as f32 / 100.0;
     let s = b.scale as f32;
     let sprites: Vec<Sprite> = st
         .parts
@@ -976,7 +977,7 @@ fn particle_systems2(ctx: &EffectCtx, mut b: Buf) -> Buf {
             type_sprite(kind, bx as f32, by as f32, r, c, q.v[0] * unit * s, q.v[1] * unit * s, (q.id % 628) as f32 * 0.01 + q.age * 2.0)
         })
         .collect();
-    let mode = pr.e("transferMode");
+    let mode = pr.e("particle/transferMode");
     let fx = splat(b.img.width, b.img.height, &sprites, if mode == 2 { Acc::Add } else { Acc::Over });
     b.img = combine(
         &b.img,
@@ -1065,15 +1066,15 @@ fn mr_mercury(ctx: &EffectCtx, mut b: Buf) -> Buf {
         Acc::Add,
     );
     let thr = 0.35f32;
-    let ambient = pr.f("ambient") as f32 / 100.0;
-    let diffuse = pr.f("diffuse") as f32 / 100.0;
-    let specular = pr.f("specular") as f32 / 100.0;
-    let rough = pr.f("roughness").max(0.001) as f32;
-    let metal = pr.f("metal") as f32 / 100.0;
-    let li = pr.f("lightIntensity") as f32 / 100.0;
-    let lc = pr.color("lightColor");
-    let ldir = (pr.f("lightDirection") as f32).to_radians();
-    let lheight = pr.f("lightHeight") as f32 / 100.0;
+    let ambient = pr.f("shading/ambient") as f32 / 100.0;
+    let diffuse = pr.f("shading/diffuse") as f32 / 100.0;
+    let specular = pr.f("shading/specular") as f32 / 100.0;
+    let rough = pr.f("shading/roughness").max(0.001) as f32;
+    let metal = pr.f("shading/metal") as f32 / 100.0;
+    let li = pr.f("light/lightIntensity") as f32 / 100.0;
+    let lc = pr.color("light/lightColor");
+    let ldir = (pr.f("light/lightDirection") as f32).to_radians();
+    let lheight = pr.f("light/lightHeight") as f32 / 100.0;
     let l = norm3([ldir.sin(), -ldir.cos(), lheight.max(0.05)]);
     let src = b.img.clone();
     let mut out = Image::new(w, hh);
@@ -1122,9 +1123,9 @@ pub fn specs() -> Vec<EffectSpec> {
                 p("opacity", "Opacity", num(25.0), pct()),
                 p("transferMode", "Transfer Mode", Value::Enum(1), transfer()),
                 p("compositeWithOriginal", "Composite With Original", Value::Bool(true), ParamUi::Checkbox),
-                p("appearance", "Appearance", Value::Enum(0), popup(&["Refracting", "Soft Solid"])),
-                p("offset", "Offset", pt(0.5, 0.5), ParamUi::Point),
-                p("randomSeed", "Random Seed", num(0.0), slider(0.0, 10_000.0, 0.0, 1000.0, 0)),
+                p("extras/appearance", "Appearance", Value::Enum(0), popup(&["Refracting", "Soft Solid"])),
+                p("extras/offset", "Offset", pt(0.5, 0.5), ParamUi::Point),
+                p("extras/randomSeed", "Random Seed", num(0.0), slider(0.0, 10_000.0, 0.0, 1000.0, 0)),
             ],
             rainfall,
         ),
@@ -1141,16 +1142,16 @@ pub fn specs() -> Vec<EffectSpec> {
                 p("wind", "Wind", num(25.0), slider(-5000.0, 5000.0, -500.0, 500.0, 1)),
                 p("windVariation", "Variation % (Wind)", num(50.0), pct()),
                 p("spread", "Spread", num(0.0), slider(0.0, 1000.0, 0.0, 100.0, 1)),
-                p("wiggleAmount", "Amount (Wiggle)", num(2.0), slider(0.0, 100.0, 0.0, 20.0, 2)),
-                p("wiggleAmountVariation", "Variation % (Amount)", num(50.0), pct()),
-                p("wiggleFrequency", "Frequency (Wiggle)", num(1.0), slider(0.0, 20.0, 0.0, 5.0, 2)),
-                p("wiggleFrequencyVariation", "Variation % (Frequency)", num(50.0), pct()),
+                p("wiggle/wiggleAmount", "Amount", num(2.0), slider(0.0, 100.0, 0.0, 20.0, 2)),
+                p("wiggle/wiggleAmountVariation", "Variation % (Amount)", num(50.0), pct()),
+                p("wiggle/wiggleFrequency", "Frequency", num(1.0), slider(0.0, 20.0, 0.0, 5.0, 2)),
+                p("wiggle/wiggleFrequencyVariation", "Variation % (Frequency)", num(50.0), pct()),
                 p("color", "Color", col(1.0, 1.0, 1.0), ParamUi::Color),
                 p("opacity", "Opacity", num(100.0), pct()),
                 p("transferMode", "Transfer Mode", Value::Enum(0), transfer()),
                 p("compositeWithOriginal", "Composite With Original", Value::Bool(true), ParamUi::Checkbox),
-                p("offset", "Offset", pt(0.5, 0.5), ParamUi::Point),
-                p("randomSeed", "Random Seed", num(0.0), slider(0.0, 10_000.0, 0.0, 1000.0, 0)),
+                p("extras/offset", "Offset", pt(0.5, 0.5), ParamUi::Point),
+                p("extras/randomSeed", "Random Seed", num(0.0), slider(0.0, 10_000.0, 0.0, 1000.0, 0)),
             ],
             snowfall,
         ),
@@ -1178,14 +1179,14 @@ pub fn specs() -> Vec<EffectSpec> {
                 p("displacement", "Displacement", num(5.0), slider(0.0, 100.0, 0.0, 30.0, 2)),
                 p("rippleHeight", "Ripple Height", num(30.0), slider(0.0, 200.0, 0.0, 100.0, 1)),
                 p("spreading", "Spreading", num(100.0), slider(0.0, 1000.0, 0.0, 300.0, 1)),
-                p("lightIntensity", "Light Intensity", num(100.0), slider(0.0, 400.0, 0.0, 200.0, 1)),
-                p("lightColor", "Light Color", col(1.0, 1.0, 1.0), ParamUi::Color),
-                p("lightHeight", "Light Height", num(25.0), slider(-100.0, 100.0, -100.0, 100.0, 1)),
-                p("lightDirection", "Light Direction", num(-45.0), ParamUi::Angle),
-                p("ambient", "Ambient", num(0.0), slider(-200.0, 200.0, -100.0, 100.0, 1)),
-                p("diffuse", "Diffuse", num(0.0), slider(0.0, 200.0, 0.0, 100.0, 1)),
-                p("specular", "Specular", num(20.0), slider(0.0, 200.0, 0.0, 100.0, 1)),
-                p("roughness", "Roughness", num(0.05), slider(0.001, 1.0, 0.001, 0.5, 3)),
+                p("light/lightIntensity", "Light Intensity", num(100.0), slider(0.0, 400.0, 0.0, 200.0, 1)),
+                p("light/lightColor", "Light Color", col(1.0, 1.0, 1.0), ParamUi::Color),
+                p("light/lightHeight", "Light Height", num(25.0), slider(-100.0, 100.0, -100.0, 100.0, 1)),
+                p("light/lightDirection", "Light Direction", num(-45.0), ParamUi::Angle),
+                p("shading/ambient", "Ambient", num(0.0), slider(-200.0, 200.0, -100.0, 100.0, 1)),
+                p("shading/diffuse", "Diffuse", num(0.0), slider(0.0, 200.0, 0.0, 100.0, 1)),
+                p("shading/specular", "Specular", num(20.0), slider(0.0, 200.0, 0.0, 100.0, 1)),
+                p("shading/roughness", "Roughness", num(0.05), slider(0.001, 1.0, 0.001, 0.5, 3)),
             ],
             drizzle,
         ),
@@ -1208,34 +1209,34 @@ pub fn specs() -> Vec<EffectSpec> {
             vec![
                 p("birthRate", "Birth Rate", num(0.5), slider(0.0, 100.0, 0.0, 10.0, 2)),
                 p("longevity", "Longevity (sec)", num(1.0), slider(0.0, 100.0, 0.0, 10.0, 2)),
-                p("producerX", "Position X", num(0.0), slider(-10.0, 10.0, -1.0, 1.0, 2)),
-                p("producerY", "Position Y", num(0.0), slider(-10.0, 10.0, -1.0, 1.0, 2)),
-                p("producerZ", "Position Z", num(0.0), slider(-10.0, 10.0, -1.0, 1.0, 2)),
-                p("radiusX", "Radius X", num(0.025), slider(0.0, 10.0, 0.0, 1.0, 3)),
-                p("radiusY", "Radius Y", num(0.025), slider(0.0, 10.0, 0.0, 1.0, 3)),
-                p("radiusZ", "Radius Z", num(0.025), slider(0.0, 10.0, 0.0, 1.0, 3)),
-                p("animation", "Animation", Value::Enum(0), popup(PW_ANIMS)),
-                p("velocity", "Velocity", num(1.0), slider(-10.0, 10.0, 0.0, 5.0, 2)),
-                p("inheritVelocity", "Inherit Velocity %", num(0.0), slider(-100.0, 100.0, -100.0, 100.0, 1)),
-                p("gravity", "Gravity", num(0.5), slider(-10.0, 10.0, -2.0, 2.0, 3)),
-                p("resistance", "Resistance", num(0.0), slider(0.0, 20.0, 0.0, 5.0, 2)),
-                p("extra", "Extra", num(1.0), slider(0.0, 10.0, 0.0, 2.0, 2)),
-                p("extraAngle", "Extra Angle", num(360.0), ParamUi::Angle),
-                p("axisX", "Direction Axis X", num(0.0), slider(-1.0, 1.0, -1.0, 1.0, 2)),
-                p("axisY", "Direction Axis Y", num(-1.0), slider(-1.0, 1.0, -1.0, 1.0, 2)),
-                p("axisZ", "Direction Axis Z", num(0.0), slider(-1.0, 1.0, -1.0, 1.0, 2)),
-                p("gravityX", "Gravity Vector X", num(0.0), slider(-1.0, 1.0, -1.0, 1.0, 2)),
-                p("gravityY", "Gravity Vector Y", num(1.0), slider(-1.0, 1.0, -1.0, 1.0, 2)),
-                p("gravityZ", "Gravity Vector Z", num(0.0), slider(-1.0, 1.0, -1.0, 1.0, 2)),
-                p("particleType", "Particle Type", Value::Enum(0), popup(PARTICLE_TYPES)),
-                p("birthSize", "Birth Size", num(0.2), slider(0.0, 10.0, 0.0, 1.0, 3)),
-                p("deathSize", "Death Size", num(0.2), slider(0.0, 10.0, 0.0, 1.0, 3)),
-                p("sizeVariation", "Size Variation", num(0.0), pct()),
-                p("maxOpacity", "Max Opacity", num(75.0), pct()),
-                p("birthColor", "Birth Color", col(1.0, 1.0, 0.0), ParamUi::Color),
-                p("deathColor", "Death Color", col(0.6, 0.0, 0.0), ParamUi::Color),
-                p("transferMode", "Transfer Mode", Value::Enum(0), popup(&["Composite", "Screen", "Add", "Black Matte"])),
-                p("randomSeed", "Random Seed", num(0.0), slider(0.0, 10_000.0, 0.0, 1000.0, 0)),
+                p("producer/producerX", "Position X", num(0.0), slider(-10.0, 10.0, -1.0, 1.0, 2)),
+                p("producer/producerY", "Position Y", num(0.0), slider(-10.0, 10.0, -1.0, 1.0, 2)),
+                p("producer/producerZ", "Position Z", num(0.0), slider(-10.0, 10.0, -1.0, 1.0, 2)),
+                p("producer/radiusX", "Radius X", num(0.025), slider(0.0, 10.0, 0.0, 1.0, 3)),
+                p("producer/radiusY", "Radius Y", num(0.025), slider(0.0, 10.0, 0.0, 1.0, 3)),
+                p("producer/radiusZ", "Radius Z", num(0.025), slider(0.0, 10.0, 0.0, 1.0, 3)),
+                p("physics/animation", "Animation", Value::Enum(0), popup(PW_ANIMS)),
+                p("physics/velocity", "Velocity", num(1.0), slider(-10.0, 10.0, 0.0, 5.0, 2)),
+                p("physics/inheritVelocity", "Inherit Velocity %", num(0.0), slider(-100.0, 100.0, -100.0, 100.0, 1)),
+                p("physics/gravity", "Gravity", num(0.5), slider(-10.0, 10.0, -2.0, 2.0, 3)),
+                p("physics/resistance", "Resistance", num(0.0), slider(0.0, 20.0, 0.0, 5.0, 2)),
+                p("physics/extra", "Extra", num(1.0), slider(0.0, 10.0, 0.0, 2.0, 2)),
+                p("physics/extraAngle", "Extra Angle", num(360.0), ParamUi::Angle),
+                p("physics/directionAxis/axisX", "Axis X", num(0.0), slider(-1.0, 1.0, -1.0, 1.0, 2)),
+                p("physics/directionAxis/axisY", "Axis Y", num(-1.0), slider(-1.0, 1.0, -1.0, 1.0, 2)),
+                p("physics/directionAxis/axisZ", "Axis Z", num(0.0), slider(-1.0, 1.0, -1.0, 1.0, 2)),
+                p("physics/gravityVector/gravityX", "Gravity X", num(0.0), slider(-1.0, 1.0, -1.0, 1.0, 2)),
+                p("physics/gravityVector/gravityY", "Gravity Y", num(1.0), slider(-1.0, 1.0, -1.0, 1.0, 2)),
+                p("physics/gravityVector/gravityZ", "Gravity Z", num(0.0), slider(-1.0, 1.0, -1.0, 1.0, 2)),
+                p("particle/particleType", "Particle Type", Value::Enum(0), popup(PARTICLE_TYPES)),
+                p("particle/birthSize", "Birth Size", num(0.2), slider(0.0, 10.0, 0.0, 1.0, 3)),
+                p("particle/deathSize", "Death Size", num(0.2), slider(0.0, 10.0, 0.0, 1.0, 3)),
+                p("particle/sizeVariation", "Size Variation", num(0.0), pct()),
+                p("particle/maxOpacity", "Max Opacity", num(75.0), pct()),
+                p("particle/birthColor", "Birth Color", col(1.0, 1.0, 0.0), ParamUi::Color),
+                p("particle/deathColor", "Death Color", col(0.6, 0.0, 0.0), ParamUi::Color),
+                p("particle/transferMode", "Transfer Mode", Value::Enum(0), popup(&["Composite", "Screen", "Add", "Black Matte"])),
+                p("extras/randomSeed", "Random Seed", num(0.0), slider(0.0, 10_000.0, 0.0, 1000.0, 0)),
             ],
             particle_world,
         ),
@@ -1245,24 +1246,24 @@ pub fn specs() -> Vec<EffectSpec> {
             vec![
                 p("birthRate", "Birth Rate", num(2.0), slider(0.0, 100.0, 0.0, 20.0, 2)),
                 p("longevity", "Longevity (sec)", num(1.0), slider(0.0, 100.0, 0.0, 10.0, 2)),
-                p("position", "Position", pt(0.5, 0.5), ParamUi::Point),
-                p("radiusX", "Radius X", num(0.0), slider(0.0, 2000.0, 0.0, 200.0, 1)),
-                p("radiusY", "Radius Y", num(0.0), slider(0.0, 2000.0, 0.0, 200.0, 1)),
-                p("animation", "Animation", Value::Enum(0), popup(PW_ANIMS)),
-                p("velocity", "Velocity", num(2.0), slider(-20.0, 20.0, 0.0, 10.0, 2)),
-                p("inheritVelocity", "Inherit Velocity %", num(0.0), slider(-100.0, 100.0, -100.0, 100.0, 1)),
-                p("gravity", "Gravity", num(1.0), slider(-20.0, 20.0, -5.0, 5.0, 2)),
-                p("resistance", "Resistance", num(0.0), slider(0.0, 20.0, 0.0, 5.0, 2)),
-                p("direction", "Direction", num(0.0), ParamUi::Angle),
-                p("extra", "Extra", num(1.0), slider(0.0, 10.0, 0.0, 2.0, 2)),
-                p("particleType", "Particle Type", Value::Enum(0), popup(PARTICLE_TYPES)),
-                p("birthSize", "Birth Size", num(0.5), slider(0.0, 20.0, 0.0, 5.0, 2)),
-                p("deathSize", "Death Size", num(1.5), slider(0.0, 20.0, 0.0, 5.0, 2)),
-                p("sizeVariation", "Size Variation", num(0.0), pct()),
-                p("maxOpacity", "Max Opacity", num(75.0), pct()),
-                p("birthColor", "Birth Color", col(1.0, 1.0, 0.0), ParamUi::Color),
-                p("deathColor", "Death Color", col(0.6, 0.0, 0.0), ParamUi::Color),
-                p("transferMode", "Transfer Mode", Value::Enum(0), popup(&["Composite", "Screen", "Add", "Black Matte"])),
+                p("producer/position", "Position", pt(0.5, 0.5), ParamUi::Point),
+                p("producer/radiusX", "Radius X", num(0.0), slider(0.0, 2000.0, 0.0, 200.0, 1)),
+                p("producer/radiusY", "Radius Y", num(0.0), slider(0.0, 2000.0, 0.0, 200.0, 1)),
+                p("physics/animation", "Animation", Value::Enum(0), popup(PW_ANIMS)),
+                p("physics/velocity", "Velocity", num(2.0), slider(-20.0, 20.0, 0.0, 10.0, 2)),
+                p("physics/inheritVelocity", "Inherit Velocity %", num(0.0), slider(-100.0, 100.0, -100.0, 100.0, 1)),
+                p("physics/gravity", "Gravity", num(1.0), slider(-20.0, 20.0, -5.0, 5.0, 2)),
+                p("physics/resistance", "Resistance", num(0.0), slider(0.0, 20.0, 0.0, 5.0, 2)),
+                p("physics/direction", "Direction", num(0.0), ParamUi::Angle),
+                p("physics/extra", "Extra", num(1.0), slider(0.0, 10.0, 0.0, 2.0, 2)),
+                p("particle/particleType", "Particle Type", Value::Enum(0), popup(PARTICLE_TYPES)),
+                p("particle/birthSize", "Birth Size", num(0.5), slider(0.0, 20.0, 0.0, 5.0, 2)),
+                p("particle/deathSize", "Death Size", num(1.5), slider(0.0, 20.0, 0.0, 5.0, 2)),
+                p("particle/sizeVariation", "Size Variation", num(0.0), pct()),
+                p("particle/maxOpacity", "Max Opacity", num(75.0), pct()),
+                p("particle/birthColor", "Birth Color", col(1.0, 1.0, 0.0), ParamUi::Color),
+                p("particle/deathColor", "Death Color", col(0.6, 0.0, 0.0), ParamUi::Color),
+                p("particle/transferMode", "Transfer Mode", Value::Enum(0), popup(&["Composite", "Screen", "Add", "Black Matte"])),
                 p("randomSeed", "Random Seed", num(0.0), slider(0.0, 10_000.0, 0.0, 1000.0, 0)),
             ],
             particle_systems2,
@@ -1285,15 +1286,15 @@ pub fn specs() -> Vec<EffectSpec> {
                 p("blobInfluence", "Blob Influence", num(100.0), slider(0.0, 400.0, 0.0, 200.0, 1)),
                 p("blobBirthSize", "Blob Birth Size", num(0.5), slider(0.0, 10.0, 0.0, 2.0, 2)),
                 p("blobDeathSize", "Blob Death Size", num(0.25), slider(0.0, 10.0, 0.0, 2.0, 2)),
-                p("lightIntensity", "Light Intensity", num(100.0), slider(0.0, 400.0, 0.0, 200.0, 1)),
-                p("lightColor", "Light Color", col(1.0, 1.0, 1.0), ParamUi::Color),
-                p("lightHeight", "Light Height", num(50.0), slider(-100.0, 100.0, -100.0, 100.0, 1)),
-                p("lightDirection", "Light Direction", num(-45.0), ParamUi::Angle),
-                p("ambient", "Ambient", num(0.0), slider(-200.0, 200.0, -100.0, 100.0, 1)),
-                p("diffuse", "Diffuse", num(75.0), slider(0.0, 200.0, 0.0, 100.0, 1)),
-                p("specular", "Specular", num(50.0), slider(0.0, 200.0, 0.0, 100.0, 1)),
-                p("roughness", "Roughness", num(0.05), slider(0.001, 1.0, 0.001, 0.5, 3)),
-                p("metal", "Metal", num(100.0), pct()),
+                p("light/lightIntensity", "Light Intensity", num(100.0), slider(0.0, 400.0, 0.0, 200.0, 1)),
+                p("light/lightColor", "Light Color", col(1.0, 1.0, 1.0), ParamUi::Color),
+                p("light/lightHeight", "Light Height", num(50.0), slider(-100.0, 100.0, -100.0, 100.0, 1)),
+                p("light/lightDirection", "Light Direction", num(-45.0), ParamUi::Angle),
+                p("shading/ambient", "Ambient", num(0.0), slider(-200.0, 200.0, -100.0, 100.0, 1)),
+                p("shading/diffuse", "Diffuse", num(75.0), slider(0.0, 200.0, 0.0, 100.0, 1)),
+                p("shading/specular", "Specular", num(50.0), slider(0.0, 200.0, 0.0, 100.0, 1)),
+                p("shading/roughness", "Roughness", num(0.05), slider(0.001, 1.0, 0.001, 0.5, 3)),
+                p("shading/metal", "Metal", num(100.0), pct()),
             ],
             mr_mercury,
         ),
@@ -1357,7 +1358,7 @@ mod tests {
 
     #[test]
     fn rainfall_deterministic_and_falls() {
-        let vals = [("drops", num(200.0)), ("opacity", num(100.0)), ("appearance", Value::Enum(1)), ("color", col(1.0, 1.0, 1.0))];
+        let vals = [("drops", num(200.0)), ("opacity", num(100.0)), ("extras/appearance", Value::Enum(1)), ("color", col(1.0, 1.0, 1.0))];
         let a = run("ec.sim.ccrainfall", &vals, grey(40, 40), 0.5);
         let b = run("ec.sim.ccrainfall", &vals, grey(40, 40), 0.5);
         assert_eq!(a, b);
@@ -1416,7 +1417,13 @@ mod tests {
     }
 
     fn pw_vals(seed: f64) -> Vec<(&'static str, Value)> {
-        vec![("birthRate", num(1.0)), ("randomSeed", num(seed)), ("particleType", Value::Enum(2)), ("birthSize", num(0.3)), ("deathSize", num(0.3))]
+        vec![
+            ("birthRate", num(1.0)),
+            ("extras/randomSeed", num(seed)),
+            ("particle/particleType", Value::Enum(2)),
+            ("particle/birthSize", num(0.3)),
+            ("particle/deathSize", num(0.3)),
+        ]
     }
 
     #[test]
@@ -1470,11 +1477,11 @@ mod tests {
         let base = |g: f64| {
             vec![
                 ("birthRate", num(2.0)),
-                ("velocity", num(0.2)),
-                ("gravity", num(g)),
-                ("particleType", Value::Enum(2)),
-                ("birthSize", num(0.2)),
-                ("deathSize", num(0.2)),
+                ("physics/velocity", num(0.2)),
+                ("physics/gravity", num(g)),
+                ("particle/particleType", Value::Enum(2)),
+                ("particle/birthSize", num(0.2)),
+                ("particle/deathSize", num(0.2)),
                 ("longevity", num(3.0)),
             ]
         };
@@ -1486,7 +1493,13 @@ mod tests {
 
     #[test]
     fn particle_systems2_seek_and_direction() {
-        let v = vec![("position", pt(24.0, 24.0)), ("birthRate", num(3.0)), ("gravity", num(0.0)), ("velocity", num(1.0)), ("animation", Value::Enum(1))];
+        let v = vec![
+            ("producer/position", pt(24.0, 24.0)),
+            ("birthRate", num(3.0)),
+            ("physics/gravity", num(0.0)),
+            ("physics/velocity", num(1.0)),
+            ("physics/animation", Value::Enum(1)),
+        ];
         let _ = run("ec.sim.ccparticlesystems2", &v, Image::new(48, 48), 0.5);
         let a = run("ec.sim.ccparticlesystems2", &v, Image::new(48, 48), 1.0);
         let mut v2 = v.clone();
@@ -1506,7 +1519,7 @@ mod tests {
         let _ = run("ec.sim.ccmrmercury", &v, ramp(48, 48), 0.7);
         let a = run("ec.sim.ccmrmercury", &v, ramp(48, 48), 1.4);
         let mut v2 = v.clone();
-        v2.push(("metal", num(100.0)));
+        v2.push(("shading/metal", num(100.0)));
         let b = run("ec.sim.ccmrmercury", &v2, ramp(48, 48), 1.4);
         assert_eq!(a, b);
         assert!(a.data.iter().any(|p| p[3] > 0.5), "blobs visible");

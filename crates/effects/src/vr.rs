@@ -154,7 +154,7 @@ fn mtv(m: &[[f64; 3]; 3], v: V3) -> V3 {
 
 // ---------------------------------------------------------------- projections (VR Converter)
 
-pub const PROJECTIONS: [&str; 6] = ["Equirectangular", "Cube-map 4:3", "Cube-map 3:2", "Cube-map 6:1", "Sphere Map", "2D Rectilinear"];
+pub const PROJECTIONS: [&str; 6] = ["Equirectangular 2:1", "Cube-map 4:3", "Cube-map Pano2VR 3:2", "Cube-map GearVR 6:1", "Sphere-map", "2D Source"];
 
 /// Cube faces: (forward, right, up).
 const FACES: [(V3, V3, V3); 6] = [
@@ -465,6 +465,12 @@ fn vr_denoise(ctx: &EffectCtx, mut b: Buf) -> Buf {
         return b;
     }
     let r = ((1.0 + level * 4.0) * b.scale).max(1.0) as usize;
+    if ctx.params.e("noiseType") == 1 {
+        // Salt-and-pepper speckles: a median removes isolated outliers outright.
+        let mr = ((level * 3.0 * b.scale).round() as usize).max(1);
+        b.img = per_eye(&b.img, layout(ctx), |e, _| crate::noise::median_image(e, mr));
+        return b;
+    }
     let eps = (level * level * 0.02) as f32;
     let detail = (ctx.params.f("detail") / 100.0).clamp(0.0, 1.0) as f32;
     b.img = per_eye(&b.img, layout(ctx), |e, _| {
@@ -558,7 +564,11 @@ fn vr_rotate(ctx: &EffectCtx, mut b: Buf) -> Buf {
     if t == 0.0 && pn == 0.0 && r == 0.0 {
         return b;
     }
-    let m = rot_params(ctx);
+    let mut m = rot_params(ctx);
+    if ctx.params.b("invertRotation") {
+        // The inverse of a rotation is its transpose.
+        m = [[m[0][0], m[1][0], m[2][0]], [m[0][1], m[1][1], m[2][1]], [m[0][2], m[1][2], m[2][2]]];
+    }
     let eq = Proj { kind: 0, fov: 360.0 };
     b.img = per_eye(&b.img, layout(ctx), |e, _| convert(e, eq, eq, e.width, e.height, Some(&m)));
     b
@@ -586,8 +596,8 @@ fn vr_sphere_to_plane(ctx: &EffectCtx, mut b: Buf) -> Buf {
 }
 
 fn vr_plane_to_sphere(ctx: &EffectCtx, mut b: Buf) -> Buf {
-    // The layer is a flat picture placed on the sphere: horizontal FOV = 90° × scale.
-    let fov = (90.0 * ctx.params.f("scale") / 100.0).clamp(1.0, 179.0);
+    // The layer is a flat picture placed on the sphere, Scale degrees wide.
+    let fov = ctx.params.f("scale").clamp(1.0, 179.0);
     let m = rot_params(ctx);
     let feather = (ctx.params.f("feather") / 100.0).clamp(0.0, 1.0);
     let flat = Proj { kind: 5, fov };
@@ -630,6 +640,8 @@ fn vr_chromatic(ctx: &EffectCtx, mut b: Buf) -> Buf {
     }
     let center = mv(&rotation(ctx.params.f("centerTilt"), ctx.params.f("centerPan"), 0.0), [0.0, 0.0, 1.0]);
     let falloff = (ctx.params.f("falloff") / 100.0).clamp(0.0, 1.0);
+    // Falloff Invert keeps the aberration near the point of interest instead of away from it.
+    let invert = ctx.params.b("falloffInvert");
     b.img = per_eye(&b.img, layout(ctx), |e, _| {
         let (w, h) = (e.width as f64, e.height as f64);
         let mut o = Image::new(e.width, e.height);
@@ -641,6 +653,7 @@ fn vr_chromatic(ctx: &EffectCtx, mut b: Buf) -> Buf {
                 let ax = [center[1] * d[2] - center[2] * d[1], center[2] * d[0] - center[0] * d[2], center[0] * d[1] - center[1] * d[0]];
                 let al = dot(ax, ax).sqrt();
                 let weight = (th / PI).powf(1.0 + falloff * 3.0);
+                let weight = if invert { 1.0 - weight } else { weight };
                 let mut out = [0.0f32; 4];
                 for c in 0..3 {
                     let s = if al < 1e-9 {
@@ -759,7 +772,10 @@ fn vr_fractal(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let invert = pr.b("invert");
     let contrast = pr.f("contrast") as f32 / 100.0;
     let brightness = pr.f("brightness") as f32 / 100.0;
-    let scale = (pr.f("scale") / 100.0).max(0.01) as f32;
+    let scale = (pr.f("transform/scale") / 100.0).max(0.01) as f32;
+    let rot = rotation(pr.f("transform/tilt"), pr.f("transform/pan"), pr.f("transform/roll"));
+    let infl = (pr.get("subSettings/subInfluence").map(Value::as_f64).unwrap_or(50.0) / 100.0).clamp(0.0, 1.0) as f32;
+    let sub = (pr.get("subSettings/subScaling").map(Value::as_f64).unwrap_or(50.0) / 100.0).clamp(0.1, 1.0) as f32;
     let octaves = pr.f("complexity").clamp(1.0, 20.0);
     let evo = (pr.f("evolution") / 360.0) as f32;
     let opacity = (pr.f("opacity") / 100.0) as f32;
@@ -771,8 +787,9 @@ fn vr_fractal(ctx: &EffectCtx, mut b: Buf) -> Buf {
         let mut g = Image::new(e.width, e.height);
         g.rows_mut().for_each(|(y, row)| {
             for (x, px) in row.iter_mut().enumerate() {
-                let d = equi_dir(x as f64 + 0.5, y as f64 + 0.5, w, h);
+                let d = mv(&rot, equi_dir(x as f64 + 0.5, y as f64 + 0.5, w, h));
                 let mut v = 0.0f32;
+                let mut best = 0.0f32;
                 let mut amp = 1.0f32;
                 let mut freq = base;
                 let mut norm = 0.0f32;
@@ -782,16 +799,19 @@ fn vr_fractal(ctx: &EffectCtx, mut b: Buf) -> Buf {
                     let q = [d[0] as f32 * freq + evo * 0.37, d[1] as f32 * freq + evo * 0.71, d[2] as f32 * freq + evo * 0.59];
                     let n = value_noise(q[0] + o as f32 * 17.3, q[1], q[2], seed.wrapping_add(o as u32));
                     let n = match kind {
-                        1 => (n * 2.0 - 1.0).abs(),
-                        2 => 1.0 - (n * 2.0 - 1.0).abs(),
+                        1 => 1.0 - (n * 2.0 - 1.0).abs(),
+                        // Strings: thin bright lines along the noise's zero crossings.
+                        3 => 1.0 - ((n * 2.0 - 1.0).abs() / 0.12).clamp(0.0, 1.0).powi(2),
                         _ => n,
                     };
+                    best = best.max(n * amp);
                     v += n * amp * wgt;
                     norm += amp * wgt;
-                    amp *= 0.5;
-                    freq *= 2.0;
+                    amp *= infl;
+                    freq /= sub;
                 }
-                let mut v = v / norm.max(1e-6);
+                // Max keeps the strongest layer rather than the weighted sum.
+                let mut v = if kind == 2 { best } else { v / norm.max(1e-6) };
                 v = (v - 0.5) * contrast + 0.5 + brightness;
                 if invert {
                     v = 1.0 - v;
@@ -871,7 +891,7 @@ pub fn specs() -> Vec<EffectSpec> {
         grad.push(p(ids[2], ids[3], Value::Vec2(pt), ParamUi::Point));
         grad.push(p(ids[4], ids[5], col(c[0], c[1], c[2]), ParamUi::Color));
     }
-    grad.push(p("blend", "Blend", num(2.0), slider(0.1, 10.0, 0.5, 6.0, 2)));
+    grad.push(p("blend", "Gradient Power", num(2.0), slider(0.1, 10.0, 0.5, 6.0, 2)));
     let (v, u) = pct(100.0);
     grad.push(p("opacity", "Opacity", v, u));
     grad.push(p("blendingMode", "Blending Mode", Value::Enum(0), popup(&BLEND_OPTS)));
@@ -887,7 +907,8 @@ pub fn specs() -> Vec<EffectSpec> {
                 p("aberrationRed", "Aberration (Red)", num(10.0), slider(-100.0, 100.0, -100.0, 100.0, 1)),
                 p("aberrationGreen", "Aberration (Green)", num(0.0), slider(-100.0, 100.0, -100.0, 100.0, 1)),
                 p("aberrationBlue", "Aberration (Blue)", num(-10.0), slider(-100.0, 100.0, -100.0, 100.0, 1)),
-                p("falloff", "Falloff", num(50.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
+                p("falloff", "Falloff Distance", num(50.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
+                p("falloffInvert", "Falloff Invert", Value::Bool(false), ParamUi::Checkbox),
             ],
             vr_chromatic,
         ),
@@ -912,6 +933,7 @@ pub fn specs() -> Vec<EffectSpec> {
             "VR De-Noise",
             vec![
                 layout_param(),
+                p("noiseType", "Noise Type", Value::Enum(0), popup(&["Random Valued", "Salt-and-Pepper"])),
                 p("noiseLevel", "Noise Level", num(20.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
                 p("detail", "Detail", num(0.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
             ],
@@ -937,13 +959,18 @@ pub fn specs() -> Vec<EffectSpec> {
             "VR Fractal Noise",
             vec![
                 layout_param(),
-                p("fractalType", "Fractal Type", Value::Enum(0), popup(&["Basic", "Turbulent Smooth", "Turbulent Sharp"])),
-                p("invert", "Invert", Value::Bool(false), ParamUi::Checkbox),
+                p("fractalType", "Fractal Type", Value::Enum(0), popup(&["Basic", "Turbulent Sharp", "Max", "Strings"])),
                 p("contrast", "Contrast", num(100.0), slider(0.0, 10000.0, 0.0, 400.0, 1)),
                 p("brightness", "Brightness", num(0.0), slider(-10000.0, 10000.0, -200.0, 200.0, 1)),
-                p("scale", "Scale", num(100.0), slider(1.0, 10000.0, 10.0, 600.0, 1)),
+                p("invert", "Invert", Value::Bool(false), ParamUi::Checkbox),
                 p("complexity", "Complexity", num(6.0), slider(1.0, 20.0, 1.0, 20.0, 1)),
                 ang("evolution", "Evolution"),
+                p("transform/scale", "Scale", num(100.0), slider(1.0, 10000.0, 10.0, 600.0, 1)),
+                ang("transform/tilt", "Tilt (X Axis)"),
+                ang("transform/pan", "Pan (Y Axis)"),
+                ang("transform/roll", "Roll (Z Axis)"),
+                p("subSettings/subInfluence", "Sub Influence", num(50.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
+                p("subSettings/subScaling", "Sub Scaling", num(50.0), slider(10.0, 100.0, 10.0, 100.0, 1)),
                 p("randomSeed", "Random Seed", num(0.0), slider(0.0, 10000.0, 0.0, 1000.0, 0)),
                 p("opacity", "Opacity", num(100.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
                 p("blendingMode", "Blending Mode", Value::Enum(0), popup(&BLEND_OPTS)),
@@ -955,7 +982,7 @@ pub fn specs() -> Vec<EffectSpec> {
             "VR Glow",
             vec![
                 layout_param(),
-                p("luminanceThreshold", "Luminance Threshold", num(60.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
+                p("luminanceThreshold", "Luma Threshold", num(60.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
                 p("glowRadius", "Glow Radius", num(20.0), slider(0.0, 1000.0, 0.0, 200.0, 1)),
                 p("glowBrightness", "Glow Brightness", num(100.0), slider(0.0, 1000.0, 0.0, 400.0, 1)),
                 p("glowSaturation", "Glow Saturation", num(100.0), slider(0.0, 400.0, 0.0, 200.0, 1)),
@@ -969,29 +996,35 @@ pub fn specs() -> Vec<EffectSpec> {
             "VR Plane to Sphere",
             vec![
                 layout_param(),
-                p("scale", "Scale", num(100.0), slider(1.0, 198.0, 1.0, 198.0, 1)),
+                p("scale", "Scale (Degrees)", num(90.0), slider(1.0, 179.0, 1.0, 179.0, 1)),
+                p("feather", "Feather", num(0.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
                 ang("tilt", "Tilt (X Axis)"),
                 ang("pan", "Pan (Y Axis)"),
                 ang("roll", "Roll (Z Axis)"),
-                p("feather", "Feather", num(0.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
             ],
             vr_plane_to_sphere,
         ),
         spec(
             "ec.vr.rotatesphere",
             "VR Rotate Sphere",
-            vec![layout_param(), ang("tilt", "Tilt (X Axis)"), ang("pan", "Pan (Y Axis)"), ang("roll", "Roll (Z Axis)")],
+            vec![
+                layout_param(),
+                p("invertRotation", "Invert Rotation", Value::Bool(false), ParamUi::Checkbox),
+                ang("tilt", "Tilt (X Axis)"),
+                ang("pan", "Pan (Y Axis)"),
+                ang("roll", "Roll (Z Axis)"),
+            ],
             vr_rotate,
         ),
         spec(
             "ec.vr.sharpen",
             "VR Sharpen",
-            vec![layout_param(), p("sharpenAmount", "Sharpen Amount", num(20.0), slider(0.0, 500.0, 0.0, 100.0, 1))],
+            vec![layout_param(), p("sharpenAmount", "Sharpen Amount", num(20.0), slider(0.0, 100.0, 0.0, 100.0, 1))],
             vr_sharpen,
         ),
         spec(
             "ec.vr.spheretoplane",
-            "VR Sphere To Plane",
+            "VR Sphere to Plane",
             vec![
                 layout_param(),
                 p("horizontalFov", "Horizontal FOV", num(90.0), slider(1.0, 179.0, 10.0, 170.0, 1)),
@@ -1144,6 +1177,29 @@ mod tests {
         let pic = Image::filled(64, 32, [1.0, 0.0, 0.0, 1.0]);
         let s = run_fx("ec.vr.planetosphere", &[], pic, 0.0, EffectEnv::default());
         assert!(s.img.get(32, 16)[3] > 0.99 && s.img.get(1, 16)[3] < 0.01);
+    }
+
+    #[test]
+    fn rotate_invert_undoes_rotation_and_options_take_effect() {
+        let img = sphere_img(64, 32);
+        let rot = [("pan", num(40.0)), ("tilt", num(15.0))];
+        let a = run_fx("ec.vr.rotatesphere", &rot, img.clone(), 0.0, EffectEnv::default());
+        let mut inv = rot.to_vec();
+        inv.push(("invertRotation", Value::Bool(true)));
+        let back = run_fx("ec.vr.rotatesphere", &inv, a.img.clone(), 0.0, EffectEnv::default());
+        let c = back.img.get(32, 16);
+        let o = img.get(32, 16);
+        assert!((0..3).all(|k| (c[k] - o[k]).abs() < 0.08), "{c:?} {o:?}");
+        // Falloff Invert, salt-and-pepper De-Noise and the VR fractal types all change the output.
+        let f0 = run_fx("ec.vr.chromaticaberrations", &[], img.clone(), 0.0, EffectEnv::default());
+        let f1 = run_fx("ec.vr.chromaticaberrations", &[("falloffInvert", Value::Bool(true))], img.clone(), 0.0, EffectEnv::default());
+        assert_ne!(f0.img.data, f1.img.data);
+        let d0 = run_fx("ec.vr.denoise", &[], img.clone(), 0.0, EffectEnv::default());
+        let d1 = run_fx("ec.vr.denoise", &[("noiseType", Value::Enum(1))], img.clone(), 0.0, EffectEnv::default());
+        assert_ne!(d0.img.data, d1.img.data);
+        let n: Vec<_> =
+            (0..4).map(|t| run_fx("ec.vr.fractalnoise", &[("fractalType", Value::Enum(t))], img.clone(), 0.0, EffectEnv::default()).img.data).collect();
+        assert!(n[0] != n[1] && n[1] != n[2] && n[2] != n[3]);
     }
 
     #[test]

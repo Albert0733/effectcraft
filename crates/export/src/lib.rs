@@ -186,6 +186,7 @@ pub(crate) fn render_frame(job: &Job, comp: &Comp, i: u64) -> Image {
         roi: None,
         nested_switches: job.nested_switches,
         draft_shadows: true,
+        proxy: job.settings.proxy_use,
     };
     let mut r = Renderer::new(job.project, job.footage, opts);
     r.expr = job.expr;

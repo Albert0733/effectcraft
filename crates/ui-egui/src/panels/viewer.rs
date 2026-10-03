@@ -156,6 +156,32 @@ thread_local! {
     static VIEW_CAM: std::cell::Cell<Option<CameraState>> = const { std::cell::Cell::new(None) };
 }
 
+/// Region of interest handles on screen: corners (0–3, clockwise from top-left) then edge
+/// midpoints (4 top, 5 right, 6 bottom, 7 left).
+fn roi_handles(r: Rect) -> [Pos2; 8] {
+    [r.left_top(), r.right_top(), r.right_bottom(), r.left_bottom(), r.center_top(), r.right_center(), r.center_bottom(), r.left_center()]
+}
+
+/// A drag starting on a region of interest handle: the ROI redrawn from the opposite corner (or
+/// edge, with the other axis kept).
+fn roi_drag(app: &EffectcraftApp, map: &ViewerMap, comp_rect: Rect, zoom: f32, press: Pos2) -> Option<ov::Drag> {
+    let [rx, ry, rw, rh] = app.session.state.region_of_interest?;
+    let r = Rect::from_min_size(comp_rect.min + vec2(rx as f32 * zoom, ry as f32 * zoom), vec2(rw as f32 * zoom, rh as f32 * zoom));
+    let i = roi_handles(r).iter().position(|h| h.distance(press) < 6.0)?;
+    let (x0, y0, x1, y1) = (rx, ry, rx + rw, ry + rh);
+    let _ = map;
+    Some(match i {
+        0 => ov::Drag::Roi { start: [x1, y1], keep: [None, None] },
+        1 => ov::Drag::Roi { start: [x0, y1], keep: [None, None] },
+        2 => ov::Drag::Roi { start: [x0, y0], keep: [None, None] },
+        3 => ov::Drag::Roi { start: [x1, y0], keep: [None, None] },
+        4 => ov::Drag::Roi { start: [x1, y1], keep: [Some(x0), None] },
+        5 => ov::Drag::Roi { start: [x0, y0], keep: [None, Some(y1)] },
+        6 => ov::Drag::Roi { start: [x0, y0], keep: [Some(x1), None] },
+        _ => ov::Drag::Roi { start: [x1, y0], keep: [None, Some(y1)] },
+    })
+}
+
 /// The camera the viewer shows (view camera or the comp's active camera).
 fn cam_state(ctx: &EvalCtx) -> CameraState {
     VIEW_CAM.with(|c| c.get()).unwrap_or_else(|| three_d::active_camera(ctx))
@@ -347,7 +373,10 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     // Bottom control bar.
     let bar_h = 30.0;
     let bar = Rect::from_min_max(pos2(rect.min.x, rect.max.y - bar_h), rect.max);
-    let full = Rect::from_min_max(pos2(rect.min.x, nav.max.y), pos2(rect.max.x, bar.min.y));
+    // The expression error bar sits above the control bar while expressions fail.
+    let err_h = super::expr_bar::height(app, &ctx, cid);
+    let err_bar = Rect::from_min_max(pos2(rect.min.x, bar.min.y - err_h), pos2(rect.max.x, bar.min.y));
+    let full = Rect::from_min_max(pos2(rect.min.x, nav.max.y), pos2(rect.max.x, err_bar.min.y));
     let pasteboard = app.ui.viewer.pasteboard.map(|[r, g, b]| Color32::from_rgb(r, g, b)).unwrap_or(t.pasteboard);
     // View ▸ Switch View Layout: extra views (Top / Front / Right) beside the main view, which
     // keeps the overlays and the interaction.
@@ -394,7 +423,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     }
     let snap_project = app.session.project.clone();
     let snap_expr = app.session.expr.clone();
-    let ectx = EvalCtx { project: &snap_project, comp_id: cid, comp: &comp, time, expr: snap_expr.as_deref() };
+    let ectx = EvalCtx { project: &snap_project, comp_id: cid, comp: &comp, time, expr: snap_expr.as_deref(), footage: None };
     // The frame (or snapshot) through Show Channel and exposure; ROI frames cover the region.
     vt::draw_frame(app, &ctx, &painter, comp_rect, cid, &ectx);
     painter.rect_stroke(comp_rect, 0.0, Stroke::new(1.0, Color32::from_black_alpha(160)), StrokeKind::Outside);
@@ -468,10 +497,28 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     if let Some([rx, ry, rw, rh]) = app.session.state.region_of_interest {
         let r = Rect::from_min_size(comp_rect.min + vec2(rx as f32 * zoom, ry as f32 * zoom), vec2(rw as f32 * zoom, rh as f32 * zoom));
         painter.rect_stroke(r, 0.0, Stroke::new(1.0, Color32::WHITE), StrokeKind::Middle);
-        for c in [r.left_top(), r.right_top(), r.right_bottom(), r.left_bottom()] {
-            painter.rect_filled(Rect::from_center_size(c, vec2(5.0, 5.0)), 0.0, Color32::WHITE);
+        // Resize handles: corners and edge midpoints (drag with any tool).
+        for (i, c) in roi_handles(r).iter().enumerate() {
+            painter.rect_filled(Rect::from_center_size(*c, vec2(5.0, 5.0)), 0.0, Color32::WHITE);
+            app.auto.add(&format!("viewer.regionOfInterest.handle.{i}"), Rect::from_center_size(*c, vec2(8.0, 8.0)), "Resize the region of interest");
         }
         app.auto.add("viewer.regionOfInterest", r, "Region of interest");
+    }
+    // 3D Reference Axes (grid and guide options): the world axes as seen by the view's camera.
+    if app.session.prefs.three_d.show_reference_axes && comp.layers.iter().any(|l| l.is_3d()) {
+        let cam = cam_state(&ectx);
+        let o = pos2(area.min.x + 40.0, area.max.y - 40.0);
+        for (axis, col, name) in [
+            (effectcraft_engine::geom::vec3(1.0, 0.0, 0.0), Color32::from_rgb(0xe0, 0x40, 0x40), "X"),
+            (effectcraft_engine::geom::vec3(0.0, 1.0, 0.0), Color32::from_rgb(0x50, 0xd0, 0x50), "Y"),
+            (effectcraft_engine::geom::vec3(0.0, 0.0, 1.0), Color32::from_rgb(0x50, 0x80, 0xf0), "Z"),
+        ] {
+            let v = cam.view.apply_vec(axis);
+            let tip = o + vec2(v.x as f32, v.y as f32) * 26.0;
+            painter.line_segment([o, tip], Stroke::new(2.0, col));
+            painter.text(tip + (tip - o).normalized() * 7.0, Align2::CENTER_CENTER, name, Tokens::ui(10.0), col);
+        }
+        app.auto.add("viewer.referenceAxes", Rect::from_center_size(o, vec2(64.0, 64.0)), "3D Reference Axes");
     }
 
     // Overlays + interaction.
@@ -760,7 +807,9 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         let g = match tool {
             Tool::Hand => Some(Gesture::Pan { start_pan: app.ui.viewer.pan }),
             // Region of Interest armed: the drag draws it.
-            _ if app.ui.viewer.roi_draw => Some(Gesture::Overlay(ov::Drag::Roi { start: map.to_comp(press) })),
+            _ if app.ui.viewer.roi_draw => Some(Gesture::Overlay(ov::Drag::Roi { start: map.to_comp(press), keep: [None, None] })),
+            // A region of interest handle: resize it from the opposite corner / edge.
+            _ if roi_drag(app, &map, comp_rect, zoom, press).is_some() => roi_drag(app, &map, comp_rect, zoom, press).map(Gesture::Overlay),
             Tool::Selection if ft.as_ref().and_then(|f| ov::begin_ft_drag(f, press, &map)).is_some() => {
                 ft.as_ref().and_then(|f| ov::begin_ft_drag(f, press, &map)).map(Gesture::Overlay)
             }
@@ -799,7 +848,8 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     layer: l,
                     start_anchor: ectx.v3(layer, tr, "anchor", [0.0; 3]),
                     start_pos: ectx.v3(layer, tr, "position", [0.0; 3]),
-                    start: cpt,
+                    // From where the button went down (the drag starts a few points later).
+                    start: map.to_comp(press),
                     inv: l2c.inverse().unwrap_or(Mat3::IDENTITY),
                     l2p,
                 })
@@ -952,6 +1002,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                             comp: app.session.project.comp(cid).unwrap_or(&comp),
                             time,
                             expr: app.session.expr.as_deref(),
+                            footage: None,
                         };
                         if let Some(m) = l2c(&e2, &l).0.inverse() {
                             *i2 = m;
@@ -971,6 +1022,11 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 let _ = app.session.execute("prop.set", json!({"layer": layer.0, "path": "transform/rotation", "value": r, "merge": merge}));
             }
             Gesture::Anchor { layer, start_anchor, start_pos, start, inv, l2p } => {
+                // Pan Behind snaps the anchor point (to layer features, guides and the grid).
+                let anchor_c = inv.inverse().map(|m| m.apply(gv2(start_anchor[0], start_anchor[1]))).unwrap_or(gv2(start[0], start[1]));
+                let want = [anchor_c.x + cpt[0] - start[0], anchor_c.y + cpt[1] - start[1]];
+                let sc = vt::snap(app, &ctx, &ectx, &map, &[layer], &[want], mods);
+                let cpt = [cpt[0] + sc[0], cpt[1] + sc[1]];
                 let a = inv.apply(gv2(start[0], start[1]));
                 let b = inv.apply(gv2(cpt[0], cpt[1]));
                 let dl = gv2(b.x - a.x, b.y - a.y);
@@ -1015,8 +1071,9 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     let pos_v = if vertical { cpt[0] } else { cpt[1] }.round();
                     let _ = app.session.execute("view.moveGuide", json!({"index": index, "position": pos_v, "merge": merge}));
                 }
-                ov::Drag::Roi { start } => {
-                    let r = Rect::from_two_pos(map.to_screen(start), pos);
+                ov::Drag::Roi { start, keep } => {
+                    let e = [keep[0].unwrap_or(cpt[0]), keep[1].unwrap_or(cpt[1])];
+                    let r = Rect::from_two_pos(map.to_screen(start), map.to_screen(e));
                     painter.rect_stroke(r, 0.0, Stroke::new(1.0, Color32::WHITE), StrokeKind::Middle);
                 }
                 d => {
@@ -1072,8 +1129,9 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     let end = map.to_comp(pos);
                     create_shape(app, tool, start, end, mods.shift);
                 }
-                Gesture::Overlay(ov::Drag::Roi { start }) => {
-                    let end = map.to_comp(pos);
+                Gesture::Overlay(ov::Drag::Roi { start, keep }) => {
+                    let c = map.to_comp(pos);
+                    let end = [keep[0].unwrap_or(c[0]), keep[1].unwrap_or(c[1])];
                     let (x0, y0) = (start[0].min(end[0]).max(0.0), start[1].min(end[1]).max(0.0));
                     let (x1, y1) = (start[0].max(end[0]).min(comp.width as f64), start[1].max(end[1]).min(comp.height as f64));
                     if x1 - x0 >= 2.0 && y1 - y0 >= 2.0 {
@@ -1221,6 +1279,9 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     vt::draw_snap(&ctx, &painter, &map, &ectx);
     vt::rulers(app, ui, &map, outer, area);
     vt::bottom_bar(app, ui, bar, zoom, fit, time, &comp);
+    if err_h > 0.0 {
+        super::expr_bar::draw(app, ui, err_bar, cid);
+    }
 }
 
 /// Parent-space position change per comp pixel of drag (x and y) for a layer: 2D layers map
@@ -1460,6 +1521,7 @@ fn create_shape(app: &mut EffectcraftApp, tool: Tool, a: [f64; 2], b: [f64; 2], 
                 comp: &comp,
                 time: app.session.time(),
                 expr: None,
+                footage: None,
             };
             let inv = l2c(&ectx, &l).0.inverse().unwrap_or(Mat3::IDENTITY);
             let p0 = inv.apply(gv2(cx - w / 2.0, cy - h / 2.0));

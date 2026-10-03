@@ -11,10 +11,14 @@ mod comp_more;
 mod create;
 mod edit;
 mod effect;
+pub mod essential;
+pub mod expr_tools;
 mod file;
-mod file_more;
+pub(crate) mod file_more;
+mod focus;
 mod frontend;
 mod help;
+mod key_labels;
 mod key_transform;
 mod keys_more;
 mod layer;
@@ -32,11 +36,13 @@ mod paths;
 mod project_items;
 mod prop;
 mod prop_groups;
+mod proxy;
 pub mod puppet;
 mod query;
 mod render_queue;
 pub mod roto_cmds;
 mod settings;
+mod shape_stroke;
 mod stubs;
 mod styles;
 mod text_anim;
@@ -139,6 +145,9 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(animation::specs());
         v.extend(view::specs());
         v.extend(viewer_cmds::specs());
+        v.extend(shape_stroke::specs());
+        v.extend(focus::specs());
+        v.extend(key_labels::specs());
         v.extend(key_transform::specs());
         v.extend(file_more::specs());
         v.extend(lottie::specs());
@@ -155,9 +164,17 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(settings::specs());
         v.extend(app_more::specs());
         v.extend(keys_more::specs());
+        v.extend(essential::specs());
+        v.extend(expr_tools::specs());
+        v.extend(proxy::specs());
         v.extend(stubs::specs());
         v
     })
+}
+
+/// Set `footage` as the proxy of `item` (File ▸ Create Proxy's post-render action).
+pub(crate) fn proxy_set(s: &mut Session, item: ItemId, footage: effectcraft_project::Footage) -> Result<()> {
+    proxy::set_proxy_footage(s, &[item], footage)
 }
 
 /// (id, name) of the text animation presets.

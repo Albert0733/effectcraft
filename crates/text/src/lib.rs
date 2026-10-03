@@ -10,6 +10,7 @@ pub mod layout;
 pub mod path_text;
 pub mod selectors;
 pub mod sfnt;
+pub mod variable;
 
 pub use kurbo;
 
@@ -24,7 +25,7 @@ use skrifa::instance::{LocationRef, Size};
 use skrifa::outline::{DrawSettings, OutlinePen};
 use skrifa::{GlyphId, MetadataProvider};
 
-struct Pen(BezPath);
+pub(crate) struct Pen(pub(crate) BezPath);
 
 impl OutlinePen for Pen {
     fn move_to(&mut self, x: f32, y: f32) {
@@ -70,10 +71,15 @@ pub(crate) fn outline_units(face: FaceId, gid: u32) -> Option<Arc<BezPath>> {
 /// horizontal / vertical scale and faux italic.
 pub fn glyph_outline(g: &Glyph) -> BezPath {
     let Some(units) = outline_units(g.face, g.id) else { return BezPath::new() };
+    glyph_affine(g) * (*units).clone()
+}
+
+/// Font units → the glyph's outline in pixels (size, horizontal / vertical scale, faux italic).
+pub fn glyph_affine(g: &Glyph) -> Affine {
     let k = g.size as f64 / fonts::face(g.face).units_per_em() as f64;
     let slant = if g.synth_italic { 0.21 } else { 0.0 };
     let (hs, vs) = (g.h_scale as f64, g.v_scale as f64);
-    Affine::new([k * hs, 0.0, slant * k * vs * hs, -k * vs, 0.0, 0.0]) * (*units).clone()
+    Affine::new([k * hs, 0.0, slant * k * vs * hs, -k * vs, 0.0, 0.0])
 }
 
 /// One character of laid-out text.
@@ -97,6 +103,10 @@ pub struct CharGlyph {
     pub size: f64,
     /// Index into [`TextLayout::styles`].
     pub run: usize,
+    /// Face and glyph id, and font units → `path` (for variable-font redraws).
+    pub face: FaceId,
+    pub gid: u32,
+    pub outline_xf: Affine,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -170,8 +180,9 @@ pub fn paragraph_style(p: &ParaStyle, width: Option<f32>) -> ParagraphStyle {
         justify_last,
         leading: 0.0,
         width,
-        // Left-to-right paragraphs keep the Unicode default (first strong character).
-        rtl: (p.direction == Direction::Rtl).then_some(true),
+        // The chosen direction is the paragraph's base direction (a left-to-right paragraph
+        // starting with Arabic or Hebrew still runs left to right, as in After Effects).
+        rtl: Some(p.direction == Direction::Rtl),
         indent_start: p.indent_left as f32,
         indent_end: p.indent_right as f32,
         indent_first: p.indent_first as f32,
@@ -180,6 +191,15 @@ pub fn paragraph_style(p: &ParaStyle, width: Option<f32>) -> ParagraphStyle {
         every_line: p.composer == Composer::EveryLine,
         hanging: p.hanging_punctuation,
     }
+}
+
+/// Characters set upright in vertical type: CJK ideographs, kana, hangul, full-width forms and
+/// CJK punctuation. Everything else (Roman) turns on its side unless asked to stay upright.
+pub fn is_cjk(c: char) -> bool {
+    matches!(c as u32,
+        0x1100..=0x11FF | 0x2E80..=0x303F | 0x3040..=0x30FF | 0x3100..=0x31FF | 0x3200..=0x4DBF | 0x4E00..=0x9FFF
+        | 0xA960..=0xA97F | 0xAC00..=0xD7FF | 0xF900..=0xFAFF | 0xFE10..=0xFE1F | 0xFE30..=0xFE4F | 0xFF00..=0xFFEF
+        | 0x20000..=0x3FFFF)
 }
 
 /// Vertical type: the horizontal layout turned a quarter clockwise (lines become columns
@@ -243,22 +263,56 @@ pub fn layout_doc(doc: &TextDoc) -> TextLayout {
     for (li, line) in lay.lines.iter().enumerate() {
         let o = to_layer * Point::new(line.x as f64, line.baseline as f64);
         out.line_boxes.push([o.x, o.y, line.width as f64, (line.ascent + line.descent) as f64]);
-        for gi in line.glyphs.clone() {
+        // Vertical type: Tate-Chu-Yoko groups (consecutive glyphs of tcy runs) take one em of
+        // the column; everything after them moves up by the rest of their width.
+        let tcy = |gi: usize| doc.vertical && styles.get(lay.glyphs[gi].run).is_some_and(|s| s.tate_chu_yoko);
+        let mut shift = 0.0f64;
+        let mut group: Option<(f64, f64, f64)> = None; // (start x, width, em) in layout space
+        let line_glyphs: Vec<usize> = line.glyphs.clone().collect();
+        for (k, gi) in line_glyphs.iter().copied().enumerate() {
             let g = &lay.glyphs[gi];
             let ci = char_of_byte.get(g.cluster).copied().unwrap_or(0);
             let src = text[g.cluster..].chars().next().unwrap_or(' ');
             let st = styles.get(g.run);
             let ch = if st.is_some_and(|s| s.all_caps) { src.to_uppercase().next().unwrap_or(src) } else { src };
             let mut path = glyph_outline(g);
+            let mut outline_xf = glyph_affine(g);
             let next_x = lay.glyphs.get(gi + 1).filter(|_| line.glyphs.contains(&(gi + 1))).map(|n| n.x).unwrap_or(line.x + line.width);
             let advance = (next_x - g.x) as f64;
-            if doc.vertical {
-                // Keep the character upright around its centre.
-                let c = Point::new(advance / 2.0, -0.35 * g.size as f64);
-                let rc = ROT90 * c;
-                path = Affine::translate((rc.x - c.x, rc.y - c.y)) * path;
+            let mut origin = to_layer * Point::new(g.x as f64 - shift, g.y as f64);
+            if doc.vertical && tcy(gi) {
+                // Start of a group: measure it.
+                if group.is_none() {
+                    let mut w = 0.0;
+                    for &gj in line_glyphs[k..].iter().take_while(|&&gj| tcy(gj)) {
+                        let nx = lay.glyphs.get(gj + 1).filter(|_| line.glyphs.contains(&(gj + 1))).map(|n| n.x).unwrap_or(line.x + line.width);
+                        w += (nx - lay.glyphs[gj].x) as f64;
+                    }
+                    group = Some((g.x as f64, w, g.size as f64));
+                }
+                let (x0, w, em) = group.unwrap_or((g.x as f64, advance, g.size as f64));
+                // Upright and horizontal, centred across the column in an em-high cell.
+                let centre = to_layer * Point::new(x0 - shift + em / 2.0, g.y as f64 - 0.35 * em);
+                origin = Point::new(centre.x - w / 2.0 + (g.x as f64 - x0), centre.y + 0.35 * em);
+                if line_glyphs.get(k + 1).is_none_or(|&n| !tcy(n)) {
+                    shift += w - em;
+                    group = None;
+                }
+            } else if doc.vertical {
+                let upright = is_cjk(src) || st.is_some_and(|s| s.vertical_roman_upright);
+                if upright {
+                    // Keep the character upright around its centre.
+                    let c = Point::new(advance / 2.0, -0.35 * g.size as f64);
+                    let rc = ROT90 * c;
+                    let t = Affine::translate((rc.x - c.x, rc.y - c.y));
+                    path = t * path;
+                    outline_xf = t * outline_xf;
+                } else {
+                    // Roman characters turn on their side with the column.
+                    path = ROT90 * path;
+                    outline_xf = ROT90 * outline_xf;
+                }
             }
-            let origin = to_layer * Point::new(g.x as f64, g.y as f64);
             if let Some(r) = (!path.elements().is_empty()).then(|| kurbo::Shape::bounding_box(&path)) {
                 b[0] = b[0].min(origin.x + r.x0);
                 b[1] = b[1].min(origin.y + r.y0);
@@ -278,6 +332,9 @@ pub fn layout_doc(doc: &TextDoc) -> TextLayout {
                 synth_bold: g.synth_bold,
                 size: g.size as f64,
                 run: g.run,
+                face: g.face,
+                gid: g.id,
+                outline_xf,
             });
         }
     }
@@ -436,6 +493,59 @@ mod tests {
         let (p0, p1) = v.caret(1);
         assert!((p0.y - p1.y).abs() < 1e-6 && (p0.x - p1.x).abs() > 5.0);
         assert_eq!(v.hit(p0.midpoint(p1)), 1);
+    }
+
+    #[test]
+    fn vertical_roman_rotates_and_tate_chu_yoko_sets_upright_groups() {
+        let wide = |g: &CharGlyph| {
+            let r = kurbo::Shape::bounding_box(&g.path);
+            (r.width(), r.height())
+        };
+        // "H" sideways in a vertical column: wider than tall (it is taller than wide upright).
+        let doc = TextDoc { text: "HI".into(), size: 40.0, vertical: true, ..Default::default() };
+        let v = layout_doc(&doc);
+        let (w, h) = wide(&v.glyphs[0]);
+        assert!(w > h, "rotated: {w}×{h}");
+        // Standard Vertical Roman Alignment keeps it upright.
+        let mut up = doc.clone();
+        up.apply_style_all(|s| s.vertical_roman_upright = true);
+        let (w, h) = wide(&layout_doc(&up).glyphs[0]);
+        assert!(h > w, "upright: {w}×{h}");
+        // CJK stays upright.
+        let cjk = layout_doc(&TextDoc { text: "日本".into(), size: 40.0, vertical: true, ..Default::default() });
+        assert!(cjk.glyphs.iter().all(|g| g.origin.x.is_finite()));
+        // Tate-Chu-Yoko on "12" in "A12B": the digits sit side by side on one row of the column
+        // (same y, increasing x) and the group takes one em of the column.
+        let mut t = TextDoc { text: "A12B".into(), size: 40.0, vertical: true, ..Default::default() };
+        let plain = layout_doc(&t);
+        t.apply_style(1..3, |s| s.tate_chu_yoko = true);
+        let tcy = layout_doc(&t);
+        let (one, two) = (&tcy.glyphs[1], &tcy.glyphs[2]);
+        assert!((one.origin.y - two.origin.y).abs() < 1e-6, "{:?} {:?}", one.origin, two.origin);
+        assert!(two.origin.x > one.origin.x + 5.0);
+        let (w, h) = wide(one);
+        assert!(h > w, "digits upright");
+        let w = one.advance + two.advance;
+        let moved = tcy.glyphs[3].origin.y - plain.glyphs[3].origin.y;
+        // (Within kerning, which no longer applies across the run boundaries.)
+        assert!((moved - (40.0 - w)).abs() < 2.5, "the group takes one em: moved {moved}, width {w}");
+        // The group is centred across the column (x of the column centre line).
+        let mid = (one.origin.x + two.origin.x + two.advance) / 2.0;
+        assert!((mid - plain.glyphs[0].origin.x - 0.35 * 40.0).abs() < 3.0, "{mid}");
+    }
+
+    #[test]
+    fn ltr_paragraph_direction_is_forced() {
+        // Arabic first: Left-to-Right keeps a left-to-right base (the Latin word stays left).
+        let text = "\u{0645}\u{0631}\u{062D}\u{0628}\u{0627} abc";
+        let ltr = layout_doc(&TextDoc { text: text.into(), size: 30.0, ..Default::default() });
+        let mut r = TextDoc { text: text.into(), size: 30.0, ..Default::default() };
+        r.direction = effectcraft_keyframe::text_doc::Direction::Rtl;
+        let rtl = layout_doc(&r);
+        let x_of = |l: &TextLayout, c: char| l.glyphs.iter().find(|g| g.ch == c).map(|g| g.origin.x).unwrap();
+        let first_ar = '\u{0645}';
+        assert!(x_of(&ltr, 'a') > x_of(&ltr, first_ar), "LTR: Arabic run first, then abc");
+        assert!(x_of(&rtl, 'a') < x_of(&rtl, first_ar), "RTL: abc on the left");
     }
 
     #[test]

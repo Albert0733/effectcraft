@@ -105,6 +105,7 @@ pub fn transform_path(p: &ShapePath, h: &trk::Homography) -> ShapePath {
         in_tangents: p.vertices.iter().zip(&p.in_tangents).map(|(v, t)| h.apply_tangent(*v, *t)).collect(),
         out_tangents: p.vertices.iter().zip(&p.out_tangents).map(|(v, t)| h.apply_tangent(*v, *t)).collect(),
         closed: p.closed,
+        feather: p.feather.clone(),
     }
 }
 
@@ -195,6 +196,7 @@ fn run_work(w: MaskWork, shared: &MaskTrackShared) {
         s.elapsed = t0.elapsed().as_secs_f64();
         s.fps = if s.elapsed > 0.0 { k as f64 / s.elapsed } else { 0.0 };
         s.time = w.times[k].seconds();
+        crate::offload::report(s.done, s.total);
     }
     let mut s = lock(&shared.state);
     s.elapsed = t0.elapsed().as_secs_f64();
@@ -213,16 +215,19 @@ fn write_frames(p: &mut Project, job: &MaskTrackJob, frames: &[MaskFrame]) {
 impl Session {
     /// Whether a mask track is running.
     pub fn is_mask_tracking(&self) -> bool {
-        self.mask_job.as_ref().is_some_and(|j| !j.is_finished())
+        self.mask_job.as_ref().is_some_and(|j| !j.is_finished()) || self.offloaded(crate::offload::JobKind::MaskTrack).is_some()
     }
 
     /// Live progress of the running (or just finished) mask track.
     pub fn mask_track_progress(&self) -> Option<TrackProgress> {
-        self.mask_job.as_ref().map(|j| j.progress())
+        self.mask_job.as_ref().map(|j| j.progress()).or_else(|| self.offloaded(crate::offload::JobKind::MaskTrack).map(|j| j.progress.track()))
     }
 
     /// Cancel the running mask track (frames tracked so far are kept).
     pub fn stop_mask_track(&mut self) -> bool {
+        if self.cancel_offloaded(crate::offload::JobKind::MaskTrack) {
+            return true;
+        }
         match &self.mask_job {
             Some(j) if !j.is_finished() => {
                 j.shared.cancel.store(true, Ordering::Relaxed);
@@ -237,6 +242,10 @@ impl Session {
             return Err("a track analysis is already running".into());
         }
         self.poll_mask_track();
+        if !wait && self.offloads() {
+            let MaskWork { comp, layer, path, method, times, .. } = work;
+            return self.offload_analysis(crate::offload::WorkerJob::MaskTrack { comp, layer, mask, direction, path, method, times });
+        }
         let wait = wait || cfg!(target_arch = "wasm32");
         self.history.undo.push(("Track Mask".into(), self.project.clone()));
         self.history.redo.clear();

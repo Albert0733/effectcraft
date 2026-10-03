@@ -257,7 +257,7 @@ impl Importer for MockImporter {
             missing: false,
             sequence: vec![],
             color_profile: None,
-            layer: None,
+            ..Default::default()
         })
     }
 }
@@ -332,7 +332,7 @@ fn implemented_stubs_are_enabled_and_workspaces_are_frontend() {
         assert!(s.drain_events().iter().any(|e| matches!(e, Event::Frontend { command, .. } if command == id)));
     }
     // What remains a stub is still disabled.
-    for id in ["view.displayColorManagement", "file.createProxy"] {
+    for id in ["view.displayColorManagement", "layer.autoTrace"] {
         assert!(!s.is_enabled(id), "{id}");
     }
 }

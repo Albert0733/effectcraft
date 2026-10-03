@@ -41,6 +41,8 @@ pub(crate) struct PathInfo {
     pub m: Mat3,
     pub sp: ShapePath,
     pub is_mask: bool,
+    /// Mask feather points' radius handles on screen (feather point index, handle position).
+    pub feather: Vec<(usize, Pos2)>,
 }
 
 fn cubic(p0: [f64; 2], p1: [f64; 2], p2: [f64; 2], p3: [f64; 2], t: f64) -> [f64; 2] {
@@ -93,7 +95,7 @@ pub(crate) fn path_of(ectx: &EvalCtx, layer: LayerId, uid: u64) -> Option<PathIn
     let (m, _) = super::viewer::l2c(ectx, l);
     let is_mask = matches!(g.kind, GroupKind::Mask { .. });
     let m = if is_mask { m } else { m * effectcraft_engine::render::shapes::item_matrix(ectx, l, uid).unwrap_or(Mat3::IDENTITY) };
-    Some(PathInfo { layer, uid, m, sp, is_mask })
+    Some(PathInfo { layer, uid, m, sp, is_mask, feather: Vec::new() })
 }
 
 fn flatten(sp: &ShapePath, m: &Mat3, map: &ViewerMap) -> Vec<Pos2> {
@@ -178,8 +180,53 @@ pub(crate) fn draw_paths(
         {
             painter.line_segment([scr(*last), hp], Stroke::new(1.0, mc.gamma_multiply(0.6)));
         }
-        paths.push(PathInfo { layer: l.id, uid, m: pm, sp, is_mask });
+        let feather = if is_mask { draw_feather_points(painter, map, &sp, &pm, mc) } else { Vec::new() };
+        for (i, h) in &feather {
+            app.auto.add(&format!("viewer.mask.{uid}.feather.{i}"), Rect::from_center_size(*h, vec2(8.0, 8.0)), &name);
+        }
+        paths.push(PathInfo { layer: l.id, uid, m: pm, sp, is_mask, feather });
     }
+}
+
+/// Mask feather points: a hollow dot on the path and a radius handle along the normal (outwards for
+/// outer feather, inwards for inner), joined by a line. Returns the handles' screen positions.
+fn draw_feather_points(painter: &egui::Painter, map: &ViewerMap, sp: &ShapePath, pm: &Mat3, col: Color32) -> Vec<(usize, Pos2)> {
+    let mut out = Vec::new();
+    let scr = |p: [f64; 2]| {
+        let c = pm.apply(gv2(p[0], p[1]));
+        map.to_screen([c.x, c.y])
+    };
+    let inside = |q: [f64; 2]| {
+        // Even-odd test against the vertex polygon (good enough to orient the handle).
+        let v = &sp.vertices;
+        let mut c = false;
+        for i in 0..v.len() {
+            let (a, b) = (v[i], v[(i + 1) % v.len()]);
+            if (a[1] > q[1]) != (b[1] > q[1]) && q[0] < (b[0] - a[0]) * (q[1] - a[1]) / (b[1] - a[1]) + a[0] {
+                c = !c;
+            }
+        }
+        c
+    };
+    for (i, f) in sp.feather.iter().enumerate() {
+        let Some(c) = segment(sp, f.segment) else { continue };
+        let at = cubic(c[0], c[1], c[2], c[3], f.t);
+        let (t0, t1) = ((f.t - 1e-3).max(0.0), (f.t + 1e-3).min(1.0));
+        let (a, b) = (cubic(c[0], c[1], c[2], c[3], t0), cubic(c[0], c[1], c[2], c[3], t1));
+        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+        let len = dx.hypot(dy).max(1e-9);
+        let mut n = [-dy / len, dx / len];
+        if inside([at[0] + n[0] * 2.0, at[1] + n[1] * 2.0]) {
+            n = [-n[0], -n[1]];
+        }
+        let h = [at[0] + n[0] * f.radius, at[1] + n[1] * f.radius];
+        let (ps, hs) = (scr(at), scr(h));
+        painter.line_segment([ps, hs], Stroke::new(1.0, col));
+        painter.circle_stroke(ps, 3.5, Stroke::new(1.0, col));
+        painter.circle_filled(hs, 3.0, col);
+        out.push((i, hs));
+    }
+    out
 }
 
 // ---------------------------------------------------------------- motion paths
@@ -387,12 +434,12 @@ pub(crate) enum Drag {
     KeyTangent { layer: LayerId, prop: u64, time: Tick, out: bool, key: [f64; 3], inv: Mat3 },
     /// Free transform: 0 move, 1 scale (anchor, axes), 2 rotate about `anchor`.
     Ft { layer: LayerId, path: u64, mode: u8, anchor: [f64; 2], last: [f64; 2], inv: Mat3, axes: [bool; 2] },
-    /// Mask Feather tool: drag away from the path to feather the mask.
-    Feather { layer: LayerId, prop: u64, start: [f64; 2], press: Pos2 },
+    /// Mask Feather tool: drag a feather point's radius handle (comp → layer matrix `inv`).
+    Feather { layer: LayerId, mask: u64, index: usize, inv: Mat3 },
     /// A guide dragged in the viewer.
     Guide { index: usize, vertical: bool },
-    /// Drawing the region of interest.
-    Roi { start: [f64; 2] },
+    /// Drawing the region of interest from `start`; `keep` pins the end's x / y (edge handles).
+    Roi { start: [f64; 2], keep: [Option<f64>; 2] },
 }
 
 /// Start a motion-path drag at `press` (keys before tangents), selecting the key.
@@ -441,13 +488,26 @@ pub(crate) fn begin_ft_drag(f: &FtBox, press: Pos2, map: &ViewerMap) -> Option<D
     None
 }
 
-/// Mask Feather tool: start on a mask path.
-pub(crate) fn begin_feather(app: &EffectcraftApp, ectx: &EvalCtx, paths: &[PathInfo], map: &ViewerMap, press: Pos2) -> Option<Drag> {
-    let (layer, uid, _, _) = segment_at(&paths.iter().filter(|p| p.is_mask).cloned().collect::<Vec<_>>(), map, press, 10.0)?;
-    let l = ectx.comp.layer(layer)?;
-    let pr = l.masks()?.find_group(uid)?.get("feather")?;
-    let _ = app;
-    Some(Drag::Feather { layer, prop: pr.uid, start: ectx.value(l, pr).as_vec2(), press })
+/// Mask Feather tool: press on a feather point's handle to drag it, or on a mask path to add a
+/// feather point there and drag its radius out.
+pub(crate) fn begin_feather(app: &mut EffectcraftApp, ectx: &EvalCtx, paths: &[PathInfo], map: &ViewerMap, press: Pos2) -> Option<Drag> {
+    let _ = ectx;
+    for p in paths.iter().filter(|p| p.is_mask) {
+        if let Some((i, _)) = p.feather.iter().find(|(_, h)| h.distance(press) < 7.0) {
+            return Some(Drag::Feather { layer: p.layer, mask: p.uid, index: *i, inv: p.m.inverse()? });
+        }
+    }
+    let masks: Vec<PathInfo> = paths.iter().filter(|p| p.is_mask).cloned().collect();
+    let (layer, uid, seg, t) = segment_at(&masks, map, press, 10.0)?;
+    let inv = masks.iter().find(|p| p.layer == layer && p.uid == uid)?.m.inverse()?;
+    let r = app.session.execute("mask.featherPoint.add", json!({"layer": layer.0, "mask": uid, "segment": seg, "t": t, "radius": 0}));
+    match r {
+        Ok(v) => Some(Drag::Feather { layer, mask: uid, index: v["index"].as_u64()? as usize, inv }),
+        Err(e) => {
+            app.ui.status = e.to_string();
+            None
+        }
+    }
 }
 
 /// Advance an overlay drag to the pointer (`cpt` comp, `pos` screen). `snap` corrects a comp
@@ -518,10 +578,13 @@ pub(crate) fn update(
             }
             Some(Drag::Ft { layer, path, mode, anchor, last: cur, inv, axes })
         }
-        Drag::Feather { layer, prop, start, press } => {
-            let amt = (pos.distance(press) / zoom.max(1e-3)) as f64;
-            let v = json!([(start[0] + amt).max(0.0), (start[1] + amt).max(0.0)]);
-            let _ = app.session.execute("prop.set", json!({"layer": layer.0, "prop": prop, "value": v, "merge": merge}));
+        Drag::Feather { layer, mask, index, inv } => {
+            let p = inv.apply(gv2(cpt[0], cpt[1]));
+            let _ = (pos, zoom);
+            let q = json!({"layer": layer.0, "mask": mask, "index": index, "toward": [p.x, p.y], "merge": merge});
+            if let Err(e) = app.session.execute("mask.featherPoint.set", q) {
+                app.ui.status = e.to_string();
+            }
             None
         }
         Drag::Guide { index, .. } => {

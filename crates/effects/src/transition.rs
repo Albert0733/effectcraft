@@ -1,4 +1,4 @@
-//! Transition effects (batch 2): Block Dissolve, Gradient Wipe (self gradient), Iris Wipe, Card
+//! Transition effects (batch 2): Block Dissolve, Gradient Wipe (gradient layer or self), Iris Wipe, Card
 //! Wipe (2D cards), CC Grid Wipe, CC Radial ScaleWipe, CC Scale Wipe and CC Light Wipe.
 //!
 //! Every transition is the identity at 0 % completion. Angles are clockwise from "up".
@@ -25,6 +25,24 @@ fn scale_px(px: &mut Px, k: f32) {
     for c in px.iter_mut() {
         *c *= k;
     }
+}
+
+/// Resample `other` into `b`'s pixel grid with placement `mode` (Gradient Wipe's Gradient
+/// Placement, Texturize's Texture Placement): 0 tile from the top-left, 1 centre once,
+/// 2 stretch to fit.
+pub(crate) fn place_layer(ctx: &EffectCtx, b: &Buf, other: &crate::LayerPixels, mode: u32) -> effectcraft_raster::Image {
+    let (ls, os) = (ctx.layer_size, other.size);
+    let inv = 1.0 / b.scale.max(1e-9);
+    crate::util::gen_image(b.img.width, b.img.height, |x, y| {
+        let (px, py) = ((x as f64 + 0.5 - b.offset[0]) * inv, (y as f64 + 0.5 - b.offset[1]) * inv);
+        let (qx, qy) = match mode {
+            0 if os[0] >= 1.0 && os[1] >= 1.0 => (px.rem_euclid(os[0]), py.rem_euclid(os[1])),
+            1 => (px + (os[0] - ls[0]) * 0.5, py + (os[1] - ls[1]) * 0.5),
+            _ if ls[0] > 0.0 && ls[1] > 0.0 => (px * os[0] / ls[0], py * os[1] / ls[1]),
+            _ => (px, py),
+        };
+        other.buf.img.sample_bilinear(qx * other.buf.scale + other.buf.offset[0], qy * other.buf.scale + other.buf.offset[1])
+    })
 }
 
 /// Largest distance from `c` to a corner of the buffer.
@@ -67,8 +85,13 @@ fn gradient_wipe(ctx: &EffectCtx, mut b: Buf) -> Buf {
     }
     let soft = (ctx.params.f("softness") / 100.0) as f32;
     let invert = ctx.params.b("invert");
-    b.img.data.par_iter_mut().for_each(|px| {
-        let (c, _) = unpremul(*px);
+    // The gradient layer (the layer itself when none is chosen), placed over this one.
+    let grad = match ctx.layer_param("gradientLayer", false) {
+        Some(o) => place_layer(ctx, &b, &o, ctx.params.e("gradientPlacement")),
+        None => b.img.clone(),
+    };
+    b.img.data.par_iter_mut().zip(grad.data.par_iter()).for_each(|(px, g)| {
+        let (c, _) = unpremul(*g);
         let mut t = luminance(c[0], c[1], c[2]).clamp(0.0, 1.0);
         if invert {
             t = 1.0 - t;
@@ -147,15 +170,23 @@ fn card_wipe(ctx: &EffectCtx, mut b: Buf) -> Buf {
     }
     let tw = (ctx.params.f("transitionWidth") / 100.0).clamp(0.01, 1.0);
     let rows = ctx.params.f("rows").round().clamp(1.0, 1000.0) as i64;
-    let cols = ctx.params.f("columns").round().clamp(1.0, 1000.0) as i64;
+    // Rows & Columns: Independent, or Columns Follows Rows.
+    let cols = if ctx.params.e("rowsAndColumns") == 1 { rows } else { ctx.params.f("columns").round().clamp(1.0, 1000.0) as i64 };
+    let card_scale = ctx.params.f("cardScale").max(0.01);
     let axis = ctx.params.e("flipAxis");
     let order = ctx.params.e("flipOrder");
     let back_self = ctx.params.e("backLayer") == 1;
+    let jitter = ctx.params.f("timingRandomness").clamp(0.0, 1.0);
     let seed = ctx.params.f("randomSeed") as u32 ^ 0xca7d;
     let (x0, y0, w, h) = layer_rect(ctx, &b);
     let (cw, ch) = (w / cols as f64, h / rows as f64);
     let nx = |i: i64| if cols > 1 { i as f64 / (cols - 1) as f64 } else { 0.0 };
     let ny = |j: i64| if rows > 1 { j as f64 / (rows - 1) as f64 } else { 0.0 };
+    // Flip Order "Gradient": cards flip first where the gradient layer (default: this layer) is dark.
+    let grad = (order == 8).then(|| match ctx.layer_param("gradientLayer", false) {
+        Some(o) => place_layer(ctx, &b, &o, 2),
+        None => b.img.clone(),
+    });
     let src = b.img.clone();
     b.img = remap(&src, false, |x, y| {
         let (lx, ly) = (x - x0, y - y0);
@@ -164,18 +195,33 @@ fn card_wipe(ctx: &EffectCtx, mut b: Buf) -> Buf {
         }
         let i = ((lx / cw).floor() as i64).min(cols - 1);
         let j = ((ly / ch).floor() as i64).min(rows - 1);
-        let o = match order {
+        let (ccx, ccy) = (x0 + (i as f64 + 0.5) * cw, y0 + (j as f64 + 0.5) * ch);
+        let mut o = match order {
             1 => 1.0 - nx(i),
             2 => ny(j),
             3 => 1.0 - ny(j),
             4 => (nx(i) + ny(j)) * 0.5,
-            5 => 1.0 - (nx(i) + ny(j)) * 0.5,
-            6 => hash1(i as u32, j as u32, seed) as f64,
+            5 => (1.0 - nx(i) + ny(j)) * 0.5,
+            6 => (nx(i) + 1.0 - ny(j)) * 0.5,
+            7 => 1.0 - (nx(i) + ny(j)) * 0.5,
+            8 => {
+                let g = grad.as_ref().map(|g| g.get_clamped(ccx as i64, ccy as i64)).unwrap_or([0.0; 4]);
+                let (c, _) = unpremul(g);
+                luminance(c[0], c[1], c[2]).clamp(0.0, 1.0) as f64
+            }
             _ => nx(i),
         };
+        if jitter > 0.0 {
+            o += (hash1(i as u32, j as u32, seed ^ 0x7177) as f64 - o) * jitter;
+        }
         let p = ((done - o * (1.0 - tw)) / tw).clamp(0.0, 1.0);
+        // Card Scale: each card is scaled about its centre (gaps below 1, cropped above 1).
+        let (mut dx, mut dy) = ((x - ccx) / card_scale, (y - ccy) / card_scale);
+        if dx.abs() > cw * 0.5 + 1e-9 || dy.abs() > ch * 0.5 + 1e-9 {
+            return None;
+        }
         if p <= 0.0 {
-            return Some((x, y));
+            return Some((ccx + dx, ccy + dy));
         }
         let cos = (p * std::f64::consts::PI).cos();
         if cos.abs() < 1e-4 || (cos < 0.0 && !back_self) {
@@ -186,8 +232,6 @@ fn card_wipe(ctx: &EffectCtx, mut b: Buf) -> Buf {
             2 => hash1(i as u32, j as u32, seed ^ 0x55) < 0.5,
             _ => true,
         };
-        let (ccx, ccy) = (x0 + (i as f64 + 0.5) * cw, y0 + (j as f64 + 0.5) * ch);
-        let (mut dx, mut dy) = (x - ccx, y - ccy);
         if around_x {
             dy /= cos;
             if dy.abs() > ch * 0.5 {
@@ -357,6 +401,8 @@ fn light_wipe(ctx: &EffectCtx, mut b: Buf) -> Buf {
 pub fn specs() -> Vec<EffectSpec> {
     let pt = |x, y| Value::Vec2([x, y]);
     let done = || p("completion", "Transition Completion", num(0.0), slider(0.0, 100.0, 0.0, 100.0, 0));
+    // The CC transitions call it plain "Completion".
+    let cc_done = || p("completion", "Completion", num(0.0), slider(0.0, 100.0, 0.0, 100.0, 1));
     vec![
         spec(
             "ec.transition.blockdissolve",
@@ -375,6 +421,8 @@ pub fn specs() -> Vec<EffectSpec> {
             vec![
                 done(),
                 p("softness", "Transition Softness", num(0.0), slider(0.0, 100.0, 0.0, 100.0, 0)),
+                p("gradientLayer", "Gradient Layer", Value::Layer(None), ParamUi::Layer),
+                p("gradientPlacement", "Gradient Placement", Value::Enum(2), popup(&["Tile Gradient", "Center Gradient", "Stretch Gradient to Fit"])),
                 p("invert", "Invert Gradient", Value::Bool(false), ParamUi::Checkbox),
             ],
             gradient_wipe,
@@ -400,8 +448,10 @@ pub fn specs() -> Vec<EffectSpec> {
                 done(),
                 p("transitionWidth", "Transition Width", num(50.0), slider(1.0, 100.0, 1.0, 100.0, 0)),
                 p("backLayer", "Back Layer", Value::Enum(0), popup(&["None", "Self"])),
+                p("rowsAndColumns", "Rows & Columns", Value::Enum(0), popup(&["Independent", "Columns Follows Rows"])),
                 p("rows", "Rows", num(8.0), slider(1.0, 1000.0, 1.0, 100.0, 0)),
                 p("columns", "Columns", num(8.0), slider(1.0, 1000.0, 1.0, 100.0, 0)),
+                p("cardScale", "Card Scale", num(1.0), slider(0.01, 10.0, 0.01, 2.0, 2)),
                 p("flipAxis", "Flip Axis", Value::Enum(0), popup(&["X", "Y", "Random"])),
                 p(
                     "flipOrder",
@@ -413,10 +463,14 @@ pub fn specs() -> Vec<EffectSpec> {
                         "Top to Bottom",
                         "Bottom to Top",
                         "Top Left to Bottom Right",
+                        "Top Right to Bottom Left",
+                        "Bottom Left to Top Right",
                         "Bottom Right to Top Left",
-                        "Random",
+                        "Gradient",
                     ]),
                 ),
+                p("gradientLayer", "Gradient Layer", Value::Layer(None), ParamUi::Layer),
+                p("timingRandomness", "Timing Randomness", num(0.0), slider(0.0, 1.0, 0.0, 1.0, 2)),
                 p("randomSeed", "Random Seed", num(1.0), slider(0.0, 10000.0, 0.0, 100.0, 0)),
             ],
             card_wipe,
@@ -425,7 +479,7 @@ pub fn specs() -> Vec<EffectSpec> {
             "ec.transition.ccgridwipe",
             "CC Grid Wipe",
             vec![
-                done(),
+                cc_done(),
                 p("center", "Center", pt(0.5, 0.5), ParamUi::Point),
                 p("rotation", "Rotation", num(0.0), ParamUi::Angle),
                 p("border", "Border", num(0.0), slider(0.0, 100.0, 0.0, 20.0, 1)),
@@ -438,7 +492,7 @@ pub fn specs() -> Vec<EffectSpec> {
         spec(
             "ec.transition.ccradialscalewipe",
             "CC Radial ScaleWipe",
-            vec![done(), p("center", "Center", pt(0.5, 0.5), ParamUi::Point), p("reverse", "Reverse Transition", Value::Bool(false), ParamUi::Checkbox)],
+            vec![cc_done(), p("center", "Center", pt(0.5, 0.5), ParamUi::Point), p("reverse", "Reverse Transition", Value::Bool(false), ParamUi::Checkbox)],
             radial_scale_wipe,
         ),
         spec(
@@ -455,7 +509,7 @@ pub fn specs() -> Vec<EffectSpec> {
             "ec.transition.cclightwipe",
             "CC Light Wipe",
             vec![
-                done(),
+                cc_done(),
                 p("center", "Center", pt(0.5, 0.5), ParamUi::Point),
                 p("intensity", "Intensity", num(100.0), slider(0.0, 1000.0, 0.0, 200.0, 1)),
                 p("shape", "Shape", Value::Enum(1), popup(&["Doors", "Round", "Square"])),
@@ -606,6 +660,83 @@ mod tests {
         assert_eq!(out.get(10, 1), img.get(10, 1));
         let centre = img.get(20, 1)[0];
         assert!((out.get(38, 1)[0] - centre).abs() < 0.03, "{}", out.get(38, 1)[0]);
+    }
+
+    #[test]
+    fn radial_wipe_both_opens_symmetrically() {
+        let img = Image::filled(41, 41, [1.0, 1.0, 1.0, 1.0]);
+        let both = run("ec.transition.radialwipe", &img, &[("completion", num(50.0)), ("wipe", Value::Enum(2))]);
+        // Start angle 0 = up: half done in both directions clears the whole top half…
+        assert_eq!(both.get(5, 5)[3], 0.0);
+        assert_eq!(both.get(35, 5)[3], 0.0);
+        // …and leaves the bottom half.
+        assert_eq!(both.get(5, 35)[3], 1.0);
+        assert_eq!(both.get(35, 35)[3], 1.0);
+        let cw = run("ec.transition.radialwipe", &img, &[("completion", num(50.0))]);
+        assert_eq!(cw.get(35, 35)[3], 0.0, "clockwise covers the right half");
+        assert_eq!(cw.get(5, 5)[3], 1.0);
+    }
+
+    #[test]
+    fn card_wipe_columns_follow_rows_scale_and_gradient_order() {
+        let img = Image::filled(80, 40, [1.0, 0.0, 0.0, 1.0]);
+        // Card Scale 0.5 leaves gaps between untouched cards.
+        let out = run("ec.transition.cardwipe", &img, &[("completion", num(1.0)), ("rows", num(1.0)), ("columns", num(4.0)), ("cardScale", num(0.5))]);
+        assert_eq!(out.get(1, 20)[3], 0.0);
+        assert_eq!(out.get(70, 20)[3], 1.0);
+        // Columns Follows Rows: 2 rows → 2 columns, so at 50 % with a narrow transition the left
+        // half (first column) has flipped away while the right half remains.
+        let out = run(
+            "ec.transition.cardwipe",
+            &img,
+            &[("completion", num(50.0)), ("rows", num(2.0)), ("columns", num(40.0)), ("rowsAndColumns", Value::Enum(1)), ("transitionWidth", num(10.0))],
+        );
+        assert_eq!(out.get(30, 10)[3], 0.0);
+        assert_eq!(out.get(50, 10)[3], 1.0);
+        // Gradient order (self as gradient): dark cards flip first.
+        let ramp = ramp(80, 4);
+        let out = run(
+            "ec.transition.cardwipe",
+            &ramp,
+            &[("completion", num(50.0)), ("rows", num(1.0)), ("columns", num(8.0)), ("flipOrder", Value::Enum(8)), ("transitionWidth", num(10.0))],
+        );
+        assert_eq!(out.get(2, 2)[3], 0.0);
+        assert_eq!(out.get(77, 2)[3], 1.0);
+    }
+
+    #[test]
+    fn gradient_wipe_uses_the_gradient_layer_with_placement() {
+        struct Host(Image);
+        impl crate::EffectHost for Host {
+            fn layer(&self, _: u64, _: bool) -> Option<crate::LayerPixels> {
+                Some(crate::LayerPixels { buf: Buf { img: self.0.clone(), offset: [0.0; 2], scale: 1.0 }, size: [self.0.width as f64, self.0.height as f64] })
+            }
+            fn audio(&self, _: u64, _: f64, _: usize, _: u32) -> Option<Vec<f32>> {
+                None
+            }
+        }
+        // A flat layer wiped by a 10-px left-to-right ramp layer.
+        let img = Image::filled(40, 4, [1.0, 1.0, 1.0, 1.0]);
+        let host = Host(ramp(10, 4));
+        let s = find("ec.transition.gradientwipe").unwrap();
+        let wipe = |placement: u32| {
+            let mut params = Params { values: s.params.iter().map(|p| (p.id.to_string(), p.default.clone())).collect() };
+            params.values.insert("completion".into(), num(50.0));
+            params.values.insert("gradientLayer".into(), Value::Layer(Some(1)));
+            params.values.insert("gradientPlacement".into(), Value::Enum(placement));
+            let env = crate::EffectEnv { host: Some(&host), ..Default::default() };
+            let ctx = EffectCtx { params: &params, time: 0.0, layer_size: [40.0, 4.0], seed: 7, adjustment: false, env };
+            (s.render)(&ctx, Buf { img: img.clone(), offset: [0.0, 0.0], scale: 1.0 }).img
+        };
+        // Stretched: one ramp across the layer.
+        let st = wipe(2);
+        assert_eq!(st.get(5, 1)[3], 0.0);
+        assert_eq!(st.get(35, 1)[3], 1.0);
+        // Tiled: the ramp repeats every 10 px.
+        let tl = wipe(0);
+        assert_eq!(tl.get(11, 1)[3], 0.0);
+        assert_eq!(tl.get(18, 1)[3], 1.0);
+        assert_eq!(tl.get(31, 1)[3], 0.0);
     }
 
     #[test]

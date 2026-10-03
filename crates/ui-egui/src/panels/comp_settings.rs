@@ -85,6 +85,7 @@ pub struct CompDraft {
     pub shutter_angle: f64,
     pub shutter_phase: f64,
     pub samples: u32,
+    pub adaptive_limit: u32,
     pub advanced_3d: bool,
     pub tab: Tab,
     /// Timecode text being edited (start, duration).
@@ -108,6 +109,7 @@ impl Default for CompDraft {
             shutter_angle: 180.0,
             shutter_phase: -90.0,
             samples: 16,
+            adaptive_limit: 128,
             advanced_3d: false,
             tab: Tab::Basic,
             start_tc: None,
@@ -294,6 +296,9 @@ pub fn show(ui: &mut egui::Ui, d: &mut CompDraft, t: &Tokens) -> Option<serde_js
                 ui.label("Samples Per Frame:");
                 ui.add(egui::DragValue::new(&mut d.samples).range(2..=64));
                 ui.end_row();
+                ui.label("Adaptive Sample Limit:");
+                ui.add(egui::DragValue::new(&mut d.adaptive_limit).range(16..=256));
+                ui.end_row();
             });
         }
         Tab::Renderer => {
@@ -325,7 +330,7 @@ pub fn params(d: &CompDraft) -> serde_json::Value {
     json!({
         "name": d.name, "width": d.width, "height": d.height, "pixelAspect": d.pixel_aspect, "frameRate": d.fps,
         "duration": d.duration, "startTime": d.start, "background": [d.bg[0], d.bg[1], d.bg[2]], "anchor": d.anchor,
-        "shutterAngle": d.shutter_angle, "shutterPhase": d.shutter_phase, "motionBlurSamples": d.samples,
+        "shutterAngle": d.shutter_angle, "shutterPhase": d.shutter_phase, "motionBlurSamples": d.samples, "adaptiveSampleLimit": d.adaptive_limit,
         "renderer": if d.advanced_3d { "advanced3D" } else { "classic3D" },
     })
 }

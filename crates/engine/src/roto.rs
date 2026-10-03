@@ -10,6 +10,7 @@
 //! of (the layer's source and timing, its masks and the effects above it) and drops frozen
 //! mattes made from other frames.
 
+use crate::offload::JobKind;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -62,7 +63,7 @@ impl Default for RotoOptions {
 pub const VIEWS: [&str; 4] = ["alphaBoundary", "alpha", "alphaOverlay", "none"];
 
 /// What a job does.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum RotoTask {
     Propagate,
@@ -378,6 +379,7 @@ fn run_work(w: Work, shared: &RotoShared) {
         s.done = k as u64 + 1;
         s.elapsed = t0.elapsed().as_secs_f64();
         s.fps = if s.elapsed > 0.0 { s.done as f64 / s.elapsed } else { 0.0 };
+        crate::offload::report(s.done, s.total);
     }
     if w.task == RotoTask::Freeze {
         *lock(&shared.frozen) = Some(frozen);
@@ -402,19 +404,37 @@ pub(crate) fn job_frames(d: &effectcraft_track::roto::RotoData, dir: Direction) 
 
 impl Session {
     pub fn is_roto_running(&self) -> bool {
-        self.roto_job.as_ref().is_some_and(|j| !j.is_finished())
+        self.roto_job.as_ref().is_some_and(|j| !j.is_finished()) || self.offloaded(JobKind::RotoFreeze).is_some()
     }
 
     pub fn roto_progress(&self) -> Option<RotoProgress> {
-        self.roto_job.as_ref().map(|j| j.progress())
+        self.roto_job.as_ref().map(|j| j.progress()).or_else(|| {
+            self.offloaded(JobKind::RotoFreeze).map(|j| {
+                let p = &j.progress;
+                RotoProgress {
+                    task: Some(RotoTask::Freeze),
+                    done: p.done,
+                    total: p.total,
+                    elapsed: p.elapsed,
+                    fps: crate::offload::rate(p.done, p.elapsed),
+                    ..Default::default()
+                }
+            })
+        })
     }
 
     /// (comp, layer, effect uid, task) of the running job.
     pub fn roto_target(&self) -> Option<(ItemId, LayerId, Uid, RotoTask)> {
-        self.roto_job.as_ref().map(|j| (j.comp, j.layer, j.effect, j.task))
+        self.roto_job
+            .as_ref()
+            .map(|j| (j.comp, j.layer, j.effect, j.task))
+            .or_else(|| self.offloaded(JobKind::RotoFreeze).map(|j| (j.comp, j.layer, j.uid, RotoTask::Freeze)))
     }
 
     pub fn stop_roto(&mut self) -> bool {
+        if self.cancel_offloaded(JobKind::RotoFreeze) {
+            return true;
+        }
         match &self.roto_job {
             Some(j) if !j.is_finished() => {
                 j.shared.cancel.store(true, Ordering::Relaxed);
@@ -471,6 +491,11 @@ impl Session {
             task,
         };
         let strokes = str_of(g, fx::STROKES);
+        if !wait && task == RotoTask::Freeze && self.offloads() {
+            drop(work);
+            self.offload_analysis(crate::offload::WorkerJob::RotoFreeze { comp, layer, effect })?;
+            return Ok(n);
+        }
         let wait = wait || cfg!(target_arch = "wasm32");
         let shared = Arc::new(RotoShared::default());
         let thread = if wait {

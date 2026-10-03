@@ -17,12 +17,6 @@ macro_rules! stub {
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
-        // Render queue / export (export milestone).
-        stub!("file.createProxy", "Create Proxy", [], "{kind: still|movie}"),
-        // Proxies (no proxy model yet).
-        stub!("file.setProxy", "File...", ["File", "Set Proxy"], "{path}"),
-        stub!("file.setProxyNone", "None", ["File", "Set Proxy"], "{}"),
-        stub!("file.interpretProxy", "Proxy...", ["File", "Interpret Footage"], "{}"),
         // Layer ▸ New (3D / content-aware fill).
         stub!("layer.newContentAwareFill", "Content-Aware Fill Layer...", ["Layer", "New"], "{}"),
         // Mask options not in the mask model yet; pen / vertex editing (timeline milestone).
@@ -34,9 +28,6 @@ pub fn specs() -> Vec<CommandSpec> {
         stub!("camera.stereoRig", "Create Stereo 3D Rig", ["Layer", "Camera"], "{}"),
         stub!("camera.orbitNull", "Create Orbit Null", ["Layer", "Camera"], "{}"),
         stub!("camera.fromModel", "Create Cameras from 3D Model", ["Layer", "Camera"], "{}"),
-        stub!("camera.linkFocusToPoi", "Link Focus Distance to Point of Interest", ["Layer", "Camera"], "{}"),
-        stub!("camera.linkFocusToLayer", "Link Focus Distance to Layer", ["Layer", "Camera"], "{}"),
-        stub!("camera.setFocusToLayer", "Set Focus Distance to Layer", ["Layer", "Camera"], "{}"),
         stub!("light.fromModel", "Create Lights from 3D Model", ["Layer", "Light"], "{}"),
         stub!("light.controlWithCamera", "Control Light with Camera", ["Layer", "Light"], "{}"),
         stub!("light.environmentBackground", "Create Environment Light Background Layer", ["Layer", "Light"], "{}"),
@@ -46,7 +37,6 @@ pub fn specs() -> Vec<CommandSpec> {
         stub!("view.displayColorManagement", "Use Display Color Management", ["View"], "{}"),
         stub!("view.simulateOutput", "Simulate Output", [], "{profile}"),
         // Keyframes / text / tracking.
-        stub!("text.animatorFontAxes", "Variable Font Axes", ["Animation", "Animate Text"], "{}"),
         // Workspaces and panels that don't exist yet.
         stub!("window.unavailablePanel", "Panel", [], "{panel}"),
     ]

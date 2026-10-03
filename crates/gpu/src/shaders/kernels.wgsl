@@ -326,7 +326,29 @@ fn directional(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 // ---------------------------------------------------------------- Glow / Drop Shadow
 
-// Glow bright pass. u[0].x = A & B colours; f[0].x = threshold; f[1] = colour A; f[2] = colour B.
+// Glow's A & B gradient position (effects::misc::glow_ab_t). f[0].yzw = loops, phase, midpoint;
+// u[0].z = colour looping.
+fn glow_ab_t(l: f32) -> f32 {
+    let u = clamp(l, 0.0, 1.0) * max(P.f[0].y, 0.0) + P.f[0].z;
+    var t = u - floor(u);
+    if (u > 0.0 && t <= 0.0) {
+        t = 1.0;
+    }
+    let tri = 1.0 - abs(2.0 * t - 1.0);
+    let lp = P.u[0].z;
+    if (lp == 1u) {
+        t = 1.0 - t;
+    } else if (lp == 3u) {
+        t = 1.0 - tri;
+    } else if (lp != 0u) {
+        t = tri;
+    }
+    let m = clamp(P.f[0].w, 0.01, 0.99);
+    return pow(max(t, 0.0), log(0.5) / log(m));
+}
+
+// Glow bright pass. u[0].x = A & B colours; u[0].y = based on alpha; f[0].x = threshold;
+// f[1] = colour A; f[2] = colour B.
 @compute @workgroup_size(16, 16)
 fn glow_bright(@builtin(global_invocation_id) gid: vec3<u32>) {
     let dims = out_dims();
@@ -341,10 +363,13 @@ fn glow_bright(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
     let thr = P.f[0].x;
-    let l = luminance(px.xyz / a);
+    var l = luminance(px.xyz / a);
+    if (P.u[0].y != 0u) {
+        l = a;
+    }
     let k = clamp((l - thr) / max(1.0 - thr, 1e-3), 0.0, 1.0);
     if (P.u[0].x != 0u) {
-        let t = clamp(l, 0.0, 1.0);
+        let t = glow_ab_t(l);
         let ca = P.f[1].xyz;
         let cb = P.f[2].xyz;
         let c = ca + (cb - ca) * t;
@@ -354,7 +379,8 @@ fn glow_bright(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 }
 
-// Glow composite: original `src` with the blurred glow `aux`. u[0].x = behind; f[0].x = intensity.
+// Glow composite: original `src` with the blurred glow `aux`. u[0].x = 0 on top, 1 behind,
+// 2 none (glow only); f[0].x = intensity.
 @compute @workgroup_size(16, 16)
 fn glow_combine(@builtin(global_invocation_id) gid: vec3<u32>) {
     let dims = out_dims();
@@ -364,7 +390,9 @@ fn glow_combine(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     var o = textureLoad(src, p, 0);
     let g = textureLoad(aux, p, 0) * P.f[0].x;
-    if (P.u[0].x != 0u) {
+    if (P.u[0].x == 2u) {
+        o = g;
+    } else if (P.u[0].x == 1u) {
         let k = 1.0 - o.w;
         o = o + g * k;
     } else {
@@ -518,8 +546,9 @@ fn straight(px: vec4<f32>) -> vec3<f32> {
 //  8 Curves          f[0] = data offsets (rgb, red, green, blue), f[1].x = alpha (−1 = none)
 //  9 Gradient Ramp   f[0] = (sx, sy, ex, ey); f[1] = start colour; f[2] = end colour;
 //                    f[3] = (len2, scatter, blend); u[0] = (_, radial, seed)
-// 10 Fractal Noise   f[0] = (contrast, brightness, scale, frac); f[1] = (ox, oy, sr, cr);
-//                    f[2] = (evo, blend, opacity); u[0] = (_, kind, n_oct, seed); u[1].x = invert
+// 10 Fractal Noise   f[0] = (contrast, brightness, scale x, frac); f[1] = (ox, oy, sr, cr);
+//                    f[2] = (evo, blend, opacity, scale y); f[3] = (sub influence, 1 / sub scaling);
+//                    u[0] = (_, kind, n_oct, seed); u[1] = (invert, overflow, normal blend)
 @compute @workgroup_size(16, 16)
 fn pointwise(@builtin(global_invocation_id) gid: vec3<u32>) {
     let dims = out_dims();
@@ -546,7 +575,26 @@ fn pointwise(@builtin(global_invocation_id) gid: vec3<u32>) {
                 let c = straight(px);
                 let br = P.f[0].x;
                 let k = P.f[0].y;
-                px = vec4<f32>(max((c + br - 0.5) * k + 0.5, vec3<f32>(0.0)) * a, a);
+                let ct = P.f[0].z;
+                if (P.u[0].y == 1u) {
+                    px = vec4<f32>(max((c + br - 0.5) * k + 0.5, vec3<f32>(0.0)) * a, a);
+                } else if (P.u[0].y == 2u) {
+                    // Brightness & Contrast tone curves (effects crate bc_modern).
+                    var o = c;
+                    let pb = exp2(-br);
+                    let g = exp2(2.0 * ct);
+                    for (var i = 0; i < 3; i++) {
+                        if (c[i] < 1.0) {
+                            let v = powz(max(c[i], 0.0), pb);
+                            if (v < 0.5) {
+                                o[i] = 0.5 * powz(2.0 * v, g);
+                            } else {
+                                o[i] = 1.0 - 0.5 * powz(max(2.0 - 2.0 * v, 0.0), g);
+                            }
+                        }
+                    }
+                    px = vec4<f32>(o * a, a);
+                }
             }
         }
         case 3u: {
@@ -600,7 +648,10 @@ fn pointwise(@builtin(global_invocation_id) gid: vec3<u32>) {
                 for (var i = 0; i < 3; i++) {
                     var t = (c[i] - ib) / max(iw - ib, 1e-6);
                     if (P.u[0].y != 0u) {
-                        t = clamp(t, 0.0, 1.0);
+                        t = max(t, 0.0);
+                    }
+                    if (P.u[0].z != 0u) {
+                        t = min(t, 1.0);
                     }
                     t = powz(max(t, 0.0), 1.0 / g);
                     o[i] = ob + (ow - ob) * t;
@@ -613,9 +664,15 @@ fn pointwise(@builtin(global_invocation_id) gid: vec3<u32>) {
                 let c = straight(px);
                 var o = vec3<f32>(0.0);
                 for (var i = 0; i < 3; i++) {
-                    let lin = srgb_to_linear(max(c[i], 0.0));
-                    let v = powz(max(lin * P.f[0].x + P.f[0].y, 0.0), 1.0 / P.f[0].z);
-                    o[i] = linear_to_srgb(v);
+                    // Per-channel gain, offset, gamma; negative values are mirrored.
+                    if (P.u[0].y != 0u) {
+                        let x = c[i] * P.f[0][i] + P.f[1][i];
+                        o[i] = sign(x) * powz(abs(x), 1.0 / P.f[2][i]);
+                    } else {
+                        let lin = srgb_to_linear(max(c[i], 0.0));
+                        let x = lin * P.f[0][i] + P.f[1][i];
+                        o[i] = sign(x) * linear_to_srgb(powz(abs(x), 1.0 / P.f[2][i]));
+                    }
                 }
                 px = vec4<f32>(o * a, a);
             }
@@ -706,6 +763,9 @@ fn pointwise(@builtin(global_invocation_id) gid: vec3<u32>) {
             let contrast = P.f[0].x;
             let brightness = P.f[0].y;
             let scale = P.f[0].z;
+            let scale_y = P.f[2].w;
+            let infl = P.f[3].x;
+            let fmul = P.f[3].y;
             let frac = P.f[0].w;
             let ox = P.f[1].x;
             let oy = P.f[1].y;
@@ -718,7 +778,7 @@ fn pointwise(@builtin(global_invocation_id) gid: vec3<u32>) {
             let dx = f32(p.x) + 0.5 - ox;
             let dy = f32(p.y) + 0.5 - oy;
             let u = (dx * cr + dy * sr) / scale;
-            let v = (-dx * sr + dy * cr) / scale;
+            let v = (-dx * sr + dy * cr) / scale_y;
             var sum = 0.0;
             var amp = 1.0;
             var norm = 0.0;
@@ -729,20 +789,40 @@ fn pointwise(@builtin(global_invocation_id) gid: vec3<u32>) {
                     w = frac;
                 }
                 var n = value_noise(u * f, v * f, evo + f32(o) * 7.31, seed + o);
+                let s = n * 2.0 - 1.0;
                 if (kind == 1u) {
-                    n = 1.0 - abs(n * 2.0 - 1.0);
+                    n = 1.0 - s * s;
+                } else if (kind == 2u) {
+                    n = 1.0 - abs(s);
                 }
                 sum += n * amp * w;
                 norm += amp * w;
-                amp *= 0.5;
-                f *= 2.0;
+                amp *= infl;
+                f *= fmul;
             }
             var val = sum / max(norm, 1e-6);
-            val = clamp((val - 0.5) * contrast + 0.5 + brightness, 0.0, 1.0);
+            val = (val - 0.5) * contrast + 0.5 + brightness;
+            // Overflow: Clip, Soft Clamp, Wrap Back, Allow HDR Results.
+            let ov = P.u[1].y;
+            if (ov == 0u) {
+                val = clamp(val, 0.0, 1.0);
+            } else if (ov == 1u) {
+                val = clamp(0.5 + 0.5 * tanh(2.0 * (val - 0.5)) / tanh(1.0), 0.0, 1.0);
+            } else if (ov == 2u) {
+                let t = val - 2.0 * floor(val / 2.0);
+                val = select(t, 2.0 - t, t > 1.0);
+            }
             if (P.u[1].x != 0u) {
                 val = 1.0 - val;
             }
-            px = put(px, vec3<f32>(val), P.f[2].z, P.f[2].y);
+            let op = P.f[2].z;
+            if (P.u[1].z == 1u) {
+                // Normal: the noise over the layer at Opacity, then Blend With Original.
+                let over = vec4<f32>(vec3<f32>(val) * op, op) + px * (1.0 - op);
+                px = px * P.f[2].y + over * (1.0 - P.f[2].y);
+            } else {
+                px = put(px, vec3<f32>(val), op, P.f[2].y);
+            }
         }
         default: {}
     }

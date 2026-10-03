@@ -135,6 +135,7 @@ struct Inner {
     /// rate, read back instead of decoding again (`None` = off).
     conform: Mutex<Option<std::path::PathBuf>>,
     /// Conformed files being written right now.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     conforming: Mutex<HashSet<std::path::PathBuf>>,
 }
 
@@ -492,7 +493,7 @@ impl Inner {
                 let l = footage.layer.as_ref().map_or(0, |l| 1 + l.index as i64 * 2 + l.layer_size as i64);
                 Loc { key: key(&footage.path, l), media_t: None }
             }
-            FootageKind::Still | FootageKind::Sequence | FootageKind::Model => Loc { key: key(&footage.path, 0), media_t: None },
+            FootageKind::Still | FootageKind::Sequence | FootageKind::Model | FootageKind::Data => Loc { key: key(&footage.path, 0), media_t: None },
             FootageKind::Video | FootageKind::Audio => {
                 let rate = footage.frame_rate;
                 let n = Self::frame_count(rate, footage.duration);

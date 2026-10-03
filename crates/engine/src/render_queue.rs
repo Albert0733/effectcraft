@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use effectcraft_project::render_queue::{OutputFormat, OutputModule, PostRenderAction, RenderQueueItem, RenderStatus, TemplateVars, expand_template};
 use effectcraft_project::{ItemId, ItemKind, LayerSource, Project};
 use effectcraft_render::{ExprHost, FootageSource};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{Event, Session};
 
@@ -56,7 +56,7 @@ pub trait Exporter: Send + Sync {
 pub const CANCELLED: &str = "cancelled";
 
 /// Live progress of a render job (serde for agents / the control channel).
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct JobState {
     /// Item being rendered.
     pub current: Option<u64>,
@@ -75,7 +75,8 @@ pub struct JobState {
 }
 
 /// Per-item status changes from the job thread, applied to the project by `poll_render`.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "event", rename_all = "camelCase")]
 pub enum ItemUpdate {
     Started { id: u64, unix: u64 },
     Finished { id: u64, status: RenderStatus, seconds: f64, output: Option<String> },
@@ -88,7 +89,7 @@ pub struct JobShared {
     pub updates: Mutex<Vec<ItemUpdate>>,
 }
 
-fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+pub(crate) fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
@@ -102,6 +103,8 @@ impl JobShared {
 pub struct RenderJob {
     pub shared: Arc<JobShared>,
     thread: Option<std::thread::JoinHandle<()>>,
+    /// Rendering in a worker ([`crate::offload`]).
+    pub remote: Option<crate::offload::RemoteRender>,
 }
 
 impl RenderJob {
@@ -182,7 +185,27 @@ fn unix_now() -> u64 {
     web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
-fn run_work(w: Work, shared: &JobShared) {
+/// Render `items` with the session's footage, expressions and GPU (a worker's render).
+pub(crate) fn run_items(
+    s: &Session,
+    exporter: Arc<dyn Exporter>,
+    items: Vec<Vec<(RenderQueueItem, String)>>,
+    shared: &JobShared,
+    notify: &mut dyn FnMut(&JobShared),
+) {
+    let work = Work {
+        project: s.project.clone(),
+        footage: s.footage.clone(),
+        expr: s.expr.clone(),
+        accel: s.accel.clone(),
+        exporter,
+        items,
+        nested_switches: s.prefs.general.switches_affect_nested_comps,
+    };
+    run_work(work, shared, notify);
+}
+
+fn run_work(w: Work, shared: &JobShared, notify: &mut dyn FnMut(&JobShared)) {
     let t0 = web_time::Instant::now();
     {
         let mut s = lock(&shared.state);
@@ -204,6 +227,7 @@ fn run_work(w: Work, shared: &JobShared) {
             s.items_done = k;
             s.remaining = None;
         }
+        notify(shared);
         // Every output module encodes the same frames (Composition ▸ Add Output Module); the
         // first module's file is the item's output.
         let mut r: Result<ExportResult, String> = Err("no output module".into());
@@ -218,12 +242,15 @@ fn run_work(w: Work, shared: &JobShared) {
                 nested_switches: w.nested_switches,
             };
             let rr = w.exporter.export(&job, &mut |done, total| {
-                let mut s = lock(&shared.state);
-                s.done = done;
-                s.total = total;
-                s.elapsed = t0.elapsed().as_secs_f64();
-                s.item_elapsed = t1.elapsed().as_secs_f64();
-                s.remaining = (done > 0).then(|| s.item_elapsed / done as f64 * total.saturating_sub(done) as f64);
+                {
+                    let mut s = lock(&shared.state);
+                    s.done = done;
+                    s.total = total;
+                    s.elapsed = t0.elapsed().as_secs_f64();
+                    s.item_elapsed = t1.elapsed().as_secs_f64();
+                    s.remaining = (done > 0).then(|| s.item_elapsed / done as f64 * total.saturating_sub(done) as f64);
+                }
+                notify(shared);
                 !shared.cancel.load(Ordering::Relaxed)
             });
             match rr {
@@ -245,6 +272,7 @@ fn run_work(w: Work, shared: &JobShared) {
             }
         };
         lock(&shared.updates).push(up);
+        notify(shared);
     }
     let mut s = lock(&shared.state);
     s.items_done = w.items.len();
@@ -349,10 +377,12 @@ impl Session {
     }
 
     /// Start rendering every queued item. `wait`: block until done (otherwise a background thread
-    /// renders; call [`Session::poll_render`] regularly). Returns the ids being rendered.
-    /// wasm32 has no threads: the render always runs to completion before this returns.
+    /// renders, or the [`Session::offload`] worker; call [`Session::poll_render`] regularly).
+    /// Returns the ids being rendered. Without threads or an offload (wasm32) the render always
+    /// runs to completion before this returns.
     pub fn start_render(&mut self, wait: bool) -> Result<Vec<u64>, String> {
-        let wait = wait || cfg!(target_arch = "wasm32");
+        let offload = self.offload.clone().filter(|_| !wait);
+        let wait = wait || (cfg!(target_arch = "wasm32") && offload.is_none());
         if self.is_rendering() {
             return Err("a render is already in progress".into());
         }
@@ -401,6 +431,22 @@ impl Session {
             return Err("nothing is queued: add a composition (Composition ▸ Add to Render Queue) and tick Render".into());
         }
         let ids: Vec<u64> = items.iter().filter_map(|m| m.first().map(|(i, _)| i.id)).collect();
+        if let Some(off) = offload {
+            let id = crate::offload::next_id();
+            let inbox = Arc::new(crate::offload::Inbox::default());
+            let req = crate::offload::WorkerRequest {
+                id,
+                project: self.project.to_json(),
+                files: crate::offload::footage_files(&self.project),
+                job: crate::offload::WorkerJob::Render { items },
+            };
+            off.start(req, inbox.clone())?;
+            let shared = Arc::new(JobShared::default());
+            lock(&shared.state).items_total = ids.len();
+            self.render_job = Some(RenderJob { shared, thread: None, remote: Some(crate::offload::RemoteRender { id, inbox, ids: ids.clone() }) });
+            self.poll_render();
+            return Ok(ids);
+        }
         let work = Work {
             project: self.project.clone(),
             footage: self.footage.clone(),
@@ -412,12 +458,12 @@ impl Session {
         };
         let shared = Arc::new(JobShared::default());
         if wait {
-            run_work(work, &shared);
-            self.render_job = Some(RenderJob { shared, thread: None });
+            run_work(work, &shared, &mut |_| {});
+            self.render_job = Some(RenderJob { shared, thread: None, remote: None });
         } else {
             let sh = shared.clone();
-            let thread = std::thread::Builder::new().name("render-queue".into()).spawn(move || run_work(work, &sh)).map_err(|e| e.to_string())?;
-            self.render_job = Some(RenderJob { shared, thread: Some(thread) });
+            let thread = std::thread::Builder::new().name("render-queue".into()).spawn(move || run_work(work, &sh, &mut |_| {})).map_err(|e| e.to_string())?;
+            self.render_job = Some(RenderJob { shared, thread: Some(thread), remote: None });
         }
         self.poll_render();
         Ok(ids)
@@ -428,6 +474,25 @@ impl Session {
         match &self.render_job {
             Some(j) if !j.is_finished() => {
                 j.cancel();
+                if let Some(r) = &j.remote {
+                    // A worker can't be interrupted mid-frame: terminate it and stop what's left.
+                    if let Some(off) = &self.offload {
+                        off.cancel(r.id);
+                    }
+                    self.drain_remote_render();
+                    let j = self.render_job.as_ref().expect("job");
+                    let r = j.remote.as_ref().expect("remote");
+                    let finished: Vec<u64> =
+                        lock(&j.shared.updates).iter().filter_map(|u| if let ItemUpdate::Finished { id, .. } = u { Some(*id) } else { None }).collect();
+                    for id in &r.ids {
+                        let done = finished.contains(id)
+                            || self.project.render_queue.iter().any(|i| i.id == *id && matches!(i.status, RenderStatus::Done | RenderStatus::Failed(_)));
+                        if !done {
+                            lock(&j.shared.updates).push(ItemUpdate::Finished { id: *id, status: RenderStatus::UserStopped, seconds: 0.0, output: None });
+                        }
+                    }
+                    lock(&j.shared.state).finished = true;
+                }
                 true
             }
             _ => false,
@@ -437,6 +502,7 @@ impl Session {
     /// Apply job updates to the queue items; drop the job once it finished. Returns whether
     /// anything changed. Frontends call this every frame while rendering.
     pub fn poll_render(&mut self) -> bool {
+        self.drain_remote_render();
         let Some(job) = &self.render_job else { return false };
         let updates = std::mem::take(&mut *lock(&job.shared.updates));
         let finished = job.is_finished();
@@ -506,6 +572,11 @@ impl Session {
         }
         let importer = self.importer.clone().ok_or("media import is not available in this build")?;
         let footage = importer.probe(path)?;
+        if item.post_render == PostRenderAction::SetProxy {
+            crate::commands::proxy_set(self, item.comp, footage).map_err(|e| e.to_string())?;
+            self.toast(format!("Proxy set from {path}"));
+            return Ok(None);
+        }
         let name = std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| path.to_string());
         let replace = item.post_render == PostRenderAction::ImportAndReplace;
         let comp = item.comp;

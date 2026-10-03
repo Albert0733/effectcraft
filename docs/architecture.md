@@ -166,7 +166,8 @@ chain with one upload and one readback. Tests render scenes on both paths and co
 (≤ 1/255 at 8 bpc, ≤ 1e-3 at 32 bpc); they skip without an adapter. The desktop viewer builds the
 `Gpu` on egui-wgpu's device and shows frames from GPU textures without reading them back
 (`ui-egui::frames`); headless renders, the CLI (unless `--gpu`) and CI use the CPU. On the web
-(WebGPU) the GPU composites viewer frames; steps that need a readback fall back to the CPU.
+(WebGPU) the GPU composites viewer frames; steps that need a readback fall back to the CPU (the
+Info panel's pixel readout reads GPU frames back asynchronously).
 
 **Colour and bit depth** (`crates/render/src/color.rs`, `crates/color/src/space.rs`). Pixels are
 `f32`, but 8 and 16 bpc projects clamp and quantise each layer after its source and masks and
@@ -219,6 +220,24 @@ auto-scale; cached per analysis and settings) and warps each frame; Synthesize E
 borders from neighbouring frames read with `EffectHost::self_at`. The effect lives in the
 effects crate, hence the `effects → track` edge.
 
+**Essential Graphics** (`project::essential`, `engine::commands::essential`): a comp's
+`essential` field lists its exposed controls (properties, Media Replacement, groups, comments).
+Every precomp layer of such a comp gets an Essential Properties group (`GroupKind::Essential`,
+children `eg<control id>`), kept in step by `Session::edit`; editing a child overrides it for
+that instance. The renderer draws an instance with overrides from a copy of the project with the
+overridden source properties set (`essential::with_overrides`). Templates are `.ectemplate`
+ZIPs: `manifest.json` (controls), `project.ecproj` (the comp and its dependencies), `media/…` and
+`poster.png`; importing offsets every id past the project's (`essential::offset_ids`).
+**Responsive Design — Time**: a time-stretched precomp maps time piecewise so its protected
+marker regions play at 100 % (`eval::responsive_source_time`).
+
+**Proxies and interpretation**: an item's `proxy` (footage or comp) is decoded in its place at
+the source's nominal size when `RenderOpts::proxy` (Render Settings ▸ Proxy Use) allows it.
+Interpret Footage's Separate Fields turns each field into a frame at twice the rate (the other
+lines interpolated); pixel aspect stretches footage, solids and precomps in the comp
+(`EvalCtx::par_ratio`, not inherited by children); Invert Alpha and Interpret As Linear Light
+apply after decoding.
+
 **3D Camera Tracker** (`effects::camera_tracker`, `engine::camera_track`, `effectcraft-track`'s
 `camtrack`): `camera.analyze` / `track.camera` render the layer's input to the effect on a
 background thread and run structure from motion in two steps. Step 1 follows Shi–Tomasi features
@@ -252,7 +271,11 @@ in the effect.
 
 Expressions are JavaScript, run by boa, with After Effects' object model (`thisComp`, `thisLayer`,
 `time`, `value`, `wiggle`, `loopOut`, vector maths on arrays, and so on). A syntax error keeps the
-text, disables the expression and shows a warning, like After Effects.
+text, disables the expression and shows a warning, like After Effects. `sampleImage` renders the
+sampled layer through the evaluating renderer's footage source (`EvalCtx::footage`), cached per
+thread and frame; `footage(name)` reads data footage (JSON, CSV, TSV imported with File ▸ Import,
+text kept in the project) through `sourceData`, `sourceText` and `dataValue`. `expr.errors`
+lists failing expressions for the viewer's error bar.
 
 ## 5a. Scripting
 
@@ -287,6 +310,14 @@ inspect and click the interface. See [agents.md](agents.md) and
 
 Settings (`engine::prefs`), keyboard shortcut presets (`engine::shortcuts`) and auto-save /
 crash recovery (`engine::autosave`) live in the engine too; they persist through a
-`ConfigStore` the frontend provides (a directory on the desktop, `localStorage` on the web).
+`ConfigStore` the frontend provides (a directory on the desktop; the Origin Private File System,
+or IndexedDB, on the web). Auto-saves go through the store's `FileOps` (the file system by
+default, the browser storage on the web).
+
+Renders and analyses run on background threads on the desktop. Where there are no threads (the
+browser), `engine::offload` sends them to a second engine instance instead: the session's
+`Offload` ships the serialized project, the footage it reads and the job (`WorkerRequest`) to a
+Web Worker, and the worker's replies (progress, item status, the analysed property group) are
+applied on the UI thread.
 The shortcut dispatcher and the menus read the active preset. See
 [preferences.md](preferences.md).

@@ -56,7 +56,7 @@ pub fn text_target(app: &EffectcraftApp) -> Option<TextTarget> {
         .iter()
         .filter_map(|id| comp.layer(*id))
         .find(|l| matches!(l.source, effectcraft_engine::project::LayerSource::Text))?;
-    let ectx = EvalCtx { project: &app.session.project, comp_id: cid, comp, time: app.session.time(), expr: app.session.expr.as_deref() };
+    let ectx = EvalCtx { project: &app.session.project, comp_id: cid, comp, time: app.session.time(), expr: app.session.expr.as_deref(), footage: None };
     effectcraft_engine::render::text::source_text(&ectx, layer).map(|d| TextTarget { layer: layer.id.0, doc: d, range: None })
 }
 
@@ -231,6 +231,22 @@ pub fn character(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     }
     app.auto.add("character.ligatures", lr, "Ligatures");
     p.text(pos2(x0 + 20.0, y + 7.0), Align2::LEFT_CENTER, "Ligatures", Tokens::ui(11.5), t.text_dim);
+    // Vertical type: Tate-Chu-Yoko and Standard Vertical Roman Alignment (Character panel menu).
+    if doc.vertical {
+        y += 22.0;
+        for (i, (key, label, on)) in
+            [("tateChuYoko", "Tate-Chu-Yoko", doc.tate_chu_yoko), ("verticalRomanUpright", "Standard Vertical Roman", doc.vertical_roman_upright)]
+                .into_iter()
+                .enumerate()
+        {
+            let cr = Rect::from_min_size(pos2(x0 + i as f32 * 120.0, y), vec2(14.0, 14.0));
+            if widgets::checkbox(ui, cr, on, &t, egui::Id::new(("char-vert", key))).clicked() && enabled {
+                actions.push(json!({key: !on}));
+            }
+            app.auto.add(&format!("character.{key}"), cr, label);
+            p.text(pos2(cr.max.x + 6.0, y + 7.0), Align2::LEFT_CENTER, label, Tokens::ui(11.0), t.text_dim);
+        }
+    }
     match &target {
         None => {
             p.text(pos2(rect.center().x, rect.max.y - 20.0), Align2::CENTER_CENTER, "Select a text layer", Tokens::ui(11.0), t.text_faint);
@@ -511,7 +527,7 @@ pub fn align_layers(app: &mut EffectcraftApp, op: &str) {
     let time = app.session.time();
     let mut moves = vec![];
     {
-        let ectx = EvalCtx { project: &app.session.project, comp_id: cid, comp: &comp, time, expr: app.session.expr.as_deref() };
+        let ectx = EvalCtx { project: &app.session.project, comp_id: cid, comp: &comp, time, expr: app.session.expr.as_deref(), footage: None };
         for l in comp.layers.iter().filter(|l| app.session.state.selected_layers.contains(&l.id)) {
             let Some(b) = effectcraft_engine::render::content_bounds(&ectx, l) else { continue };
             let (m, _) = ectx.layer_to_comp(l);

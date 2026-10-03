@@ -131,9 +131,17 @@ fn align(a: &Plane, bp: &Plane, x0: usize, y0: usize, x1: usize, y1: usize, r: i
 fn camera_shake_deblur(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let Some(host) = ctx.env.host else { return b };
     let dur = ctx.params.f("blurDuration").clamp(1.0, 10.0).round() as i64;
-    let search = (ctx.params.f("searchRange").max(0.0) * b.scale).round() as i64;
+    // Standard (index 1) aligns substitutes over a smaller search window than High Quality.
+    let mut search = (ctx.params.f("searchRange").max(0.0) * b.scale).round() as i64;
+    if ctx.params.e("deblurMethod") == 1 {
+        search /= 2;
+    }
     let patch = (ctx.params.f("patchSize").max(8.0) * b.scale).round().max(4.0) as usize;
-    let thresh = 1.0 + ctx.params.f("threshold").max(0.0) / 100.0;
+    // Shake Sensitivity scales how much sharper a neighbour must be (50 = the Threshold as set,
+    // 100 = any sharper neighbour counts, 0 = twice the Threshold).
+    let sens = ctx.params.f("shakeSensitivity").clamp(0.0, 100.0);
+    let thresh = 1.0 + ctx.params.f("threshold").max(0.0) / 100.0 * (100.0 - sens) / 50.0;
+    let strength = (ctx.params.f("strength") / 100.0).clamp(1.0, 2.0) as f32;
     let show = ctx.params.b("showBlurryFrames");
     let fps = ctx.fps();
     let (w, h) = (b.img.width as usize, b.img.height as usize);
@@ -214,6 +222,17 @@ fn camera_shake_deblur(ctx: &EffectCtx, mut b: Buf) -> Buf {
                     acc[c] += q[c] * wgt;
                 }
             }
+            if strength != 1.0 {
+                // Strength above 100 % pushes past the substitute (away from the blurry pixel).
+                let s0 = src.data[y * w + x];
+                for c in 0..4 {
+                    acc[c] = s0[c] + (acc[c] - s0[c]) * strength;
+                }
+                acc[3] = acc[3].clamp(0.0, 1.0);
+                for c in 0..3 {
+                    acc[c] = acc[c].max(0.0);
+                }
+            }
             if show {
                 acc[0] = (acc[0] + 0.3 * acc[3]).min(acc[3].max(acc[0]));
             }
@@ -241,6 +260,9 @@ pub fn specs() -> Vec<EffectSpec> {
             "Camera-Shake Deblur",
             vec![
                 p("blurDuration", "Blur Duration", num(2.0), slider(1.0, 10.0, 1.0, 10.0, 0)),
+                p("deblurMethod", "Deblur Method", Value::Enum(0), popup(&["High Quality (slower)", "Standard"])),
+                p("strength", "Strength", num(100.0), slider(100.0, 200.0, 100.0, 200.0, 0)),
+                p("shakeSensitivity", "Shake Sensitivity", num(50.0), slider(0.0, 100.0, 0.0, 100.0, 0)),
                 p("searchRange", "Search Range", num(8.0), slider(0.0, 64.0, 0.0, 32.0, 0)),
                 p("patchSize", "Patch Size", num(32.0), slider(8.0, 256.0, 8.0, 128.0, 0)),
                 p("threshold", "Threshold", num(20.0), slider(0.0, 500.0, 0.0, 100.0, 1)),
@@ -334,5 +356,35 @@ mod tests {
         assert_eq!(out.img.data, again.img.data);
         let none = run_fx("ec.blur.camerashakedeblur", &[], blurry.clone(), 0.0, EffectEnv::default());
         assert_eq!(none.img.data, blurry.data);
+    }
+
+    #[test]
+    fn camera_shake_deblur_sensitivity_and_strength() {
+        let host = Shaky;
+        let env = EffectEnv { host: Some(&host), frame_rate: 30.0, ..Default::default() };
+        let blurry = frame(1);
+        let base = [("patchSize", num(16.0)), ("searchRange", num(3.0)), ("threshold", num(500.0))];
+        let dist = |a: &Image| a.data.iter().zip(&blurry.data).map(|(p, q)| (p[0] - q[0]).abs()).sum::<f32>();
+        // Full sensitivity deblurs whatever the threshold; lower sensitivity never deblurs more.
+        let low = run_fx(
+            "ec.blur.camerashakedeblur",
+            &[base[0].clone(), base[1].clone(), base[2].clone(), ("shakeSensitivity", num(0.0))],
+            blurry.clone(),
+            1.0 / 30.0,
+            env,
+        );
+        let high = run_fx(
+            "ec.blur.camerashakedeblur",
+            &[base[0].clone(), base[1].clone(), base[2].clone(), ("shakeSensitivity", num(100.0))],
+            blurry.clone(),
+            1.0 / 30.0,
+            env,
+        );
+        assert_ne!(high.img.data, blurry.data);
+        assert!(dist(&high.img) >= dist(&low.img));
+        // Strength 200 % moves further from the blurry frame than 100 %.
+        let s1 = run_fx("ec.blur.camerashakedeblur", &[base[0].clone(), base[1].clone()], blurry.clone(), 1.0 / 30.0, env);
+        let s2 = run_fx("ec.blur.camerashakedeblur", &[base[0].clone(), base[1].clone(), ("strength", num(200.0))], blurry.clone(), 1.0 / 30.0, env);
+        assert!(dist(&s2.img) > dist(&s1.img) * 1.05, "{} vs {}", dist(&s2.img), dist(&s1.img));
     }
 }

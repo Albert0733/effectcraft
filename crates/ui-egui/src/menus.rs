@@ -153,6 +153,10 @@ pub fn invoke(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, params: V
     if crate::panels::dialogs_3d::route(app, id, &params)? {
         return Ok(Value::Null);
     }
+    // Layer ▸ Layer Styles ▸ <style> from the menu adds the style and opens the dialog on it.
+    if crate::panels::layer_styles_dialog::route(app, id, &params)? {
+        return Ok(Value::Null);
+    }
     // Legacy per-panel / per-workspace ids (`window.panel.Project`, `window.workspace.default`).
     if let Some(rest) = id.strip_prefix("window.panel.") {
         return frontend(app, ctx, "window.panel", json!({"panel": rest}));
@@ -450,6 +454,10 @@ pub fn frontend(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, p: Valu
     Ok(match id {
         "app.about" => {
             app.dialog = Some(crate::Dialog::About);
+            Value::Null
+        }
+        "layer.style.options" => {
+            crate::panels::layer_styles_dialog::open(app, &p)?;
             Value::Null
         }
         "app.settings" => {
@@ -819,6 +827,9 @@ fn file_dialog(app: &mut EffectcraftApp, id: &str, params: &Value) -> Option<Res
         "file.collectFiles" => ("folder", Ask::Save("Collected Files")),
         "file.saveCopyAsXml" => ("path", Ask::Save("Untitled Project.ecprojx")),
         "keys.rpfCameraImport" => ("path", Ask::Open(&["json", "csv", "txt"])),
+        "essential.exportTemplate" => ("path", Ask::Save("Template.ectemplate")),
+        "essential.importTemplate" => ("path", Ask::Open(&["ectemplate"])),
+        "file.setProxy" => ("path", Ask::Open(&["mp4", "mov", "m4v", "mkv", "webm", "png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "bmp", "exr"])),
         _ => return None,
     };
     if params.get(key).is_some()
@@ -835,7 +846,7 @@ fn file_dialog(app: &mut EffectcraftApp, id: &str, params: &Value) -> Option<Res
             let Some(f) = app.hooks.pick_files.as_ref() else { return Some(Err("no file dialog available (pass `paths`)".into())) };
             let paths = f(&[
                 "mp4", "mov", "m4v", "mkv", "webm", "png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "bmp", "exr", "wav", "aif", "aiff", "mp3", "flac",
-                "ogg", "opus", "svg", "psd", "psb", "gltf", "glb", "obj",
+                "ogg", "opus", "svg", "psd", "psb", "gltf", "glb", "obj", "json", "csv", "tsv",
             ]);
             match (paths.is_empty(), key) {
                 (true, _) => None,
