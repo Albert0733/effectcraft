@@ -525,6 +525,9 @@ fn purge_caches(s: &mut Session, p: &Value) -> Result<Value> {
         s.snapshot = None;
         s.state.viewer.show_snapshot = false;
     }
+    if matches!(what.as_str(), "all" | "image" | "memory" | "memoryAndDisk") {
+        effectcraft_effects::roto::purge();
+    }
     s.events.push(crate::Event::PurgeCaches);
     s.toast(format!("Purged {what} cache"));
     Ok(json!({"purged": what}))

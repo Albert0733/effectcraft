@@ -17,6 +17,7 @@ pub mod mask_track;
 pub mod menus;
 pub mod prefs;
 pub mod render_queue;
+pub mod roto;
 mod session_settings;
 pub mod shortcuts;
 pub mod tracking;
@@ -41,6 +42,7 @@ pub use effectcraft_project as project;
 pub use effectcraft_render as render;
 pub use effectcraft_text as text;
 pub use effectcraft_time as time;
+pub use effectcraft_track as track;
 pub use render_queue::{ExportJob, ExportResult, Exporter, JobState};
 
 #[derive(Debug, thiserror::Error)]
@@ -176,6 +178,9 @@ pub struct EditorState {
     /// Paint and Brushes panel options (Brush, Clone Stamp and Eraser tools).
     #[serde(default)]
     pub paint: commands::paint::PaintOptions,
+    /// Roto Brush and Refine Edge tool options.
+    #[serde(default)]
+    pub roto: roto::RotoOptions,
     /// Puppet tool options for new meshes.
     #[serde(default)]
     pub puppet: commands::puppet::PuppetOptions,
@@ -263,6 +268,10 @@ pub struct Session {
     pub warp_job: Option<warp::WarpJob>,
     /// Warp Stabilizers waiting for (re-)analysis: (comp, layer, effect uid).
     pub warp_pending: Vec<(ItemId, LayerId, Uid)>,
+    /// The running (or finished, not yet polled) Roto Brush propagation / Freeze.
+    pub roto_job: Option<roto::RotoJob>,
+    /// Roto Brush instances edited since their last propagation: (comp, layer, effect uid).
+    pub roto_pending: Vec<(ItemId, LayerId, Uid)>,
     pub events: Vec<Event>,
     /// Commands executed: (id, params).
     pub journal: Vec<(String, Value)>,
@@ -308,6 +317,8 @@ impl Default for Session {
             mask_job: None,
             warp_job: None,
             warp_pending: vec![],
+            roto_job: None,
+            roto_pending: vec![],
             events: vec![],
             journal: vec![],
             layer_cache: Arc::new(LayerCache::default()),
@@ -372,6 +383,12 @@ impl Session {
         for w in warp::invalidate(&before, &mut p) {
             if !self.warp_pending.contains(&w) {
                 self.warp_pending.push(w);
+            }
+        }
+        // Roto Brush Input Keys follow the frames; edited instances propagate again.
+        for r in roto::sync(&before, &mut p) {
+            if !self.roto_pending.contains(&r) {
+                self.roto_pending.push(r);
             }
         }
         let same = merge.is_some() && merge.map(str::to_string) == self.history.merge_key;
@@ -551,6 +568,9 @@ impl Session {
         self.stop_warp();
         self.warp_job = None;
         self.warp_pending.clear();
+        self.stop_roto();
+        self.roto_job = None;
+        self.roto_pending.clear();
         p.fix_next_id();
         self.project = Arc::new(p);
         self.history = History::default();
@@ -615,3 +635,5 @@ pub fn text_families() -> Vec<String> {
 }
 #[cfg(test)]
 mod tests_paint;
+#[cfg(test)]
+mod tests_roto;
