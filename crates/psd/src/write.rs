@@ -103,11 +103,14 @@ pub struct WDoc {
     /// Merged image (straight RGBA, document-sized); `None` composites visible pixel layers
     /// with Normal blending.
     pub composite: Option<Vec<[f32; 4]>>,
+    /// Embedded files for smart objects: (unique id, file name, type code, bytes), written as
+    /// linked layer data (`lnk2`).
+    pub linked: Vec<(String, String, [u8; 4], Vec<u8>)>,
 }
 
 impl WDoc {
     pub fn new(width: u32, height: u32) -> WDoc {
-        WDoc { width, height, depth: 8, mode: ColorMode::Rgb, rle: true, layers: vec![], composite: None }
+        WDoc { width, height, depth: 8, mode: ColorMode::Rgb, rle: true, layers: vec![], composite: None, linked: vec![] }
     }
 }
 
@@ -339,6 +342,13 @@ pub fn write(doc: &WDoc) -> Vec<u8> {
             lm.extend_from_slice(&li);
             u32b(&mut lm, 0);
         }
+        if !doc.linked.is_empty() {
+            let d = linked_block(&doc.linked);
+            lm.extend_from_slice(b"8BIM");
+            lm.extend_from_slice(b"lnk2");
+            u32b(&mut lm, d.len() as u32);
+            lm.extend_from_slice(&d);
+        }
     }
     u32b(&mut out, lm.len() as u32);
     out.extend_from_slice(&lm);
@@ -372,7 +382,52 @@ pub fn write(doc: &WDoc) -> Vec<u8> {
     out
 }
 
+/// Linked layer data records (`liFD`, version 7) for embedded files.
+fn linked_block(files: &[(String, String, [u8; 4], Vec<u8>)]) -> Vec<u8> {
+    let mut out = vec![];
+    for (uuid, name, ty, data) in files {
+        let mut rec = vec![];
+        rec.extend_from_slice(b"liFD");
+        u32b(&mut rec, 7);
+        rec.push(uuid.len() as u8);
+        rec.extend_from_slice(uuid.as_bytes());
+        rec.extend_from_slice(&unicode_plain(name));
+        rec.extend_from_slice(ty);
+        rec.extend_from_slice(b"8BIM");
+        rec.extend_from_slice(&(data.len() as u64).to_be_bytes());
+        rec.push(0); // no file-open descriptor
+        rec.extend_from_slice(data);
+        u32b(&mut rec, 0); // child document id (empty unicode string)
+        rec.extend_from_slice(&0f64.to_be_bytes()); // asset modification time
+        rec.push(0); // asset locked state
+        out.extend_from_slice(&(rec.len() as u64).to_be_bytes());
+        out.extend_from_slice(&rec);
+        while !out.len().is_multiple_of(4) {
+            out.push(0);
+        }
+    }
+    out
+}
+
 // ---------------------------------------------------------------- block helpers
+
+/// `SoLd`: a placed layer showing linked file `uuid` (content `size` pixels) with its corners at
+/// `quad` (top-left, top-right, bottom-right, bottom-left).
+pub fn smart_object_block(uuid: &str, quad: [[f64; 2]; 4], size: [f64; 2]) -> ([u8; 4], Vec<u8>) {
+    let list = |v: &[f64]| DValue::List(v.iter().map(|x| DValue::Double(*x)).collect());
+    let t: Vec<f64> = quad.iter().flat_map(|p| [p[0], p[1]]).collect();
+    let d = Descriptor::new("null")
+        .with("Idnt", DValue::Text(uuid.to_string()))
+        .with("placed", DValue::Text(uuid.to_string()))
+        .with("Trnf", list(&t))
+        .with("nonAffineTransform", list(&t))
+        .with("Sz  ", DValue::Descriptor(Descriptor::new("Pnt ").with("Wdth", DValue::Double(size[0])).with("Hght", DValue::Double(size[1]))));
+    let mut out = b"soLD".to_vec();
+    u32b(&mut out, 4);
+    u32b(&mut out, 16);
+    descriptor::write_descriptor(&mut out, &d);
+    (*b"SoLd", out)
+}
 
 /// `TySh`: a type layer with one style run; the text origin sits at `origin`.
 pub fn text_block(text: &str, origin: [f64; 2], font: &str, size: f64, color: [f64; 3], justification: u8) -> ([u8; 4], Vec<u8>) {

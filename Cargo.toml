@@ -29,6 +29,7 @@ effectcraft-media = { path = "crates/media" }
 effectcraft-export = { path = "crates/export" }
 effectcraft-expr = { path = "crates/expr" }
 effectcraft-lottie = { path = "crates/lottie" }
+effectcraft-pdf = { path = "crates/pdf" }
 effectcraft-psd = { path = "crates/psd" }
 effectcraft-vp9enc = { path = "crates/vp9enc" }
 effectcraft-svg = { path = "crates/svg" }

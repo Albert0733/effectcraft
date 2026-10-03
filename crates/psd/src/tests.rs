@@ -187,3 +187,34 @@ fn truncated_and_garbage_input_errors() {
     assert!(Psd::parse(b"8BPS\0\x09garbage".to_vec()).is_err());
     assert!(Psd::parse(b"PNG".to_vec()).is_err());
 }
+
+#[test]
+fn smart_objects_and_embedded_files() {
+    let mut inner = WDoc::new(20, 10);
+    inner.layers = vec![WLayer::solid("Red", Rect::new(0, 0, 20, 10), [1.0, 0.0, 0.0, 1.0])];
+    let inner_bytes = write(&inner);
+    let mut d = WDoc::new(64, 48);
+    // The content scaled 2× and rotated 90° clockwise: top-left at (40, 4).
+    let quad = [[40.0, 4.0], [40.0, 44.0], [20.0, 44.0], [20.0, 4.0]];
+    d.layers = vec![
+        WLayer::solid("Back", Rect::new(0, 0, 64, 48), [0.0, 0.0, 0.0, 1.0]),
+        WLayer::solid("Placed", Rect::new(20, 4, 20, 40), [0.5, 0.5, 0.5, 1.0]).with_block(smart_object_block("uuid-1", quad, [20.0, 10.0])),
+    ];
+    d.linked = vec![("uuid-1".into(), "inner.psd".into(), *b"8BPS", inner_bytes.clone())];
+    let p = Psd::parse(write(&d)).unwrap();
+    assert_eq!(p.linked.len(), 1);
+    assert_eq!(p.linked[0].name, "inner.psd");
+    assert_eq!(p.linked[0].file_type, "8BPS");
+    assert_eq!(p.linked_data("uuid-1").unwrap(), &inner_bytes[..]);
+    let so = p.layers[1].smart_object.clone().unwrap();
+    assert_eq!(so.uuid, "uuid-1");
+    assert_eq!(so.quad, quad);
+    assert_eq!(so.size, Some([20.0, 10.0]));
+    let (c, sx, sy, rot) = so.placement(20.0, 10.0);
+    assert_eq!(c, [30.0, 24.0]);
+    assert!((sx - 2.0).abs() < 1e-9 && (sy - 2.0).abs() < 1e-9 && (rot - 90.0).abs() < 1e-9, "{sx} {sy} {rot}");
+    // The embedded document parses on its own.
+    let e = Psd::parse(p.linked_data("uuid-1").unwrap().to_vec()).unwrap();
+    assert_eq!((e.width, e.height), (20, 10));
+    assert!(p.layers[0].smart_object.is_none());
+}

@@ -433,8 +433,8 @@ fn ae(v: [f64; 3]) -> Vec3 {
 }
 
 /// Composition ▸ VR ▸ Create VR Environment: renders the active comp's 3D scene in every
-/// direction. Six face comps (a 90° camera each at `position`, default the comp centre, with a
-/// copy of the scene's layers), a 3:2 cube map of them, and an equirectangular output comp
+/// direction. Six face comps (a 90° camera each at `position`, default the comp centre, looking
+/// at the scene nested as a collapsed 3D precomp), a 3:2 cube map of them, and an equirectangular output comp
 /// (VR Converter, cube map → equirectangular). One undo step.
 fn create_vr_environment(s: &mut Session, p: &Value) -> Result<Value> {
     let cid = comp_id(s, p)?;
@@ -462,30 +462,41 @@ fn create_vr_environment(s: &mut Session, p: &Value) -> Result<Value> {
                 id_of(&s.execute("layer.newCamera", json!({"comp": fc, "name": format!("{fname} Camera"), "angleOfView": 90.0, "type": "oneNode"}))?, "layer")?;
             s.execute("prop.set", json!({"comp": fc, "layer": cam, "path": "transform/position", "value": center}))?;
             s.execute("prop.set", json!({"comp": fc, "layer": cam, "path": "transform/orientation", "value": o}))?;
-            // The scene's layers (not its cameras), in the scene's coordinates, under the face
-            // camera.
-            let layers: Vec<effectcraft_project::Layer> = src.layers.iter().filter(|l| !l.is_camera()).cloned().collect();
-            s.edit("Create VR Environment", None, |proj, _| {
-                let mut next = proj.next_id;
-                let mut map = std::collections::BTreeMap::new();
-                let mut copies = vec![];
-                for l in &layers {
-                    let mut c = l.clone();
-                    super::edit::reid(&mut c, &mut next);
-                    map.insert(l.id, c.id);
-                    copies.push(c);
-                }
-                for c in &mut copies {
-                    c.parent = c.parent.and_then(|p| map.get(&p).copied());
-                    if let Some(m) = &mut c.track_matte {
-                        m.layer = map.get(&m.layer).copied().unwrap_or(m.layer);
+            // The scene, nested as a collapsed 3D precomp whose layer maps the scene's
+            // coordinates onto the face comp's unchanged (anchor = position): its 3D layers are
+            // seen through the face camera and edits to the scene show in every face. Lights
+            // inside a collapsed precomp do not light it (the containing comp's do), so the
+            // scene's lights are copied next to it.
+            let pre = id_of(&s.execute("layer.addItem", json!({"comp": fc, "item": cid.0, "time": 0.0}))?, "layer")?;
+            let mid = [src.width as f64 / 2.0, src.height as f64 / 2.0, 0.0];
+            s.execute("layer.setSwitch", json!({"comp": fc, "layers": [pre], "switch": "threeD", "value": true}))?;
+            s.execute("layer.setSwitch", json!({"comp": fc, "layers": [pre], "switch": "collapse", "value": true}))?;
+            s.execute("prop.set", json!({"comp": fc, "layer": pre, "path": "transform/anchor", "value": mid}))?;
+            s.execute("prop.set", json!({"comp": fc, "layer": pre, "path": "transform/position", "value": mid}))?;
+            let lights: Vec<effectcraft_project::Layer> = src.layers.iter().filter(|l| l.is_light()).cloned().collect();
+            if !lights.is_empty() {
+                s.edit("Create VR Environment", None, |proj, _| {
+                    let mut next = proj.next_id;
+                    let mut map = std::collections::BTreeMap::new();
+                    let mut copies = vec![];
+                    for l in &lights {
+                        let mut c = l.clone();
+                        super::edit::reid(&mut c, &mut next);
+                        map.insert(l.id, c.id);
+                        copies.push(c);
                     }
-                }
-                proj.next_id = next;
-                let comp = proj.comp_mut(ItemId(fc)).ok_or(EngineError::NoComp)?;
-                comp.layers.extend(copies);
-                Ok(())
-            })?;
+                    for c in &mut copies {
+                        c.parent = c.parent.and_then(|p| map.get(&p).copied());
+                    }
+                    proj.next_id = next;
+                    let comp = proj.comp_mut(ItemId(fc)).ok_or(EngineError::NoComp)?;
+                    let at = comp.layers.len().saturating_sub(1);
+                    for (k, c) in copies.into_iter().enumerate() {
+                        comp.layers.insert(at + k, c);
+                    }
+                    Ok(())
+                })?;
+            }
             faces.push(fc);
         }
         let cube = id_of(

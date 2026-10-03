@@ -21,5 +21,6 @@ effectcraft-export = { workspace = true }
 serde_json = { workspace = true }
 effectcraft-psd = { workspace = true }
 effectcraft-svg = { workspace = true }
+effectcraft-pdf = { workspace = true }
 effectcraft-raster = { workspace = true }
 effectcraft-time = { workspace = true }
