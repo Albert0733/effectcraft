@@ -71,7 +71,8 @@ pub use color_fx::{
 };
 pub use color2::Curve;
 pub use distort::transform_shutter;
-pub use distort2::parse_mesh;
+pub use distort2::{MAGNIFY_MODES, parse_mesh};
+pub use distort4::liquify_mesh;
 use effectcraft_keyframe::Value;
 use effectcraft_project::build::Ids;
 use effectcraft_project::{GroupKind, ParamUi, PropGroup, Property};
@@ -79,6 +80,7 @@ pub use effectcraft_raster::{AuxChannels, Image};
 pub use misc::{INVERT_ALPHA, INVERT_CHANNELS, glow_operation};
 pub use sim::particle_state;
 pub use sim3::playground_state;
+pub use stylize2::strobe_on;
 // CPU helpers the GPU kernels share (effectcraft-gpu).
 pub use blur2::{camera_lens_plain, camera_lens_spans};
 pub use generate::gen_mode;
@@ -809,7 +811,33 @@ pub const GPU_EFFECTS: &[&str] = &[
     // effectcraft-gpu fx_key (keying, matte, channel)
     //
     // effectcraft-gpu fx_stylize (stylize, distort)
-    //
+    "ec.stylize.posterize",
+    "ec.stylize.threshold",
+    "ec.stylize.ccthreshold",
+    "ec.stylize.ccthresholdrgb",
+    "ec.stylize.strobe",
+    "ec.stylize.ccvignette",
+    "ec.stylize.scatter",
+    "ec.stylize.brushstrokes",
+    "ec.stylize.roughenedges",
+    "ec.stylize.texturize",
+    "ec.stylize.motiontile",
+    "ec.stylize.cckaleida",
+    "ec.stylize.ccrepetile",
+    "ec.distort.mirror",
+    "ec.distort.offset",
+    "ec.distort.polar",
+    "ec.distort.spherize",
+    "ec.distort.cornerpin",
+    "ec.distort.opticscompensation",
+    "ec.distort.magnify",
+    "ec.distort.ccslant",
+    "ec.distort.ccsmear",
+    "ec.distort.ccsplit",
+    "ec.distort.ccsplit2",
+    "ec.distort.cctiler",
+    "ec.distort.ccgriddler",
+    "ec.distort.liquify",
     // effectcraft-gpu fx_noise (noise, blur, time)
     //
 ];

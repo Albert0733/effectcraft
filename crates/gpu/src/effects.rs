@@ -113,6 +113,8 @@ fn apply(e: &mut Enc, id: &str, ctx: &EffectCtx, b: GBuf) -> Option<GBuf> {
         "ec.blur.gaussian" => gaussian(e, ctx, b),
         "ec.blur.fastbox" => box_blur(e, ctx, b),
         "ec.blur.directional" => directional(e, ctx, b),
+        "ec.stylize.glow" if crate::fx_stylize::glow_extra(ctx) => crate::fx_stylize::glow(e, ctx, b),
+        "ec.distort.transform" if crate::fx_stylize::transform_blur(ctx) => crate::fx_stylize::transform(e, ctx, b),
         "ec.stylize.glow" => glow(e, ctx, b),
         "ec.perspective.dropshadow" => drop_shadow(e, ctx, b),
         "ec.distort.transform" => transform(e, ctx, b),
