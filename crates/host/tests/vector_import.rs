@@ -161,3 +161,26 @@ fn svg_footage_and_shapes_from_vector_layer() {
         assert!(d3 < 0.03, "{name}: ×3 mean diff {d3}");
     }
 }
+
+#[test]
+fn svg_footage_continuously_rasterizes() {
+    let path = tmp("cr.svg");
+    std::fs::write(&path, SVG).unwrap();
+    let doc = effectcraft_svg::parse(SVG).unwrap();
+    let (w, h) = doc.pixel_size();
+    let mut s = effectcraft_host::session();
+    let item = s.execute_checked("file.import", json!({"paths": [path]})).unwrap()["items"][0].as_u64().unwrap();
+    s.execute("comp.new", json!({"name": "C", "width": w, "height": h, "frameRate": 30, "duration": 1})).unwrap();
+    let lid = s.execute_checked("layer.addItem", json!({"item": item})).unwrap()["layer"].as_u64().unwrap();
+    for (k, v) in [("transform/anchor", json!([0, 0])), ("transform/position", json!([0, 0])), ("transform/scale", json!([300, 300]))] {
+        s.execute("prop.set", json!({"layer": lid, "path": k, "value": v})).unwrap();
+    }
+    let cid = s.active_comp_id().unwrap();
+    let t = effectcraft_time::Tick::ZERO;
+    let want = effectcraft_svg::rasterize(&doc, w, h, 3.0);
+    let soft = mean_diff(&s.render(cid, t, RenderOpts::default()), &want);
+    s.execute("layer.setSwitch", json!({"layers": [lid], "switch": "collapse", "value": true})).unwrap();
+    let sharp = mean_diff(&s.render(cid, t, RenderOpts::default()), &want);
+    assert!(sharp < 0.004, "continuously rasterised diff {sharp}");
+    assert!(sharp < soft, "sharper than the upscaled pixels ({sharp} vs {soft})");
+}

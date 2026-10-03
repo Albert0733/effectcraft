@@ -1226,11 +1226,13 @@ dependencies = [
  "effectcraft-raster",
  "effectcraft-render",
  "effectcraft-time",
+ "effectcraft-vp9enc",
  "filmcraft-aac",
  "filmcraft-h264enc",
  "filmcraft-isobmff",
  "filmcraft-opus",
  "filmcraft-prores",
+ "filmcraft-vp9",
  "gif",
  "image",
  "log",
@@ -1484,6 +1486,10 @@ dependencies = [
  "serde_json",
  "web-time",
 ]
+
+[[package]]
+name = "effectcraft-vp9enc"
+version = "0.1.0"
 
 [[package]]
 name = "effectcraft-web"

@@ -9,7 +9,7 @@
 //! effectcraft-cli get <comp> <layer> <path> [--time S]        read a property
 //! effectcraft-cli set <comp> <layer> <path> <value> [--time S] [--expression E]
 //! effectcraft-cli render-frame [--comp C] [--time S|--frame N] [--max-side PX|--scale K] [--out F.png]
-//! effectcraft-cli render [--comp C] --out FILE [--format h264|prores|png|jpeg|tiff|exr|gif] [--start S] [--end S]
+//! effectcraft-cli render [--comp C] --out FILE [--format h264|prores|webm|png|jpeg|tiff|exr|gif|wav|aiff] [--start S] [--end S]
 //!     [--work-area] [--fps N] [--resolution full|half|third|quarter|K] [--quality best|draft] [--channels rgb|rgba]
 //!     [--jpeg-quality N] [--bitrate KBPS] [--prores proxy|lt|standard|hq|4444|4444xq] [--audio auto|on|off]
 //! effectcraft-cli render F.ecproj --queue                    render the project's Render Queue

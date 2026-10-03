@@ -75,7 +75,7 @@ library groundwork for mask tracking and Warp Stabilizer.
 
 What is left is concentrated in large systems: Roto Brush and Refine Edge, the 3D camera tracker,
 Advanced 3D (models, PBR, image-based lighting), the Warp Stabilizer and mask-tracking UI on top of
-the new tracking library, a JavaScript scripting object model, SVG/PSD import, WebM, a disk cache,
+the new tracking library, a JavaScript scripting object model,
 the missing effect categories (3D Channel, Immersive Video, OCIO), native macOS menus, and
 wasm threads.
 
@@ -84,9 +84,9 @@ wasm threads.
 | Area | Weighted parity | Remaining (agent-hours) | Biggest gaps |
 |---|---|---|---|
 | Layers | 88% | 4.8 | frame blending, collapse transformations, slip edit |
-| Output | 85% | 4.2 | multiple output modules, pre-render, WebM, audio-only |
+| Output | 90% | 3.0 | multiple output modules, pre-render (WebM with VP9 alpha + Opus and WAV/AIFF audio-only landed: VP9 is intra-only, Opus CELT-only) |
 | Audio | 85% | 0.5 | audio to keyframes |
-| Import | 78% | 4.5 | PSD, SVG as shapes, Lottie |
+| Import | 88% | 2.0 | AI/EPS/PDF vector footage, PSD smart objects and 3D layers (PSD as footage/composition/retain layer sizes, SVG footage and Create Shapes from Vector Layer landed) |
 | Automation | 76% | 3.3 | a JavaScript scripting object model |
 | Shapes | 68% | 3.9 | taper and wave strokes (pen tool for shape paths and vertex editing landed in M6.5) |
 | Compositions | 67% | 7.4 | marker dialog, flowchart, Essential Graphics |
@@ -98,7 +98,7 @@ wasm threads.
 | Interface | 55% | 10.4 | drag-to-dock and floating panels, preferences, native macOS menus (viewer rulers/snapping/channels/snapshots landed in M0.13) |
 | Project | 53% | 8.1 | 8/16/32-bit pipeline and colour management, auto-save, proxies, folder moves |
 | Masks & roto | 52% | 10.0 | Roto Brush, variable-width mask feather points (mask tracking and Mask Interpolation landed in M6.6) |
-| Preview | 55% | 6.1 | GPU 3D and adjustment layers, disk cache (region of interest, snapshots, exposure and Fast Previews landed in M0.13) |
+| Preview | 62% | 5.0 | GPU 3D and adjustment layers (persistent disk cache with the blue cache bar landed; region of interest, snapshots, exposure and Fast Previews landed in M0.13) |
 | Tracking | ≈ 70% | 4.0 | 3D camera tracker, face tracking, Subspace Warp's mesh warp and rolling-shutter repair (point tracker, mask tracking and Warp Stabilizer landed in M6.x / M12.5) |
 | Paint | 0% | 4.0 | Brush, Clone Stamp, Eraser |
 
@@ -125,7 +125,7 @@ Mocha and Cineware are third-party and not counted.
 10. Drag-to-dock and floating panels, saved workspaces, native macOS menus.
 11. Auto-save, crash recovery, recent projects (in progress).
 12. Expression gaps: `sampleImage`, `footage()` (the `sourceText` style API landed in M9.9).
-13. Lottie (in progress), WebM, SVG and PSD import.
+13. ~~Lottie, WebM, SVG and PSD import~~ (landed; a disk cache too).
 14. Puppet and paint tools (in progress).
 15. Preferences and a shortcut editor that can rebind (in progress); real Wiggler, Smoother and Motion Sketch; the marker dialog.
 
