@@ -370,3 +370,42 @@ fn effects_read_layer_params() {
     let px = img.get(100, 50);
     assert!(px[2] > 0.99 && px[0] < 0.01, "{px:?}");
 }
+
+/// Records whether the GPU compositor was asked to draw a frame.
+struct ProbeAccel(std::sync::atomic::AtomicBool);
+impl crate::Accelerator for ProbeAccel {
+    fn name(&self) -> String {
+        "probe".into()
+    }
+    fn comp_frame(&self, _r: &crate::Renderer, _comp: ItemId, _t: Tick) -> Option<crate::Image> {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+        None // fall back to the CPU result
+    }
+    fn supports_effect(&self, _id: &str) -> bool {
+        false
+    }
+    fn effects(&self, _chain: &[crate::FxStep], _buf: &crate::Buf, _levels: Option<f32>) -> Option<crate::Buf> {
+        None
+    }
+}
+
+#[test]
+fn auto_backend_keeps_3d_comps_on_the_cpu() {
+    let (mut p, cid, comp) = setup();
+    p.settings.gpu_acceleration = true;
+    let l = solid(&mut p, &comp, [1.0, 0.0, 0.0], 50, 50);
+    p.comp_mut(cid).unwrap().layers.push(l);
+    let asked = |p: &Project, backend: crate::Backend| {
+        let probe = ProbeAccel(Default::default());
+        let mut r = crate::Renderer::new(p, &crate::NoFootage, crate::RenderOpts { backend, ..Default::default() });
+        r.accel = Some(&probe);
+        let _ = r.comp_frame(cid, Tick::ZERO);
+        probe.0.load(std::sync::atomic::Ordering::SeqCst)
+    };
+    // 2D comp: Auto uses the GPU compositor.
+    assert!(asked(&p, crate::Backend::Auto));
+    // A 3D layer: Auto stays on the CPU; an explicit Gpu request still goes to the GPU.
+    p.comp_mut(cid).unwrap().layers[0].switches.three_d = true;
+    assert!(!asked(&p, crate::Backend::Auto));
+    assert!(asked(&p, crate::Backend::Gpu));
+}

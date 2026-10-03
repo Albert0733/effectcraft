@@ -27,6 +27,7 @@ cpal or muda. Everything in L0 to L4, the egui UI and the web app also build for
 | L3 | `media` | Footage decoding (FilmCraft's pure-Rust codecs), image sequences, frame cache |
 | L3 | `expr` | The expression engine (JavaScript via boa) with the After Effects object model |
 | L3 | `export` | Render queue encoding: H.264, ProRes, PNG/JPEG/TIFF/EXR sequences, GIF, audio |
+| L3 | `gpu` | The GPU compositor and GPU effects on wgpu compute shaders (Metal, Vulkan, Direct3D 12, WebGPU), checked against the CPU renderer |
 | L3 | `lottie` | Lottie JSON / dotLottie import and export (layers, precomps, eased and spatial keyframes, shapes, masks, mattes) with a warnings list for what Lottie cannot express |
 | L4 | `engine` | `Session`: project, undo history, editor state, the command registry and menus |
 | L4 | `host` | A fully wired `Session` (media, expressions, exporter) for the frontends |
@@ -35,7 +36,7 @@ cpal or muda. Everything in L0 to L4, the egui UI and the web app also build for
 | L6 | apps `effectcraft`, `effectcraft-cli`, `effectcraft-web` | Desktop app; command-line tool (render, exec, get/set, MCP); the browser app (wasm32, [web.md](web.md)) |
 
 Allowed same-layer edges: `path → keyframe, raster`, `text → path`, `effects → project, text, path`,
-`media / expr / export → render`, `export → media`, `lottie → format`, `host → engine`.
+`media / expr / export / gpu → render`, `export → media`, `lottie → format`, `host → engine`.
 
 ## 2. Time
 
@@ -102,6 +103,27 @@ input is texture-mapped through the deformed triangles. The renderer flattens ne
 groups into `Params` keys (`effects::flatten_params`). Commands: `paint.*`, `puppet.*`.
 
 Half, Third and Quarter resolution render proportionally fewer pixels end to end.
+
+**GPU compositor** (`crates/gpu`; Project Settings ▸ Video Rendering and Effects ▸ Mercury GPU
+Acceleration, the default, or Mercury Software Only; `render.backend`). The CPU renderer is the
+reference and keeps rendering layer content (sources, masks, CPU effects, layer styles) into the
+layer cache. The render crate defines an `Accelerator` trait; `effectcraft_gpu::Gpu` implements it
+on wgpu compute shaders. `RenderOpts::backend` picks `Cpu`, `Gpu` or `Auto` (GPU when an
+accelerator is attached and the project's renderer is the GPU). A GPU frame walks the comp like
+`draw_comp`: cached layer buffers are uploaded once per buffer, then transformed with the CPU's
+sampling (nearest, bilinear, Catmull-Rom bicubic, the same minification pre-filter), motion-blur
+sub-samples are accumulated, and track mattes, Preserve Transparency, layer style passes,
+knockout, all 38 blend modes (a WGSL port of `color::blend`), the 8/16 bpc clamp-and-quantise steps
+and colour-space conversions run on the GPU. 3D runs, adjustment layers and wireframes run on the
+CPU between GPU steps (read back, draw, upload). GPU effects (`effects::GPU_EFFECTS`: Gaussian,
+Fast Box and Directional Blur, Glow, Levels, Curves, Hue/Saturation, Tint, Fill, Gradient Ramp,
+Fractal Noise, Drop Shadow, Brightness & Contrast, Exposure, Invert, Transform) repeat the CPU
+effect's steps (padding, box radii, parameters) as kernels; consecutive GPU effects run as one
+chain with one upload and one readback. Tests render scenes on both paths and compare them
+(≤ 1/255 at 8 bpc, ≤ 1e-3 at 32 bpc); they skip without an adapter. The desktop viewer builds the
+`Gpu` on egui-wgpu's device and shows frames from GPU textures without reading them back
+(`ui-egui::frames`); headless renders, the CLI (unless `--gpu`) and CI use the CPU. On the web
+(WebGPU) the GPU composites viewer frames; steps that need a readback fall back to the CPU.
 
 **Colour and bit depth** (`crates/render/src/color.rs`, `crates/color/src/space.rs`). Pixels are
 `f32`, but 8 and 16 bpc projects clamp and quantise each layer after its source and masks and

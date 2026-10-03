@@ -13,11 +13,14 @@
 //!     [--work-area] [--fps N] [--resolution full|half|third|quarter|K] [--quality best|draft] [--channels rgb|rgba]
 //!     [--jpeg-quality N] [--bitrate KBPS] [--prores proxy|lt|standard|hq|4444|4444xq] [--audio auto|on|off]
 //! effectcraft-cli render F.ecproj --queue                    render the project's Render Queue
-//! effectcraft-cli bench [--comp C] [--time S] [--scale K] [--n N] [--play N]   render timings
+//! effectcraft-cli bench [--comp C] [--time S] [--scale K] [--n N] [--play N] [--gpu]   render timings
+//!     (--gpu: CPU vs GPU ms/frame for every comp at Full and Half)
 //! effectcraft-cli mcp [--bridge PORT]                         MCP server on stdio
 //!
 //! Project:  --project F.ecproj (or a positional *.ecproj) | --demo | --empty   (default: demo; mcp: empty)
 //! Saving:   --save (back to --project) | --save-as F.ecproj
+//! GPU:      --gpu renders on the GPU compositor (Mercury GPU Acceleration) when an adapter exists;
+//!           the default is the CPU (Mercury Software Only)
 //! Bridge:   --bridge PORT drives a running `effectcraft --control PORT` instead of a headless session
 //! Output:   --json for one compact JSON document on stdout (errors: {"error": …}, exit 1)
 //! ```
@@ -41,10 +44,11 @@ const USAGE: &str = "usage: effectcraft-cli <info|commands|exec|run|props|get|se
   render [--comp C] --out FILE [--format F] [--start S] [--end S] [--work-area] [--fps N]
          [--resolution full|half|third|quarter|K] [--quality best|draft] [--channels rgb|rgba]
          [--jpeg-quality N] [--bitrate KBPS] [--prores PROFILE] [--audio auto|on|off] | --queue
-  bench [--comp C] [--time S] [--scale K] [--n N] [--play N]   per-layer/effect render timings;
-                                           --play N renders N consecutive frames with/without the layer cache
+  bench [--comp C] [--time S] [--scale K] [--n N] [--play N] [--gpu]   per-layer/effect render timings;
+                                           --play N renders N consecutive frames with/without the layer cache;
+                                           --gpu compares CPU and GPU ms/frame for every comp at Full and Half
   mcp [--bridge PORT]                      MCP server (JSON-RPC over stdio)
-options: --project F.ecproj | --demo | --empty   --save | --save-as F   --bridge PORT   --json
+options: --project F.ecproj | --demo | --empty   --save | --save-as F   --bridge PORT   --json   --gpu
 <comp>: id or name, '-' = active comp; <layer>: id, '#n' or name; <value>: JSON or bare string";
 
 /// Options that take a value.
@@ -200,13 +204,24 @@ fn backend(args: &Args, default_demo: bool) -> Result<Backend, Failure> {
         }
         return Ok(Backend::bridge(addr)?);
     }
-    let mut b = Backend::headless(effectcraft_host::session());
+    let mut b = Backend::headless(session(args)?);
     if let Some(p) = &args.project {
         b.exec("file.open", json!({"path": p}))?;
     } else if args.flag("--demo") || (default_demo && !args.flag("--empty")) {
         b.exec("file.openDemoProject", json!({}))?;
     }
     Ok(b)
+}
+
+/// A wired session; `--gpu` attaches the GPU compositor (renders then follow the project's
+/// renderer setting, Mercury GPU Acceleration by default).
+fn session(args: &Args) -> Result<effectcraft_engine::Session, Failure> {
+    let mut s = effectcraft_host::session();
+    if args.flag("--gpu") {
+        let g = effectcraft_gpu::Gpu::headless().ok_or_else(|| Failure::Error("--gpu: no usable GPU adapter".into()))?;
+        s.accel = Some(std::sync::Arc::new(g));
+    }
+    Ok(s)
 }
 
 /// `--save` / `--save-as` after a mutating command.
@@ -440,7 +455,7 @@ fn render(args: &Args, json_out: bool) -> Result<(), Failure> {
     if args.opt("--bridge").is_some() {
         return usage_err("render runs headless; use `exec renderQueue.add` / `renderQueue.render` with --bridge");
     }
-    let mut s = effectcraft_host::session();
+    let mut s = session(args)?;
     match &args.project {
         Some(p) => s.execute("file.open", json!({"path": p})).map_err(|e| Failure::Error(e.to_string()))?,
         None => s.execute("file.openDemoProject", json!({})).map_err(|e| Failure::Error(e.to_string()))?,
@@ -552,6 +567,9 @@ fn bench_cmd(args: &Args) -> Result<(), Failure> {
     .map_err(|e| Failure::Error(e.to_string()))?;
     if let Some(c) = args.opt("--comp") {
         s.execute("comp.open", json!({"comp": c})).map_err(|e| Failure::Error(e.to_string()))?;
+    }
+    if args.flag("--gpu") {
+        return bench_gpu(&s, args);
     }
     let cid = s.active_comp_id().ok_or_else(|| Failure::Error("no composition".into()))?;
     let t = Tick::from_seconds_f64(args.num("--time")?.unwrap_or(3.0));
@@ -667,4 +685,71 @@ fn bench_play(s: &Session, cid: ItemId, t: Tick, opts: RenderOpts, n: usize) {
     }
     let st = cache.stats();
     eprintln!("  layer cache: {} hits, {} misses, {} entries, {:.1} MB", st.hits, st.misses, st.entries, st.bytes as f64 / 1e6);
+}
+
+/// Median wall time (ms) of `n` runs of `f` after one warm-up run.
+fn time_ms(n: usize, mut f: impl FnMut()) -> f64 {
+    f();
+    let mut v: Vec<f64> = (0..n)
+        .map(|_| {
+            let t0 = std::time::Instant::now();
+            f();
+            t0.elapsed().as_secs_f64() * 1e3
+        })
+        .collect();
+    median(&mut v)
+}
+
+/// `bench --gpu`: CPU vs GPU ms/frame for every comp (or `--comp`) at Full and Half. "cold"
+/// renders everything (no layer cache); "warm" reuses the layer cache (playback / scrubbing of
+/// unchanged layers: compositing cost); "viewer" is the GPU display path without readback.
+fn bench_gpu(s: &Session, args: &Args) -> Result<(), Failure> {
+    use effectcraft_render::Backend;
+    let gpu = effectcraft_gpu::Gpu::headless().ok_or_else(|| Failure::Error("--gpu: no usable GPU adapter".into()))?;
+    let n = args.num("--n")?.unwrap_or(10.0).max(1.0) as usize;
+    let comps: Vec<ItemId> = match args.opt("--comp") {
+        Some(_) => s.active_comp_id().into_iter().collect(),
+        None => s.project.comps().map(|(id, _)| *id).collect(),
+    };
+    eprintln!("GPU: {} — median of {n} runs (ms/frame)", effectcraft_render::Accelerator::name(&gpu));
+    eprintln!("{:<28} {:>5} {:>10} {:>9} {:>9} {:>9} {:>9} {:>9}", "comp", "res", "size", "cpu cold", "gpu cold", "cpu warm", "gpu warm", "gpu view");
+    for cid in comps {
+        let Some(comp) = s.project.comp(cid) else { continue };
+        let name = s.project.item(cid).map(|i| i.name.clone()).unwrap_or_default();
+        let t = Tick::from_seconds_f64(args.num("--time")?.unwrap_or(3.0).min(comp.duration.seconds() * 0.5));
+        for (label, scale) in [("Full", 1.0), ("Half", 0.5)] {
+            let mk = |backend: Backend, cache: Option<&LayerCache>| {
+                let mut r = Renderer::new(&s.project, s.footage.as_ref(), RenderOpts { scale, backend, ..Default::default() });
+                r.expr = s.expr.as_deref();
+                r.cache = cache;
+                r.accel = Some(&gpu);
+                r.comp_frame(cid, t)
+            };
+            let cpu_cold = time_ms(n, || {
+                std::hint::black_box(mk(Backend::Cpu, None));
+            });
+            let gpu_cold = time_ms(n, || {
+                std::hint::black_box(mk(Backend::Gpu, None));
+            });
+            let cache = LayerCache::default();
+            let cpu_warm = time_ms(n, || {
+                std::hint::black_box(mk(Backend::Cpu, Some(&cache)));
+            });
+            let gcache = LayerCache::default();
+            let gpu_warm = time_ms(n, || {
+                std::hint::black_box(mk(Backend::Gpu, Some(&gcache)));
+            });
+            let view = time_ms(n, || {
+                let mut r = Renderer::new(&s.project, s.footage.as_ref(), RenderOpts { scale, backend: Backend::Gpu, ..Default::default() });
+                r.expr = s.expr.as_deref();
+                r.cache = Some(&gcache);
+                r.accel = Some(&gpu);
+                std::hint::black_box(gpu.render_display(&r, cid, t));
+                gpu.wait();
+            });
+            let size = format!("{}x{}", (comp.width as f64 * scale).round(), (comp.height as f64 * scale).round());
+            eprintln!("{name:<28} {label:>5} {size:>10} {cpu_cold:>9.2} {gpu_cold:>9.2} {cpu_warm:>9.2} {gpu_warm:>9.2} {view:>9.2}");
+        }
+    }
+    Ok(())
 }

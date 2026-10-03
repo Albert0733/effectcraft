@@ -353,6 +353,11 @@ pub fn registry() -> &'static [EffectSpec] {
         v.extend(paint::specs());
         v.extend(puppet::specs());
         v.sort_by(|a, b| a.category.cmp(b.category).then(a.name.cmp(b.name)));
+        for s in v.iter_mut() {
+            if GPU_EFFECTS.contains(&s.id) {
+                s.gpu = true;
+            }
+        }
         v
     })
 }
@@ -410,6 +415,28 @@ pub fn instantiate(spec: &EffectSpec, ids: &mut Ids, instance_name: &str, layer_
     }
     g
 }
+
+/// Effects the GPU compositor (`effectcraft-gpu`) implements with the CPU effect's semantics
+/// (Mercury GPU Acceleration; the Effects & Presets GPU badge). Expression controls are
+/// pass-throughs and count as GPU effects too.
+pub const GPU_EFFECTS: &[&str] = &[
+    "ec.blur.gaussian",
+    "ec.blur.fastbox",
+    "ec.blur.directional",
+    "ec.stylize.glow",
+    "ec.color.levels",
+    "ec.color.curves",
+    "ec.color.huesaturation",
+    "ec.color.tint",
+    "ec.generate.fill",
+    "ec.generate.gradientramp",
+    "ec.noise.fractal",
+    "ec.perspective.dropshadow",
+    "ec.color.brightnesscontrast",
+    "ec.color.exposure",
+    "ec.channel.invert",
+    "ec.distort.transform",
+];
 
 /// Effects whose output depends on [`EffectCtx::time`] directly (not only through animated
 /// parameters). The renderer's layer cache folds the layer time into the key for these.

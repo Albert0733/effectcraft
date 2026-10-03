@@ -1,5 +1,6 @@
 //! Panel bodies.
 
+pub mod anim_tools;
 pub mod comp_settings;
 pub mod dialogs;
 pub mod dialogs_3d;
@@ -12,8 +13,10 @@ pub mod graph_tools;
 pub mod info;
 pub mod key_dialogs;
 pub mod layer_panel;
+pub mod markers_ui;
 pub mod misc;
 pub mod paint_panels;
+pub mod precomp;
 pub mod project;
 pub mod properties;
 pub mod puppet_tool;
@@ -78,7 +81,9 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: PanelKind, rect: Rec
         PanelKind::Audio => misc::audio(app, ui, rect),
         PanelKind::History => misc::history(app, ui, rect),
         PanelKind::Markers => misc::markers(app, ui, rect),
-        PanelKind::Wiggler => misc::wiggler(app, ui, rect),
+        PanelKind::Wiggler => anim_tools::wiggler(app, ui, rect),
+        PanelKind::Smoother => anim_tools::smoother(app, ui, rect),
+        PanelKind::MotionSketch => anim_tools::motion_sketch(app, ui, rect),
         PanelKind::RenderQueue => render_queue::show(app, ui, rect),
         PanelKind::Tracker => tracker::show(app, ui, rect),
         PanelKind::Layer => layer_panel::show(app, ui, rect),
@@ -97,11 +102,17 @@ pub fn panel_menu_popup(app: &mut EffectcraftApp, ui: &mut egui::Ui) {
         egui::Frame::popup(ui.style()).show(ui, |ui| {
             ui.set_min_width(200.0);
             if ui.button("Close Panel").clicked() {
-                app.ui.dock.close(panel);
+                app.close_panel(panel);
                 close = true;
             }
-            if ui.button("Maximize Panel").clicked() {
-                app.ui.dock = crate::dock::DockNode::Tabs { panels: vec![panel], active: 0 };
+            let floating = app.ui.floating.iter().any(|f| f.panels.contains(&panel));
+            if !floating && ui.button("Undock Panel").clicked() {
+                let r = crate::dock_ui::default_float_rect(ui.ctx().content_rect());
+                app.edit_layout(|l| l.float(panel, r));
+                close = true;
+            }
+            if !floating && ui.button(if app.ui.maximized == Some(panel) { "Restore Panel Size" } else { "Maximize Panel" }).clicked() {
+                app.toggle_maximize(panel);
                 close = true;
             }
             ui.separator();

@@ -9,6 +9,7 @@ pub mod audio;
 pub mod automation;
 pub mod control;
 pub mod dock;
+pub mod dock_ui;
 pub mod frames;
 pub mod header;
 pub mod icons;
@@ -65,6 +66,10 @@ pub enum Dialog {
     TrackApply,
     /// Crash recovery: offer the latest auto-save (`EffectcraftApp::recovery`).
     Recovery,
+    /// Composition/Layer Marker (double-click a marker).
+    Marker,
+    /// Layer ▸ Pre-compose.
+    Precompose,
 }
 
 /// Host hooks provided by the native app (file pickers etc.).
@@ -118,10 +123,20 @@ pub struct EffectcraftApp {
     next_token: u64,
     pub(crate) last_ui_time: f64,
     pub(crate) toast: Option<(String, f64)>,
-    /// Texture of the frame shown in the viewer and the key it came from.
+    /// Texture of the last CPU frame shown in the viewer and the key it came from.
     pub(crate) viewer_tex: Option<(egui::TextureHandle, FrameKey)>,
-    /// Last displayed image (for the Info panel colour picker).
+    /// The last GPU frame shown: its egui texture id (registered with egui-wgpu), key and texture.
+    pub(crate) viewer_native: Option<(egui::TextureId, FrameKey, Arc<effectcraft_gpu::DisplayFrame>)>,
+    /// The texture the viewer draws and its frame key (CPU or GPU frame).
+    pub(crate) viewer_shown: Option<(egui::TextureId, FrameKey)>,
+    /// Last displayed image (Info panel colour, eyedroppers, histograms). GPU frames fill it on
+    /// demand ([`EffectcraftApp::viewer_pixels`]).
     pub(crate) viewer_image: Option<Arc<egui::ColorImage>>,
+    /// egui-wgpu's device, once the first frame arrives (desktop and WebGPU).
+    pub(crate) wgpu: Option<eframe::egui_wgpu::RenderState>,
+    /// The GPU compositor on that device (None: no usable adapter → CPU only).
+    pub(crate) gpu: Option<effectcraft_gpu::Gpu>,
+    gpu_checked: bool,
     /// Commands from the native menu bar.
     pub command_inbox: Option<Receiver<String>>,
     /// Pointer position in comp pixels (Info panel).
@@ -140,6 +155,9 @@ pub struct EffectcraftApp {
     applied_prefs: Option<u64>,
     /// A previous run that didn't exit cleanly (shown by `Dialog::Recovery`).
     pub recovery: Option<effectcraft_engine::autosave::Recovery>,
+    /// Docked groups laid out last frame: (active panel, group rect) — `~` maximizes the one
+    /// under the pointer.
+    pub(crate) dock_rects: Vec<(PanelKind, egui::Rect)>,
 }
 
 impl EffectcraftApp {
@@ -167,7 +185,12 @@ impl EffectcraftApp {
             last_ui_time: 0.0,
             toast: None,
             viewer_tex: None,
+            viewer_native: None,
+            viewer_shown: None,
             viewer_image: None,
+            wgpu: None,
+            gpu: None,
+            gpu_checked: false,
             command_inbox: None,
             pointer_comp: None,
             dialog_state: Default::default(),
@@ -178,6 +201,7 @@ impl EffectcraftApp {
             last_reveal: None,
             applied_prefs: None,
             recovery: None,
+            dock_rects: vec![],
         }
         .with_ui_commands()
     }
@@ -243,6 +267,8 @@ impl EffectcraftApp {
     pub fn set_workspace(&mut self, name: &str) {
         self.ui.workspace = name.to_string();
         self.ui.dock = self.ui.saved_workspaces.get(name).cloned().unwrap_or_else(|| dock::workspace(name));
+        self.ui.floating = self.ui.saved_floating.get(name).cloned().unwrap_or_default();
+        self.ui.maximized = None;
     }
 
     /// Built-in workspaces followed by the saved ones (Window ▸ Workspace ▸ Save as New Workspace).
@@ -253,6 +279,14 @@ impl EffectcraftApp {
     }
 
     pub fn show_panel(&mut self, p: PanelKind) {
+        if let Some(f) = self.ui.floating.iter_mut().find(|f| f.panels.contains(&p)) {
+            f.active = f.panels.iter().position(|x| *x == p).unwrap_or(0);
+            self.ui.focused = p;
+            return;
+        }
+        if self.ui.maximized.is_some_and(|m| m != p) {
+            self.ui.maximized = None;
+        }
         if !self.ui.dock.contains(p) {
             let near = match p {
                 PanelKind::Layer | PanelKind::Flowchart => PanelKind::Composition,
@@ -272,7 +306,52 @@ impl EffectcraftApp {
             footage: self.session.footage.clone(),
             expr: self.session.expr.clone(),
             layer_cache: self.session.layer_cache.clone(),
+            gpu: self.gpu.clone(),
+            gpu_display: false,
         }
+    }
+
+    /// Set up the GPU compositor on egui-wgpu's device (once). Without an adapter that runs
+    /// compute shaders (WebGL2, software GL) everything stays on the CPU.
+    pub(crate) fn init_gpu(&mut self, frame: &eframe::Frame) {
+        if self.gpu_checked {
+            return;
+        }
+        self.gpu_checked = true;
+        let Some(rs) = frame.wgpu_render_state() else { return };
+        match effectcraft_gpu::Gpu::new(&rs.adapter, rs.device.clone(), rs.queue.clone()) {
+            Ok(g) => {
+                log::info!("GPU compositor: {}", effectcraft_engine::render::Accelerator::name(&g));
+                self.session.accel = Some(Arc::new(g.clone()));
+                self.gpu = Some(g);
+                self.wgpu = Some(rs.clone());
+            }
+            Err(e) => log::info!("GPU compositor unavailable: {e}"),
+        }
+    }
+
+    /// The viewer shows a frame composited on the GPU (drawn from its wgpu texture).
+    pub fn viewer_on_gpu(&self) -> bool {
+        matches!((&self.viewer_shown, &self.viewer_native), (Some(s), Some(n)) if s.1 == n.1)
+    }
+
+    /// The GPU compositor's adapter, when the viewer has one.
+    pub fn gpu_adapter(&self) -> Option<String> {
+        self.gpu.as_ref().map(effectcraft_engine::render::Accelerator::name)
+    }
+
+    /// The viewer's current pixels as 8-bit premultiplied RGBA, reading a GPU frame back the
+    /// first time something asks for it.
+    pub fn viewer_pixels(&mut self) -> Option<Arc<egui::ColorImage>> {
+        if self.viewer_image.is_none()
+            && let (Some((_, _, f)), Some(g)) = (&self.viewer_native, &self.gpu)
+            && self.viewer_shown.as_ref().map(|s| s.1) == self.viewer_native.as_ref().map(|n| n.1)
+            && let Some(bytes) = g.read_display(f)
+        {
+            let px = bytes.chunks_exact(4).map(|c| egui::Color32::from_rgba_premultiplied(c[0], c[1], c[2], c[3])).collect();
+            self.viewer_image = Some(Arc::new(egui::ColorImage::new([f.width as usize, f.height as usize], px)));
+        }
+        self.viewer_image.clone()
     }
 
     /// The render scale used by the viewer right now.
@@ -332,8 +411,15 @@ impl EffectcraftApp {
         let t = c.frame_rate.tick_of(frame);
         let (draft, _) = self.session.state.viewer.fast_previews.render(self.ui.viewer.interacting);
         let roi = self.session.state.region_of_interest.filter(|_| self.session.active_comp_id() == Some(comp));
-        let opts =
-            RenderOpts { scale, motion_blur: true, guides: true, draft: self.ui.viewer.fast_preview || draft, view: self.session.view_camera(comp), roi };
+        let opts = RenderOpts {
+            scale,
+            motion_blur: true,
+            guides: true,
+            draft: self.ui.viewer.fast_preview || draft,
+            view: self.session.view_camera(comp),
+            roi,
+            backend: effectcraft_engine::render::Backend::Auto,
+        };
         if urgent {
             self.frames.request_urgent(&self.render_source(), key, comp, t, opts);
         } else {
@@ -660,6 +746,7 @@ impl EffectcraftApp {
         header::show(self, ui, header);
         let body = egui::Rect::from_min_max(egui::pos2(full.min.x + 4.0, header.max.y + 2.0), egui::pos2(full.max.x - 4.0, full.max.y - 4.0));
         self.dock_area(ui, body);
+        panels::precomp::mini_flowchart(self, &ctx);
         panels::dialogs::show(self, &ctx);
         self.draw_toast(ui, full);
     }
@@ -693,61 +780,6 @@ impl EffectcraftApp {
                 }
             }
         }
-    }
-
-    /// Tab labels that name what the panel shows, as After Effects does: "Composition Intro",
-    /// "Effect Controls Title", "Properties: Title", and the Timeline tab named after its comp.
-    fn tab_titles(&self) -> Vec<(PanelKind, String)> {
-        let mut out = Vec::new();
-        let Some(comp) = self.session.active_comp() else { return out };
-        let cname = self.session.active_comp_id().and_then(|id| self.session.project.item(id)).map(|i| i.name.clone()).unwrap_or_default();
-        out.push((PanelKind::Composition, format!("Composition {cname}")));
-        out.push((PanelKind::Timeline, cname));
-        if let Some(l) = self.session.state.selected_layers.first().and_then(|id| comp.layer(*id)) {
-            out.push((PanelKind::EffectControls, format!("Effect Controls {}", l.name)));
-            out.push((PanelKind::Properties, format!("Properties: {}", l.name)));
-        }
-        out
-    }
-
-    fn dock_area(&mut self, ui: &mut egui::Ui, body: egui::Rect) {
-        let t = self.tokens;
-        let mut dock = std::mem::replace(&mut self.ui.dock, dock::DockNode::Tabs { panels: vec![], active: 0 });
-        let mut groups = Vec::new();
-        dock::layout(ui, &mut dock, body, &t, "", &mut groups, &mut self.auto);
-        let mut actions = Vec::new();
-        let titles = self.tab_titles();
-        let title = |p: PanelKind| titles.iter().find(|(k, _)| *k == p).map(|(_, s)| s.clone()).unwrap_or_else(|| p.title().to_string());
-        for g in &groups {
-            actions.extend(dock::draw_group_chrome(ui, g, self.ui.focused, &t, &mut self.auto, &title));
-        }
-        self.ui.dock = dock;
-        for g in &groups {
-            let Some(p) = g.panels.get(g.active).copied() else { continue };
-            if g.content.height() < 2.0 {
-                continue; // a collapsed stacked panel: header only
-            }
-            self.auto.add(&format!("panel.{}", p.id()), g.content, p.title());
-            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(g.content).id_salt(("panel", p.id())));
-            child.set_clip_rect(g.content.intersect(ui.clip_rect()));
-            panels::show(self, &mut child, p, g.content);
-        }
-        for a in actions {
-            match a {
-                dock::DockAction::Activate(p) => {
-                    self.ui.dock.activate(p);
-                }
-                dock::DockAction::ToggleStacked(p) => {
-                    self.ui.dock.toggle_stacked(p);
-                }
-                dock::DockAction::Focus(p) => self.ui.focused = p,
-                dock::DockAction::Close(p) => self.ui.dock.close(p),
-                dock::DockAction::PanelMenu(p, pos) => {
-                    ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("panel-menu"), (p, pos)));
-                }
-            }
-        }
-        panels::panel_menu_popup(self, ui);
     }
 }
 
@@ -818,7 +850,8 @@ impl eframe::App for EffectcraftApp {
         self.collect_screenshots(ctx);
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        self.init_gpu(frame);
         if !self.fonts_ready {
             ui.ctx().request_repaint();
             return;

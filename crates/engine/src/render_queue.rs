@@ -23,6 +23,8 @@ pub struct ExportJob<'a> {
     pub footage: &'a dyn FootageSource,
     pub expr: Option<&'a dyn ExprHost>,
     pub item: &'a RenderQueueItem,
+    /// GPU compositor to render with when the project's renderer is Mercury GPU Acceleration.
+    pub accel: Option<&'a dyn effectcraft_render::Accelerator>,
     /// Resolved output path (templates expanded except the `#` frame-number run).
     pub path: &'a str,
 }
@@ -120,6 +122,7 @@ struct Work {
     project: Arc<Project>,
     footage: Arc<dyn FootageSource>,
     expr: Option<Arc<dyn ExprHost>>,
+    accel: Option<Arc<dyn effectcraft_render::Accelerator>>,
     exporter: Arc<dyn Exporter>,
     /// Per queue item: one (item with that output module, resolved path) per output module.
     items: Vec<Vec<(RenderQueueItem, String)>>,
@@ -155,7 +158,7 @@ fn run_work(w: Work, shared: &JobShared) {
         // first module's file is the item's output.
         let mut r: Result<ExportResult, String> = Err("no output module".into());
         for (mi, (mitem, path)) in modules.iter().enumerate() {
-            let job = ExportJob { project: &w.project, footage: w.footage.as_ref(), expr: w.expr.as_deref(), item: mitem, path };
+            let job = ExportJob { project: &w.project, footage: w.footage.as_ref(), expr: w.expr.as_deref(), accel: w.accel.as_deref(), item: mitem, path };
             let rr = w.exporter.export(&job, &mut |done, total| {
                 let mut s = lock(&shared.state);
                 s.done = done;
@@ -288,7 +291,7 @@ impl Session {
             return Err("nothing is queued: add a composition (Composition ▸ Add to Render Queue) and tick Render".into());
         }
         let ids: Vec<u64> = items.iter().filter_map(|m| m.first().map(|(i, _)| i.id)).collect();
-        let work = Work { project: self.project.clone(), footage: self.footage.clone(), expr: self.expr.clone(), exporter, items };
+        let work = Work { project: self.project.clone(), footage: self.footage.clone(), expr: self.expr.clone(), accel: self.accel.clone(), exporter, items };
         let shared = Arc::new(JobShared::default());
         if wait {
             run_work(work, &shared);
