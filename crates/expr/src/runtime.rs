@@ -236,8 +236,11 @@ impl Runtime {
             self.scripts.clear();
         }
         // A block keeps `let`/`const` local to one evaluation; `{` shares line 1 with the code so
-        // error line numbers match the user's text.
-        let src = format!("{{{}\n}}", crate::rewrite::rewrite(text));
+        // error line numbers match the user's text. Errors are rethrown from the script's own
+        // frame: boa leaves the stack of the inner frames behind when an exception leaves the
+        // script from a nested call (every host request does), and the thread's runtime would
+        // fail every expression with "reached the maximum stack size" after a few hundred.
+        let src = format!("try{{{}\n}}catch(__e){{throw __e}}", crate::rewrite::rewrite(text));
         let s = Script::parse(Source::from_bytes(src.as_bytes()), None, &mut self.ctx).map_err(|e| format_error(&e.to_string(), line_count(text)));
         self.scripts.insert(text.to_string(), s.clone());
         s

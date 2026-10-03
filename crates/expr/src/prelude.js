@@ -34,6 +34,15 @@ function __begin(t, v, c, l, path, uid, idx, fd, ti, tt, sv) {
 }
 
 function __finish(r) {
+  // Rethrow from this frame so the runtime's stack unwinds (see `Runtime::script`).
+  try {
+    return __result(r);
+  } catch (e) {
+    throw e;
+  }
+}
+
+function __result(r) {
   r = __v(r);
   if (r !== null && typeof r === 'object' && r.__isLayer) return r.index;
   if (r !== null && typeof r === 'object' && r.__isTextStyle) return r.__out();

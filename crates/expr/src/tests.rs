@@ -389,6 +389,22 @@ fn circular_references_terminate() {
 }
 
 #[test]
+fn errors_and_property_reads_keep_the_runtime_usable() {
+    // Errors thrown inside helpers, and the aborts every property read makes until the host
+    // answers, must not use up the thread's runtime (it used to fail every expression after a
+    // few hundred with "reached the maximum stack size").
+    let f = fx();
+    for _ in 0..3000 {
+        assert!(f.ev(f.b, ROT, "thisComp.layer('Ghost').position", 0.0).is_err());
+    }
+    for i in 0..1000 {
+        let t = i as f64 / 1000.0;
+        assert_close!(f.ev(f.b, ROT, "thisComp.layer('A').transform.rotation", t).unwrap().as_f64(), 90.0 * t);
+    }
+    assert_close!(f.num("time * 2", 1.0), 2.0);
+}
+
+#[test]
 fn effect_slider_reference() {
     let f = fx();
     assert_close!(f.num("effect(\"Slider Control\")(\"Slider\")", 0.0), 42.0);
