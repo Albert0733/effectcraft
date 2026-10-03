@@ -1,7 +1,8 @@
 //! The Home screen (shown in the Composition panel at launch, from the header's Home button, and
 //! by the Learn workspace): New Project / Open Project / New Composition / Open Demo, the recent
-//! projects (File ▸ Open Recent, from Settings) with thumbnails, folders and dates, and where
-//! After Effects has its Learn / What's New area, the ArtCraft community links.
+//! projects (File ▸ Open Recent, from Settings) with thumbnails, folders and dates, the
+//! Templates tab (New from Template gallery, `templates`), the Learn tab, and where After
+//! Effects has its Learn / What's New area, the ArtCraft community links.
 //!
 //! Thumbnails: when a project is opened or saved and the viewer has its frame, a 96×54 RGB
 //! thumbnail is stored in the config store (`thumb-<hash>.txt`, hex) and shown here.
@@ -174,11 +175,18 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     p.text(pos2(x0 + 52.0, y + 12.0), Align2::LEFT_CENTER, "EffectCraft", Tokens::semibold(22.0), Color32::WHITE);
     p.text(pos2(x0 + 52.0, y + 32.0), Align2::LEFT_CENTER, format!("Version {}", env!("CARGO_PKG_VERSION")), Tokens::ui(11.0), t.text_faint);
     y += 56.0;
-    // Home / Learn tabs.
-    for (k, (label, learn)) in [("Home", false), ("Learn", true)].into_iter().enumerate() {
+    // Home / Templates / Learn tabs.
+    let tab = if app.ui.home_learn {
+        2
+    } else if app.ui.home_templates {
+        1
+    } else {
+        0
+    };
+    for (k, label) in ["Home", "Templates", "Learn"].into_iter().enumerate() {
         let r = Rect::from_min_size(pos2(x0 + k as f32 * 84.0, y), vec2(78.0, 28.0));
         let resp = ui.interact(r, egui::Id::new(("home-tab", label)), Sense::click());
-        let on = app.ui.home_learn == learn;
+        let on = tab == k;
         if on || resp.hovered() {
             p.rect_filled(r, 6.0, if on { Color32::from_rgb(0x2e, 0x31, 0x3b) } else { t.hover });
         }
@@ -188,7 +196,8 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         }
         app.auto.add(&format!("home.tab.{}", label.to_ascii_lowercase()), r, label);
         if resp.clicked() {
-            app.ui.home_learn = learn;
+            app.ui.home_learn = k == 2;
+            app.ui.home_templates = k == 1;
         }
     }
     y += 40.0;
@@ -266,6 +275,11 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     };
     if app.ui.home_learn {
         super::learn::home_tab(app, ui, Rect::from_min_max(pos2(rx, ry), pos2(rx + rw, rect.max.y - 8.0)));
+        run_actions(app, &ctx, actions);
+        return;
+    }
+    if app.ui.home_templates {
+        super::templates::home_tab(app, ui, Rect::from_min_max(pos2(rx, ry), pos2(rx + rw, rect.max.y - 8.0)));
         run_actions(app, &ctx, actions);
         return;
     }
@@ -410,6 +424,7 @@ mod tests {
             "home.help.github",
             "home.recent.0",
             "home.tab.home",
+            "home.tab.templates",
             "home.tab.learn",
         ] {
             assert!(app.auto.find(id).is_some(), "{id}");

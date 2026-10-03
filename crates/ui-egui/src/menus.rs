@@ -880,6 +880,14 @@ pub fn frontend(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, p: Valu
         "help.inAppTutorials" => {
             app.ui.start_screen = true;
             app.ui.home_learn = true;
+            app.ui.home_templates = false;
+            Value::Null
+        }
+        // File ▸ New ▸ New Project from Template…: the Home screen's Templates tab.
+        "file.newFromTemplate" => {
+            app.ui.start_screen = true;
+            app.ui.home_learn = false;
+            app.ui.home_templates = true;
             Value::Null
         }
         "effect.manage" | "anim.browsePresets" => {
