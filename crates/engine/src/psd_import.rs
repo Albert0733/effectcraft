@@ -351,7 +351,8 @@ fn add_effect(proj: &mut Project, l: &mut Layer, effect: &str, comp: &Comp, para
     let mut ids = Ids(&mut proj.next_id);
     let mut g = effectcraft_effects::instantiate(spec, &mut ids, spec.name, [comp.width as f64, comp.height as f64]);
     for (k, v) in params {
-        if let Some(p) = g.get_mut(k) {
+        // Paths reach parameters in twirl-down groups (`master/exposure`).
+        if let Some(p) = g.prop_mut(k) {
             p.value = v.clone();
         }
     }
@@ -363,9 +364,13 @@ fn add_effect(proj: &mut Project, l: &mut Layer, effect: &str, comp: &Comp, para
 fn add_adjustment_effect(proj: &mut Project, l: &mut Layer, adj: &Adjustment, comp: &Comp, warnings: &mut Vec<String>, name: &str) {
     match adj {
         Adjustment::Invert => add_effect(proj, l, "Invert", comp, &[]),
-        Adjustment::BrightnessContrast { brightness, contrast, .. } => {
-            add_effect(proj, l, "Brightness & Contrast", comp, &[("brightness", Value::Scalar(*brightness)), ("contrast", Value::Scalar(*contrast))])
-        }
+        Adjustment::BrightnessContrast { brightness, contrast, legacy } => add_effect(
+            proj,
+            l,
+            "Brightness & Contrast",
+            comp,
+            &[("brightness", Value::Scalar(*brightness)), ("contrast", Value::Scalar(*contrast)), ("useLegacy", Value::Bool(*legacy))],
+        ),
         Adjustment::HueSaturation { hue, saturation, lightness, colorize } => {
             let mut p = vec![("hue", Value::Scalar(*hue)), ("saturation", Value::Scalar(*saturation)), ("lightness", Value::Scalar(*lightness))];
             if *colorize {
@@ -396,7 +401,7 @@ fn add_adjustment_effect(proj: &mut Project, l: &mut Layer, adj: &Adjustment, co
             l,
             "Exposure",
             comp,
-            &[("exposure", Value::Scalar(*exposure)), ("offset", Value::Scalar(*offset)), ("gamma", Value::Scalar(*gamma))],
+            &[("master/exposure", Value::Scalar(*exposure)), ("master/offset", Value::Scalar(*offset)), ("master/gamma", Value::Scalar(*gamma))],
         ),
         Adjustment::Other(k) => warnings.push(format!("{name}: adjustment `{k}` is not converted (layer kept as an empty adjustment layer)")),
     }

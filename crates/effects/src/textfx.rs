@@ -227,13 +227,19 @@ fn draw_text(b: &mut Buf, polys: &[Vec<[f64; 2]>], r: f64, look: &TextLook) {
     });
 }
 
+/// Parameter `id`, read from its `group` twirl-down when the effect nests it there.
+fn grouped<'a>(pr: &'a crate::Params, group: &str, id: &str) -> Option<&'a Value> {
+    pr.get(&format!("{group}/{id}")).or_else(|| pr.get(id))
+}
+
 fn look_from(ctx: &EffectCtx, b: &Buf, on_original_id: &str) -> TextLook {
     let pr = ctx.params;
+    let fs = |id: &str| grouped(pr, "fillAndStroke", id);
     TextLook {
-        display: pr.e("displayOptions"),
-        fill: pr.color("fillColor"),
-        stroke: pr.color("strokeColor"),
-        stroke_w: pr.f("strokeWidth") * b.scale,
+        display: fs("displayOptions").map(Value::as_enum).unwrap_or(0),
+        fill: fs("fillColor").map(Value::as_color).unwrap_or([1.0; 4]),
+        stroke: fs("strokeColor").map(Value::as_color).unwrap_or([1.0; 4]),
+        stroke_w: fs("strokeWidth").map(Value::as_f64).unwrap_or(0.0) * b.scale,
         on_original: pr.b(on_original_id),
         opacity: 1.0,
     }
@@ -268,8 +274,24 @@ fn timecode(frames: i64, fps: f64) -> String {
     if neg { format!("-{s}") } else { s }
 }
 
+/// Numbers' twirl-down groups (Format, Fill and Stroke).
+const NUMBERS_GROUPS: [&str; 2] = ["format/", "fillAndStroke/"];
+
+/// `params` with Numbers' group prefixes stripped (`format/value` → `value`), so the drawing
+/// helpers shared with Basic Text read plain ids. Plain keys already present win.
+fn ungroup(params: &crate::Params) -> crate::Params {
+    let mut out = params.clone();
+    for (k, v) in &params.values {
+        if let Some(leaf) = NUMBERS_GROUPS.iter().find_map(|g| k.strip_prefix(g)) {
+            out.values.entry(leaf.to_string()).or_insert_with(|| v.clone());
+        }
+    }
+    out
+}
+
 fn numbers_text(ctx: &EffectCtx) -> String {
-    let pr = ctx.params;
+    let flat = ungroup(ctx.params);
+    let pr = &flat;
     let kind = pr.e("type");
     let dp = pr.f("decimalPlaces").round().clamp(0.0, 10.0) as usize;
     let mut v = pr.f("value");
@@ -311,6 +333,8 @@ fn numbers_text(ctx: &EffectCtx) -> String {
 }
 
 fn numbers(ctx: &EffectCtx, mut b: Buf) -> Buf {
+    let flat = ungroup(ctx.params);
+    let ctx = &EffectCtx { params: &flat, time: ctx.time, layer_size: ctx.layer_size, seed: ctx.seed, adjustment: ctx.adjustment, env: ctx.env };
     let pr = ctx.params;
     let text = numbers_text(ctx);
     let size = (pr.f("size") * b.scale).max(0.5);
@@ -431,13 +455,14 @@ fn basic_text(ctx: &EffectCtx, mut b: Buf) -> Buf {
 
 fn path_text(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let pr = ctx.params;
+    let g = |group: &str, id: &str| grouped(pr, group, id).cloned().unwrap_or(Value::Scalar(0.0));
     let px = |id: &str| {
-        let q = b.to_px(pr.v2(id));
+        let q = b.to_px(g("pathOptions/controlPoints", id).as_vec2());
         [q.0, q.1]
     };
-    let (mut path, mut closed) = match mask_px(ctx, &b, pr.f("customPath").round() as usize) {
+    let (mut path, mut closed) = match mask_px(ctx, &b, g("pathOptions", "customPath").as_f64().round() as usize) {
         Some((p, c, _)) => (p, c),
-        None => match pr.e("shapeType") {
+        None => match g("pathOptions", "shapeType").as_enum() {
             1 | 2 => {
                 let c = px("vertex1");
                 let s = px("tangent1");
@@ -471,26 +496,26 @@ fn path_text(ctx: &EffectCtx, mut b: Buf) -> Buf {
             }
         },
     };
-    if pr.b("reversePath") {
+    if g("pathOptions", "reversePath").as_bool() {
         path.reverse();
     }
     if path.len() < 2 {
         closed = false;
     }
     let len = poly_length(&path, closed);
-    let text: String = pr.s("text").chars().take(pr.f("visibleCharacters").max(0.0) as usize).collect();
-    let size = (pr.f("size") * b.scale).max(0.5);
+    let text: String = pr.s("text").chars().take(g("advanced", "visibleCharacters").as_f64().max(0.0) as usize).collect();
+    let size = (g("character", "size").as_f64() * b.scale).max(0.5);
     let u = unit(size);
-    let tracking = pr.f("tracking") * b.scale;
-    let lm = pr.f("leftMargin") * b.scale;
-    let rm = pr.f("rightMargin") * b.scale;
-    let shift = pr.f("baselineShift") * b.scale;
-    let rot = pr.f("characterRotation").to_radians();
+    let tracking = g("character", "tracking").as_f64() * b.scale;
+    let lm = g("paragraph", "leftMargin").as_f64() * b.scale;
+    let rm = g("paragraph", "rightMargin").as_f64() * b.scale;
+    let shift = g("paragraph", "baselineShift").as_f64() * b.scale;
+    let rot = g("character/orientation", "characterRotation").as_f64().to_radians();
     let n = text.chars().count();
     let advs: Vec<f64> = text.chars().map(|c| advance(c, true) * u).collect();
     let natural: f64 = advs.iter().sum::<f64>() + tracking * (n.max(1) as f64 - 1.0);
     let avail = (len - lm - rm).max(0.0);
-    let (mut cursor, extra) = match pr.e("alignment") {
+    let (mut cursor, extra) = match g("paragraph", "alignment").as_enum() {
         1 => (len - rm - natural, 0.0),
         2 => (lm + (avail - natural) * 0.5, 0.0),
         3 => (lm, if n > 1 { (avail - natural) / (n as f64 - 1.0) } else { 0.0 }),
@@ -691,8 +716,8 @@ pub fn specs() -> Vec<EffectSpec> {
             "Text",
             vec![
                 p(
-                    "type",
-                    "Format: Type",
+                    "format/type",
+                    "Type",
                     Value::Enum(0),
                     popup(&[
                         "Number",
@@ -707,15 +732,15 @@ pub fn specs() -> Vec<EffectSpec> {
                         "Hexadecimal",
                     ]),
                 ),
-                check("randomValues", "Format: Random Values", false),
-                p("value", "Format: Value/Offset/Random Max", num(0.0), slider(-30000.0, 30000.0, -1000.0, 1000.0, 3)),
-                p("decimalPlaces", "Format: Decimal Places", num(2.0), slider(0.0, 10.0, 0.0, 10.0, 0)),
-                check("currentTimeDate", "Format: Current Time/Date", false),
-                p("position", "Fill and Stroke: Position", pt(0.5, 0.5), ParamUi::Point),
-                p("displayOptions", "Fill and Stroke: Display Options", Value::Enum(0), display()),
-                p("fillColor", "Fill and Stroke: Fill Color", col(1.0, 0.0, 0.0), ParamUi::Color),
-                p("strokeColor", "Fill and Stroke: Stroke Color", col(1.0, 1.0, 1.0), ParamUi::Color),
-                p("strokeWidth", "Fill and Stroke: Stroke Width", num(2.0), slider(0.0, 50.0, 0.0, 50.0, 1)),
+                check("format/randomValues", "Random Values", false),
+                p("format/value", "Value/Offset/Random Max", num(0.0), slider(-30000.0, 30000.0, -1000.0, 1000.0, 3)),
+                p("format/decimalPlaces", "Decimal Places", num(2.0), slider(0.0, 10.0, 0.0, 10.0, 0)),
+                check("format/currentTimeDate", "Current Time/Date", false),
+                p("fillAndStroke/position", "Position", pt(0.5, 0.5), ParamUi::Point),
+                p("fillAndStroke/displayOptions", "Display Options", Value::Enum(0), display()),
+                p("fillAndStroke/fillColor", "Fill Color", col(1.0, 0.0, 0.0), ParamUi::Color),
+                p("fillAndStroke/strokeColor", "Stroke Color", col(1.0, 1.0, 1.0), ParamUi::Color),
+                p("fillAndStroke/strokeWidth", "Stroke Width", num(2.0), slider(0.0, 50.0, 0.0, 50.0, 1)),
                 p("size", "Size", num(36.0), size()),
                 p("tracking", "Tracking", num(0.0), slider(-100.0, 100.0, -20.0, 50.0, 1)),
                 check("proportionalSpacing", "Proportional Spacing", true),
@@ -739,7 +764,7 @@ pub fn specs() -> Vec<EffectSpec> {
                 check("showBox", "Show Box", true),
                 p("boxColor", "Box Color", col(0.0, 0.0, 0.0), ParamUi::Color),
                 p("opacity", "Opacity", num(100.0), pct()),
-                check("renderOnOriginal", "Render On Original", true),
+                check("renderOnOriginal", "Composite on Original", true),
             ],
             timecode_fx,
         ),
@@ -751,10 +776,10 @@ pub fn specs() -> Vec<EffectSpec> {
                 p("text", "Text", Value::Str("Text".into()), ParamUi::Text),
                 p("alignment", "Alignment", Value::Enum(1), popup(&["Left", "Center", "Right"])),
                 p("position", "Position", pt(0.5, 0.5), ParamUi::Point),
-                p("displayOptions", "Fill and Stroke: Display Options", Value::Enum(0), display()),
-                p("fillColor", "Fill and Stroke: Fill Color", col(1.0, 0.0, 0.0), ParamUi::Color),
-                p("strokeColor", "Fill and Stroke: Stroke Color", col(1.0, 1.0, 1.0), ParamUi::Color),
-                p("strokeWidth", "Fill and Stroke: Stroke Width", num(2.0), slider(0.0, 50.0, 0.0, 50.0, 1)),
+                p("fillAndStroke/displayOptions", "Display Options", Value::Enum(0), display()),
+                p("fillAndStroke/fillColor", "Fill Color", col(1.0, 0.0, 0.0), ParamUi::Color),
+                p("fillAndStroke/strokeColor", "Stroke Color", col(1.0, 1.0, 1.0), ParamUi::Color),
+                p("fillAndStroke/strokeWidth", "Stroke Width", num(2.0), slider(0.0, 50.0, 0.0, 50.0, 1)),
                 p("size", "Size", num(36.0), size()),
                 p("tracking", "Tracking", num(0.0), slider(-100.0, 100.0, -20.0, 50.0, 1)),
                 p("lineSpacing", "Line Spacing", num(100.0), slider(0.0, 1000.0, 0.0, 300.0, 1)),
@@ -768,25 +793,25 @@ pub fn specs() -> Vec<EffectSpec> {
             "Obsolete",
             vec![
                 p("text", "Text", Value::Str("Text".into()), ParamUi::Text),
-                p("shapeType", "Path Options: Shape Type", Value::Enum(0), popup(&["Bezier", "Circle", "Loop", "Line"])),
-                p("tangent1", "Control Points: Tangent 1/Circle Point", pt(0.3, 0.3), ParamUi::Point),
-                p("vertex1", "Control Points: Vertex 1/Circle Center", pt(0.1, 0.6), ParamUi::Point),
-                p("tangent2", "Control Points: Tangent 2", pt(0.7, 0.3), ParamUi::Point),
-                p("vertex2", "Control Points: Vertex 2/Line Right", pt(0.9, 0.6), ParamUi::Point),
-                p("customPath", "Path Options: Custom Path", num(0.0), slider(0.0, 32.0, 0.0, 8.0, 0)),
-                check("reversePath", "Path Options: Reverse Path", false),
-                p("displayOptions", "Fill and Stroke: Options", Value::Enum(0), display()),
-                p("fillColor", "Fill and Stroke: Fill Color", col(1.0, 0.0, 0.0), ParamUi::Color),
-                p("strokeColor", "Fill and Stroke: Stroke Color", col(1.0, 1.0, 1.0), ParamUi::Color),
-                p("strokeWidth", "Fill and Stroke: Stroke Width", num(2.0), slider(0.0, 50.0, 0.0, 50.0, 1)),
-                p("size", "Character: Size", num(36.0), size()),
-                p("tracking", "Character: Tracking", num(0.0), slider(-100.0, 100.0, -20.0, 50.0, 1)),
-                p("characterRotation", "Character: Orientation: Character Rotation", num(0.0), ang()),
-                p("alignment", "Paragraph: Alignment", Value::Enum(0), popup(&["Left", "Right", "Center", "Force"])),
-                p("leftMargin", "Paragraph: Left Margin", num(0.0), slider(-10000.0, 10000.0, -500.0, 500.0, 1)),
-                p("rightMargin", "Paragraph: Right Margin", num(0.0), slider(-10000.0, 10000.0, -500.0, 500.0, 1)),
-                p("baselineShift", "Paragraph: Baseline Shift", num(0.0), slider(-1000.0, 1000.0, -100.0, 100.0, 1)),
-                p("visibleCharacters", "Advanced: Visible Characters", num(1024.0), slider(0.0, 1024.0, 0.0, 1024.0, 0)),
+                p("pathOptions/shapeType", "Shape Type", Value::Enum(0), popup(&["Bezier", "Circle", "Loop", "Line"])),
+                p("pathOptions/controlPoints/tangent1", "Tangent 1/Circle Point", pt(0.3, 0.3), ParamUi::Point),
+                p("pathOptions/controlPoints/vertex1", "Vertex 1/Circle Center", pt(0.1, 0.6), ParamUi::Point),
+                p("pathOptions/controlPoints/tangent2", "Tangent 2", pt(0.7, 0.3), ParamUi::Point),
+                p("pathOptions/controlPoints/vertex2", "Vertex 2/Line Right", pt(0.9, 0.6), ParamUi::Point),
+                p("pathOptions/customPath", "Custom Path", num(0.0), slider(0.0, 32.0, 0.0, 8.0, 0)),
+                check("pathOptions/reversePath", "Reverse Path", false),
+                p("fillAndStroke/displayOptions", "Options", Value::Enum(0), display()),
+                p("fillAndStroke/fillColor", "Fill Color", col(1.0, 0.0, 0.0), ParamUi::Color),
+                p("fillAndStroke/strokeColor", "Stroke Color", col(1.0, 1.0, 1.0), ParamUi::Color),
+                p("fillAndStroke/strokeWidth", "Stroke Width", num(2.0), slider(0.0, 50.0, 0.0, 50.0, 1)),
+                p("character/size", "Size", num(36.0), size()),
+                p("character/tracking", "Tracking", num(0.0), slider(-100.0, 100.0, -20.0, 50.0, 1)),
+                p("character/orientation/characterRotation", "Character Rotation", num(0.0), ang()),
+                p("paragraph/alignment", "Alignment", Value::Enum(0), popup(&["Left", "Right", "Center", "Force"])),
+                p("paragraph/leftMargin", "Left Margin", num(0.0), slider(-10000.0, 10000.0, -500.0, 500.0, 1)),
+                p("paragraph/rightMargin", "Right Margin", num(0.0), slider(-10000.0, 10000.0, -500.0, 500.0, 1)),
+                p("paragraph/baselineShift", "Baseline Shift", num(0.0), slider(-1000.0, 1000.0, -100.0, 100.0, 1)),
+                p("advanced/visibleCharacters", "Visible Characters", num(1024.0), slider(0.0, 1024.0, 0.0, 1024.0, 0)),
                 check("compositeOnOriginal", "Composite On Original", true),
             ],
             path_text,
@@ -900,8 +925,8 @@ mod tests {
     #[test]
     fn numbers_draws_glyph_at_position() {
         let img = Image::new(80, 60);
-        let a = run("ec.text.numbers", &[("value", num(8.0)), ("decimalPlaces", num(0.0))], img.clone(), 0.0);
-        assert_eq!(a.img.data, run("ec.text.numbers", &[("value", num(8.0)), ("decimalPlaces", num(0.0))], img.clone(), 0.0).img.data);
+        let a = run("ec.text.numbers", &[("format/value", num(8.0)), ("format/decimalPlaces", num(0.0))], img.clone(), 0.0);
+        assert_eq!(a.img.data, run("ec.text.numbers", &[("format/value", num(8.0)), ("format/decimalPlaces", num(0.0))], img.clone(), 0.0).img.data);
         // Ink only around the centre.
         let mut inside = 0.0;
         let mut outside = 0.0;
@@ -916,7 +941,7 @@ mod tests {
             }
         }
         assert!(inside > 20.0 && outside < 0.5, "{inside} {outside}");
-        let stroke = run("ec.text.numbers", &[("value", num(8.0)), ("displayOptions", Value::Enum(2))], img, 0.0);
+        let stroke = run("ec.text.numbers", &[("format/value", num(8.0)), ("fillAndStroke/displayOptions", Value::Enum(2))], img, 0.0);
         assert!(stroke.img.data.iter().any(|p| p[3] > 0.5 && p[1] > 0.5 * p[3]), "white stroke visible");
     }
 
@@ -948,7 +973,12 @@ mod tests {
         let img = Image::new(120, 60);
         let line = run(
             "ec.obsolete.pathtext",
-            &[("shapeType", Value::Enum(3)), ("vertex1", Value::Vec2([5.0, 50.0])), ("vertex2", Value::Vec2([115.0, 50.0])), ("size", num(20.0))],
+            &[
+                ("pathOptions/shapeType", Value::Enum(3)),
+                ("pathOptions/controlPoints/vertex1", Value::Vec2([5.0, 50.0])),
+                ("pathOptions/controlPoints/vertex2", Value::Vec2([115.0, 50.0])),
+                ("character/size", num(20.0)),
+            ],
             img.clone(),
             0.0,
         );
@@ -958,10 +988,10 @@ mod tests {
         assert!(below < 1.0);
         let masks = vec![MaskShape { name: "M".into(), points: vec![[10.0, 20.0], [110.0, 20.0]], closed: false, inverted: false }];
         let env = EffectEnv { masks: &masks, ..Default::default() };
-        let m = run_env("ec.obsolete.pathtext", &[("customPath", num(1.0)), ("size", num(20.0))], img.clone(), 0.0, env);
+        let m = run_env("ec.obsolete.pathtext", &[("pathOptions/customPath", num(1.0)), ("character/size", num(20.0))], img.clone(), 0.0, env);
         let near: f32 = (0..24).flat_map(|y| (0..120).map(move |x| (x, y))).map(|(x, y)| m.img.get(x, y)[3]).sum();
         assert!(near > 10.0 && (ink(&m.img) - near).abs() < 1.0);
-        let circle = run("ec.obsolete.pathtext", &[("shapeType", Value::Enum(1)), ("text", Value::Str("CIRCLE TEXT".into()))], img, 0.0);
+        let circle = run("ec.obsolete.pathtext", &[("pathOptions/shapeType", Value::Enum(1)), ("text", Value::Str("CIRCLE TEXT".into()))], img, 0.0);
         assert!(ink(&circle.img) > 10.0);
     }
 

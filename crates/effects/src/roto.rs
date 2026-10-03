@@ -46,7 +46,13 @@ pub const FROZEN: &str = "frozen";
 pub const DEFAULT_SPAN: i64 = 20;
 
 /// Display names of the instance's parameter groups.
-pub const GROUPS: &[(&str, &str)] = &[("rotoBrushMatte", "Roto Brush Matte"), ("refineEdgeMatte", "Refine Edge Matte")];
+pub const GROUPS: &[(&str, &str)] = &[
+    ("rotoBrushPropagation", "Roto Brush Propagation"),
+    ("rotoBrushMatte", "Roto Brush Matte"),
+    ("refineEdgeMatte", "Refine Edge Matte"),
+    ("motionBlur", "Motion Blur"),
+    ("decontamination", "Decontamination"),
+];
 
 pub const VERSIONS: [&str; 3] = ["1.0", "2.0", "3.0"];
 pub const QUALITIES: [&str; 2] = ["Standard", "Best"];
@@ -59,10 +65,10 @@ pub fn specs() -> Vec<EffectSpec> {
         params: vec![
             p("version", "Version", Value::Enum(2), popup(&VERSIONS)),
             p("quality", "Quality", Value::Enum(0), popup(&QUALITIES)),
-            p("rotoBrushMatte/searchRadius", "Search Radius", num(15.0), slider(0.0, 100.0, 0.0, 50.0, 1)),
-            p("rotoBrushMatte/motionThreshold", "Motion Threshold", num(10.0), slider(0.0, 100.0, 0.0, 100.0, 0)),
-            p("rotoBrushMatte/motionDamping", "Motion Damping", num(20.0), slider(0.0, 100.0, 0.0, 100.0, 0)),
-            p("rotoBrushMatte/viewSearchRegion", "View Search Region", Value::Bool(false), ParamUi::Checkbox),
+            p("rotoBrushPropagation/searchRadius", "Search Radius", num(15.0), slider(0.0, 100.0, 0.0, 50.0, 1)),
+            p("rotoBrushPropagation/motionThreshold", "Motion Threshold", num(10.0), slider(0.0, 100.0, 0.0, 100.0, 0)),
+            p("rotoBrushPropagation/motionDamping", "Motion Damping", num(20.0), slider(0.0, 100.0, 0.0, 100.0, 0)),
+            p("rotoBrushPropagation/viewSearchRegion", "View Search Region", Value::Bool(false), ParamUi::Checkbox),
             p("rotoBrushMatte/feather", "Feather", num(0.0), slider(0.0, 100.0, 0.0, 20.0, 1)),
             p("rotoBrushMatte/contrast", "Contrast", num(0.0), slider(0.0, 100.0, 0.0, 100.0, 0)),
             p("rotoBrushMatte/shiftEdge", "Shift Edge", num(0.0), slider(-100.0, 100.0, -100.0, 100.0, 0)),
@@ -73,14 +79,14 @@ pub fn specs() -> Vec<EffectSpec> {
             p("refineEdgeMatte/shiftEdge", "Shift Edge", num(0.0), slider(-100.0, 100.0, -100.0, 100.0, 0)),
             p("refineEdgeMatte/reduceChatter", "Reduce Chatter", num(0.0), slider(0.0, 100.0, 0.0, 100.0, 0)),
             p("refineEdgeMatte/useMotionBlur", "Use Motion Blur", Value::Bool(false), ParamUi::Checkbox),
-            p("refineEdgeMatte/motionBlurSamples", "Motion Blur Samples", num(11.0), slider(1.0, 64.0, 1.0, 32.0, 0)),
-            p("refineEdgeMatte/shutterAngle", "Shutter Angle", num(180.0), slider(0.0, 720.0, 0.0, 360.0, 0)),
-            p("refineEdgeMatte/higherQuality", "Higher Quality", Value::Bool(true), ParamUi::Checkbox),
+            p("refineEdgeMatte/motionBlur/motionBlurSamples", "Samples", num(11.0), slider(1.0, 64.0, 1.0, 32.0, 0)),
+            p("refineEdgeMatte/motionBlur/shutterAngle", "Shutter Angle", num(180.0), slider(0.0, 720.0, 0.0, 360.0, 0)),
+            p("refineEdgeMatte/motionBlur/higherQuality", "Higher Quality", Value::Bool(true), ParamUi::Checkbox),
             p("refineEdgeMatte/decontaminateEdgeColors", "Decontaminate Edge Colors", Value::Bool(true), ParamUi::Checkbox),
-            p("refineEdgeMatte/decontaminationAmount", "Decontamination Amount", num(100.0), slider(0.0, 100.0, 0.0, 100.0, 0)),
-            p("refineEdgeMatte/extendWhereSmoothed", "Extend Where Smoothed", Value::Bool(true), ParamUi::Checkbox),
-            p("refineEdgeMatte/increaseDecontaminationRadius", "Increase Decontamination Radius", num(0.0), slider(0.0, 100.0, 0.0, 20.0, 1)),
-            p("refineEdgeMatte/viewDecontaminationMap", "View Decontamination Map", Value::Bool(false), ParamUi::Checkbox),
+            p("refineEdgeMatte/decontamination/decontaminationAmount", "Decontamination Amount", num(100.0), slider(0.0, 100.0, 0.0, 100.0, 0)),
+            p("refineEdgeMatte/decontamination/extendWhereSmoothed", "Extend Where Smoothed", Value::Bool(true), ParamUi::Checkbox),
+            p("refineEdgeMatte/decontamination/increaseDecontaminationRadius", "Increase Decontamination Radius", num(0.0), slider(0.0, 100.0, 0.0, 20.0, 1)),
+            p("refineEdgeMatte/decontamination/viewDecontaminationMap", "View Decontamination Map", Value::Bool(false), ParamUi::Checkbox),
             p(STROKES, "Strokes", Value::Str(String::new()), ParamUi::Hidden),
             p(INPUT_KEY, "Input Key", Value::Str(String::new()), ParamUi::Hidden),
             p(FROZEN, "Frozen", Value::Str(String::new()), ParamUi::Hidden),
@@ -137,9 +143,9 @@ pub fn data(params: &Params) -> Arc<RotoData> {
 pub fn seg_opts(params: &Params, scale: f64) -> SegOpts {
     SegOpts {
         scale,
-        search_radius: f(params, "rotoBrushMatte/searchRadius").max(0.0),
-        motion_threshold: f(params, "rotoBrushMatte/motionThreshold"),
-        motion_damping: f(params, "rotoBrushMatte/motionDamping"),
+        search_radius: f(params, "rotoBrushPropagation/searchRadius").max(0.0),
+        motion_threshold: f(params, "rotoBrushPropagation/motionThreshold"),
+        motion_damping: f(params, "rotoBrushPropagation/motionDamping"),
         best: e(params, "quality") == 1,
     }
 }
@@ -157,13 +163,13 @@ pub fn matte_params(params: &Params) -> MatteParams {
         shift: f(params, "refineEdgeMatte/shiftEdge"),
         chatter: f(params, "refineEdgeMatte/reduceChatter"),
         motion_blur: b(params, "refineEdgeMatte/useMotionBlur"),
-        mb_samples: f(params, "refineEdgeMatte/motionBlurSamples").round().clamp(1.0, 64.0) as usize,
-        shutter_angle: f(params, "refineEdgeMatte/shutterAngle"),
-        higher_quality: b(params, "refineEdgeMatte/higherQuality"),
+        mb_samples: f(params, "refineEdgeMatte/motionBlur/motionBlurSamples").round().clamp(1.0, 64.0) as usize,
+        shutter_angle: f(params, "refineEdgeMatte/motionBlur/shutterAngle"),
+        higher_quality: b(params, "refineEdgeMatte/motionBlur/higherQuality"),
         decontaminate: b(params, "refineEdgeMatte/decontaminateEdgeColors"),
-        decontamination: f(params, "refineEdgeMatte/decontaminationAmount"),
-        extend_where_smoothed: b(params, "refineEdgeMatte/extendWhereSmoothed"),
-        increase_radius: f(params, "refineEdgeMatte/increaseDecontaminationRadius").max(0.0),
+        decontamination: f(params, "refineEdgeMatte/decontamination/decontaminationAmount"),
+        extend_where_smoothed: b(params, "refineEdgeMatte/decontamination/extendWhereSmoothed"),
+        increase_radius: f(params, "refineEdgeMatte/decontamination/increaseDecontaminationRadius").max(0.0),
     }
 }
 
@@ -176,9 +182,9 @@ pub fn seed(params: &Params, layer_size: [f64; 2], fps: f64) -> u64 {
         layer_size[0],
         layer_size[1],
         fps,
-        f(params, "rotoBrushMatte/searchRadius"),
-        f(params, "rotoBrushMatte/motionThreshold"),
-        f(params, "rotoBrushMatte/motionDamping"),
+        f(params, "rotoBrushPropagation/searchRadius"),
+        f(params, "rotoBrushPropagation/motionThreshold"),
+        f(params, "rotoBrushPropagation/motionDamping"),
     ] {
         fnv(&mut h, &v.to_bits().to_le_bytes());
     }
@@ -555,7 +561,7 @@ fn render(ctx: &EffectCtx, buf: Buf) -> Buf {
     let mp = matte_params(ctx.params);
     let mut rgb = rb::rgb_of(&img);
     let map = refine::decontaminate(&mut rgb, &alpha, &band, w, h, &mp, rr * sc, sc);
-    let view_map = b(ctx.params, "refineEdgeMatte/viewDecontaminationMap");
+    let view_map = b(ctx.params, "refineEdgeMatte/decontamination/viewDecontaminationMap");
     let (ox, oy) = (buf.offset[0].round() as i64, buf.offset[1].round() as i64);
     for y in 0..h {
         for x in 0..w {
@@ -694,5 +700,36 @@ mod tests {
         };
         let o = crate::apply(&specs()[0], &ctx, Buf { img: frame(0.3), offset: [0.0; 2], scale: 1.0 }).img;
         assert!(o.data.iter().all(|p| p[3] == 0.0));
+    }
+
+    /// Instances saved before the propagation controls got their own twirl-down (and motion
+    /// blur / decontamination their nested ones) load with their values in the new places.
+    #[test]
+    fn old_group_layout_is_migrated_on_load() {
+        use effectcraft_project::build::Ids;
+        let spec = crate::find(ID).unwrap();
+        let mut next = 1;
+        let mut ids = Ids(&mut next);
+        // The old layout: everything under Roto Brush Matte / Refine Edge Matte.
+        let mut g = ids.group(ID, "Roto Brush & Refine Edge");
+        g.kind = effectcraft_project::GroupKind::Effect { effect: ID.into() };
+        let mut rb = ids.group("rotoBrushMatte", "Roto Brush Matte");
+        rb.children.push(ids.prop("searchRadius", "Search Radius", Value::Scalar(33.0)).into());
+        rb.children.push(ids.prop("feather", "Feather", Value::Scalar(2.0)).into());
+        let mut re = ids.group("refineEdgeMatte", "Refine Edge Matte");
+        re.children.push(ids.prop("shutterAngle", "Shutter Angle", Value::Scalar(90.0)).into());
+        re.children.push(ids.prop("decontaminationAmount", "Decontamination Amount", Value::Scalar(40.0)).into());
+        g.children.push(rb.into());
+        g.children.push(re.into());
+        assert!(crate::migrate::upgrade_instance(spec, &mut g, &mut ids, [100.0, 80.0]));
+        let params = crate::flatten_params(&g, &mut |p| p.value.clone());
+        assert_eq!(f(&params, "rotoBrushPropagation/searchRadius"), 33.0);
+        assert_eq!(f(&params, "rotoBrushMatte/feather"), 2.0);
+        assert_eq!(f(&params, "refineEdgeMatte/motionBlur/shutterAngle"), 90.0);
+        assert_eq!(f(&params, "refineEdgeMatte/decontamination/decontaminationAmount"), 40.0);
+        assert!(g.sub("rotoBrushMatte").unwrap().get("searchRadius").is_none());
+        assert_eq!(g.sub("rotoBrushPropagation").unwrap().name, "Roto Brush Propagation");
+        // Parameters the old save lacked get their defaults.
+        assert_eq!(f(&params, "rotoBrushPropagation/motionDamping"), 20.0);
     }
 }

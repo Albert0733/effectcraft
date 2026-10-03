@@ -107,6 +107,22 @@ pub const LIQUIFY_TOOLS: [&str; 12] = [
     "thaw",
 ];
 
+/// Display labels of [`LIQUIFY_TOOLS`] (the Tool popup), in the same order.
+pub const LIQUIFY_TOOL_LABELS: [&str; 12] = [
+    "Warp",
+    "Turbulence",
+    "Twirl Clockwise",
+    "Twirl Counterclockwise",
+    "Pucker",
+    "Bloat",
+    "Shift Pixels",
+    "Reflection",
+    "Clone",
+    "Reconstruction",
+    "Freeze",
+    "Thaw",
+];
+
 /// One recorded Liquify stroke.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LiquifyStroke {
@@ -503,8 +519,8 @@ fn rolling_shutter(ctx: &EffectCtx, mut b: Buf) -> Buf {
     if prev.is_none() && next.is_none() {
         return b;
     }
-    let per_row = ctx.params.e("method") == 0;
-    let Some(flow) = measure(&b.img, prev.as_ref(), next.as_ref(), 1.0, ctx.params.b("detailedAnalysis"), per_row) else { return b };
+    let per_row = ctx.params.e("advanced/method") == 0;
+    let Some(flow) = measure(&b.img, prev.as_ref(), next.as_ref(), 1.0, ctx.params.b("advanced/detailedAnalysis"), per_row) else { return b };
     let dir = ctx.params.e("scanDirection");
     let src = b.img.clone();
     let (w, h) = (b.img.width as f64, b.img.height as f64);
@@ -545,7 +561,7 @@ pub fn specs() -> Vec<EffectSpec> {
             "ec.distort.liquify",
             "Liquify",
             vec![
-                p("tool", "Tool", Value::Enum(0), popup(&LIQUIFY_TOOLS)),
+                p("tool", "Tool", Value::Enum(0), popup(&LIQUIFY_TOOL_LABELS)),
                 p("brushSize", "Brush Size", num(64.0), slider(1.0, 600.0, 1.0, 600.0, 0)),
                 p("brushPressure", "Brush Pressure", num(50.0), slider(1.0, 100.0, 1.0, 100.0, 0)),
                 p("freezeAreaMask", "Freeze Area Mask", num(0.0), ParamUi::Mask),
@@ -570,9 +586,9 @@ pub fn specs() -> Vec<EffectSpec> {
             vec![
                 p("rollingShutterRate", "Rolling Shutter Rate", num(50.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
                 p("scanDirection", "Scan Direction", Value::Enum(0), popup(&["Top → Bottom", "Bottom → Top", "Left → Right", "Right → Left"])),
-                p("method", "Method", Value::Enum(0), popup(&["Warp", "Pixel Motion"])),
-                p("detailedAnalysis", "Detailed Analysis", Value::Bool(false), ParamUi::Checkbox),
-                p("pixelMotionDetail", "Pixel Motion Detail", num(20.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
+                p("advanced/method", "Method", Value::Enum(0), popup(&["Warp", "Pixel Motion"])),
+                p("advanced/detailedAnalysis", "Detailed Analysis", Value::Bool(false), ParamUi::Checkbox),
+                p("advanced/pixelMotionDetail", "Pixel Motion Detail", num(20.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
             ],
             rolling_shutter,
         ),
@@ -707,10 +723,21 @@ mod tests {
             s / n
         };
         for method in [0u32, 1] {
-            let out = run_fx("ec.distort.rollingshutterrepair", &[("rollingShutterRate", num(100.0)), ("method", Value::Enum(method))], skewed.clone(), t, env);
+            let out = run_fx(
+                "ec.distort.rollingshutterrepair",
+                &[("rollingShutterRate", num(100.0)), ("advanced/method", Value::Enum(method))],
+                skewed.clone(),
+                t,
+                env,
+            );
             assert!(err(&out.img) < err(&skewed) * 0.4, "method {method}: {} vs {}", err(&out.img), err(&skewed));
-            let again =
-                run_fx("ec.distort.rollingshutterrepair", &[("rollingShutterRate", num(100.0)), ("method", Value::Enum(method))], skewed.clone(), t, env);
+            let again = run_fx(
+                "ec.distort.rollingshutterrepair",
+                &[("rollingShutterRate", num(100.0)), ("advanced/method", Value::Enum(method))],
+                skewed.clone(),
+                t,
+                env,
+            );
             assert_eq!(out.img.data, again.img.data);
         }
         let none = run_fx("ec.distort.rollingshutterrepair", &[], skewed.clone(), t, EffectEnv::default());

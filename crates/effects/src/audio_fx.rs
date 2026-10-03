@@ -14,8 +14,10 @@
 //! all-passes, as in the published Freeverb description); chorus/flange/vibrato are modulated
 //! fractional delay lines. Compressor and Gate are feed-forward dynamics processors on a
 //! stereo-linked peak envelope (one-pole attack/release smoothing, the textbook quadratic soft-knee
-//! gain computer); Distortion is a static waveshaper (soft clip, hard clip, fold-back, bit crush)
-//! followed by a one-pole tone filter.
+//! gain computer, an optional program-dependent "auto" release and an output ceiling); Gate mutes
+//! below its threshold with attack / hold / release; Distortion is a static waveshaper (soft and
+//! hard clip, two saturation curves, tube, fuzz) with pre-gain, bit reduction, sample-and-hold
+//! downsampling, dry/wet mix and output volume.
 
 use std::f64::consts::PI;
 
@@ -40,11 +42,14 @@ fn pp(id: &'static str, name: &'static str, v: (Value, ParamUi)) -> crate::Param
     p(id, name, v.0, v.1)
 }
 
+/// Distortion's Type options.
+pub const DISTORTION_TYPES: [&str; 6] = ["Soft Clip", "Hard Clip", "Saturation 1", "Saturation 2", "Tube", "Fuzz"];
+
 pub fn specs() -> Vec<EffectSpec> {
     const BANDS: [[&str; 8]; 3] = [
-        ["band1Enable", "Band 1 Enable", "band1Frequency", "Band 1 Frequency", "band1Bandwidth", "Band 1 Bandwidth", "band1BoostCut", "Band 1 Boost/Cut"],
-        ["band2Enable", "Band 2 Enable", "band2Frequency", "Band 2 Frequency", "band2Bandwidth", "Band 2 Bandwidth", "band2BoostCut", "Band 2 Boost/Cut"],
-        ["band3Enable", "Band 3 Enable", "band3Frequency", "Band 3 Frequency", "band3Bandwidth", "Band 3 Bandwidth", "band3BoostCut", "Band 3 Boost/Cut"],
+        ["band1Enable", "Band 1 Enabled", "band1Frequency", "Band 1 Frequency", "band1Bandwidth", "Band 1 Bandwidth", "band1BoostCut", "Band 1 Boost/Cut"],
+        ["band2Enable", "Band 2 Enabled", "band2Frequency", "Band 2 Frequency", "band2Bandwidth", "Band 2 Bandwidth", "band2BoostCut", "Band 2 Boost/Cut"],
+        ["band3Enable", "Band 3 Enabled", "band3Frequency", "Band 3 Frequency", "band3Bandwidth", "Band 3 Bandwidth", "band3BoostCut", "Band 3 Boost/Cut"],
     ];
     let mut eq = vec![];
     for (b, (f, on)) in BANDS.iter().zip([(200.0, true), (1000.0, false), (5000.0, false)]) {
@@ -67,14 +72,14 @@ pub fn specs() -> Vec<EffectSpec> {
             "ec.audio.compressor",
             "Compressor",
             vec![
-                p("threshold", "Threshold (dB)", num(-20.0), slider(-60.0, 0.0, -60.0, 0.0, 2)),
-                p("ratio", "Ratio", num(4.0), slider(1.0, 30.0, 1.0, 20.0, 2)),
-                p("attack", "Attack (ms)", num(10.0), slider(0.0, 500.0, 0.0, 200.0, 2)),
-                p("release", "Release (ms)", num(100.0), slider(1.0, 5000.0, 1.0, 1000.0, 2)),
-                p("knee", "Knee (dB)", num(0.0), slider(0.0, 24.0, 0.0, 24.0, 2)),
-                p("makeupGain", "Makeup Gain (dB)", num(0.0), slider(-24.0, 36.0, 0.0, 24.0, 2)),
-                pp("dryOut", "Dry Out", pct(0.0)),
-                pp("wetOut", "Wet Out", pct(100.0)),
+                p("threshold", "Threshold (dB)", num(-16.0), slider(-60.0, 0.0, -60.0, 0.0, 2)),
+                p("ratio", "Ratio (x:1)", num(3.0), slider(0.4, 30.0, 0.4, 30.0, 2)),
+                p("knee", "Knee (dB)", num(15.0), slider(0.0, 30.0, 0.0, 30.0, 2)),
+                p("attack", "Attack (ms)", num(6.0), slider(0.0, 400.0, 0.0, 400.0, 2)),
+                p("release", "Release (ms)", num(440.0), slider(1.0, 4000.0, 1.0, 4000.0, 2)),
+                p("autoRelease", "Auto Release", Value::Bool(true), ParamUi::Checkbox),
+                p("makeupGain", "Makeup Gain (dB)", num(0.0), slider(-30.0, 30.0, -30.0, 30.0, 2)),
+                p("outputLimit", "Output Limit (dB)", num(0.0), slider(-30.0, 0.0, -30.0, 0.0, 2)),
             ],
         ),
         spec(
@@ -92,13 +97,13 @@ pub fn specs() -> Vec<EffectSpec> {
             "ec.audio.distortion",
             "Distortion",
             vec![
-                p("distortionType", "Distortion Type", Value::Enum(0), popup(&["Soft Clip", "Hard Clip", "Fold Back", "Bit Crush"])),
-                p("drive", "Drive (dB)", num(12.0), slider(0.0, 48.0, 0.0, 48.0, 2)),
-                p("bitDepth", "Bit Depth", num(8.0), slider(1.0, 16.0, 1.0, 16.0, 0)),
-                p("tone", "Tone (Hz)", num(8000.0), slider(200.0, 20000.0, 200.0, 20000.0, 1)),
-                p("outputGain", "Output Gain (dB)", num(-6.0), slider(-48.0, 12.0, -24.0, 12.0, 2)),
-                pp("dryOut", "Dry Out", pct(0.0)),
-                pp("wetOut", "Wet Out", pct(100.0)),
+                p("distortionType", "Type", Value::Enum(0), popup(&DISTORTION_TYPES)),
+                pp("drive", "Drive", pct(25.0)),
+                p("gain", "Gain", num(25.0), slider(0.0, 300.0, 0.0, 300.0, 2)),
+                pp("mix", "Mix", pct(100.0)),
+                p("volume", "Volume", num(11.0), slider(0.0, 100.0, 0.0, 100.0, 2)),
+                p("bitDepth", "Resolution (bit)", num(24.0), slider(1.0, 24.0, 1.0, 24.0, 0)),
+                p("downsample", "Downsample (x)", num(1.0), slider(1.0, 64.0, 1.0, 32.0, 0)),
             ],
         ),
         spec(
@@ -120,11 +125,10 @@ pub fn specs() -> Vec<EffectSpec> {
             "ec.audio.gate",
             "Gate",
             vec![
-                p("threshold", "Threshold (dB)", num(-40.0), slider(-90.0, 0.0, -80.0, 0.0, 2)),
-                p("attack", "Attack (ms)", num(1.0), slider(0.0, 500.0, 0.0, 100.0, 2)),
-                p("hold", "Hold (ms)", num(50.0), slider(0.0, 5000.0, 0.0, 500.0, 2)),
-                p("release", "Release (ms)", num(100.0), slider(1.0, 5000.0, 1.0, 1000.0, 2)),
-                p("range", "Range (dB)", num(-80.0), slider(-120.0, 0.0, -90.0, 0.0, 2)),
+                p("threshold", "Threshold (dB)", num(-60.0), slider(-60.0, 0.0, -60.0, 0.0, 2)),
+                p("attack", "Attack (ms)", num(10.0), slider(0.0, 1000.0, 0.0, 1000.0, 2)),
+                p("hold", "Hold (ms)", num(40.0), slider(0.0, 2500.0, 0.0, 2500.0, 2)),
+                p("release", "Release (ms)", num(220.0), slider(5.0, 4000.0, 5.0, 4000.0, 2)),
             ],
         ),
         spec(
@@ -175,7 +179,7 @@ pub fn specs() -> Vec<EffectSpec> {
             "ec.audio.tone",
             "Tone",
             vec![
-                p("waveformOptions", "Waveform Options", Value::Enum(0), popup(&["Sine", "Triangle", "Saw", "Square"])),
+                p("waveformOptions", "Waveform Options", Value::Enum(0), popup(&["Sine", "Triangle", "Saw", "Square", "White Noise"])),
                 p("frequency1", "Frequency 1", num(440.0), slider(0.0, 22000.0, 0.0, 2000.0, 2)),
                 p("frequency2", "Frequency 2", num(493.88), slider(0.0, 22000.0, 0.0, 2000.0, 2)),
                 p("frequency3", "Frequency 3", num(587.33), slider(0.0, 22000.0, 0.0, 2000.0, 2)),
@@ -211,7 +215,8 @@ pub fn preroll(id: &str, params: &Params) -> f64 {
         "ec.audio.distortion" => 0.01,
         // The envelope settles within a few attack/release time constants.
         "ec.audio.compressor" | "ec.audio.gate" => {
-            let rel = params.f("release").max(1.0) / 1000.0;
+            let auto = id == "ec.audio.compressor" && params.b("autoRelease");
+            let rel = if auto { AUTO_RELEASE_SLOW_MS } else { params.f("release").max(1.0) } / 1000.0;
             let att = params.f("attack").max(0.0) / 1000.0;
             let hold = if id == "ec.audio.gate" { params.f("hold").max(0.0) / 1000.0 } else { 0.0 };
             (9.0 * rel + 9.0 * att + hold + 0.01).min(10.0)
@@ -281,7 +286,7 @@ pub fn process(id: &str, params: &Params, buf: &mut [f32], rate: u32, start: f64
         }
         "ec.audio.delay" => delay(params, buf, sr),
         "ec.audio.compressor" => compressor(params, buf, sr),
-        "ec.audio.distortion" => distortion(params, buf, sr),
+        "ec.audio.distortion" => distortion(params, buf, sr, start),
         "ec.audio.gate" => gate(params, buf, sr),
         "ec.audio.flangechorus" => flange_chorus(params, buf, sr, start),
         "ec.audio.modulator" => modulator(params, buf, sr, start),
@@ -432,7 +437,8 @@ fn smoothing(ms: f64, sr: f64) -> f64 {
 /// Static compressor curve: gain change (dB, ≤ 0) for an input level `x` dB (quadratic soft
 /// knee of width `knee` around the threshold).
 pub fn compressor_gain_db(x: f64, threshold: f64, ratio: f64, knee: f64) -> f64 {
-    let r = ratio.max(1.0);
+    // Ratios below 1:1 expand above the threshold.
+    let r = ratio.max(0.1);
     let over = x - threshold;
     let y = if knee > 0.0 && 2.0 * over.abs() <= knee {
         x + (1.0 / r - 1.0) * (over + knee / 2.0).powi(2) / (2.0 * knee)
@@ -444,25 +450,41 @@ pub fn compressor_gain_db(x: f64, threshold: f64, ratio: f64, knee: f64) -> f64 
     y - x
 }
 
+/// Auto Release: a program-dependent release from two envelopes. A fast one (the Attack time, a
+/// short release) follows transients; a slow one (slow attack and release) only builds up under
+/// sustained compression. The deeper of the two applies, so brief peaks recover quickly and long
+/// loud passages slowly.
+const AUTO_RELEASE_FAST_MS: f64 = 60.0;
+const AUTO_RELEASE_SLOW_ATTACK_MS: f64 = 150.0;
+const AUTO_RELEASE_SLOW_MS: f64 = 900.0;
+
 fn compressor(params: &Params, buf: &mut [f32], sr: f64) {
     let th = params.f("threshold");
-    let ratio = params.f("ratio").max(1.0);
+    let ratio = params.f("ratio").max(0.1);
     let knee = params.f("knee").max(0.0);
     let att = smoothing(params.f("attack"), sr);
-    let rel = smoothing(params.f("release").max(0.001), sr);
+    let auto = params.b("autoRelease");
+    let rel = smoothing(if auto { AUTO_RELEASE_FAST_MS } else { params.f("release").max(0.001) }, sr);
+    let (att_s, rel_s) = (smoothing(AUTO_RELEASE_SLOW_ATTACK_MS, sr), smoothing(AUTO_RELEASE_SLOW_MS, sr));
     let makeup = params.f("makeupGain");
-    let dry = (params.f("dryOut") / 100.0) as f32;
-    let wet = (params.f("wetOut") / 100.0) as f32;
-    // Smoothed gain change in dB (≤ 0): attack while the reduction grows, release as it shrinks.
-    let mut g = 0.0f64;
+    // Output Limit: a final ceiling (brick-wall clip) so the result never exceeds it.
+    let limit = db_to_lin(params.f("outputLimit").min(0.0)) as f32;
+    // Smoothed gain change in dB: attack while the reduction grows, release as it shrinks.
+    let (mut g, mut gs) = (0.0f64, 0.0f64);
     for f in buf.chunks_exact_mut(2) {
         let peak = f[0].abs().max(f[1].abs()) as f64;
         let target = compressor_gain_db(lin_to_db(peak), th, ratio, knee);
         let k = if target < g { att } else { rel };
         g = target + (g - target) * k;
-        let lin = db_to_lin(g + makeup) as f32;
+        let mut eff = g;
+        if auto {
+            let k = if target < gs { att_s } else { rel_s };
+            gs = target + (gs - target) * k;
+            eff = g.min(gs);
+        }
+        let lin = db_to_lin(eff + makeup) as f32;
         for v in f.iter_mut() {
-            *v = *v * dry + *v * lin * wet;
+            *v = (*v * lin).clamp(-limit, limit);
         }
     }
 }
@@ -472,8 +494,7 @@ fn gate(params: &Params, buf: &mut [f32], sr: f64) {
     let att = smoothing(params.f("attack"), sr);
     let rel = smoothing(params.f("release").max(0.001), sr);
     let hold = (params.f("hold").max(0.0) / 1000.0 * sr) as usize;
-    let floor = db_to_lin(params.f("range").min(0.0));
-    // Openness 0..1 (closed..open), mapped to floor..1.
+    // Openness 0..1 (closed..open) is the gain: a closed gate mutes.
     let mut g = 0.0f64;
     let mut held = 0usize;
     for f in buf.chunks_exact_mut(2) {
@@ -490,46 +511,67 @@ fn gate(params: &Params, buf: &mut [f32], sr: f64) {
         let target = if open { 1.0 } else { 0.0 };
         let k = if target > g { att } else { rel };
         g = target + (g - target) * k;
-        let lin = (floor + (1.0 - floor) * g) as f32;
+        let lin = g as f32;
         f[0] *= lin;
         f[1] *= lin;
     }
 }
 
-/// The Distortion effect's waveshaper for one sample (`drive` linear gain, `bits` for Bit Crush).
-pub fn distort_sample(kind: u32, x: f32, drive: f32, bits: f32) -> f32 {
-    let v = x * drive;
+/// The Distortion effect's waveshaper for one sample: `kind` indexes [`DISTORTION_TYPES`],
+/// `drive` (0..1) sets how hard the curve bends. The result stays within ±1.
+pub fn distort_sample(kind: u32, x: f32, drive: f32) -> f32 {
+    let v = x * (1.0 + drive.clamp(0.0, 1.0) * 24.0);
     match kind {
-        1 => v.clamp(-1.0, 1.0),
-        2 => {
-            // Fold back: reflect at ±1 (a triangle function of the input).
-            let t = (v + 1.0).rem_euclid(4.0);
-            if t < 2.0 { t - 1.0 } else { 3.0 - t }
-        }
+        // Hard clip: linear up to a flat ceiling.
+        1 => v,
+        // Saturation 1: rational curve, gentler knee than tanh.
+        2 => v / (1.0 + v.abs()),
+        // Saturation 2: cubic soft saturator (odd harmonics), flat beyond ±1.5.
         3 => {
-            let q = 2f32.powf(bits.clamp(1.0, 16.0) - 1.0);
-            (v.clamp(-1.0, 1.0) * q).round() / q
+            let c = v.clamp(-1.5, 1.5);
+            c - c * c * c * 4.0 / 27.0
         }
+        // Tube: asymmetric — the positive half saturates harder (even harmonics).
+        4 => {
+            if v >= 0.0 {
+                v.tanh()
+            } else {
+                (0.6 * v).tanh()
+            }
+        }
+        // Fuzz: near-square exponential clipper.
+        5 => v.signum() * (1.0 - (-3.0 * v.abs()).exp()),
+        // Soft clip.
         _ => v.tanh(),
     }
+    .clamp(-1.0, 1.0)
 }
 
-fn distortion(params: &Params, buf: &mut [f32], sr: f64) {
+fn distortion(params: &Params, buf: &mut [f32], sr: f64, start: f64) {
     let kind = params.e("distortionType");
-    let drive = db_to_lin(params.f("drive")) as f32;
-    let bits = params.f("bitDepth") as f32;
-    let out = db_to_lin(params.f("outputGain")) as f32;
-    let dry = (params.f("dryOut") / 100.0) as f32;
-    let wet = (params.f("wetOut") / 100.0) as f32;
-    let fc = params.f("tone").clamp(20.0, sr * 0.49);
-    let a = (-2.0 * PI * fc / sr).exp() as f32;
-    let mut lp = [0.0f32; 2];
-    for f in buf.chunks_exact_mut(2) {
+    let drive = (params.f("drive") / 100.0) as f32;
+    // Gain: pre-distortion amplification (25 = unity); Volume: output level (11 = unity).
+    let pre = (params.f("gain").max(0.0) / 25.0) as f32;
+    let mix = (params.f("mix") / 100.0).clamp(0.0, 1.0) as f32;
+    let vol = (params.f("volume").max(0.0) / 11.0) as f32;
+    let bits = params.f("bitDepth").round().clamp(1.0, 24.0);
+    let q = (bits < 24.0).then(|| 2f32.powf(bits as f32 - 1.0));
+    let down = params.f("downsample").round().clamp(1.0, 64.0) as i64;
+    // Sample-and-hold on absolute sample positions, so blocks agree with one long run.
+    let first = (start * sr).round() as i64;
+    let mut held = [0.0f32; 2];
+    for (i, f) in buf.chunks_exact_mut(2).enumerate() {
+        let take = i == 0 || (first + i as i64).rem_euclid(down) == 0;
         for ch in 0..2 {
             let x = f[ch];
-            let y = distort_sample(kind, x, drive, bits);
-            lp[ch] = y + (lp[ch] - y) * a;
-            f[ch] = x * dry + lp[ch] * out * wet;
+            let mut y = distort_sample(kind, x * pre, drive);
+            if let Some(q) = q {
+                y = (y * q).round() / q;
+            }
+            if take {
+                held[ch] = y;
+            }
+            f[ch] = (x * (1.0 - mix) + held[ch] * mix) * vol;
         }
     }
 }
@@ -680,6 +722,12 @@ fn tone(params: &Params, buf: &mut [f32], sr: f64, start: f64) {
                     } else {
                         -1.0
                     }
+                }
+                // White noise: a hash of the absolute sample position (every frequency alike).
+                4 => {
+                    let h = ((t * sr).round() as i64 as u64 ^ f.to_bits()).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+                    let h = (h ^ (h >> 29)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+                    ((h ^ (h >> 32)) >> 11) as f64 / (1u64 << 53) as f64 * 2.0 - 1.0
                 }
                 _ => (2.0 * PI * ph).sin(),
             };
@@ -866,7 +914,10 @@ mod tests {
         assert!((compressor_gain_db(-17.0, -20.0, 4.0, k) - compressor_gain_db(-17.0, -20.0, 4.0, 0.0)).abs() < 1e-9);
         let sr = 48000.0;
         let mut p = defaults("ec.audio.compressor");
-        p.values.insert("attack".into(), num(1.0));
+        for (k, v) in [("attack", 1.0), ("threshold", -20.0), ("ratio", 4.0), ("knee", 0.0), ("release", 100.0)] {
+            p.values.insert(k.into(), num(v));
+        }
+        p.values.insert("autoRelease".into(), Value::Bool(false));
         let mut loud = sine(1000.0, sr, 9600);
         process("ec.audio.compressor", &p, &mut loud, 48000, 0.0);
         // A full-scale sine (peak 0 dB) is pulled down by ~15 dB once the envelope settles.
@@ -883,8 +934,9 @@ mod tests {
     #[test]
     fn gate_mutes_below_threshold() {
         let sr = 48000.0;
-        let p = defaults("ec.audio.gate");
-        // A −60 dB signal under the −40 dB threshold is attenuated by the −80 dB range.
+        let mut p = defaults("ec.audio.gate");
+        p.values.insert("threshold".into(), num(-40.0));
+        // A −60 dB signal under the −40 dB threshold is muted.
         let mut quiet: Vec<f32> = sine(500.0, sr, 9600).iter().map(|v| v * 0.001).collect();
         process("ec.audio.gate", &p, &mut quiet, 48000, 0.0);
         assert!(rms(&quiet, 4800) < 1e-6, "{}", rms(&quiet, 4800));
@@ -903,15 +955,71 @@ mod tests {
 
     #[test]
     fn distortion_shapes_and_bounds() {
-        assert!((distort_sample(0, 0.5, 1.0, 8.0) - 0.5f32.tanh()).abs() < 1e-6);
-        assert_eq!(distort_sample(1, 0.8, 2.0, 8.0), 1.0);
-        assert!((distort_sample(2, 0.7, 2.0, 8.0) - 0.6).abs() < 1e-5);
-        assert_eq!(distort_sample(3, 0.3, 1.0, 2.0), 0.5);
+        assert!((distort_sample(0, 0.5, 0.0) - 0.5f32.tanh()).abs() < 1e-6);
+        assert_eq!(distort_sample(1, 0.8, 1.0), 1.0);
+        for k in 0..DISTORTION_TYPES.len() as u32 {
+            for x in [-2.0f32, -0.3, 0.0, 0.2, 1.7] {
+                let y = distort_sample(k, x, 0.5);
+                assert!(y.abs() <= 1.0 && y.signum() * x.signum() >= 0.0, "{k} {x} {y}");
+            }
+        }
+        // Tube is asymmetric.
+        assert!(distort_sample(4, 0.1, 0.5) > -distort_sample(4, -0.1, 0.5));
         let p = defaults("ec.audio.distortion");
         let mut b = sine(200.0, 48000.0, 4800);
         process("ec.audio.distortion", &p, &mut b, 48000, 0.0);
         assert!(b.iter().all(|v| v.abs() <= 1.0));
         assert!(rms(&b, 100) > 0.1);
         assert!(preroll("ec.audio.compressor", &defaults("ec.audio.compressor")) > 0.4);
+    }
+
+    #[test]
+    fn distortion_mix_resolution_and_downsample() {
+        let sr = 48000.0;
+        let src: Vec<f32> = sine(300.0, sr, 480).iter().map(|v| v * 0.5).collect();
+        // Mix 0 with unity volume passes the input through.
+        let mut p = defaults("ec.audio.distortion");
+        p.values.insert("mix".into(), num(0.0));
+        let mut b = src.clone();
+        process("ec.audio.distortion", &p, &mut b, 48000, 0.0);
+        assert!(b.iter().zip(&src).all(|(a, s)| (a - s).abs() < 1e-6));
+        // 2-bit resolution leaves at most 5 distinct levels (−1, −½, 0, ½, 1).
+        let mut p = defaults("ec.audio.distortion");
+        p.values.insert("bitDepth".into(), num(2.0));
+        let mut b = src.clone();
+        process("ec.audio.distortion", &p, &mut b, 48000, 0.0);
+        let mut levels: Vec<i32> = b.iter().map(|v| (v * 1000.0).round() as i32).collect();
+        levels.sort();
+        levels.dedup();
+        assert!(levels.len() <= 5, "{levels:?}");
+        // Downsample ×4 holds each value for 4 frames.
+        let mut p = defaults("ec.audio.distortion");
+        p.values.insert("downsample".into(), num(4.0));
+        let mut b = src.clone();
+        process("ec.audio.distortion", &p, &mut b, 48000, 0.0);
+        assert_eq!(b[0], b[6]);
+        assert_ne!(b[6], b[8]);
+    }
+
+    #[test]
+    fn compressor_output_limit_and_auto_release() {
+        let sr = 48000.0;
+        let mut p = defaults("ec.audio.compressor");
+        p.values.insert("outputLimit".into(), num(-12.0));
+        p.values.insert("makeupGain".into(), num(20.0));
+        let mut b = sine(1000.0, sr, 4800);
+        process("ec.audio.compressor", &p, &mut b, 48000, 0.0);
+        let ceiling = db_to_lin(-12.0) as f32;
+        assert!(b.iter().all(|v| v.abs() <= ceiling + 1e-6));
+        // After a short burst, auto release recovers faster than a long manual release.
+        let burst = |auto: bool| {
+            let mut p = defaults("ec.audio.compressor");
+            p.values.insert("autoRelease".into(), Value::Bool(auto));
+            p.values.insert("release".into(), num(4000.0));
+            let mut b: Vec<f32> = sine(1000.0, sr, 9600).iter().enumerate().map(|(i, v)| if i < 960 { *v } else { v * 0.2 }).collect();
+            process("ec.audio.compressor", &p, &mut b, 48000, 0.0);
+            rms(&b, 4800)
+        };
+        assert!(burst(true) > burst(false) * 1.2, "{} {}", burst(true), burst(false));
     }
 }

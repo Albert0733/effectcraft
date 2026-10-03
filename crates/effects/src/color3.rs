@@ -251,32 +251,40 @@ fn tint_offset(c: [f32; 4]) -> [f32; 3] {
 
 fn lumetri(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let pr = ctx.params;
-    let temp = (pr.f("temperature") / 100.0) as f32;
-    let tint = (pr.f("tint") / 100.0) as f32;
-    let expo = 2f32.powf(pr.f("exposure") as f32);
-    let contrast = (pr.f("contrast") / 100.0) as f32;
-    let (hi, sh, wh, bl) =
-        ((pr.f("highlights") / 100.0) as f32, (pr.f("shadows") / 100.0) as f32, (pr.f("whites") / 100.0) as f32, (pr.f("blacks") / 100.0) as f32);
-    let sat = (pr.f("saturation") / 100.0) as f32;
-    let intensity = (pr.f("lookIntensity") / 100.0) as f32;
-    let faded = (pr.f("fadedFilm") / 100.0) as f32;
-    let vib = (pr.f("vibrance") / 100.0) as f32;
-    let csat = (pr.f("creativeSaturation") / 100.0) as f32;
-    let st = tint_offset(pr.color("shadowTint"));
-    let ht = tint_offset(pr.color("highlightTint"));
-    let tbal = (pr.f("tintBalance") / 100.0) as f32;
+    let temp = (pr.f("basicCorrection/whiteBalance/temperature") / 100.0) as f32;
+    let tint = (pr.f("basicCorrection/whiteBalance/tint") / 100.0) as f32;
+    let expo = 2f32.powf(pr.f("basicCorrection/tone/exposure") as f32);
+    let contrast = (pr.f("basicCorrection/tone/contrast") / 100.0) as f32;
+    let (hi, sh, wh, bl) = (
+        (pr.f("basicCorrection/tone/highlights") / 100.0) as f32,
+        (pr.f("basicCorrection/tone/shadows") / 100.0) as f32,
+        (pr.f("basicCorrection/tone/whites") / 100.0) as f32,
+        (pr.f("basicCorrection/tone/blacks") / 100.0) as f32,
+    );
+    let sat = (pr.f("basicCorrection/saturation") / 100.0) as f32;
+    let intensity = (pr.f("creative/lookIntensity") / 100.0) as f32;
+    let faded = (pr.f("creative/adjustments/fadedFilm") / 100.0) as f32;
+    let vib = (pr.f("creative/adjustments/vibrance") / 100.0) as f32;
+    let csat = (pr.f("creative/adjustments/creativeSaturation") / 100.0) as f32;
+    let st = tint_offset(pr.color("creative/adjustments/shadowTint"));
+    let ht = tint_offset(pr.color("creative/adjustments/highlightTint"));
+    let tbal = (pr.f("creative/adjustments/tintBalance") / 100.0) as f32;
     let curve = |k: &str| {
-        [(pr.f(&format!("{k}Shadows")) / 100.0) as f32, (pr.f(&format!("{k}Midtones")) / 100.0) as f32, (pr.f(&format!("{k}Highlights")) / 100.0) as f32]
+        [
+            (pr.f(&format!("curves/{k}Shadows")) / 100.0) as f32,
+            (pr.f(&format!("curves/{k}Midtones")) / 100.0) as f32,
+            (pr.f(&format!("curves/{k}Highlights")) / 100.0) as f32,
+        ]
     };
     let (cm, cr, cg, cb) = (curve("curveMaster"), curve("curveRed"), curve("curveGreen"), curve("curveBlue"));
-    let ws = tint_offset(pr.color("shadowsWheel"));
-    let wm = tint_offset(pr.color("midtonesWheel"));
-    let wh_ = tint_offset(pr.color("highlightsWheel"));
-    let vig = pr.f("vignetteAmount") as f32;
-    let vmid = (pr.f("vignetteMidpoint") / 100.0) as f32;
-    let vround = (pr.f("vignetteRoundness") / 100.0) as f32;
-    let vfeather = (pr.f("vignetteFeather") / 100.0) as f32;
-    let sharpen = (pr.f("sharpen") / 100.0) as f32;
+    let ws = tint_offset(pr.color("colorWheels/shadowsWheel"));
+    let wm = tint_offset(pr.color("colorWheels/midtonesWheel"));
+    let wh_ = tint_offset(pr.color("colorWheels/highlightsWheel"));
+    let vig = pr.f("vignette/vignetteAmount") as f32;
+    let vmid = (pr.f("vignette/vignetteMidpoint") / 100.0) as f32;
+    let vround = (pr.f("vignette/vignetteRoundness") / 100.0) as f32;
+    let vfeather = (pr.f("vignette/vignetteFeather") / 100.0) as f32;
+    let sharpen = (pr.f("creative/adjustments/sharpen") / 100.0) as f32;
     let (lx, ly, lw, lh) = layer_rect(ctx, &b);
     let w = b.img.width as usize;
     let (cx, cy) = (lx + lw * 0.5, ly + lh * 0.5);
@@ -376,51 +384,51 @@ fn lumetri(ctx: &EffectCtx, mut b: Buf) -> Buf {
 pub fn specs() -> Vec<EffectSpec> {
     let grey = || col(0.5, 0.5, 0.5);
     let mut lum = vec![
-        p("inputLut", "Input LUT", Value::Enum(0), popup(&["None"])),
-        p("temperature", "Temperature", num(0.0), bipolar()),
-        p("tint", "Tint", num(0.0), bipolar()),
-        p("exposure", "Exposure", num(0.0), slider(-5.0, 5.0, -5.0, 5.0, 2)),
-        p("contrast", "Contrast", num(0.0), bipolar()),
-        p("highlights", "Highlights", num(0.0), bipolar()),
-        p("shadows", "Shadows", num(0.0), bipolar()),
-        p("whites", "Whites", num(0.0), bipolar()),
-        p("blacks", "Blacks", num(0.0), bipolar()),
-        p("saturation", "Saturation", num(100.0), slider(0.0, 200.0, 0.0, 200.0, 1)),
-        p("look", "Look", Value::Enum(0), popup(&["None"])),
-        p("lookIntensity", "Intensity", num(100.0), slider(0.0, 200.0, 0.0, 200.0, 1)),
-        p("fadedFilm", "Faded Film", num(0.0), pct()),
-        p("sharpen", "Sharpen", num(0.0), bipolar()),
-        p("vibrance", "Vibrance", num(0.0), bipolar()),
-        p("creativeSaturation", "Saturation", num(100.0), slider(0.0, 200.0, 0.0, 200.0, 1)),
-        p("shadowTint", "Shadow Tint", grey(), ParamUi::Color),
-        p("highlightTint", "Highlight Tint", grey(), ParamUi::Color),
-        p("tintBalance", "Tint Balance", num(0.0), bipolar()),
+        p("basicCorrection/inputLut", "Input LUT", Value::Enum(0), popup(&["None"])),
+        p("basicCorrection/whiteBalance/temperature", "Temperature", num(0.0), bipolar()),
+        p("basicCorrection/whiteBalance/tint", "Tint", num(0.0), bipolar()),
+        p("basicCorrection/tone/exposure", "Exposure", num(0.0), slider(-5.0, 5.0, -5.0, 5.0, 2)),
+        p("basicCorrection/tone/contrast", "Contrast", num(0.0), bipolar()),
+        p("basicCorrection/tone/highlights", "Highlights", num(0.0), bipolar()),
+        p("basicCorrection/tone/shadows", "Shadows", num(0.0), bipolar()),
+        p("basicCorrection/tone/whites", "Whites", num(0.0), bipolar()),
+        p("basicCorrection/tone/blacks", "Blacks", num(0.0), bipolar()),
+        p("basicCorrection/saturation", "Saturation", num(100.0), slider(0.0, 200.0, 0.0, 200.0, 1)),
+        p("creative/look", "Look", Value::Enum(0), popup(&["None"])),
+        p("creative/lookIntensity", "Intensity", num(100.0), slider(0.0, 200.0, 0.0, 200.0, 1)),
+        p("creative/adjustments/fadedFilm", "Faded Film", num(0.0), pct()),
+        p("creative/adjustments/sharpen", "Sharpen", num(0.0), bipolar()),
+        p("creative/adjustments/vibrance", "Vibrance", num(0.0), bipolar()),
+        p("creative/adjustments/creativeSaturation", "Saturation", num(100.0), slider(0.0, 200.0, 0.0, 200.0, 1)),
+        p("creative/adjustments/shadowTint", "Shadow Tint", grey(), ParamUi::Color),
+        p("creative/adjustments/highlightTint", "Highlight Tint", grey(), ParamUi::Color),
+        p("creative/adjustments/tintBalance", "Tint Balance", num(0.0), bipolar()),
     ];
     const CURVES: [(&str, &str); 12] = [
-        ("curveMasterShadows", "RGB Curve Shadows"),
-        ("curveMasterMidtones", "RGB Curve Midtones"),
-        ("curveMasterHighlights", "RGB Curve Highlights"),
-        ("curveRedShadows", "Red Curve Shadows"),
-        ("curveRedMidtones", "Red Curve Midtones"),
-        ("curveRedHighlights", "Red Curve Highlights"),
-        ("curveGreenShadows", "Green Curve Shadows"),
-        ("curveGreenMidtones", "Green Curve Midtones"),
-        ("curveGreenHighlights", "Green Curve Highlights"),
-        ("curveBlueShadows", "Blue Curve Shadows"),
-        ("curveBlueMidtones", "Blue Curve Midtones"),
-        ("curveBlueHighlights", "Blue Curve Highlights"),
+        ("curves/curveMasterShadows", "RGB Curve Shadows"),
+        ("curves/curveMasterMidtones", "RGB Curve Midtones"),
+        ("curves/curveMasterHighlights", "RGB Curve Highlights"),
+        ("curves/curveRedShadows", "Red Curve Shadows"),
+        ("curves/curveRedMidtones", "Red Curve Midtones"),
+        ("curves/curveRedHighlights", "Red Curve Highlights"),
+        ("curves/curveGreenShadows", "Green Curve Shadows"),
+        ("curves/curveGreenMidtones", "Green Curve Midtones"),
+        ("curves/curveGreenHighlights", "Green Curve Highlights"),
+        ("curves/curveBlueShadows", "Blue Curve Shadows"),
+        ("curves/curveBlueMidtones", "Blue Curve Midtones"),
+        ("curves/curveBlueHighlights", "Blue Curve Highlights"),
     ];
     for (id, name) in CURVES {
         lum.push(p(id, name, num(0.0), bipolar()));
     }
     lum.extend([
-        p("shadowsWheel", "Shadows", grey(), ParamUi::Color),
-        p("midtonesWheel", "Midtones", grey(), ParamUi::Color),
-        p("highlightsWheel", "Highlights", grey(), ParamUi::Color),
-        p("vignetteAmount", "Amount", num(0.0), slider(-5.0, 5.0, -5.0, 5.0, 2)),
-        p("vignetteMidpoint", "Midpoint", num(50.0), pct()),
-        p("vignetteRoundness", "Roundness", num(0.0), bipolar()),
-        p("vignetteFeather", "Feather", num(50.0), pct()),
+        p("colorWheels/shadowsWheel", "Shadows", grey(), ParamUi::Color),
+        p("colorWheels/midtonesWheel", "Midtones", grey(), ParamUi::Color),
+        p("colorWheels/highlightsWheel", "Highlights", grey(), ParamUi::Color),
+        p("vignette/vignetteAmount", "Amount", num(0.0), slider(-5.0, 5.0, -5.0, 5.0, 2)),
+        p("vignette/vignetteMidpoint", "Midpoint", num(50.0), pct()),
+        p("vignette/vignetteRoundness", "Roundness", num(0.0), bipolar()),
+        p("vignette/vignetteFeather", "Feather", num(50.0), pct()),
     ]);
     vec![
         spec(
@@ -434,7 +442,7 @@ pub fn specs() -> Vec<EffectSpec> {
                 p("colorToChange", "Color To Change", col(0.8, 0.2, 0.2), ParamUi::Color),
                 p("matchingTolerance", "Matching Tolerance", num(15.0), pct()),
                 p("matchingSoftness", "Matching Softness", num(0.0), pct()),
-                p("matchColors", "Match colors", Value::Enum(1), popup(&["Using RGB", "Using Hue", "Using Chroma"])),
+                p("matchColors", "Match Colors", Value::Enum(1), popup(&["Using RGB", "Using Hue", "Using Chroma"])),
                 p("invertColorCorrectionMask", "Invert Color Correction Mask", Value::Bool(false), ParamUi::Checkbox),
             ],
             change_color,
@@ -559,17 +567,17 @@ mod tests {
         let img = ramp();
         assert!(close(&run("ec.color.lumetri", &[], img.clone()), &img, 1e-5));
         let g = Image::filled(8, 8, [0.4, 0.4, 0.4, 1.0]);
-        let e = run("ec.color.lumetri", &[("exposure", num(1.0))], g.clone());
+        let e = run("ec.color.lumetri", &[("basicCorrection/tone/exposure", num(1.0))], g.clone());
         assert!((e.get(0, 0)[0] - 0.8).abs() < 1e-5);
-        let warm = run("ec.color.lumetri", &[("temperature", num(50.0))], g.clone());
+        let warm = run("ec.color.lumetri", &[("basicCorrection/whiteBalance/temperature", num(50.0))], g.clone());
         assert!(warm.get(0, 0)[0] > warm.get(0, 0)[2]);
-        let bw = run("ec.color.lumetri", &[("saturation", num(0.0))], img.clone());
+        let bw = run("ec.color.lumetri", &[("basicCorrection/saturation", num(0.0))], img.clone());
         let p = bw.get(5, 3);
         assert!((p[0] - p[1]).abs() < 1e-5 && (p[1] - p[2]).abs() < 1e-5);
-        let v = run("ec.color.lumetri", &[("vignetteAmount", num(-3.0))], g.clone());
+        let v = run("ec.color.lumetri", &[("vignette/vignetteAmount", num(-3.0))], g.clone());
         assert!(v.get(0, 0)[0] < v.get(4, 4)[0]);
-        let c = run("ec.color.lumetri", &[("curveMasterMidtones", num(50.0))], g.clone());
+        let c = run("ec.color.lumetri", &[("curves/curveMasterMidtones", num(50.0))], g.clone());
         assert!(c.get(0, 0)[0] > 0.4);
-        assert_eq!(c.data, run("ec.color.lumetri", &[("curveMasterMidtones", num(50.0))], g).data);
+        assert_eq!(c.data, run("ec.color.lumetri", &[("curves/curveMasterMidtones", num(50.0))], g).data);
     }
 }

@@ -389,15 +389,16 @@ fn scatterize(ctx: &EffectCtx, mut b: Buf) -> Buf {
 // ------------------------------------------------------------------ Card Dance
 
 const CD_SOURCES: &[&str] = &["None", "Intensity 1", "Red 1", "Green 1", "Blue 1", "Alpha 1", "Intensity 2", "Red 2", "Green 2", "Blue 2", "Alpha 2"];
+/// (param id prefix, twirl-down group match id) per transformed card property.
 const CD_PROPS: [(&str, &str); 8] = [
-    ("xPos", "X Position"),
-    ("yPos", "Y Position"),
-    ("zPos", "Z Position"),
-    ("xRot", "X Rotation"),
-    ("yRot", "Y Rotation"),
-    ("zRot", "Z Rotation"),
-    ("xScale", "X Scale"),
-    ("yScale", "Y Scale"),
+    ("xPos", "xPosition"),
+    ("yPos", "yPosition"),
+    ("zPos", "zPosition"),
+    ("xRot", "xRotation"),
+    ("yRot", "yRotation"),
+    ("zRot", "zRotation"),
+    ("xScale", "xScale"),
+    ("yScale", "yScale"),
 ];
 
 fn card_source(src: u32, g1: [f32; 4], g2: [f32; 4]) -> f32 {
@@ -429,14 +430,14 @@ fn card_dance(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let [lw, lh] = ctx.layer_size;
     let s = b.scale;
     let (cw, ch) = (lw / cols as f64, lh / rows as f64);
-    let zpos = pr.f("cameraZ").max(0.05);
-    let focal = pr.f("focalLength").max(1.0);
+    let zpos = pr.f("cameraPosition/cameraZ").max(0.05);
+    let focal = pr.f("cameraPosition/focalLength").max(1.0);
     let cam = Cam { c: [b.offset[0] + lw * 0.5 * s, b.offset[1] + lh * 0.5 * s], d: lw.max(lh) * s * zpos * focal / 140.0 };
-    let ambient = pr.f("ambientLight") as f32;
-    let diffuse = pr.f("diffuse") as f32;
-    let intensity = pr.f("lightIntensity") as f32;
+    let ambient = pr.f("lighting/ambientLight") as f32;
+    let diffuse = pr.f("material/diffuse") as f32;
+    let intensity = pr.f("lighting/lightIntensity") as f32;
     let props: Vec<(u32, f64, f64)> =
-        CD_PROPS.iter().map(|(id, _)| (pr.e(&format!("{id}Source")), pr.f(&format!("{id}Multiplier")), pr.f(&format!("{id}Offset")))).collect();
+        CD_PROPS.iter().map(|(id, g)| (pr.e(&format!("{g}/{id}Source")), pr.f(&format!("{g}/{id}Multiplier")), pr.f(&format!("{g}/{id}Offset")))).collect();
     let src = b.img.clone();
     let mut pieces: Vec<Piece> = (0..rows * cols)
         .into_par_iter()
@@ -574,24 +575,24 @@ fn shatter(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let pr = ctx.params;
     let view = pr.e("view");
     let render = pr.e("render");
-    let kind = pr.e("pattern");
-    let reps = pr.f("repetitions").clamp(1.0, 500.0);
-    let dir = pr.f("direction").to_radians();
-    let origin = pr.v2("origin");
+    let kind = pr.e("shape/pattern");
+    let reps = pr.f("shape/repetitions").clamp(1.0, 500.0);
+    let dir = pr.f("shape/direction").to_radians();
+    let origin = pr.v2("shape/origin");
     let forces = [
-        (pr.v2("force1Position"), pr.f("force1Depth"), pr.f("force1Radius"), pr.f("force1Strength")),
-        (pr.v2("force2Position"), pr.f("force2Depth"), pr.f("force2Radius"), pr.f("force2Strength")),
+        (pr.v2("force1/force1Position"), pr.f("force1/force1Depth"), pr.f("force1/force1Radius"), pr.f("force1/force1Strength")),
+        (pr.v2("force2/force2Position"), pr.f("force2/force2Depth"), pr.f("force2/force2Radius"), pr.f("force2/force2Strength")),
     ];
-    let rot_speed = pr.f("rotationSpeed");
-    let tumble = pr.e("tumbleAxis");
-    let randomness = pr.f("randomness");
-    let k = pr.f("viscosity").max(0.0) * 5.0;
-    let mass_var = pr.f("massVariance") / 100.0;
-    let gravity = pr.f("gravity");
-    let gdir = pr.f("gravityDirection").to_radians();
-    let ginc = pr.f("gravityInclination").to_radians();
-    let ambient = pr.f("ambientLight") as f32;
-    let intensity = pr.f("lightIntensity") as f32;
+    let rot_speed = pr.f("physics/rotationSpeed");
+    let tumble = pr.e("physics/tumbleAxis");
+    let randomness = pr.f("physics/randomness");
+    let k = pr.f("physics/viscosity").max(0.0) * 5.0;
+    let mass_var = pr.f("physics/massVariance") / 100.0;
+    let gravity = pr.f("physics/gravity");
+    let gdir = pr.f("physics/gravityDirection").to_radians();
+    let ginc = pr.f("physics/gravityInclination").to_radians();
+    let ambient = pr.f("lighting/ambientLight") as f32;
+    let intensity = pr.f("lighting/lightIntensity") as f32;
     let seed = (pr.f("randomSeed") as u32).wrapping_mul(0x9e3779b1) ^ ctx.seed;
     let [lw, lh] = ctx.layer_size;
     let s = b.scale;
@@ -747,31 +748,31 @@ fn sample_repeat(img: &Image, x: f64, y: f64, mode: u32) -> Px {
 fn caustics(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let pr = ctx.params;
     let s = b.scale;
-    let mut bottom = layer_or_self(ctx, &b, "bottom", true, pr.e("bottomSizeDiffers") == 1);
-    let blur = pr.f("blur") * s;
+    let mut bottom = layer_or_self(ctx, &b, "bottom/bottom", true, pr.e("bottom/bottomSizeDiffers") == 1);
+    let blur = pr.f("bottom/blur") * s;
     if blur > 0.05 {
         bottom = effectcraft_raster::gaussian_blur(&bottom, blur * 0.5, blur * 0.5, false);
     }
-    let scaling = pr.f("scaling").max(0.01);
-    let repeat = pr.e("repeatMode");
-    let wave_h = pr.f("waveHeight");
-    let smoothing = pr.f("smoothing") * s;
-    let depth = pr.f("waterDepth");
-    let ior = pr.f("refractiveIndex").max(1.0);
-    let surf = pr.color("surfaceColor");
-    let surf_op = pr.f("surfaceOpacity") as f32;
-    let cstr = pr.f("causticsStrength") as f32;
-    let li = pr.f("lightIntensity") as f32;
-    let lc = pr.color("lightColor");
-    let lpos = pr.v2("lightPosition");
-    let lheight = pr.f("lightHeight").max(0.01);
-    let ambient = pr.f("ambientLight") as f32;
-    let diffuse = pr.f("diffuse") as f32;
-    let specular = pr.f("specular") as f32;
-    let sharp = pr.f("highlightSharpness").max(1.0) as f32;
+    let scaling = pr.f("bottom/scaling").max(0.01);
+    let repeat = pr.e("bottom/repeatMode");
+    let wave_h = pr.f("water/waveHeight");
+    let smoothing = pr.f("water/smoothing") * s;
+    let depth = pr.f("water/waterDepth");
+    let ior = pr.f("water/refractiveIndex").max(1.0);
+    let surf = pr.color("water/surfaceColor");
+    let surf_op = pr.f("water/surfaceOpacity") as f32;
+    let cstr = pr.f("water/causticsStrength") as f32;
+    let li = pr.f("lighting/lightIntensity") as f32;
+    let lc = pr.color("lighting/lightColor");
+    let lpos = pr.v2("lighting/lightPosition");
+    let lheight = pr.f("lighting/lightHeight").max(0.01);
+    let ambient = pr.f("lighting/ambientLight") as f32;
+    let diffuse = pr.f("material/diffuse") as f32;
+    let specular = pr.f("material/specular") as f32;
+    let sharp = pr.f("material/highlightSharpness").max(1.0) as f32;
     let (w, hh) = (b.img.width as usize, b.img.height as usize);
     // Height field of the water surface (luminance of the chosen layer; none = flat).
-    let height = ctx.layer_param("waterSurface", true).map(|o| {
+    let height = ctx.layer_param("water/waterSurface", true).map(|o| {
         let img = crate::util::fit_layer(ctx, &b, &o, true);
         let pl = Plane::luma(&img);
         if smoothing > 0.05 { gauss_plane(&pl, smoothing * 0.5, smoothing * 0.5) } else { pl }
@@ -887,27 +888,27 @@ static WAVE_CACHE: SimCache<Waves> = SimCache::new(4);
 fn wave_world(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let pr = ctx.params;
     let [lw, lh] = ctx.layer_size;
-    let res = pr.f("gridResolution").clamp(1.0, 400.0) as usize;
-    let res = if pr.b("gridResDownsamples") { ((res as f64) * b.scale).round().max(1.0) as usize } else { res };
+    let res = pr.f("simulation/gridResolution").clamp(1.0, 400.0) as usize;
+    let res = if pr.b("simulation/gridResDownsamples") { ((res as f64) * b.scale).round().max(1.0) as usize } else { res };
     let nx = res.max(2) + 1;
     let ny = ((res as f64 * lh / lw.max(1.0)).round() as usize).max(2) + 1;
-    let speed = pr.f("waveSpeed").max(0.0) as f32;
-    let damping = pr.f("damping").max(0.0) as f32;
-    let reflect = pr.e("reflectEdges");
-    let preroll = pr.f("preRoll").max(0.0);
+    let speed = pr.f("simulation/waveSpeed").max(0.0) as f32;
+    let damping = pr.f("simulation/damping").max(0.0) as f32;
+    let reflect = pr.e("simulation/reflectEdges");
+    let preroll = pr.f("simulation/preRoll").max(0.0);
     let prods: Vec<Producer> = [1, 2]
         .iter()
         .map(|k| {
-            let pos = pr.v2(&format!("producer{k}Position"));
+            let pos = pr.v2(&format!("producer{k}/producer{k}Position"));
             Producer {
-                ring: pr.e(&format!("producer{k}Type")) == 0,
+                ring: pr.e(&format!("producer{k}/producer{k}Type")) == 0,
                 pos: [(pos[0] / lw.max(1.0)) as f32, (pos[1] / lw.max(1.0)) as f32],
-                len: pr.f(&format!("producer{k}Length")) as f32,
-                width: pr.f(&format!("producer{k}Width")) as f32,
-                angle: (pr.f(&format!("producer{k}Angle")) as f32).to_radians(),
-                amp: pr.f(&format!("producer{k}Amplitude")) as f32,
-                freq: pr.f(&format!("producer{k}Frequency")) as f32,
-                phase: (pr.f(&format!("producer{k}Phase")) as f32).to_radians(),
+                len: pr.f(&format!("producer{k}/producer{k}Length")) as f32,
+                width: pr.f(&format!("producer{k}/producer{k}Width")) as f32,
+                angle: (pr.f(&format!("producer{k}/producer{k}Angle")) as f32).to_radians(),
+                amp: pr.f(&format!("producer{k}/producer{k}Amplitude")) as f32,
+                freq: pr.f(&format!("producer{k}/producer{k}Frequency")) as f32,
+                phase: (pr.f(&format!("producer{k}/producer{k}Phase")) as f32).to_radians(),
             }
         })
         .collect();
@@ -918,7 +919,7 @@ fn wave_world(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let dt = 1.0 / (sps * sub as f32);
     let cell = 1.0 / (nx - 1) as f32;
     let weights: Vec<Vec<f32>> = prods.iter().map(|p| (0..nx * ny).map(|i| p.weight((i % nx) as f32 * cell, (i / nx) as f32 * cell)).collect()).collect();
-    let key = params_key(ctx, &Buf { img: Image::new(0, 0), offset: [0.0; 2], scale: if pr.b("gridResDownsamples") { b.scale } else { 1.0 } }, 4);
+    let key = params_key(ctx, &Buf { img: Image::new(0, 0), offset: [0.0; 2], scale: if pr.b("simulation/gridResDownsamples") { b.scale } else { 1.0 } }, 4);
     let steps = crate::sim::steps_at(ctx.time + preroll);
     let st = WAVE_CACHE.run(
         key,
@@ -997,10 +998,10 @@ fn wave_world(ctx: &EffectCtx, mut b: Buf) -> Buf {
         a + (c - a) * ty
     };
     if pr.e("view") == 1 {
-        let bright = pr.f("brightness") as f32;
-        let contrast = pr.f("contrast") as f32;
-        let gamma = pr.f("gamma").max(0.01) as f32;
-        let alpha = 1.0 - pr.f("transparency") as f32;
+        let bright = pr.f("heightMapControls/brightness") as f32;
+        let contrast = pr.f("heightMapControls/contrast") as f32;
+        let gamma = pr.f("heightMapControls/gamma").max(0.01) as f32;
+        let alpha = 1.0 - pr.f("heightMapControls/transparency") as f32;
         b.img.rows_mut().for_each(|(y, row)| {
             for (x, px) in row.iter_mut().enumerate() {
                 let lx = (x as f64 + 0.5 - b.offset[0]) / s;
@@ -1061,26 +1062,35 @@ static FOAM_CACHE: SimCache<FoamState> = SimCache::new(4);
 /// Foam steps once per frame at 30 frames per second.
 const FOAM_FPS: f64 = 30.0;
 
+/// Age (in simulation steps) at which bubble `id` pops: its lifespan, shortened at random for
+/// frail bubbles (`frailty` 0 = every bubble reaches `lifespan`, 1 = uniformly early).
+fn foam_pop_age(id: u32, lifespan: f32, frailty: f32, seed: u32) -> f32 {
+    lifespan * (1.0 - frailty * (hs(id, 11, seed) * 0.5 + 0.5))
+}
+
 fn foam(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let pr = ctx.params;
     let (lw, lh) = (ctx.layer_size[0] as f32, ctx.layer_size[1] as f32);
     let unit = lw * 0.01;
-    let prod = pr.v2("producerPoint");
-    let (psx, psy) = (pr.f("producerXSize") as f32 * lw, pr.f("producerYSize") as f32 * lh);
-    let porient = (pr.f("producerOrientation") as f32).to_radians();
-    let rate = pr.f("productionRate").max(0.0) as f32;
-    let size = pr.f("size").max(0.0) as f32;
-    let size_var = pr.f("sizeVariance") as f32;
-    let lifespan = pr.f("lifespan").max(1.0) as f32;
-    let growth = pr.f("growthSpeed").max(0.0001) as f32;
-    let init_speed = pr.f("initialSpeed") as f32;
-    let init_dir = (pr.f("initialDirection") as f32).to_radians();
-    let wind = pr.f("windSpeed") as f32;
-    let wind_dir = (pr.f("windDirection") as f32).to_radians();
-    let turb = pr.f("turbulence") as f32;
-    let repulsion = pr.f("repulsion") as f32;
-    let viscosity = pr.f("viscosity").clamp(0.0, 1.0) as f32;
-    let sticky = pr.f("stickiness").clamp(0.0, 1.0) as f32;
+    let prod = pr.v2("producer/producerPoint");
+    let (psx, psy) = (pr.f("producer/producerXSize") as f32 * lw, pr.f("producer/producerYSize") as f32 * lh);
+    let porient = (pr.f("producer/producerOrientation") as f32).to_radians();
+    let rate = pr.f("producer/productionRate").max(0.0) as f32;
+    let size = pr.f("bubbles/size").max(0.0) as f32;
+    let size_var = pr.f("bubbles/sizeVariance") as f32;
+    let lifespan = pr.f("bubbles/lifespan").max(1.0) as f32;
+    let growth = pr.f("bubbles/growthSpeed").max(0.0001) as f32;
+    // Strength: weaker bubbles tend to pop before their lifespan (at 20 or more every bubble
+    // lives the full lifespan); each bubble gets its own pop age.
+    let frailty = 1.0 - (pr.f("bubbles/strength") as f32 / 20.0).clamp(0.0, 1.0);
+    let init_speed = pr.f("physics/initialSpeed") as f32;
+    let init_dir = (pr.f("physics/initialDirection") as f32).to_radians();
+    let wind = pr.f("physics/windSpeed") as f32;
+    let wind_dir = (pr.f("physics/windDirection") as f32).to_radians();
+    let turb = pr.f("physics/turbulence") as f32;
+    let repulsion = pr.f("physics/repulsion") as f32;
+    let viscosity = pr.f("physics/viscosity").clamp(0.0, 1.0) as f32;
+    let sticky = pr.f("physics/stickiness").clamp(0.0, 1.0) as f32;
     let universe = pr.f("universeSize").max(0.01) as f32;
     let seed = (pr.f("randomSeed") as u32).wrapping_mul(0x68e31da4) ^ ctx.seed;
     let wvec = [wind_dir.sin() * wind * unit, -wind_dir.cos() * wind * unit];
@@ -1162,12 +1172,12 @@ fn foam(ctx: &EffectCtx, mut b: Buf) -> Buf {
             q.p[1] += q.v[1];
             q.age += 1.0;
         }
-        st.b.retain(|q| q.age < lifespan && q.p[0] > ux0 && q.p[0] < ux1 && q.p[1] > uy0 && q.p[1] < uy1);
+        st.b.retain(|q| q.age < foam_pop_age(q.id, lifespan, frailty, seed) && q.p[0] > ux0 && q.p[0] < ux1 && q.p[1] > uy0 && q.p[1] < uy1);
     });
     let view = pr.e("view");
     let zoom = pr.f("zoom").max(0.01) as f32;
-    let texture = pr.e("bubbleTexture");
-    let blend = pr.e("blendMode");
+    let texture = pr.e("rendering/bubbleTexture");
+    let blend = pr.e("rendering/blendMode");
     let s = b.scale as f32;
     let (cx, cy) = (lw * 0.5, lh * 0.5);
     let mut order: Vec<&FoamBubble> = st.b.iter().collect();
@@ -1182,8 +1192,9 @@ fn foam(ctx: &EffectCtx, mut b: Buf) -> Buf {
         .map(|q| {
             let r = q.size * unit * 3.0 * (q.age * growth).min(1.0) * zoom * s;
             let (bx, by) = b.to_px([(cx + (q.p[0] - cx) * zoom) as f64, (cy + (q.p[1] - cy) * zoom) as f64]);
-            let fade = ((lifespan - q.age) / 5.0).clamp(0.0, 1.0);
-            if view == 0 {
+            let fade = ((foam_pop_age(q.id, lifespan, frailty, seed) - q.age) / 5.0).clamp(0.0, 1.0);
+            // Draft and Draft + Flow Map show the wireframe-style bubbles.
+            if view != 2 {
                 Sprite::new(bx as f32, by as f32, r, [0.55, 0.75, 1.0, fade], Shape::Bubble)
             } else {
                 let (c, shape) = match texture {
@@ -1197,7 +1208,7 @@ fn foam(ctx: &EffectCtx, mut b: Buf) -> Buf {
             }
         })
         .collect();
-    b.img = splat(b.img.width, b.img.height, &sprites, if blend == 0 && view != 0 { Acc::Add } else { Acc::Over });
+    b.img = splat(b.img.width, b.img.height, &sprites, if blend == 0 && view == 2 { Acc::Add } else { Acc::Over });
     b
 }
 
@@ -1206,24 +1217,24 @@ fn foam(ctx: &EffectCtx, mut b: Buf) -> Buf {
 fn producer_params(k: u32, amp: f64, pos: (f64, f64)) -> Vec<crate::ParamSpec> {
     let ids: [&'static str; 8] = match k {
         1 => [
-            "producer1Type",
-            "producer1Position",
-            "producer1Length",
-            "producer1Width",
-            "producer1Angle",
-            "producer1Amplitude",
-            "producer1Frequency",
-            "producer1Phase",
+            "producer1/producer1Type",
+            "producer1/producer1Position",
+            "producer1/producer1Length",
+            "producer1/producer1Width",
+            "producer1/producer1Angle",
+            "producer1/producer1Amplitude",
+            "producer1/producer1Frequency",
+            "producer1/producer1Phase",
         ],
         _ => [
-            "producer2Type",
-            "producer2Position",
-            "producer2Length",
-            "producer2Width",
-            "producer2Angle",
-            "producer2Amplitude",
-            "producer2Frequency",
-            "producer2Phase",
+            "producer2/producer2Type",
+            "producer2/producer2Position",
+            "producer2/producer2Length",
+            "producer2/producer2Width",
+            "producer2/producer2Angle",
+            "producer2/producer2Amplitude",
+            "producer2/producer2Frequency",
+            "producer2/producer2Phase",
         ],
     };
     vec![
@@ -1240,7 +1251,7 @@ fn producer_params(k: u32, amp: f64, pos: (f64, f64)) -> Vec<crate::ParamSpec> {
 
 fn card_dance_params() -> Vec<crate::ParamSpec> {
     let mut v = vec![
-        p("rowsColumns", "Rows & Columns", Value::Enum(0), popup(&["Independent", "Columns Follow Rows"])),
+        p("rowsColumns", "Rows & Columns", Value::Enum(0), popup(&["Independent", "Columns Follows Rows"])),
         p("rows", "Rows", num(10.0), slider(1.0, 1000.0, 1.0, 100.0, 0)),
         p("columns", "Columns", num(10.0), slider(1.0, 1000.0, 1.0, 100.0, 0)),
         p("backLayer", "Back Layer", Value::Layer(None), ParamUi::Layer),
@@ -1248,14 +1259,14 @@ fn card_dance_params() -> Vec<crate::ParamSpec> {
         p("gradientLayer2", "Gradient Layer 2", Value::Layer(None), ParamUi::Layer),
     ];
     let names: [[&'static str; 4]; 8] = [
-        ["xPosSource", "xPosMultiplier", "xPosOffset", "X Position"],
-        ["yPosSource", "yPosMultiplier", "yPosOffset", "Y Position"],
-        ["zPosSource", "zPosMultiplier", "zPosOffset", "Z Position"],
-        ["xRotSource", "xRotMultiplier", "xRotOffset", "X Rotation"],
-        ["yRotSource", "yRotMultiplier", "yRotOffset", "Y Rotation"],
-        ["zRotSource", "zRotMultiplier", "zRotOffset", "Z Rotation"],
-        ["xScaleSource", "xScaleMultiplier", "xScaleOffset", "X Scale"],
-        ["yScaleSource", "yScaleMultiplier", "yScaleOffset", "Y Scale"],
+        ["xPosition/xPosSource", "xPosition/xPosMultiplier", "xPosition/xPosOffset", "X Position"],
+        ["yPosition/yPosSource", "yPosition/yPosMultiplier", "yPosition/yPosOffset", "Y Position"],
+        ["zPosition/zPosSource", "zPosition/zPosMultiplier", "zPosition/zPosOffset", "Z Position"],
+        ["xRotation/xRotSource", "xRotation/xRotMultiplier", "xRotation/xRotOffset", "X Rotation"],
+        ["yRotation/yRotSource", "yRotation/yRotMultiplier", "yRotation/yRotOffset", "Y Rotation"],
+        ["zRotation/zRotSource", "zRotation/zRotMultiplier", "zRotation/zRotOffset", "Z Rotation"],
+        ["xScale/xScaleSource", "xScale/xScaleMultiplier", "xScale/xScaleOffset", "X Scale"],
+        ["yScale/yScaleSource", "yScale/yScaleMultiplier", "yScale/yScaleOffset", "Y Scale"],
     ];
     debug_assert_eq!(names.len(), CD_PROPS.len());
     for (i, n) in names.iter().enumerate() {
@@ -1267,11 +1278,11 @@ fn card_dance_params() -> Vec<crate::ParamSpec> {
         v.push(p(n[2], "Offset", num(if scale { 1.0 } else { 0.0 }), slider(lo, hi, if rot { -360.0 } else { -10.0 }, if rot { 360.0 } else { 10.0 }, 2)));
     }
     v.extend([
-        p("cameraZ", "Z Position", num(2.0), slider(0.05, 10.0, 0.5, 5.0, 2)),
-        p("focalLength", "Focal Length", num(70.0), slider(1.0, 500.0, 10.0, 200.0, 1)),
-        p("lightIntensity", "Light Intensity", num(1.0), slider(0.0, 4.0, 0.0, 2.0, 2)),
-        p("ambientLight", "Ambient Light", num(0.25), slider(0.0, 2.0, 0.0, 1.0, 2)),
-        p("diffuse", "Diffuse Reflection", num(0.75), slider(0.0, 2.0, 0.0, 1.0, 2)),
+        p("cameraPosition/cameraZ", "Z Position", num(2.0), slider(0.05, 10.0, 0.5, 5.0, 2)),
+        p("cameraPosition/focalLength", "Focal Length", num(70.0), slider(1.0, 500.0, 10.0, 200.0, 1)),
+        p("lighting/lightIntensity", "Light Intensity", num(1.0), slider(0.0, 4.0, 0.0, 2.0, 2)),
+        p("lighting/ambientLight", "Ambient Light", num(0.25), slider(0.0, 2.0, 0.0, 1.0, 2)),
+        p("material/diffuse", "Diffuse Reflection", num(0.75), slider(0.0, 2.0, 0.0, 1.0, 2)),
     ]);
     v
 }
@@ -1326,27 +1337,27 @@ pub fn specs() -> Vec<EffectSpec> {
             "ec.sim.caustics",
             "Caustics",
             vec![
-                p("bottom", "Bottom", Value::Layer(None), ParamUi::Layer),
-                p("scaling", "Scaling", num(1.0), slider(0.01, 10.0, 0.1, 3.0, 3)),
-                p("repeatMode", "Repeat Mode", Value::Enum(2), popup(&["Once", "Tiled", "Reflected"])),
-                p("bottomSizeDiffers", "If Layer Size Differs", Value::Enum(1), popup(&["Center", "Stretch to Fit"])),
-                p("blur", "Blur", num(0.0), slider(0.0, 100.0, 0.0, 20.0, 1)),
-                p("waterSurface", "Water Surface", Value::Layer(None), ParamUi::Layer),
-                p("waveHeight", "Wave Height", num(0.2), slider(-1.0, 1.0, -1.0, 1.0, 3)),
-                p("smoothing", "Smoothing", num(5.0), slider(0.0, 100.0, 0.0, 50.0, 1)),
-                p("waterDepth", "Water Depth", num(0.1), slider(0.0, 1.0, 0.0, 1.0, 3)),
-                p("refractiveIndex", "Refractive Index", num(1.2), slider(1.0, 3.0, 1.0, 2.0, 3)),
-                p("surfaceColor", "Surface Color", col(1.0, 1.0, 1.0), ParamUi::Color),
-                p("surfaceOpacity", "Surface Opacity", num(0.3), slider(0.0, 1.0, 0.0, 1.0, 3)),
-                p("causticsStrength", "Caustics Strength", num(0.0), slider(0.0, 1.0, 0.0, 1.0, 3)),
-                p("lightIntensity", "Light Intensity", num(1.0), slider(0.0, 4.0, 0.0, 2.0, 2)),
-                p("lightColor", "Light Color", col(1.0, 1.0, 1.0), ParamUi::Color),
-                p("lightPosition", "Light Position", pt(0.0, 0.0), ParamUi::Point),
-                p("lightHeight", "Light Height", num(1.0), slider(0.0, 10.0, 0.0, 4.0, 2)),
-                p("ambientLight", "Ambient Light", num(0.35), slider(0.0, 2.0, 0.0, 1.0, 2)),
-                p("diffuse", "Diffuse Reflection", num(0.75), slider(0.0, 2.0, 0.0, 1.0, 2)),
-                p("specular", "Specular Reflection", num(0.2), slider(0.0, 2.0, 0.0, 1.0, 2)),
-                p("highlightSharpness", "Highlight Sharpness", num(15.0), slider(1.0, 100.0, 1.0, 100.0, 1)),
+                p("bottom/bottom", "Bottom", Value::Layer(None), ParamUi::Layer),
+                p("bottom/scaling", "Scaling", num(1.0), slider(0.01, 10.0, 0.1, 3.0, 3)),
+                p("bottom/repeatMode", "Repeat Mode", Value::Enum(2), popup(&["Once", "Tiled", "Reflected"])),
+                p("bottom/bottomSizeDiffers", "If Layer Size Differs", Value::Enum(1), popup(&["Center", "Stretch to Fit"])),
+                p("bottom/blur", "Blur", num(0.0), slider(0.0, 100.0, 0.0, 20.0, 1)),
+                p("water/waterSurface", "Water Surface", Value::Layer(None), ParamUi::Layer),
+                p("water/waveHeight", "Wave Height", num(0.2), slider(-1.0, 1.0, -1.0, 1.0, 3)),
+                p("water/smoothing", "Smoothing", num(5.0), slider(0.0, 100.0, 0.0, 50.0, 1)),
+                p("water/waterDepth", "Water Depth", num(0.1), slider(0.0, 1.0, 0.0, 1.0, 3)),
+                p("water/refractiveIndex", "Refractive Index", num(1.2), slider(1.0, 3.0, 1.0, 2.0, 3)),
+                p("water/surfaceColor", "Surface Color", col(1.0, 1.0, 1.0), ParamUi::Color),
+                p("water/surfaceOpacity", "Surface Opacity", num(0.3), slider(0.0, 1.0, 0.0, 1.0, 3)),
+                p("water/causticsStrength", "Caustics Strength", num(0.0), slider(0.0, 1.0, 0.0, 1.0, 3)),
+                p("lighting/lightIntensity", "Light Intensity", num(1.0), slider(0.0, 4.0, 0.0, 2.0, 2)),
+                p("lighting/lightColor", "Light Color", col(1.0, 1.0, 1.0), ParamUi::Color),
+                p("lighting/lightPosition", "Light Position", pt(0.0, 0.0), ParamUi::Point),
+                p("lighting/lightHeight", "Light Height", num(1.0), slider(0.0, 10.0, 0.0, 4.0, 2)),
+                p("lighting/ambientLight", "Ambient Light", num(0.35), slider(0.0, 2.0, 0.0, 1.0, 2)),
+                p("material/diffuse", "Diffuse Reflection", num(0.75), slider(0.0, 2.0, 0.0, 1.0, 2)),
+                p("material/specular", "Specular Reflection", num(0.2), slider(0.0, 2.0, 0.0, 1.0, 2)),
+                p("material/highlightSharpness", "Highlight Sharpness", num(15.0), slider(1.0, 100.0, 1.0, 100.0, 1)),
             ],
             caustics,
         ),
@@ -1356,16 +1367,16 @@ pub fn specs() -> Vec<EffectSpec> {
             {
                 let mut v = vec![
                     p("view", "View", Value::Enum(0), popup(&["Wireframe Preview", "Height Map"])),
-                    p("brightness", "Brightness", num(0.5), slider(-1.0, 2.0, 0.0, 1.0, 3)),
-                    p("contrast", "Contrast", num(0.75), slider(0.0, 4.0, 0.0, 2.0, 3)),
-                    p("gamma", "Gamma Adjustment", num(1.0), slider(0.01, 10.0, 0.2, 5.0, 3)),
-                    p("transparency", "Transparency", num(0.0), slider(0.0, 1.0, 0.0, 1.0, 3)),
-                    p("gridResolution", "Grid Resolution", num(60.0), slider(1.0, 400.0, 1.0, 200.0, 0)),
-                    p("gridResDownsamples", "Grid Res Downsamples", Value::Bool(false), ParamUi::Checkbox),
-                    p("waveSpeed", "Wave Speed", num(0.2), slider(0.0, 5.0, 0.0, 1.0, 3)),
-                    p("damping", "Damping", num(0.05), slider(0.0, 5.0, 0.0, 1.0, 3)),
-                    p("reflectEdges", "Reflect Edges", Value::Enum(0), popup(&["None", "Left", "Top", "Right", "Bottom", "All"])),
-                    p("preRoll", "Pre-roll (seconds)", num(0.0), slider(0.0, 30.0, 0.0, 10.0, 2)),
+                    p("heightMapControls/brightness", "Brightness", num(0.5), slider(-1.0, 2.0, 0.0, 1.0, 3)),
+                    p("heightMapControls/contrast", "Contrast", num(0.75), slider(0.0, 4.0, 0.0, 2.0, 3)),
+                    p("heightMapControls/gamma", "Gamma Adjustment", num(1.0), slider(0.01, 10.0, 0.2, 5.0, 3)),
+                    p("heightMapControls/transparency", "Transparency", num(0.0), slider(0.0, 1.0, 0.0, 1.0, 3)),
+                    p("simulation/gridResolution", "Grid Resolution", num(60.0), slider(1.0, 400.0, 1.0, 200.0, 0)),
+                    p("simulation/gridResDownsamples", "Grid Res Downsamples", Value::Bool(false), ParamUi::Checkbox),
+                    p("simulation/waveSpeed", "Wave Speed", num(0.2), slider(0.0, 5.0, 0.0, 1.0, 3)),
+                    p("simulation/damping", "Damping", num(0.05), slider(0.0, 5.0, 0.0, 1.0, 3)),
+                    p("simulation/reflectEdges", "Reflect Edges", Value::Enum(0), popup(&["None", "Left", "Top", "Right", "Bottom", "All"])),
+                    p("simulation/preRoll", "Pre-roll (seconds)", num(0.0), slider(0.0, 30.0, 0.0, 10.0, 2)),
                 ];
                 v.extend(producer_params(1, 0.5, (0.5, 0.5)));
                 v.extend(producer_params(2, 0.0, (0.25, 0.25)));
@@ -1384,29 +1395,29 @@ pub fn specs() -> Vec<EffectSpec> {
                     popup(&["Rendered", "Wireframe Front View", "Wireframe", "Wireframe Front View + Forces", "Wireframe + Forces"]),
                 ),
                 p("render", "Render", Value::Enum(0), popup(&["All", "Layer", "Pieces"])),
-                p("pattern", "Pattern", Value::Enum(0), popup(SHATTER_PATTERNS)),
-                p("repetitions", "Repetitions", num(10.0), slider(1.0, 500.0, 1.0, 100.0, 2)),
-                p("direction", "Direction", num(0.0), ParamUi::Angle),
-                p("origin", "Origin", pt(0.5, 0.5), ParamUi::Point),
-                p("extrusionDepth", "Extrusion Depth", num(0.05), slider(0.0, 1.0, 0.0, 1.0, 3)),
-                p("force1Position", "Force 1 Position", pt(0.5, 0.5), ParamUi::Point),
-                p("force1Depth", "Force 1 Depth", num(0.1), slider(-1.0, 1.0, -1.0, 1.0, 3)),
-                p("force1Radius", "Force 1 Radius", num(0.4), slider(0.0, 4.0, 0.0, 2.0, 3)),
-                p("force1Strength", "Force 1 Strength", num(5.0), slider(-20.0, 20.0, -10.0, 10.0, 2)),
-                p("force2Position", "Force 2 Position", pt(0.25, 0.25), ParamUi::Point),
-                p("force2Depth", "Force 2 Depth", num(0.1), slider(-1.0, 1.0, -1.0, 1.0, 3)),
-                p("force2Radius", "Force 2 Radius", num(0.0), slider(0.0, 4.0, 0.0, 2.0, 3)),
-                p("force2Strength", "Force 2 Strength", num(5.0), slider(-20.0, 20.0, -10.0, 10.0, 2)),
-                p("rotationSpeed", "Rotation Speed", num(0.2), slider(0.0, 5.0, 0.0, 1.0, 3)),
-                p("tumbleAxis", "Tumble Axis", Value::Enum(0), popup(&["Free", "None", "X", "Y", "Z", "XY", "XZ", "YZ"])),
-                p("randomness", "Randomness", num(0.1), slider(0.0, 1.0, 0.0, 1.0, 3)),
-                p("viscosity", "Viscosity", num(0.1), slider(0.0, 1.0, 0.0, 1.0, 3)),
-                p("massVariance", "Mass Variance", num(30.0), pct()),
-                p("gravity", "Gravity", num(3.0), slider(0.0, 100.0, 0.0, 10.0, 2)),
-                p("gravityDirection", "Gravity Direction", num(180.0), ParamUi::Angle),
-                p("gravityInclination", "Gravity Inclination", num(0.0), slider(-90.0, 90.0, -90.0, 90.0, 1)),
-                p("lightIntensity", "Light Intensity", num(1.0), slider(0.0, 4.0, 0.0, 2.0, 2)),
-                p("ambientLight", "Ambient Light", num(0.25), slider(0.0, 2.0, 0.0, 1.0, 2)),
+                p("shape/pattern", "Pattern", Value::Enum(0), popup(SHATTER_PATTERNS)),
+                p("shape/repetitions", "Repetitions", num(10.0), slider(1.0, 500.0, 1.0, 100.0, 2)),
+                p("shape/direction", "Direction", num(0.0), ParamUi::Angle),
+                p("shape/origin", "Origin", pt(0.5, 0.5), ParamUi::Point),
+                p("shape/extrusionDepth", "Extrusion Depth", num(0.05), slider(0.0, 1.0, 0.0, 1.0, 3)),
+                p("force1/force1Position", "Position", pt(0.5, 0.5), ParamUi::Point),
+                p("force1/force1Depth", "Depth", num(0.1), slider(-1.0, 1.0, -1.0, 1.0, 3)),
+                p("force1/force1Radius", "Radius", num(0.4), slider(0.0, 4.0, 0.0, 2.0, 3)),
+                p("force1/force1Strength", "Strength", num(5.0), slider(-20.0, 20.0, -10.0, 10.0, 2)),
+                p("force2/force2Position", "Position", pt(0.25, 0.25), ParamUi::Point),
+                p("force2/force2Depth", "Depth", num(0.1), slider(-1.0, 1.0, -1.0, 1.0, 3)),
+                p("force2/force2Radius", "Radius", num(0.0), slider(0.0, 4.0, 0.0, 2.0, 3)),
+                p("force2/force2Strength", "Strength", num(5.0), slider(-20.0, 20.0, -10.0, 10.0, 2)),
+                p("physics/rotationSpeed", "Rotation Speed", num(0.2), slider(0.0, 5.0, 0.0, 1.0, 3)),
+                p("physics/tumbleAxis", "Tumble Axis", Value::Enum(0), popup(&["Free", "None", "X", "Y", "Z", "XY", "XZ", "YZ"])),
+                p("physics/randomness", "Randomness", num(0.1), slider(0.0, 1.0, 0.0, 1.0, 3)),
+                p("physics/viscosity", "Viscosity", num(0.1), slider(0.0, 1.0, 0.0, 1.0, 3)),
+                p("physics/massVariance", "Mass Variance", num(30.0), pct()),
+                p("physics/gravity", "Gravity", num(3.0), slider(0.0, 100.0, 0.0, 10.0, 2)),
+                p("physics/gravityDirection", "Gravity Direction", num(180.0), ParamUi::Angle),
+                p("physics/gravityInclination", "Gravity Inclination", num(0.0), slider(-90.0, 90.0, -90.0, 90.0, 1)),
+                p("lighting/lightIntensity", "Light Intensity", num(1.0), slider(0.0, 4.0, 0.0, 2.0, 2)),
+                p("lighting/ambientLight", "Ambient Light", num(0.25), slider(0.0, 2.0, 0.0, 1.0, 2)),
                 p("randomSeed", "Random Seed", num(0.0), slider(0.0, 10_000.0, 0.0, 1000.0, 0)),
             ],
             shatter,
@@ -1415,29 +1426,29 @@ pub fn specs() -> Vec<EffectSpec> {
             "ec.sim.foam",
             "Foam",
             vec![
-                p("view", "View", Value::Enum(0), popup(&["Draft", "Rendered"])),
-                p("producerPoint", "Producer Point", pt(0.5, 0.5), ParamUi::Point),
-                p("producerXSize", "Producer X Size", num(0.05), slider(0.0, 2.0, 0.0, 1.0, 3)),
-                p("producerYSize", "Producer Y Size", num(0.05), slider(0.0, 2.0, 0.0, 1.0, 3)),
-                p("producerOrientation", "Producer Orientation", num(0.0), ParamUi::Angle),
-                p("productionRate", "Production Rate", num(1.0), slider(0.0, 50.0, 0.0, 10.0, 3)),
-                p("size", "Size", num(0.5), slider(0.0, 10.0, 0.0, 2.0, 3)),
-                p("sizeVariance", "Size Variance", num(0.5), slider(0.0, 1.0, 0.0, 1.0, 3)),
-                p("lifespan", "Lifespan", num(300.0), slider(1.0, 30_000.0, 1.0, 1000.0, 1)),
-                p("growthSpeed", "Bubble Growth Speed", num(0.1), slider(0.0001, 10.0, 0.0, 1.0, 3)),
-                p("strength", "Strength", num(10.0), slider(0.0, 100.0, 0.0, 20.0, 2)),
-                p("initialSpeed", "Initial Speed", num(0.0), slider(-100.0, 100.0, -10.0, 10.0, 3)),
-                p("initialDirection", "Initial Direction", num(0.0), ParamUi::Angle),
-                p("windSpeed", "Wind Speed", num(0.5), slider(-100.0, 100.0, -10.0, 10.0, 3)),
-                p("windDirection", "Wind Direction", num(90.0), ParamUi::Angle),
-                p("turbulence", "Turbulence", num(0.5), slider(0.0, 10.0, 0.0, 2.0, 3)),
-                p("repulsion", "Repulsion", num(1.0), slider(0.0, 10.0, 0.0, 2.0, 3)),
-                p("viscosity", "Viscosity", num(0.1), slider(0.0, 1.0, 0.0, 1.0, 3)),
-                p("stickiness", "Stickiness", num(0.75), slider(0.0, 1.0, 0.0, 1.0, 3)),
+                p("view", "View", Value::Enum(0), popup(&["Draft", "Draft + Flow Map", "Rendered"])),
+                p("producer/producerPoint", "Producer Point", pt(0.5, 0.5), ParamUi::Point),
+                p("producer/producerXSize", "Producer X Size", num(0.05), slider(0.0, 2.0, 0.0, 1.0, 3)),
+                p("producer/producerYSize", "Producer Y Size", num(0.05), slider(0.0, 2.0, 0.0, 1.0, 3)),
+                p("producer/producerOrientation", "Producer Orientation", num(0.0), ParamUi::Angle),
+                p("producer/productionRate", "Production Rate", num(1.0), slider(0.0, 50.0, 0.0, 10.0, 3)),
+                p("bubbles/size", "Size", num(0.5), slider(0.0, 10.0, 0.0, 2.0, 3)),
+                p("bubbles/sizeVariance", "Size Variance", num(0.5), slider(0.0, 1.0, 0.0, 1.0, 3)),
+                p("bubbles/lifespan", "Lifespan", num(300.0), slider(1.0, 30_000.0, 1.0, 1000.0, 1)),
+                p("bubbles/growthSpeed", "Bubble Growth Speed", num(0.1), slider(0.0001, 10.0, 0.0001, 1.0, 3)),
+                p("bubbles/strength", "Strength", num(10.0), slider(0.0, 100.0, 0.0, 20.0, 2)),
+                p("physics/initialSpeed", "Initial Speed", num(0.0), slider(-100.0, 100.0, -10.0, 10.0, 3)),
+                p("physics/initialDirection", "Initial Direction", num(0.0), ParamUi::Angle),
+                p("physics/windSpeed", "Wind Speed", num(0.5), slider(-100.0, 100.0, -10.0, 10.0, 3)),
+                p("physics/windDirection", "Wind Direction", num(90.0), ParamUi::Angle),
+                p("physics/turbulence", "Turbulence", num(0.5), slider(0.0, 10.0, 0.0, 2.0, 3)),
+                p("physics/repulsion", "Repulsion", num(1.0), slider(0.0, 10.0, 0.0, 2.0, 3)),
+                p("physics/viscosity", "Viscosity", num(0.1), slider(0.0, 1.0, 0.0, 1.0, 3)),
+                p("physics/stickiness", "Stickiness", num(0.75), slider(0.0, 1.0, 0.0, 1.0, 3)),
                 p("zoom", "Zoom", num(1.0), slider(0.01, 50.0, 0.1, 5.0, 3)),
                 p("universeSize", "Universe Size", num(1.0), slider(0.01, 10.0, 0.5, 3.0, 3)),
-                p("blendMode", "Blend Mode", Value::Enum(0), popup(&["Transparent", "Solid Old on Top", "Solid New on Top"])),
-                p("bubbleTexture", "Bubble Texture", Value::Enum(0), popup(&["Default Bubble", "Spit", "Bubblegum", "Dishwater", "Milky"])),
+                p("rendering/blendMode", "Blend Mode", Value::Enum(0), popup(&["Transparent", "Solid Old on Top", "Solid New on Top"])),
+                p("rendering/bubbleTexture", "Bubble Texture", Value::Enum(0), popup(&["Default Bubble", "Spit", "Bubblegum", "Dishwater", "Milky"])),
                 p("randomSeed", "Random Seed", num(1.0), slider(0.0, 10_000.0, 0.0, 1000.0, 0)),
             ],
             foam,
@@ -1522,16 +1533,16 @@ mod tests {
         let src = ramp(30, 20);
         let a = run("ec.sim.carddance", &[], src.clone(), 0.0);
         assert!(max_diff(&a, &src) < 0.02, "flat cards reproduce the layer: {}", max_diff(&a, &src));
-        let r = run("ec.sim.carddance", &[("yRotSource", Value::Enum(1)), ("yRotMultiplier", num(90.0))], src.clone(), 0.0);
-        assert_eq!(r, run("ec.sim.carddance", &[("yRotSource", Value::Enum(1)), ("yRotMultiplier", num(90.0))], src.clone(), 0.0));
+        let r = run("ec.sim.carddance", &[("yRotation/yRotSource", Value::Enum(1)), ("yRotation/yRotMultiplier", num(90.0))], src.clone(), 0.0);
+        assert_eq!(r, run("ec.sim.carddance", &[("yRotation/yRotSource", Value::Enum(1)), ("yRotation/yRotMultiplier", num(90.0))], src.clone(), 0.0));
         assert!(sum_diff(&r, &src) > 5.0);
-        let z = run("ec.sim.carddance", &[("zPosOffset", num(-1.0))], src.clone(), 0.0);
+        let z = run("ec.sim.carddance", &[("zPosition/zPosOffset", num(-1.0))], src.clone(), 0.0);
         assert!(sum_diff(&z, &src) > 5.0, "cards pulled towards the camera grow");
     }
 
     #[test]
     fn shatter_at_rest_then_breaks() {
-        let v = [("view", Value::Enum(0)), ("force1Position", pt(16.0, 16.0)), ("origin", pt(16.0, 16.0))];
+        let v = [("view", Value::Enum(0)), ("force1/force1Position", pt(16.0, 16.0)), ("shape/origin", pt(16.0, 16.0))];
         let src = ramp(32, 32);
         let t0 = run("ec.sim.shatter", &v, src.clone(), 0.0);
         assert!(max_diff(&t0, &src) < 0.03, "{}", max_diff(&t0, &src));
@@ -1539,13 +1550,15 @@ mod tests {
         assert_eq!(t1, run("ec.sim.shatter", &v, src.clone(), 0.5));
         assert!(sum_diff(&t1, &src) > 10.0);
         for pat in 0..SHATTER_PATTERNS.len() as u32 {
-            let vv = [("view", Value::Enum(0)), ("pattern", Value::Enum(pat)), ("force1Position", pt(16.0, 16.0)), ("origin", pt(16.0, 16.0))];
+            let vv =
+                [("view", Value::Enum(0)), ("shape/pattern", Value::Enum(pat)), ("force1/force1Position", pt(16.0, 16.0)), ("shape/origin", pt(16.0, 16.0))];
             let r = run("ec.sim.shatter", &vv, src.clone(), 0.0);
             assert!(max_diff(&r, &src) < 0.05, "pattern {pat} tiles the layer: {}", max_diff(&r, &src));
         }
-        let wire = run("ec.sim.shatter", &[("repetitions", num(3.0))], src.clone(), 0.0);
+        let wire = run("ec.sim.shatter", &[("shape/repetitions", num(3.0))], src.clone(), 0.0);
         assert!(wire.data.iter().any(|p| p[3] > 0.5) && wire.data.iter().any(|p| p[3] == 0.0));
-        let layer_only = run("ec.sim.shatter", &[("view", Value::Enum(0)), ("render", Value::Enum(1)), ("force1Position", pt(16.0, 16.0))], src.clone(), 0.5);
+        let layer_only =
+            run("ec.sim.shatter", &[("view", Value::Enum(0)), ("render", Value::Enum(1)), ("force1/force1Position", pt(16.0, 16.0))], src.clone(), 0.5);
         assert!(layer_only.get(16, 16)[3] == 0.0, "broken centre removed");
     }
 
@@ -1554,7 +1567,13 @@ mod tests {
         let src = ramp(24, 24);
         let a = run(
             "ec.sim.caustics",
-            &[("surfaceOpacity", num(0.0)), ("ambientLight", num(0.0)), ("diffuse", num(1.0)), ("lightHeight", num(1000.0)), ("specular", num(0.0))],
+            &[
+                ("water/surfaceOpacity", num(0.0)),
+                ("lighting/ambientLight", num(0.0)),
+                ("material/diffuse", num(1.0)),
+                ("lighting/lightHeight", num(1000.0)),
+                ("material/specular", num(0.0)),
+            ],
             src.clone(),
             0.0,
         );
@@ -1566,27 +1585,33 @@ mod tests {
 
     #[test]
     fn wave_world_seek_and_waves() {
-        let v = vec![("view", Value::Enum(1)), ("producer1Position", pt(16.0, 16.0)), ("gridResolution", num(24.0))];
+        let v = vec![("view", Value::Enum(1)), ("producer1/producer1Position", pt(16.0, 16.0)), ("simulation/gridResolution", num(24.0))];
         let _ = run("ec.sim.waveworld", &v, Image::new(32, 32), 0.5);
         let a = run("ec.sim.waveworld", &v, Image::new(32, 32), 1.0);
         let mut v2 = v.clone();
-        v2.push(("transparency", num(0.0)));
+        v2.push(("heightMapControls/transparency", num(0.0)));
         assert_eq!(a, run("ec.sim.waveworld", &v2, Image::new(32, 32), 1.0));
         // Waves spread: some pixels differ from the flat-water grey.
         assert!(a.data.iter().any(|p| (p[0] - 0.5).abs() > 0.05), "waves");
-        let flat = run("ec.sim.waveworld", &[("view", Value::Enum(1)), ("producer1Amplitude", num(0.0))], Image::new(32, 32), 1.0);
+        let flat = run("ec.sim.waveworld", &[("view", Value::Enum(1)), ("producer1/producer1Amplitude", num(0.0))], Image::new(32, 32), 1.0);
         assert!(flat.data.iter().all(|p| (p[0] - 0.5).abs() < 1e-5));
-        let wire = run("ec.sim.waveworld", &[("producer1Position", pt(16.0, 16.0)), ("gridResolution", num(10.0))], Image::new(32, 32), 0.3);
+        let wire =
+            run("ec.sim.waveworld", &[("producer1/producer1Position", pt(16.0, 16.0)), ("simulation/gridResolution", num(10.0))], Image::new(32, 32), 0.3);
         assert!(wire.data.iter().any(|p| p[1] > 0.3));
     }
 
     #[test]
     fn wave_world_steps_match_direct() {
         // Fresh caches: resumed simulation equals simulation from scratch.
-        let v = vec![("view", Value::Enum(1)), ("producer1Position", pt(16.0, 16.0)), ("gridResolution", num(20.0)), ("damping", num(0.07))];
+        let v = vec![
+            ("view", Value::Enum(1)),
+            ("producer1/producer1Position", pt(16.0, 16.0)),
+            ("simulation/gridResolution", num(20.0)),
+            ("simulation/damping", num(0.07)),
+        ];
         let a = run("ec.sim.waveworld", &v, Image::new(32, 32), 1.3);
         let mut v2 = v.clone();
-        v2.push(("damping", num(0.07000001)));
+        v2.push(("simulation/damping", num(0.07000001)));
         // Different key: computed from scratch at 1.3 directly vs via 0.4 (both fresh keys).
         let _ = run("ec.sim.waveworld", &v2, Image::new(32, 32), 0.4);
         let b = run("ec.sim.waveworld", &v2, Image::new(32, 32), 1.3);
@@ -1595,7 +1620,7 @@ mod tests {
 
     #[test]
     fn foam_bubbles_drift_and_seek() {
-        let v = vec![("producerPoint", pt(16.0, 16.0)), ("view", Value::Enum(1)), ("productionRate", num(2.0))];
+        let v = vec![("producer/producerPoint", pt(16.0, 16.0)), ("view", Value::Enum(2)), ("producer/productionRate", num(2.0))];
         let none = run("ec.sim.foam", &v, Image::new(32, 32), 0.0);
         assert!(none.data.iter().all(|p| p[3] == 0.0));
         let _ = run("ec.sim.foam", &v, Image::new(32, 32), 0.6);
@@ -1604,7 +1629,26 @@ mod tests {
         v2.push(("randomSeed", num(1.0)));
         assert_eq!(a, run("ec.sim.foam", &v2, Image::new(32, 32), 1.2));
         assert!(a.data.iter().any(|p| p[3] > 0.05), "bubbles");
-        let draft = run("ec.sim.foam", &[("producerPoint", pt(16.0, 16.0)), ("productionRate", num(2.0))], Image::new(32, 32), 1.0);
+        let draft = run("ec.sim.foam", &[("producer/producerPoint", pt(16.0, 16.0)), ("producer/productionRate", num(2.0))], Image::new(32, 32), 1.0);
         assert!(draft.data.iter().any(|p| p[3] > 0.05));
+    }
+
+    #[test]
+    fn foam_strength_controls_early_popping() {
+        // Strong bubbles all live their full lifespan; weak ones pop at random earlier.
+        assert_eq!(foam_pop_age(7, 300.0, 0.0, 1), 300.0);
+        let early = (0..200).filter(|&id| foam_pop_age(id, 300.0, 1.0, 1) < 150.0).count();
+        assert!(early > 60 && early < 140, "{early}");
+        let count = |strength: f64| {
+            let v = vec![
+                ("producer/producerPoint", pt(16.0, 16.0)),
+                ("producer/productionRate", num(3.0)),
+                ("bubbles/lifespan", num(40.0)),
+                ("bubbles/strength", num(strength)),
+                ("physics/windSpeed", num(0.0)),
+            ];
+            run("ec.sim.foam", &v, Image::new(32, 32), 1.5).data.iter().map(|p| p[3]).sum::<f32>()
+        };
+        assert!(count(0.0) < count(20.0) * 0.9, "{} vs {}", count(0.0), count(20.0));
     }
 }

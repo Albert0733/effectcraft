@@ -96,7 +96,7 @@ the disk cache in the formats wave.)
 | Text | ≈ 86% | 1.3 | vertical type is basic (upright characters, no tate-chu-yoko), no OpenType feature panel, no extruded strokes (extruded, bevelled text landed in M7.6); per-character styles, paragraph settings, on-canvas editing and the `sourceText` style API landed (M9.9–M9.10) |
 | Web | 60% | 2.5 | threads, browser storage, audio |
 | 3D | 72% | 12.0 | 3D camera tracker, multi-view layouts, Advanced 3D motion blur and blend modes, cameras/lights from models; Advanced 3D (glTF/OBJ models, primitives, extruded text and shapes, PBR, image-based light, shadow maps, GPU rasteriser) landed in M7.4–M7.6 |
-| Effects | ≈ 75% | 5.0 | GPU versions of more effects and the 3D Camera Tracker (every other After Effects effect exists since M9.11 and M12.5) |
+| Effects | ≈ 80% | 4.5 | GPU versions of more effects, the 3D Camera Tracker, and the missing controls listed as partial in [effects.md](effects.md) (every other After Effects effect exists since M9.11 and M12.5; parameter names, order, twirl-downs, popups, units and defaults were aligned in M9.12) |
 | Interface | 70% | 6.0 | Timeline horizontal scrolling of many columns, a richer Learn area (native macOS menu bar, Timeline columns/search/reveal-add, Home screen with recent projects and all AE workspaces landed; viewer rulers/snapping/channels/snapshots landed in M0.13) |
 | Project | 53% | 8.1 | 8/16/32-bit pipeline and colour management, auto-save, proxies, folder moves |
 | Masks & roto | 68% | 6.0 | variable-width mask feather points, Roto Brush's learned (3.0) segmentation model (mask tracking and Mask Interpolation landed in M6.6; Roto Brush & Refine Edge with graph-cut segmentation, flow propagation, edge matting, decontamination and Freeze in M6.7) |
@@ -106,6 +106,9 @@ the disk cache in the formats wave.)
 
 ## Effects still missing
 
+The full catalogue with GPU / 32-bpc badges and per-effect status is [effects.md](effects.md)
+(generated from the registry).
+
 The 3D Camera Tracker (built on the tracking library by other work). Boris FX
 Mocha and Cineware are third-party and not counted.
 
@@ -114,7 +117,7 @@ Mocha and Cineware are third-party and not counted.
 | Category | Effects | Notes |
 |---|---|---|
 | 3D Channel | 3D Channel Extract, Cryptomatte, Depth Matte, Depth of Field, EXtractoR, Fog 3D, ID Matte, IDentifier | Read auxiliary channels: multi-layer OpenEXR (any `layer.channel`, Cryptomatte manifests from the header) or the compositor's own depth / layer-ID / normal / UV / Cryptomatte pass for precomps of 3D comps. |
-| Immersive Video | VR Blur, VR Chromatic Aberrations, VR Color Gradients, VR Converter, VR De-Noise, VR Digital Glitch, VR Fractal Noise, VR Glow, VR Plane to Sphere, VR Rotate Sphere, VR Sharpen, VR Sphere To Plane | Seam-aware equirectangular processing (wrap-around, pole continuation, latitude-scaled filters), mono / over-under / side-by-side layouts; VR Converter between equirectangular, cube maps (4:3, 3:2, 6:1), sphere map and 2D. |
+| Immersive Video | VR Blur, VR Chromatic Aberrations, VR Color Gradients, VR Converter, VR De-Noise, VR Digital Glitch, VR Fractal Noise, VR Glow, VR Plane to Sphere, VR Rotate Sphere, VR Sharpen, VR Sphere to Plane | Seam-aware equirectangular processing (wrap-around, pole continuation, latitude-scaled filters), mono / over-under / side-by-side layouts; VR Converter between equirectangular, cube maps (4:3, 3:2, 6:1), sphere map and 2D. |
 | Color Correction | OCIO CDL / Color Space / Display / File / Look Transform, Color Stabilizer | Built-in minimal OCIO-style config (ACES2065-1, ACEScg, ACEScct, sRGB, Rec.709, Rec.2020, Display P3, linear variants, XYZ) from published matrices and transfer functions; `.cube` / `.3dl` / `.csp` LUTs and ASC `.cc` / `.ccc` / `.cdl`. Custom `.ocio` config files are not read yet. |
 | Distort | CC Flo Motion, Liquify, Rolling Shutter Repair | Liquify strokes are effect data replayed into a displacement mesh (`liquify.stroke` / `liquify.clear` commands; no interactive viewer brush yet). Rolling Shutter Repair uses the KLT tracker. |
 | Blur & Sharpen | Camera-Shake Deblur, CC Radial Blur | Deblur substitutes aligned patches from sharper neighbouring frames. |
@@ -122,7 +125,7 @@ Mocha and Cineware are third-party and not counted.
 | Simulation | CC Hair, Particle Playground | Particle Playground: cannon, grid, layer exploder, layer map, gravity, repel, wall, persistent property mapper (no Particle Exploder, text particles or ephemeral mapper yet). |
 | Keying | Key Light | The full Keylight 1.2 control set under a generic name ("Keylight" is a vendor trademark); `lookup("Keylight (1.2)")` finds it. |
 | Utility | Color Profile Converter | Our colour spaces and ACES; rendering intents (perceptual gamut compression, relative / absolute colorimetric, saturation). |
-| Obsolete | mocha shape | Mocha's export format is not public: reads a documented JSON shape format instead. |
+| Matte | Mocha shape | Mocha's export format is not public: reads a documented JSON shape format instead. |
 
 ## Highest-value gaps, in order
 

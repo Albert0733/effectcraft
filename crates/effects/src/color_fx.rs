@@ -43,11 +43,30 @@ fn tritone(ctx: &EffectCtx, mut b: Buf) -> Buf {
     b
 }
 
+/// Brightness & Contrast without Use Legacy: tone curves that keep black and white fixed (no
+/// clipping). Brightness bends the curve with a power (`b` in -1.5..1.5), contrast is an S
+/// curve around mid grey (`c` in -1..1). Values above 1 pass through. The GPU kernel mirrors it.
+pub fn bc_modern(v: f32, b: f32, c: f32) -> f32 {
+    if v >= 1.0 {
+        return v;
+    }
+    let v = v.max(0.0).powf(2f32.powf(-b));
+    let g = 2f32.powf(2.0 * c);
+    if v < 0.5 { 0.5 * (2.0 * v).powf(g) } else { 1.0 - 0.5 * (2.0 - 2.0 * v).max(0.0).powf(g) }
+}
+
 fn brightness_contrast(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let br = ctx.params.f("brightness") as f32 / 100.0;
     let ct = ctx.params.f("contrast") as f32 / 100.0;
-    let k = if ct >= 0.0 { 1.0 / (1.0 - ct * 0.99) } else { 1.0 + ct };
-    b.img.map_straight(|c| c.map(|v| ((v + br - 0.5) * k + 0.5).max(0.0)));
+    if br == 0.0 && ct == 0.0 {
+        return b;
+    }
+    if ctx.params.b("useLegacy") {
+        let k = if ct >= 0.0 { 1.0 / (1.0 - ct * 0.99) } else { 1.0 + ct };
+        b.img.map_straight(|c| c.map(|v| ((v + br - 0.5) * k + 0.5).max(0.0)));
+    } else {
+        b.img.map_straight(|c| c.map(|v| bc_modern(v, br, ct)));
+    }
     b
 }
 
@@ -74,18 +93,35 @@ fn hue_saturation(ctx: &EffectCtx, mut b: Buf) -> Buf {
     b
 }
 
+/// Options of Levels' Clip To Output Black / White.
+pub const LEVELS_CLIP: [&str; 3] = ["Off", "On", "Off for 32 bpc Color"];
+
+/// Whether Levels clips below Input Black / above Input White. "Off for 32 bpc Color" clips
+/// (effects can't see the project's bit depth; 8/16 bpc behaviour). The hidden `noClip` switch
+/// of projects saved before the two popups existed turns both off.
+pub fn levels_clip(ctx: &EffectCtx) -> (bool, bool) {
+    if ctx.params.b("noClip") {
+        return (false, false);
+    }
+    let on = |id: &str| ctx.params.get(id).is_none_or(|v| v.as_enum() != 0);
+    (on("clipToOutputBlack"), on("clipToOutputWhite"))
+}
+
 fn levels(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let ib = ctx.params.f("inBlack") as f32;
     let iw = ctx.params.f("inWhite") as f32;
     let g = ctx.params.f("gamma").max(0.01) as f32;
     let ob = ctx.params.f("outBlack") as f32;
     let ow = ctx.params.f("outWhite") as f32;
-    let clip = !ctx.params.b("noClip");
+    let (clip_b, clip_w) = levels_clip(ctx);
     b.img.map_straight(|c| {
         c.map(|v| {
             let mut t = (v - ib) / (iw - ib).max(1e-6);
-            if clip {
-                t = t.clamp(0.0, 1.0);
+            if clip_b {
+                t = t.max(0.0);
+            }
+            if clip_w {
+                t = t.min(1.0);
             }
             let t = t.max(0.0).powf(1.0 / g);
             ob + (ow - ob) * t
@@ -94,18 +130,42 @@ fn levels(ctx: &EffectCtx, mut b: Buf) -> Buf {
     b
 }
 
+/// Exposure's per-channel (gain, offset, gamma) for R, G, B: the Master group's values, or the
+/// Red / Green / Blue groups' with Channels = Individual Channels.
+pub fn exposure_settings(ctx: &EffectCtx) -> [(f32, f32, f32); 3] {
+    let f = |k: &str| ctx.params.f(k) as f32;
+    let one = |e: &str, o: &str, g: &str| (2f32.powf(f(e)), f(o), f(g).max(0.01));
+    if ctx.params.e("channels") == 1 {
+        [
+            one("red/redExposure", "red/redOffset", "red/redGamma"),
+            one("green/greenExposure", "green/greenOffset", "green/greenGamma"),
+            one("blue/blueExposure", "blue/blueOffset", "blue/blueGamma"),
+        ]
+    } else {
+        [one("master/exposure", "master/offset", "master/gamma"); 3]
+    }
+}
+
 fn exposure(ctx: &EffectCtx, mut b: Buf) -> Buf {
-    let e = 2f32.powf(ctx.params.f("exposure") as f32);
-    let off = ctx.params.f("offset") as f32;
-    let g = ctx.params.f("gamma").max(0.01) as f32;
+    let s = exposure_settings(ctx);
+    let bypass = ctx.params.b("bypassLinearLight");
     b.img.map_straight(|c| {
-        c.map(|v| {
-            let lin = effectcraft_color::srgb_to_linear(v.max(0.0));
-            let o = (lin * e + off).max(0.0).powf(1.0 / g);
-            effectcraft_color::linear_to_srgb(o)
+        [0, 1, 2].map(|i| {
+            let (e, off, g) = s[i];
+            if bypass {
+                return mirror_pow(c[i] * e + off, 1.0 / g);
+            }
+            let lin = effectcraft_color::srgb_to_linear(c[i].max(0.0));
+            let o = mirror_pow(lin * e + off, 1.0 / g);
+            effectcraft_color::linear_to_srgb(o.abs()).copysign(o)
         })
     });
     b
+}
+
+/// `|v|^p` with `v`'s sign: Exposure adjusts negative values as if they were positive.
+pub fn mirror_pow(v: f32, p: f32) -> f32 {
+    v.abs().powf(p).copysign(v)
 }
 
 fn black_white(ctx: &EffectCtx, mut b: Buf) -> Buf {
@@ -150,41 +210,122 @@ fn fill(ctx: &EffectCtx, mut b: Buf) -> Buf {
     b
 }
 
+/// Change to Color: pixels whose hue, lightness and saturation are each within their tolerance
+/// of From are changed (Softness feathers the match). Change picks the components that change;
+/// Change By either sets them to To's (Setting To Color) or shifts them by To − From
+/// (Transforming To Color). View Correction Matte shows the match as grey.
 fn change_to_color(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let from = ctx.params.color("from");
     let to = ctx.params.color("to");
-    let tol = ctx.params.f("tolerance") as f32 / 100.0;
-    let soft = (ctx.params.f("softness") as f32 / 100.0).max(1e-3);
+    let tol = ["toleranceGroup/hue", "toleranceGroup/lightness", "toleranceGroup/saturation"].map(|k| ctx.params.f(k) as f32 / 100.0);
+    let soft = ctx.params.f("softness") as f32 / 100.0;
+    let change = ctx.params.e("change");
+    let (ch_l, ch_s) = (matches!(change, 1 | 3), matches!(change, 2 | 3));
+    let transform = ctx.params.e("changeBy") == 1;
+    let matte = ctx.params.b("viewCorrectionMatte");
     let (fh, fs, fl) = rgb_to_hsl(from[0], from[1], from[2]);
     let (th, ts, tl) = rgb_to_hsl(to[0], to[1], to[2]);
     b.img.map_straight(|c| {
         let (h, s, l) = rgb_to_hsl(c[0], c[1], c[2]);
-        let dh = ((h - fh + 0.5).rem_euclid(1.0) - 0.5).abs() * 2.0;
-        let d = dh.max((s - fs).abs() * 0.5).max((l - fl).abs() * 0.5);
-        let k = (1.0 - ((d - tol) / soft).clamp(0.0, 1.0)).clamp(0.0, 1.0);
-        let (r, g, bl) = hsl_to_rgb((h + (th - fh)).rem_euclid(1.0), (s + (ts - fs)).clamp(0.0, 1.0), (l + (tl - fl)).clamp(0.0, 1.0));
-        mix(c, [r, g, bl], k)
+        let d = [((h - fh + 0.5).rem_euclid(1.0) - 0.5).abs() * 2.0, (l - fl).abs(), (s - fs).abs()];
+        let mut k = 1.0f32;
+        for i in 0..3 {
+            let over = d[i] - tol[i];
+            if over > 0.0 {
+                k = k.min(if soft <= 1e-6 { 0.0 } else { (1.0 - over / soft).clamp(0.0, 1.0) });
+            }
+        }
+        if matte {
+            return [k; 3];
+        }
+        if k <= 0.0 {
+            return c;
+        }
+        let (nh, ns, nl) = if transform {
+            let dh = ((th - fh + 0.5).rem_euclid(1.0) - 0.5) * k;
+            ((h + dh).rem_euclid(1.0), if ch_s { s + (ts - fs) * k } else { s }, if ch_l { l + (tl - fl) * k } else { l })
+        } else {
+            let dh = ((th - h + 0.5).rem_euclid(1.0) - 0.5) * k;
+            ((h + dh).rem_euclid(1.0), if ch_s { s + (ts - s) * k } else { s }, if ch_l { l + (tl - l) * k } else { l })
+        };
+        let (r, g, bl) = hsl_to_rgb(nh, ns.clamp(0.0, 1.0), nl.clamp(0.0, 1.0));
+        [r, g, bl]
     });
     b
 }
 
+/// Leave Color: decolours pixels unlike Color To Leave. Tolerance 0 keeps only exact matches,
+/// 100 keeps everything; Edge Softness feathers the boundary; Match Colors compares RGB
+/// distance or hue only.
 fn leave_color(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let keep = ctx.params.color("color");
     let amt = ctx.params.f("amount") as f32 / 100.0;
     let tol = ctx.params.f("tolerance") as f32 / 100.0;
+    let soft = ctx.params.f("edgeSoftness") as f32 / 100.0;
+    let by_hue = ctx.params.e("matchColors") == 1;
+    if amt <= 0.0 {
+        return b;
+    }
     let (kh, _, _) = rgb_to_hsl(keep[0], keep[1], keep[2]);
     b.img.map_straight(|c| {
-        let (h, s, _) = rgb_to_hsl(c[0], c[1], c[2]);
-        let dh = ((h - kh + 0.5).rem_euclid(1.0) - 0.5).abs() * 2.0;
-        let keepk = if s > 0.05 && dh <= tol { 1.0 } else { (1.0 - (dh - tol) * 8.0).clamp(0.0, 1.0) * s.min(1.0) };
+        let d = if by_hue {
+            let (h, s, _) = rgb_to_hsl(c[0], c[1], c[2]);
+            // Greys have no hue: they never match a hue.
+            if s < 0.02 { 1.0 } else { ((h - kh + 0.5).rem_euclid(1.0) - 0.5).abs() * 2.0 }
+        } else {
+            ((c[0] - keep[0]).powi(2) + (c[1] - keep[1]).powi(2) + (c[2] - keep[2]).powi(2)).sqrt() / 3f32.sqrt()
+        };
+        let keepk = if tol >= 1.0 || d <= tol {
+            1.0
+        } else if soft <= 1e-6 {
+            0.0
+        } else {
+            (1.0 - (d - tol) / soft).clamp(0.0, 1.0)
+        };
         let g = luminance(c[0], c[1], c[2]);
         mix(c, [g, g, g], amt * (1.0 - keepk))
     });
     b
 }
 
+/// Photo Filter's Filter menu: the conventional camera filters (Wratten-style warming /
+/// cooling conversion and light-balancing filters) and plain colours, as 8-bit sRGB values
+/// chosen for EffectCraft; the last entry, Custom, uses the Color parameter.
+pub const PHOTO_FILTERS: [(&str, [u8; 3]); 21] = [
+    ("Warming Filter (85)", [240, 140, 30]),
+    ("Warming Filter (LBA)", [245, 155, 25]),
+    ("Warming Filter (81)", [240, 180, 40]),
+    ("Cooling Filter (80)", [20, 110, 250]),
+    ("Cooling Filter (LBB)", [20, 95, 245]),
+    ("Cooling Filter (82)", [30, 180, 250]),
+    ("Red", [230, 30, 30]),
+    ("Orange", [240, 130, 30]),
+    ("Yellow", [245, 225, 35]),
+    ("Green", [30, 200, 30]),
+    ("Cyan", [30, 200, 230]),
+    ("Blue", [30, 55, 230]),
+    ("Violet", [150, 30, 230]),
+    ("Magenta", [225, 30, 225]),
+    ("Sepia", [170, 120, 55]),
+    ("Deep Red", [250, 0, 0]),
+    ("Deep Blue", [0, 40, 200]),
+    ("Deep Emerald", [0, 135, 0]),
+    ("Deep Yellow", [255, 210, 0]),
+    ("Underwater", [0, 190, 175]),
+    ("Custom", [0, 0, 0]),
+];
+/// Index of Photo Filter's Custom entry.
+pub const PHOTO_FILTER_CUSTOM: u32 = PHOTO_FILTERS.len() as u32 - 1;
+
 fn photo_filter(ctx: &EffectCtx, mut b: Buf) -> Buf {
-    let c = ctx.params.color("color");
+    let f = ctx.params.e("filter");
+    let c = match PHOTO_FILTERS.get(f as usize) {
+        Some((_, rgb)) if f != PHOTO_FILTER_CUSTOM => rgb.map(|v| v as f32 / 255.0),
+        _ => {
+            let c = ctx.params.color("color");
+            [c[0], c[1], c[2]]
+        }
+    };
     let d = ctx.params.f("density") as f32 / 100.0;
     let keep = ctx.params.b("preserveLuminosity");
     b.img.map_straight(|x| {
@@ -217,6 +358,7 @@ fn color_balance(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let sh = [g("shadowRed"), g("shadowGreen"), g("shadowBlue")];
     let md = [g("midRed"), g("midGreen"), g("midBlue")];
     let hl = [g("hiRed"), g("hiGreen"), g("hiBlue")];
+    let keep_luma = ctx.params.b("preserveLuminosity");
     b.img.map_straight(|c| {
         let l = luminance(c[0], c[1], c[2]).clamp(0.0, 1.0);
         let ws = (1.0 - l * 2.0).clamp(0.0, 1.0);
@@ -225,6 +367,11 @@ fn color_balance(ctx: &EffectCtx, mut b: Buf) -> Buf {
         let mut o = c;
         for i in 0..3 {
             o[i] = (c[i] + (sh[i] * ws + md[i] * wm + hl[i] * wh) * 0.5).max(0.0);
+        }
+        if keep_luma {
+            // Preserve Luminosity: keep the pixel's luminance, change only its colour.
+            let d = luminance(c[0], c[1], c[2]) - luminance(o[0], o[1], o[2]);
+            o = o.map(|v| (v + d).max(0.0));
         }
         o
     });
@@ -253,28 +400,66 @@ fn gamma_pg(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let r = ch("red");
     let g = ch("green");
     let bl = ch("blue");
+    let stretch = ctx.params.f("blackStretch").max(0.0) as f32;
     b.img.map_straight(|c| {
+        // Black Stretch lifts the low values of every channel (a toe that fades out by mid grey).
+        let toe = |v: f32| if stretch > 0.0 && v > 0.0 && v < 1.0 { v + stretch * 0.25 * v * (1.0 - v).powi(4) } else { v };
+        let c = c.map(toe);
         let f = |v: f32, (gm, pd, gn): (f32, f32, f32)| (pd + (gn - pd) * v.max(0.0).powf(gm)).max(0.0);
         [f(c[0], r), f(c[1], g), f(c[2], bl)]
     });
     b
 }
 
+/// Colorama's Get Phase From options.
+pub const COLORAMA_PHASE: [&str; 10] = ["Intensity", "Red", "Green", "Blue", "Hue", "Lightness", "Saturation", "Value", "Alpha", "Zero"];
+
+/// The input phase (0..1) of a straight colour + alpha for Get Phase From option `mode`.
+fn colorama_phase(c: [f32; 3], a: f32, mode: u32) -> f32 {
+    let v = match mode {
+        1 => c[0],
+        2 => c[1],
+        3 => c[2],
+        4 => rgb_to_hsl(c[0], c[1], c[2]).0,
+        5 => rgb_to_hsl(c[0], c[1], c[2]).2,
+        6 => rgb_to_hsl(c[0], c[1], c[2]).1,
+        7 => c[0].max(c[1]).max(c[2]),
+        8 => a,
+        9 => 0.0,
+        _ => luminance(c[0], c[1], c[2]),
+    };
+    v.clamp(0.0, 1.0)
+}
+
+/// Colorama with the built-in hue-cycle output palette: the chosen input attribute, shifted by
+/// Phase Shift and repeated Cycle Repetitions times, picks a colour on the cycle (Interpolate
+/// Palette off posterizes to the palette's six colours).
 fn colorama(ctx: &EffectCtx, mut b: Buf) -> Buf {
-    let shift = ctx.params.f("phaseShift") as f32 / 360.0;
-    let cycles = ctx.params.f("cycles").max(0.0) as f32;
+    let shift = ctx.params.f("inputPhase/phaseShift") as f32 / 360.0;
+    let mode = ctx.params.e("inputPhase/mode");
+    let cycles = ctx.params.f("outputCycle/cycles").max(0.0) as f32;
+    let smooth = ctx.params.get("outputCycle/interpolatePalette").is_none_or(|v| v.as_bool());
     let blend = 1.0 - ctx.params.f("blend") as f32 / 100.0;
-    b.img.map_straight(|c| {
-        let l = luminance(c[0], c[1], c[2]);
-        let (r, g, bl) = effectcraft_color::hsv_to_rgb((l * cycles + shift).rem_euclid(1.0), 1.0, 1.0);
-        mix(c, [r, g, bl], blend)
+    b.img.data.iter_mut().for_each(|px| {
+        let a = px[3];
+        if a <= 0.0 {
+            return;
+        }
+        let c = [px[0] / a, px[1] / a, px[2] / a];
+        let mut ph = (colorama_phase(c, a, mode) * cycles + shift).rem_euclid(1.0);
+        if !smooth {
+            ph = (ph * 6.0).floor() / 6.0;
+        }
+        let (r, g, bl) = effectcraft_color::hsv_to_rgb(ph, 1.0, 1.0);
+        let o = mix(c, [r, g, bl], blend);
+        *px = [o[0] * a, o[1] * a, o[2] * a, a];
     });
     b
 }
 
 pub fn specs() -> Vec<EffectSpec> {
     let pct = || slider(-100.0, 100.0, -100.0, 100.0, 1);
-    let mut gpg = Vec::new();
+    let mut gpg = vec![p("blackStretch", "Black Stretch", num(0.0), slider(0.0, 4.0, 0.0, 4.0, 2))];
     for (n, label) in [("red", "Red"), ("green", "Green"), ("blue", "Blue")] {
         let leak = |s: String| -> &'static str { Box::leak(s.into_boxed_str()) };
         gpg.push(p(leak(format!("{n}Gamma")), leak(format!("{label} Gamma")), num(1.0), slider(0.1, 10.0, 0.1, 4.0, 2)));
@@ -306,7 +491,11 @@ pub fn specs() -> Vec<EffectSpec> {
         spec(
             "ec.color.brightnesscontrast",
             "Brightness & Contrast",
-            vec![p("brightness", "Brightness", num(0.0), slider(-150.0, 150.0, -150.0, 150.0, 1)), p("contrast", "Contrast", num(0.0), pct())],
+            vec![
+                p("brightness", "Brightness", num(0.0), slider(-150.0, 150.0, -150.0, 150.0, 1)),
+                p("contrast", "Contrast", num(0.0), pct()),
+                p("useLegacy", "Use Legacy", Value::Bool(false), ParamUi::Checkbox),
+            ],
             brightness_contrast,
         ),
         spec(
@@ -332,18 +521,32 @@ pub fn specs() -> Vec<EffectSpec> {
                 p("gamma", "Gamma", num(1.0), slider(0.1, 10.0, 0.1, 3.0, 2)),
                 p("outBlack", "Output Black", num(0.0), slider(-1.0, 2.0, 0.0, 1.0, 3)),
                 p("outWhite", "Output White", num(1.0), slider(-1.0, 2.0, 0.0, 1.0, 3)),
-                p("noClip", "Don't Clip", Value::Bool(false), ParamUi::Checkbox),
+                p("clipToOutputBlack", "Clip To Output Black", Value::Enum(2), popup(&LEVELS_CLIP)),
+                p("clipToOutputWhite", "Clip To Output White", Value::Enum(2), popup(&LEVELS_CLIP)),
+                // Projects saved before the two popups: "Don't Clip".
+                p("noClip", "Don't Clip", Value::Bool(false), ParamUi::Hidden),
             ],
             levels,
         ),
         spec(
             "ec.color.exposure",
             "Exposure",
-            vec![
-                p("exposure", "Exposure", num(0.0), slider(-20.0, 20.0, -5.0, 5.0, 2)),
-                p("offset", "Offset", num(0.0), slider(-2.0, 2.0, -0.5, 0.5, 4)),
-                p("gamma", "Gamma Correction", num(1.0), slider(0.01, 9.99, 0.1, 3.0, 2)),
-            ],
+            {
+                let mut v = vec![p("channels", "Channels", Value::Enum(0), popup(&["Master", "Individual Channels"]))];
+                let group = |ids: [&'static str; 3]| {
+                    [
+                        p(ids[0], "Exposure", num(0.0), slider(-20.0, 20.0, -5.0, 5.0, 2)),
+                        p(ids[1], "Offset", num(0.0), slider(-2.0, 2.0, -0.5, 0.5, 4)),
+                        p(ids[2], "Gamma Correction", num(1.0), slider(0.01, 9.99, 0.1, 3.0, 2)),
+                    ]
+                };
+                v.extend(group(["master/exposure", "master/offset", "master/gamma"]));
+                v.extend(group(["red/redExposure", "red/redOffset", "red/redGamma"]));
+                v.extend(group(["green/greenExposure", "green/greenOffset", "green/greenGamma"]));
+                v.extend(group(["blue/blueExposure", "blue/blueOffset", "blue/blueGamma"]));
+                v.push(p("bypassLinearLight", "Bypass Linear Light Conversion", Value::Bool(false), ParamUi::Checkbox));
+                v
+            },
             exposure,
         ),
         spec(
@@ -380,8 +583,13 @@ pub fn specs() -> Vec<EffectSpec> {
             vec![
                 p("from", "From", col(1.0, 0.0, 0.0), ParamUi::Color),
                 p("to", "To", col(0.0, 0.0, 1.0), ParamUi::Color),
-                p("tolerance", "Tolerance", num(10.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
-                p("softness", "Softness", num(10.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
+                p("change", "Change", Value::Enum(0), popup(&["Hue", "Hue & Lightness", "Hue & Saturation", "Hue, Lightness & Saturation"])),
+                p("changeBy", "Change By", Value::Enum(0), popup(&["Setting To Color", "Transforming To Color"])),
+                p("toleranceGroup/hue", "Hue", num(5.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
+                p("toleranceGroup/lightness", "Lightness", num(50.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
+                p("toleranceGroup/saturation", "Saturation", num(50.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
+                p("softness", "Softness", num(50.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
+                p("viewCorrectionMatte", "View Correction Matte", Value::Bool(false), ParamUi::Checkbox),
             ],
             change_to_color,
         ),
@@ -392,6 +600,8 @@ pub fn specs() -> Vec<EffectSpec> {
                 p("amount", "Amount to Decolor", num(0.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
                 p("color", "Color To Leave", col(1.0, 0.0, 0.0), ParamUi::Color),
                 p("tolerance", "Tolerance", num(15.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
+                p("edgeSoftness", "Edge Softness", num(0.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
+                p("matchColors", "Match Colors", Value::Enum(0), popup(&["Using RGB", "Using Hue"])),
             ],
             leave_color,
         ),
@@ -399,6 +609,7 @@ pub fn specs() -> Vec<EffectSpec> {
             "ec.color.photofilter",
             "Photo Filter",
             vec![
+                p("filter", "Filter", Value::Enum(0), popup(&PHOTO_FILTERS.map(|f| f.0))),
                 p("color", "Color", col(0.93, 0.54, 0.09), ParamUi::Color),
                 p("density", "Density", num(25.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
                 p("preserveLuminosity", "Preserve Luminosity", Value::Bool(true), ParamUi::Checkbox),
@@ -423,6 +634,7 @@ pub fn specs() -> Vec<EffectSpec> {
                     "Highlight Blue Balance",
                 ])
                 .map(|(id, n)| p(id, n, num(0.0), pct()))
+                .chain([p("preserveLuminosity", "Preserve Luminosity", Value::Bool(false), ParamUi::Checkbox)])
                 .collect(),
             color_balance,
         ),
@@ -460,12 +672,169 @@ pub fn specs() -> Vec<EffectSpec> {
             "ec.color.colorama",
             "Colorama",
             vec![
-                p("phaseShift", "Phase Shift", num(0.0), ParamUi::Angle),
-                p("cycles", "Cycle Repetitions", num(1.0), slider(0.0, 100.0, 0.0, 10.0, 1)),
+                p("inputPhase/mode", "Get Phase From", Value::Enum(0), popup(&COLORAMA_PHASE)),
+                p("inputPhase/phaseShift", "Phase Shift", num(0.0), ParamUi::Angle),
+                p("outputCycle/cycles", "Cycle Repetitions", num(1.0), slider(0.0, 100.0, 0.0, 10.0, 1)),
+                p("outputCycle/interpolatePalette", "Interpolate Palette", Value::Bool(true), ParamUi::Checkbox),
                 p("blend", "Blend With Original", num(0.0), slider(0.0, 100.0, 0.0, 100.0, 1)),
-                p("mode", "Get Phase From", Value::Enum(0), popup(&["Intensity", "Red", "Green", "Blue", "Hue", "Lightness", "Saturation", "Value", "Alpha"])),
             ],
             colorama,
         ),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{EffectEnv, run_fx};
+    use effectcraft_raster::Image;
+
+    fn px(id: &str, vals: &[(&str, Value)], c: [f32; 4]) -> [f32; 4] {
+        run_fx(id, vals, Image::filled(2, 2, c), 0.0, EffectEnv::default()).img.get(0, 0)
+    }
+    fn close(a: [f32; 4], b: [f32; 4], eps: f32) -> bool {
+        a.iter().zip(b).all(|(x, y)| (x - y).abs() <= eps)
+    }
+
+    /// Projects saved before Use Legacy / the Photo Filter menu existed keep rendering as before.
+    #[test]
+    fn old_saves_get_legacy_values_for_added_params() {
+        use effectcraft_project::build::Ids;
+        let mut next = 1;
+        for (id, param, want) in
+            [("ec.color.brightnesscontrast", "useLegacy", Value::Bool(true)), ("ec.color.photofilter", "filter", Value::Enum(PHOTO_FILTER_CUSTOM))]
+        {
+            let spec = crate::find(id).unwrap();
+            let mut g = crate::instantiate(spec, &mut Ids(&mut next), spec.name, [10.0, 10.0]);
+            g.children.retain(|c| c.match_id() != param);
+            crate::migrate::upgrade_instance(spec, &mut g, &mut Ids(&mut next), [10.0, 10.0]);
+            assert_eq!(g.get(param).unwrap().value, want, "{id}");
+        }
+    }
+
+    #[test]
+    fn colorama_reads_get_phase_from() {
+        // Same intensity, different red: Intensity gives one colour, Red gives two.
+        let a = [0.6, 0.2, 0.2, 1.0];
+        let b = [0.2, 0.2, 0.6, 1.0];
+        let red = |c| px("ec.color.colorama", &[("inputPhase/mode", Value::Enum(1))], c);
+        assert!(!close(red(a), red(b), 1e-3));
+        // Zero maps everything to the start of the cycle (red).
+        assert!(close(px("ec.color.colorama", &[("inputPhase/mode", Value::Enum(9))], b), [1.0, 0.0, 0.0, 1.0], 1e-5));
+        // Interpolate Palette off posterizes: two nearby inputs land on the same colour.
+        let off = |v: f32| px("ec.color.colorama", &[("outputCycle/interpolatePalette", Value::Bool(false))], [v, v, v, 1.0]);
+        assert_eq!(off(0.20), off(0.22));
+    }
+
+    #[test]
+    fn brightness_contrast_modern_keeps_black_and_white_and_legacy_is_linear() {
+        let bc = |vals: &[(&str, Value)], v: f32| px("ec.color.brightnesscontrast", vals, [v, v, v, 1.0])[0];
+        let up = [("brightness", num(50.0)), ("contrast", num(40.0))];
+        assert_eq!(bc(&up, 0.0), 0.0);
+        assert!((bc(&up, 1.0) - 1.0).abs() < 1e-6);
+        assert!(bc(&up, 0.4) > 0.4);
+        let legacy = [("brightness", num(50.0)), ("useLegacy", Value::Bool(true))];
+        assert!((bc(&legacy, 0.2) - 0.7).abs() < 1e-5);
+        assert!((bc(&legacy, 0.0) - 0.5).abs() < 1e-5);
+    }
+
+    #[test]
+    fn levels_clips_black_and_white_independently() {
+        let lv = |vals: &[(&str, Value)], v: f32| px("ec.color.levels", vals, [v, v, v, 1.0])[0];
+        let base = [("inBlack", num(0.2)), ("inWhite", num(0.6)), ("outBlack", num(0.1)), ("outWhite", num(0.9))];
+        assert!((lv(&base, 0.9) - 0.9).abs() < 1e-5);
+        let mut no_white = base.to_vec();
+        no_white.push(("clipToOutputWhite", Value::Enum(0)));
+        assert!(lv(&no_white, 0.9) > 0.9);
+        assert!((lv(&no_white, 0.0) - 0.1).abs() < 1e-5);
+        // The hidden switch of older projects turns both off.
+        let mut legacy = base.to_vec();
+        legacy.push(("noClip", Value::Bool(true)));
+        assert!(lv(&legacy, 0.9) > 0.9);
+    }
+
+    #[test]
+    fn exposure_individual_channels_and_bypass() {
+        let g = [0.5, 0.5, 0.5, 1.0];
+        let one = px("ec.color.exposure", &[("channels", Value::Enum(1)), ("red/redExposure", num(1.0))], g);
+        assert!(one[0] > 0.6 && (one[1] - 0.5).abs() < 1e-5 && (one[2] - 0.5).abs() < 1e-5);
+        // Master values are ignored in Individual Channels mode.
+        assert!(close(px("ec.color.exposure", &[("channels", Value::Enum(1)), ("master/exposure", num(2.0))], g), g, 1e-5));
+        // Bypass Linear Light Conversion: +1 stop doubles the raw value.
+        let raw = px("ec.color.exposure", &[("master/exposure", num(1.0)), ("bypassLinearLight", Value::Bool(true))], [0.25, 0.25, 0.25, 1.0]);
+        assert!((raw[0] - 0.5).abs() < 1e-5);
+        // Negative results are mirrored, not clipped.
+        let neg = px(
+            "ec.color.exposure",
+            &[("master/offset", num(-0.5)), ("bypassLinearLight", Value::Bool(true)), ("master/gamma", num(2.0))],
+            [0.25, 0.25, 0.25, 1.0],
+        );
+        assert!((neg[0] + 0.5).abs() < 1e-4, "{neg:?}");
+    }
+
+    #[test]
+    fn change_to_color_change_modes_tolerances_and_matte() {
+        let red = [0.8, 0.1, 0.1, 1.0];
+        let green = [0.1, 0.8, 0.1, 1.0];
+        let base = [("from", col(0.8, 0.1, 0.1)), ("to", col(0.1, 0.1, 0.8))];
+        // Hue only: red turns blue with its own lightness / saturation; green is untouched.
+        let o = px("ec.color.changetocolor", &base, red);
+        assert!(o[2] > 0.7 && o[0] < 0.2, "{o:?}");
+        assert!(close(px("ec.color.changetocolor", &base, green), green, 1e-5));
+        // The matte is white where matched, black elsewhere.
+        let mut m = base.to_vec();
+        m.push(("viewCorrectionMatte", Value::Bool(true)));
+        assert!(close(px("ec.color.changetocolor", &m, red), [1.0, 1.0, 1.0, 1.0], 1e-5));
+        assert!(close(px("ec.color.changetocolor", &m, green), [0.0, 0.0, 0.0, 1.0], 1e-5));
+        // A lightness tolerance of 0 rejects a lighter red.
+        let mut strict = m.clone();
+        strict.push(("toleranceGroup/lightness", num(0.0)));
+        strict.push(("softness", num(0.0)));
+        assert!(close(px("ec.color.changetocolor", &strict, [1.0, 0.5, 0.5, 1.0]), [0.0, 0.0, 0.0, 1.0], 1e-5));
+        // Hue, Lightness & Saturation, set: a matched pixel becomes the To colour.
+        let mut all = base.to_vec();
+        all.push(("change", Value::Enum(3)));
+        assert!(close(px("ec.color.changetocolor", &all, red), [0.1, 0.1, 0.8, 1.0], 1e-4));
+    }
+
+    #[test]
+    fn leave_color_tolerance_softness_and_match_mode() {
+        let green = [0.1, 0.8, 0.1, 1.0];
+        let lc = |vals: &[(&str, Value)]| {
+            let mut v = vec![("amount", num(100.0))];
+            v.extend_from_slice(vals);
+            px("ec.color.leavecolor", &v, green)
+        };
+        let g = luminance(0.1, 0.8, 0.1);
+        assert!(close(lc(&[]), [g, g, g, 1.0], 1e-5));
+        assert!(close(lc(&[("tolerance", num(100.0))]), green, 1e-6));
+        // Softness keeps part of the colour.
+        let s = lc(&[("tolerance", num(10.0)), ("edgeSoftness", num(100.0))]);
+        assert!(s[1] > g + 0.05 && s[1] < 0.8);
+        // Using Hue: a dark red still matches pure red.
+        let dark = px("ec.color.leavecolor", &[("amount", num(100.0)), ("tolerance", num(5.0)), ("matchColors", Value::Enum(1))], [0.4, 0.0, 0.0, 1.0]);
+        assert!(close(dark, [0.4, 0.0, 0.0, 1.0], 1e-6));
+    }
+
+    #[test]
+    fn photo_filter_presets_and_custom() {
+        let g = [0.5, 0.5, 0.5, 1.0];
+        let cool = px("ec.color.photofilter", &[("filter", Value::Enum(3)), ("preserveLuminosity", Value::Bool(false))], g);
+        assert!(cool[2] > cool[0], "a cooling filter is blue: {cool:?}");
+        let custom = |c| px("ec.color.photofilter", &[("filter", Value::Enum(PHOTO_FILTER_CUSTOM)), ("color", c)], g);
+        assert!(custom(col(0.0, 1.0, 0.0))[1] > custom(col(1.0, 0.0, 0.0))[1]);
+        // The Color swatch is ignored by the presets.
+        let warm = |c| px("ec.color.photofilter", &[("color", c)], g);
+        assert_eq!(warm(col(0.0, 1.0, 0.0)), warm(col(1.0, 0.0, 0.0)));
+    }
+
+    #[test]
+    fn color_balance_preserve_luminosity_and_black_stretch() {
+        let g = [0.5, 0.5, 0.5, 1.0];
+        let o = px("ec.color.colorbalance", &[("midRed", num(60.0)), ("preserveLuminosity", Value::Bool(true))], g);
+        assert!((luminance(o[0], o[1], o[2]) - 0.5).abs() < 1e-4 && o[0] > o[2]);
+        let dark = [0.1, 0.1, 0.1, 1.0];
+        assert!(px("ec.color.gammapedestalgain", &[("blackStretch", num(4.0))], dark)[0] > 0.15);
+        assert!(close(px("ec.color.gammapedestalgain", &[], dark), dark, 1e-6));
+    }
 }
