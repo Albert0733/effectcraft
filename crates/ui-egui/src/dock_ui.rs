@@ -29,6 +29,30 @@ impl EffectcraftApp {
         out
     }
 
+    /// Settings ▸ Appearance ▸ Use Label Color for Related Tabs: the Composition and Timeline
+    /// tabs carry their comp's label colour, Effect Controls and Properties the layer's.
+    fn label_tab_marks(&self, ui: &egui::Ui) {
+        if !self.session.prefs.appearance.use_label_color_for_tabs {
+            return;
+        }
+        let Some(cid) = self.session.active_comp_id() else { return };
+        let comp_label = self.session.project.item(cid).map(|i| i.label);
+        let layer_label = self.session.active_comp().and_then(|c| self.session.state.selected_layers.first().and_then(|l| c.layer(*l))).map(|l| l.label);
+        for (p, label) in [
+            (PanelKind::Composition, comp_label),
+            (PanelKind::Timeline, comp_label),
+            (PanelKind::EffectControls, layer_label),
+            (PanelKind::Properties, layer_label),
+        ] {
+            let (Some(label), Some(e)) = (label, self.auto.find(&format!("panel.tab.{}", p.id()))) else { continue };
+            if label == effectcraft_engine::color::Label::None {
+                continue;
+            }
+            let r = Rect::from_min_size(pos2(e.rect[0] + 2.0, e.rect[1] + 9.0), vec2(4.0, (e.rect[3] - 16.0).max(6.0)));
+            ui.painter().rect_filled(r, 1.0, self.tokens.label(label));
+        }
+    }
+
     /// Edit the full layout (docked tree + floating groups) with a [`Layout`] operation.
     pub fn edit_layout(&mut self, f: impl FnOnce(&mut Layout) -> bool) -> bool {
         let mut l = Layout { root: self.ui.dock.clone(), floating: self.ui.floating.clone() };
@@ -98,6 +122,7 @@ impl EffectcraftApp {
         for g in &groups {
             actions.extend(dock::draw_group_chrome(ui, g, self.ui.focused, &t, &mut self.auto, &title));
         }
+        self.label_tab_marks(ui);
         if maximized.is_none() {
             self.ui.dock = dock;
         }

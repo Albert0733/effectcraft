@@ -69,6 +69,8 @@ pub struct Job<'a> {
     pub path: &'a str,
     /// Hand finished files to this instead of writing them to disk (web downloads, tests).
     pub sink: Option<&'a Sink>,
+    /// Settings ▸ General ▸ Switches Affect Nested Comps (see `RenderOpts::nested_switches`).
+    pub nested_switches: bool,
 }
 
 /// Progress after a batch of frames.
@@ -182,6 +184,8 @@ pub(crate) fn render_frame(job: &Job, comp: &Comp, i: u64) -> Image {
         view: None,
         backend: effectcraft_render::Backend::Auto,
         roi: None,
+        nested_switches: job.nested_switches,
+        draft_shadows: true,
     };
     let mut r = Renderer::new(job.project, job.footage, opts);
     r.expr = job.expr;

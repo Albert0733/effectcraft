@@ -134,28 +134,41 @@ pub fn build(app: &EffectcraftApp) -> NativeMenu {
             let id = format!("{path}.{i}");
             match n {
                 MenuNode::Separator => out.push(NativeNode::Separator),
+                MenuNode::Dynamic { name } => {
+                    // Recent projects / footage / presets, undo history, shortcut slots, viewers.
+                    let (entries, empty) = effectcraft_engine::menus::dynamic(&app.session, name, &crate::menus::dyn_ctx(&app.ui.workspace));
+                    if entries.is_empty()
+                        && let Some(e) = empty
+                    {
+                        out.push(NativeNode::Item(NativeItem {
+                            id: format!("{id}.none"),
+                            label: e.to_string(),
+                            command: String::new(),
+                            params: Value::Null,
+                            shortcut: None,
+                            accelerator: None,
+                            enabled: false,
+                            checked: None,
+                        }));
+                    }
+                    for (k, e) in entries.iter().enumerate() {
+                        out.push(NativeNode::Item(NativeItem {
+                            id: format!("{id}.d{k}"),
+                            label: e.label.clone(),
+                            command: e.command.clone(),
+                            params: e.params.clone(),
+                            shortcut: None,
+                            accelerator: None,
+                            enabled: crate::menus::entry_enabled(app, e),
+                            checked: None,
+                        }));
+                    }
+                }
                 MenuNode::Submenu { label, children } => {
                     let mut kids = vec![];
-                    if label == "Open Recent" {
-                        for (k, p) in app.session.prefs.recent_projects.iter().enumerate() {
-                            let name = std::path::Path::new(p).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or(p.clone());
-                            kids.push(NativeNode::Item(NativeItem {
-                                id: format!("{id}.r{k}"),
-                                label: name,
-                                command: "file.openRecent".into(),
-                                params: json!({"index": k}),
-                                shortcut: None,
-                                accelerator: None,
-                                enabled: true,
-                                checked: None,
-                            }));
-                        }
-                        if !kids.is_empty() {
-                            kids.push(NativeNode::Separator);
-                        }
-                    }
                     rec(app, children, &id, &mut kids);
-                    out.push(NativeNode::Submenu { label: label.clone(), children: kids });
+                    let shown = effectcraft_engine::menus::submenu_label(&app.session, label, &crate::menus::dyn_ctx(&app.ui.workspace));
+                    out.push(NativeNode::Submenu { label: shown, children: kids });
                 }
                 MenuNode::Item(e) => {
                     let role = match e.command.as_str() {
@@ -272,6 +285,11 @@ pub fn state_key(app: &EffectcraftApp) -> u64 {
     s.journal.len().hash(&mut h);
     s.journal.last().map(|j| &j.0).hash(&mut h);
     s.prefs.recent_projects.hash(&mut h);
+    (&s.prefs.recent_footage, &s.prefs.recent_presets).hash(&mut h);
+    s.history.undo.iter().for_each(|(l, _)| l.hash(&mut h));
+    s.state.open_comps.hash(&mut h);
+    s.active_comp_id().and_then(|c| s.state.views3d.get(&c)).map(|v| format!("{:?}", v.current)).hash(&mut h);
+    s.shortcuts().keys.len().hash(&mut h);
     s.keymaps.active.hash(&mut h);
     let v = &app.ui.viewer;
     (v.rulers, v.guides, v.snap_guides, v.lock_guides, v.grid, v.snap_grid, v.show_layer_controls, v.pasteboard).hash(&mut h);
@@ -340,7 +358,10 @@ mod tests {
         fn commands(n: &[NativeNode], out: &mut Vec<(String, String)>) {
             for x in n {
                 match x {
-                    NativeNode::Item(i) if i.command != "file.openRecent" => out.push((i.command.clone(), i.params.to_string())),
+                    // Dynamic entries (recent files, History, viewers…) are not tree entries.
+                    NativeNode::Item(i) if !i.id.rsplit('.').next().is_some_and(|l| l.starts_with('d') || l == "none") => {
+                        out.push((i.command.clone(), i.params.to_string()))
+                    }
                     NativeNode::Predefined { command, .. } if !command.is_empty() => out.push((command.clone(), "null".into())),
                     NativeNode::Submenu { children, .. } => commands(children, out),
                     _ => {}
@@ -431,7 +452,9 @@ mod tests {
         app.session.execute("layer.setSwitch", json!({"switch": "lock"})).unwrap();
         assert_ne!(state_key(&app), k0);
         let spec1 = build(&app);
-        assert_eq!(spec0.structure(), spec1.structure(), "state changes don't rebuild the menu");
+        // The new undo step joins Edit ▸ History (a dynamic submenu); nothing else is rebuilt.
+        let history = |s: &NativeMenu| s.items().into_iter().filter(|i| i.command == "edit.history").count();
+        assert_eq!(history(&spec1), history(&spec0) + 1);
         let lock = spec1.items().into_iter().find(|i| i.command == "layer.setSwitch" && i.params["switch"] == "lock").unwrap().checked;
         assert_eq!(lock, Some(true));
         assert_ne!(undo(&spec0), undo(&spec1));

@@ -84,6 +84,14 @@ pub struct Keyframe {
     pub spatial_continuous: bool,
     #[serde(default)]
     pub roving: bool,
+    /// Keyframe colour label (Edit ▸ Label on selected keyframes): 0 = None, 1–16 = the 16
+    /// label colours (Red … Dark Green).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub label: u8,
+}
+
+fn is_zero(v: &u8) -> bool {
+    *v == 0
 }
 
 fn yes() -> bool {
@@ -106,6 +114,7 @@ impl Keyframe {
             spatial_auto: true,
             spatial_continuous: false,
             roving: false,
+            label: 0,
         }
     }
     pub fn hold(mut self) -> Keyframe {
@@ -512,6 +521,7 @@ pub fn set_key(keys: &mut Vec<Keyframe>, key: Keyframe) -> usize {
             k.spatial_in = old.spatial_in;
             k.spatial_out = old.spatial_out;
             k.spatial_auto = old.spatial_auto;
+            k.label = old.label;
             keys[i] = k;
             i
         }

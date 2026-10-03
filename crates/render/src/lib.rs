@@ -53,6 +53,9 @@ pub trait FootageSource: Send + Sync {
     /// Set the decoded-frame cache budget in bytes (Settings ▸ Memory & CPU); sources without
     /// a cache ignore it.
     fn set_cache_budget(&self, _bytes: usize) {}
+    /// Settings ▸ Disk ▸ Conformed Audio Folder: where decoded audio is kept between reads
+    /// (`None` = off); sources that don't decode audio ignore it.
+    fn set_conform_folder(&self, _folder: Option<std::path::PathBuf>) {}
     /// The decoded-frame cache budget in bytes, if the source has a cache.
     fn cache_budget(&self) -> Option<usize> {
         None
@@ -242,11 +245,34 @@ pub struct RenderOpts {
     /// Region of interest `[x, y, w, h]` in comp pixels (viewer only): the top-level frame covers
     /// just this rectangle, and only its pixels are composited.
     pub roi: Option<[f64; 4]>,
+    /// Switches Affect Nested Comps (Settings ▸ General): a precomp layer's Quality and Motion
+    /// Blur switches also limit the layers of the nested comp (Draft/Wireframe or motion blur off
+    /// propagate down; they never raise a nested layer's own setting).
+    pub nested_switches: bool,
+    /// Realtime Shadows in Draft (Settings ▸ 3D): draft renders (`draft`) still cast shadows.
+    pub draft_shadows: bool,
+}
+
+impl RenderOpts {
+    /// Whether 3D layers cast shadows in this render.
+    pub fn shadows(&self) -> bool {
+        !self.draft || self.draft_shadows
+    }
 }
 
 impl Default for RenderOpts {
     fn default() -> Self {
-        RenderOpts { scale: 1.0, motion_blur: true, guides: false, draft: false, view: None, roi: None, backend: Backend::Cpu }
+        RenderOpts {
+            scale: 1.0,
+            motion_blur: true,
+            guides: false,
+            draft: false,
+            view: None,
+            roi: None,
+            backend: Backend::Cpu,
+            nested_switches: true,
+            draft_shadows: true,
+        }
     }
 }
 
@@ -272,6 +298,9 @@ pub struct Renderer<'a> {
     opacity_mul: f32,
     /// Collapsed precomp: nested 3D layers join the parent's 3D space.
     pub(crate) collapse3d: Option<Collapse3d<'a>>,
+    /// Switches inherited from the precomp layers this comp is rendered through (see
+    /// [`RenderOpts::nested_switches`]): the worst quality and whether motion blur is allowed.
+    pub(crate) inherited: Option<(Quality, bool)>,
 }
 
 /// How a collapsed precomp's 3D layers are placed in the parent (see `Renderer::collapse_into`).
@@ -315,7 +344,37 @@ impl<'a> Renderer<'a> {
             outer: None,
             opacity_mul: 1.0,
             collapse3d: None,
+            inherited: None,
         }
+    }
+
+    /// A layer's Quality switch, limited by the precomp layers above it when
+    /// [`RenderOpts::nested_switches`] is on.
+    pub fn quality(&self, layer: &Layer) -> Quality {
+        let rank = |q: Quality| match q {
+            Quality::Best => 0,
+            Quality::Draft => 1,
+            Quality::Wireframe => 2,
+        };
+        match self.inherited {
+            Some((q, _)) if rank(q) > rank(layer.switches.quality) => q,
+            _ => layer.switches.quality,
+        }
+    }
+
+    /// A layer's Motion Blur switch, limited by the precomp layers above it.
+    pub(crate) fn layer_motion_blur(&self, layer: &Layer) -> bool {
+        layer.switches.motion_blur && self.inherited.is_none_or(|(_, mb)| mb)
+    }
+
+    /// The renderer for the nested comp of precomp layer `layer`: its switches pass down when
+    /// [`RenderOpts::nested_switches`] is on.
+    fn nested_through(&self, layer: &Layer) -> Renderer<'a> {
+        let mut sub = self.nested();
+        if self.opts.nested_switches {
+            sub.inherited = Some((self.quality(layer), self.layer_motion_blur(layer)));
+        }
+        sub
     }
 
     /// A renderer for nested work (precomps, layers read by effects): one level deeper.
@@ -671,7 +730,7 @@ impl<'a> Renderer<'a> {
                 if self.project.comp_contains(*item, ctx.comp_id) {
                     return None;
                 }
-                let sub = self.nested();
+                let sub = self.nested_through(layer);
                 let lt = ctx.source_time(layer);
                 // Frame blending between the nested comp's frames (time-stretched/remapped).
                 let mode = frame_blend_mode(ctx, layer);
@@ -925,7 +984,7 @@ impl<'a> Renderer<'a> {
     }
 
     fn sampling(&self, layer: &Layer) -> effectcraft_raster::Sampling {
-        if layer.switches.quality == Quality::Draft {
+        if self.quality(layer) == Quality::Draft {
             // Draft quality: no interpolation (nearest neighbour), as After Effects' Draft.
             effectcraft_raster::Sampling::Nearest
         } else if self.opts.draft {
@@ -970,7 +1029,7 @@ impl<'a> Renderer<'a> {
 
     /// Motion-blur sub-samples for a layer (1 = no motion blur).
     fn mb_samples(&self, ctx: &EvalCtx, layer: &Layer) -> usize {
-        if self.opts.motion_blur && ctx.comp.enable_motion_blur && layer.switches.motion_blur {
+        if self.opts.motion_blur && ctx.comp.enable_motion_blur && self.layer_motion_blur(layer) {
             if self.opts.draft { 4 } else { ctx.comp.motion_blur_samples.clamp(2, 64) as usize }
         } else {
             1
@@ -1056,7 +1115,7 @@ impl<'a> Renderer<'a> {
     /// Draw a 2D layer into `canvas`; returns the region it may have changed.
     fn draw_layer(&self, ctx: &EvalCtx, layer: &Layer, canvas: &mut Image, blank: bool) -> Region {
         let opacity = ctx.opacity(layer) as f32 * self.opacity_mul;
-        if layer.switches.quality == Quality::Wireframe && !layer.switches.adjustment {
+        if self.quality(layer) == Quality::Wireframe && !layer.switches.adjustment {
             self.draw_wireframe(ctx, layer, canvas);
             return Region::Full;
         }

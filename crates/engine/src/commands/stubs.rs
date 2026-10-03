@@ -23,7 +23,6 @@ pub fn specs() -> Vec<CommandSpec> {
         stub!("file.setProxy", "File...", ["File", "Set Proxy"], "{path}"),
         stub!("file.setProxyNone", "None", ["File", "Set Proxy"], "{}"),
         stub!("file.interpretProxy", "Proxy...", ["File", "Interpret Footage"], "{}"),
-        stub!("keys.selectLabelGroup", "Select Keyframe Label Group", [], "{scope}"),
         // Layer ▸ New (3D / content-aware fill).
         stub!("layer.newContentAwareFill", "Content-Aware Fill Layer...", ["Layer", "New"], "{}"),
         // Mask options not in the mask model yet; pen / vertex editing (timeline milestone).
@@ -47,8 +46,6 @@ pub fn specs() -> Vec<CommandSpec> {
         stub!("view.displayColorManagement", "Use Display Color Management", ["View"], "{}"),
         stub!("view.simulateOutput", "Simulate Output", [], "{profile}"),
         // Keyframes / text / tracking.
-        stub!("keys.audioToKeyframes", "Convert Audio to Keyframes", ["Animation", "Keyframe Assistant"], "{}"),
-        stub!("keys.rpfCameraImport", "RPF Camera Import", ["Animation", "Keyframe Assistant"], "{}"),
         stub!("text.animatorFontAxes", "Variable Font Axes", ["Animation", "Animate Text"], "{}"),
         // Workspaces and panels that don't exist yet.
         stub!("window.unavailablePanel", "Panel", [], "{panel}"),

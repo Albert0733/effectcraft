@@ -7,6 +7,7 @@ pub mod dialogs;
 pub mod dialogs_3d;
 pub mod effect_controls;
 pub mod effects_presets;
+pub mod expr_editor;
 pub mod flowchart;
 pub mod forms;
 pub mod fx_widgets;

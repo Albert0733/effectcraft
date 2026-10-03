@@ -1510,15 +1510,17 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 let er = Rect::from_min_max(pos2(graph_x0 + 8.0, r.min.y + 3.0), pos2(rect.max.x - 14.0, r.max.y - 3.0));
                 let buf_id = egui::Id::new(("expr-buf", uid));
                 let mut buf: String = ctx.data(|d| d.get_temp(buf_id)).unwrap_or_else(|| ex.text.clone());
-                let mut child = ui.new_child(egui::UiBuilder::new().max_rect(er));
-                let resp = child.add(
-                    egui::TextEdit::multiline(&mut buf)
-                        .id(egui::Id::new(("expr-edit", uid)))
-                        .font(Tokens::mono(11.5))
-                        .text_color(if ex.enabled { expr_col } else { t.text_dim })
-                        .desired_width(er.width())
-                        .desired_rows((*lines).clamp(1, 8))
-                        .frame(egui::Frame::NONE),
+                // Settings ▸ Scripting & Expressions ▸ Expressions Editor.
+                let sp = app.session.prefs.scripting.clone();
+                let resp = super::expr_editor::editor(
+                    ui,
+                    egui::Id::new(("expr-edit", uid)),
+                    &mut buf,
+                    er,
+                    &sp,
+                    if ex.enabled { expr_col } else { t.text_dim },
+                    (*lines).clamp(1, 8),
+                    &t,
                 );
                 app.auto.add(&format!("timeline.prop.{uid}.expression"), er, &prop.name);
                 let commit = resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter) && (i.modifiers.command || i.modifiers.ctrl));
@@ -1647,7 +1649,14 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                         let ks = sel_keys.contains(&kref);
                         let icon = k.icon();
                         let c = pos2(x, cy);
-                        icons::keyframe(&gp, c, 11.0, icon.left, icon.right, if ks { t.keyframe_selected } else { t.keyframe }, Color32::from_black_alpha(200));
+                        // Keyframe colour labels (Edit ▸ Label on selected keyframes).
+                        let fill = match effectcraft_engine::color::Label::ALL.get(k.label as usize).filter(|_| k.label > 0) {
+                            Some(l) if ks => t.label(*l).lerp_to_gamma(Color32::WHITE, 0.45),
+                            Some(l) => t.label(*l),
+                            None if ks => t.keyframe_selected,
+                            None => t.keyframe,
+                        };
+                        icons::keyframe(&gp, c, 11.0, icon.left, icon.right, fill, Color32::from_black_alpha(200));
                         let kr = Rect::from_center_size(c, vec2(12.0, 14.0));
                         let kresp = ui.interact(kr, egui::Id::new(("key", uid, k.time.0)), Sense::click_and_drag());
                         app.auto.add(&format!("timeline.key.{uid}.{}", fr.frame_at(ct)), kr, &format!("{} key", prop.name));

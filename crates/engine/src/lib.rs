@@ -14,7 +14,9 @@ pub mod commands;
 pub mod config;
 pub mod demo;
 pub mod links;
+pub mod logging;
 pub mod mask_track;
+pub mod media_cache;
 pub mod menus;
 pub mod prefs;
 pub mod psd_import;
@@ -22,10 +24,12 @@ pub mod render_queue;
 pub mod roto;
 mod session_settings;
 pub mod shortcuts;
+pub mod sysinfo;
 pub mod tracking;
 pub mod vector;
 pub mod viewer;
 pub mod warp;
+pub mod xml_project;
 
 use std::sync::Arc;
 
@@ -309,6 +313,11 @@ pub struct Session {
     /// The JavaScript scripting engine (set by the host that links `effectcraft-script`):
     /// `script.run`, File ▸ Scripts ▸ Run Script File… (`.jsx`/`.js`) and the Script Console.
     pub script: Option<ScriptRunner>,
+    /// The last physical-memory reading (Settings ▸ Memory & CPU budgets); `None` = unknown
+    /// (headless sessions don't query it, see [`Session::memory_tick`]).
+    pub sys_memory: Option<sysinfo::SysMemory>,
+    /// Switches Affect Nested Comps as last applied (a change empties the layer cache).
+    pub applied_nested_switches: Option<bool>,
 }
 
 /// A script to run (see [`Session::script`]).
@@ -363,6 +372,8 @@ impl Default for Session {
             autosave: autosave::AutoSaveState::default(),
             snapshot: None,
             script: None,
+            sys_memory: None,
+            applied_nested_switches: None,
         }
     }
 }
@@ -527,6 +538,47 @@ impl Session {
                 None => t,
             };
             self.state.times.insert(c, t);
+            if self.prefs.general.sync_time_related_items {
+                self.sync_related_times(c, t);
+            }
+        }
+    }
+
+    /// Settings ▸ General ▸ Synchronize Time of All Related Items: moving the current time of
+    /// `comp` moves the current time of the comps nested in it (through their precomp layers'
+    /// timing) and of the comps it is nested in, so every related viewer shows the same moment.
+    pub fn sync_related_times(&mut self, comp: ItemId, t: Tick) {
+        let mut seen = std::collections::BTreeSet::from([comp]);
+        let mut todo = vec![(comp, t)];
+        let mut found = vec![];
+        while let Some((cid, ct)) = todo.pop() {
+            if cid != comp {
+                found.push((cid, ct));
+            }
+            let Some(c) = self.project.comp(cid) else { continue };
+            // Down: the comps this one nests.
+            for l in &c.layers {
+                if let effectcraft_project::LayerSource::Comp { item } = &l.source
+                    && seen.insert(*item)
+                {
+                    todo.push((*item, l.layer_time(ct)));
+                }
+            }
+            // Up: the comps nesting this one.
+            for iid in self.project.items.keys() {
+                if let Some(pc) = self.project.comp(*iid)
+                    && let Some(l) = pc.layers.iter().find(|l| matches!(&l.source, effectcraft_project::LayerSource::Comp { item } if *item == cid))
+                    && seen.insert(*iid)
+                {
+                    todo.push((*iid, l.comp_time(ct)));
+                }
+            }
+        }
+        for (cid, ct) in found {
+            if let Some(c) = self.project.comp(cid) {
+                let ct = c.frame_rate.snap_nearest(ct.clamp(Tick::ZERO, (c.duration - c.frame_duration()).max(Tick::ZERO)));
+                self.state.times.insert(cid, ct);
+            }
         }
     }
 
@@ -568,6 +620,7 @@ impl Session {
 
     /// Render a comp frame with the session's footage + expression hosts.
     pub fn render(&self, comp: ItemId, t: Tick, opts: RenderOpts) -> Image {
+        let opts = RenderOpts { nested_switches: self.prefs.general.switches_affect_nested_comps, draft_shadows: self.prefs.three_d.realtime_shadows, ..opts };
         let mut r = Renderer::new(&self.project, self.footage.as_ref(), opts);
         r.expr = self.expr.as_deref();
         r.cache = Some(&self.layer_cache);
@@ -649,6 +702,8 @@ mod tests_fidelity;
 #[cfg(test)]
 mod tests_lottie;
 #[cfg(test)]
+mod tests_m145;
+#[cfg(test)]
 mod tests_markers;
 #[cfg(test)]
 mod tests_mask_warp;
@@ -685,6 +740,68 @@ pub fn text_presets() -> Vec<(String, String)> {
 
 pub fn text_families() -> Vec<String> {
     effectcraft_text::families().into_iter().map(|(f, _)| f).collect()
+}
+
+/// One row of the Character panel's font menu.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FontRow {
+    /// The family to apply (empty for the separator after the recent fonts).
+    pub family: String,
+    /// What the menu shows: the English family name, or the font's own-language name when
+    /// Settings ▸ Type ▸ Show Font Names in English is off.
+    pub display: String,
+    pub recent: bool,
+}
+
+/// Outline polylines of "Sample" set in `family` at `size` px (baseline at y = 0, y down), for
+/// the font menu's preview (Settings ▸ Type ▸ Show Font Preview).
+pub fn font_preview(family: &str, size: f64) -> Vec<Vec<[f32; 2]>> {
+    use kurbo::PathEl;
+    let st = effectcraft_keyframe::text_doc::CharStyle { font: family.to_string(), size, ..Default::default() };
+    let mut out = vec![];
+    let mut x = 0.0;
+    for ch in "Sample".chars() {
+        let (path, adv) = effectcraft_text::char_glyph_style(&st, ch);
+        let mut cur: Vec<[f32; 2]> = vec![];
+        let pt = |p: kurbo::Point| [(p.x + x) as f32, p.y as f32];
+        kurbo::flatten(&path, 0.2, |el| match el {
+            PathEl::MoveTo(p) => {
+                if cur.len() > 1 {
+                    out.push(std::mem::take(&mut cur));
+                }
+                cur = vec![pt(p)];
+            }
+            PathEl::LineTo(p) => cur.push(pt(p)),
+            PathEl::ClosePath => {
+                if let Some(f) = cur.first().copied() {
+                    cur.push(f);
+                }
+                if cur.len() > 1 {
+                    out.push(std::mem::take(&mut cur));
+                }
+            }
+            _ => {}
+        });
+        if cur.len() > 1 {
+            out.push(cur);
+        }
+        x += adv;
+    }
+    out
+}
+
+/// The Character panel's font menu: the recent fonts (Settings ▸ Type ▸ Number of Recent Fonts
+/// to Display), a separator, then every family.
+pub fn font_menu(prefs: &prefs::Prefs) -> Vec<FontRow> {
+    let all = text_families();
+    let native = if prefs.type_.font_names_in_english { Default::default() } else { effectcraft_text::fonts::native_families() };
+    let row = |f: &String, recent: bool| FontRow { family: f.clone(), display: native.get(f).cloned().unwrap_or_else(|| f.clone()), recent };
+    let mut out: Vec<FontRow> = prefs.recent_fonts_shown().iter().filter(|f| all.contains(f)).map(|f| row(f, true)).collect();
+    if !out.is_empty() {
+        out.push(FontRow { family: String::new(), display: "-".into(), recent: false });
+    }
+    out.extend(all.iter().map(|f| row(f, false)));
+    out
 }
 #[cfg(test)]
 mod tests_paint;

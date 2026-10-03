@@ -282,11 +282,11 @@ pub(crate) fn proportional_grid(app: &EffectcraftApp, painter: &egui::Painter, c
     let (nx, ny) = (g.proportional_horizontal.max(1), g.proportional_vertical.max(1));
     for i in 1..nx {
         let x = comp_rect.min.x + comp_rect.width() * i as f32 / nx as f32;
-        painter.line_segment([pos2(x, comp_rect.min.y), pos2(x, comp_rect.max.y)], s);
+        super::viewer::styled_line(painter, [pos2(x, comp_rect.min.y), pos2(x, comp_rect.max.y)], s, &g.grid_style);
     }
     for i in 1..ny {
         let y = comp_rect.min.y + comp_rect.height() * i as f32 / ny as f32;
-        painter.line_segment([pos2(comp_rect.min.x, y), pos2(comp_rect.max.x, y)], s);
+        super::viewer::styled_line(painter, [pos2(comp_rect.min.x, y), pos2(comp_rect.max.x, y)], s, &g.grid_style);
     }
 }
 
@@ -319,6 +319,11 @@ fn transformed(img: &egui::ColorImage, ch: Channel, colorized: bool, stops: f32)
 pub(crate) fn draw_frame(app: &mut EffectcraftApp, ctx: &egui::Context, painter: &egui::Painter, comp_rect: Rect, cid: ItemId, ectx: &EvalCtx) {
     let opts = app.session.state.viewer.clone();
     let snap = showing_snapshot(app, ctx);
+    // Settings ▸ Video ▸ Mirror on Computer Monitor off: playback goes to Video Preview only.
+    if crate::prefs_live::main_viewer_hidden(app) && !snap {
+        painter.text(comp_rect.center(), Align2::CENTER_CENTER, "Playing on Video Preview", Tokens::ui(13.0), Color32::from_gray(150));
+        return;
+    }
     if opts.fast_previews == FastPreviews::Wireframe && !snap {
         let zoom = comp_rect.width() / ectx.comp.width.max(1) as f32;
         let map = ViewerMap { origin: comp_rect.min, zoom, comp: [ectx.comp.width as f32, ectx.comp.height as f32], area: comp_rect };
@@ -375,6 +380,7 @@ pub(crate) fn draw_frame(app: &mut EffectcraftApp, ctx: &egui::Context, painter:
         return;
     }
     let Some(src) = app.viewer_image.clone() else { return };
+    let zoom_opts = super::viewer::zoom_texture_options(app.session.prefs.viewer_zoom_smooth());
     let key = {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -385,7 +391,7 @@ pub(crate) fn draw_frame(app: &mut EffectcraftApp, ctx: &egui::Context, painter:
     let tex = match ctx.data(|d| d.get_temp::<(u64, egui::TextureHandle)>(id)) {
         Some((k, tex)) if k == key => tex,
         _ => {
-            let tex = ctx.load_texture("viewer-display", transformed(&src, opts.channel, opts.colorized, opts.exposure), egui::TextureOptions::LINEAR);
+            let tex = ctx.load_texture("viewer-display", transformed(&src, opts.channel, opts.colorized, opts.exposure), zoom_opts);
             ctx.data_mut(|d| d.insert_temp(id, (key, tex.clone())));
             tex
         }

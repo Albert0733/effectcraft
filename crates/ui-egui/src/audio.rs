@@ -47,11 +47,13 @@ pub struct AudioOutput {
     pub device: String,
     pub left: u32,
     pub right: u32,
+    /// Preview Sample Rate: devices that support it are opened at this rate.
+    pub rate: u32,
 }
 
 impl AudioOutput {
     pub fn from_prefs(p: &effectcraft_engine::prefs::Prefs) -> AudioOutput {
-        AudioOutput { device: p.audio.output_device.clone(), left: p.audio.output_left, right: p.audio.output_right }
+        AudioOutput { device: p.audio.output_device.clone(), left: p.audio.output_left, right: p.audio.output_right, rate: p.audio.preview_sample_rate }
     }
 }
 
@@ -166,6 +168,9 @@ pub struct AudioPlayback {
 
 impl AudioPlayback {
     /// Start mixing `comp` over `span` into `device`.
+    /// `mix_rate`: Settings ▸ Audio ▸ Preview Sample Rate, the rate the comp's audio is mixed
+    /// at (resampled to the device's rate when they differ; 0 = the device's rate).
+    #[allow(clippy::too_many_arguments)]
     pub fn start(
         mut device: Box<dyn AudioDevice>,
         src: RenderSource,
@@ -174,8 +179,10 @@ impl AudioPlayback {
         wa: Tick,
         wb: Tick,
         looping: bool,
+        mix_rate: u32,
     ) -> Result<AudioPlayback, String> {
         let rate = device.sample_rate().max(8000);
+        let mix = if mix_rate == 0 { rate } else { mix_rate.clamp(8000, 192_000) };
         let span = PlaySpan::new(start, wa, wb, looping, rate);
         let feed = Arc::new(AudioFeed::default());
         let stop = Arc::new(AtomicBool::new(false));
@@ -183,7 +190,7 @@ impl AudioPlayback {
         let mut cursor = span.start;
         let prime = (rate as usize / 20).div_ceil(BLOCK);
         for _ in 0..prime {
-            cursor = feed_block(&src, comp, &feed, &span, cursor, rate);
+            cursor = feed_block(&src, comp, &feed, &span, cursor, rate, mix);
         }
         let thread = {
             let (feed, stop) = (feed.clone(), stop.clone());
@@ -194,7 +201,7 @@ impl AudioPlayback {
                     let target = rate as usize / 5;
                     while !stop.load(Ordering::Relaxed) {
                         if feed.queued_frames() < target && !feed.finished.load(Ordering::Relaxed) {
-                            cursor = feed_block(&src, comp, &feed, &span, cursor, rate);
+                            cursor = feed_block(&src, comp, &feed, &span, cursor, rate, mix);
                         } else {
                             std::thread::sleep(std::time::Duration::from_millis(4));
                         }
@@ -232,7 +239,7 @@ impl Drop for AudioPlayback {
 
 /// Mix one block at `cursor` into the feed; returns the next cursor (wrapping or finishing at
 /// the work-area end).
-fn feed_block(src: &RenderSource, comp: ItemId, feed: &AudioFeed, span: &PlaySpan, cursor: i64, rate: u32) -> i64 {
+fn feed_block(src: &RenderSource, comp: ItemId, feed: &AudioFeed, span: &PlaySpan, cursor: i64, rate: u32, mix: u32) -> i64 {
     let mut cursor = cursor;
     if cursor >= span.wb {
         if !span.looping {
@@ -242,9 +249,37 @@ fn feed_block(src: &RenderSource, comp: ItemId, feed: &AudioFeed, span: &PlaySpa
         cursor = span.wa;
     }
     let n = ((span.wb - cursor) as usize).min(BLOCK);
-    let buf = effectcraft_engine::render::audio::mix_comp(&src.project, src.footage.as_ref(), src.expr.as_deref(), comp, sample_time(cursor, rate), n, rate);
+    let t = sample_time(cursor, rate);
+    let buf = if mix == rate {
+        effectcraft_engine::render::audio::mix_comp(&src.project, src.footage.as_ref(), src.expr.as_deref(), comp, t, n, rate)
+    } else {
+        let m = (n as u64 * mix as u64).div_ceil(rate as u64) as usize + 1;
+        let b = effectcraft_engine::render::audio::mix_comp(&src.project, src.footage.as_ref(), src.expr.as_deref(), comp, t, m, mix);
+        resample_stereo(&b, mix, rate, n)
+    };
     feed.push(&buf);
     cursor + n as i64
+}
+
+/// Linear resampling of interleaved stereo from `from` Hz to `n` frames at `to` Hz.
+pub fn resample_stereo(src: &[f32], from: u32, to: u32, n: usize) -> Vec<f32> {
+    let frames = src.len() / 2;
+    let mut out = Vec::with_capacity(n * 2);
+    if frames == 0 {
+        out.resize(n * 2, 0.0);
+        return out;
+    }
+    let step = from as f64 / to as f64;
+    for i in 0..n {
+        let x = i as f64 * step;
+        let a = (x.floor() as usize).min(frames - 1);
+        let b = (a + 1).min(frames - 1);
+        let f = (x - a as f64) as f32;
+        for c in 0..2 {
+            out.push(src[a * 2 + c] * (1.0 - f) + src[b * 2 + c] * f);
+        }
+    }
+    out
 }
 
 /// VU meter state for the Audio panel: smoothed level with a falling decay and peak hold, in

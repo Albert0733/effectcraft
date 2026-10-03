@@ -162,7 +162,7 @@ pub(crate) fn camera_for(r: &Renderer, ctx: &EvalCtx) -> CameraState {
 
 /// Number of motion-blur sub-samples for a layer.
 fn mb_samples(r: &Renderer, ctx: &EvalCtx, layer: &Layer) -> usize {
-    if r.opts.motion_blur && ctx.comp.enable_motion_blur && layer.switches.motion_blur {
+    if r.opts.motion_blur && ctx.comp.enable_motion_blur && r.layer_motion_blur(layer) {
         if r.opts.draft { 4 } else { ctx.comp.motion_blur_samples.clamp(2, 64) as usize }
     } else {
         1
@@ -335,7 +335,7 @@ pub(crate) fn draw_run(r: &Renderer, ctx: &EvalCtx, run: &[&Layer], canvas: &mut
     let mut items: Vec<Item> = run
         .par_iter()
         .enumerate()
-        .filter(|(_, l)| ctx.opacity(l) > 0.0 && l.switches.quality != effectcraft_project::Quality::Wireframe)
+        .filter(|(_, l)| ctx.opacity(l) > 0.0 && r.quality(l) != effectcraft_project::Quality::Wireframe)
         .flat_map_iter(|(i, l)| {
             // Stack order with room for a collapsed precomp's layers in between.
             let i = i * 1024;
@@ -366,9 +366,9 @@ pub(crate) fn draw_run(r: &Renderer, ctx: &EvalCtx, run: &[&Layer], canvas: &mut
             .collect();
     }
     items.sort_by_key(|i| i.order);
-    let casters: Vec<&Item> = items.iter().chain(extra.iter()).filter(|i| i.mat.casts_shadows != 0 && !i.geos.is_empty()).collect();
+    let casters: Vec<&Item> = items.iter().chain(extra.iter()).filter(|i| r.opts.shadows() && i.mat.casts_shadows != 0 && !i.geos.is_empty()).collect();
     composite(canvas, &items, &lights, &casters, run[0].id.0 as u32);
-    for l in run.iter().filter(|l| l.switches.quality == effectcraft_project::Quality::Wireframe) {
+    for l in run.iter().filter(|l| r.quality(l) == effectcraft_project::Quality::Wireframe) {
         r.draw_layer(ctx, l, canvas, false);
     }
 }

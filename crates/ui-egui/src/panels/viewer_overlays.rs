@@ -222,7 +222,9 @@ pub(crate) fn motion_path(app: &mut EffectcraftApp, painter: &egui::Painter, map
         let c = p2c.apply(gv2(v[0], v[1]));
         map.to_screen([c.x, c.y])
     };
-    let (lt0, lt1) = (pos.keys[0].time, pos.keys[pos.keys.len() - 1].time);
+    // Settings ▸ Composition ▸ Motion Path: all keyframes, none, or a window around the CTI.
+    let times: Vec<Tick> = pos.keys.iter().map(|k| k.time).collect();
+    let Some((lt0, lt1)) = app.session.prefs.motion_path_span(&times, l.layer_time(ectx.time)) else { return };
     let fd = ectx.comp.frame_duration();
     let mut pts = vec![];
     let mut lt = lt0;
@@ -238,6 +240,9 @@ pub(crate) fn motion_path(app: &mut EffectcraftApp, painter: &egui::Painter, map
     }
     let sel = &app.session.state.selected_keys;
     for (i, k) in pos.keys.iter().enumerate() {
+        if k.time < lt0 || k.time > lt1 {
+            continue;
+        }
         let v = k.value.as_vec3();
         let s = to_scr(v);
         let (tin, tout) = effectcraft_engine::keyframe::spatial_tangents(&pos.keys, i);

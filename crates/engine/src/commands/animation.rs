@@ -103,6 +103,12 @@ fn apply_preset(s: &mut Session, p: &Value) -> Result<Value> {
     if ids.is_empty() {
         return Err(bad("anim.applyPreset", "select a layer"));
     }
+    // Animation ▸ Recent Animation Presets.
+    if let Some(path) = str_p(p, "path") {
+        s.prefs.push_recent_preset(path);
+        s.save_prefs();
+        s.prefs_revision += 1;
+    }
     let effects: Vec<PropGroup> =
         doc["effects"].as_array().map(|a| a.iter().filter_map(|v| serde_json::from_value(v.clone()).ok()).collect()).unwrap_or_default();
     let props: Vec<(String, Property)> = doc["properties"]
