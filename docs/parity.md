@@ -15,7 +15,7 @@ rendered, does not count as done.
 | P1 (professional daily use) | ≈ 38% |
 | P2 (long tail) | ≈ 17% |
 | Features done / partial / missing | 18 / 60 / 14 of 92 |
-| **Effects** | **257 of 298** After Effects 2026 effects by name (86%); ≈ 70% allowing for simplified implementations |
+| **Effects** | **297 of 298** After Effects 2026 effects by name (99.7%, after M9.11 and Warp Stabilizer; was 257); only the 3D Camera Tracker is left |
 | Remaining work | ≈ **167 agent-hours** (139 h of features + ≈ 20% for 1:1 polish against After Effects) |
 | Wall-clock estimate | ≈ **42–50 hours** with five agents working in parallel and one integrating; ≈ 31–35 h for P0 + P1 only |
 
@@ -76,8 +76,8 @@ library groundwork for mask tracking and Warp Stabilizer.
 What is left is concentrated in large systems: Roto Brush and Refine Edge, the 3D camera tracker,
 the Warp Stabilizer and mask-tracking UI on top of
 the new tracking library, a JavaScript scripting object model, SVG/PSD import, WebM, a disk cache,
-the missing effect categories (3D Channel, Immersive Video, OCIO), native macOS menus, and
-wasm threads.
+native macOS menus, and wasm threads. (The missing effect categories, 3D Channel, Immersive Video
+and OCIO, landed in M9.11.)
 
 ## By area
 
@@ -94,21 +94,33 @@ wasm threads.
 | Text | ≈ 86% | 1.3 | vertical type is basic (upright characters, no tate-chu-yoko), no OpenType feature panel, no extruded strokes (extruded, bevelled text landed in M7.6); per-character styles, paragraph settings, on-canvas editing and the `sourceText` style API landed (M9.9–M9.10) |
 | Web | 60% | 2.5 | threads, browser storage, audio |
 | 3D | 72% | 12.0 | 3D camera tracker, multi-view layouts, Advanced 3D motion blur and blend modes, cameras/lights from models; Advanced 3D (glTF/OBJ models, primitives, extruded text and shapes, PBR, image-based light, shadow maps, GPU rasteriser) landed in M7.4–M7.6 |
-| Effects | 58% | 13.6 | Effect Controls widgets (angle dial, point crosshair, eyedropper, curves), GPU versions of more effects, 41 missing effects |
+| Effects | ≈ 75% | 5.0 | GPU versions of more effects and the 3D Camera Tracker (every other After Effects effect exists since M9.11 and M12.5) |
 | Interface | 55% | 10.4 | drag-to-dock and floating panels, preferences, native macOS menus (viewer rulers/snapping/channels/snapshots landed in M0.13) |
 | Project | 53% | 8.1 | 8/16/32-bit pipeline and colour management, auto-save, proxies, folder moves |
 | Masks & roto | 52% | 10.0 | Roto Brush, variable-width mask feather points (mask tracking and Mask Interpolation landed in M6.6) |
 | Preview | 55% | 6.1 | GPU 3D and adjustment layers, disk cache (region of interest, snapshots, exposure and Fast Previews landed in M0.13) |
-| Tracking | ≈ 70% | 4.0 | 3D camera tracker, face tracking, Subspace Warp's mesh warp and rolling-shutter repair (point tracker, mask tracking and Warp Stabilizer landed in M6.x / M12.5) |
+| Tracking | ≈ 70% | 4.0 | 3D camera tracker, face tracking and Subspace Warp's mesh warp (Rolling Shutter Repair landed in M9.11; point tracker, mask tracking and Warp Stabilizer landed in M6.x / M12.5) |
 | Paint | 0% | 4.0 | Brush, Clone Stamp, Eraser |
 
 ## Effects still missing
 
-Immersive Video (all 12), 3D Channel (all 8, including Cryptomatte), Color Stabilizer and the five
-OCIO transforms, CC Flo Motion, Liquify, Rolling Shutter Repair, Compressor,
-Distortion and Gate (audio), Camera-Shake Deblur, CC Radial Blur, CC Hair, Particle Playground,
-Keylight (our Screen Key stands in), Color Profile Converter and the 3D Camera Tracker. Boris FX
+The 3D Camera Tracker (built on the tracking library by other work). Boris FX
 Mocha and Cineware are third-party and not counted.
+
+### Added in M9.11 (39 effects)
+
+| Category | Effects | Notes |
+|---|---|---|
+| 3D Channel | 3D Channel Extract, Cryptomatte, Depth Matte, Depth of Field, EXtractoR, Fog 3D, ID Matte, IDentifier | Read auxiliary channels: multi-layer OpenEXR (any `layer.channel`, Cryptomatte manifests from the header) or the compositor's own depth / layer-ID / normal / UV / Cryptomatte pass for precomps of 3D comps. |
+| Immersive Video | VR Blur, VR Chromatic Aberrations, VR Color Gradients, VR Converter, VR De-Noise, VR Digital Glitch, VR Fractal Noise, VR Glow, VR Plane to Sphere, VR Rotate Sphere, VR Sharpen, VR Sphere To Plane | Seam-aware equirectangular processing (wrap-around, pole continuation, latitude-scaled filters), mono / over-under / side-by-side layouts; VR Converter between equirectangular, cube maps (4:3, 3:2, 6:1), sphere map and 2D. |
+| Color Correction | OCIO CDL / Color Space / Display / File / Look Transform, Color Stabilizer | Built-in minimal OCIO-style config (ACES2065-1, ACEScg, ACEScct, sRGB, Rec.709, Rec.2020, Display P3, linear variants, XYZ) from published matrices and transfer functions; `.cube` / `.3dl` / `.csp` LUTs and ASC `.cc` / `.ccc` / `.cdl`. Custom `.ocio` config files are not read yet. |
+| Distort | CC Flo Motion, Liquify, Rolling Shutter Repair | Liquify strokes are effect data replayed into a displacement mesh (`liquify.stroke` / `liquify.clear` commands; no interactive viewer brush yet). Rolling Shutter Repair uses the KLT tracker. |
+| Blur & Sharpen | Camera-Shake Deblur, CC Radial Blur | Deblur substitutes aligned patches from sharper neighbouring frames. |
+| Audio | Compressor, Distortion, Gate | Applied in the mixdown like the other audio effects. |
+| Simulation | CC Hair, Particle Playground | Particle Playground: cannon, grid, layer exploder, layer map, gravity, repel, wall, persistent property mapper (no Particle Exploder, text particles or ephemeral mapper yet). |
+| Keying | Key Light | The full Keylight 1.2 control set under a generic name ("Keylight" is a vendor trademark); `lookup("Keylight (1.2)")` finds it. |
+| Utility | Color Profile Converter | Our colour spaces and ACES; rendering intents (perceptual gamut compression, relative / absolute colorimetric, saturation). |
+| Obsolete | mocha shape | Mocha's export format is not public: reads a documented JSON shape format instead. |
 
 ## Highest-value gaps, in order
 

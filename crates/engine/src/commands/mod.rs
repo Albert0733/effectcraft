@@ -17,6 +17,7 @@ mod layer;
 mod layer_menu;
 mod layer_time;
 mod link;
+mod liquify;
 mod lottie;
 mod markers;
 mod mask;
@@ -133,6 +134,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(warp_cmds::specs());
         v.extend(paint::specs());
         v.extend(puppet::specs());
+        v.extend(liquify::specs());
         v.extend(settings::specs());
         v.extend(stubs::specs());
         v

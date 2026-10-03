@@ -13,6 +13,7 @@
 //! (PNG, JPEG, GIF, WebP, TIFF, BMP, OpenEXR).
 
 mod convert;
+pub mod exr_channels;
 mod pool;
 mod probe;
 
