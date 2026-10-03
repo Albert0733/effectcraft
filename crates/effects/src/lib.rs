@@ -41,6 +41,7 @@ pub mod ocio_config;
 pub mod paint;
 mod perspective;
 mod perspective2;
+pub mod psim;
 pub mod puppet;
 pub mod roto;
 mod sim;
@@ -63,11 +64,20 @@ use std::sync::OnceLock;
 
 pub use color_fx::{exposure_settings, levels_clip};
 pub use color2::Curve;
+pub use distort2::parse_mesh;
 use effectcraft_keyframe::Value;
 use effectcraft_project::build::Ids;
 use effectcraft_project::{GroupKind, ParamUi, PropGroup, Property};
 pub use effectcraft_raster::{AuxChannels, Image};
 pub use misc::{INVERT_ALPHA, INVERT_CHANNELS};
+pub use sim::particle_state;
+pub use sim3::playground_state;
+// CPU helpers the GPU kernels share (effectcraft-gpu).
+pub use blur2::camera_lens_spans;
+pub use generate::gen_mode;
+pub use generate2::pattern_kind as cell_pattern_kind;
+pub use noise::GrainLook;
+pub use transition::place_layer;
 
 /// Effect categories in Effects & Presets order.
 pub const CATEGORIES: &[&str] = &[
@@ -259,6 +269,11 @@ pub trait EffectHost: Sync {
     /// [`AuxChannels`]). `None` when the source has none (the 3D Channel effects then pass the
     /// layer through).
     fn aux(&self) -> Option<std::sync::Arc<AuxChannels>> {
+        None
+    }
+    /// A particle simulation backend (GPU particles; see [`psim`]). `None` = simulate on the
+    /// CPU.
+    fn particles(&self) -> Option<&dyn psim::ParticleSim> {
         None
     }
 }
@@ -642,6 +657,42 @@ pub const GPU_EFFECTS: &[&str] = &[
     "ec.color.exposure",
     "ec.channel.invert",
     "ec.distort.transform",
+    "ec.distort.turbulentdisplace",
+    "ec.distort.displacementmap",
+    "ec.distort.wavewarp",
+    "ec.distort.ripple",
+    "ec.distort.twirl",
+    "ec.distort.bulge",
+    "ec.distort.cclens",
+    "ec.distort.meshwarp",
+    "ec.stylize.mosaic",
+    "ec.stylize.findedges",
+    "ec.stylize.emboss",
+    // Blur, transition and generate family (effectcraft-gpu `fx_generate`).
+    "ec.blur.radial",
+    "ec.blur.cameralens",
+    "ec.blur.ccradialfast",
+    "ec.transition.venetian",
+    "ec.transition.linearwipe",
+    "ec.transition.radialwipe",
+    "ec.transition.gradientwipe",
+    "ec.generate.cellpattern",
+    "ec.generate.checkerboard",
+    "ec.generate.grid",
+    "ec.generate.fourcolor",
+    "ec.noise.noise",
+    "ec.noise.addgrain",
+    // effectcraft-gpu fx_color
+    "ec.color.colorbalance",
+    "ec.color.vibrance",
+    "ec.color.lumetri",
+    "ec.color.blackwhite",
+    "ec.color.tritone",
+    "ec.color.colorama",
+    "ec.color.channelmixer",
+    "ec.color.selectivecolor",
+    "ec.key.linearcolor",
+    "ec.keying.keylight",
 ];
 
 /// Effects whose output depends on [`EffectCtx::time`] directly (not only through animated

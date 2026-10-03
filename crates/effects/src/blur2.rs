@@ -277,11 +277,9 @@ fn iris_spans(r: f64, sides: u32, rotation_deg: f64, roundness: f64) -> Vec<(i64
     spans
 }
 
-fn camera_lens_blur(ctx: &EffectCtx, mut b: Buf) -> Buf {
-    let r = ctx.params.f("blurRadius").max(0.0) * b.scale;
-    if r < 0.5 {
-        return b;
-    }
+/// Camera Lens Blur's iris spans at blur radius `r` pixels (shape, rotation, roundness and
+/// aspect ratio applied) and the iris' horizontal reach (shared with the GPU kernel).
+pub fn camera_lens_spans(ctx: &EffectCtx, r: f64) -> (Vec<(i64, i64, i64)>, f64) {
     let shape = ctx.params.e("irisProperties/irisShape");
     let sides = if shape >= 8 { 0 } else { shape + 3 };
     let mut spans = iris_spans(r, sides, ctx.params.f("irisProperties/irisRotation"), ctx.params.f("irisProperties/irisRoundness").clamp(0.0, 100.0) / 100.0);
@@ -293,7 +291,15 @@ fn camera_lens_blur(ctx: &EffectCtx, mut b: Buf) -> Buf {
             s.2 = (s.2 as f64 * aspect).round() as i64;
         }
     }
-    let reach = r * aspect.max(1.0);
+    (spans, r * aspect.max(1.0))
+}
+
+fn camera_lens_blur(ctx: &EffectCtx, mut b: Buf) -> Buf {
+    let r = ctx.params.f("blurRadius").max(0.0) * b.scale;
+    if r < 0.5 {
+        return b;
+    }
+    let (spans, reach) = camera_lens_spans(ctx, r);
     let repeat = ctx.params.b("repeatEdge") || ctx.adjustment;
     if !repeat {
         b.pad(reach.ceil() as u32 + 1);

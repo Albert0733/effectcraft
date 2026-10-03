@@ -143,6 +143,125 @@ fn yes() -> bool {
     true
 }
 
+/// Figure style (OpenType `lnum` / `onum`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum FigureStyle {
+    /// The font's default figures.
+    #[default]
+    Default,
+    Lining,
+    OldStyle,
+}
+
+/// Figure spacing (OpenType `pnum` / `tnum`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum FigureWidth {
+    #[default]
+    Default,
+    Proportional,
+    Tabular,
+}
+
+/// OpenType layout features of a run of characters (Character panel ▸ OpenType). Kerning,
+/// standard ligatures, small caps and superscript / subscript have their own [`CharStyle`]
+/// fields (they use the font's `smcp` / `sups` / `subs` glyphs when it has them and synthesize
+/// them otherwise).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OpenType {
+    /// `dlig`.
+    pub discretionary_ligatures: bool,
+    /// `calt` (on by default, as in the font).
+    pub contextual_alternates: bool,
+    /// `salt`.
+    pub stylistic_alternates: bool,
+    /// Stylistic sets: bit `n - 1` turns on `ssNN` (n = 1…20).
+    pub stylistic_sets: u32,
+    /// `swsh`.
+    pub swash: bool,
+    /// `titl`.
+    pub titling: bool,
+    /// `ordn`.
+    pub ordinals: bool,
+    /// `frac`.
+    pub fractions: bool,
+    /// All Small Caps: capitals become small capitals too (`c2sc` with `smcp`).
+    pub all_small_caps: bool,
+    pub figure_style: FigureStyle,
+    pub figure_width: FigureWidth,
+}
+
+impl Default for OpenType {
+    fn default() -> Self {
+        OpenType {
+            discretionary_ligatures: false,
+            contextual_alternates: true,
+            stylistic_alternates: false,
+            stylistic_sets: 0,
+            swash: false,
+            titling: false,
+            ordinals: false,
+            fractions: false,
+            all_small_caps: false,
+            figure_style: FigureStyle::Default,
+            figure_width: FigureWidth::Default,
+        }
+    }
+}
+
+impl OpenType {
+    pub fn is_default(&self) -> bool {
+        *self == OpenType::default()
+    }
+    /// Whether stylistic set `n` (1…20) is on.
+    pub fn stylistic_set(&self, n: u32) -> bool {
+        (1..=20).contains(&n) && self.stylistic_sets & (1 << (n - 1)) != 0
+    }
+    pub fn set_stylistic_set(&mut self, n: u32, on: bool) {
+        if (1..=20).contains(&n) {
+            if on {
+                self.stylistic_sets |= 1 << (n - 1);
+            } else {
+                self.stylistic_sets &= !(1 << (n - 1));
+            }
+        }
+    }
+    /// The OpenType feature settings these options ask for (tag, value), beyond the font's
+    /// defaults: e.g. `[("dlig", 1), ("ss02", 1), ("calt", 0)]`.
+    pub fn feature_settings(&self) -> Vec<([u8; 4], u32)> {
+        let mut v = Vec::new();
+        for (tag, f) in [
+            (b"dlig", self.discretionary_ligatures),
+            (b"salt", self.stylistic_alternates),
+            (b"swsh", self.swash),
+            (b"titl", self.titling),
+            (b"ordn", self.ordinals),
+            (b"frac", self.fractions),
+            (b"c2sc", self.all_small_caps),
+            (b"smcp", self.all_small_caps),
+            (b"lnum", self.figure_style == FigureStyle::Lining),
+            (b"onum", self.figure_style == FigureStyle::OldStyle),
+            (b"pnum", self.figure_width == FigureWidth::Proportional),
+            (b"tnum", self.figure_width == FigureWidth::Tabular),
+        ] {
+            if f {
+                v.push((*tag, 1));
+            }
+        }
+        if !self.contextual_alternates {
+            v.push((*b"calt", 0));
+        }
+        for n in 1..=20u32 {
+            if self.stylistic_set(n) {
+                let d = format!("ss{n:02}");
+                let b = d.as_bytes();
+                v.push(([b[0], b[1], b[2], b[3]], 1));
+            }
+        }
+        v
+    }
+}
+
 /// The formatting of a run of characters (Character panel).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -177,6 +296,9 @@ pub struct CharStyle {
     /// Vertical type: keep Roman (half-width) characters upright instead of turning them on
     /// their side (Character panel menu ▸ Standard Vertical Roman Alignment).
     pub vertical_roman_upright: bool,
+    /// OpenType features (stylistic sets, figures, fractions…).
+    #[serde(skip_serializing_if = "OpenType::is_default")]
+    pub opentype: OpenType,
 }
 
 impl Default for CharStyle {
@@ -258,6 +380,9 @@ pub struct TextDoc {
     /// Base Tate-Chu-Yoko and Standard Vertical Roman Alignment (see [`CharStyle`]).
     pub tate_chu_yoko: bool,
     pub vertical_roman_upright: bool,
+    /// Base OpenType features (see [`CharStyle::opentype`]).
+    #[serde(skip_serializing_if = "OpenType::is_default")]
+    pub opentype: OpenType,
     pub indent_left: f64,
     pub indent_right: f64,
     pub indent_first: f64,
@@ -309,6 +434,7 @@ impl Default for TextDoc {
             ligatures: true,
             tate_chu_yoko: false,
             vertical_roman_upright: false,
+            opentype: OpenType::default(),
             indent_left: 0.0,
             indent_right: 0.0,
             indent_first: 0.0,
@@ -395,6 +521,7 @@ impl TextDoc {
             ligatures: self.ligatures,
             tate_chu_yoko: self.tate_chu_yoko,
             vertical_roman_upright: self.vertical_roman_upright,
+            opentype: self.opentype,
         }
     }
 
@@ -422,6 +549,7 @@ impl TextDoc {
         self.ligatures = s.ligatures;
         self.tate_chu_yoko = s.tate_chu_yoko;
         self.vertical_roman_upright = s.vertical_roman_upright;
+        self.opentype = s.opentype;
     }
 
     /// The base (first paragraph's) settings.
@@ -777,6 +905,9 @@ fn color_json(v: &J) -> Option<[f32; 4]> {
 fn num(key: &str, v: &J) -> Result<f64, String> {
     v.as_f64().filter(|x| x.is_finite()).ok_or_else(|| format!("{key}: expected a number"))
 }
+fn norm(v: &J) -> Option<String> {
+    v.as_str().map(|s| s.to_ascii_lowercase().replace(['-', ' ', '_'], ""))
+}
 fn flag(key: &str, v: &J) -> Result<bool, String> {
     v.as_bool().or_else(|| v.as_f64().map(|x| x != 0.0)).ok_or_else(|| format!("{key}: expected a boolean"))
 }
@@ -808,6 +939,18 @@ pub const CHAR_ATTRS: &[&str] = &[
     "ligatures",
     "tateChuYoko",
     "verticalRomanUpright",
+    "discretionaryLigatures",
+    "contextualAlternates",
+    "stylisticAlternates",
+    "stylisticSets",
+    "swash",
+    "titling",
+    "ordinals",
+    "fractions",
+    "allSmallCaps",
+    "figureStyle",
+    "figureWidth",
+    "figures",
 ];
 
 /// Paragraph attribute keys of `layer.setText`.
@@ -850,6 +993,7 @@ pub fn apply_char_attr(s: &mut CharStyle, key: &str, v: &J) -> Result<bool, Stri
             s.all_caps = flag(key, v)?;
             if s.all_caps {
                 s.small_caps = false;
+                s.opentype.all_small_caps = false;
             }
         }
         "smallCaps" => {
@@ -869,6 +1013,65 @@ pub fn apply_char_attr(s: &mut CharStyle, key: &str, v: &J) -> Result<bool, Stri
         "ligatures" => s.ligatures = flag(key, v)?,
         "tateChuYoko" => s.tate_chu_yoko = flag(key, v)?,
         "verticalRomanUpright" => s.vertical_roman_upright = flag(key, v)?,
+        "discretionaryLigatures" => s.opentype.discretionary_ligatures = flag(key, v)?,
+        "contextualAlternates" => s.opentype.contextual_alternates = flag(key, v)?,
+        "stylisticAlternates" => s.opentype.stylistic_alternates = flag(key, v)?,
+        "swash" => s.opentype.swash = flag(key, v)?,
+        "titling" => s.opentype.titling = flag(key, v)?,
+        "ordinals" => s.opentype.ordinals = flag(key, v)?,
+        "fractions" => s.opentype.fractions = flag(key, v)?,
+        "allSmallCaps" => {
+            s.opentype.all_small_caps = flag(key, v)?;
+            if s.opentype.all_small_caps {
+                s.all_caps = false;
+            }
+        }
+        "stylisticSets" => {
+            s.opentype.stylistic_sets = match v {
+                J::Array(a) => {
+                    let mut m = 0u32;
+                    for n in a {
+                        let n = n.as_u64().filter(|n| (1..=20).contains(n)).ok_or("stylisticSets: expected set numbers 1–20")?;
+                        m |= 1 << (n - 1);
+                    }
+                    m
+                }
+                J::Number(_) => (num(key, v)? as u64 & 0xF_FFFF) as u32,
+                _ => return Err("stylisticSets: expected [1, 2, …] or a bit mask".into()),
+            }
+        }
+        "figureStyle" => {
+            s.opentype.figure_style = match norm(v).as_deref() {
+                Some("default") => FigureStyle::Default,
+                Some("lining") => FigureStyle::Lining,
+                Some("oldstyle") => FigureStyle::OldStyle,
+                _ => return Err("figureStyle: expected default|lining|oldStyle".into()),
+            }
+        }
+        "figureWidth" => {
+            s.opentype.figure_width = match norm(v).as_deref() {
+                Some("default") => FigureWidth::Default,
+                Some("proportional") => FigureWidth::Proportional,
+                Some("tabular") => FigureWidth::Tabular,
+                _ => return Err("figureWidth: expected default|proportional|tabular".into()),
+            }
+        }
+        "figures" => {
+            let (st, w) = match norm(v).as_deref() {
+                Some("default") => (FigureStyle::Default, FigureWidth::Default),
+                Some("tabularlining") => (FigureStyle::Lining, FigureWidth::Tabular),
+                Some("proportionallining") => (FigureStyle::Lining, FigureWidth::Proportional),
+                Some("tabularoldstyle") => (FigureStyle::OldStyle, FigureWidth::Tabular),
+                Some("proportionaloldstyle") => (FigureStyle::OldStyle, FigureWidth::Proportional),
+                _ => return Err("figures: expected default|tabularLining|proportionalLining|tabularOldstyle|proportionalOldstyle".into()),
+            };
+            s.opentype.figure_style = st;
+            s.opentype.figure_width = w;
+        }
+        k if k.len() == 4 && k.starts_with("ss") && k[2..].parse::<u32>().is_ok_and(|n| (1..=20).contains(&n)) => {
+            let n = k[2..].parse::<u32>().unwrap_or(0);
+            s.opentype.set_stylistic_set(n, flag(key, v)?);
+        }
         _ => return Ok(false),
     }
     Ok(true)
@@ -915,6 +1118,13 @@ pub fn char_style_json(s: &CharStyle) -> J {
         "hScale": s.h_scale, "vScale": s.v_scale, "tsume": s.tsume, "fauxBold": s.faux_bold, "fauxItalic": s.faux_italic,
         "allCaps": s.all_caps, "smallCaps": s.small_caps, "baseline": s.baseline.key(), "kerning": s.kerning.to_json(),
         "ligatures": s.ligatures, "tateChuYoko": s.tate_chu_yoko, "verticalRomanUpright": s.vertical_roman_upright,
+        "discretionaryLigatures": s.opentype.discretionary_ligatures, "contextualAlternates": s.opentype.contextual_alternates,
+        "stylisticAlternates": s.opentype.stylistic_alternates,
+        "stylisticSets": (1..=20u32).filter(|n| s.opentype.stylistic_set(*n)).collect::<Vec<_>>(),
+        "swash": s.opentype.swash, "titling": s.opentype.titling, "ordinals": s.opentype.ordinals, "fractions": s.opentype.fractions,
+        "allSmallCaps": s.opentype.all_small_caps,
+        "figureStyle": match s.opentype.figure_style { FigureStyle::Default => "default", FigureStyle::Lining => "lining", FigureStyle::OldStyle => "oldStyle" },
+        "figureWidth": match s.opentype.figure_width { FigureWidth::Default => "default", FigureWidth::Proportional => "proportional", FigureWidth::Tabular => "tabular" },
     })
 }
 
@@ -1126,5 +1336,38 @@ mod tests {
         assert_eq!(word_left(t, 11), 7);
         assert_eq!(word_at(t, 8), 7..10);
         assert_eq!(word_at(t, 6), 6..7);
+    }
+
+    #[test]
+    fn opentype_attributes_per_range_and_serde() {
+        let mut d = TextDoc::plain("Office 1/2 1st");
+        // Untouched documents serialize without an OpenType block.
+        assert!(!serde_json::to_string(&d).unwrap().contains("opentype"));
+        d.set_attr("ss02", &J::Bool(true), Some(0..6)).unwrap();
+        d.set_attr("fractions", &J::Bool(true), Some(7..10)).unwrap();
+        d.set_attr("figures", &J::from("tabularOldstyle"), None).unwrap();
+        assert!(d.style_at(0).opentype.stylistic_set(2));
+        assert!(!d.style_at(8).opentype.stylistic_set(2));
+        assert!(d.style_at(8).opentype.fractions);
+        assert_eq!(d.style_at(12).opentype.figure_width, FigureWidth::Tabular);
+        assert!(d.set_attr("stylisticSets", &serde_json::json!([1, 20]), Some(0..1)).unwrap());
+        assert_eq!(d.style_at(0).opentype.stylistic_sets, 1 | (1 << 19));
+        assert!(d.set_attr("stylisticSets", &serde_json::json!([21]), None).is_err());
+        let f = d.style_at(8).opentype.feature_settings();
+        assert!(f.contains(&(*b"frac", 1)) && f.contains(&(*b"onum", 1)) && f.contains(&(*b"tnum", 1)));
+        let mut s = d.style_at(0);
+        s.opentype.contextual_alternates = false;
+        assert!(s.opentype.feature_settings().contains(&(*b"calt", 0)));
+        // Round trip, and the JSON form names the attributes as layer.setText does.
+        let back: TextDoc = serde_json::from_str(&serde_json::to_string(&d).unwrap()).unwrap();
+        assert_eq!(back, d);
+        let j = char_style_json(&d.style_at(0));
+        assert_eq!(j["stylisticSets"], serde_json::json!([1, 20]));
+        assert_eq!(j["figureStyle"], "oldStyle");
+        // All Small Caps and All Caps exclude each other.
+        let mut s = CharStyle::default();
+        apply_char_attr(&mut s, "allCaps", &J::Bool(true)).unwrap();
+        apply_char_attr(&mut s, "allSmallCaps", &J::Bool(true)).unwrap();
+        assert!(!s.all_caps && s.opentype.all_small_caps);
     }
 }

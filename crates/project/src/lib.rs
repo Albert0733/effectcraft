@@ -175,6 +175,9 @@ pub struct ProjectSettings {
     /// when a GPU adapter exists) or Mercury Software Only (`false`, the CPU compositor).
     #[serde(default = "yes")]
     pub gpu_acceleration: bool,
+    /// The project's comment (Metadata panel).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub comment: String,
     /// Color Engine (Adobe-style built-in or OCIO with ACES working spaces).
     #[serde(default)]
     pub color_engine: ColorEngine,
@@ -198,6 +201,7 @@ impl Default for ProjectSettings {
             frame_start: 0,
             audio_sample_rate: 48_000,
             gpu_acceleration: true,
+            comment: String::new(),
             color_engine: ColorEngine::Adobe,
             hdr: HdrMode::Clip,
             output_space: None,
@@ -827,9 +831,9 @@ pub struct Proxy {
     pub enabled: bool,
 }
 
-/// A layer of a layered still (a Photoshop document) used as footage
-/// (File ▸ Import ▸ Composition / Composition – Retain Layer Sizes, or Choose Layer).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// A layer of a layered still (a Photoshop document, or a PDF / Illustrator / EPS file) used as
+/// footage (File ▸ Import ▸ Composition / Composition – Retain Layer Sizes, or Choose Layer).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceLayer {
     /// Layer record index in the file (bottom of the stack = 0).
     pub index: u32,
@@ -837,6 +841,10 @@ pub struct SourceLayer {
     /// The footage is the layer's own bounds (Retain Layer Sizes) rather than the document size.
     #[serde(default)]
     pub layer_size: bool,
+    /// A Photoshop smart object: the unique id of its embedded file (linked layer data), which
+    /// is the footage instead of the layer's pixels.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embedded: Option<String>,
 }
 
 fn one() -> u32 {
@@ -853,6 +861,7 @@ pub struct Solid {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type")]
+#[allow(clippy::large_enum_variant)]
 pub enum ItemKind {
     Folder,
     Comp(Arc<Comp>),

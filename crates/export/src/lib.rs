@@ -79,6 +79,8 @@ pub struct Job<'a> {
     pub path: &'a str,
     /// Hand finished files to this instead of writing them to disk (web downloads, tests).
     pub sink: Option<&'a Sink>,
+    /// Settings ▸ General ▸ Switches Affect Nested Comps (see `RenderOpts::nested_switches`).
+    pub nested_switches: bool,
     /// Render log, storage overflow.
     pub options: JobOptions<'a>,
 }

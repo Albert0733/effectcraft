@@ -46,7 +46,19 @@ fn run_with(p: &Project, cid: ItemId, s: &RenderSettings, om: &OutputModule, pat
     let files: Files = Default::default();
     let f = files.clone();
     let sink: Box<Sink> = Box::new(move |path: &str, data: Vec<u8>| f.lock().unwrap().push((path.to_string(), data)));
-    let job = Job { project: p, footage: &NoFootage, expr: None, accel: None, comp: cid, settings: s, output: om, path, sink: Some(&*sink), options };
+    let job = Job {
+        project: p,
+        footage: &NoFootage,
+        expr: None,
+        accel: None,
+        comp: cid,
+        settings: s,
+        output: om,
+        path,
+        sink: Some(&*sink),
+        options,
+        nested_switches: true,
+    };
     let r = export(&job, &mut |pr| !(cancel && pr.done > 0)).map_err(|e| e.to_string());
     (r, files)
 }

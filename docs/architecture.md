@@ -26,6 +26,7 @@ cpal or muda. Everything in L0 to L4, the egui UI and the web app also build for
 | L2 | `text` | Fonts, shaping, layout, per-glyph geometry, text animators and selectors |
 | L2 | `effects` | The effect registry (241 effects) and their CPU implementations |
 | L2 | `svg` | SVG import (W3C SVG 1.1/2 static subset: shapes, paths, transforms, `use`, CSS, gradients) and rasterisation at any scale |
+| L2 | `pdf` | PDF, PDF-compatible Illustrator (`.ai`) and EPS (PostScript subset) vector footage into the `svg` render tree: paths, fills, strokes, shadings, clipping, optional-content layers |
 | L2 | `model` | 3D models for Advanced 3D: glTF 2.0 (`.gltf`/`.glb`) and OBJ/MTL import (meshes, PBR metallic-roughness materials and textures, node hierarchy, skins, animations), parametric primitives, extruded/bevelled outline meshes and polygon triangulation |
 | L2 | `track` | Motion tracking: feature/search region point tracking (pyramid normalized cross-correlation, Lucas–Kanade sub-pixel refinement), confidence, homography/affine/similarity solves |
 | L3 | `render` | Evaluation and compositing: sources, masks, effects, transforms, 3D, motion blur, mattes, blending, layer cache, audio mixdown |
@@ -163,17 +164,31 @@ accelerator is attached and the project's renderer is the GPU). A GPU frame walk
 sampling (nearest, bilinear, Catmull-Rom bicubic, the same minification pre-filter), motion-blur
 sub-samples are accumulated, and track mattes, Preserve Transparency, layer style passes,
 knockout, all 38 blend modes (a WGSL port of `color::blend`), the 8/16 bpc clamp-and-quantise steps
-and colour-space conversions run on the GPU. 3D runs, adjustment layers and wireframes run on the
-CPU between GPU steps (read back, draw, upload). GPU effects (`effects::GPU_EFFECTS`: Gaussian,
-Fast Box and Directional Blur, Glow, Levels, Curves, Hue/Saturation, Tint, Fill, Gradient Ramp,
-Fractal Noise, Drop Shadow, Brightness & Contrast, Exposure, Invert, Transform) repeat the CPU
-effect's steps (padding, box radii, parameters) as kernels; consecutive GPU effects run as one
+and colour-space conversions run on the GPU. Classic 3D runs composite on the GPU too
+(`gpu::classic3d`): the render crate prepares the planes (`Renderer::prepare_3d_run`: layer buffers
+with their bokeh depth of field, homographies per motion-blur sub-sample, materials, lights, track
+mattes), the GPU packs the buffers into one atlas texture and one kernel does the per-pixel
+fragment sort (intersecting planes, coplanar stack order), Blinn-Phong lighting, ray-cast shadows
+against the caster planes (Shadow Diffusion, Light Transmission) and blending. Adjustment layers
+run their effect stacks on the GPU-resident comp (`Renderer::run_effects_on` with an `FxTarget`):
+runs of GPU effects stay on the device and only non-GPU effects read back and upload. Advanced 3D
+compositing and wireframes still run on the CPU between GPU steps (read back, draw, upload). GPU
+effects (`effects::GPU_EFFECTS`, 58 of them: blurs, colour, keying incl. Key Light, distortion,
+transitions, generators, noise and grain; see [effects.md](effects.md)) repeat the CPU effect's
+steps (padding, box radii, parameters, hashes) as kernels; consecutive GPU effects run as one
 chain with one upload and one readback. Tests render scenes on both paths and compare them
 (≤ 1/255 at 8 bpc, ≤ 1e-3 at 32 bpc); they skip without an adapter. The desktop viewer builds the
 `Gpu` on egui-wgpu's device and shows frames from GPU textures without reading them back
 (`ui-egui::frames`); headless renders, the CLI (unless `--gpu`) and CI use the CPU. On the web
 (WebGPU) the GPU composites viewer frames; steps that need a readback fall back to the CPU (the
-Info panel's pixel readout reads GPU frames back asynchronously).
+Info panel's pixel readout reads GPU frames back asynchronously). **GPU particles**
+(`effects::psim`, `gpu::particles`): CC Particle World, CC Particle Systems II and Particle
+Playground cannons without interacting forces evolve every particle independently, so the GPU
+backend (reached through `EffectHost::particles` when the GPU compositor is active) simulates one
+particle per invocation from the CPU's birth schedule and keeps per-key state checkpoints on the
+GPU, like `SimCache`; the CPU simulation stays the oracle (tests compare ids and positions).
+`effectcraft-cli bench --gpu` reports CPU vs GPU ms/frame, speed-up and pixel agreement for every
+comp plus an adjustment-layer comp.
 
 **Colour and bit depth** (`crates/render/src/color.rs`, `crates/color/src/space.rs`). Pixels are
 `f32`, but 8 and 16 bpc projects clamp and quantise each layer after its source and masks and
@@ -272,6 +287,42 @@ Key, settings, strokes from the base frame out) indexes a process-wide cache tha
 demand (`self_at`) and `roto.propagate` fills in the background; `Session::edit` keeps the Input
 Key in step with the layer's source, masks and upstream effects. Freeze stores final 8-bit mattes
 in the effect.
+
+**Content-Aware Fill** (`raster::inpaint`, `engine::commands::content_fill`): the hole is
+where the layer's masked source (`Renderer::layer_input` with no effects) is under half
+opacity, grown by Alpha Expansion. Optical flow between neighbouring membrane-filled frames is
+*completed* inside the holes (membrane interpolation of the surrounding tiles' motion); each
+missing pixel follows it forwards and backwards to the nearest frame (or reference frame) where
+it is visible, the two candidates blended by temporal distance, with Lighting Correction adding
+the membrane of the border mismatch (Poisson-style). What no frame shows is synthesised by
+PatchMatch (Barnes et al. 2009) inside Wexler et al.'s (2007) multi-scale EM: Object refines each
+frame starting from the previous result warped along the flow; Surface carries one synthesised
+fill through the range; Edge Blend is the membrane fill alone. The frames are written as a PNG
+sequence and imported into a "Fill" layer above the source. It runs as a generic **background
+task** (`engine::jobs`: a closure with progress and cancel on a thread, inline on wasm32 or
+with `wait`, whose result is applied on the UI thread as one undo step); the Progress panel and
+`jobs.list` / `jobs.cancel` show these tasks together with the render queue and the analyses.
+
+**Scene Edit Detection** (`raster::cuts`) compares consecutive frames by colour-histogram
+distance and motion-compensated (block-flow warped) luma error, takes their geometric mean and
+marks frames that exceed a threshold and several times their neighbours' median; the cuts
+become layer markers, split layers, or split-and-precomposed layers. **Auto-trace**
+(`path::trace`) runs marching squares on the chosen channel, Douglas–Peucker simplification and
+cubic fitting with Corner Roundness blending chord and smooth tangents; holes become Subtract
+masks, and a work-area trace keys Mask Path per frame.
+
+**Align Video to Data** reads data footage (File ▸ Import of `.json`, `.csv`, `.tsv`, kept as
+text in the project). Supported data: JSON as an array of objects or an object holding one
+(`{"samples": [...]}`), CSV/TSV with a header row (quoted fields allowed). The time key is the
+`key` parameter or the first field named `time`, `timestamp`, `t`, `date`, `datetime`, `utc`,
+`gps_time`, `seconds` or `time_s`; values may be ISO 8601 date-times (with `Z` or `±hh:mm`),
+times of day (`hh:mm:ss.sss`), timecode (`hh:mm:ss:ff` at the footage rate), Unix seconds or
+Unix milliseconds. The layer's Start Time becomes `dataStart + videoStart − firstSample`
+(`videoStart` given, or the file's creation date on the desktop; reduced to a time of day when
+the data has no dates).
+
+**Lumetri Scopes** (`raster::scopes`) are density plots of the viewer frame (rendered over the
+comp background) with BT.601 / BT.709 / BT.2020 luma and colour-difference coefficients.
 
 ## 5. Expressions
 

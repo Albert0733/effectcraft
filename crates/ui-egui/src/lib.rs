@@ -16,6 +16,7 @@ pub mod icons;
 pub mod menus;
 pub mod native_menu;
 pub mod panels;
+pub mod prefs_live;
 pub mod state;
 pub mod theme;
 pub mod widgets;
@@ -257,7 +258,7 @@ impl EffectcraftApp {
         ctx.all_styles_mut(|s| s.interaction.tooltip_delay = if tips { 0.5 } else { f32::INFINITY });
         self.ui.cache_when_idle = p.previews.cache_frames_when_idle;
         self.ui.viewer.fast_preview = p.previews.fast_previews;
-        self.frames.set_budget(p.preview_cache_bytes());
+        self.frames.set_budget(p.cache_budgets(self.session.sys_memory).preview);
     }
 
     /// Change settings from the UI (applied next frame and saved).
@@ -477,6 +478,8 @@ impl EffectcraftApp {
             view: self.session.view_camera(comp),
             roi,
             backend: effectcraft_engine::render::Backend::Auto,
+            nested_switches: self.session.prefs.general.switches_affect_nested_comps,
+            draft_shadows: self.session.prefs.three_d.realtime_shadows,
             proxy: Default::default(),
         }
     }
@@ -530,7 +533,8 @@ impl EffectcraftApp {
         }
         let out = audio::AudioOutput::from_prefs(&self.session.prefs);
         let Some(dev) = self.hooks.audio_device.as_ref().and_then(|f| f(&out)) else { return };
-        match audio::AudioPlayback::start(dev, self.render_source(), cid, t, c.work_area.0, c.work_area.1, self.ui.preview_loop) {
+        let mix = self.session.prefs.audio.preview_sample_rate;
+        match audio::AudioPlayback::start(dev, self.render_source(), cid, t, c.work_area.0, c.work_area.1, self.ui.preview_loop, mix) {
             Ok(a) => self.audio = Some(a),
             Err(e) => log::warn!("audio preview: {e}"),
         }
@@ -789,6 +793,11 @@ impl EffectcraftApp {
             self.session.poll_mask_track();
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
         }
+        // Background tasks (Content-Aware Fill, Scene Edit Detection).
+        if !self.session.tasks.is_empty() {
+            self.session.poll_jobs();
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
         // Analyses running in a worker (the web app).
         if !self.session.offloaded.is_empty() {
             self.session.poll_offload();
@@ -808,6 +817,7 @@ impl EffectcraftApp {
         self.apply_prefs(&ctx);
         self.handle_events(&ctx);
         self.tick_autosave(&ctx);
+        prefs_live::frame(self, &ctx);
         if let Some(rx) = self.command_inbox.take() {
             while let Ok(id) = rx.try_recv() {
                 if let Err(e) = menus::invoke(self, &ctx, &id, json!({})) {

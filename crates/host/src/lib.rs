@@ -46,6 +46,7 @@ impl Exporter for FileExporter {
                 storage: job.storage,
                 overflow: job.project.render_prefs.overflow_folders.clone(),
             },
+            nested_switches: job.nested_switches,
         };
         match effectcraft_export::export(&j, &mut |p| progress(p.done, p.total)) {
             Ok(r) => Ok(ExportResult {

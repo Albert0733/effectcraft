@@ -28,12 +28,14 @@ fn create(s: &mut Session, p: &Value) -> Result<Value> {
         });
         match op {
             "shapesFromVector" => {
-                let Some(f) = footage.filter(|f| f.codec == "SVG" || f.path.to_ascii_lowercase().ends_with(".svg")) else {
-                    skipped.push(format!("{}: not a vector (SVG) footage layer", src.name));
+                let Some(f) = footage.filter(crate::vector::is_vector) else {
+                    skipped.push(format!("{}: not a vector (SVG, PDF, AI or EPS) footage layer", src.name));
                     continue;
                 };
                 let bytes = s.services.read_file(&f.path).map_err(|e| EngineError::Other(format!("cannot read {}: {e}", f.path)))?;
-                let doc = effectcraft_svg::parse(&bytes).map_err(|e| EngineError::Other(format!("{}: {e}", f.path)))?;
+                let doc = crate::vector::vector_doc(&f.path, &bytes, f.layer.as_ref())
+                    .unwrap_or_else(|| Err(format!("{}: not a vector file", f.path)))
+                    .map_err(EngineError::Other)?;
                 let id = s.edit("Create Shapes from Vector Layer", None, |proj, st| {
                     let l = crate::vector::shapes_from_vector(proj, &comp, &src, &doc);
                     let id = l.id;

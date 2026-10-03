@@ -86,6 +86,8 @@ impl<'a> Cx<'a> {
             view: None,
             backend: effectcraft_render::Backend::Auto,
             roi: None,
+            nested_switches: self.job.nested_switches,
+            draft_shadows: true,
             proxy: s.proxy_use,
         };
         let mut r = Renderer::new(&self.project, self.job.footage, opts);

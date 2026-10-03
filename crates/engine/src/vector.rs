@@ -1,5 +1,6 @@
-//! Vector conversions behind Layer ▸ Create: Create Shapes from Vector Layer (SVG footage →
-//! shape layer), Create Shapes from Text and Create Masks from Text (glyph outlines).
+//! Vector conversions behind Layer ▸ Create: Create Shapes from Vector Layer (SVG, PDF,
+//! Illustrator and EPS footage → shape layer), Create Shapes from Text and Create Masks from
+//! Text (glyph outlines), and vector files imported as compositions (one layer per file layer).
 
 use effectcraft_keyframe::{Gradient, ShapePath, Value};
 use effectcraft_project::build::{self, Ids};
@@ -147,6 +148,74 @@ pub fn svg_contents(ids: &mut Ids, doc: &Doc) -> Vec<PropGroup> {
     let root = &doc.root;
     let items = walk(ids, &root.children, root.transform);
     if (root.opacity - 1.0).abs() > 1e-9 { vec![group(ids, "svg", items, root.opacity)] } else { items }
+}
+
+/// Whether footage is a vector file (SVG / PDF / AI / EPS).
+pub fn is_vector(f: &effectcraft_project::Footage) -> bool {
+    effectcraft_render::is_vector_footage(f) || f.path.to_ascii_lowercase().ends_with(".svg")
+}
+
+/// The vector document of an SVG / PDF / AI / EPS file (`None` for other formats), restricted
+/// to one layer when `layer` names it.
+pub fn vector_doc(path: &str, bytes: &[u8], layer: Option<&effectcraft_project::SourceLayer>) -> Option<Result<Doc, String>> {
+    if path.to_ascii_lowercase().ends_with(".svg") || effectcraft_svg::looks_like_svg(bytes) {
+        return Some(effectcraft_svg::parse(bytes).map_err(|e| format!("{path}: {e}")));
+    }
+    effectcraft_pdf::sniff(bytes)?;
+    Some(
+        effectcraft_pdf::parse(bytes)
+            .map(|d| match layer {
+                Some(l) => effectcraft_pdf::layer_doc(&d, l.index as usize),
+                None => d,
+            })
+            .map_err(|e| format!("{path}: {e}")),
+    )
+}
+
+/// Import a PDF / Illustrator / EPS document as a composition the size of its page: one footage
+/// item per file layer (each showing only that layer, continuously rasterisable), top layer
+/// first. Returns (comp, folder, items).
+pub fn import_vector_comp(
+    proj: &mut Project,
+    path: &str,
+    bytes: &[u8],
+    name: &str,
+    rate: effectcraft_time::FrameRate,
+    duration: effectcraft_time::Tick,
+) -> Result<(ItemId, ItemId, Vec<ItemId>), String> {
+    use effectcraft_color::Label;
+    use effectcraft_project::{AlphaMode, Footage, FootageKind, ItemKind, SourceLayer};
+    let doc = effectcraft_pdf::parse(bytes).map_err(|e| format!("{path}: {e}"))?;
+    let codec = effectcraft_pdf::codec(path, bytes).unwrap_or("PDF");
+    let (w, h) = doc.pixel_size();
+    let file = std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    let folder = proj.add_item(&format!("{name} Layers"), Label::Yellow, None, ItemKind::Folder);
+    let mut comp = Comp::new(w, h, rate, duration);
+    let mut items = vec![];
+    let names = effectcraft_pdf::layer_names(&doc);
+    for (i, lname) in names.iter().enumerate() {
+        let f = Footage {
+            path: path.to_string(),
+            kind: FootageKind::Still,
+            width: w,
+            height: h,
+            pixel_aspect: 1.0,
+            frame_rate: rate,
+            has_video: true,
+            alpha: AlphaMode::Straight,
+            loop_count: 1,
+            codec: codec.into(),
+            layer: Some(SourceLayer { index: i as u32, name: lname.clone(), layer_size: false, ..Default::default() }),
+            ..Default::default()
+        };
+        let id = proj.add_item(&format!("{lname}/{file}"), Label::Lavender, Some(folder), ItemKind::Footage(f));
+        items.push(id);
+        let mut l = build::layer(proj, &comp, lname, LayerSource::Footage { item: id }, (w, h), None);
+        l.name = comp.unique_layer_name(lname);
+        comp.layers.insert(0, l);
+    }
+    let cid = proj.add_item(name, Label::Sandstone, None, ItemKind::Comp(std::sync::Arc::new(comp)));
+    Ok((cid, folder, items))
 }
 
 /// A copy of `src`'s transform group with fresh uids.

@@ -18,6 +18,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 use harfrust::{Direction, Feature, Tag, UnicodeBuffer};
 use unicode_bidi::{BidiInfo, Level};
 
+use effectcraft_keyframe::OpenType;
+
 use crate::fonts::{self, FaceId, Resolved};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -81,6 +83,8 @@ pub struct TextStyle {
     pub script: Script,
     /// Baseline-to-baseline distance in pixels; None = auto (120% of the size).
     pub leading: Option<f32>,
+    /// OpenType features (stylistic sets, figures, fractions, all small caps…).
+    pub opentype: OpenType,
 }
 
 impl Default for TextStyle {
@@ -104,6 +108,7 @@ impl Default for TextStyle {
             tsume: 0.0,
             script: Script::Normal,
             leading: None,
+            opentype: OpenType::default(),
         }
     }
 }
@@ -188,6 +193,7 @@ impl Hash for TextStyle {
         self.manual_kern.map(f32::to_bits).hash(h);
         self.leading.map(f32::to_bits).hash(h);
         (self.kerning, self.optical, self.ligatures, self.faux_bold, self.faux_italic, self.caps, self.underline, self.script).hash(h);
+        self.opentype.hash(h);
     }
 }
 
@@ -342,6 +348,8 @@ struct ShapedGlyph {
     dy: f32,
     size: f32,
     run: usize,
+    /// Upward baseline offset (baseline shift, plus a synthesized superscript / subscript's).
+    rise: f32,
 }
 
 struct Item {
@@ -360,6 +368,50 @@ fn upper_single(c: char) -> char {
 
 const SMALL_CAPS_SCALE: f32 = 0.78;
 
+/// How a character is set: as itself, as a synthesized small capital (a scaled-down capital),
+/// with the font's small-capital glyph (`smcp` / `c2sc`), or with the font's superior / inferior
+/// glyph (`sups` / `subs`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum Form {
+    Normal,
+    FauxSmall,
+    TrueSmall,
+    TrueScript,
+}
+
+/// Whether OpenType feature `tag` gives character `c` its own glyph in `face` (cached): the
+/// true small caps / superscripts / subscripts test, with synthesized forms as the fallback.
+pub fn feature_substitutes(face: FaceId, tag: &[u8; 4], c: char) -> bool {
+    static C: OnceLock<Mutex<HashMap<(FaceId, [u8; 4], char), bool>>> = OnceLock::new();
+    let cache = C.get_or_init(Default::default);
+    if let Some(v) = cache.lock().unwrap_or_else(|e| e.into_inner()).get(&(face, *tag, c)) {
+        return *v;
+    }
+    let f = fonts::face(face);
+    let v = f.has_feature(tag)
+        && match (f.font(), f.shaper_data()) {
+            (Some(font), Some(data)) => {
+                let shaper = data.shaper(&font).build();
+                let shape = |feats: &[Feature]| -> Vec<u32> {
+                    let mut buf = UnicodeBuffer::new();
+                    buf.add(c, 0);
+                    buf.guess_segment_properties();
+                    shaper.shape(buf, harfrust::ShapeOptions::new().features(feats)).glyph_infos().iter().map(|i| i.glyph_id).collect()
+                };
+                let plain = shape(&[]);
+                let with = shape(&[Feature::new(Tag::new(tag), 1, ..)]);
+                plain != with && !with.contains(&0)
+            }
+            _ => false,
+        };
+    let mut m = cache.lock().unwrap_or_else(|e| e.into_inner());
+    if m.len() > 100_000 {
+        m.clear();
+    }
+    m.insert((face, *tag, c), v);
+    v
+}
+
 /// Horizontal ink extent `(x0, x1)` of a glyph in font units.
 fn ink_x(face: FaceId, gid: u32) -> Option<(f32, f32)> {
     let p = crate::outline_units(face, gid)?;
@@ -370,7 +422,7 @@ fn ink_x(face: FaceId, gid: u32) -> Option<(f32, f32)> {
     Some((r.x0 as f32, r.x1 as f32))
 }
 
-fn shape_item(chars: &[(usize, char, char)], rtl: bool, face: FaceId, size: f32, style: &TextStyle, run: usize) -> Vec<ShapedGlyph> {
+fn shape_item(chars: &[(usize, char, char)], rtl: bool, face: FaceId, size: f32, style: &TextStyle, run: usize, form: Form) -> Vec<ShapedGlyph> {
     let f = fonts::face(face);
     let (Some(font), Some(data)) = (f.font(), f.shaper_data()) else { return Vec::new() };
     let shaper = data.shaper(&font).build();
@@ -388,6 +440,30 @@ fn shape_item(chars: &[(usize, char, char)], rtl: bool, face: FaceId, size: f32,
         feats.push(Feature::new(Tag::new(b"liga"), 0, ..));
         feats.push(Feature::new(Tag::new(b"clig"), 0, ..));
     }
+    // OpenType options; small caps go per character (true where the font has them).
+    for (tag, v) in style.opentype.feature_settings() {
+        if &tag != b"smcp" && &tag != b"c2sc" {
+            feats.push(Feature::new(Tag::new(&tag), v, ..));
+        }
+    }
+    if style.caps == Caps::All {
+        // Case-sensitive forms (punctuation raised to sit with capitals).
+        feats.push(Feature::new(Tag::new(b"case"), 1, ..));
+    }
+    let rise = match form {
+        Form::TrueScript => style.baseline_shift,
+        _ => style.rise(),
+    };
+    match form {
+        Form::TrueSmall => {
+            feats.push(Feature::new(Tag::new(b"smcp"), 1, ..));
+            if style.opentype.all_small_caps {
+                feats.push(Feature::new(Tag::new(b"c2sc"), 1, ..));
+            }
+        }
+        Form::TrueScript => feats.push(Feature::new(Tag::new(if style.script == Script::Sub { b"subs" } else { b"sups" }), 1, ..)),
+        _ => {}
+    }
     let out = shaper.shape(buf, harfrust::ShapeOptions::new().features(&feats));
     let k = size / f.units_per_em();
     let hs = style.h_scale;
@@ -404,6 +480,7 @@ fn shape_item(chars: &[(usize, char, char)], rtl: bool, face: FaceId, size: f32,
             dy: p.y_offset as f32 * k,
             size,
             run,
+            rise,
         })
         .collect()
 }
@@ -539,38 +616,54 @@ fn paragraph(text: &str, base: usize, runs: &[(Range<usize>, TextStyle)], primar
     let bidi = BidiInfo::new(text, default_level);
     let pinfo = &bidi.paragraphs[0];
     let base_rtl = pinfo.level.is_rtl();
-    // per char: (byte, char, shaped char, face, rtl, small caps, run)
-    let chars: Vec<(usize, char, char, FaceId, bool, bool, usize)> = text
+    // per char: (byte, char, shaped char, face, rtl, form, run)
+    let chars: Vec<(usize, char, char, FaceId, bool, Form, usize)> = text
         .char_indices()
         .map(|(b, c)| {
             let si = run_at(runs, base + b);
             let style = &runs[si].1;
-            let (sc, small) = match style.caps {
-                Caps::Normal => (c, false),
-                Caps::All => (upper_single(c), false),
-                Caps::Small if c.is_lowercase() => (upper_single(c), true),
-                Caps::Small => (c, false),
-            };
             let primary = primaries[si].face;
-            let face = if sc.is_whitespace() { primary } else { fonts::fallback_for(sc, primary) };
-            (b, c, sc, face, bidi.levels[b].is_rtl(), small, si)
+            let face_of = |ch: char| if ch.is_whitespace() { primary } else { fonts::fallback_for(ch, primary) };
+            let all_small = style.opentype.all_small_caps && style.caps != Caps::All;
+            let small = (style.caps == Caps::Small || all_small) && c.is_lowercase();
+            let small_cap = all_small && c.is_uppercase();
+            let (sc, mut form) = match style.caps {
+                Caps::All => (upper_single(c), Form::Normal),
+                _ if small && feature_substitutes(face_of(c), b"smcp", c) => (c, Form::TrueSmall),
+                _ if small_cap && feature_substitutes(face_of(c), b"c2sc", c) => (c, Form::TrueSmall),
+                _ if small => (upper_single(c), Form::FauxSmall),
+                _ if small_cap => (c, Form::FauxSmall),
+                _ => (c, Form::Normal),
+            };
+            let face = face_of(sc);
+            if form == Form::Normal && style.script != Script::Normal && !sc.is_whitespace() {
+                let tag = if style.script == Script::Sub { b"subs" } else { b"sups" };
+                if feature_substitutes(face, tag, sc) {
+                    form = Form::TrueScript;
+                }
+            }
+            (b, c, sc, face, bidi.levels[b].is_rtl(), form, si)
         })
         .collect();
     // items: runs of equal (face, rtl, small, style)
     let mut items: Vec<Item> = Vec::new();
     let mut i = 0;
     while i < chars.len() {
-        let key = |c: &(usize, char, char, FaceId, bool, bool, usize)| (c.3, c.4, c.5, c.6);
+        let key = |c: &(usize, char, char, FaceId, bool, Form, usize)| (c.3, c.4, c.5, c.6);
         let k0 = key(&chars[i]);
         let mut j = i + 1;
         while j < chars.len() && key(&chars[j]) == k0 {
             j += 1;
         }
-        let (face, rtl, small, si) = k0;
+        let (face, rtl, form, si) = k0;
         let style = &runs[si].1;
         let sub: Vec<(usize, char, char)> = chars[i..j].iter().map(|c| (c.0, c.1, c.2)).collect();
-        let size = style.glyph_size() * if small { SMALL_CAPS_SCALE } else { 1.0 };
-        let mut glyphs = shape_item(&sub, rtl, face, size, style, si);
+        let size = match form {
+            Form::FauxSmall => style.glyph_size() * SMALL_CAPS_SCALE,
+            Form::TrueScript => style.size,
+            _ => style.glyph_size(),
+        };
+        let mut glyphs = shape_item(&sub, rtl, face, size, style, si, form);
         space_item(&mut glyphs, style, text, true);
         let end = if j < chars.len() { chars[j].0 } else { text.len() };
         items.push(Item { range: chars[i].0..end, rtl, glyphs });
@@ -718,7 +811,7 @@ fn paragraph(text: &str, base: usize, runs: &[(Range<usize>, TextStyle)], primar
                         face: g.face,
                         id: g.id,
                         x: pen + g.dx,
-                        y: -g.dy - st.rise(),
+                        y: -g.dy - g.rise,
                         size: g.size,
                         cluster: base + g.cluster,
                         synth_bold: primaries[g.run].synth_bold || st.faux_bold,
@@ -960,6 +1053,82 @@ mod tests {
         TextStyle { size, ..Default::default() }
     }
 
+    fn ids(text: &str, s: &TextStyle) -> Vec<u32> {
+        layout_uncached(text, s, &ParagraphStyle::default()).glyphs.iter().map(|g| g.id).collect()
+    }
+
+    fn ot(f: impl FnOnce(&mut OpenType)) -> TextStyle {
+        let mut s = st(100.0);
+        f(&mut s.opentype);
+        s
+    }
+
+    fn serif() -> TextStyle {
+        TextStyle { family: "Noto Serif".into(), ..st(100.0) }
+    }
+
+    #[test]
+    fn bundled_faces_list_their_features() {
+        let inter = fonts::face(fonts::resolve("Inter", "Regular").face).features();
+        for t in ["ss01", "dlig", "frac", "tnum", "sups", "ordn"] {
+            assert!(inter.iter().any(|f| f == t), "{t} in {inter:?}");
+        }
+        let serif = fonts::face(fonts::resolve("Noto Serif", "Regular").face).features();
+        for t in ["smcp", "c2sc", "onum", "lnum"] {
+            assert!(serif.iter().any(|f| f == t), "{t} in {serif:?}");
+        }
+    }
+
+    #[test]
+    fn opentype_features_substitute_glyphs() {
+        let plain = st(100.0);
+        // Stylistic sets, fractions, ordinals, figure widths and discretionary ligatures.
+        assert_ne!(ids("1234567890", &plain), ids("1234567890", &ot(|o| o.set_stylistic_set(1, true))), "ss01 alternate digits");
+        assert_eq!(ids("1234567890", &plain), ids("1234567890", &ot(|o| o.set_stylistic_set(20, true))), "Inter has no ss20");
+        assert_ne!(ids("1/2", &plain), ids("1/2", &ot(|o| o.fractions = true)), "frac");
+        assert_ne!(ids("1a 2o No", &plain), ids("1a 2o No", &ot(|o| o.ordinals = true)), "ordn");
+        let tab = measure("1111", &ot(|o| o.figure_width = effectcraft_keyframe::FigureWidth::Tabular));
+        let prop = measure("1111", &ot(|o| o.figure_width = effectcraft_keyframe::FigureWidth::Proportional));
+        assert!((tab - prop).abs() > 1.0, "tabular {tab} vs proportional {prop}");
+        // Old-style figures (Noto Serif).
+        let old = TextStyle { opentype: OpenType { figure_style: effectcraft_keyframe::FigureStyle::OldStyle, ..Default::default() }, ..serif() };
+        assert_ne!(ids("123", &serif()), ids("123", &old), "onum");
+        // Contextual alternates are on by default; turning them off can only keep or change glyphs.
+        let no_calt = ot(|o| o.contextual_alternates = false);
+        assert_eq!(ids("Hello", &plain).len(), ids("Hello", &no_calt).len());
+    }
+
+    #[test]
+    fn true_small_caps_and_superscripts_with_faux_fallback() {
+        // Noto Serif has smcp: lowercase letters take their own small-capital glyphs at full size.
+        let sc = TextStyle { caps: Caps::Small, ..serif() };
+        let l = layout_uncached("Ab", &sc, &ParagraphStyle::default());
+        let upper_b = ids("B", &serif())[0];
+        assert_ne!(l.glyphs[1].id, upper_b, "true small cap glyph, not a scaled capital");
+        assert_eq!(l.glyphs[1].size, 100.0);
+        // Inter has no smcp: a capital scaled down.
+        let faux = layout_uncached("Ab", &TextStyle { caps: Caps::Small, ..st(100.0) }, &ParagraphStyle::default());
+        assert_eq!(faux.glyphs[1].id, ids("B", &st(100.0))[0]);
+        assert!((faux.glyphs[1].size - 78.0).abs() < 0.01);
+        // All Small Caps: capitals become small capitals too (c2sc).
+        let all = TextStyle { opentype: OpenType { all_small_caps: true, ..Default::default() }, ..serif() };
+        let a = layout_uncached("AB", &all, &ParagraphStyle::default());
+        assert_ne!(a.glyphs[0].id, ids("A", &serif())[0]);
+        // Superscript: Inter's sups figures at full size on the baseline; letters it lacks are
+        // synthesized (smaller and raised).
+        let sup = TextStyle { script: Script::Super, ..st(100.0) };
+        let s2 = layout_uncached("2", &sup, &ParagraphStyle::default());
+        assert_ne!(s2.glyphs[0].id, ids("2", &st(100.0))[0]);
+        assert_eq!(s2.glyphs[0].size, 100.0);
+        assert_eq!(s2.glyphs[0].y, 0.0);
+        let sq = layout_uncached("q", &sup, &ParagraphStyle::default());
+        if !feature_substitutes(sq.glyphs[0].face, b"sups", 'q') {
+            assert!(sq.glyphs[0].size < 60.0 && sq.glyphs[0].y < -20.0, "{:?}", sq.glyphs[0]);
+        }
+        let sub = layout_uncached("2", &TextStyle { script: Script::Sub, ..st(100.0) }, &ParagraphStyle::default());
+        assert_ne!(sub.glyphs[0].id, s2.glyphs[0].id);
+    }
+
     #[test]
     fn kerning_and_ligatures_change_advances() {
         let kern = measure("AVAVAV", &st(100.0));
@@ -1110,7 +1279,11 @@ mod tests {
         let base = st(100.0);
         let sup = TextStyle { script: Script::Super, ..base.clone() };
         let sub = TextStyle { script: Script::Sub, ..base.clone() };
-        let l = rich("x2y2", &[(0..1, base.clone()), (1..2, sup), (2..3, base.clone()), (3..4, sub)], ParagraphStyle::default());
+        // A letter the font has no superior / inferior glyph for: synthesized.
+        let inter = fonts::resolve("Inter", "Regular").face;
+        let c = "qwkzvjxyQWK".chars().find(|&c| !feature_substitutes(inter, b"sups", c) && !feature_substitutes(inter, b"subs", c)).unwrap();
+        let text: String = ['x', c, 'y', c].iter().collect();
+        let l = rich(&text, &[(0..1, base.clone()), (1..2, sup), (2..3, base.clone()), (3..4, sub)], ParagraphStyle::default());
         let g = &l.glyphs;
         assert!((g[1].size - 58.3).abs() < 0.1);
         assert!((g[1].y - (g[0].y - 33.3)).abs() < 0.1, "superscript raised by a third of the size");

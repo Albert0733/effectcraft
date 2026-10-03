@@ -390,7 +390,7 @@ impl crate::Accelerator for ProbeAccel {
 }
 
 #[test]
-fn auto_backend_keeps_3d_comps_on_the_cpu() {
+fn auto_backend_sends_2d_and_3d_comps_to_the_gpu() {
     let (mut p, cid, comp) = setup();
     p.settings.gpu_acceleration = true;
     let l = solid(&mut p, &comp, [1.0, 0.0, 0.0], 50, 50);
@@ -404,8 +404,11 @@ fn auto_backend_keeps_3d_comps_on_the_cpu() {
     };
     // 2D comp: Auto uses the GPU compositor.
     assert!(asked(&p, crate::Backend::Auto));
-    // A 3D layer: Auto stays on the CPU; an explicit Gpu request still goes to the GPU.
+    // A 3D layer: Classic 3D runs on the GPU too (M12.7), so Auto still asks it.
     p.comp_mut(cid).unwrap().layers[0].switches.three_d = true;
-    assert!(!asked(&p, crate::Backend::Auto));
+    assert!(asked(&p, crate::Backend::Auto));
     assert!(asked(&p, crate::Backend::Gpu));
+    // Software Only: never.
+    p.settings.gpu_acceleration = false;
+    assert!(!asked(&p, crate::Backend::Auto));
 }

@@ -47,7 +47,15 @@ fn device(name: &str) -> Option<cpal::Device> {
 pub fn open(out: &AudioOutput) -> Option<Box<dyn AudioDevice>> {
     let dev = device(&out.device)?;
     let cfg = dev.default_output_config().ok()?;
-    Some(Box::new(CpalOut { out: out.clone(), rate: cfg.sample_rate().0, latency: Arc::new(AtomicU64::new(0)), stop: None, thread: None }))
+    // Settings ▸ Audio ▸ Preview Sample Rate: open the device at that rate when it supports it
+    // (otherwise the preview is mixed at that rate and resampled to the device's).
+    let supports = |r: u32| {
+        dev.supported_output_configs()
+            .map(|mut c| c.any(|c| c.channels() == cfg.channels() && c.min_sample_rate().0 <= r && r <= c.max_sample_rate().0))
+            .unwrap_or(false)
+    };
+    let rate = if out.rate > 0 && supports(out.rate) { out.rate } else { cfg.sample_rate().0 };
+    Some(Box::new(CpalOut { out: out.clone(), rate, latency: Arc::new(AtomicU64::new(0)), stop: None, thread: None }))
 }
 
 fn run<T: SizedSample + FromSample<f32>>(

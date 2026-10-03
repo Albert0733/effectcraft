@@ -5,7 +5,10 @@
 
 pub mod blur;
 pub mod channels3d;
+pub mod cuts;
 pub mod flow;
+pub mod inpaint;
+pub mod scopes;
 pub mod warp;
 
 use effectcraft_color::{BlendMode, blend_pixel};

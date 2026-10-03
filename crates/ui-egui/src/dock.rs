@@ -36,10 +36,16 @@ pub enum PanelKind {
     MaskInterpolation,
     ScriptConsole,
     EssentialGraphics,
+    LumetriScopes,
+    Footage,
+    MediaBrowser,
+    Metadata,
+    Progress,
+    ContentAwareFill,
 }
 
 impl PanelKind {
-    pub const ALL: [PanelKind; 26] = [
+    pub const ALL: [PanelKind; 32] = [
         PanelKind::Project,
         PanelKind::EffectControls,
         PanelKind::Composition,
@@ -66,6 +72,12 @@ impl PanelKind {
         PanelKind::MaskInterpolation,
         PanelKind::ScriptConsole,
         PanelKind::EssentialGraphics,
+        PanelKind::LumetriScopes,
+        PanelKind::Footage,
+        PanelKind::MediaBrowser,
+        PanelKind::Metadata,
+        PanelKind::Progress,
+        PanelKind::ContentAwareFill,
     ];
     pub fn title(self) -> &'static str {
         match self {
@@ -95,6 +107,12 @@ impl PanelKind {
             PanelKind::MaskInterpolation => "Mask Interpolation",
             PanelKind::ScriptConsole => "Script Console",
             PanelKind::EssentialGraphics => "Essential Graphics",
+            PanelKind::LumetriScopes => "Lumetri Scopes",
+            PanelKind::Footage => "Footage",
+            PanelKind::MediaBrowser => "Media Browser",
+            PanelKind::Metadata => "Metadata",
+            PanelKind::Progress => "Progress",
+            PanelKind::ContentAwareFill => "Content-Aware Fill",
         }
     }
     pub fn id(self) -> String {
@@ -102,7 +120,7 @@ impl PanelKind {
     }
     pub fn from_name(s: &str) -> Option<PanelKind> {
         let n = s.to_ascii_lowercase().replace([' ', '_', '-', '&'], "");
-        Self::ALL.iter().copied().find(|p| format!("{p:?}").to_ascii_lowercase() == n || p.title().to_ascii_lowercase().replace([' ', '&'], "") == n)
+        Self::ALL.iter().copied().find(|p| format!("{p:?}").to_ascii_lowercase() == n || p.title().to_ascii_lowercase().replace([' ', '&', '-'], "") == n)
     }
     /// Window-menu shortcut.
     pub fn window_shortcut(self) -> Option<&'static str> {
@@ -295,7 +313,7 @@ pub fn workspace(name: &str) -> DockNode {
             hsplit(
                 FixedA(360.0),
                 tabs(&[EffectControls, Project], 0),
-                hsplit(FixedB(300.0), tabs(&[Composition, Layer], 0), right(&[Info, Preview], &[EffectsPresets])),
+                hsplit(FixedB(340.0), tabs(&[Composition, Layer], 0), right(&[LumetriScopes, Info, Preview], &[EffectsPresets])),
             ),
             tabs(&[Timeline], 0),
         ),
@@ -315,17 +333,17 @@ pub fn workspace(name: &str) -> DockNode {
             Ratio(0.55),
             hsplit(
                 FixedA(300.0),
-                tabs(&[Project, EffectControls, Flowchart, History], 0),
+                tabs(&[Project, EffectControls, Flowchart, History, MediaBrowser, Metadata], 0),
                 hsplit(
                     FixedB(300.0),
-                    tabs(&[Composition, Layer], 0),
+                    tabs(&[Composition, Layer, Footage], 0),
                     right(
-                        &[Info, Preview, Audio, Align, Character, Paragraph],
-                        &[EffectsPresets, Properties, Tracker, Wiggler, Smoother, MotionSketch, Paint, Brushes, Markers],
+                        &[Info, Preview, Audio, Align, Character, Paragraph, LumetriScopes],
+                        &[EffectsPresets, Properties, Tracker, Wiggler, Smoother, MotionSketch, Paint, Brushes, Markers, ContentAwareFill],
                     ),
                 ),
             ),
-            tabs(&[Timeline, RenderQueue], 0),
+            tabs(&[Timeline, RenderQueue, Progress], 0),
         ),
         "Standard" => vsplit(
             Ratio(0.56),
@@ -779,6 +797,10 @@ pub fn draw_group_chrome(
         }
     } else {
         let strip = Rect::from_min_size(g.rect.min, vec2(g.rect.width(), t.tab_h));
+        if t.gradients {
+            // Settings ▸ Appearance ▸ Use Gradients.
+            crate::theme::gradient_rect(&painter, strip.shrink2(vec2(t.radius, 0.0)), t.grad_top(t.panel_bg), t.panel_bg);
+        }
         let mut x = strip.min.x + 12.0;
         let text_y = strip.min.y + 16.0;
         for (i, p) in g.panels.iter().enumerate() {

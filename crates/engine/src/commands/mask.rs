@@ -54,9 +54,76 @@ pub(crate) fn path_group<'a>(props: &'a mut PropGroup, key: &Value) -> Option<&'
 
 /// Edit the mask path of (layer, mask) at the current time.
 fn edit_path<T>(s: &mut Session, p: &Value, label: &str, f: impl FnOnce(&mut ShapePath) -> Result<T>) -> Result<(Uid, T)> {
+    edit_path_counted(s, p, label, |sp| f(sp).map(|r| (r, None)))
+}
+
+/// A change of a path's vertex count, repeated on the other keyframes of an animated path when
+/// Settings ▸ General ▸ Preserve Constant Vertex and Feather Point Count is on.
+#[derive(Clone, Debug)]
+pub(crate) enum CountOp {
+    /// A vertex was inserted at this index.
+    Insert(usize),
+    /// These vertices were removed.
+    Remove(Vec<usize>),
+}
+
+/// Apply a vertex-count change to another keyframe's path: an inserted vertex splits the
+/// matching segment in half (the shape doesn't change), removed vertices go.
+pub(crate) fn apply_count_op(sp: &mut ShapePath, op: &CountOp) {
+    match op {
+        CountOp::Insert(at) => {
+            let n = sp.vertices.len();
+            if n == 0 {
+                return;
+            }
+            if *at > 0 && split_segment(sp, at - 1, 0.5).is_some() {
+                return;
+            }
+            let at = (*at).min(n);
+            let v = sp.vertices[at.min(n - 1)];
+            sp.in_tangents.resize(n, [0.0; 2]);
+            sp.out_tangents.resize(n, [0.0; 2]);
+            sp.vertices.insert(at, v);
+            sp.in_tangents.insert(at, [0.0; 2]);
+            sp.out_tangents.insert(at, [0.0; 2]);
+        }
+        CountOp::Remove(idx) => {
+            let mut idx = idx.clone();
+            idx.sort_unstable();
+            idx.dedup();
+            for &i in idx.iter().rev() {
+                if i < sp.vertices.len() {
+                    sp.vertices.remove(i);
+                    if i < sp.in_tangents.len() {
+                        sp.in_tangents.remove(i);
+                    }
+                    if i < sp.out_tangents.len() {
+                        sp.out_tangents.remove(i);
+                    }
+                }
+            }
+            if sp.vertices.len() < 3 {
+                sp.closed = false;
+            }
+        }
+    }
+}
+
+/// Repeat `op` on every keyframe of `pr` other than the one at `lt`.
+fn sync_keys(pr: &mut effectcraft_project::Property, lt: effectcraft_time::Tick, op: &CountOp) {
+    for k in pr.keys.iter_mut().filter(|k| k.time != lt) {
+        if let KV::Path(sp) = &mut k.value {
+            apply_count_op(sp, op);
+        }
+    }
+}
+
+/// [`edit_path`] whose edit may change the vertex count (`f` says how).
+fn edit_path_counted<T>(s: &mut Session, p: &Value, label: &str, f: impl FnOnce(&mut ShapePath) -> Result<(T, Option<CountOp>)>) -> Result<(Uid, T)> {
     let (cid, lid) = layer_p(s, p, label)?;
     let key = p.get("mask").cloned().ok_or_else(|| bad(label, "missing `mask` (uid, index or name)"))?;
     let t = s.time();
+    let preserve = s.prefs.general.preserve_constant_vertex_count;
     s.edit(label, merge_p(p), |proj, _| {
         let l = layer_mut(proj, cid, lid)?;
         let lt = l.layer_time(t);
@@ -65,11 +132,14 @@ fn edit_path<T>(s: &mut Session, p: &Value, label: &str, f: impl FnOnce(&mut Sha
         let roto = super::paths::is_roto(g);
         let pr = g.get_mut("path").ok_or_else(|| bad(label, "mask has no path"))?;
         let KV::Path(mut sp) = pr.value_at(lt) else { return Err(bad(label, "not a path")) };
-        let r = f(&mut sp)?;
+        let (r, op) = f(&mut sp)?;
         if roto {
             super::paths::roto_smooth(&mut sp);
         }
         pr.set_value_at(lt, KV::Path(sp));
+        if let Some(op) = op.filter(|_| preserve) {
+            sync_keys(pr, lt, &op);
+        }
         Ok((uid, r))
     })
 }
@@ -88,12 +158,13 @@ fn new_mask(s: &mut Session, p: &Value) -> Result<Value> {
     outs.resize(n, [0.0; 2]);
     let path = ShapePath { vertices: v, in_tangents: ins, out_tangents: outs, closed: b_p(p, "closed").unwrap_or(false), feather: Vec::new() };
     let mode = str_p(p, "mode").and_then(MaskMode::from_name).unwrap_or(MaskMode::Add);
+    let cycle = s.prefs.appearance.cycle_mask_colors;
     let uid = s.edit("New Mask", None, |proj, st| {
         let mut next = proj.next_id;
         let l = layer_mut(proj, cid, lid)?;
         let masks = l.props.sub_mut("masks").ok_or_else(|| bad("mask.new", "this layer can't have masks"))?;
         let k = masks.children.len();
-        let g = build::mask(&mut Ids(&mut next), &format!("Mask {}", k + 1), path, mode, build::MASK_COLORS[k % build::MASK_COLORS.len()]);
+        let g = build::mask(&mut Ids(&mut next), &format!("Mask {}", k + 1), path, mode, crate::prefs::mask_color(cycle, k));
         let uid = g.uid;
         masks.children.push(g.into());
         proj.next_id = next;
@@ -109,13 +180,13 @@ fn add_vertex(s: &mut Session, p: &Value) -> Result<Value> {
     let tout = pt(p.get("out")).unwrap_or([0.0; 2]);
     let at = p.get("index").and_then(Value::as_u64).map(|i| i as usize);
     let (_, lid) = layer_p(s, p, "mask.addVertex")?;
-    let (uid, i) = edit_path(s, p, "mask.addVertex", |sp| {
+    let (uid, i) = edit_path_counted(s, p, "mask.addVertex", |sp| {
         let i = at.unwrap_or(sp.vertices.len()).min(sp.vertices.len());
         sp.vertices.insert(i, point);
         sp.in_tangents.insert(i, tin);
         sp.out_tangents.insert(i, tout);
         sp.feather_after_insert(i, None);
-        Ok(i)
+        Ok((i, Some(CountOp::Insert(i))))
     })?;
     s.state.selected_vertices = vec![VertexRef { layer: lid, mask: uid, index: i }];
     Ok(json!(i))
@@ -197,9 +268,16 @@ fn has_vertices(s: &Session) -> std::result::Result<(), String> {
 
 /// Apply `f` to the selected vertices' paths (each mask once).
 fn edit_vertices(s: &mut Session, p: &Value, label: &str, f: impl Fn(&mut ShapePath, &[usize])) -> Result<Value> {
+    edit_vertices_counted(s, p, label, false, f)
+}
+
+/// [`edit_vertices`]; `removes`: `f` deletes the given vertices (repeated on the other keyframes
+/// when Preserve Constant Vertex Count is on).
+fn edit_vertices_counted(s: &mut Session, p: &Value, label: &str, removes: bool, f: impl Fn(&mut ShapePath, &[usize])) -> Result<Value> {
     let cid = s.active_comp_id().ok_or(EngineError::NoComp)?;
     let groups = vertex_groups(s, p)?;
     let t = s.time();
+    let preserve = removes && s.prefs.general.preserve_constant_vertex_count;
     s.edit(label, merge_p(p), |proj, _| {
         let comp = proj.comp_mut(cid).ok_or(EngineError::NoComp)?;
         for ((l, m), idx) in &groups {
@@ -214,6 +292,9 @@ fn edit_vertices(s: &mut Session, p: &Value, label: &str, f: impl Fn(&mut ShapeP
                 super::paths::roto_smooth(&mut sp);
             }
             pr.set_value_at(lt, KV::Path(sp));
+            if preserve {
+                sync_keys(pr, lt, &CountOp::Remove(idx.clone()));
+            }
         }
         Ok(())
     })?;
@@ -233,7 +314,7 @@ fn move_vertices(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 fn delete_vertices(s: &mut Session, p: &Value) -> Result<Value> {
-    let n = edit_vertices(s, p, "Delete Mask Vertices", |sp, idx| {
+    let n = edit_vertices_counted(s, p, "Delete Mask Vertices", true, |sp, idx| {
         let mut idx = idx.to_vec();
         idx.sort_unstable();
         idx.dedup();
@@ -525,7 +606,10 @@ fn insert_vertex(s: &mut Session, p: &Value) -> Result<Value> {
         p.get("segment").and_then(Value::as_u64).ok_or_else(|| bad("mask.insertVertex", "missing `segment` (index of the segment's first vertex)"))? as usize;
     let t = super::f_p(p, "t").unwrap_or(0.5).clamp(0.0, 1.0);
     let (_, lid) = layer_p(s, p, "mask.insertVertex")?;
-    let (uid, i) = edit_path(s, p, "Add Vertex", |sp| split_segment(sp, seg, t).ok_or_else(|| bad("mask.insertVertex", "no such segment")))?;
+    let (uid, i) = edit_path_counted(s, p, "Add Vertex", |sp| {
+        let i = split_segment(sp, seg, t).ok_or_else(|| bad("mask.insertVertex", "no such segment"))?;
+        Ok((i, Some(CountOp::Insert(i))))
+    })?;
     s.state.selected_vertices = vec![VertexRef { layer: lid, mask: uid, index: i }];
     Ok(json!(i))
 }
