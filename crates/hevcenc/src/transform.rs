@@ -95,7 +95,7 @@ pub fn forward(r: &[i32], c: &mut [i32], n: usize, dst: bool, bit_depth: u32) {
     let shift1 = log2 + bit_depth - 9;
     let shift2 = log2 + 6;
     let (r1, r2) = (1i32 << (shift1 - 1), 1i32 << (shift2 - 1));
-    let mut tmp = [0i32; 32 * 32];
+    let mut tmp = vec![0i32; n * n];
     let mut out = [0i32; 32];
     // rows (horizontal frequencies)
     for y in 0..n {
@@ -127,7 +127,7 @@ pub fn forward(r: &[i32], c: &mut [i32], n: usize, dst: bool, bit_depth: u32) {
 /// Inverse 2-D transform (8.6.4.2) of scaled coefficients `d` in place, producing residuals.
 pub fn inverse(d: &mut [i32], n: usize, dst: bool, bit_depth: u32) {
     let bd_shift = 20 - bit_depth;
-    let mut tmp = [0i32; 32 * 32];
+    let mut tmp = vec![0i32; n * n];
     let mut col = [0i32; 32];
     let mut out = [0i32; 32];
     // max non-zero row, to skip empty work

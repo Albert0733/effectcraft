@@ -3,9 +3,6 @@
 
 use crate::tables::{CHROMA_FILTER, LUMA_FILTER};
 
-/// Max prediction block size + filter margin.
-const WIN: usize = 64 + 7;
-
 /// One plane of a reference picture.
 #[derive(Clone, Copy)]
 pub struct PlaneRef<'a> {
@@ -44,22 +41,23 @@ pub fn mc_luma(f: PlaneRef, bd: u32, x: i32, y: i32, mv: [i16; 2], w: usize, h: 
     let yi = y + (mv[1] as i32 >> 2);
     let shift1 = bd.min(12) - 8;
     let shift3 = 14 - bd;
-    let mut win = [0i16; WIN * WIN];
+    let ws = w + 7;
+    let mut win = vec![0i16; ws * (h + 7)];
     if fx == 0 && fy == 0 {
-        f.window(xi, yi, w, h, &mut win, WIN);
+        f.window(xi, yi, w, h, &mut win, ws);
         for r in 0..h {
             for c in 0..w {
-                out[r * w + c] = win[r * WIN + c] << shift3;
+                out[r * w + c] = win[r * ws + c] << shift3;
             }
         }
         return;
     }
-    f.window(xi - 3, yi - 3, w + 7, h + 7, &mut win, WIN);
+    f.window(xi - 3, yi - 3, w + 7, h + 7, &mut win, ws);
     let hf = &LUMA_FILTER[fx];
     let vf = &LUMA_FILTER[fy];
     if fy == 0 {
         for r in 0..h {
-            let row = &win[(r + 3) * WIN..];
+            let row = &win[(r + 3) * ws..];
             for c in 0..w {
                 let s: i32 = (0..8).map(|k| hf[k] as i32 * row[c + k] as i32).sum();
                 out[r * w + c] = (s >> shift1) as i16;
@@ -68,22 +66,22 @@ pub fn mc_luma(f: PlaneRef, bd: u32, x: i32, y: i32, mv: [i16; 2], w: usize, h: 
     } else if fx == 0 {
         for r in 0..h {
             for c in 0..w {
-                let s: i32 = (0..8).map(|k| vf[k] as i32 * win[(r + k) * WIN + c + 3] as i32).sum();
+                let s: i32 = (0..8).map(|k| vf[k] as i32 * win[(r + k) * ws + c + 3] as i32).sum();
                 out[r * w + c] = (s >> shift1) as i16;
             }
         }
     } else {
-        let mut tmp = [0i16; WIN * WIN];
+        let mut tmp = vec![0i16; ws * (h + 7)];
         for r in 0..h + 7 {
-            let row = &win[r * WIN..];
+            let row = &win[r * ws..];
             for c in 0..w {
                 let s: i32 = (0..8).map(|k| hf[k] as i32 * row[c + k] as i32).sum();
-                tmp[r * WIN + c] = (s >> shift1) as i16;
+                tmp[r * ws + c] = (s >> shift1) as i16;
             }
         }
         for r in 0..h {
             for c in 0..w {
-                let s: i32 = (0..8).map(|k| vf[k] as i32 * tmp[(r + k) * WIN + c] as i32).sum();
+                let s: i32 = (0..8).map(|k| vf[k] as i32 * tmp[(r + k) * ws + c] as i32).sum();
                 out[r * w + c] = (s >> 6) as i16;
             }
         }
@@ -97,22 +95,23 @@ pub fn mc_chroma(f: PlaneRef, bd: u32, x: i32, y: i32, mv: [i16; 2], w: usize, h
     let yi = y + (mv[1] as i32 >> 3);
     let shift1 = bd.min(12) - 8;
     let shift3 = 14 - bd;
-    let mut win = [0i16; WIN * WIN];
+    let ws = w + 7;
+    let mut win = vec![0i16; ws * (h + 7)];
     if fx == 0 && fy == 0 {
-        f.window(xi, yi, w, h, &mut win, WIN);
+        f.window(xi, yi, w, h, &mut win, ws);
         for r in 0..h {
             for c in 0..w {
-                out[r * w + c] = win[r * WIN + c] << shift3;
+                out[r * w + c] = win[r * ws + c] << shift3;
             }
         }
         return;
     }
-    f.window(xi - 1, yi - 1, w + 3, h + 3, &mut win, WIN);
+    f.window(xi - 1, yi - 1, w + 3, h + 3, &mut win, ws);
     let hf = &CHROMA_FILTER[fx];
     let vf = &CHROMA_FILTER[fy];
     if fy == 0 {
         for r in 0..h {
-            let row = &win[(r + 1) * WIN..];
+            let row = &win[(r + 1) * ws..];
             for c in 0..w {
                 let s: i32 = (0..4).map(|k| hf[k] as i32 * row[c + k] as i32).sum();
                 out[r * w + c] = (s >> shift1) as i16;
@@ -121,22 +120,22 @@ pub fn mc_chroma(f: PlaneRef, bd: u32, x: i32, y: i32, mv: [i16; 2], w: usize, h
     } else if fx == 0 {
         for r in 0..h {
             for c in 0..w {
-                let s: i32 = (0..4).map(|k| vf[k] as i32 * win[(r + k) * WIN + c + 1] as i32).sum();
+                let s: i32 = (0..4).map(|k| vf[k] as i32 * win[(r + k) * ws + c + 1] as i32).sum();
                 out[r * w + c] = (s >> shift1) as i16;
             }
         }
     } else {
-        let mut tmp = [0i16; WIN * WIN];
+        let mut tmp = vec![0i16; ws * (h + 7)];
         for r in 0..h + 3 {
-            let row = &win[r * WIN..];
+            let row = &win[r * ws..];
             for c in 0..w {
                 let s: i32 = (0..4).map(|k| hf[k] as i32 * row[c + k] as i32).sum();
-                tmp[r * WIN + c] = (s >> shift1) as i16;
+                tmp[r * ws + c] = (s >> shift1) as i16;
             }
         }
         for r in 0..h {
             for c in 0..w {
-                let s: i32 = (0..4).map(|k| vf[k] as i32 * tmp[(r + k) * WIN + c] as i32).sum();
+                let s: i32 = (0..4).map(|k| vf[k] as i32 * tmp[(r + k) * ws + c] as i32).sum();
                 out[r * w + c] = (s >> 6) as i16;
             }
         }

@@ -3,7 +3,7 @@
 //! Main and Main 10 profiles, 4:2:0, one slice per picture: IDR pictures and single-reference P
 //! pictures (no reordering), 64x64 CTUs with rate-distortion coding-unit decisions (8x8 .. 64x64),
 //! intra (35 modes, NxN at 8x8), merge / skip and AMVP inter prediction with quarter-sample motion,
-//! DCT / DST transforms and CABAC. In-loop filters (deblocking, SAO) are disabled.
+//! DCT / DST transforms and CABAC. The deblocking filter is on; SAO is not used.
 //!
 //! ```
 //! use effectcraft_hevcenc::{Encoder, EncoderConfig, Frame};
@@ -19,6 +19,7 @@
 
 mod bitstream;
 mod cabac;
+mod deblock;
 mod frame;
 mod inter;
 mod intra;
@@ -333,6 +334,7 @@ impl Encoder {
         let ctx = cabac::init_contexts(qp, if idr { 0 } else { 1 });
         let mut enc = cabac::CabacEncoder::new(bw, ctx);
         fc.encode(&mut enc);
+        fc.deblock();
         let rbsp = enc.finish().into_bytes();
         let nal = nal_unit(if idr { NAL_IDR_N_LP } else { NAL_TRAIL_R }, &rbsp);
         let mut data = Vec::with_capacity(nal.len() + 4);

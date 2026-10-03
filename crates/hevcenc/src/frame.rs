@@ -12,6 +12,11 @@ use crate::transform;
 
 pub const F_INTRA: u8 = 1;
 pub const F_SKIP: u8 = 2;
+/// The luma transform block covering this 4x4 block has non-zero coefficients.
+pub const F_CBF: u8 = 4;
+/// The left / top edge of this 4x4 block is a transform (and prediction) block edge.
+pub const E_EDGE_V: u8 = 8;
+pub const E_EDGE_H: u8 = 16;
 
 /// Per 4x4 luma block state of the current picture.
 #[derive(Clone, Copy, Default)]
@@ -79,6 +84,7 @@ pub struct FrameCoder<'a> {
     hctb: usize,
     pub kind: SliceKind,
     /// QP' (with QpBdOffset) for luma and chroma.
+    slice_qp: i32,
     qp_y: i32,
     qp_c: i32,
     lambda: f64,
@@ -91,6 +97,7 @@ pub struct FrameCoder<'a> {
     tbs: Vec<Tb>,
     coefs: Vec<i32>,
     pred: Vec<i16>,
+    scratch: [Vec<i32>; 2],
 }
 
 #[inline]
@@ -134,6 +141,7 @@ impl<'a> FrameCoder<'a> {
             wctb: w.div_ceil(ctb),
             hctb: h.div_ceil(ctb),
             kind,
+            slice_qp,
             qp_y: slice_qp + off,
             qp_c,
             lambda,
@@ -146,6 +154,7 @@ impl<'a> FrameCoder<'a> {
             tbs: Vec::with_capacity(16),
             coefs: Vec::with_capacity(64 * 64 * 2),
             pred: vec![0; 64 * 64],
+            scratch: [vec![0; 32 * 32], vec![0; 32 * 32]],
         }
     }
 
@@ -180,6 +189,28 @@ impl<'a> FrameCoder<'a> {
                 f(b);
             }
         }
+    }
+
+    /// Mark the CU's left / top edges and, for CUs larger than the maximum transform size, the
+    /// inner transform edges (deblocking).
+    fn mark_edges(&mut self, x: usize, y: usize, log2: u32) {
+        let n = 1usize << log2;
+        let t = 1usize << log2.min(LOG2_MAX_TB);
+        for ty in (y..y + n).step_by(t) {
+            for tx in (x..x + n).step_by(t) {
+                for by in ty / 4..(ty + t) / 4 {
+                    self.blk[by * self.w4 + tx / 4].flags |= E_EDGE_V;
+                }
+                for b in &mut self.blk[(ty / 4) * self.w4 + tx / 4..(ty / 4) * self.w4 + (tx + t) / 4] {
+                    b.flags |= E_EDGE_H;
+                }
+            }
+        }
+    }
+
+    /// In-loop deblocking of the finished picture.
+    pub fn deblock(&mut self) {
+        crate::deblock::deblock(&mut self.rec, &self.blk, self.w, self.h, self.slice_qp, self.bd);
     }
 
     fn snap(&self, x: usize, y: usize, n: usize) -> Snap {
@@ -387,6 +418,7 @@ impl<'a> FrameCoder<'a> {
                     b.flags = F_INTRA;
                     b.ipm = modes[0];
                 });
+                self.mark_edges(x, y, log2);
                 if nxn {
                     let h = n / 2;
                     for k in 1..4 {
@@ -430,6 +462,7 @@ impl<'a> FrameCoder<'a> {
                     b.ipm = 1;
                     b.mv = mv;
                 });
+                self.mark_edges(x, y, log2);
                 self.predict_inter(x, y, n, mv);
                 let mut eff = mode;
                 let mut root = false;
@@ -439,7 +472,7 @@ impl<'a> FrameCoder<'a> {
                     if !root && let CuMode::Merge { idx } = mode {
                         // rqt_root_cbf would be inferred: code a skipped CU instead
                         eff = CuMode::Skip { idx };
-                        self.fill(x, y, n, |b| b.flags = F_SKIP);
+                        self.fill(x, y, n, |b| b.flags |= F_SKIP);
                     }
                 }
                 match eff {
@@ -515,7 +548,8 @@ impl<'a> FrameCoder<'a> {
             let bd = self.bd;
             predict_from_refs(&refs, c, m, n, bd, &mut self.rec[c][y * stride + x..], stride);
         }
-        let mut r = [0i32; 32 * 32];
+        let mut scr = std::mem::take(&mut self.scratch);
+        let [r, coef] = &mut scr;
         for yy in 0..n {
             let o = (y + yy) * stride + x;
             for xx in 0..n {
@@ -524,15 +558,16 @@ impl<'a> FrameCoder<'a> {
         }
         let intra = intra_mode.is_some();
         let dst = intra && c == 0 && n == 4;
-        let mut coef = [0i32; 32 * 32];
         transform::forward(&r[..n * n], &mut coef[..n * n], n, dst, self.bd);
         let qp = if c == 0 { self.qp_y } else { self.qp_c };
-        let mut lv = [0i32; 32 * 32];
-        let nz = transform::quantize(&coef[..n * n], &mut lv[..n * n], n, qp, intra, self.bd) > 0;
+        let off = self.coefs.len();
+        self.coefs.resize(off + n * n, 0);
+        let lv = &mut self.coefs[off..off + n * n];
+        let nz = transform::quantize(&coef[..n * n], lv, n, qp, intra, self.bd) > 0;
         if nz {
-            let mut d = [0i32; 32 * 32];
-            transform::dequantize(&lv[..n * n], &mut d[..n * n], n, qp, self.bd);
-            transform::inverse(&mut d[..n * n], n, dst, self.bd);
+            let d = &mut r[..n * n];
+            transform::dequantize(lv, d, n, qp, self.bd);
+            transform::inverse(d, n, dst, self.bd);
             let max = (1i32 << self.bd) - 1;
             for yy in 0..n {
                 let o = (y + yy) * stride + x;
@@ -542,12 +577,14 @@ impl<'a> FrameCoder<'a> {
                 }
             }
         }
+        self.scratch = scr;
+        if nz && c == 0 {
+            self.fill(x, y, n, |b| b.flags |= F_CBF);
+        }
         let scan = match intra_mode {
             Some(m) if log2 == 2 || (log2 == 3 && c == 0) => scan_idx_for_mode(m),
             _ => 0,
         };
-        let off = self.coefs.len();
-        self.coefs.extend_from_slice(&lv[..n * n]);
         self.tbs.push(Tb { c: c as u8, lx: lpos.0 as u32, ly: lpos.1 as u32, log2, nz, off, scan });
     }
 

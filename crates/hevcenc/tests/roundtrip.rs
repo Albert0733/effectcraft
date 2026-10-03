@@ -216,6 +216,32 @@ fn odd_multiple_sizes_and_cropping() {
     }
 }
 
+/// High QPs: strong deblocking, large skipped CUs.
+#[test]
+fn high_qp_deblocking() {
+    let (w, h) = (200, 136);
+    for (qp, profile, bd) in [(38u8, Profile::Main, 8u32), (44, Profile::Main, 8), (37, Profile::Main10, 10)] {
+        let pics: Vec<Pic> = (0..5).map(|i| synth(w, h, bd, 2 * i, i)).collect();
+        let run = encode(cfg(w as u32, h as u32, qp, 4, profile), &pics);
+        check_filmcraft(&run, w, h);
+        check_ffmpeg(&run, w, h, bd, &format!("hq{qp}"));
+    }
+}
+
+/// More pictures than MaxPicOrderCntLsb (256) without an IDR, then a periodic IDR: POC wrap.
+#[test]
+fn long_gop_poc_wrap() {
+    let (w, h) = (16, 16);
+    let pics: Vec<Pic> = (0..300).map(|i| synth(w, h, 8, i % 7, i % 5)).collect();
+    let run = encode(cfg(w as u32, h as u32, 30, 0, Profile::Main), &pics);
+    assert_eq!(run.keys.iter().filter(|&&k| k).count(), 1);
+    check_filmcraft(&run, w, h);
+    check_ffmpeg(&run, w, h, 8, "pocwrap");
+    let run = encode(cfg(w as u32, h as u32, 30, 260, Profile::Main), &pics);
+    assert_eq!(run.keys.iter().filter(|&&k| k).count(), 2);
+    check_ffmpeg(&run, w, h, 8, "pocwrap2");
+}
+
 #[test]
 fn odd_dimensions_are_rejected() {
     assert!(Encoder::new(EncoderConfig::new(33, 17, 30, 1)).is_err());
@@ -270,4 +296,52 @@ fn hvcc_layout() {
     assert_eq!(sets[0][0] >> 1, 32);
     assert_eq!(sets[1][0] >> 1, 33);
     assert_eq!(sets[2][0] >> 1, 34);
+}
+
+/// Speed / size / quality report on ffmpeg-generated 1080p test content:
+/// `cargo test -p effectcraft-hevcenc --test roundtrip bench_1080p -- --ignored --nocapture`
+/// (`HEVCENC_BENCH_SRC` selects another lavfi source).
+#[test]
+#[ignore]
+fn bench_1080p() {
+    if !ffmpeg_available() {
+        return;
+    }
+    let (w, h, n) = (1920usize, 1080usize, 8usize);
+    let src = std::env::var("HEVCENC_BENCH_SRC").unwrap_or_else(|_| "testsrc2=size=1920x1080:rate=30".into());
+    let out = std::env::temp_dir().join(format!("hevcenc-bench-{}.yuv", std::process::id()));
+    let st = Command::new("ffmpeg")
+        .args(["-v", "error", "-y", "-f", "lavfi", "-i", &src, "-frames:v", &n.to_string(), "-pix_fmt", "yuv420p", "-f", "rawvideo"])
+        .arg(&out)
+        .status()
+        .unwrap();
+    assert!(st.success());
+    let raw = std::fs::read(&out).unwrap();
+    let _ = std::fs::remove_file(&out);
+    let fsz = w * h * 3 / 2;
+    let to16 = |s: &[u8]| s.iter().map(|&v| v as u16).collect::<Vec<_>>();
+    let pics: Vec<Pic> = (0..n)
+        .map(|i| {
+            let f = &raw[i * fsz..(i + 1) * fsz];
+            Pic { w, y: to16(&f[..w * h]), u: to16(&f[w * h..w * h * 5 / 4]), v: to16(&f[w * h * 5 / 4..]) }
+        })
+        .collect();
+    for qp in [22u8, 32] {
+        let mut enc = Encoder::new(cfg(w as u32, h as u32, qp, 30, Profile::Main)).unwrap();
+        for (i, p) in pics.iter().enumerate() {
+            let t = std::time::Instant::now();
+            let pkt = enc.encode(&p.frame());
+            let dt = t.elapsed();
+            let rec = enc.last_reconstruction().unwrap();
+            eprintln!(
+                "QP {qp} frame {i} ({}): {:7} bytes, {:6.1} ms, PSNR Y {:.2} U {:.2} V {:.2}",
+                if pkt.keyframe { "I" } else { "P" },
+                pkt.data.len(),
+                dt.as_secs_f64() * 1000.0,
+                psnr(&p.y, &rec[0], 8),
+                psnr(&p.u, &rec[1], 8),
+                psnr(&p.v, &rec[2], 8)
+            );
+        }
+    }
 }

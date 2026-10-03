@@ -208,7 +208,9 @@ pub fn pps() -> Vec<u8> {
     w.put(0, 1); // pps_loop_filter_across_slices_enabled_flag
     w.put(1, 1); // deblocking_filter_control_present_flag
     w.put(0, 1); // deblocking_filter_override_enabled_flag
-    w.put(1, 1); // pps_deblocking_filter_disabled_flag
+    w.put(0, 1); // pps_deblocking_filter_disabled_flag
+    w.se(0); // pps_beta_offset_div2
+    w.se(0); // pps_tc_offset_div2
     w.put(0, 1); // pps_scaling_list_data_present_flag
     w.put(0, 1); // lists_modification_present_flag
     w.ue(0); // log2_parallel_merge_level_minus2
