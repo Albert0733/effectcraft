@@ -461,6 +461,9 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     ctx.data_mut(|d| d.insert_temp(map_id(), map));
     let comp_rect = Rect::from_min_size(origin, vec2(cw * zoom, ch * zoom));
     let painter = p.with_clip_rect(area);
+    // Settings ▸ 3D ▸ Extended Viewer: custom 3D views (and Draft 3D) render the visible
+    // pasteboard too, so 3D layers reaching past the comp frame stay visible there.
+    app.ui.viewer.extended = extended_region(app, &comp, cid, map);
 
     // Frame.
     let ppp = ctx.pixels_per_point();
@@ -491,7 +494,13 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let ectx = EvalCtx { project: &snap_project, comp_id: cid, comp: &comp, time, expr: snap_expr.as_deref(), footage: None };
     // The frame (or snapshot) through Show Channel and exposure; ROI frames cover the region.
     vt::draw_frame(app, &ctx, &painter, comp_rect, cid, &ectx);
-    painter.rect_stroke(comp_rect, 0.0, Stroke::new(1.0, Color32::from_black_alpha(160)), StrokeKind::Outside);
+    if app.ui.viewer.extended.is_some() {
+        // The comp frame outlined over the extended render.
+        painter.rect_stroke(comp_rect, 0.0, Stroke::new(1.0, Color32::from_gray(150)), StrokeKind::Outside);
+        app.auto.add("viewer.extendedArea", rect_of(&map, app.ui.viewer.extended), "Extended Viewer area");
+    } else {
+        painter.rect_stroke(comp_rect, 0.0, Stroke::new(1.0, Color32::from_black_alpha(160)), StrokeKind::Outside);
+    }
     app.auto.add("viewer.comp", comp_rect, &comp_name);
     app.auto.add("viewer.area", area, "Composition viewer");
 
@@ -1654,6 +1663,34 @@ pub(crate) fn hex_rgb(s: &str) -> Option<[u8; 3]> {
     Some([p(0)?, p(2)?, p(4)?])
 }
 
+/// The Extended Viewer's render region for this frame (see [`ViewerState::extended`]):
+/// Settings ▸ 3D ▸ Extended Viewer on, the comp has 3D layers and the view is a custom 3D view
+/// (or Draft 3D is on), and part of the visible viewer lies outside the comp frame.
+///
+/// [`ViewerState::extended`]: crate::state::ViewerState::extended
+pub(crate) fn extended_region(
+    app: &EffectcraftApp,
+    comp: &effectcraft_engine::project::Comp,
+    cid: effectcraft_engine::project::ItemId,
+    map: ViewerMap,
+) -> Option<[f64; 4]> {
+    if !app.session.prefs.three_d.extended_viewer || !comp.has_3d() || app.session.state.region_of_interest.is_some() {
+        return None;
+    }
+    let view = app.session.state.views3d.get(&cid).map(|v| v.current).unwrap_or_default();
+    if view == View3D::ActiveCamera && !comp.draft_3d {
+        return None;
+    }
+    let a = map.to_comp(map.area.min);
+    let b = map.to_comp(map.area.max);
+    effectcraft_engine::render::extended_region(comp.width, comp.height, [a[0], a[1], b[0], b[1]], 1.0)
+}
+
+fn rect_of(map: &ViewerMap, r: Option<[f64; 4]>) -> Rect {
+    let [x, y, w, h] = r.unwrap_or_default();
+    Rect::from_min_max(map.to_screen([x, y]), map.to_screen([x + w, y + h]))
+}
+
 /// Put a rendered frame on screen: CPU pixels go into an egui texture; GPU frames are drawn
 /// straight from their wgpu texture (registered with egui-wgpu, no readback).
 fn show_frame(app: &mut EffectcraftApp, ctx: &egui::Context, key: crate::frames::FrameKey, img: crate::frames::FrameImage) {
@@ -1672,7 +1709,7 @@ fn show_frame(app: &mut EffectcraftApp, ctx: &egui::Context, key: crate::frames:
             }
             app.viewer_shown = app.viewer_tex.as_ref().map(|(t, k)| (t.id(), *k));
             app.viewer_image = Some(img);
-            vt::set_texture_roi(ctx, app.session.state.region_of_interest);
+            vt::set_texture_roi(ctx, app.session.state.region_of_interest.or(app.ui.viewer.extended));
         }
         FrameImage::Gpu(f) => {
             let Some(rs) = &app.wgpu else { return };

@@ -299,6 +299,10 @@ pub struct ViewerState {
     /// The pointer is dragging in the viewer this frame (Adaptive Resolution).
     #[serde(skip)]
     pub interacting: bool,
+    /// Extended Viewer: the comp-space region the viewer renders this frame (comp frame plus
+    /// the visible pasteboard), set while a 3D view shows past the frame.
+    #[serde(skip)]
+    pub extended: Option<[f64; 4]>,
     /// View ▸ Panel Background Color (`None` = theme default).
     pub pasteboard: Option<[u8; 3]>,
     pub custom_pasteboard: [u8; 3],
@@ -326,6 +330,7 @@ impl Default for ViewerState {
             ruler_origin: [0.0, 0.0],
             roi_draw: false,
             interacting: false,
+            extended: None,
             pasteboard: None,
             custom_pasteboard: [0x80, 0x80, 0x80],
         }
