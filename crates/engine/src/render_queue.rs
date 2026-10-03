@@ -162,7 +162,7 @@ pub fn bytes_per_frame(om: &OutputModule, w: u32, h: u32, fps: f64) -> f64 {
     let px = (w as f64 * h as f64) / (1920.0 * 1080.0);
     let mbps = |m: f64| m * 1_000_000.0 / 8.0;
     match om.format {
-        OutputFormat::H264 => om.bitrate_kbps as f64 * 1000.0 / 8.0 / fps,
+        OutputFormat::H264 | OutputFormat::Hevc | OutputFormat::Av1 => om.bitrate_kbps as f64 * 1000.0 / 8.0 / fps,
         OutputFormat::ProRes => {
             let rate = match om.prores_profile {
                 Proxy => 45.0,

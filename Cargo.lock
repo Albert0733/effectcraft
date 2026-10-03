@@ -1242,7 +1242,9 @@ dependencies = [
 name = "effectcraft-export"
 version = "0.1.0"
 dependencies = [
+ "effectcraft-av1enc",
  "effectcraft-color",
+ "effectcraft-hevcenc",
  "effectcraft-media",
  "effectcraft-opusenc",
  "effectcraft-project",

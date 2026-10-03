@@ -8,6 +8,8 @@
 //! | OpenEXR sequence | one file per frame | 32-bit float, linear light, premultiplied | yes | — |
 //! | Animated GIF | GIF89a | 256-colour palette per frame (NeuQuant) | 1-bit | — |
 //! | WebM | WebM (Matroska) | VP9 profile 0 intra frames (`effectcraft-vp9enc`), 8-bit 4:2:0 | VP9 alpha (BlockAdditional) | Opus (`effectcraft-opusenc`), 48 kHz stereo |
+//! | HEVC | MP4 (`hvc1`) | `effectcraft-hevcenc` Main / Main 10 4:2:0, I + P slices, bitrate or constant quality, level, key-frame interval | no | AAC-LC (FilmCraft), stereo |
+//! | AV1 | MP4 (`av01`), or WebM with the WebM format's AV1 codec | `effectcraft-av1enc` Main 8/10-bit 4:2:0, key + inter frames | no | AAC-LC in MP4, Opus in WebM |
 //! | WAV / AIFF | RIFF WAVE / AIFF | — | — | 16-bit PCM stereo (audio only) |
 //!
 //! Frames are rendered in parallel batches (rayon; one batch ≈ one frame per core) and handed to
@@ -19,8 +21,10 @@
 //! output is a single pixel wide/high).
 
 mod encode;
+mod hevc_av1;
 mod out;
 mod webm;
+mod webm_av1;
 
 use web_time::Instant;
 
@@ -134,7 +138,7 @@ pub fn export(job: &Job, progress: &mut dyn FnMut(&Progress) -> bool) -> Result<
     st.advance(0)?;
     let (w, h) = output_size(comp, job.settings, job.output);
     let mut report = match job.output.format {
-        OutputFormat::H264 | OutputFormat::ProRes => encode::movie(job, comp, w, h, &mut st)?,
+        OutputFormat::H264 | OutputFormat::Hevc | OutputFormat::Av1 | OutputFormat::ProRes => encode::movie(job, comp, w, h, &mut st)?,
         OutputFormat::Gif => gif_export(job, comp, w, h, &mut st)?,
         OutputFormat::WebM => webm::webm(job, comp, w, h, &mut st)?,
         OutputFormat::Wav => webm::audio_file(job, comp, false, &mut st)?,

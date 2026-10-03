@@ -19,25 +19,24 @@ use rayon::prelude::*;
 
 use crate::{Job, Report, Result, State, batch_size, io, render_frame, rgba8, wants_audio};
 
-const OPUS_RATE: u32 = 48_000;
-const OPUS_BITRATE: u32 = 192_000;
+pub(crate) const OPUS_RATE: u32 = 48_000;
 
 // Element ids (with their length markers).
-const EBML: u32 = 0x1A45_DFA3;
-const SEGMENT: u32 = 0x1853_8067;
-const INFO: u32 = 0x1549_A966;
-const TRACKS: u32 = 0x1654_AE6B;
-const TRACK_ENTRY: u32 = 0xAE;
-const CLUSTER: u32 = 0x1F43_B675;
+pub(crate) const EBML: u32 = 0x1A45_DFA3;
+pub(crate) const SEGMENT: u32 = 0x1853_8067;
+pub(crate) const INFO: u32 = 0x1549_A966;
+pub(crate) const TRACKS: u32 = 0x1654_AE6B;
+pub(crate) const TRACK_ENTRY: u32 = 0xAE;
+pub(crate) const CLUSTER: u32 = 0x1F43_B675;
 
-fn id_bytes(id: u32) -> Vec<u8> {
+pub(crate) fn id_bytes(id: u32) -> Vec<u8> {
     let b = id.to_be_bytes();
     let skip = b.iter().position(|x| *x != 0).unwrap_or(3);
     b[skip..].to_vec()
 }
 
 /// EBML variable-size integer for an element data size (shortest form).
-fn vint(n: u64) -> Vec<u8> {
+pub(crate) fn vint(n: u64) -> Vec<u8> {
     for len in 1..=8u32 {
         let max = (1u64 << (7 * len)) - 2;
         if n <= max {
@@ -50,23 +49,23 @@ fn vint(n: u64) -> Vec<u8> {
     v
 }
 
-fn el(out: &mut Vec<u8>, id: u32, data: &[u8]) {
+pub(crate) fn el(out: &mut Vec<u8>, id: u32, data: &[u8]) {
     out.extend(id_bytes(id));
     out.extend(vint(data.len() as u64));
     out.extend_from_slice(data);
 }
 
-fn el_uint(out: &mut Vec<u8>, id: u32, v: u64) {
+pub(crate) fn el_uint(out: &mut Vec<u8>, id: u32, v: u64) {
     let b = v.to_be_bytes();
     let skip = b.iter().position(|x| *x != 0).unwrap_or(7);
     el(out, id, &b[skip..]);
 }
 
-fn el_float(out: &mut Vec<u8>, id: u32, v: f64) {
+pub(crate) fn el_float(out: &mut Vec<u8>, id: u32, v: f64) {
     el(out, id, &v.to_be_bytes());
 }
 
-fn el_str(out: &mut Vec<u8>, id: u32, s: &str) {
+pub(crate) fn el_str(out: &mut Vec<u8>, id: u32, s: &str) {
     el(out, id, s.as_bytes());
 }
 
@@ -79,14 +78,14 @@ fn block(track: u64, rel: i16, flags: u8, data: &[u8]) -> Vec<u8> {
     b
 }
 
-struct Frame {
-    ms: i64,
-    track: u64,
-    data: Vec<u8>,
-    alpha: Option<Vec<u8>>,
+pub(crate) struct Frame {
+    pub(crate) ms: i64,
+    pub(crate) track: u64,
+    pub(crate) data: Vec<u8>,
+    pub(crate) alpha: Option<Vec<u8>>,
 }
 
-fn cluster(frames: &mut [Frame]) -> Vec<u8> {
+pub(crate) fn cluster(frames: &mut [Frame]) -> Vec<u8> {
     frames.sort_by_key(|f| (f.ms, f.track));
     let base = frames.first().map_or(0, |f| f.ms);
     let mut body = vec![];
@@ -113,13 +112,22 @@ fn cluster(frames: &mut [Frame]) -> Vec<u8> {
     out
 }
 
+/// The Opus encoder of a WebM output (stereo, the module's bitrate and application).
+pub(crate) fn opus_encoder(job: &Job) -> effectcraft_opusenc::OpusEncoder {
+    // TEMP(M13.4): application mapping lands with the SILK encoder.
+    effectcraft_opusenc::OpusEncoder::new(2, job.output.opus_bitrate_kbps.clamp(6, 510) * 1000)
+}
+
 pub(crate) fn webm(job: &Job, comp: &Comp, w: u32, h: u32, st: &mut State) -> Result<Report> {
+    if job.output.webm_codec == effectcraft_project::render_queue::WebmVideoCodec::Av1 {
+        return crate::webm_av1::webm_av1(job, comp, w, h, st);
+    }
     let rate = job.settings.rate(comp);
     let alpha = job.output.channels == Channels::Rgba;
     let quality = job.output.quality.clamp(1, 100);
     let cfg = effectcraft_vp9enc::EncoderConfig { width: w, height: h, quality, full_range: false };
     let with_audio = wants_audio(job);
-    let mut opus = with_audio.then(|| effectcraft_opusenc::OpusEncoder::new(2, OPUS_BITRATE));
+    let mut opus = with_audio.then(|| opus_encoder(job));
     let total = st.total;
     let frame_ms = |k: u64| -> i64 { ((k as i128 * 1000 * rate.den as i128 + rate.num as i128 / 2) / rate.num as i128) as i64 };
     let duration_ms = frame_ms(total) as f64;
