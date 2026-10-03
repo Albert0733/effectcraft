@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::{CommandSpec, always, b_p, bad, comp_id, f_p, has_comp, merge_p, str_p};
-use crate::viewer::{Channel, Snapshot};
-use crate::{EngineError, Result, Session, VertexRef, cmd};
+use crate::viewer::{Channel, SimProfile, Simulation, Snapshot};
+use crate::{EngineError, Result, Session, VertexRef, cmd, query};
 
 /// Composition ▸ Preview ▸ Fast Previews modes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -61,8 +61,8 @@ impl FastPreviews {
     }
 }
 
-/// Viewer display options (Show Channel, exposure, snapshot, Fast Previews).
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+/// Viewer display options (Show Channel, exposure, snapshot, Fast Previews, display colour).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ViewOptions {
     pub channel: Channel,
@@ -73,6 +73,36 @@ pub struct ViewOptions {
     /// Show Snapshot (F5 held): the viewer shows the snapshot instead of the frame.
     pub show_snapshot: bool,
     pub fast_previews: FastPreviews,
+    /// View ▸ Use Display Color Management (with a working space): the frame is converted
+    /// from the working space to the display; off shows the working space's numbers.
+    pub display_color_management: bool,
+    /// View ▸ Simulate Output.
+    pub simulation: Simulation,
+    /// The profile View ▸ Simulate Output ▸ Custom... uses.
+    pub custom_simulation: Simulation,
+}
+
+impl Default for ViewOptions {
+    fn default() -> Self {
+        ViewOptions {
+            channel: Channel::default(),
+            colorized: false,
+            exposure: 0.0,
+            show_snapshot: false,
+            fast_previews: FastPreviews::default(),
+            display_color_management: true,
+            simulation: Simulation::default(),
+            custom_simulation: Simulation { profile: SimProfile::Linear, preserve_rgb: true },
+        }
+    }
+}
+
+/// View ▸ Split with New Locked Viewer: a second Composition viewer that keeps showing one
+/// comp and 3D view whatever comp is active.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LockedViewer {
+    pub comp: effectcraft_project::ItemId,
+    pub view: effectcraft_render::three_d::View3D,
 }
 
 fn snapping(s: &mut Session, p: &Value) -> Result<Value> {
@@ -281,9 +311,97 @@ fn shape_layer_or_none(s: &Session) -> std::result::Result<(), String> {
     has_comp(s)
 }
 
+// ---------------------------------------------------------------- display colour, locked viewer
+
+/// View ▸ Use Display Color Management (toggle, or `value`).
+fn display_cm(s: &mut Session, p: &Value) -> Result<Value> {
+    let v = b_p(p, "value").unwrap_or(!s.state.viewer.display_color_management);
+    s.state.viewer.display_color_management = v;
+    s.events.push(crate::Event::ProjectChanged { revision: s.revision });
+    Ok(json!({"displayColorManagement": v, "workingSpace": s.project.settings.working_space.map(|w| w.id()), "display": s.prefs.previews.display_profile}))
+}
+
+/// View ▸ Simulate Output ▸ (profile). `custom` uses (and with `space` sets) the Custom profile.
+fn simulate_output(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "view.simulateOutput";
+    let name = str_p(p, "profile").unwrap_or("none");
+    let ids = SimProfile::ALL.iter().map(|p| p.id()).collect::<Vec<_>>().join("|");
+    let sim = if name.eq_ignore_ascii_case("custom") {
+        let mut c = s.state.viewer.custom_simulation;
+        if let Some(sp) = str_p(p, "space") {
+            c.profile = SimProfile::parse(sp).ok_or_else(|| bad(cmd, format!("space: {ids}")))?;
+        }
+        if let Some(v) = b_p(p, "preserveRgb") {
+            c.preserve_rgb = v;
+        }
+        s.state.viewer.custom_simulation = c;
+        c
+    } else {
+        let profile = SimProfile::parse(name).ok_or_else(|| bad(cmd, format!("profile: {ids}|custom")))?;
+        Simulation { profile, preserve_rgb: b_p(p, "preserveRgb").unwrap_or(false) }
+    };
+    s.state.viewer.simulation = sim;
+    s.events.push(crate::Event::ProjectChanged { revision: s.revision });
+    Ok(json!({"profile": sim.profile.id(), "label": sim.profile.label(), "preserveRgb": sim.preserve_rgb}))
+}
+
+/// View ▸ Split with New Locked Viewer: lock a second viewer to the comp (default the active
+/// one) and its current 3D view (or `view`).
+fn split_locked(s: &mut Session, p: &Value) -> Result<Value> {
+    let cid = comp_id(s, p)?;
+    let view = match str_p(p, "view") {
+        Some(v) => effectcraft_render::three_d::View3D::from_id(v).ok_or_else(|| bad("view.splitLockedViewer", format!("unknown view `{v}`")))?,
+        None => s.state.views3d.get(&cid).map(|v| v.current).unwrap_or_default(),
+    };
+    s.state.locked_viewer = Some(LockedViewer { comp: cid, view });
+    s.events.push(crate::Event::ProjectChanged { revision: s.revision });
+    Ok(json!({"comp": cid.0, "view": view.id()}))
+}
+
+fn close_locked(s: &mut Session, _: &Value) -> Result<Value> {
+    let was = s.state.locked_viewer.take().is_some();
+    s.events.push(crate::Event::ProjectChanged { revision: s.revision });
+    Ok(json!({"closed": was}))
+}
+
+fn has_locked(s: &Session) -> std::result::Result<(), String> {
+    if s.state.locked_viewer.is_some() { Ok(()) } else { Err("no locked viewer".into()) }
+}
+
+/// The viewer's colour settings and what they do.
+fn display_color_state(s: &mut Session, _: &Value) -> Result<Value> {
+    let v = &s.state.viewer;
+    Ok(json!({
+        "displayColorManagement": v.display_color_management,
+        "simulation": {"profile": v.simulation.profile.id(), "preserveRgb": v.simulation.preserve_rgb},
+        "display": s.prefs.previews.display_profile,
+        "workingSpace": s.project.settings.working_space.map(|w| w.id()),
+        "active": crate::viewer::DisplayColor::of(s).is_some(),
+        "lockedViewer": s.state.locked_viewer.map(|l| json!({"comp": l.comp.0, "view": l.view.id()})),
+    }))
+}
+
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!("view.snapping", "Snapping", ["View"], None, "{value?}", always, snapping),
+        cmd!("view.displayColorManagement", "Use Display Color Management", ["View"], None, "{value?}", always, display_cm),
+        cmd!(
+            "view.simulateOutput",
+            "Simulate Output",
+            [],
+            None,
+            "{profile: none|rec709|ntsc|pal|mac18|srgb|rec2020|p3|linear|custom, preserveRgb?, space? (custom)}",
+            always,
+            simulate_output
+        ),
+        cmd!("view.splitLockedViewer", "Split with New Locked Viewer", ["View"], None, "{comp?, view?: 3D view id}", has_comp, split_locked),
+        cmd!("view.closeLockedViewer", "Close Locked Viewer", [], None, "{}", has_locked, close_locked),
+        query!(
+            "view.displayColor",
+            "Viewer Color State",
+            "{} → display colour management, output simulation, display profile, locked viewer",
+            display_color_state
+        ),
         cmd!("view.channel", "Show Channel", [], None, "{channel: rgb|red|green|blue|alpha|rgbStraight, colorized?, toggle?}", always, channel),
         cmd!("view.exposure", "Adjust Exposure", [], None, "{stops? | delta?}", always, exposure),
         cmd!("view.resetExposure", "Reset Exposure", [], None, "{}", always, reset_exposure),

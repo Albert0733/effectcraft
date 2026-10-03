@@ -34,6 +34,7 @@ mod noise;
 mod noise2;
 mod obsolete;
 mod ocio;
+pub mod ocio_config;
 pub mod paint;
 mod perspective;
 mod perspective2;

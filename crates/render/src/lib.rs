@@ -551,6 +551,12 @@ impl<'a> Renderer<'a> {
             color::convert(&mut canvas, &c);
             self.pipe.quantize(&mut canvas);
         }
+        if self.depth == 0
+            && let Some((lin, mode, enc)) = self.pipe.output_hdr()
+        {
+            color::output_hdr(&mut canvas, lin, mode, enc);
+            self.pipe.quantize(&mut canvas);
+        }
         canvas
     }
 

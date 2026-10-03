@@ -44,7 +44,7 @@ mod styles;
 mod text_anim;
 pub mod text_edit;
 mod three_d;
-mod time;
+pub mod time;
 mod track;
 mod view;
 pub mod viewer_cmds;

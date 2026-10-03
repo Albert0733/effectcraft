@@ -29,11 +29,6 @@ pub fn specs() -> Vec<CommandSpec> {
         stub!("camera.linkFocusToPoi", "Link Focus Distance to Point of Interest", ["Layer", "Camera"], "{}"),
         stub!("camera.linkFocusToLayer", "Link Focus Distance to Layer", ["Layer", "Camera"], "{}"),
         stub!("camera.setFocusToLayer", "Set Focus Distance to Layer", ["Layer", "Camera"], "{}"),
-        stub!("view.3d.default", "Default", ["View", "Switch 3D View"], "{}"),
-        stub!("view.splitLockedViewer", "Split with New Locked Viewer", ["View"], "{}"),
-        // Color management.
-        stub!("view.displayColorManagement", "Use Display Color Management", ["View"], "{}"),
-        stub!("view.simulateOutput", "Simulate Output", [], "{profile}"),
         // Keyframes / text / tracking.
         stub!("keys.audioToKeyframes", "Convert Audio to Keyframes", ["Animation", "Keyframe Assistant"], "{}"),
         stub!("keys.rpfCameraImport", "RPF Camera Import", ["Animation", "Keyframe Assistant"], "{}"),

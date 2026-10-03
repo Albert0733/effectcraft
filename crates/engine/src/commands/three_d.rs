@@ -297,7 +297,7 @@ fn views(s: &mut Session, cid: ItemId) -> &mut Views3D {
 }
 
 fn view_p(p: &Value, cmd: &str) -> Result<View3D> {
-    let v = str_p(p, "view").ok_or_else(|| bad(cmd, "missing `view` (activeCamera|front|left|top|back|right|bottom|custom1|custom2|custom3)"))?;
+    let v = str_p(p, "view").ok_or_else(|| bad(cmd, "missing `view` (activeCamera|default|front|left|top|back|right|bottom|custom1|custom2|custom3)"))?;
     View3D::from_id(v).ok_or_else(|| bad(cmd, format!("unknown view `{v}`")))
 }
 
@@ -334,6 +334,7 @@ view_cmd!(view_bottom, View3D::Bottom);
 view_cmd!(view_custom1, View3D::Custom1);
 view_cmd!(view_custom2, View3D::Custom2);
 view_cmd!(view_custom3, View3D::Custom3);
+view_cmd!(view_default, View3D::Default);
 
 fn last_view(s: &mut Session, p: &Value) -> Result<Value> {
     let cid = comp_id(s, p)?;
@@ -697,11 +698,12 @@ pub fn specs() -> Vec<CommandSpec> {
             "Switch 3D View",
             [],
             None,
-            "{view: activeCamera|front|left|top|back|right|bottom|custom1|custom2|custom3, comp?}",
+            "{view: activeCamera|default|front|left|top|back|right|bottom|custom1|custom2|custom3, comp?}",
             has_comp,
             set_3d_view
         ),
         cmd!("view.3d.activeCamera", "Active Camera", ["View", "Switch 3D View"], Some("F12"), "{comp?}", has_comp, view_active),
+        cmd!("view.3d.default", "Default", ["View", "Switch 3D View"], None, "{comp?}", has_comp, view_default),
         cmd!("view.3d.front", "Front", ["View", "Switch 3D View"], Some("F10"), "{comp?}", has_comp, view_front),
         cmd!("view.3d.left", "Left", ["View", "Switch 3D View"], None, "{comp?}", has_comp, view_left),
         cmd!("view.3d.top", "Top", ["View", "Switch 3D View"], None, "{comp?}", has_comp, view_top),
