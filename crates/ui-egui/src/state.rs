@@ -173,7 +173,11 @@ impl Tool {
             Tool::Eraser => Icon::Eraser,
             Tool::RotoBrush => Icon::RotoBrush,
             Tool::RefineEdge => Icon::RefineEdge,
-            Tool::Puppet | Tool::PuppetStarch | Tool::PuppetBend | Tool::PuppetAdvanced | Tool::PuppetOverlap => Icon::Puppet,
+            Tool::Puppet => Icon::Puppet,
+            Tool::PuppetStarch => Icon::PuppetStarch,
+            Tool::PuppetBend => Icon::PuppetBend,
+            Tool::PuppetAdvanced => Icon::PuppetAdvanced,
+            Tool::PuppetOverlap => Icon::PuppetOverlap,
         }
     }
     pub fn from_name(s: &str) -> Option<Tool> {

@@ -12,10 +12,17 @@
 //!
 //! The path is `path`/`prop` of `layer`, else the selected path property, else the layer's first
 //! mask or shape path. Each command is one undo step.
+//!
+//! **Puppet pins** rig the same way (controllers drive the pins, or props ride along with a pin):
+//! with `pins`, selected pins, or a layer that has Puppet pins but no path, Points Follow Nulls
+//! makes a null per Position / Advanced pin and gives the pin's Position an expression following
+//! it (`fromComp` of the null's anchor, so parented nulls rig limbs), and Nulls Follow Points makes
+//! nulls whose Position follows each pin (`toComp` of its Position).
 
+use effectcraft_effects::puppet::PinKind;
 use effectcraft_geom::vec2;
 use effectcraft_keyframe::Value as KV;
-use effectcraft_project::{ItemId, LayerId, Uid};
+use effectcraft_project::{Comp, ItemId, Layer, LayerId, Uid};
 use serde_json::{Value, json};
 
 use super::{CommandSpec, b_p, bad, comp_id, has_layers};
@@ -85,13 +92,80 @@ fn info(s: &Session, cid: ItemId, lid: LayerId, uid: Uid, cmd: &str) -> Result<P
             [q.x, q.y]
         })
         .collect();
-    // Seen from another layer (the nulls).
+    let reference = from_other_layer(comp, layer, uid).ok_or_else(|| bad(cmd, "can't reference that path"))?;
+    let prop_name = layer.props.name_path_of(uid).and_then(|n| n.split('/').rev().nth(1).map(str::to_string)).unwrap_or_else(|| pr.name.clone());
+    Ok(PathInfo { comp_pts, path, reference, layer_name: layer.name.clone(), prop_name, span: (layer.in_point.seconds(), layer.out_point.seconds()) })
+}
+
+/// An expression reference to `uid` of `layer` as another layer (the nulls) sees it.
+fn from_other_layer(comp: &Comp, layer: &Layer, uid: Uid) -> Option<String> {
     let mut other = layer.clone();
     other.id = LayerId(u64::MAX);
     other.name = "\u{0}".into();
-    let reference = super::link::reference(comp, &other, layer, uid, true).ok_or_else(|| bad(cmd, "can't reference that path"))?;
-    let prop_name = layer.props.name_path_of(uid).and_then(|n| n.split('/').rev().nth(1).map(str::to_string)).unwrap_or_else(|| pr.name.clone());
-    Ok(PathInfo { comp_pts, path, reference, layer_name: layer.name.clone(), prop_name, span: (layer.in_point.seconds(), layer.out_point.seconds()) })
+    super::link::reference(comp, &other, layer, uid, true)
+}
+
+/// A Puppet pin to rig: its layer, name, Position property, where it is now (comp space) and the
+/// reference to its Position from another layer.
+struct PinRig {
+    layer: LayerId,
+    layer_name: String,
+    name: String,
+    position: Uid,
+    comp_pt: [f64; 2],
+    reference: String,
+}
+
+/// The pins to rig, when the command targets Puppet pins: `pins` / `pin`, else the selected pins,
+/// else (no path given) every pin of a layer that has pins but no mask or shape path. Bend,
+/// Starch and Overlap pins have no Position and are skipped.
+fn pin_targets(s: &Session, p: &Value, cmd: &str) -> Result<Option<(ItemId, Vec<PinRig>)>> {
+    if p.get("path").is_some() || p.get("prop").is_some() {
+        return Ok(None);
+    }
+    let named = p.get("pins").is_some() || p.get("pin").is_some();
+    let pins = if named || !super::puppet::selected_pins(s).is_empty() {
+        super::puppet::pins_p(s, p, cmd)?
+    } else {
+        if target(s, p, cmd).is_ok() {
+            return Ok(None);
+        }
+        let cid = comp_id(s, p)?;
+        let lid = match p.get("layer") {
+            Some(_) => super::layer_p(s, p, cmd)?.1,
+            None => match s.state.selected_layers.first() {
+                Some(l) => *l,
+                None => return Ok(None),
+            },
+        };
+        let all: Vec<_> =
+            s.project.comp(cid).and_then(|c| c.layer(lid)).map(|l| super::puppet::layer_pins(l).map(|g| (cid, lid, g.uid)).collect()).unwrap_or_default();
+        if all.is_empty() {
+            return Ok(None);
+        }
+        all
+    };
+    let cid = pins.first().map(|x| x.0).ok_or_else(|| bad(cmd, "no puppet pins"))?;
+    let comp = s.project.comp(cid).ok_or(EngineError::NoComp)?;
+    let ctx =
+        effectcraft_render::EvalCtx { project: &s.project, comp_id: cid, comp, time: s.time(), expr: s.expr.as_deref(), footage: Some(s.footage.as_ref()) };
+    let mut out = vec![];
+    for (_, lid, uid) in pins {
+        let Some(layer) = comp.layer(lid) else { continue };
+        let Some(g) = layer.props.find_group(uid) else { continue };
+        if !PinKind::from_index(g.get("kind").map(|k| k.value.as_enum()).unwrap_or(0)).moves() {
+            continue;
+        }
+        let Some(pos) = g.get("position") else { continue };
+        let v = ctx.value(layer, pos).as_vec2();
+        let q = ctx.layer_to_comp(layer).0.apply(vec2(v[0], v[1]));
+        let reference = from_other_layer(comp, layer, pos.uid).ok_or_else(|| bad(cmd, "can't reference that pin"))?;
+        out.push(PinRig { layer: lid, layer_name: layer.name.clone(), name: g.name.clone(), position: pos.uid, comp_pt: [q.x, q.y], reference });
+    }
+    if out.is_empty() {
+        return Err(bad(cmd, "no Position or Advanced puppet pins to rig (Bend, Starch and Overlap pins have no Position)"));
+    }
+    Ok(Some((cid, out)))
 }
 
 /// A new null at `at` (comp space) named `name`, made unique in the comp (expressions find
@@ -113,6 +187,19 @@ fn new_null(s: &mut Session, cid: ItemId, name: &str, at: [f64; 2]) -> Result<(u
 
 fn nulls_follow_points(s: &mut Session, p: &Value) -> Result<Value> {
     const C: &str = "paths.nullsFollowPoints";
+    if let Some((cid, pins)) = pin_targets(s, p, C)? {
+        let nulls = super::app_more::grouped(s, "Nulls Follow Points", |s| {
+            let mut out = vec![];
+            for pin in &pins {
+                let (id, _) = new_null(s, cid, &format!("{}: {}", pin.layer_name, pin.name), pin.comp_pt)?;
+                let e = format!("var src = thisComp.layer({});\nvar p = src.toComp({});\n[p[0], p[1]]", quote(&pin.layer_name), pin.reference);
+                s.execute("prop.setExpression", json!({"comp": cid.0, "layer": id, "path": "transform/position", "expression": e}))?;
+                out.push(id);
+            }
+            Ok(out)
+        })?;
+        return Ok(json!({"nulls": nulls, "pins": pins.iter().map(|p| p.position).collect::<Vec<_>>()}));
+    }
     let (cid, lid, uid) = target(s, p, C)?;
     let pi = info(s, cid, lid, uid, C)?;
     let nulls = super::app_more::grouped(s, "Nulls Follow Points", |s| {
@@ -130,6 +217,19 @@ fn nulls_follow_points(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn points_follow_nulls(s: &mut Session, p: &Value) -> Result<Value> {
     const C: &str = "paths.pointsFollowNulls";
+    if let Some((cid, pins)) = pin_targets(s, p, C)? {
+        let nulls = super::app_more::grouped(s, "Points Follow Nulls", |s| {
+            let mut out = vec![];
+            for pin in &pins {
+                let (id, name) = new_null(s, cid, &format!("{}: {}", pin.layer_name, pin.name), pin.comp_pt)?;
+                let e = format!("var n = thisComp.layer({});\nvar q = fromComp(n.toComp(n.transform.anchorPoint));\n[q[0], q[1]]", quote(&name));
+                s.execute("prop.setExpression", json!({"comp": cid.0, "layer": pin.layer.0, "prop": pin.position, "expression": e}))?;
+                out.push(id);
+            }
+            Ok(out)
+        })?;
+        return Ok(json!({"nulls": nulls, "pins": pins.iter().map(|p| p.position).collect::<Vec<_>>()}));
+    }
     let (cid, lid, uid) = target(s, p, C)?;
     let pi = info(s, cid, lid, uid, C)?;
     let nulls = super::app_more::grouped(s, "Points Follow Nulls", |s| {
@@ -191,7 +291,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Points Follow Nulls",
             [],
             None,
-            "{layer?, path?|prop?} → a null per vertex; the path follows them (expression)",
+            "{layer?, path?|prop?, pins?: [uid | name…]} → a null per vertex (or Position / Advanced puppet pin); the path (pins) follow them (expressions)",
             has_layers,
             points_follow_nulls
         ),
@@ -200,7 +300,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Nulls Follow Points",
             [],
             None,
-            "{layer?, path?|prop?} → a null per vertex following it (Position expressions)",
+            "{layer?, path?|prop?, pins?: [uid | name…]} → a null per vertex (or puppet pin) following it (Position expressions)",
             has_layers,
             nulls_follow_points
         ),

@@ -237,6 +237,21 @@ fn puppet_options(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: &egui::Painter
             app.ui.status = e;
         }
     }
+    // Follow-Through… (select the leader pin, then Shift-click the pins that trail it).
+    let label = "Follow-Through...";
+    let r = Rect::from_min_size(pos2(r.max.x + 8.0, cy - 10.0), vec2(w, 20.0));
+    let resp = ui
+        .interact(r, egui::Id::new("puppet-follow"), egui::Sense::click())
+        .on_hover_text("Select the leader pin, then Shift-click the pins that should trail it (hair, cloth, tails)");
+    p.rect_stroke(r, 3.0, egui::Stroke::new(1.0, if resp.hovered() { t.accent } else { t.field_border }), egui::StrokeKind::Inside);
+    p.text(r.center(), Align2::CENTER_CENTER, label, Tokens::ui(11.5), t.text);
+    app.auto.add("header.puppet.follow", r, label);
+    if resp.clicked() {
+        let ctx = ui.ctx().clone();
+        if let Err(e) = crate::menus::invoke(app, &ctx, "puppet.follow", json!({})) {
+            app.ui.status = e;
+        }
+    }
     r.max.x + 16.0
 }
 

@@ -217,6 +217,127 @@ fn puppet_pin_kinds_and_mesh_options() {
 }
 
 #[test]
+fn puppet_pins_select_and_delete_without_touching_the_layer() {
+    let (mut s, id) = setup();
+    let a = s.execute("puppet.addPin", json!({"layer": id, "position": [10, 30]})).unwrap()["pin"].clone();
+    let b = s.execute("puppet.addPin", json!({"layer": id, "position": [90, 30]})).unwrap()["pin"].clone();
+    s.execute("puppet.addPin", json!({"layer": id, "position": [50, 30]})).unwrap();
+    // A new pin is selected: Delete removes it, and the layer stays.
+    assert_eq!(s.execute("edit.clear", json!({})).unwrap(), json!({"removed": 1}));
+    assert_eq!(pin_count(&s, id), 2);
+    assert!(s.active_comp().unwrap().layer(effectcraft_project::LayerId(id)).is_some());
+    // Click, Shift-click (toggle) and add by name.
+    let sel = |s: &mut Session, q: Value| s.execute("puppet.selectPins", q).unwrap()["pins"].clone();
+    assert_eq!(sel(&mut s, json!({"layer": id, "pins": [a, b]})), json!([a, b]));
+    assert_eq!(sel(&mut s, json!({"layer": id, "pins": [b], "toggle": true})), json!([a]));
+    assert_eq!(sel(&mut s, json!({"layer": id, "pins": ["Puppet Pin 2"], "add": true})), json!([a, b]));
+    assert!(s.execute("puppet.selectPins", json!({"layer": id, "pins": ["Puppet Pin 9"]})).is_err());
+    // Deleting both is one undo step.
+    assert_eq!(s.execute("edit.clear", json!({})).unwrap(), json!({"removed": 2}));
+    assert_eq!(pin_count(&s, id), 0);
+    s.undo();
+    assert_eq!(pin_count(&s, id), 2);
+    // Nothing selected: removing needs a pin.
+    assert_eq!(sel(&mut s, json!({"layer": id, "pins": []})), json!([]));
+    assert!(s.execute("puppet.removePin", json!({"layer": id})).is_err());
+}
+
+#[test]
+fn puppet_select_all_takes_the_pin_kind_and_several_pins_record_together() {
+    let (mut s, id) = setup();
+    let a = s.execute("puppet.addPin", json!({"layer": id, "position": [10, 30]})).unwrap()["pin"].clone();
+    let b = s.execute("puppet.addPin", json!({"layer": id, "position": [90, 30]})).unwrap()["pin"].clone();
+    let st = s.execute("puppet.addPin", json!({"layer": id, "kind": "starch", "position": [50, 30]})).unwrap()["pin"].clone();
+    // Ctrl+A with a Position pin selected: every Position pin, not the Starch pin.
+    s.execute("puppet.selectPins", json!({"layer": id, "pins": [a]})).unwrap();
+    assert_eq!(s.execute("edit.selectAll", json!({})).unwrap()["pins"], json!([a, b]));
+    s.execute("puppet.selectPins", json!({"layer": id, "pins": [st]})).unwrap();
+    assert_eq!(s.execute("edit.selectAll", json!({})).unwrap()["pins"], json!([st]));
+    // Without pins selected, Select All selects layers as before.
+    s.execute("puppet.selectPins", json!({"layer": id, "pins": []})).unwrap();
+    assert_eq!(s.execute("edit.selectAll", json!({})).unwrap(), json!(1));
+    // Recording a drag of pin A with B selected too: B moves by the same displacement.
+    let steps = s.history.undo.len();
+    let samples: Vec<Value> = [0.0, 0.25, 0.5].iter().map(|t| json!([t, 10.0, 30.0 + 40.0 * t])).collect();
+    let r = s.execute("puppet.recordPin", json!({"layer": id, "pin": a, "pins": [b], "samples": samples, "smoothing": 0})).unwrap();
+    assert_eq!(r["pins"], json!([a, b]));
+    assert_eq!(s.history.undo.len(), steps + 1, "one undo step");
+    let last = |s: &Session, pin: &Value| pin_keys(s, id, pin.as_u64().unwrap()).last().unwrap().1;
+    assert_eq!(last(&s, &a), [10.0, 50.0]);
+    assert_eq!(last(&s, &b), [90.0, 50.0]);
+    // Starch pins don't record.
+    assert!(s.execute("puppet.recordPin", json!({"layer": id, "pin": a, "pins": [st], "samples": samples})).is_err());
+}
+
+fn expr_of(s: &Session, layer: u64, uid: u64) -> String {
+    let l = layer_of(s, layer);
+    l.props.find(uid).and_then(|p| p.expr.as_ref()).map(|e| e.text.clone()).unwrap_or_default()
+}
+
+fn layer_of(s: &Session, id: u64) -> effectcraft_project::Layer {
+    s.active_comp().unwrap().layer(effectcraft_project::LayerId(id)).unwrap().clone()
+}
+
+#[test]
+fn puppet_pins_rig_to_nulls_both_ways() {
+    let (mut s, id) = setup();
+    s.execute("puppet.addPin", json!({"layer": id, "position": [10, 30]})).unwrap();
+    s.execute("puppet.addPin", json!({"layer": id, "position": [90, 30]})).unwrap();
+    let bend = s.execute("puppet.addPin", json!({"layer": id, "kind": "bend", "position": [50, 30]})).unwrap()["pin"].clone();
+    // Only a Bend pin selected: nothing to rig.
+    assert!(s.execute("paths.pointsFollowNulls", json!({})).is_err());
+    // No pin selected and no path: every Position pin of the layer gets a null on it, and the
+    // pin's Position follows the null; one undo step.
+    s.execute("puppet.selectPins", json!({"layer": id, "pins": []})).unwrap();
+    let steps = s.history.undo.len();
+    let r = s.execute("paths.pointsFollowNulls", json!({"layer": id})).unwrap();
+    assert_eq!(s.history.undo.len(), steps + 1);
+    let nulls: Vec<u64> = r["nulls"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap()).collect();
+    let pins: Vec<u64> = r["pins"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap()).collect();
+    assert_eq!((nulls.len(), pins.len()), (2, 2));
+    let solid = layer_of(&s, id).name;
+    let null = layer_of(&s, nulls[0]);
+    assert_eq!(null.name, format!("{solid}: Puppet Pin 1"));
+    // Layer (10, 30) is comp (60, 50).
+    assert_eq!(null.props.prop("transform/position").unwrap().value.components()[..2], [60.0, 50.0]);
+    let e = expr_of(&s, id, pins[0]);
+    assert!(e.contains(&format!("thisComp.layer(\"{solid}: Puppet Pin 1\")")) && e.contains("fromComp(n.toComp(n.transform.anchorPoint))"), "{e}");
+    // Nulls Follow Points: a null riding on a pin, through the pin's Position.
+    let r = s.execute("paths.nullsFollowPoints", json!({"layer": id, "pins": ["Puppet Pin 2"]})).unwrap();
+    let rider = layer_of(&s, r["nulls"][0].as_u64().unwrap());
+    let e = rider.props.prop("transform/position").unwrap().expr.as_ref().unwrap().text.clone();
+    assert!(e.contains(&format!("thisComp.layer(\"{solid}\")")) && e.contains("(\"Puppet Pin 2\")(\"Position\")") && e.contains("toComp"), "{e}");
+    assert!(s.execute("paths.nullsFollowPoints", json!({"layer": id, "pins": [bend]})).is_err());
+    // Trace Path still needs a path.
+    assert!(s.execute("paths.tracePath", json!({"layer": id})).is_err());
+}
+
+#[test]
+fn puppet_follow_through_trails_the_leader_by_cascading_delays() {
+    let (mut s, id) = setup();
+    let lead = s.execute("puppet.addPin", json!({"layer": id, "position": [10, 30]})).unwrap()["pin"].clone();
+    let far = s.execute("puppet.addPin", json!({"layer": id, "position": [90, 30]})).unwrap()["pin"].clone();
+    let near = s.execute("puppet.addPin", json!({"layer": id, "position": [50, 30]})).unwrap()["pin"].clone();
+    let pos_uid = |s: &Session, pin: &Value| layer_of(s, id).props.find_group(pin.as_u64().unwrap()).unwrap().get("position").unwrap().uid;
+    // Leader first, then the followers (in any order): nearer pins trail less.
+    s.execute("puppet.selectPins", json!({"layer": id, "pins": [lead, far, near]})).unwrap();
+    let steps = s.history.undo.len();
+    let r = s.execute("puppet.follow", json!({"delay": 0.2})).unwrap();
+    assert_eq!(s.history.undo.len(), steps + 1, "one undo step");
+    assert_eq!(r["leader"], lead);
+    assert_eq!(r["pins"], json!([{"pin": near, "delay": 0.2}, {"pin": far, "delay": 0.4}]));
+    let e = expr_of(&s, id, pos_uid(&s, &far));
+    assert!(e.contains("(\"Puppet Pin 1\")(\"Position\")") && e.contains("valueAtTime(time - 0.4)") && e.contains("- [10, 30]) * 1"), "{e}");
+    // Without cascade every follower trails by the same delay; `amount` scales the motion.
+    s.execute("puppet.follow", json!({"layer": id, "leader": "Puppet Pin 1", "pins": [far, near], "delay": 0.25, "amount": 50, "cascade": false})).unwrap();
+    assert!(expr_of(&s, id, pos_uid(&s, &far)).contains("valueAtTime(time - 0.25)") && expr_of(&s, id, pos_uid(&s, &far)).contains("* 0.5"));
+    // Errors: no followers, or a pin without a Position.
+    assert!(s.execute("puppet.follow", json!({"layer": id, "leader": "Puppet Pin 1", "pins": [lead]})).is_err());
+    let bend = s.execute("puppet.addPin", json!({"layer": id, "kind": "bend", "position": [30, 30]})).unwrap()["pin"].clone();
+    assert!(s.execute("puppet.follow", json!({"layer": id, "leader": "Puppet Pin 1", "pins": [bend]})).is_err());
+}
+
+#[test]
 fn project_with_paint_and_puppet_round_trips() {
     let (mut s, id) = setup();
     s.execute("paint.stroke", json!({"layer": id, "points": [[10, 30, 0.5], [90, 30, 1.0]], "durationMode": "writeOn"})).unwrap();

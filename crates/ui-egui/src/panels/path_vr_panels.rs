@@ -2,7 +2,8 @@
 //!
 //! - **Create Nulls From Paths** (Window ▸ Create Nulls From Paths): with a mask or shape path (or
 //!   a layer that has one) selected, Points Follow Nulls / Nulls Follow Points / Trace Path
-//!   (`paths.*` commands; Trace Path can loop).
+//!   (`paths.*` commands; Trace Path can loop). Puppet pins (selected, or a layer that has pins)
+//!   rig the same way with the first two.
 //! - **VR Comp Editor** (Window ▸ VR Comp Editor): the project's VR environments (Composition ▸ VR
 //!   ▸ Create VR Environment); pick one and edit its 360 view's camera orientation (pan, tilt,
 //!   roll) with `comp.vr.setView`; open its output.
@@ -37,7 +38,7 @@ pub fn create_nulls(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let loop_id = egui::Id::new("createNulls.loop");
     let mut looping: bool = ui.data(|d| d.get_temp(loop_id)).unwrap_or(false);
     let ready = app.session.is_enabled("paths.nullsFollowPoints") && !app.session.state.selected_layers.is_empty();
-    ui.label(RichText::new("Select a layer with a mask or shape path (or the path property).").color(t.text_dim).small());
+    ui.label(RichText::new("Select a layer with a mask or shape path (or the path property), or Puppet pins.").color(t.text_dim).small());
     ui.add_space(6.0);
     let mut acts = vec![];
     for (id, label, tip) in [

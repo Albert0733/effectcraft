@@ -16,6 +16,8 @@ const PRELUDE: &str = include_str!("prelude.js");
 /// Message of the error thrown when a request isn't answered yet (never shown to users).
 const PENDING: &str = "\u{1}effectcraft: pending host request";
 const MAX_SCRIPTS: usize = 4096;
+/// The part of boa's stack-size limit error the runtime recovers from (see [`run`]).
+const STACK_LIMIT: &str = "maximum stack size";
 
 /// Memoized host answers and pending misses of one expression evaluation.
 #[derive(Default)]
@@ -392,13 +394,32 @@ fn position_line(msg: &str) -> Option<usize> {
 }
 
 /// Run `text` once on this thread's runtime.
+///
+/// boa leaves values on its VM stack when an exception unwinds through call frames, and every
+/// pending host request does that (the request throws out of the object-model functions), so a
+/// long-lived context eventually fails every run with "maximum stack size". When a run hits that
+/// limit the context is replaced with a fresh one and the run retried once: each run starts from
+/// `__begin` with memoized answers, so nothing carries over. A script that really overflows the
+/// stack fails again on the fresh context and reports the error.
 pub fn run(text: &str, b: &Begin) -> Run {
     RUNTIME.with(|r| {
         let mut r = r.borrow_mut();
-        match &mut **r.get_or_insert_with(|| ManuallyDrop::new(Runtime::new())) {
-            Ok(rt) => rt.run(text, b),
-            Err(e) => Run::Done(Err(e.clone())),
+        for fresh in [false, true] {
+            let out = match &mut **r.get_or_insert_with(|| ManuallyDrop::new(Runtime::new())) {
+                Ok(rt) => rt.run(text, b),
+                Err(e) => return Run::Done(Err(e.clone())),
+            };
+            match out {
+                Run::Done(Err(e)) if !fresh && e.contains(STACK_LIMIT) => {
+                    // Dropped here, mid-thread, where boa's heap is alive (unlike at thread exit).
+                    if let Some(old) = r.take() {
+                        drop(ManuallyDrop::into_inner(old));
+                    }
+                }
+                out => return out,
+            }
         }
+        Run::Done(Err(format!("Error: {STACK_LIMIT}")))
     })
 }
 

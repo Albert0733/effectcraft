@@ -56,6 +56,10 @@ fn select_all(s: &mut Session, _: &Value) -> Result<Value> {
     if s.state.text_edit.is_some() {
         return s.execute("text.setSelection", json!({"select": "all"}));
     }
+    // A puppet pin selected: every pin of that kind.
+    if let Some(r) = super::puppet::select_all_of_kind(s) {
+        return Ok(r);
+    }
     if let Some(c) = s.active_comp() {
         s.state.selected_layers = c.layers.iter().map(|l| l.id).collect();
     }
@@ -119,6 +123,10 @@ fn delete(s: &mut Session, p: &Value) -> Result<Value> {
     }
     if !s.state.selected_vertices.is_empty() && p.get("layers").is_none() {
         return s.execute("mask.deleteVertices", json!({}));
+    }
+    // Puppet pins selected → delete the pins (not their layer).
+    if p.get("layers").is_none() && !super::puppet::selected_pins(s).is_empty() {
+        return s.execute("puppet.removePin", json!({}));
     }
     // Effects selected → remove them.
     if p.get("layers").is_none() && !super::effect::selected_effects(s).is_empty() {

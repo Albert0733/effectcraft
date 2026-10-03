@@ -154,6 +154,15 @@ pub fn open_form(app: &mut EffectcraftApp, id: &str, p: &Value) -> bool {
                 Field::num("page", "Page", 1.0),
             ],
         ),
+        // Puppet tool ▸ Follow-Through.
+        "puppet.follow" if !has(p, &["delay", "amount", "cascade"]) => (
+            "Puppet Follow-Through".into(),
+            vec![
+                Field::num("delay", "Delay (s)", 0.1),
+                Field::num("amount", "Amount (%)", 100.0),
+                Field::bool("cascade", "Cascade (farther pins trail longer)", true),
+            ],
+        ),
         // Puppet tool ▸ Record Options.
         "puppet.recordOptions" if !has(p, &["speed", "smoothing", "useDraftDeformation", "showMesh"]) => {
             let o = &s.state.puppet;

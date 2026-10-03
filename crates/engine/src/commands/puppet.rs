@@ -1,6 +1,10 @@
 //! Puppet tools: pins on the layer's Puppet effect (Position, Advanced, Bend, Starch and
 //! Overlap pins), mesh options, and a query of the current mesh for overlays and agents.
 //!
+//! Pins are selected like properties (`puppet.selectPins`; Edit ▸ Clear / Delete removes the
+//! selected pins, not their layer). Follow-Through (`puppet.follow`) makes pins trail a leader pin
+//! with a delay, for hair, cloth and overlapping action.
+//!
 //! Pin positions are layer space. A new pin is attached to the mesh under it: the click is
 //! mapped back through the current deformation to the rest mesh (its hidden rest position), and
 //! Position / Advanced pins get a Position keyframe at the current time, as in After Effects.
@@ -9,7 +13,7 @@ use effectcraft_effects::puppet::{self, MeshOpts, PinKind};
 use effectcraft_effects::{Buf, Params};
 use effectcraft_keyframe::{Keyframe, Value as KV};
 use effectcraft_project::build::Ids;
-use effectcraft_project::{ItemId, LayerId, Node, PropGroup, Uid};
+use effectcraft_project::{ItemId, Layer, LayerId, Node, PropGroup, Uid};
 use effectcraft_render::{EvalCtx, RenderOpts, Renderer};
 use effectcraft_time::Tick;
 use serde_json::{Value, json};
@@ -162,25 +166,102 @@ fn add_pin(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"effect": fx, "mesh": mesh, "pin": pin, "rest": [target.map(|x| x.1).unwrap_or(at)[0], target.map(|x| x.1).unwrap_or(at)[1]]}))
 }
 
+/// The pin groups of a layer's Puppet effects, in stack order.
+pub(crate) fn layer_pins(l: &Layer) -> impl Iterator<Item = &PropGroup> {
+    l.effects().into_iter().flat_map(|fx| fx.groups().filter(|g| puppet::is_puppet(g))).flat_map(puppet::meshes).flat_map(puppet::pins)
+}
+
+/// Selected puppet pins of the active comp: (layer, pin uid).
+pub(crate) fn selected_pins(s: &Session) -> Vec<(LayerId, Uid)> {
+    let Some(c) = s.active_comp() else { return vec![] };
+    s.state.selected_props.iter().filter(|(l, u)| c.layer(*l).is_some_and(|l| layer_pins(l).any(|g| g.uid == *u))).copied().collect()
+}
+
+/// Edit ▸ Select All with puppet pins selected: every pin of the selected pins' kinds on their
+/// layers. `None` when no pin is selected (Select All then selects layers).
+pub(crate) fn select_all_of_kind(s: &mut Session) -> Option<Value> {
+    let sel = selected_pins(s);
+    let comp = s.active_comp()?;
+    let kind = |g: &PropGroup| PinKind::from_index(g.get("kind").map(|k| k.value.as_enum()).unwrap_or(0));
+    let mut kinds = vec![];
+    for (l, u) in &sel {
+        if let Some(g) = comp.layer(*l).and_then(|l| l.props.find_group(*u)) {
+            kinds.push((*l, kind(g)));
+        }
+    }
+    if kinds.is_empty() {
+        return None;
+    }
+    let all: Vec<(LayerId, Uid)> =
+        comp.layers.iter().flat_map(|l| layer_pins(l).filter(|g| kinds.contains(&(l.id, kind(g)))).map(|g| (l.id, g.uid)).collect::<Vec<_>>()).collect();
+    s.state.selected_props = all.clone();
+    Some(json!({ "pins": all.iter().map(|(_, u)| *u).collect::<Vec<_>>() }))
+}
+
 /// Find a pin group (uid or name) in the layer's Puppet effects.
 fn pin_uid(s: &Session, cid: ItemId, lid: LayerId, key: &Value, cmd: &str) -> Result<Uid> {
     let l = s.project.comp(cid).and_then(|c| c.layer(lid)).ok_or(EngineError::NoComp)?;
-    let fx = l.effects().ok_or_else(|| bad(cmd, "no effects"))?;
-    for g in fx.groups().filter(|g| puppet::is_puppet(g)) {
-        for m in puppet::meshes(g) {
-            for pin in puppet::pins(m) {
-                let hit = match key {
-                    Value::Number(n) => n.as_u64() == Some(pin.uid),
-                    Value::String(name) => &pin.name == name,
-                    _ => false,
-                };
-                if hit {
-                    return Ok(pin.uid);
-                }
+    let hit = |pin: &&PropGroup| match key {
+        Value::Number(n) => n.as_u64() == Some(pin.uid),
+        Value::String(name) => &pin.name == name,
+        _ => false,
+    };
+    layer_pins(l).find(hit).map(|g| g.uid).ok_or_else(|| bad(cmd, format!("no puppet pin {key}")))
+}
+
+/// Pins named by `pin` or `pins` (uids or names) on `layer`, else the selected pins (of `layer`
+/// when given): (comp, layer, pin uid).
+pub(crate) fn pins_p(s: &Session, p: &Value, cmd: &str) -> Result<Vec<(ItemId, LayerId, Uid)>> {
+    let keys: Vec<Value> = match (p.get("pin"), p.get("pins")) {
+        (Some(k), _) => vec![k.clone()],
+        (None, Some(Value::Array(a))) => a.clone(),
+        (None, Some(_)) => return Err(bad(cmd, "`pins` must be an array of pin uids or names")),
+        (None, None) => vec![],
+    };
+    if !keys.is_empty() {
+        let (cid, lid) = layer_p(s, p, cmd)?;
+        return keys.iter().map(|k| pin_uid(s, cid, lid, k, cmd).map(|u| (cid, lid, u))).collect();
+    }
+    let cid = s.active_comp_id().ok_or(EngineError::NoComp)?;
+    let only = match p.get("layer") {
+        Some(_) => Some(layer_p(s, p, cmd)?.1),
+        None => None,
+    };
+    let sel: Vec<_> = selected_pins(s).into_iter().filter(|(l, _)| only.is_none_or(|o| o == *l)).map(|(l, u)| (cid, l, u)).collect();
+    if sel.is_empty() {
+        return Err(bad(cmd, "missing `pin` / `pins` (uids or names), and no puppet pins are selected"));
+    }
+    Ok(sel)
+}
+
+/// Select pins (the viewer's click / Shift-click on a pin). Plain: only these pins; `add`: add
+/// them; `toggle`: flip each. An empty `pins` deselects every pin.
+fn select_pins(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "puppet.selectPins";
+    let want = match p.get("pins") {
+        Some(Value::Array(a)) if a.is_empty() => vec![],
+        _ => pins_p(s, p, cmd)?,
+    };
+    let (add, toggle) = (super::b_p(p, "add").unwrap_or(false), super::b_p(p, "toggle").unwrap_or(false));
+    let st = &mut s.state;
+    if !add && !toggle {
+        st.selected_props.clear();
+        st.selected_keys.clear();
+    }
+    for (_, l, u) in want {
+        let at = st.selected_props.iter().position(|x| *x == (l, u));
+        match at {
+            Some(i) if toggle => {
+                st.selected_props.remove(i);
             }
+            Some(_) => {}
+            None => st.selected_props.push((l, u)),
+        }
+        if !st.selected_layers.contains(&l) {
+            st.selected_layers.push(l);
         }
     }
-    Err(bad(cmd, format!("no puppet pin {key}")))
+    Ok(json!({ "pins": selected_pins(s).iter().map(|(_, u)| *u).collect::<Vec<_>>() }))
 }
 
 fn with_pin<T>(s: &mut Session, p: &Value, cmd: &str, label: &str, f: impl FnOnce(&mut PropGroup, Tick) -> Result<T>) -> Result<T> {
@@ -237,19 +318,19 @@ fn set_pin(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 fn remove_pin(s: &mut Session, p: &Value) -> Result<Value> {
-    let cmd = "puppet.removePin";
-    let (cid, lid) = layer_p(s, p, cmd)?;
-    let key = p.get("pin").cloned().ok_or_else(|| bad(cmd, "missing `pin` (uid or name)"))?;
-    let uid = pin_uid(s, cid, lid, &key, cmd)?;
-    s.edit("Delete Puppet Pin", None, |proj, st| {
-        let l = layer_mut(proj, cid, lid)?;
-        if let Some(parent) = l.props.parent_of_mut(uid) {
-            parent.children.retain(|c| c.uid() != uid);
+    let pins = pins_p(s, p, "puppet.removePin")?;
+    let label = if pins.len() == 1 { "Delete Puppet Pin" } else { "Delete Puppet Pins" };
+    s.edit(label, None, |proj, st| {
+        for (cid, lid, uid) in &pins {
+            let l = layer_mut(proj, *cid, *lid)?;
+            if let Some(parent) = l.props.parent_of_mut(*uid) {
+                parent.children.retain(|c| c.uid() != *uid);
+            }
+            st.selected_props.retain(|(_, u)| u != uid);
         }
-        st.selected_props.retain(|(_, u)| *u != uid);
         Ok(())
     })?;
-    Ok(Value::Null)
+    Ok(json!({ "removed": pins.len() }))
 }
 
 fn mesh_opts(s: &mut Session, p: &Value) -> Result<Value> {
@@ -341,6 +422,43 @@ fn record_pin(s: &mut Session, p: &Value) -> Result<Value> {
     let key = p.get("pin").cloned().ok_or_else(|| bad(cmd, "missing `pin` (uid or name)"))?;
     let uid = pin_uid(s, cid, lid, &key, cmd)?;
     let rec = samples(p, cmd)?;
+    // Several selected pins dragged together (`pins`): each follows the drag's displacement from
+    // where it is when recording begins; one undo step.
+    if let Some(Value::Array(others)) = p.get("pins")
+        && !others.is_empty()
+    {
+        let start = match p.get("start").and_then(Value::as_f64) {
+            Some(t) => Tick::from_seconds_f64(t),
+            None => s.time_of(cid),
+        };
+        let lt = layer_time(s, cid, lid, start)?;
+        let mut pins = vec![(uid, rec[0].1)];
+        for k in others {
+            let u = pin_uid(s, cid, lid, k, cmd)?;
+            if pins.iter().any(|(x, _)| *x == u) {
+                continue;
+            }
+            let l = s.project.comp(cid).and_then(|c| c.layer(lid)).ok_or(EngineError::NoComp)?;
+            let at = l.props.find_group(u).and_then(|g| g.get("position")).map(|pr| pr.value_at(lt).as_vec2());
+            pins.push((u, at.ok_or_else(|| bad(cmd, "only Position and Advanced pins record motion"))?));
+        }
+        let o = rec[0].1;
+        return super::app_more::grouped(s, "Record Puppet Pins", |s| {
+            let mut last = Value::Null;
+            for (u, base) in &pins {
+                let moved: Vec<Value> = rec.iter().map(|(t, q)| json!([t, base[0] + q[0] - o[0], base[1] + q[1] - o[1]])).collect();
+                let mut one = p.clone();
+                if let Some(m) = one.as_object_mut() {
+                    m.remove("pins");
+                    m.insert("pin".into(), json!(u));
+                    m.insert("samples".into(), Value::Array(moved));
+                }
+                last = s.execute(cmd, one)?;
+            }
+            last["pins"] = json!(pins.iter().map(|(u, _)| *u).collect::<Vec<_>>());
+            Ok(last)
+        });
+    }
     let opts = &s.state.puppet;
     let speed = f_p(p, "speed").unwrap_or(opts.record_speed).clamp(1.0, 10_000.0) / 100.0;
     // Smoothing 10 (the default) keeps the path within 1 layer pixel of the drag.
@@ -406,6 +524,68 @@ fn record_pin(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"keys": n, "start": start.seconds(), "end": end.seconds(), "frames": nframes + 1}))
 }
 
+/// Follow-Through (hair, cloth, tails, overlapping action): each follower pin trails the leader
+/// pin's motion by a delay, through an expression on its Position. The followers nearest the
+/// leader trail least; with `cascade` the k-th nearest trails k × `delay`, otherwise all trail by
+/// `delay`. `amount` (%) scales the motion they inherit; their own keyframes still add on top.
+/// The leader is `leader`, else the first selected pin; the followers are `pins`, else the other
+/// selected pins of the leader's layer. One undo step.
+fn follow(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "puppet.follow";
+    let (cid, lid, leader, mut followers) = match p.get("leader") {
+        Some(k) => {
+            let (cid, lid) = layer_p(s, p, cmd)?;
+            let leader = pin_uid(s, cid, lid, k, cmd)?;
+            let rest: Vec<Uid> = pins_p(s, p, cmd)?.into_iter().filter(|(_, l, u)| *l == lid && *u != leader).map(|x| x.2).collect();
+            (cid, lid, leader, rest)
+        }
+        None => {
+            let sel = pins_p(s, p, cmd)?;
+            let (cid, lid, leader) = sel[0];
+            (cid, lid, leader, sel.iter().skip(1).filter(|(_, l, _)| *l == lid).map(|x| x.2).collect())
+        }
+    };
+    followers.dedup();
+    if followers.is_empty() {
+        return Err(bad(cmd, "select the leader pin first, then the pins that follow it (or pass `leader` and `pins`)"));
+    }
+    let delay = f_p(p, "delay").unwrap_or(0.1).clamp(0.0, 10.0);
+    let amount = f_p(p, "amount").unwrap_or(100.0) / 100.0;
+    let cascade = super::b_p(p, "cascade").unwrap_or(true);
+    let comp = s.project.comp(cid).ok_or(EngineError::NoComp)?;
+    let layer = comp.layer(lid).ok_or(EngineError::NoComp)?;
+    // (Position uid, rest) of a pin that moves.
+    let moving = |uid: Uid| -> Result<(Uid, [f64; 2], String)> {
+        let g = layer.props.find_group(uid).ok_or_else(|| bad(cmd, "pin gone"))?;
+        if !PinKind::from_index(g.get("kind").map(|k| k.value.as_enum()).unwrap_or(0)).moves() {
+            return Err(bad(cmd, format!("`{}` has no Position (only Position and Advanced pins follow or lead)", g.name)));
+        }
+        let pos = g.get("position").ok_or_else(|| bad(cmd, "the pin has no Position"))?;
+        Ok((pos.uid, g.get("rest").map(|r| r.value.as_vec2()).unwrap_or([0.0; 2]), g.name.clone()))
+    };
+    let (lead_pos, lead_rest, lead_name) = moving(leader)?;
+    let reference = super::link::reference(comp, layer, layer, lead_pos, true).ok_or_else(|| bad(cmd, "can't reference the leader pin"))?;
+    let mut rigs = followers.iter().map(|u| moving(*u).map(|(pos, rest, _)| (*u, pos, rest))).collect::<Result<Vec<_>>>()?;
+    let dist = |r: [f64; 2]| (r[0] - lead_rest[0]).hypot(r[1] - lead_rest[1]);
+    rigs.sort_by(|a, b| dist(a.2).total_cmp(&dist(b.2)));
+    let out = super::app_more::grouped(s, "Follow-Through", |s| {
+        let mut out = vec![];
+        for (k, (pin, pos, _)) in rigs.iter().enumerate() {
+            let d = if cascade { delay * (k + 1) as f64 } else { delay };
+            let e = format!(
+                "// Follow-Through: trails {} by {d} s\nvar lead = {reference};\nvalue + (lead.valueAtTime(time - {d}) - [{}, {}]) * {amount}",
+                serde_json::to_string(&lead_name).unwrap_or_default(),
+                lead_rest[0],
+                lead_rest[1]
+            );
+            s.execute("prop.setExpression", json!({"comp": cid.0, "layer": lid.0, "prop": pos, "expression": e}))?;
+            out.push(json!({"pin": pin, "delay": d}));
+        }
+        Ok(out)
+    })?;
+    Ok(json!({"leader": leader, "pins": out}))
+}
+
 /// Record Options (the Puppet tool's Record Options… dialog): `speed`, `smoothing`,
 /// `useDraftDeformation`, `showMesh`. Returns the options.
 fn record_options(s: &mut Session, p: &Value) -> Result<Value> {
@@ -469,7 +649,16 @@ pub fn specs() -> Vec<CommandSpec> {
             has_comp,
             set_pin
         ),
-        cmd!("puppet.removePin", "Delete Puppet Pin", [], None, "{layer?, pin: uid | name}", has_comp, remove_pin),
+        cmd!(
+            "puppet.removePin",
+            "Delete Puppet Pin",
+            [],
+            None,
+            "{layer?, pin?: uid | name, pins?: [uid | name…]} (default: the selected pins)",
+            has_comp,
+            remove_pin
+        ),
+        cmd!("puppet.selectPins", "Select Puppet Pins", [], None, "{layer?, pins: [uid | name…] ([] deselects), add?, toggle?}", has_comp, select_pins),
         cmd!(
             "puppet.mesh",
             "Puppet Mesh Options",
@@ -485,9 +674,18 @@ pub fn specs() -> Vec<CommandSpec> {
             "Record Puppet Pin",
             [],
             None,
-            "{layer?, pin: uid | name, samples: [[t, x, y]…] (t = seconds since the drag began, layer space), start? (s, default current time), speed? (%, Record Options), smoothing? (Record Options)}",
+            "{layer?, pin: uid | name, samples: [[t, x, y]…] (t = seconds since the drag began, layer space), pins?: [uid | name…] (more pins that move by the same displacement), start? (s, default current time), speed? (%, Record Options), smoothing? (Record Options)}",
             has_comp,
             record_pin
+        ),
+        cmd!(
+            "puppet.follow",
+            "Follow-Through...",
+            [],
+            None,
+            "{layer?, leader?: uid | name (default: the first selected pin), pins?: [uid | name…] (default: the other selected pins), delay? (s, 0.1), amount? (%, 100), cascade? (true: the k-th nearest pin trails k × delay)}",
+            has_comp,
+            follow
         ),
         cmd!(
             "puppet.recordOptions",
