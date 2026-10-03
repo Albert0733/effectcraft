@@ -426,3 +426,58 @@ Web Worker, and the worker's replies (progress, item status, the analysed proper
 applied on the UI thread.
 The shortcut dispatcher and the menus read the active preset. See
 [preferences.md](preferences.md).
+
+## 7. Performance of everyday operations
+
+`effectcraft-cli bench --ops [--small] [--layers N] [--comps N] [--footage N]` measures the
+operations people do all day on a large generated project (`engine::perf::large_project`: 200
+comps, 5,000 layers in the main comp plus 10 in each other comp, 300 footage items — 100 image
+sequences of 240 frames, 100 movies, 100 stills — a 20-deep precomp chain, expressions on every
+4th layer, Gaussian Blur on every 6th, parenting). The engine side is `engine::perf::ops_bench`;
+the UI side (`ui-egui::bench`) drives the real `EffectcraftApp` headless: layout, painting and
+tessellation, no window or GPU upload.
+
+What keeps it fast:
+
+- **Lazy open.** A project file carries its footage metadata, so File ▸ Open is read + parse +
+  swap. Nothing is decoded until a frame needs it, expressions compile on first evaluation
+  (cached by text), and system fonts are scanned only when a text layer asks for a family that
+  isn't bundled. The footage files are checked afterwards in the background (`footage.check`, a
+  "Checking footage" job in the Progress panel): missing items are flagged, items saved without
+  metadata are probed, and the project is not marked modified. The desktop app does this after
+  every open (`Session::check_footage_on_open`); headless sessions run `footage.check {wait:true}`.
+- **No deep copies per frame.** Panels hold `Arc<Comp>` snapshots (`Session::active_comp_arc`,
+  `Project::comp_arc`) instead of cloning a comp's layers every frame.
+- **Virtualised lists.** The Timeline and the Project panel draw (and register automation ids
+  for) only the rows in view; the Project panel scrolls vertically and reveals an item selected
+  elsewhere. Menus listing every layer (track matte, parent) are built only while open.
+- **Off the UI thread.** Project panel thumbnails render on a background thread (the previous
+  thumbnail stays up meanwhile); auto-save snapshots the project (an `Arc` clone) and serialises
+  and writes compact JSON on a background thread (`AutoSaveState::background`, on in the desktop
+  app; inline on wasm32).
+- **Undo is a pointer swap.** History stores `Arc<Project>` snapshots and comps are `Arc`s, so
+  undo and redo of any edit are constant time. An edit copies the comps it changes (a one-layer
+  edit in a 5,000-layer comp copies that comp: ~8 ms).
+
+Numbers (Apple Silicon, 14 cores, release build, best of 3–20 runs; the machine was shared with
+other builds, load average 150–220, so treat them as orders of magnitude). "Before" is the
+commit before M13.14 with the same benchmark code:
+
+| Operation | Before | After |
+|---|---|---|
+| Startup to first full UI frame (open + app + 2 frames) | 2,119 ms | 432 ms (1,482 ms at load 220) |
+| File ▸ Open (125 MB pretty JSON; parse is ~95% of it) | 1,049 ms | 269–733 ms |
+| Save (pretty JSON, 125 MB) | 845 ms | 275–359 ms |
+| Auto-save, UI-thread cost | 530 ms (pretty, synchronous) | 0.1–0.2 ms (compact, background; 69–172 ms off-thread) |
+| Steady frame, Standard workspace | 862 ms | 0.5–6.9 ms |
+| Timeline frame scrolling 5,000 layers | 1,725 ms | 1.5–8.1 ms |
+| Timeline frame, 500 layers twirled open | 1,508 ms | 1.8–5.5 ms |
+| Project panel frame, 503 items, all folders open | 1.2 ms (first screenful only, no scrolling) | 0.4–2.8 ms (scrolling) |
+| Small edit (one property) / undo + redo | 14.7 ms / 0.01 ms | 8.4–19.7 ms / 0.01 ms |
+| Large edit (switch on 5,000 layers) / undo / redo | 62 / 0.03 / 0.01 ms | 18–57 / 0.02 / 0.01 ms |
+| First rendered frame of the 5,000-layer comp at ¼ (viewer thread) | 5.7 s | 2.7–3.6 s (unchanged code; load) |
+
+The before frame times were dominated by an O(layers²) menu build per visible timeline row and
+by every panel deep-cloning the active comp each frame. Left for later: per-layer structural
+sharing (so a one-layer edit doesn't copy its comp), a binary or compact project format (pretty
+JSON parsing is now the bulk of open), and rendering 5,000-layer comps faster.

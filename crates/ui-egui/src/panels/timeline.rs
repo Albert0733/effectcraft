@@ -75,15 +75,23 @@ fn row_height(row: &Row, rh: f32) -> f32 {
 /// Insert an expression editor row after every property that has an expression.
 fn with_expr_rows(rows: Vec<Row>, comp: &Comp, closed: &std::collections::BTreeSet<u64>) -> Vec<Row> {
     let mut out = Vec::with_capacity(rows.len());
+    // Rows come grouped by layer: look each layer up once (a linear search per property row
+    // made twirling open many layers of a big comp quadratic).
+    let mut cur: Option<&Layer> = None;
     for r in rows {
-        let extra = match r.kind {
-            RowKind::Prop { uid } if !closed.contains(&uid) => comp.layer(r.layer).and_then(|l| l.props.find(uid)).and_then(|p| p.expr.as_ref()).map(|e| Row {
+        let mut extra = None;
+        if let RowKind::Prop { uid } = r.kind
+            && !closed.contains(&uid)
+        {
+            if cur.is_none_or(|l| l.id != r.layer) {
+                cur = comp.layer(r.layer);
+            }
+            extra = cur.and_then(|l| l.props.find(uid)).and_then(|p| p.expr.as_ref()).map(|e| Row {
                 layer: r.layer,
                 depth: r.depth,
                 kind: RowKind::Expr { uid, lines: e.text.lines().count().max(1) },
-            }),
-            _ => None,
-        };
+            });
+        }
         out.push(r);
         out.extend(extra);
     }
@@ -336,7 +344,7 @@ fn tl_map_id() -> egui::Id {
 /// Zoom the time ruler around the CTI.
 pub fn zoom(app: &mut EffectcraftApp, ctx: &egui::Context, k: f64) {
     let Some((x0, w)) = ctx.data(|d| d.get_temp::<(f32, f32)>(egui::Id::new("timeline-graph-area"))) else { return };
-    let comp = app.session.active_comp().cloned();
+    let comp = app.session.active_comp_arc();
     let Some(comp) = comp else { return };
     let fit = (w as f64 - 20.0) / comp.duration.seconds().max(0.01);
     let pps = app.ui.timeline.pps.unwrap_or(fit);
@@ -783,7 +791,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         ui.painter().text(rect.center(), Align2::CENTER_CENTER, "(no composition)", Tokens::ui(12.0), t.text_faint);
         return;
     };
-    let Some(comp) = app.session.project.comp(cid).cloned() else { return };
+    let Some(comp) = app.session.project.comp_arc(cid) else { return };
     let p = ui.painter().clone();
     let time = app.session.time();
     let fr = comp.frame_rate;
@@ -891,6 +899,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         p.rect_filled(Rect::from_min_max(pos2(x - 3.0, nav.min.y - 1.0), pos2(x + 3.0, nav.max.y + 1.0)), 3.0, t.accent);
     }
     let nresp = ui.interact(nav, egui::Id::new("tl-nav"), Sense::drag());
+    app.auto.add("timeline.navigator", nav, "Time navigator");
     if nresp.dragged() {
         let d = nresp.drag_delta().x as f64 / nav.width() as f64 * comp.duration.seconds();
         app.ui.timeline.start = (app.ui.timeline.start + d).clamp(0.0, comp.duration.seconds());
@@ -1211,6 +1220,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     let lr = Rect::from_center_size(pos2(cw.label + 10.0, cy), vec2(12.0, 12.0));
                     lp.rect_filled(lr, 2.0, t.label(layer.label));
                     let lresp = ui.interact(lr, egui::Id::new(("label", layer.id.0)), Sense::click());
+                    app.auto.add(&format!("timeline.layer.{}.label", layer.id.0), lr, layer.label.name());
                     lresp.context_menu(|ui| {
                         for lab in effectcraft_engine::color::Label::ALL {
                             let name = if lab == effectcraft_engine::color::Label::None { lab.name().to_string() } else { app.session.prefs.label_name(lab) };
@@ -1363,14 +1373,19 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     if tresp.clicked() {
                         widgets::open_popup(ui, pop);
                     }
+                    // The menu lists every layer: built only while it is open (per visible row
+                    // it made a big comp's timeline quadratic).
                     let mut opts = vec!["No Track Matte".to_string(), "-".to_string()];
-                    let candidates: Vec<&Layer> = comp.layers.iter().filter(|l| l.id != layer.id && l.source.is_av()).collect();
-                    for l in &candidates {
-                        opts.push(format!("{}. {}", idx_of(l.id), l.name));
-                    }
-                    opts.push("-".into());
-                    for k in MatteKind::ALL {
-                        opts.push(k.label().into());
+                    let mut candidates: Vec<&Layer> = vec![];
+                    if widgets::popup_is_open(ui, pop) {
+                        for (i, l) in comp.layers.iter().enumerate().filter(|(_, l)| l.id != layer.id && l.source.is_av()) {
+                            opts.push(format!("{}. {}", i + 1, l.name));
+                            candidates.push(l);
+                        }
+                        opts.push("-".into());
+                        for k in MatteKind::ALL {
+                            opts.push(k.label().into());
+                        }
                     }
                     if let Some(i) = widgets::popup_menu(ui, pop, mr.left_bottom(), &opts, None) {
                         if i == 0 {
@@ -1409,9 +1424,14 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     if presp.clicked() {
                         widgets::open_popup(ui, pop);
                     }
-                    let cands: Vec<&Layer> = comp.layers.iter().filter(|l| l.id != layer.id).collect();
+                    let mut cands: Vec<&Layer> = vec![];
                     let mut popts = vec!["None".to_string(), "-".to_string()];
-                    popts.extend(cands.iter().map(|l| format!("{}. {}", idx_of(l.id), l.name)));
+                    if widgets::popup_is_open(ui, pop) {
+                        for (i, l) in comp.layers.iter().enumerate().filter(|(_, l)| l.id != layer.id) {
+                            popts.push(format!("{}. {}", i + 1, l.name));
+                            cands.push(l);
+                        }
+                    }
                     if let Some(i) = widgets::popup_menu(ui, pop, pr_rect.left_bottom(), &popts, None) {
                         let par = if i == 0 { serde_json::Value::Null } else { json!(cands[i - 2].id.0) };
                         actions.push(("layer.setParent".into(), json!({"layers": [layer.id.0], "parent": par})));
@@ -1474,10 +1494,12 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     // Interactions: move body, trim edges.
                     let edge_w = 6.0;
                     let body = ui.interact(bar.shrink2(vec2(edge_w, 0.0)), egui::Id::new(("bar", layer.id.0)), Sense::click_and_drag());
-                    let lin =
-                        ui.interact(Rect::from_min_max(bar.min, pos2(bar.min.x + edge_w, bar.max.y)), egui::Id::new(("bar-in", layer.id.0)), Sense::drag());
-                    let lout =
-                        ui.interact(Rect::from_min_max(pos2(bar.max.x - edge_w, bar.min.y), bar.max), egui::Id::new(("bar-out", layer.id.0)), Sense::drag());
+                    let (in_r, out_r) =
+                        (Rect::from_min_max(bar.min, pos2(bar.min.x + edge_w, bar.max.y)), Rect::from_min_max(pos2(bar.max.x - edge_w, bar.min.y), bar.max));
+                    let lin = ui.interact(in_r, egui::Id::new(("bar-in", layer.id.0)), Sense::drag());
+                    let lout = ui.interact(out_r, egui::Id::new(("bar-out", layer.id.0)), Sense::drag());
+                    app.auto.add(&format!("timeline.layer.{}.bar.in", layer.id.0), in_r, "Trim In");
+                    app.auto.add(&format!("timeline.layer.{}.bar.out", layer.id.0), out_r, "Trim Out");
                     if lin.hovered() || lout.hovered() || lin.dragged() || lout.dragged() {
                         ctx.set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
                     }
@@ -1567,7 +1589,9 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     }
                     lp.text(pos2(ir.max.x + 4.0, cy), Align2::LEFT_CENTER, "Inverted", Tokens::ui(11.0), t.text_dim);
                 }
-                let gr = ui.interact(Rect::from_min_max(pos2(indent + 8.0, r.min.y), pos2(cw.switches, r.max.y)), egui::Id::new(("grow", uid)), Sense::click());
+                let gr_rect = Rect::from_min_max(pos2(indent + 8.0, r.min.y), pos2(cw.switches, r.max.y));
+                let gr = ui.interact(gr_rect, egui::Id::new(("grow", uid)), Sense::click());
+                app.auto.add(&format!("timeline.group.{uid}.name"), gr_rect, name);
                 if gr.clicked() && uid & WAVE_BIT == 0 {
                     actions.push(("prop.select".into(), json!({"layer": layer.id.0, "prop": uid, "selectKeys": false})));
                 }
@@ -1781,11 +1805,9 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     Tokens::ui(12.0),
                     if prop.has_expression() { Color32::from_rgb(0xe8, 0x7c, 0x5c) } else { t.text },
                 );
-                let name_resp = ui.interact(
-                    Rect::from_min_max(pos2(name_x, r.min.y), pos2(cw.switches - 2.0, r.max.y)),
-                    egui::Id::new(("pname", uid)),
-                    Sense::click_and_drag(),
-                );
+                let name_rect = Rect::from_min_max(pos2(name_x, r.min.y), pos2(cw.switches - 2.0, r.max.y));
+                let name_resp = ui.interact(name_rect, egui::Id::new(("pname", uid)), Sense::click_and_drag());
+                app.auto.add(&format!("timeline.prop.{uid}.name"), name_rect, &prop.name);
                 if name_resp.drag_started() {
                     // Drop on the Essential Graphics panel to expose the property.
                     egui::DragAndDrop::set_payload(&ctx, crate::panels::DragPayload::Property { layer: layer.id.0, prop: *uid });
@@ -1906,7 +1928,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                         // Alt-drag the first or last key of a selected group: scale the group in time.
                         if kresp.drag_started()
                             && ui.input(|i| i.modifiers.alt)
-                            && let Some(c) = app.session.active_comp().cloned()
+                            && let Some(c) = app.session.active_comp_arc()
                         {
                             super::graph_tools::alt_scale_begin(app, &ctx, &c, ct.seconds());
                         }
@@ -1956,7 +1978,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         }
     }
     // Alt-drag key group scaling (follows the pointer until release).
-    if let Some(c) = app.session.active_comp().cloned() {
+    if let Some(c) = app.session.active_comp_arc() {
         super::graph_tools::alt_scale_update(app, &ctx, &c, tm, &mut actions);
     }
     // Graph editor.

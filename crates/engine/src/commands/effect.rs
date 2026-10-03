@@ -358,8 +358,12 @@ fn list(_: &mut Session, p: &Value) -> Result<Value> {
     let filter = str_p(p, "filter").map(str::to_ascii_lowercase);
     let v: Vec<Value> = effectcraft_effects::all()
         .into_iter()
-        .filter(|e| filter.as_ref().is_none_or(|f| e.name.to_ascii_lowercase().contains(f) || e.id.contains(f.as_str())))
-        .map(|e| json!({"id": e.id, "name": e.name, "category": e.category, "params": e.params.iter().map(|p| json!({"id": p.id, "name": p.name, "default": p.default.to_json()})).collect::<Vec<_>>()}))
+        .filter(|e| {
+            filter.as_ref().is_none_or(|f| e.name.to_ascii_lowercase().contains(f) || e.id.contains(f.as_str()) || e.category.to_ascii_lowercase().contains(f))
+        })
+        .map(|e| {
+            json!({"id": e.id, "name": e.name, "category": e.category, "gpu": e.gpu, "float": e.float, "params": e.params.iter().map(|p| json!({"id": p.id, "name": p.name, "default": p.default.to_json()})).collect::<Vec<_>>()})
+        })
         .collect();
     Ok(json!(v))
 }

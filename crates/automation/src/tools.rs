@@ -117,7 +117,8 @@ fn params_of(v: Option<&Value>) -> Result<Value> {
 // ------------------------------------------------------------------ engine tools
 
 fn list_commands(b: &mut Backend, a: &Value) -> Result<Reply> {
-    let r = b.exec("command.list", obj(&[("filter", get(a, "filter")), ("enabledOnly", get(a, "enabled_only"))]))?;
+    let schemas = get(a, "schemas").and_then(Value::as_bool).unwrap_or(false).then_some(json!(true));
+    let r = b.exec("command.list", obj(&[("filter", get(a, "filter")), ("enabledOnly", get(a, "enabled_only")), ("schemas", schemas.as_ref())]))?;
     // Drop empty fields to keep the listing compact.
     let list: Vec<Value> = r
         .as_array()
@@ -138,6 +139,53 @@ fn execute_command(b: &mut Backend, a: &Value) -> Result<Reply> {
     let id = get(a, "command").or(get(a, "id")).and_then(Value::as_str).ok_or_else(|| Error::BadArgs("missing `command` (e.g. `comp.new`)".into()))?;
     let params = params_of(get(a, "params"))?;
     json_reply(b.exec(id, params)?)
+}
+
+fn describe_command(b: &mut Backend, a: &Value) -> Result<Reply> {
+    let id = get(a, "command").or(get(a, "id")).and_then(Value::as_str).ok_or_else(|| Error::BadArgs("missing `command` (e.g. `layer.newText`)".into()))?;
+    json_reply(b.exec("command.describe", json!({"command": id}))?)
+}
+
+fn list_effects(b: &mut Backend, a: &Value) -> Result<Reply> {
+    json_reply(b.exec("effect.list", obj(&[("filter", get(a, "filter"))]))?)
+}
+
+/// `effect.apply` on one layer, then set parameters on the new instance by param id.
+fn add_effect(b: &mut Backend, a: &Value) -> Result<Reply> {
+    let (layer, effect, comp) = (need(a, "layer")?, need(a, "effect")?, get(a, "comp"));
+    let count = |t: &Value| effects_group(t).and_then(|g| g.get("children")).and_then(Value::as_array).map_or(0, Vec::len);
+    let before = b.exec("layer.tree", obj(&[("layer", Some(layer)), ("comp", comp)]))?;
+    let index = count(&before) + 1;
+    let mut p = obj(&[("effect", Some(effect)), ("comp", comp)]);
+    p["layers"] = json!([layer]);
+    b.exec("effect.apply", p)?;
+    let prefix = format!("effects/#{index}");
+    let mut set = vec![];
+    if let Some(vals) = get(a, "values").and_then(Value::as_object) {
+        for (k, v) in vals {
+            let path = format!("{prefix}/{k}");
+            b.exec("prop.set", obj(&[("layer", Some(layer)), ("comp", comp), ("path", Some(&json!(path))), ("value", Some(v))]))?;
+            set.push(path);
+        }
+    }
+    let tree = b.exec("layer.tree", obj(&[("layer", Some(layer)), ("comp", comp)]))?;
+    let inst = effects_group(&tree).and_then(|g| g.get("children")).and_then(Value::as_array).and_then(|c| c.get(index - 1)).cloned();
+    let mut params = vec![];
+    if let Some(i) = &inst {
+        flatten(i, &mut params);
+    }
+    json_reply(json!({"layer": tree["id"], "index": index, "path": prefix, "name": inst.as_ref().map(|i| i["name"].clone()), "set": set, "params": params}))
+}
+
+/// The `effects` group of a `layer.tree` reply.
+fn effects_group(tree: &Value) -> Option<&Value> {
+    tree["properties"]["children"].as_array()?.iter().find(|c| c["path"] == "effects")
+}
+
+fn get_state(b: &mut Backend, _: &Value) -> Result<Reply> {
+    let state = b.exec("editor.state", json!({}))?;
+    let caps = b.exec("app.capabilities", json!({}))?;
+    json_reply(json!({"state": state, "app": caps}))
 }
 
 fn run_script(b: &mut Backend, a: &Value) -> Result<Reply> {
@@ -414,12 +462,20 @@ static TOOLS: &[ToolDef] = &[
             schema(
                 json!({
                     "filter": {"type": "string", "description": "Only commands whose id or label contains this text (case-insensitive)."},
-                    "enabled_only": {"type": "boolean", "description": "Only commands that can run right now."}
+                    "enabled_only": {"type": "boolean", "description": "Only commands that can run right now."},
+                    "schemas": {"type": "boolean", "description": "Also return each command's parameter JSON Schema (`schema`)."}
                 }),
                 &[],
             )
         },
         run: list_commands,
+    },
+    ToolDef {
+        name: "describe_command",
+        description: "One command in full: id, label, menu path, shortcut, the `params` doc, a JSON Schema of its parameters (`schema`: properties, required, additionalProperties) and whether it can run now (`why` if not). Use before execute_command when unsure of the parameters; execute_command rejects unknown keys.",
+        bridge_only: false,
+        schema: || schema(json!({"command": {"type": "string", "description": "Command id, e.g. `layer.newText`."}}), &["command"]),
+        run: describe_command,
     },
     ToolDef {
         name: "execute_command",
@@ -527,6 +583,36 @@ static TOOLS: &[ToolDef] = &[
             )
         },
         run: add_keyframe,
+    },
+    ToolDef {
+        name: "add_effect",
+        description: "Apply an effect to a layer and optionally set its parameters in one undoable call. `effect` is an id (`ec.blur.gaussian`) or After Effects name (`Gaussian Blur`; see list_effects); `values` maps parameter ids to values, e.g. {\"blurriness\": 12}. Returns the instance `path` (`effects/#n`, for set_property / add_keyframe) and its parameters with their paths and current values.",
+        bridge_only: false,
+        schema: || {
+            schema(
+                json!({
+                    "layer": layer_s(), "comp": comp_s(),
+                    "effect": {"type": "string", "description": "Effect id or name, e.g. `Gaussian Blur`, `Glow`, `Curves`, `ec.color.levels`."},
+                    "values": {"type": "object", "description": "Parameter id -> value (ids are in the returned `params` paths), e.g. {\"blurriness\": 12}.", "additionalProperties": true}
+                }),
+                &["layer", "effect"],
+            )
+        },
+        run: add_effect,
+    },
+    ToolDef {
+        name: "list_effects",
+        description: "The effect registry: id, After Effects name, category, GPU and 32-bpc support. Narrow with `filter` (id, name or category text). Apply with add_effect.",
+        bridge_only: false,
+        schema: || schema(json!({"filter": {"type": "string", "description": "Only effects whose id, name or category contains this text."}}), &[]),
+        run: list_effects,
+    },
+    ToolDef {
+        name: "get_state",
+        description: "Where things stand: the editor state (active comp, current time, selected layers/keys/items, open comps, tool, work area) plus what this build can do (`app`: version, command and effect counts, GPU effects, import/export formats, After Effects parity summary). Cheap; call it to re-orient after a series of edits.",
+        bridge_only: false,
+        schema: || schema(json!({}), &[]),
+        run: get_state,
     },
     ToolDef {
         name: "render_frame",

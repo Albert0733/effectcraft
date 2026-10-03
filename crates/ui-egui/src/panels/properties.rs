@@ -60,7 +60,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let p = ui.painter().with_clip_rect(rect);
     let ctx = ui.ctx().clone();
-    let comp = app.session.active_comp().cloned();
+    let comp = app.session.active_comp_arc();
     let layer = comp.as_ref().and_then(|c| app.session.state.selected_layers.first().and_then(|id| c.layer(*id)).cloned());
     let (Some(comp), Some(cid), Some(layer)) = (comp, app.session.active_comp_id(), layer) else {
         p.text(rect.center(), Align2::CENTER_CENTER, "Select a layer to see its properties", Tokens::ui(12.0), t.text_faint);

@@ -987,6 +987,14 @@ impl Project {
     pub fn comp(&self, id: ItemId) -> Option<&Comp> {
         self.items.get(&id)?.as_comp()
     }
+    /// A shared handle on a comp: a snapshot that costs a reference count, not a deep copy of
+    /// its layers (frontends hold one across a frame instead of cloning the comp).
+    pub fn comp_arc(&self, id: ItemId) -> Option<Arc<Comp>> {
+        match &self.items.get(&id)?.kind {
+            ItemKind::Comp(c) => Some(c.clone()),
+            _ => None,
+        }
+    }
     /// Mutable comp (copy-on-write).
     pub fn comp_mut(&mut self, id: ItemId) -> Option<&mut Comp> {
         match &mut self.items.get_mut(&id)?.kind {
@@ -1041,6 +1049,10 @@ impl Project {
     }
     pub fn to_json(&self) -> String {
         serde_json::to_string_pretty(self).unwrap_or_default()
+    }
+    /// [`Project::to_json`] without indentation: smaller and faster (auto-saves).
+    pub fn to_json_compact(&self) -> String {
+        serde_json::to_string(self).unwrap_or_default()
     }
     pub fn from_json(s: &str) -> Result<Project, ProjectError> {
         let mut p: Project = serde_json::from_str(s).map_err(|e| ProjectError::Invalid(e.to_string()))?;

@@ -238,6 +238,11 @@ pub fn popup_menu(ui: &mut Ui, id: egui::Id, pos: egui::Pos2, options: &[String]
     chosen
 }
 
+/// Whether a [`popup_menu`] is open (build its options only then: they can be long).
+pub fn popup_is_open(ui: &Ui, id: egui::Id) -> bool {
+    ui.data(|d| d.get_temp(id.with("open")).unwrap_or(false))
+}
+
 pub fn open_popup(ui: &Ui, id: egui::Id) {
     ui.data_mut(|d| d.insert_temp(id.with("open"), true));
 }

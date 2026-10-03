@@ -352,7 +352,7 @@ fn aux_views(
 /// (its comp and 3D view stay put whatever comp is active). Returns the main viewer's rectangle.
 fn locked_pane(app: &mut EffectcraftApp, ui: &mut egui::Ui, full: Rect, bg: Color32) -> Rect {
     let Some(lv) = app.session.state.locked_viewer else { return full };
-    let Some(comp) = app.session.project.comp(lv.comp).cloned() else { return full };
+    let Some(comp) = app.session.project.comp_arc(lv.comp) else { return full };
     let name = app.session.project.item(lv.comp).map(|i| i.name.clone()).unwrap_or_default();
     let gap = 2.0;
     let mid = full.center().x;
@@ -435,7 +435,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         empty_state(app, ui, rect);
         return;
     };
-    let comp = app.session.project.comp(cid).cloned().unwrap_or_else(|| effectcraft_engine::project::Comp::new(1920, 1080, Default::default(), Tick::ZERO));
+    let comp = app.session.project.comp_arc(cid).unwrap_or_else(|| effectcraft_engine::project::Comp::new(1920, 1080, Default::default(), Tick::ZERO).into());
     let comp_name = app.session.project.item(cid).map(|i| i.name.clone()).unwrap_or_default();
     let p = ui.painter().clone();
     VIEW_CAM.with(|c| c.set(app.session.view_camera(cid)));
@@ -1726,7 +1726,7 @@ fn create_shape(app: &mut EffectcraftApp, tool: Tool, a: [f64; 2], b: [f64; 2], 
         && matches!(kind, "rect" | "ellipse")
     {
         // Mask in layer space: invert the layer transform.
-        let comp = app.session.active_comp().cloned();
+        let comp = app.session.active_comp_arc();
         if let Some(comp) = comp {
             let ectx = EvalCtx {
                 project: &app.session.project,

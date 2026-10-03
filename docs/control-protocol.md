@@ -34,7 +34,13 @@ printf '{"id":1,"method":"engine.execute","params":{"command":"comp.new","params
 
 Useful query commands for `engine.execute` (they aren't journaled or undoable): `project.summary`,
 `comp.info {comp?}`, `layer.tree {layer, comp?, depth?, time?}` (every node has a `path`),
-`prop.get {layer, path, comp?, time?}`, `editor.state`, `command.list {filter?, enabledOnly?}`.
+`prop.get {layer, path, comp?, time?}`, `editor.state`, `command.list {filter?, enabledOnly?, schemas?}`,
+`command.describe {command}` (params doc and JSON Schema), `app.capabilities` (version, counts,
+export formats, parity summary), `jobs.list` (Progress panel jobs, e.g. the background
+`footage.check` after File ▸ Open).
+
+Every engine command is reachable through `engine.execute`, and every interactive widget of every
+panel registers an element id; both are enforced by `crates/ui-egui/tests/ui_agent_audit.rs`.
 
 ## UI state
 

@@ -63,6 +63,10 @@ fn main() -> eframe::Result {
         options,
         Box::new(move |cc| {
             let mut session = effectcraft_host::session();
+            // Lazy open and non-blocking auto-save: footage is checked and auto-saves are
+            // written on background threads (M13.14).
+            session.check_footage_on_open = true;
+            session.autosave.background = true;
             // Settings, shortcut presets and the crash-recovery sentinel live in the platform
             // config directory. Agent-driven runs (`--control`) skip crash recovery.
             if let Some(dir) = config_dir() {

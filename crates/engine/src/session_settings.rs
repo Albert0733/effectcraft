@@ -163,7 +163,9 @@ impl Session {
     pub(crate) fn note_project_path(&mut self, path: &str) {
         self.prefs.push_recent(path);
         self.save_prefs();
-        self.autosave = autosave::AutoSaveState { last: self.autosave.last, sentinel: self.autosave.sentinel, ..Default::default() };
+        let _ = self.autosave_wait();
+        self.autosave =
+            autosave::AutoSaveState { last: self.autosave.last, sentinel: self.autosave.sentinel, background: self.autosave.background, ..Default::default() };
         self.update_sentinel();
     }
 
@@ -191,11 +193,34 @@ impl Session {
     }
 
     /// Write an auto-save now (whether or not the project is dirty). Returns its path.
+    ///
+    /// With [`autosave::AutoSaveState::background`] the project is serialised and written on a
+    /// background thread (the path is returned at once; [`Session::autosave_wait`] waits).
+    /// Auto-saves are compact JSON (opened like any project); File ▸ Save writes pretty JSON.
     pub fn autosave_now(&mut self) -> Result<String> {
-        let json = self.project.to_json();
+        // One write at a time: the previous one must land before its slot rotates.
+        self.autosave_wait()?;
         let root = self.default_autosave_root();
-        let (path, slot) = autosave::write_in(self.file_ops(), &self.prefs, self.path.as_deref(), root.as_deref(), self.autosave.last_slot, &json)
-            .map_err(|e| EngineError::Other(format!("auto-save failed: {e}")))?;
+        let fail = |e: std::io::Error| EngineError::Other(format!("auto-save failed: {e}"));
+        let plan = autosave::plan_in(self.file_ops(), &self.prefs, self.path.as_deref(), root.as_deref(), self.autosave.last_slot).map_err(fail)?;
+        if self.autosave.background && !cfg!(target_arch = "wasm32") {
+            let project = self.project.clone();
+            let config = self.config.clone();
+            let job = plan.clone();
+            let pending = autosave::PendingWrite::spawn(plan.path.clone(), move || {
+                let json = project.to_json_compact();
+                match &config {
+                    Some(c) => job.write(c.files(), json.as_bytes()),
+                    None => job.write(&crate::config::StdFiles, json.as_bytes()),
+                }
+            })
+            .map_err(fail)?;
+            self.autosave.pending = Some(pending);
+        } else {
+            let json = self.project.to_json_compact();
+            plan.write(self.file_ops(), json.as_bytes()).map_err(fail)?;
+        }
+        let (path, slot) = (plan.path, plan.slot);
         let p = path.to_string_lossy().to_string();
         self.autosave.last_slot = Some(slot);
         self.autosave.saved_revision = Some(self.revision);
@@ -204,9 +229,22 @@ impl Session {
         Ok(p)
     }
 
+    /// Wait for a background auto-save ([`autosave::AutoSaveState::background`]) to land.
+    pub fn autosave_wait(&mut self) -> Result<()> {
+        match self.autosave.pending.take() {
+            Some(w) => w.join().map_err(|e| EngineError::Other(format!("auto-save failed: {e}"))),
+            None => Ok(()),
+        }
+    }
+
     /// Call periodically with wall-clock seconds: auto-saves a dirty project once the interval
     /// has passed since the last auto-save (or since the first call). Returns the written path.
     pub fn autosave_tick(&mut self, now: f64) -> Option<Result<String>> {
+        if self.autosave.pending.as_ref().is_some_and(autosave::PendingWrite::is_finished)
+            && let Err(e) = self.autosave_wait()
+        {
+            return Some(Err(e));
+        }
         let a = &self.prefs.auto_save;
         if !a.enabled {
             self.autosave.last = Some(now);

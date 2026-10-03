@@ -5,6 +5,8 @@
 //! the label colour picker, and the bottom bar (interpret, new folder, new comp, bit depth,
 //! delete). Edits are `project.*` engine commands, so they are undoable.
 
+use std::sync::{Arc, Mutex};
+
 use effectcraft_engine::project::{Item, ItemId, ItemKind};
 use egui::{Align2, Color32, Rect, Sense, Stroke, pos2, vec2};
 use serde_json::json;
@@ -102,41 +104,69 @@ pub fn drop_folder(project: &effectcraft_engine::project::Project, row: Option<I
     if it.is_folder() { Some(it.id) } else { it.parent }
 }
 
+/// A thumbnail being rendered off the UI thread: (revision, result slot).
+type PendingThumb = (u64, Arc<Mutex<Option<Option<(u32, u32, Vec<u8>)>>>>);
+
 /// Thumbnail of a comp (its current time) or footage (first frame), cached per item/revision.
+/// Rendered on a background thread (inline on wasm32): until the new one lands the previous
+/// thumbnail stays up, so selecting a big comp or editing it never stalls the panel.
 fn thumbnail(app: &EffectcraftApp, ctx: &egui::Context, it: &Item) -> Option<egui::TextureHandle> {
     let key = egui::Id::new(("proj-thumb", it.id.0));
+    let pkey = egui::Id::new(("proj-thumb-pending", it.id.0));
     let rev = app.session.revision;
-    if let Some((r, tex)) = ctx.data(|d| d.get_temp::<(u64, egui::TextureHandle)>(key))
-        && r == rev
-    {
-        return Some(tex);
-    }
-    let (w, h, px) = match &it.kind {
-        ItemKind::Comp(_) => {
-            let t = app.session.state.times.get(&it.id).copied().unwrap_or_default();
-            app.session.render_rgba8(it.id, t, 192).ok()?
-        }
-        ItemKind::Footage(f) if f.has_video => {
-            let img = app.session.footage.frame(it.id, f, effectcraft_engine::time::Tick(0))?;
-            // Point-sample down to at most 192 px on the long side.
-            let step = (img.width.max(img.height) as f32 / 192.0).ceil().max(1.0) as u32;
-            let (w, h) = (img.width.div_ceil(step), img.height.div_ceil(step));
-            let full = img.to_rgba8();
-            let mut px = Vec::with_capacity((w * h * 4) as usize);
-            for y in 0..h {
-                for x in 0..w {
-                    let i = (((y * step) * img.width + x * step) * 4) as usize;
-                    px.extend_from_slice(&full[i..i + 4]);
+    let cached: Option<(u64, egui::TextureHandle)> = ctx.data(|d| d.get_temp(key));
+    let mut tex = cached.as_ref().map(|(_, t)| t.clone());
+    let have = cached.as_ref().map(|(r, _)| *r);
+    // A finished render: upload it.
+    let pending: Option<PendingThumb> = ctx.data(|d| d.get_temp(pkey));
+    if let Some((prev, slot)) = &pending {
+        let done = slot.lock().ok().and_then(|mut s| s.take());
+        match done {
+            Some(Some((w, h, px))) => {
+                let ci = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &px);
+                let t = ctx.load_texture(format!("proj-thumb-{}", it.id.0), ci, egui::TextureOptions::LINEAR);
+                ctx.data_mut(|d| {
+                    d.insert_temp(key, (*prev, t.clone()));
+                    d.remove::<PendingThumb>(pkey);
+                });
+                tex = Some(t);
+                if *prev == rev {
+                    return tex;
                 }
             }
-            (w, h, px)
+            Some(None) => {
+                ctx.data_mut(|d| d.remove::<PendingThumb>(pkey));
+                return tex;
+            }
+            None => {
+                ctx.request_repaint_after(std::time::Duration::from_millis(50));
+                return tex;
+            }
         }
-        _ => return None,
-    };
-    let ci = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &px);
-    let tex = ctx.load_texture(format!("proj-thumb-{}", it.id.0), ci, egui::TextureOptions::LINEAR);
-    ctx.data_mut(|d| d.insert_temp(key, (rev, tex.clone())));
-    Some(tex)
+    }
+    if have == Some(rev) {
+        return tex;
+    }
+    let t = app.session.state.times.get(&it.id).copied().unwrap_or_default();
+    let job = app.session.thumbnail_job(it.id, t, 192)?;
+    let slot: Arc<Mutex<Option<Option<(u32, u32, Vec<u8>)>>>> = Arc::default();
+    if cfg!(target_arch = "wasm32") {
+        *slot.lock().ok()? = Some(job());
+    } else {
+        let s = slot.clone();
+        let spawned = std::thread::Builder::new().name("proj-thumb".into()).spawn(move || {
+            let r = job();
+            if let Ok(mut s) = s.lock() {
+                *s = Some(r);
+            }
+        });
+        if spawned.is_err() {
+            return tex;
+        }
+    }
+    ctx.data_mut(|d| d.insert_temp::<PendingThumb>(pkey, (rev, slot)));
+    ctx.request_repaint();
+    tex
 }
 
 fn fit(r: Rect, w: f32, h: f32) -> Rect {
@@ -290,7 +320,6 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
             app.ui.project_hscroll = (hscroll + sresp.drag_delta().x * overflow / (track.width() - tw).max(1.0)).clamp(0.0, overflow);
         }
     }
-    let mut y = list.min.y;
     let query = app.ui.project_search.to_lowercase();
     let mut rows: Vec<(ItemId, usize)> = vec![];
     fn walk(app: &EffectcraftApp, folder: Option<ItemId>, depth: usize, q: &str, out: &mut Vec<(ItemId, usize)>) {
@@ -324,8 +353,48 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let hover_y = ctx.pointer_hover_pos().filter(|p| list.contains(*p)).map(|p| p.y);
     let mut drop_row: Option<ItemId> = None;
     let mut actions: Vec<(String, serde_json::Value)> = vec![];
-    for (i, (id, depth)) in rows.iter().enumerate() {
-        let Some(it) = app.session.project.item(*id).cloned() else { continue };
+    // Vertical scrolling: only the rows in view are drawn (and registered), so a project with
+    // thousands of items costs what one screenful does.
+    let content_h = rows.len() as f32 * ROW_H;
+    let max_scroll = (content_h - list.height() + ROW_H).max(0.0);
+    if ui.rect_contains_pointer(list) {
+        let (dy, shift) = ui.input(|i| (i.smooth_scroll_delta.y, i.modifiers.shift));
+        if !shift && dy != 0.0 {
+            app.ui.project_scroll -= dy;
+        }
+    }
+    // A selection made elsewhere (a command, an agent, the viewer) scrolls into view.
+    let sel_key = egui::Id::new("proj-sel-seen");
+    let sel_now = app.session.state.project_selection.last().map(|i| i.0);
+    if ctx.data(|d| d.get_temp::<Option<u64>>(sel_key)) != Some(sel_now) {
+        ctx.data_mut(|d| d.insert_temp(sel_key, sel_now));
+        if let Some(row) = sel_now.and_then(|s| rows.iter().position(|(id, _)| id.0 == s)) {
+            let top = row as f32 * ROW_H;
+            if top < app.ui.project_scroll {
+                app.ui.project_scroll = top;
+            } else if top + ROW_H > app.ui.project_scroll + list.height() {
+                app.ui.project_scroll = top + ROW_H - list.height();
+            }
+        }
+    }
+    app.ui.project_scroll = app.ui.project_scroll.clamp(0.0, max_scroll);
+    let scroll = app.ui.project_scroll;
+    if max_scroll > 0.0 {
+        let track = Rect::from_min_max(pos2(rect.max.x - 6.0, list.min.y + 1.0), pos2(rect.max.x - 2.0, list.max.y - 7.0));
+        let th = (track.height() * list.height() / content_h).clamp(16.0, track.height());
+        let thumb = Rect::from_min_size(pos2(track.min.x, track.min.y + (track.height() - th) * (scroll / max_scroll)), vec2(track.width(), th));
+        let vresp = ui.interact(track.expand2(vec2(2.0, 0.0)), egui::Id::new("proj-vscroll"), Sense::drag());
+        p.rect_filled(thumb, 2.0, if vresp.hovered() || vresp.dragged() { t.text_dim } else { t.text_faint });
+        app.auto.add("project.vscroll", track, &format!("{scroll}/{max_scroll}"));
+        if vresp.dragged() {
+            app.ui.project_scroll = (scroll + vresp.drag_delta().y * max_scroll / (track.height() - th).max(1.0)).clamp(0.0, max_scroll);
+        }
+    }
+    let first = ((scroll / ROW_H).floor() as usize).min(rows.len());
+    let mut y = list.min.y - (scroll - first as f32 * ROW_H);
+    let project = app.session.project.clone();
+    for (i, (id, depth)) in rows.iter().enumerate().skip(first) {
+        let Some(it) = project.item(*id) else { continue };
         let r = Rect::from_min_size(pos2(list.min.x, y), vec2(list.width(), ROW_H));
         y += ROW_H;
         if r.min.y > list.max.y {
@@ -355,7 +424,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
             }
             app.auto.add(&format!("project.item.{}.twirl", id.0), tw, &it.name);
         }
-        icons::paint(&lp, Rect::from_center_size(pos2(x0 + 18.0, r.center().y), vec2(14.0, 14.0)), item_icon(&it), t.text_dim);
+        icons::paint(&lp, Rect::from_center_size(pos2(x0 + 18.0, r.center().y), vec2(14.0, 14.0)), item_icon(it), t.text_dim);
         // Proxy indicator: filled = the proxy is used, hollow = set but off. Click to switch.
         if let Some(px) = it.proxy.as_ref() {
             let pr = Rect::from_center_size(pos2(x0 + 4.0, r.center().y), vec2(9.0, 9.0));
@@ -437,10 +506,10 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
             let cp = lp.with_clip_rect(cell);
             let txt = match *key {
                 "type" => it.type_name().to_string(),
-                "size" => file_size(&it).map(fmt_size).unwrap_or_default(),
+                "size" => file_size(it).map(fmt_size).unwrap_or_default(),
                 "duration" => it.duration().map(|d| fmt_dur(d.seconds(), it.frame_rate().map(|r| r.as_f64()).unwrap_or(30.0))).unwrap_or_default(),
                 "fps" => it.frame_rate().map(|f| format!("{:.2}", f.as_f64())).unwrap_or_default(),
-                "path" => file_path(&it).to_string(),
+                "path" => file_path(it).to_string(),
                 "comment" => {
                     let cr = Rect::from_min_size(pos2(*cx - 2.0, r.min.y + 2.0), vec2(*w, r.height() - 4.0));
                     if cell_edit(app, ui, &mut actions, "comment", cr) {

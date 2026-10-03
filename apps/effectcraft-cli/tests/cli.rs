@@ -44,6 +44,30 @@ fn info_and_commands() {
     assert!(ids.iter().all(|i| i.contains("layer.new") || !i.is_empty()));
 }
 
+/// The agent-interface audit (CLI side): `exec --list` lists every registered engine command
+/// with its label, params doc and (with `--schemas`) params JSON Schema, and `exec` routes every
+/// id to its command (an unknown parameter is rejected by that command).
+#[test]
+fn exec_list_covers_every_engine_command() {
+    let v = ok_json(&["exec", "--list", "--schemas", "--empty"]);
+    let listed: std::collections::HashMap<&str, &Value> = v.as_array().unwrap().iter().map(|c| (c["id"].as_str().unwrap(), c)).collect();
+    let specs = effectcraft_engine::command_specs();
+    assert_eq!(listed.len(), specs.len());
+    for spec in specs {
+        let c = listed.get(spec.id).unwrap_or_else(|| panic!("`exec --list` misses {}", spec.id));
+        assert_eq!(c["label"], spec.label);
+        // Empty docs (`{}`) are dropped from the compact listing.
+        assert!(c["params"] == spec.params || (spec.params == "{}" && c["params"].is_null()), "{}: {}", spec.id, c["params"]);
+        assert_eq!(c["schema"]["type"], "object", "{}", spec.id);
+    }
+    // Routing: a few ids through a real process (all ids are checked in-process by the MCP audit).
+    for id in ["comp.new", "layer.newText", "effect.apply", "file.saveAs", "render.frame"].into_iter().filter(|i| listed.contains_key(i)) {
+        let (code, v) = run_json(&["exec", id, r#"{"__audit":1}"#, "--empty"]);
+        assert_eq!(code, 1, "{id}: {v}");
+        assert!(v["error"].as_str().unwrap().contains("unknown parameter"), "{id}: {v}");
+    }
+}
+
 #[test]
 fn exec_set_get_with_saved_project() {
     let proj = tmp("edit.ecproj");

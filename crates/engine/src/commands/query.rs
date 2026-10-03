@@ -9,6 +9,7 @@ use crate::{EngineError, Result, Session, query};
 fn list(s: &mut Session, p: &Value) -> Result<Value> {
     let filter = str_p(p, "filter").map(str::to_ascii_lowercase);
     let only = b_p(p, "enabledOnly").unwrap_or(false);
+    let schemas = b_p(p, "schemas").unwrap_or(false);
     let v: Vec<Value> = super::command_specs()
         .iter()
         .filter(|c| filter.as_ref().is_none_or(|f| c.id.to_ascii_lowercase().contains(f) || c.label.to_ascii_lowercase().contains(f)))
@@ -17,7 +18,12 @@ fn list(s: &mut Session, p: &Value) -> Result<Value> {
             if only && en.is_err() {
                 return None;
             }
-            Some(json!({"id": c.id, "label": c.label, "menu": c.menu, "shortcut": c.shortcut, "params": c.params, "enabled": en.is_ok(), "why": en.err()}))
+            let mut o =
+                json!({"id": c.id, "label": c.label, "menu": c.menu, "shortcut": c.shortcut, "params": c.params, "enabled": en.is_ok(), "why": en.err()});
+            if schemas {
+                o["schema"] = super::params_schema(c);
+            }
+            Some(o)
         })
         .collect();
     Ok(json!(v))
@@ -151,13 +157,50 @@ fn layer_tree(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(o)
 }
 
+/// One command in full, with the JSON Schema of its parameters.
+fn describe(s: &mut Session, p: &Value) -> Result<Value> {
+    let id = str_p(p, "command").or(str_p(p, "id")).ok_or_else(|| super::bad("command.describe", "missing `command`"))?;
+    let c = super::find(id).ok_or_else(|| EngineError::UnknownCommand(id.to_string()))?;
+    let en = (c.enabled)(s);
+    Ok(json!({
+        "id": c.id, "label": c.label, "menu": c.menu, "shortcut": c.shortcut, "params": c.params,
+        "schema": super::params_schema(c), "undoable": c.journal, "enabled": en.is_ok(), "why": en.err(),
+    }))
+}
+
+/// What this build can do: counts agents use to orient themselves, and the parity summary.
+fn capabilities(s: &mut Session, _: &Value) -> Result<Value> {
+    let fx = effectcraft_effects::registry();
+    let formats: Vec<Value> = s.exporter.as_ref().map(|e| e.formats().iter().map(|f| json!(format!("{f:?}"))).collect()).unwrap_or_default();
+    Ok(json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "commands": super::command_specs().len(),
+        "effects": {"total": fx.len(), "gpu": fx.iter().filter(|e| e.gpu).count(), "float": fx.iter().filter(|e| e.float).count()},
+        "export": formats,
+        "import": s.importer.is_some(),
+        "expressions": s.expr.is_some(),
+        "scripting": s.script.is_some(),
+        "gpu": s.accel.is_some(),
+        "parity": {
+            "target": "Adobe After Effects 2026",
+            "summary": PARITY,
+            "doc": "docs/parity.md",
+        },
+    }))
+}
+
+/// The headline of `docs/parity.md` (kept in sync by hand at each audit).
+const PARITY: &str = "≈94% weighted feature parity (80 done / 12 partial / 0 missing of 92 features); 298 of 298 After Effects 2026 effects present";
+
 fn state(s: &mut Session, _: &Value) -> Result<Value> {
     Ok(serde_json::to_value(&s.state).unwrap_or_default())
 }
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
-        query!("command.list", "List Commands", "{filter?, enabledOnly?}", list),
+        query!("command.list", "List Commands", "{filter?, enabledOnly?, schemas? (add each command's params JSON Schema)}", list),
+        query!("command.describe", "Describe Command", "{command} → id, label, menu, shortcut, params doc, JSON `schema`, enabled", describe),
+        query!("app.capabilities", "App Capabilities", "{} → version, command/effect counts, export formats, parity summary", capabilities),
         query!("project.summary", "Project Summary", "{}", summary),
         query!("comp.info", "Composition Info", "{comp?}", comp_info),
         query!("layer.tree", "Layer Property Tree", "{layer?, comp?, depth?, time? (comp s)} → nodes with `path`", layer_tree),

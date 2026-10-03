@@ -13,6 +13,7 @@ pub mod camera_track;
 pub mod commands;
 pub mod config;
 pub mod demo;
+pub mod footage_check;
 pub mod history;
 pub mod jobs;
 pub mod learn;
@@ -23,6 +24,7 @@ pub mod media_browser;
 pub mod media_cache;
 pub mod menus;
 pub mod offload;
+pub mod perf;
 pub mod prefs;
 pub mod preview;
 pub mod psd_import;
@@ -84,6 +86,10 @@ pub type Result<T> = std::result::Result<T, EngineError>;
 pub trait Services: Send + Sync {
     fn read_file(&self, path: &str) -> std::io::Result<Vec<u8>>;
     fn write_file(&self, path: &str, data: &[u8]) -> std::io::Result<()>;
+    /// Whether a file exists (the background footage check after open).
+    fn exists(&self, path: &str) -> bool {
+        std::path::Path::new(path).exists()
+    }
 }
 
 /// Native filesystem.
@@ -366,7 +372,14 @@ pub struct Session {
     pub next_task_id: u64,
     /// The running Learn tutorial (Home ▸ Learn), see [`learn`].
     pub learn: Option<learn::Progress>,
+    /// Check footage in the background after File ▸ Open ([`footage_check`]): frontends with an
+    /// event loop (the desktop app) turn this on; headless sessions run `footage.check` when
+    /// they want it.
+    pub check_footage_on_open: bool,
 }
+
+/// A thumbnail render ([`Session::thumbnail_job`]): (width, height, RGBA8).
+pub type ThumbnailJob = Box<dyn FnOnce() -> Option<(u32, u32, Vec<u8>)> + Send>;
 
 /// A script to run (see [`Session::script`]).
 #[derive(Clone, Copy, Debug)]
@@ -437,6 +450,7 @@ impl Default for Session {
             job_log: vec![],
             next_task_id: 1,
             learn: None,
+            check_footage_on_open: false,
         }
     }
 }
@@ -583,6 +597,10 @@ impl Session {
     pub fn active_comp(&self) -> Option<&Comp> {
         self.project.comp(self.state.active_comp?)
     }
+    /// [`Session::active_comp`] as a shared snapshot (an `Arc` clone, not a deep copy).
+    pub fn active_comp_arc(&self) -> Option<std::sync::Arc<Comp>> {
+        self.project.comp_arc(self.state.active_comp?)
+    }
     pub fn active_comp_id(&self) -> Option<ItemId> {
         self.state.active_comp.filter(|c| self.project.comp(*c).is_some())
     }
@@ -712,6 +730,54 @@ impl Session {
         let scale = if max_side == 0 { 1.0 } else { (max_side as f64 / long).min(1.0) };
         let img = self.render(comp, t, RenderOpts { scale, backend: effectcraft_render::Backend::Auto, ..Default::default() });
         Ok((img.width, img.height, img.to_rgba8_over(c.background)))
+    }
+
+    /// A Project panel thumbnail of an item (a comp at `t`, footage at its first frame), longest
+    /// side at most `max_side`, as a job that owns everything it reads: frontends run it off the
+    /// UI thread (a big comp takes far longer than a frame). `None` for items without pixels.
+    pub fn thumbnail_job(&self, item: ItemId, t: Tick, max_side: u32) -> Option<ThumbnailJob> {
+        let it = self.project.item(item)?;
+        let footage = self.footage.clone();
+        match &it.kind {
+            effectcraft_project::ItemKind::Comp(c) => {
+                let (project, expr, cache) = (self.project.clone(), self.expr.clone(), self.layer_cache.clone());
+                let long = c.width.max(c.height).max(1) as f64;
+                let scale = if max_side == 0 { 1.0 } else { (max_side as f64 / long).min(1.0) };
+                let opts = RenderOpts {
+                    scale,
+                    nested_switches: self.prefs.general.switches_affect_nested_comps,
+                    draft_shadows: self.prefs.three_d.realtime_shadows,
+                    ..Default::default()
+                };
+                let bg = c.background;
+                Some(Box::new(move || {
+                    let mut r = Renderer::new(&project, footage.as_ref(), opts);
+                    r.expr = expr.as_deref();
+                    r.cache = Some(&cache);
+                    let img = r.comp_frame(item, t);
+                    Some((img.width, img.height, img.to_rgba8_over(bg)))
+                }))
+            }
+            effectcraft_project::ItemKind::Footage(f) if f.has_video => {
+                let f = f.clone();
+                Some(Box::new(move || {
+                    let img = footage.frame(item, &f, Tick(0))?;
+                    // Point-sample down to at most `max_side` on the long side.
+                    let step = (img.width.max(img.height) as f32 / max_side.max(1) as f32).ceil().max(1.0) as u32;
+                    let (w, h) = (img.width.div_ceil(step), img.height.div_ceil(step));
+                    let full = img.to_rgba8();
+                    let mut px = Vec::with_capacity((w * h * 4) as usize);
+                    for y in 0..h {
+                        for x in 0..w {
+                            let i = (((y * step) * img.width + x * step) * 4) as usize;
+                            px.extend_from_slice(&full[i..i + 4]);
+                        }
+                    }
+                    Some((w, h, px))
+                }))
+            }
+            _ => None,
+        }
     }
 
     /// [`Session::render_rgba8`], or with `transparent` the frame's own straight alpha (what a

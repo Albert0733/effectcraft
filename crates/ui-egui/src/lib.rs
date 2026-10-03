@@ -7,6 +7,7 @@
 
 pub mod audio;
 pub mod automation;
+pub mod bench;
 pub mod control;
 pub mod dock;
 pub mod dock_ui;
@@ -547,7 +548,7 @@ impl EffectcraftApp {
     /// Start the preview of a Preview panel shortcut (its range, play-from, rate, skip,
     /// resolution, loop, caching, full screen and include options).
     pub fn play_with(&mut self, now: f64, sc: effectcraft_engine::preview::PreviewShortcut) {
-        let Some(c) = self.session.active_comp().cloned() else { return };
+        let Some(c) = self.session.active_comp_arc() else { return };
         let preset = self.session.prefs.preview.get(sc).clone();
         let plan = effectcraft_engine::preview::plan(&preset, &c, self.session.time());
         let fr = c.frame_rate;
@@ -590,7 +591,7 @@ impl EffectcraftApp {
             return;
         }
         let Some(cid) = self.session.active_comp_id() else { return };
-        let Some(c) = self.session.project.comp(cid).cloned() else { return };
+        let Some(c) = self.session.project.comp_arc(cid) else { return };
         // A preview at another frame rate plays slower or faster than real time: silent.
         if (pl.fps - c.frame_rate.as_f64()).abs() > 0.01 {
             return;
@@ -687,7 +688,7 @@ impl EffectcraftApp {
     /// and keep rendering ahead (the green cache bar fills, then playback runs in real time).
     fn advance_playback(&mut self, ctx: &egui::Context, scale: f64) {
         let Some(cid) = self.session.active_comp_id() else { return };
-        let Some(c) = self.session.project.comp(cid).cloned() else { return };
+        let Some(c) = self.session.project.comp_arc(cid) else { return };
         let now = ctx.input(|i| i.time);
         let fr = c.frame_rate;
         let plan = self.playback.plan.filter(|_| self.playback.playing);
