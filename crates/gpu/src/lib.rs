@@ -56,6 +56,7 @@ mod fx_light;
 mod fx_noise;
 mod fx_stylize;
 mod fx_text;
+mod fx_time;
 mod fx_tone;
 mod fx_transition;
 mod fx_warp;
@@ -219,6 +220,8 @@ mod tests_fx_noise;
 mod tests_fx_stylize;
 #[cfg(test)]
 mod tests_fx_text;
+#[cfg(test)]
+mod tests_fx_time;
 #[cfg(test)]
 mod tests_fx_tone;
 #[cfg(test)]

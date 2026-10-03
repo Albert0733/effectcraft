@@ -5,7 +5,7 @@
 
 EffectCraft ships 306 effects with 3009 parameters in total, grouped into the same categories as the Effects & Presets panel. Every effect is our own implementation, written from public behaviour descriptions and standard image-processing literature. Parameter names, order, popup options, units, defaults and ranges follow the reference application so that projects, expressions and muscle memory carry over.
 
-- **GPU**: 190 effects also run on the GPU compositor with identical results.
+- **GPU**: 196 effects also run on the GPU compositor with identical results.
 - **32**: 306 effects process 32-bit float (HDR, overbright) pixels without clamping.
 - **Status**: 306 implemented in full, 0 partial (what is missing is listed).
 
@@ -377,14 +377,14 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 
 | Effect | Id | Params | GPU | 32 | Status |
 |---|---|---:|:-:|:-:|---|
-| CC Force Motion Blur | `ec.time.ccforcemotionblur` | 4 |  | 32 | Implemented |
-| CC Wide Time | `ec.time.ccwidetime` | 3 |  | 32 | Implemented |
+| CC Force Motion Blur | `ec.time.ccforcemotionblur` | 4 | GPU | 32 | Implemented |
+| CC Wide Time | `ec.time.ccwidetime` | 3 | GPU | 32 | Implemented |
 | Echo | `ec.time.echo` | 5 | GPU | 32 | Implemented |
-| Pixel Motion Blur | `ec.time.pixelmotionblur` | 4 |  | 32 | Implemented |
+| Pixel Motion Blur | `ec.time.pixelmotionblur` | 4 | GPU | 32 | Implemented |
 | Posterize Time | `ec.time.posterizetime` | 1 | GPU | 32 | Implemented |
-| Time Difference | `ec.time.timedifference` | 5 |  | 32 | Implemented |
-| Time Displacement | `ec.time.timedisplacement` | 4 |  | 32 | Implemented |
-| Timewarp | `ec.time.timewarp` | 28 |  | 32 | Implemented |
+| Time Difference | `ec.time.timedifference` | 5 | GPU | 32 | Implemented |
+| Time Displacement | `ec.time.timedisplacement` | 4 | GPU | 32 | Implemented |
+| Timewarp | `ec.time.timewarp` | 28 | GPU | 32 | Implemented |
 
 ## Transition
 

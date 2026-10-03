@@ -95,7 +95,7 @@ pub use transition::place_layer;
 pub use noise::remove_grain_level;
 pub use noise3::{FractalGpu, fractal_gpu};
 pub use textfx::{TextLayer, text_layer};
-pub use time_fx::{posterized_time, time_frames};
+pub use time_fx::{PixelMotion, TimewarpPlan, TwStep, posterized_time, time_frames, timewarp_crop, timewarp_plan};
 // effectcraft-gpu fx_tone.
 pub use ocio::color_stabilizer_maps;
 
@@ -959,6 +959,13 @@ pub const GPU_EFFECTS: &[&str] = &[
     // effectcraft-gpu fx_text (glyph coverage rasterised on the CPU)
     "ec.text.numbers",
     "ec.text.timecode",
+    // effectcraft-gpu fx_time (frames fetched by the host, combined on the GPU)
+    "ec.time.timedifference",
+    "ec.time.timedisplacement",
+    "ec.time.ccforcemotionblur",
+    "ec.time.ccwidetime",
+    "ec.time.pixelmotionblur",
+    "ec.time.timewarp",
 ];
 
 /// Effects whose output depends on [`EffectCtx::time`] directly (not only through animated
