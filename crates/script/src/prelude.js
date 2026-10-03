@@ -805,8 +805,22 @@ Property.prototype.property = function () { return null; };
   };
   P.keyLabel = function () { return 0; };
   P.setLabelAtKey = function () {};
-  P.addToMotionGraphicsTemplate = function () { return false; };
-  P.canAddToMotionGraphicsTemplate = function () { return false; };
+  // Essential Graphics: `comp` must be the comp holding the property. A property already in
+  // the panel is added again as a mirror (both controls edit one value).
+  P.canAddToMotionGraphicsTemplate = function (comp) {
+    var c = comp && comp.__id !== undefined ? comp.__id : this.__layer.__comp;
+    if (c !== this.__layer.__comp) return false;
+    var sup = __call("essential.list", { comp: c, supported: true }).supported || [], uid = this.__uid;
+    for (var i = 0; i < sup.length; i++) if (sup[i].uid === uid) return true;
+    return false;
+  };
+  P.addToMotionGraphicsTemplateAs = function (comp, name) {
+    if (!this.canAddToMotionGraphicsTemplate(comp)) return false;
+    var p = this.__ref();
+    if (name !== undefined) p.name = String(name);
+    return __call("essential.addProperty", p).controls.length > 0;
+  };
+  P.addToMotionGraphicsTemplate = function (comp) { return this.addToMotionGraphicsTemplateAs(comp); };
 })();
 
 // Layer / composition markers (`layer.marker`, `comp.markerProperty`): keyframes are markers.
@@ -1352,7 +1366,39 @@ CompItem.prototype.constructor = CompItem;
   };
   P.openInViewer = function () { __call("comp.open", { comp: this.__id }); return null; };
   P.duplicate = function () { return __item(__call("project.duplicate", { items: [this.__id] }).items[0]); };
-  P.exportAsMotionGraphicsTemplate = function () { return false; };
+  // Essential Graphics template: name, controllers (property, mirror and media controls in
+  // panel order, 1-based) and export.
+  P.__egControllers = function () {
+    var out = [];
+    (function go(v) {
+      for (var i = 0; i < v.length; i++) {
+        if (v[i].kind === "group") go(v[i].children || []);
+        else if (v[i].kind !== "comment") out.push(v[i]);
+      }
+    })(__call("essential.list", { comp: this.__id }).controls || []);
+    return out;
+  };
+  def("motionGraphicsTemplateName", function () { return __call("essential.list", { comp: this.__id }).name; }, function (v) {
+    __call("essential.setName", { comp: this.__id, name: String(v) });
+  });
+  def("motionGraphicsTemplateControllerCount", function () { return this.__egControllers().length; });
+  P.getMotionGraphicsTemplateControllerName = function (i) {
+    var c = this.__egControllers()[__num(i, "index") - 1];
+    if (!c) throw __err("controller index out of range");
+    return c.name;
+  };
+  P.setMotionGraphicsControllerName = function (i, name) {
+    var c = this.__egControllers()[__num(i, "index") - 1];
+    if (!c) throw __err("controller index out of range");
+    __call("essential.rename", { comp: this.__id, control: c.id, name: String(name) });
+    return String(name);
+  };
+  P.exportAsMotionGraphicsTemplate = function (overwrite, path) {
+    if (path === undefined) return false;
+    var p = path && path.fsName !== undefined ? path.fsName : String(path);
+    if (!overwrite && new File(p).exists) return false;
+    try { __call("essential.exportTemplate", { comp: this.__id, path: p }); return true; } catch (e) { return false; }
+  };
 })();
 
 function FootageItem(id) {

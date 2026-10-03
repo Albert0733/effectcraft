@@ -67,11 +67,15 @@ fn controls_are_listed_typed_and_editable() {
     assert_eq!(l["controls"][1]["name"], "Opacity");
     s.execute("essential.remove", json!({"control": opacity})).unwrap();
     assert_eq!(s.execute("essential.list", json!({})).unwrap()["controls"].as_array().unwrap().len(), 3);
-    // Unsupported properties are refused; adding the same property twice adds nothing.
+    // Unsupported properties are refused; adding the same property twice adds a mirror (or
+    // nothing with `mirror: false`).
     s.execute("layer.addMask", json!({"layer": solid})).unwrap();
     assert!(s.execute("essential.addProperty", json!({"layer": solid, "path": "masks/#1/path"})).is_err());
-    let again = s.execute("essential.addProperty", json!({"layer": solid, "path": "effects/#1/color"})).unwrap();
+    let again = s.execute("essential.addProperty", json!({"layer": solid, "path": "effects/#1/color", "mirror": false})).unwrap();
     assert_eq!(again["controls"], json!([]));
+    let again = s.execute("essential.addProperty", json!({"layer": solid, "path": "effects/#1/color"})).unwrap();
+    assert_eq!(again["mirrors"], again["controls"]);
+    s.execute("edit.undo", json!({})).unwrap();
     // Dropdown Menu Control: its items are editable and it becomes a dropdown control.
     s.execute("effect.apply", json!({"layer": solid, "effect": "Dropdown Menu Control"})).unwrap();
     s.execute("effect.editDropdown", json!({"layer": solid, "items": ["Small", "Medium", "Large", "Huge"]})).unwrap();
@@ -139,6 +143,79 @@ fn master_properties_override_per_instance_push_and_revert() {
     s.execute("essential.remove", json!({"comp": card.0, "control": ids["color"]})).unwrap();
     let l = s.project.comp(main).unwrap().layer(LayerId(b)).unwrap().clone();
     assert!(essential::group(&l).unwrap().children.iter().all(|n| n.name() != "Card Color"));
+}
+
+#[test]
+fn mirrored_and_linked_properties() {
+    let (mut s, card, solid, ids) = card();
+    let opacity = ids["opacity"].as_u64().unwrap();
+    // A second solid whose opacity the Opacity control drives too.
+    let bg2 = s.execute("layer.newSolid", json!({"name": "BG2", "color": "#00ff00"})).unwrap()["layer"].as_u64().unwrap();
+    s.execute("essential.linkProperty", json!({"control": opacity, "layer": bg2, "path": "transform/opacity"})).unwrap();
+    // Not the same kind of property; already driven.
+    assert!(s.execute("essential.linkProperty", json!({"control": opacity, "layer": bg2, "path": "transform/position"})).is_err());
+    assert!(s.execute("essential.linkProperty", json!({"control": ids["color"], "layer": bg2, "path": "transform/opacity"})).is_err());
+    let opa = |s: &Session, l: u64| s.project.comp(card).unwrap().layer(LayerId(l)).unwrap().props.prop("transform/opacity").unwrap().value.as_f64();
+    // The link follows the main property, and the main property follows the link.
+    s.execute("prop.set", json!({"comp": card.0, "layer": solid, "path": "transform/opacity", "value": 40})).unwrap();
+    assert_eq!(opa(&s, bg2), 40.0);
+    s.execute("prop.set", json!({"comp": card.0, "layer": bg2, "path": "transform/opacity", "value": 70})).unwrap();
+    assert_eq!(opa(&s, solid), 70.0);
+    let l = s.execute("essential.list", json!({})).unwrap();
+    let c = l["controls"].as_array().unwrap().iter().find(|c| c["id"] == opacity).unwrap().clone();
+    assert_eq!(c["links"][0]["layer"], bg2);
+    assert_eq!(c["links"][0]["path"], "transform/opacity");
+    // Adding the Opacity again (into the Words group) mirrors it.
+    let m = s.execute("essential.addProperty", json!({"layer": solid, "path": "transform/opacity", "group": ids["group"], "name": "Fade"})).unwrap();
+    let mirror = m["mirrors"][0].as_u64().unwrap();
+    let l = s.execute("essential.list", json!({})).unwrap();
+    let mc = &l["controls"][2]["children"][1];
+    assert_eq!((mc["id"].as_u64(), mc["kind"].as_str(), mc["of"].as_u64(), mc["name"].as_str()), (Some(mirror), Some("mirror"), Some(opacity), Some("Fade")));
+    assert_eq!(mc["value"], json!(70.0));
+    // A mirror of the mirror shows the same master; the linked solid also counts as present.
+    let m2 = s.execute("essential.addMirror", json!({"control": mirror})).unwrap();
+    assert_eq!(m2["of"], opacity);
+    let again = s.execute("essential.addProperty", json!({"layer": bg2, "path": "transform/opacity"})).unwrap();
+    assert_eq!(again["mirrors"].as_array().unwrap().len(), 1);
+    s.execute("edit.undo", json!({})).unwrap();
+    s.execute("edit.undo", json!({})).unwrap();
+    // Instances: setting the mirror sets the master (and both links) for that instance only.
+    s.execute("comp.new", json!({"name": "Main", "width": 64, "height": 64, "frameRate": 30, "duration": 2})).unwrap();
+    let main = s.active_comp_id().unwrap();
+    let a = s.execute("layer.addItem", json!({"item": card.0})).unwrap()["layer"].as_u64().unwrap();
+    let inst = s.execute("essential.instance", json!({"layer": a})).unwrap();
+    let find = |inst: &Value, id: u64| inst["controls"].as_array().unwrap().iter().find(|c| c["control"] == id).unwrap().clone();
+    assert_eq!(find(&inst, mirror)["kind"], "mirror");
+    s.execute("essential.set", json!({"layer": a, "control": mirror, "value": 20})).unwrap();
+    let inst = s.execute("essential.instance", json!({"layer": a})).unwrap();
+    assert_eq!((find(&inst, opacity)["value"].clone(), find(&inst, opacity)["overridden"].clone()), (json!(20.0), json!(true)));
+    assert_eq!((find(&inst, mirror)["value"].clone(), find(&inst, mirror)["overridden"].clone()), (json!(20.0), json!(true)));
+    // Rendered: both solids at 20 % (green BG2 on top of the red-filled solid).
+    let px = center(&s, main);
+    assert!((px[3] - (1.0 - 0.8 * 0.8)).abs() < 0.02, "{px:?}");
+    assert_eq!(opa(&s, solid), 70.0, "the source comp keeps its value");
+    // Setting the master updates the mirror.
+    s.execute("essential.set", json!({"layer": a, "control": opacity, "value": 55})).unwrap();
+    assert_eq!(find(&s.execute("essential.instance", json!({"layer": a})).unwrap(), mirror)["value"], json!(55.0));
+    // Reverting the mirror reverts the master too.
+    s.execute("essential.revert", json!({"layer": a, "control": mirror})).unwrap();
+    let inst = s.execute("essential.instance", json!({"layer": a})).unwrap();
+    assert_eq!((find(&inst, opacity)["overridden"].clone(), find(&inst, mirror)["value"].clone()), (json!(false), json!(70.0)));
+    // Push to Comp from a mirror writes the master and its links.
+    s.execute("essential.set", json!({"layer": a, "control": mirror, "value": 35})).unwrap();
+    s.execute("essential.pushToComp", json!({"layer": a, "control": mirror})).unwrap();
+    assert_eq!((opa(&s, solid), opa(&s, bg2)), (35.0, 35.0));
+    // Saved and loaded with the project.
+    let back = effectcraft_project::Project::from_json(&s.project.to_json()).unwrap();
+    assert_eq!(back.comp(card).unwrap().essential, s.project.comp(card).unwrap().essential);
+    // Unlink; removing the master removes its mirrors.
+    s.execute("essential.unlinkProperty", json!({"comp": card.0, "control": opacity, "layer": bg2, "path": "transform/opacity"})).unwrap();
+    s.execute("prop.set", json!({"comp": card.0, "layer": solid, "path": "transform/opacity", "value": 10})).unwrap();
+    assert_eq!(opa(&s, bg2), 35.0);
+    let r = s.execute("essential.remove", json!({"comp": card.0, "control": opacity})).unwrap();
+    assert_eq!(r["mirrors"], json!([mirror]));
+    let eg = s.project.comp(card).unwrap().essential.clone().unwrap();
+    assert!(eg.find(mirror).is_none() && essential::group(s.project.comp(main).unwrap().layer(LayerId(a)).unwrap()).is_some());
 }
 
 #[test]

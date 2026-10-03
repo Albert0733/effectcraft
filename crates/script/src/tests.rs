@@ -446,3 +446,41 @@ fn layer_switches_timing_and_comp_settings() {
     let o = ok(&mut s, "var n = app.project.numItems; app.project.item(1).remove(); n - app.project.numItems");
     assert_eq!(o.result, json!(1));
 }
+
+#[test]
+fn motion_graphics_template_hooks_add_mirrors_and_controllers() {
+    let mut s = session();
+    let dir = std::env::temp_dir().join(format!("effectcraft-eg-script-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("card.ectemplate");
+    let o = ok(
+        &mut s,
+        &format!(
+            r#"
+        var comp = app.project.items.addComp("Card", 64, 64, 1, 2, 30);
+        var bg = comp.layers.addSolid([1, 1, 1], "BG", 64, 64, 1);
+        var op = bg.transform.opacity;
+        var r = [op.canAddToMotionGraphicsTemplate(comp), op.addToMotionGraphicsTemplateAs(comp, "Fade")];
+        // Again: a mirror of the same property.
+        r.push(op.addToMotionGraphicsTemplate(comp));
+        r.push(comp.motionGraphicsTemplateControllerCount);
+        r.push(comp.getMotionGraphicsTemplateControllerName(1), comp.getMotionGraphicsTemplateControllerName(2));
+        comp.setMotionGraphicsControllerName(2, "Fade Again");
+        comp.motionGraphicsTemplateName = "Lower Card";
+        r.push(comp.getMotionGraphicsTemplateControllerName(2), comp.motionGraphicsTemplateName);
+        // A property of another comp can't be added.
+        var other = app.project.items.addComp("Other", 64, 64, 1, 2, 30);
+        r.push(op.canAddToMotionGraphicsTemplate(other));
+        r.push(comp.exportAsMotionGraphicsTemplate(true, new File("{}")));
+        r
+        "#,
+            path.to_string_lossy()
+        ),
+    );
+    assert_eq!(o.result, json!([true, true, true, 2, "Fade", "Fade", "Fade Again", "Lower Card", false, true]));
+    let (_, c) = comp_named(&s, "Card");
+    let eg = c.essential.as_ref().unwrap();
+    assert!(matches!(eg.controls[1].kind, effectcraft_engine::project::essential::EgKind::Mirror { of } if of == eg.controls[0].id));
+    assert!(path.exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
