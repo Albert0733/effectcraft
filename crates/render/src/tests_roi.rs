@@ -71,3 +71,33 @@ fn roi_at_half_resolution() {
     assert_eq!((roi.width, roi.height), (30, 20));
     assert_same(&roi, &crop(&full, 20, 10, 30, 20));
 }
+
+/// Extended Viewer: a region reaching past the comp frame shows the 3D layer's pixels on the
+/// pasteboard, and its inner part equals the normal frame.
+#[test]
+fn extended_region_renders_3d_layers_beyond_the_frame() {
+    let (mut p, cid) = project(true);
+    // Push the 3D (blue) layer half out of the frame on the right.
+    let comp = p.comp_mut(cid).unwrap();
+    comp.layers[1].props.prop_mut("transform/position").unwrap().value = Value::Vec3([150.0, 60.0, 0.0]);
+    comp.layers[1].props.prop_mut("transform/rotation").unwrap().value = Value::Scalar(0.0);
+    let full = Renderer::new(&p, &NoFootage, RenderOpts::default()).comp_frame(cid, Tick::ZERO);
+    let region = crate::extended_region(160, 120, [-100.0, -100.0, 260.0, 220.0], 0.5).unwrap();
+    assert_eq!(region, [-80.0, -64.0, 320.0, 248.0]);
+    let ext = Renderer::new(&p, &NoFootage, RenderOpts { roi: Some(region), ..Default::default() }).comp_frame(cid, Tick::ZERO);
+    assert_eq!((ext.width, ext.height), (320, 248));
+    // Comp x 175 (past the 160 px frame) at y 60: the layer covers x 115..185.
+    let out = ext.get(175 + 80, 60 + 64);
+    assert!(out[3] > 0.5 && out[2] > 0.5, "pasteboard pixel {out:?}");
+    // Nothing is drawn far outside every layer.
+    assert_eq!(ext.get(5, 5)[3], 0.0);
+    // The frame part is the normal frame.
+    assert_same(&crop(&ext, 80, 64, 160, 120), &full);
+}
+
+#[test]
+fn extended_region_is_none_inside_the_frame() {
+    assert_eq!(crate::extended_region(160, 120, [10.0, 10.0, 150.0, 110.0], 1.0), None);
+    // Clamped to the margin.
+    assert_eq!(crate::extended_region(100, 100, [-1000.0, 0.0, 50.0, 100.0], 1.0), Some([-112.0, 0.0, 212.0, 100.0]));
+}

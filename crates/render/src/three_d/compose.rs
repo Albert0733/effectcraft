@@ -74,8 +74,10 @@ impl Item<'_> {
 }
 
 /// Build the plane geometry of a layer for a camera.
-fn geo(cam: &CameraState, world: Mat4, b: [f64; 4], comp: (f64, f64), scale: f64, out: (u32, u32)) -> Option<Geo> {
-    let proj = Mat4::scale(vec3(scale, scale, 1.0)) * cam.projection(comp.0, comp.1);
+fn geo(cam: &CameraState, world: Mat4, b: [f64; 4], comp: (f64, f64), scale: f64, out: (u32, u32), off: (f64, f64)) -> Option<Geo> {
+    // The output canvas may start at `off` (scaled comp pixels): region of interest / Extended
+    // Viewer frames.
+    let proj = Mat4::translate(vec3(-off.0, -off.1, 0.0)) * Mat4::scale(vec3(scale, scale, 1.0)) * cam.projection(comp.0, comp.1);
     let full = proj * world;
     let h = full.plane_to_mat3();
     // Edge-on planes project to a line (singular homography): nothing to draw.
@@ -222,7 +224,7 @@ fn prepare_with<'a>(
     let bounds = buf_bounds(&buf);
     let n = if in_run { mb_samples(r, ctx, layer) } else { 1 };
     let geos: Vec<Geo> = if n <= 1 {
-        geo(&cam, world, bounds, comp, s, out).into_iter().collect()
+        geo(&cam, world, bounds, comp, s, out, r.out_offset()).into_iter().collect()
     } else {
         let fd = ctx.comp.frame_duration().seconds();
         let angle = ctx.comp.shutter_angle / 360.0;
@@ -232,7 +234,7 @@ fn prepare_with<'a>(
                 let f = phase + angle * i as f64 / (n - 1) as f64;
                 let sub = ctx.at(ctx.time + Tick::from_seconds_f64(f * fd));
                 let c = camera_for(r, &sub);
-                geo(&c, outer * sub.world_matrix(layer) * local, bounds, comp, s, out)
+                geo(&c, outer * sub.world_matrix(layer) * local, bounds, comp, s, out, r.out_offset())
             })
             .collect()
     };

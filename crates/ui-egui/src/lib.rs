@@ -289,9 +289,10 @@ impl EffectcraftApp {
         self.ui.dock = self.ui.saved_workspaces.get(name).cloned().unwrap_or_else(|| dock::workspace(name));
         self.ui.floating = self.ui.saved_floating.get(name).cloned().unwrap_or_else(|| dock::workspace_floating(name));
         self.ui.maximized = None;
-        // Learn: the Home screen (community links) in the Composition panel.
+        // Learn: the Home screen's Learn tab (tutorials) in the Composition panel.
         if name == "Learn" {
             self.ui.start_screen = true;
+            self.ui.home_learn = true;
         }
     }
 
@@ -346,6 +347,7 @@ impl EffectcraftApp {
             && v.channel == effectcraft_engine::viewer::Channel::Rgb
             && v.exposure == 0.0
             && self.session.state.region_of_interest.is_none()
+            && self.ui.viewer.extended.is_none()
     }
 
     /// Set up the GPU compositor on egui-wgpu's device (once). Without an adapter that runs
@@ -441,7 +443,7 @@ impl EffectcraftApp {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
         // The region of interest changes what is rendered too.
-        let roi = self.session.state.region_of_interest.filter(|_| self.session.active_comp_id() == Some(comp));
+        let roi = self.viewer_region(comp);
         if let Some(r) = roi {
             r.map(f64::to_bits).hash(&mut h);
         }
@@ -454,6 +456,15 @@ impl EffectcraftApp {
         cam.zoom.to_bits().hash(&mut h);
         cam.ortho.hash(&mut h);
         h.finish() | 1
+    }
+
+    /// The comp-space region viewer frames of `comp` cover: the region of interest, else the
+    /// Extended Viewer's area (frame plus pasteboard), else `None` (the whole frame).
+    pub fn viewer_region(&self, comp: ItemId) -> Option<[f64; 4]> {
+        if self.session.active_comp_id() != Some(comp) {
+            return None;
+        }
+        self.session.state.region_of_interest.or(self.ui.viewer.extended)
     }
 
     /// Request a prefetch frame render (no-op if cached/in flight).
@@ -469,7 +480,7 @@ impl EffectcraftApp {
     /// Render options of viewer frames of `comp` at `scale`.
     pub fn frame_opts(&self, comp: ItemId, scale: f64) -> RenderOpts {
         let (draft, _) = self.session.state.viewer.fast_previews.render(self.ui.viewer.interacting);
-        let roi = self.session.state.region_of_interest.filter(|_| self.session.active_comp_id() == Some(comp));
+        let roi = self.viewer_region(comp);
         RenderOpts {
             scale,
             motion_blur: true,
@@ -848,6 +859,7 @@ impl EffectcraftApp {
         panels::dialogs::show(self, &ctx);
         panels::scriptui_view::sync_panels(self);
         panels::scriptui_view::show_windows(self, &ctx);
+        panels::learn::coach(self, &ctx);
         self.draw_toast(ui, full);
     }
 

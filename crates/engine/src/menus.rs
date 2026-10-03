@@ -314,6 +314,7 @@ pub fn checked(s: &Session, command: &str, params: &Value) -> Option<bool> {
         "layer.mask.hideLocked" => Some(s.state.hide_locked_masks),
         "view.layout" => Some(params.get("views").and_then(Value::as_u64) == Some(s.state.view_layout.max(1) as u64)),
         "view.shareViewOptions" => Some(s.state.share_view_options),
+        "view.extendedViewer" => Some(s.prefs.three_d.extended_viewer),
         "view.snapping" => Some(s.state.snapping),
         "view.displayColorManagement" => Some(s.state.viewer.display_color_management),
         "view.simulateOutput" => {

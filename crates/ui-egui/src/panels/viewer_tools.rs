@@ -694,7 +694,13 @@ pub(crate) fn bottom_bar(app: &mut EffectcraftApp, ui: &mut egui::Ui, bar: Rect,
         if let Some(i) = popup(app, ui, "vw-cam-pop", r, &items, "view3dItem") {
             let _ = app.session.execute("view.set3DView", json!({"view": View3D::ALL[i].id()}));
         }
-        x = r.max.x + 6.0;
+        x = r.max.x + 4.0;
+        // Extended Viewer (Settings ▸ 3D): custom views and Draft 3D show past the comp frame.
+        let on = app.session.prefs.three_d.extended_viewer;
+        if tog(ui, &mut app.auto, &mut x, Icon::ExtendedViewer, on, "extendedViewer", "Extended Viewer").0 {
+            let _ = app.session.execute("view.extendedViewer", json!({}));
+        }
+        x += 2.0;
     }
     // Current time.
     let tc = crate::panels::timecode(&app.session, comp, time);
