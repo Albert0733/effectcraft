@@ -191,6 +191,43 @@ fn intra_8bit_quality_and_decoders() {
     check_ffmpeg(&run, w, h, 8, "intra8");
 }
 
+/// ffprobe reads the profile, level, colour description and timing from the parameter sets.
+#[test]
+fn ffprobe_stream_info() {
+    if !ffmpeg_available() {
+        return;
+    }
+    let (w, h) = (130, 72);
+    let pics: Vec<Pic> = (0..2).map(|i| synth(w, h, 10, i, 0)).collect();
+    let mut c = cfg(w as u32, h as u32, 30, 30, Profile::Main10);
+    c.fps_num = 30000;
+    c.fps_den = 1001;
+    c.full_range = true;
+    let run = encode(c, &pics);
+    let path = std::env::temp_dir().join(format!("hevcenc-probe-{}.hevc", std::process::id()));
+    std::fs::write(&path, annexb(&run)).unwrap();
+    let o = Command::new("ffprobe").args(["-v", "error", "-show_streams", "-of", "flat"]).arg(&path).output().unwrap();
+    let _ = std::fs::remove_file(&path);
+    let s = String::from_utf8_lossy(&o.stdout).to_string();
+    for want in [
+        "codec_name=\"hevc\"",
+        "profile=\"Main 10\"",
+        "width=130",
+        "height=72",
+        "coded_width=136",
+        "coded_height=72",
+        "pix_fmt=\"yuv420p10le\"",
+        "level=30",
+        "color_range=\"pc\"",
+        "color_space=\"bt709\"",
+        "color_transfer=\"bt709\"",
+        "color_primaries=\"bt709\"",
+        "r_frame_rate=\"30000/1001\"",
+    ] {
+        assert!(s.contains(want), "ffprobe output lacks {want}:\n{s}");
+    }
+}
+
 #[test]
 fn inter_8bit_moving_pattern() {
     let (w, h) = (160, 96);
@@ -208,7 +245,7 @@ fn inter_8bit_moving_pattern() {
 
 #[test]
 fn odd_multiple_sizes_and_cropping() {
-    for (w, h) in [(34usize, 18usize), (66, 38), (8, 8), (130, 72)] {
+    for (w, h) in [(34usize, 18usize), (66, 38), (8, 8), (130, 72), (2, 2), (2, 70), (264, 6)] {
         let pics: Vec<Pic> = (0..3).map(|i| synth(w, h, 8, i, 2 * i)).collect();
         let run = encode(cfg(w as u32, h as u32, 30, 2, Profile::Main), &pics);
         check_filmcraft(&run, w, h);
