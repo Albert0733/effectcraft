@@ -57,6 +57,7 @@ mod fx_lut;
 mod fx_noise;
 mod fx_stylize;
 mod fx_tone;
+mod fx_vr;
 mod fx_warp;
 mod ops;
 mod particles;
@@ -220,6 +221,8 @@ mod tests_fx_noise;
 mod tests_fx_stylize;
 #[cfg(test)]
 mod tests_fx_tone;
+#[cfg(test)]
+mod tests_fx_vr;
 #[cfg(test)]
 mod tests_fx_warp;
 #[cfg(test)]

@@ -101,6 +101,7 @@ pub use ocio::color_stabilizer_maps;
 pub use channel3d::{CRYPTO_LAYERS, id_color, selection_hashes};
 pub use ocio::{ColorOp, Straight, Tf, color_program};
 pub use utility::{Lut, load_lut};
+pub use vr::{equi_dir as vr_equi_dir, rotation as vr_rotation};
 
 /// Effect categories in Effects & Presets order.
 pub const CATEGORIES: &[&str] = &[
@@ -952,6 +953,19 @@ pub const GPU_EFFECTS: &[&str] = &[
     "ec.color.ociofile",
     "ec.color.ociolook",
     "ec.utility.colorprofileconverter",
+    // Immersive Video.
+    "ec.vr.blur",
+    "ec.vr.chromaticaberrations",
+    "ec.vr.colorgradients",
+    "ec.vr.converter",
+    "ec.vr.denoise",
+    "ec.vr.digitalglitch",
+    "ec.vr.fractalnoise",
+    "ec.vr.glow",
+    "ec.vr.planetosphere",
+    "ec.vr.rotatesphere",
+    "ec.vr.sharpen",
+    "ec.vr.spheretoplane",
 ];
 
 /// Effects whose output depends on [`EffectCtx::time`] directly (not only through animated

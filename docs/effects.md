@@ -5,7 +5,7 @@
 
 EffectCraft ships 306 effects with 3009 parameters in total, grouped into the same categories as the Effects & Presets panel. Every effect is our own implementation, written from public behaviour descriptions and standard image-processing literature. Parameter names, order, popup options, units, defaults and ranges follow the reference application so that projects, expressions and muscle memory carry over.
 
-- **GPU**: 181 effects also run on the GPU compositor with identical results.
+- **GPU**: 193 effects also run on the GPU compositor with identical results.
 - **32**: 306 effects process 32-bit float (HDR, overbright) pixels without clamping.
 - **Status**: 306 implemented in full, 0 partial (what is missing is listed).
 
@@ -219,18 +219,18 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 
 | Effect | Id | Params | GPU | 32 | Status |
 |---|---|---:|:-:|:-:|---|
-| VR Blur | `ec.vr.blur` | 2 |  | 32 | Implemented |
-| VR Chromatic Aberrations | `ec.vr.chromaticaberrations` | 8 |  | 32 | Implemented |
-| VR Color Gradients | `ec.vr.colorgradients` | 19 |  | 32 | Implemented |
-| VR Converter | `ec.vr.converter` | 8 |  | 32 | Implemented |
-| VR De-Noise | `ec.vr.denoise` | 4 |  | 32 | Implemented |
-| VR Digital Glitch | `ec.vr.digitalglitch` | 21 |  | 32 | Implemented |
-| VR Fractal Noise | `ec.vr.fractalnoise` | 16 |  | 32 | Implemented |
-| VR Glow | `ec.vr.glow` | 7 |  | 32 | Implemented |
-| VR Plane to Sphere | `ec.vr.planetosphere` | 6 |  | 32 | Implemented |
-| VR Rotate Sphere | `ec.vr.rotatesphere` | 5 |  | 32 | Implemented |
-| VR Sharpen | `ec.vr.sharpen` | 2 |  | 32 | Implemented |
-| VR Sphere to Plane | `ec.vr.spheretoplane` | 5 |  | 32 | Implemented |
+| VR Blur | `ec.vr.blur` | 2 | GPU | 32 | Implemented |
+| VR Chromatic Aberrations | `ec.vr.chromaticaberrations` | 8 | GPU | 32 | Implemented |
+| VR Color Gradients | `ec.vr.colorgradients` | 19 | GPU | 32 | Implemented |
+| VR Converter | `ec.vr.converter` | 8 | GPU | 32 | Implemented |
+| VR De-Noise | `ec.vr.denoise` | 4 | GPU | 32 | Implemented |
+| VR Digital Glitch | `ec.vr.digitalglitch` | 21 | GPU | 32 | Implemented |
+| VR Fractal Noise | `ec.vr.fractalnoise` | 16 | GPU | 32 | Implemented |
+| VR Glow | `ec.vr.glow` | 7 | GPU | 32 | Implemented |
+| VR Plane to Sphere | `ec.vr.planetosphere` | 6 | GPU | 32 | Implemented |
+| VR Rotate Sphere | `ec.vr.rotatesphere` | 5 | GPU | 32 | Implemented |
+| VR Sharpen | `ec.vr.sharpen` | 2 | GPU | 32 | Implemented |
+| VR Sphere to Plane | `ec.vr.spheretoplane` | 5 | GPU | 32 | Implemented |
 
 ## Keying
 
