@@ -38,6 +38,8 @@ effectcraft-ui-egui = { path = "crates/ui-egui" }
 effectcraft-automation = { path = "crates/automation" }
 effectcraft-opusenc = { path = "crates/opusenc" }
 effectcraft-script = { path = "crates/script" }
+effectcraft-hevcenc = { path = "crates/hevcenc" }
+effectcraft-av1enc = { path = "crates/av1enc" }
 
 # foundation
 thiserror = "2"
@@ -76,6 +78,9 @@ filmcraft-isobmff = { git = "https://github.com/storytold/filmcraft", rev = "89c
 # decoder used as the round-trip oracle of effectcraft-opusenc (crates/export dev-dependency)
 filmcraft-opus = { git = "https://github.com/storytold/filmcraft", rev = "89cfbf24f698b0f0e538eb7795929f19bbfb1dbb" }
 filmcraft-vp9 = { git = "https://github.com/storytold/filmcraft", rev = "89cfbf24f698b0f0e538eb7795929f19bbfb1dbb" }
+# decoders used as the round-trip oracles of effectcraft-hevcenc / effectcraft-av1enc (dev-dependencies only)
+filmcraft-hevc = { git = "https://github.com/storytold/filmcraft", rev = "89cfbf24f698b0f0e538eb7795929f19bbfb1dbb" }
+filmcraft-av1 = { git = "https://github.com/storytold/filmcraft", rev = "89cfbf24f698b0f0e538eb7795929f19bbfb1dbb" }
 
 # gpu (the same wgpu eframe / egui-wgpu use)
 wgpu = { version = "30.0.1", features = ["fragile-send-sync-non-atomic-wasm"] }
@@ -146,6 +151,12 @@ opt-level = 3
 opt-level = 3
 
 [profile.dev.package.effectcraft-vp9enc]
+opt-level = 3
+
+[profile.dev.package.effectcraft-hevcenc]
+opt-level = 3
+
+[profile.dev.package.effectcraft-av1enc]
 opt-level = 3
 
 # FilmCraft codec hot loops (same settings as FilmCraft's own workspace).

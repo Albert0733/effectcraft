@@ -1165,6 +1165,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "effectcraft-av1enc"
+version = "0.1.0"
+dependencies = [
+ "filmcraft-av1",
+]
+
+[[package]]
 name = "effectcraft-cli"
 version = "0.1.0"
 dependencies = [
@@ -1299,6 +1306,13 @@ dependencies = [
  "log",
  "pollster 0.4.0",
  "wgpu",
+]
+
+[[package]]
+name = "effectcraft-hevcenc"
+version = "0.1.0"
+dependencies = [
+ "filmcraft-hevc",
 ]
 
 [[package]]
