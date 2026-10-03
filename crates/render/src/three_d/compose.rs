@@ -367,9 +367,9 @@ pub(crate) fn draw_run(r: &Renderer, ctx: &EvalCtx, run: &[&Layer], canvas: &mut
     if run.is_empty() {
         return;
     }
-    // Advanced 3D comps: meshes, physically based lights, shadow maps (collapsed precomps keep
-    // the parent's Classic 3D planes).
-    if ctx.comp.renderer == effectcraft_project::Renderer::Advanced3D && r.collapse3d.is_none() {
+    // Advanced 3D comps: meshes, physically based lights, shadow maps (a collapsed precomp's
+    // layers use the renderer of the comp they collapse into).
+    if super::adv::active(r, ctx) {
         super::adv::draw_run(r, ctx, run, canvas);
         return;
     }
@@ -694,7 +694,7 @@ pub(crate) fn gpu_run(r: &Renderer, ctx: &EvalCtx, run: &[&Layer], out: (u32, u3
     if run.is_empty() || run.iter().any(|l| l.switches.adjustment || l.environment_background || r.quality(l) == effectcraft_project::Quality::Wireframe) {
         return None;
     }
-    if ctx.comp.renderer == effectcraft_project::Renderer::Advanced3D && r.collapse3d.is_none() {
+    if super::adv::active(r, ctx) {
         return None;
     }
     let g = gather(r, ctx, run, out);

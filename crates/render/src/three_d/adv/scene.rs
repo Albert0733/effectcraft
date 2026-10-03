@@ -212,6 +212,9 @@ pub(crate) struct Builder {
     /// Per triangle: transparent and its sort depth.
     tri_depth: Vec<(bool, f32)>,
     cam: CameraState,
+    /// World of the collapsed precomp layers the current layers are drawn through (identity at
+    /// the top level).
+    outer: Mat4,
 }
 
 impl Builder {
@@ -451,7 +454,7 @@ fn model_layer(r: &Renderer, ctx: &EvalCtx, layer: &Layer, b: &mut Builder) {
         }
         _ => return,
     };
-    let world = ctx.world_matrix(layer) * model_to_layer(unit);
+    let world = b.outer * ctx.world_matrix(layer) * model_to_layer(unit);
     // Materials of the model (one default when it has none).
     let mut mats: Vec<u32> = vec![];
     let defaults = [model::Material::plain([0.8, 0.8, 0.8, 1.0], 0.0, 0.5)];
@@ -532,34 +535,55 @@ pub fn extrusion_params(ctx: &EvalCtx, layer: &Layer) -> Option<model::extrude::
 }
 
 /// Extruded meshes of a text or shape layer: (mesh, straight colour, mesh space → layer
-/// space). Text extrudes each character in its own space, so per-character 3D animation
-/// (position, rotation, scale in Z) carries over.
+/// space). Fills and strokes are both extruded (a stroke as the region it covers, bevelled like
+/// the fill), stacked in the layer's paint order (see [`model::extrude::extrude_stacked`]).
+/// Text extrudes each character in its own space, so per-character 3D animation (position,
+/// rotation, scale in Z) carries over.
 pub fn extruded_meshes(ctx: &EvalCtx, layer: &Layer, p: &model::extrude::ExtrudeParams) -> Vec<(Primitive, [f32; 4], Mat4)> {
-    let mut groups: Vec<(Vec<kurbo::BezPath>, [f32; 4], Mat4)> = vec![];
+    // (paths, colour, mesh → layer, stacking level)
+    let mut groups: Vec<(Vec<kurbo::BezPath>, [f32; 4], Mat4, usize)> = vec![];
     match layer.source {
         LayerSource::Text => {
             if let Some(tg) = crate::text::text_geom(ctx, layer) {
-                for g in tg.glyphs.iter().filter(|g| g.apply_fill && g.fill[3] > 0.0) {
-                    groups.push((vec![g.local.clone()], g.fill, g.m));
+                // Fill & Stroke order: all strokes over all fills (2), all fills over all strokes
+                // (1), else the character style's Stroke Over Fill.
+                let stroke_on_top = match tg.fill_stroke {
+                    1 => false,
+                    2 => true,
+                    _ => tg.doc.stroke_over_fill,
+                };
+                for g in &tg.glyphs {
+                    let op = (g.xf.opacity / 100.0).clamp(0.0, 1.0) as f32;
+                    if g.apply_fill && g.fill[3] * op > 0.0 {
+                        let c = [g.fill[0], g.fill[1], g.fill[2], g.fill[3] * op];
+                        groups.push((vec![g.local.clone()], c, g.m, usize::from(!stroke_on_top)));
+                    }
+                    if g.stroke_width > 0.0 && g.stroke[3] * op > 0.0 {
+                        let st = effectcraft_path::StrokeStyle { width: g.stroke_width, join: effectcraft_path::Join::Round, ..Default::default() };
+                        if let Some(region) = crate::shapes::stroke_region(std::slice::from_ref(&g.local), &st) {
+                            let c = [g.stroke[0], g.stroke[1], g.stroke[2], g.stroke[3] * op];
+                            groups.push((vec![region], c, g.m, usize::from(stroke_on_top)));
+                        }
+                    }
                 }
             }
         }
         LayerSource::Shape => {
             if let Some(c) = layer.props.sub("contents") {
-                groups = crate::shapes::fill_outlines(ctx, layer, c).into_iter().map(|(ps, c)| (ps, c, Mat4::IDENTITY)).collect();
+                groups = crate::shapes::extrusion_outlines(ctx, layer, c).into_iter().enumerate().map(|(k, (ps, c))| (ps, c, Mat4::IDENTITY, k)).collect();
             }
         }
         _ => {}
     }
     groups
         .into_iter()
-        .filter_map(|(paths, color, m)| {
+        .filter_map(|(paths, color, m, level)| {
             let cs: Vec<Vec<[f64; 2]>> = paths.iter().flat_map(|bp| contours(bp, 0.25)).collect();
             let outlines = model::extrude::group_contours(cs);
             if outlines.is_empty() {
                 return None;
             }
-            Some((model::extrude::extrude(&outlines, p), color, m))
+            Some((model::extrude::extrude_stacked(&outlines, p, level), color, m))
         })
         .collect()
 }
@@ -567,7 +591,7 @@ pub fn extruded_meshes(ctx: &EvalCtx, layer: &Layer, p: &model::extrude::Extrude
 fn extruded_layer(r: &Renderer, ctx: &EvalCtx, layer: &Layer, p: &model::extrude::ExtrudeParams, b: &mut Builder) {
     let base = card_material(ctx, layer);
     let opacity = (ctx.opacity(layer) as f32 * r.opacity_mul()).clamp(0.0, 1.0);
-    let world = ctx.world_matrix(layer);
+    let world = b.outer * ctx.world_matrix(layer);
     let lin = b.s.linear_io;
     for (mesh, c, local) in extruded_meshes(ctx, layer, p) {
         let l = |v: f32| if lin { v } else { srgb_to_linear(v) };
@@ -610,7 +634,7 @@ fn card(b: &mut Builder, buf: &Buf, world: Mat4, mut mat: Material) {
 fn card_layer(r: &Renderer, ctx: &EvalCtx, layer: &Layer, b: &mut Builder) {
     let mut mat = card_material(ctx, layer);
     mat.opacity = (ctx.opacity(layer) as f32 * r.opacity_mul()).clamp(0.0, 1.0);
-    let world = ctx.world_matrix(layer);
+    let world = b.outer * ctx.world_matrix(layer);
     if crate::text::per_char_3d(ctx, layer) {
         for (buf, m) in crate::text::per_char_planes(ctx, layer, r.opts.scale) {
             let buf = r.to_blend(Arc::new(buf), None);
@@ -804,6 +828,50 @@ fn ssaa_for(r: &Renderer, out: (u32, u32)) -> u32 {
     if r.opts.draft || (out.0 as u64 * out.1 as u64) > 8_000_000 { 1 } else { 2 }
 }
 
+/// Add one layer of a run: a model or primitive mesh, an extruded text/shape layer, the nested
+/// layers of a collapsed precomp, or a textured card.
+fn emit_layer<'a>(r: &Renderer<'a>, ctx: &EvalCtx<'a>, layer: &Layer, b: &mut Builder) {
+    if layer.environment || layer.switches.adjustment || ctx.opacity(layer) <= 0.0 || !layer.has_video() {
+        return;
+    }
+    if let Some(item) = r.collapsed(ctx, layer) {
+        collapsed_layer(r, ctx, layer, item, b);
+    } else if layer.source.is_model() {
+        model_layer(r, ctx, layer, b);
+    } else if matches!(layer.source, LayerSource::Text | LayerSource::Shape)
+        && let Some(p) = extrusion_params(ctx, layer)
+    {
+        extruded_layer(r, ctx, layer, &p, b);
+    } else {
+        card_layer(r, ctx, layer, b);
+    }
+}
+
+/// A collapsed precomp layer: its nested layers join this scene as real Advanced 3D geometry
+/// (meshes, extrusions, cards) placed by the precomp layer's world transform, so they
+/// intersect, occlude and shadow the parent's layers. Nested 2D layers lie on the precomp
+/// layer's plane; nested lights and cameras are ignored (the parent's light the scene).
+fn collapsed_layer<'a>(r: &Renderer<'a>, ctx: &EvalCtx<'a>, layer: &Layer, item: effectcraft_project::ItemId, b: &mut Builder) {
+    let op = ctx.opacity(layer) as f32 * r.opacity_mul();
+    let Some((sub, nctx)) = r.collapse_into(ctx, layer, item, op) else { return };
+    let saved = b.outer;
+    b.outer = saved * ctx.world_matrix(layer);
+    let t = nctx.time;
+    let any_solo = nctx.comp.layers.iter().any(|l| l.switches.solo && l.source.is_av() && l.is_active_at(t));
+    for l in nctx.comp.layers.iter().rev() {
+        if !l.is_active_at(t)
+            || l.is_light()
+            || matches!(l.source, LayerSource::Camera)
+            || (any_solo && !l.switches.solo)
+            || (!r.opts.guides && l.switches.guide)
+        {
+            continue;
+        }
+        emit_layer(&sub, &nctx, l, b);
+    }
+    b.outer = saved;
+}
+
 /// Build the scene of a run of 3D layers.
 pub(crate) fn build(r: &Renderer, ctx: &EvalCtx, run: &[&Layer], out: (u32, u32)) -> Scene {
     build_at(r, ctx, None, run, out)
@@ -828,24 +896,17 @@ pub(crate) fn build_at(r: &Renderer, ctx: &EvalCtx, sub: Option<&EvalCtx>, run: 
         tex_keys: HashMap::new(),
         tri_depth: vec![],
         cam,
+        outer: r.collapse3d.map_or(Mat4::IDENTITY, |c| c.world),
     };
     for layer in run {
         let ctx = if sub.is_some() && motion_blurred(r, base, layer) { at } else { base };
-        if layer.environment || layer.switches.adjustment || ctx.opacity(layer) <= 0.0 || !layer.has_video() {
-            continue;
-        }
-        if layer.source.is_model() {
-            model_layer(r, ctx, layer, &mut b);
-        } else if matches!(layer.source, LayerSource::Text | LayerSource::Shape)
-            && let Some(p) = extrusion_params(ctx, layer)
-        {
-            extruded_layer(r, ctx, layer, &p, &mut b);
-        } else {
-            card_layer(r, ctx, layer, &mut b);
-        }
+        emit_layer(r, ctx, layer, &mut b);
     }
     b.sort_triangles();
-    // Lights, environment, shadows (Draft 3D: unlit, like After Effects).
+    // Lights, environment, shadows (Draft 3D: unlit, like After Effects). A collapsed
+    // precomp's layers are lit by the outermost comp's lights.
+    let parent = r.collapse3d.map(|c| c.parent);
+    let ctx = parent.as_ref().unwrap_or(ctx);
     if !ctx.comp.draft_3d {
         let (ls, amb, env) = lights(ctx, lin);
         b.s.lights = ls;
@@ -866,7 +927,7 @@ pub(crate) fn build_at(r: &Renderer, ctx: &EvalCtx, sub: Option<&EvalCtx>, run: 
     }
     // Camera matrices.
     let s = r.opts.scale;
-    let (cw, ch) = (ctx.comp.width as f64, ctx.comp.height as f64);
+    let (cw, ch) = crate::three_d::compose::view_size(r, ctx);
     let (ow, oh) = (out.0 as f64, out.1 as f64);
     let (a, bb) = (2.0 * s * cam.zoom / ow, s * cw / ow - 1.0);
     let (c, d) = (2.0 * s * cam.zoom / oh, s * ch / oh - 1.0);
