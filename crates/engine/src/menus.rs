@@ -280,7 +280,7 @@ pub fn parse(text: &str, mac: bool) -> Result<Vec<MenuNode>, String> {
 /// Effect ▸ category submenus from the effect registry.
 fn effect_categories() -> Vec<MenuNode> {
     let mut cats: Vec<(&str, Vec<MenuNode>)> = vec![];
-    for e in crate::effects::registry() {
+    for e in crate::effects::all() {
         let entry =
             MenuNode::Item(MenuEntry { label: e.name.into(), command: "effect.apply".into(), params: serde_json::json!({"effect": e.id}), shortcut: None });
         match cats.iter_mut().find(|(c, _)| *c == e.category) {
@@ -371,6 +371,8 @@ File
     Find Missing Footage | file.findMissing {"what":"footage"}
   ---
   Scripts
+    Install Script File... | file.installScript
+    Install ScriptUI Panel... | file.installScriptUIPanel
     Run Script File... | file.runScript
   ---
   Create Proxy

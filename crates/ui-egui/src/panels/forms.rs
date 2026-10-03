@@ -136,6 +136,19 @@ pub fn open_form(app: &mut EffectcraftApp, id: &str, p: &Value) -> bool {
                 1,
             )],
         ),
+        // Puppet tool ▸ Record Options.
+        "puppet.recordOptions" if !has(p, &["speed", "smoothing", "useDraftDeformation", "showMesh"]) => {
+            let o = &s.state.puppet;
+            (
+                "Puppet Record Options".into(),
+                vec![
+                    Field::num("speed", "Speed (%)", o.record_speed),
+                    Field::num("smoothing", "Smoothing", o.record_smoothing),
+                    Field::bool("useDraftDeformation", "Use Draft Deformation", o.record_draft),
+                    Field::bool("showMesh", "Show Mesh", o.record_show_mesh),
+                ],
+            )
+        }
         "layer.setTransform" if !has(p, &["value"]) => {
             let prop = p.get("prop").and_then(Value::as_str).unwrap_or("position");
             let cur = layer.and_then(|l| l.transform()).and_then(|tr| tr.get(if prop == "anchorPoint" { "anchor" } else { prop })).map(|pr| pr.value_at(lt));

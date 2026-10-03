@@ -172,34 +172,43 @@ pub fn audio(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
 pub fn history(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let p = ui.painter().with_clip_rect(rect);
+    // The branching history (EffectCraft's History panel): every state, branches indented under
+    // the state they grew from; click any state to go there (`edit.history.goto`).
+    let nodes = app.session.history_tree();
+    let row_h = 22.0;
+    let cur = nodes.iter().position(|n| n.current).unwrap_or(0);
+    // Keep the current state in view.
+    let visible = ((rect.height() - 12.0) / row_h).max(1.0) as usize;
+    let first = (cur + 2).saturating_sub(visible).min(nodes.len().saturating_sub(visible));
     let mut y = rect.min.y + 6.0;
-    let undo: Vec<String> = app.session.history.undo.iter().map(|u| u.0.clone()).collect();
-    let redo: Vec<String> = app.session.history.redo.iter().rev().map(|u| u.0.clone()).collect();
-    let n = undo.len();
-    let mut jump: Option<i64> = None;
-    for (i, label) in undo.iter().chain(redo.iter()).enumerate() {
-        let r = Rect::from_min_size(pos2(rect.min.x, y), vec2(rect.width(), 22.0));
-        y += 22.0;
-        let current = i + 1 == n;
-        let future = i >= n;
-        let resp = ui.interact(r, egui::Id::new(("hist", i)), Sense::click());
-        if current {
+    let mut jump: Option<usize> = None;
+    for n in nodes.iter().skip(first).take(visible + 1) {
+        let r = Rect::from_min_size(pos2(rect.min.x, y), vec2(rect.width(), row_h));
+        y += row_h;
+        let resp = ui.interact(r, egui::Id::new(("hist", n.id.as_str())), Sense::click());
+        if n.current {
             p.rect_filled(r, 0.0, t.row_selected);
         } else if resp.hovered() {
             p.rect_filled(r, 0.0, t.hover);
         }
-        p.text(pos2(r.min.x + 12.0, r.center().y), Align2::LEFT_CENTER, label, Tokens::ui(12.0), if future { t.text_faint } else { t.text });
+        let x = r.min.x + 12.0 + n.depth as f32 * 14.0;
+        if n.depth > 0 {
+            // Branch marker.
+            let c = pos2(x - 7.0, r.center().y);
+            p.line_segment([pos2(c.x, r.min.y), c], egui::Stroke::new(1.0, t.text_faint));
+            p.line_segment([c, pos2(c.x + 5.0, c.y)], egui::Stroke::new(1.0, t.text_faint));
+        }
+        let col = if !n.current && (n.future || !n.line) { t.text_faint } else { t.text };
+        p.text(pos2(x, r.center().y), Align2::LEFT_CENTER, &n.label, Tokens::ui(12.0), col);
+        app.auto.add(&format!("history.state.{}", n.index), r, &n.label);
         if resp.clicked() {
-            jump = Some(i as i64 + 1 - n as i64);
+            jump = Some(n.index);
         }
     }
-    if let Some(d) = jump {
-        for _ in 0..d.unsigned_abs() {
-            if d < 0 {
-                app.session.undo();
-            } else {
-                app.session.redo();
-            }
+    if let Some(i) = jump {
+        let ctx = ui.ctx().clone();
+        if let Err(e) = crate::menus::invoke(app, &ctx, "edit.history.goto", serde_json::json!({"index": i})) {
+            app.ui.status = e;
         }
     }
 }

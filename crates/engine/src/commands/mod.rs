@@ -40,6 +40,7 @@ mod query;
 mod render_queue;
 pub(crate) mod rig3d;
 pub mod roto_cmds;
+pub mod scripts;
 mod settings;
 mod shape_stroke;
 mod stubs;
@@ -158,6 +159,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(essential::specs());
         v.extend(expr_tools::specs());
         v.extend(proxy::specs());
+        v.extend(scripts::specs());
         v.extend(stubs::specs());
         v
     })

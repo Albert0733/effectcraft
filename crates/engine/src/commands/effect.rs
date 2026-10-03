@@ -7,6 +7,68 @@ use serde_json::{Value, json};
 use super::{CommandSpec, b_p, bad, has_layers, layer_mut, layers_p, str_p};
 use crate::{EngineError, Result, Session, cmd};
 
+/// `effect.plugins.list`: the registered plug-in effects (WebAssembly or Rust).
+fn plugins_list(s: &mut Session, _: &Value) -> Result<Value> {
+    use effectcraft_effects::plugin;
+    let list: Vec<Value> = plugin::plugins()
+        .into_iter()
+        .map(|spec| {
+            let p = plugin::plugin(spec.id);
+            let m = p.as_ref().map(|p| p.manifest().clone());
+            json!({
+                "id": spec.id,
+                "name": spec.name,
+                "category": spec.category,
+                "version": m.as_ref().map(|m| m.version.clone()),
+                "author": m.as_ref().map(|m| m.author.clone()),
+                "description": m.as_ref().map(|m| m.description.clone()),
+                "source": p.map(|p| p.source()),
+                "params": spec.params.iter().map(|p| p.id).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    Ok(json!({"api": plugin::PLUGIN_API_VERSION, "wasm": s.plugin_loader.is_some(), "plugins": list}))
+}
+
+/// `effect.plugins.load`: load WebAssembly effect plug-ins (a file, or every `.wasm` in a
+/// folder) through the host's loader ([`Session::plugin_loader`]).
+fn plugins_load(s: &mut Session, p: &Value) -> Result<Value> {
+    let c = "effect.plugins.load";
+    let loader = s.plugin_loader.ok_or_else(|| EngineError::Other("WebAssembly effect plug-ins are not available in this build".into()))?;
+    let files: Vec<String> = match (str_p(p, "path"), str_p(p, "folder")) {
+        (Some(path), _) => vec![path.to_string()],
+        (None, Some(dir)) => {
+            let mut v: Vec<String> = std::fs::read_dir(dir)
+                .map_err(|e| bad(c, format!("cannot list {dir}: {e}")))?
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("wasm")))
+                .map(|p| p.to_string_lossy().to_string())
+                .collect();
+            v.sort();
+            v
+        }
+        _ => return Err(bad(c, "give `path` or `folder`")),
+    };
+    let (mut loaded, mut errors) = (vec![], vec![]);
+    for f in &files {
+        let r = s.services.read_file(f).map_err(|e| format!("cannot read {f}: {e}")).and_then(|bytes| loader(&bytes, f));
+        match r {
+            Ok(v) => loaded.push(v),
+            Err(e) => errors.push(json!({"path": f, "error": e})),
+        }
+    }
+    if str_p(p, "path").is_some()
+        && let Some(e) = errors.first()
+    {
+        return Err(EngineError::Other(format!("{}: {}", files[0], e["error"].as_str().unwrap_or("failed"))));
+    }
+    if !loaded.is_empty() {
+        s.toast(format!("Loaded {} effect plug-in(s)", loaded.len()));
+    }
+    Ok(json!({"loaded": loaded, "errors": errors}))
+}
+
 fn apply(s: &mut Session, p: &Value) -> Result<Value> {
     let name = str_p(p, "effect").ok_or_else(|| bad("effect.apply", "missing `effect` (id or name)"))?;
     let spec = effectcraft_effects::lookup(name).ok_or_else(|| bad("effect.apply", format!("unknown effect `{name}`")))?;
@@ -284,8 +346,8 @@ fn last(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn list(_: &mut Session, p: &Value) -> Result<Value> {
     let filter = str_p(p, "filter").map(str::to_ascii_lowercase);
-    let v: Vec<Value> = effectcraft_effects::registry()
-        .iter()
+    let v: Vec<Value> = effectcraft_effects::all()
+        .into_iter()
         .filter(|e| filter.as_ref().is_none_or(|f| e.name.to_ascii_lowercase().contains(f) || e.id.contains(f.as_str())))
         .map(|e| json!({"id": e.id, "name": e.name, "category": e.category, "params": e.params.iter().map(|p| json!({"id": p.id, "name": p.name, "default": p.default.to_json()})).collect::<Vec<_>>()}))
         .collect();
@@ -305,5 +367,20 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!("effect.paste", "Paste Effects", [], None, "{layers?} — adds the copied effects to the layers", has_layers, paste),
         cmd!("effect.reset", "Reset Effect", [], None, "{layer?, effect}", has_layers, reset),
         crate::query!("effect.list", "List Effects", "{filter?}", list),
+        crate::query!(
+            "effect.plugins.list",
+            "List Effect Plug-ins",
+            "{} → {api, wasm, plugins: [{id, name, category, version, author, source, params}]}",
+            plugins_list
+        ),
+        cmd!(
+            "effect.plugins.load",
+            "Load Effect Plug-in...",
+            [],
+            None,
+            "{path (.wasm / .wat plug-in, API v1) | folder (loads every .wasm in it)}",
+            super::always,
+            plugins_load
+        ),
     ]
 }

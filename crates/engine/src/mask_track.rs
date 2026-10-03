@@ -247,9 +247,8 @@ impl Session {
             return self.offload_analysis(crate::offload::WorkerJob::MaskTrack { comp, layer, mask, direction, path, method, times });
         }
         let wait = wait || cfg!(target_arch = "wasm32");
-        self.history.undo.push(("Track Mask".into(), self.project.clone()));
-        self.history.redo.clear();
-        self.history.merge_key = None;
+        let levels = self.prefs.general.undo_levels as usize;
+        self.history.record("Track Mask", self.project.clone(), levels);
         let shared = Arc::new(MaskTrackShared::default());
         let (comp, layer) = (work.comp, work.layer);
         let thread = if wait {
