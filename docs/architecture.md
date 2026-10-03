@@ -35,7 +35,7 @@ cpal or muda. Everything in L0 to L4, the egui UI and the web app also build for
 | L5 | `automation` | The MCP server, headless or bridged to the running app |
 | L6 | apps `effectcraft`, `effectcraft-cli`, `effectcraft-web` | Desktop app; command-line tool (render, exec, get/set, MCP); the browser app (wasm32, [web.md](web.md)) |
 
-Allowed same-layer edges: `path → keyframe, raster`, `text → path`, `effects → project, text, path`,
+Allowed same-layer edges: `path → keyframe, raster`, `text → path`, `effects → project, text, path, track`,
 `media / expr / export / gpu → render`, `export → media`, `lottie → format`, `host → engine`.
 
 ## 2. Time

@@ -8,6 +8,7 @@
 
 pub mod audio_fx;
 mod blur2;
+mod blur3;
 mod channel;
 mod channel2;
 mod color2;
@@ -17,6 +18,7 @@ mod controls;
 mod distort;
 mod distort2;
 mod distort3;
+pub mod distort4;
 mod generate;
 mod generate2;
 mod generate3;
@@ -356,6 +358,8 @@ pub fn registry() -> &'static [EffectSpec] {
         v.extend(obsolete::specs());
         v.extend(ocio::specs());
         v.extend(vr::specs());
+        v.extend(blur3::specs());
+        v.extend(distort4::specs());
         v.extend(time_fx::specs());
         v.extend(audio_fx::specs());
         v.extend(paint::specs());
@@ -472,6 +476,8 @@ pub const TIME_DEPENDENT: &[&str] = &[
     "ec.time.ccwidetime",
     "ec.time.pixelmotionblur",
     "ec.vr.digitalglitch",
+    "ec.blur.camerashakedeblur",
+    "ec.distort.rollingshutterrepair",
 ];
 
 /// See [`TIME_DEPENDENT`].
