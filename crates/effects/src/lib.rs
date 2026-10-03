@@ -63,6 +63,7 @@ use std::sync::OnceLock;
 
 pub use color_fx::{exposure_settings, levels_clip};
 pub use color2::Curve;
+pub use distort2::parse_mesh;
 use effectcraft_keyframe::Value;
 use effectcraft_project::build::Ids;
 use effectcraft_project::{GroupKind, ParamUi, PropGroup, Property};
@@ -649,6 +650,17 @@ pub const GPU_EFFECTS: &[&str] = &[
     "ec.color.exposure",
     "ec.channel.invert",
     "ec.distort.transform",
+    "ec.distort.turbulentdisplace",
+    "ec.distort.displacementmap",
+    "ec.distort.wavewarp",
+    "ec.distort.ripple",
+    "ec.distort.twirl",
+    "ec.distort.bulge",
+    "ec.distort.cclens",
+    "ec.distort.meshwarp",
+    "ec.stylize.mosaic",
+    "ec.stylize.findedges",
+    "ec.stylize.emboss",
 ];
 
 /// Effects whose output depends on [`EffectCtx::time`] directly (not only through animated
