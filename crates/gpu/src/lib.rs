@@ -37,6 +37,7 @@ mod fx_generate;
 mod fx_key;
 mod fx_noise;
 mod fx_stylize;
+mod fx_tone;
 mod ops;
 mod particles;
 mod walk;
@@ -181,5 +182,7 @@ mod tests_fx_key;
 mod tests_fx_noise;
 #[cfg(test)]
 mod tests_fx_stylize;
+#[cfg(test)]
+mod tests_fx_tone;
 #[cfg(test)]
 mod tests_particles;

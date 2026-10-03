@@ -117,6 +117,8 @@ fn apply(e: &mut Enc, id: &str, ctx: &EffectCtx, b: GBuf) -> Option<GBuf> {
         "ec.perspective.dropshadow" => drop_shadow(e, ctx, b),
         "ec.distort.transform" => transform(e, ctx, b),
         "ec.color.curves" => curves(e, ctx, b),
+        "ec.color.huesaturation" if !effectcraft_effects::huesat_ranges_identity(ctx) => crate::fx_tone::hue_saturation(e, ctx, b),
+        "ec.color.levels" if !effectcraft_effects::levels_channels_identity(ctx) => crate::fx_tone::levels(e, ctx, b),
         _ if id.starts_with("ec.control.") => Some(b),
         _ if crate::fx_color::IDS.contains(&id) => crate::fx_color::apply(e, id, ctx, b),
         _ if crate::fx_distort::IDS.contains(&id) => crate::fx_distort::apply(e, id, ctx, b),
@@ -124,6 +126,7 @@ fn apply(e: &mut Enc, id: &str, ctx: &EffectCtx, b: GBuf) -> Option<GBuf> {
         _ if crate::fx_key::IDS.contains(&id) => crate::fx_key::apply(e, id, ctx, b),
         _ if crate::fx_stylize::IDS.contains(&id) => crate::fx_stylize::apply(e, id, ctx, b),
         _ if crate::fx_noise::IDS.contains(&id) => crate::fx_noise::apply(e, id, ctx, b),
+        _ if crate::fx_tone::IDS.contains(&id) => crate::fx_tone::apply(e, id, ctx, b),
         _ => pointwise(e, id, ctx, b),
     }
 }

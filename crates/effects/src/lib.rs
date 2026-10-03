@@ -67,9 +67,10 @@ use std::sync::OnceLock;
 
 pub use card3d::{CompLight, CompScene};
 pub use color_fx::{
-    HUESAT_CHANNELS, LEVELS_CHANNELS, exposure_settings, fill_uses_masks, huesat_ranges_identity, levels_channel_ids, levels_channels_identity, levels_clip,
+    HUESAT_CHANNELS, HUESAT_RANGES, LEVELS_CHANNELS, PHOTO_FILTER_CUSTOM, PHOTO_FILTERS, exposure_settings, fill_uses_masks, huesat_ranges_identity,
+    levels_channel_ids, levels_channel_settings, levels_channels_identity, levels_clip,
 };
-pub use color2::Curve;
+pub use color2::{Curve, auto_correct_settings, equalize_tables};
 pub use distort::transform_shutter;
 pub use distort2::parse_mesh;
 use effectcraft_keyframe::Value;
@@ -831,6 +832,24 @@ pub const GPU_EFFECTS: &[&str] = &[
     "ec.channel.calculations",
     "ec.channel.compoundarithmetic",
     //
+    // effectcraft-gpu fx_tone (colour correction)
+    "ec.color.levelsic",
+    "ec.color.gammapedestalgain",
+    "ec.color.photofilter",
+    "ec.color.changecolor",
+    "ec.color.changetocolor",
+    "ec.color.leavecolor",
+    "ec.color.broadcast",
+    "ec.color.colorbalancehls",
+    "ec.color.videolimiter",
+    "ec.color.psarbitrarymap",
+    "ec.color.cctoner",
+    "ec.color.cccoloroffset",
+    "ec.color.cckernel",
+    "ec.color.autolevels",
+    "ec.color.autocontrast",
+    "ec.color.autocolor",
+    "ec.color.equalize",
     // effectcraft-gpu fx_stylize (stylize, distort)
     //
     // effectcraft-gpu fx_noise (noise, blur, time)
