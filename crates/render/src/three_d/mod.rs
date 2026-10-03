@@ -5,6 +5,7 @@
 //! consecutive 3D layers is handed to [`compose::draw_run`] as a group (2D layers break 3D
 //! groups, as in After Effects).
 
+pub mod adv;
 pub mod camera;
 pub(crate) mod compose;
 pub mod light;

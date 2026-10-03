@@ -24,7 +24,11 @@ pub(crate) fn color_p(p: &Value, k: &str) -> Option<[f32; 3]> {
 }
 
 /// Insert a new layer above the selection (or at the top) and select it.
-pub(crate) fn insert_layer(proj: &mut Project, st: &mut crate::EditorState, cid: ItemId, layer: Layer) -> Result<LayerId> {
+pub(crate) fn insert_layer(proj: &mut Project, st: &mut crate::EditorState, cid: ItemId, mut layer: Layer) -> Result<LayerId> {
+    // Text and shape layers in Advanced 3D comps get Geometry Options (extrusion, bevels).
+    if proj.comp(cid).is_some_and(|c| c.renderer == effectcraft_project::Renderer::Advanced3D) {
+        super::model3d::add_geometry_options(&mut proj.next_id, &mut layer);
+    }
     let comp = proj.comp_mut(cid).ok_or(EngineError::NoComp)?;
     let at = st.selected_layers.first().and_then(|id| comp.layers.iter().position(|l| l.id == *id)).unwrap_or(0);
     let id = layer.id;
@@ -235,6 +239,9 @@ fn add_item(s: &mut Session, p: &Value) -> Result<Value> {
             let d = (s.prefs.import.still_footage == "seconds").then(|| Tick::from_seconds_f64(s.prefs.import.still_seconds));
             (LayerSource::Footage { item }, (f.width, f.height), d)
         }
+        ItemKind::Footage(f) if f.kind == effectcraft_project::FootageKind::Model => {
+            return super::model3d::new_model(s, &serde_json::json!({"comp": cid.0, "item": item.0, "time": f_p(p, "time")}));
+        }
         ItemKind::Footage(f) => (LayerSource::Footage { item }, (f.width, f.height), Some(f.duration)),
         ItemKind::Solid(so) => (LayerSource::Solid { item }, (so.width, so.height), None),
         ItemKind::Folder => return Err(bad("layer.addItem", "folders can't be layers")),
@@ -421,6 +428,20 @@ fn rename(s: &mut Session, p: &Value) -> Result<Value> {
     let name = str_p(p, "name").ok_or_else(|| bad("layer.rename", "missing `name`"))?.to_string();
     s.edit("Rename Layer", None, |proj, _| {
         layer_mut(proj, cid, lid)?.name = name.clone();
+        Ok(())
+    })?;
+    Ok(Value::Null)
+}
+
+/// The Timeline's Comment column.
+fn set_comment(s: &mut Session, p: &Value) -> Result<Value> {
+    let (cid, ids) = layers_p(s, p)?;
+    let text = str_p(p, "comment").ok_or_else(|| bad("layer.setComment", "missing `comment`"))?.to_string();
+    s.edit("Layer Comment", None, |proj, _| {
+        let comp = proj.comp_mut(cid).ok_or(EngineError::NoComp)?;
+        for l in comp.layers.iter_mut().filter(|l| ids.contains(&l.id)) {
+            l.comment = text.clone();
+        }
         Ok(())
     })?;
     Ok(Value::Null)
@@ -1066,6 +1087,7 @@ pub fn specs() -> Vec<CommandSpec> {
             set_switch
         ),
         cmd!("layer.rename", "Rename", [], Some("Enter"), "{layer?, name}", has_layers, rename),
+        cmd!("layer.setComment", "Layer Comment", [], None, "{layers?, comment}", has_layers, set_comment),
         cmd!("layer.setBlendMode", "Blending Mode", [], None, "{layers?, mode?: Normal|Multiply|Screen|…, step?: ±1}", has_layers, blend),
         cmd!(
             "layer.setTrackMatte",

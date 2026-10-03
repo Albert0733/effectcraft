@@ -28,11 +28,54 @@ pub fn probe(path: impl AsRef<Path>) -> Result<Footage> {
 pub fn probe_single(path: impl AsRef<Path>) -> Result<Footage> {
     let path = path.as_ref();
     let bytes = std::fs::read(path).map_err(|e| MediaError::Io(format!("{}: {e}", path.display())))?;
+    if crate::MODEL_EXTENSIONS.contains(&ext_of(path).as_str()) {
+        let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
+        return probe_model(&path.to_string_lossy(), &bytes, &|uri| std::fs::read(dir.join(uri)).ok());
+    }
     probe_bytes(&path.to_string_lossy(), bytes.into())
+}
+
+/// Probe a 3D model (glTF 2.0 / OBJ): a [`FootageKind::Model`] item whose duration is its
+/// longest animation. `resolve` reads sibling resources.
+pub fn probe_model(path: &str, bytes: &[u8], resolve: &dyn Fn(&str) -> Option<Vec<u8>>) -> Result<Footage> {
+    let m = effectcraft_model::load(path, bytes, resolve).map_err(|e| MediaError::Decode(format!("{path}: {e}")))?;
+    let s = m.summary();
+    let dur = s.animations.iter().map(|a| a.1).fold(0.0f64, f64::max);
+    let codec = match effectcraft_model::format_of(path) {
+        Some("obj") => "OBJ",
+        Some("glb") => "GLB",
+        _ => "glTF",
+    };
+    Ok(Footage {
+        path: path.to_string(),
+        kind: FootageKind::Model,
+        width: 0,
+        height: 0,
+        pixel_aspect: 1.0,
+        frame_rate: DEFAULT_SEQUENCE_RATE,
+        native_rate: None,
+        duration: Tick::from_seconds_f64(dur),
+        has_video: false,
+        has_audio: false,
+        alpha: AlphaMode::Straight,
+        premul_color: [0.0; 3],
+        loop_count: 1,
+        codec: format!("{codec} ({} meshes, {} triangles)", s.meshes, s.triangles),
+        missing: false,
+        sequence: Vec::new(),
+        color_profile: None,
+        layer: None,
+    })
 }
 
 /// Probe in-memory file contents; `path` names the footage (and is stored as `Footage::path`).
 pub fn probe_bytes(path: &str, bytes: Arc<[u8]>) -> Result<Footage> {
+    if let Some(f) = crate::layered::probe(path, &bytes)? {
+        return Ok(f);
+    }
+    if crate::MODEL_EXTENSIONS.contains(&ext_of(Path::new(path)).as_str()) {
+        return probe_model(path, &bytes, &|_| None);
+    }
     if let Ok(fmt) = image::guess_format(&bytes) {
         return probe_still_bytes(path, &bytes, fmt);
     }
@@ -72,6 +115,7 @@ pub(crate) fn footage_from_info(path: &str, info: &filmcraft_media::MediaInfo) -
         missing: false,
         sequence: Vec::new(),
         color_profile: v.and_then(|v| profile_of(&v.color)),
+        layer: None,
     }
 }
 
@@ -88,7 +132,7 @@ fn profile_of(c: &filmcraft_color::ColorInfo) -> Option<effectcraft_project::Col
     }
 }
 
-fn still_footage(path: &str, w: u32, h: u32, fmt: image::ImageFormat, has_alpha: bool) -> Footage {
+pub(crate) fn still_footage(path: &str, w: u32, h: u32, fmt: image::ImageFormat, has_alpha: bool) -> Footage {
     let codec = fmt.extensions_str().first().map_or("image", |s| s).to_ascii_uppercase();
     // OpenEXR stores premultiplied colour by convention; other formats straight alpha.
     let alpha = match (has_alpha, fmt) {
@@ -114,6 +158,7 @@ fn still_footage(path: &str, w: u32, h: u32, fmt: image::ImageFormat, has_alpha:
         missing: false,
         sequence: Vec::new(),
         color_profile: None,
+        layer: None,
     }
 }
 

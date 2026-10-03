@@ -22,16 +22,22 @@ effectcraft-project = { path = "crates/project" }
 effectcraft-text = { path = "crates/text" }
 effectcraft-effects = { path = "crates/effects" }
 effectcraft-track = { path = "crates/track" }
+effectcraft-model = { path = "crates/model" }
 effectcraft-render = { path = "crates/render" }
 effectcraft-gpu = { path = "crates/gpu" }
 effectcraft-media = { path = "crates/media" }
 effectcraft-export = { path = "crates/export" }
 effectcraft-expr = { path = "crates/expr" }
 effectcraft-lottie = { path = "crates/lottie" }
+effectcraft-psd = { path = "crates/psd" }
+effectcraft-vp9enc = { path = "crates/vp9enc" }
+effectcraft-svg = { path = "crates/svg" }
 effectcraft-engine = { path = "crates/engine" }
 effectcraft-host = { path = "crates/host" }
 effectcraft-ui-egui = { path = "crates/ui-egui" }
 effectcraft-automation = { path = "crates/automation" }
+effectcraft-opusenc = { path = "crates/opusenc" }
+effectcraft-script = { path = "crates/script" }
 
 # foundation
 thiserror = "2"
@@ -52,6 +58,7 @@ kurbo = { version = "0.13", features = ["serde"] }
 tiny-skia = { version = "0.12", default-features = false, features = ["std", "simd"] }
 skrifa = { version = "0.44", default-features = false, features = ["std"] }
 harfrust = { version = "0.12", default-features = false, features = ["std"] }
+exr = "1.74"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 
 # media codecs + containers: FilmCraft's pure-Rust crates, pinned to a revision (plan/adr/0001).
@@ -66,6 +73,9 @@ filmcraft-h264enc = { git = "https://github.com/storytold/filmcraft", rev = "89c
 filmcraft-prores = { git = "https://github.com/storytold/filmcraft", rev = "89cfbf24f698b0f0e538eb7795929f19bbfb1dbb" }
 filmcraft-aac = { git = "https://github.com/storytold/filmcraft", rev = "89cfbf24f698b0f0e538eb7795929f19bbfb1dbb" }
 filmcraft-isobmff = { git = "https://github.com/storytold/filmcraft", rev = "89cfbf24f698b0f0e538eb7795929f19bbfb1dbb" }
+# decoder used as the round-trip oracle of effectcraft-opusenc (crates/export dev-dependency)
+filmcraft-opus = { git = "https://github.com/storytold/filmcraft", rev = "89cfbf24f698b0f0e538eb7795929f19bbfb1dbb" }
+filmcraft-vp9 = { git = "https://github.com/storytold/filmcraft", rev = "89cfbf24f698b0f0e538eb7795929f19bbfb1dbb" }
 
 # gpu (the same wgpu eframe / egui-wgpu use)
 wgpu = { version = "30.0.1", features = ["fragile-send-sync-non-atomic-wasm"] }
@@ -129,7 +139,13 @@ opt-level = 3
 [profile.dev.package.effectcraft-media]
 opt-level = 3
 
+[profile.dev.package.effectcraft-opusenc]
+opt-level = 3
+
 [profile.dev.package.effectcraft-export]
+opt-level = 3
+
+[profile.dev.package.effectcraft-vp9enc]
 opt-level = 3
 
 # FilmCraft codec hot loops (same settings as FilmCraft's own workspace).

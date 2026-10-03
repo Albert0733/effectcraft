@@ -17,7 +17,8 @@
 //!
 //! An entry's shortcut is the command's default shortcut unless the line gives one (needed for
 //! entries with bound parameters). Adobe-service entries (Team Projects, Libraries, Bridge, Media
-//! Encoder, Essential Graphics, Behance, Creative Cloud…) are intentionally absent.
+//! Encoder, Behance, Creative Cloud…) are intentionally absent; the Essential Graphics workspace
+//! uses the Properties panel.
 
 use std::sync::OnceLock;
 
@@ -909,16 +910,22 @@ View
   Enter Full Screen | view.fullScreen
 Window
   Workspace
+    Default | window.workspace {"name":"Default"} | Shift+F10
+    Review | window.workspace {"name":"Review"}
+    Learn | window.workspace {"name":"Learn"}
+    Small Screen | window.workspace {"name":"Small Screen"} | Shift+F12
+    Standard | window.workspace {"name":"Standard"} | Shift+F11
+    ---
     All Panels | window.workspace {"name":"All Panels"}
     Animation | window.workspace {"name":"Animation"}
-    Default | window.workspace {"name":"Default"} | Shift+F10
+    Color | window.workspace {"name":"Color"}
     Effects | window.workspace {"name":"Effects"}
+    Essential Graphics | window.workspace {"name":"Essential Graphics"}
     Minimal | window.workspace {"name":"Minimal"}
     Motion Tracking | window.workspace {"name":"Motion Tracking"}
     Paint | window.workspace {"name":"Paint"}
-    Small Screen | window.workspace {"name":"Small Screen"} | Shift+F12
-    Standard | window.workspace {"name":"Standard"} | Shift+F11
     Text | window.workspace {"name":"Text"}
+    Undocked Panels | window.workspace {"name":"Undocked Panels"}
     ---
     Reset to Saved Layout | window.resetWorkspace
     Save Changes to this Workspace | window.saveWorkspace
@@ -942,6 +949,7 @@ Window
   Preview | window.panel {"panel":"preview"} | Cmd+3
   Progress | window.unavailablePanel {"panel":"progress"}
   Properties | window.panel {"panel":"properties"}
+  Script Console | window.panel {"panel":"scriptConsole"}
   Smoother | window.panel {"panel":"smoother"}
   Tools | window.panel {"panel":"tools"} | Cmd+1
   Tracker | window.panel {"panel":"tracker"}

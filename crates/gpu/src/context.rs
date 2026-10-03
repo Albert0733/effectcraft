@@ -94,6 +94,8 @@ pub struct GpuContext {
     dummy_tex: wgpu::TextureView,
     dummy_buf: wgpu::Buffer,
     uploads: Mutex<Uploads>,
+    /// Advanced 3D render pipelines (built on first use).
+    pub(crate) adv3d: std::sync::OnceLock<crate::adv3d::Pipes>,
 }
 
 fn tex_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
@@ -225,6 +227,7 @@ impl GpuContext {
             dummy_tex: dummy.create_view(&Default::default()),
             dummy_buf,
             uploads: Mutex::new(Uploads::default()),
+            adv3d: std::sync::OnceLock::new(),
         })
     }
 

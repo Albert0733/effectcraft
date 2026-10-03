@@ -10,14 +10,17 @@
 //! Video containers (MP4/MOV, Matroska/WebM) and codecs (H.264, HEVC, VP9, AV1, ProRes, DNxHD,
 //! MJPEG; AAC, Opus, PCM, MP3/FLAC/Vorbis) come from FilmCraft's pure-Rust crates (git dependency,
 //! pinned; `plan/adr/0001`). FilmCraft types never leave this crate. Stills use the `image` crate
-//! (PNG, JPEG, GIF, WebP, TIFF, BMP, OpenEXR).
+//! (PNG, JPEG, GIF, WebP, TIFF, BMP, OpenEXR); Photoshop documents (merged image or one layer) come
+//! from `effectcraft-psd` and SVG from `effectcraft-svg` (rasterised at any scale).
 
 mod convert;
+pub mod exr_channels;
+mod layered;
 mod pool;
 mod probe;
 
 pub use pool::{DEFAULT_BUDGET, MediaPool, PoolStats};
-pub use probe::{DEFAULT_SEQUENCE_RATE, probe, probe_bytes, probe_single, sequence_files};
+pub use probe::{DEFAULT_SEQUENCE_RATE, probe, probe_bytes, probe_model, probe_single, sequence_files};
 
 /// Errors from probing or decoding footage.
 #[derive(Debug, thiserror::Error)]
@@ -44,16 +47,22 @@ impl From<filmcraft_media::MediaError> for MediaError {
 }
 
 /// File extensions recognised as stills.
-pub const STILL_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "bmp", "exr"];
+pub const STILL_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "bmp", "exr", "psd", "psb", "svg"];
 /// File extensions recognised as audio-only files.
 pub const AUDIO_EXTENSIONS: &[&str] = filmcraft_media::AUDIO_EXTENSIONS;
 /// File extensions recognised as movies.
 pub const VIDEO_EXTENSIONS: &[&str] = &["mp4", "m4v", "mov", "mkv", "webm"];
 
+/// File extensions recognised as 3D models (Advanced 3D model layers).
+pub const MODEL_EXTENSIONS: &[&str] = &["gltf", "glb", "obj"];
+
 /// Whether `path` has an extension we can import.
 pub fn is_importable(path: &std::path::Path) -> bool {
     let ext = ext_of(path);
-    STILL_EXTENSIONS.contains(&ext.as_str()) || AUDIO_EXTENSIONS.contains(&ext.as_str()) || VIDEO_EXTENSIONS.contains(&ext.as_str())
+    MODEL_EXTENSIONS.contains(&ext.as_str())
+        || STILL_EXTENSIONS.contains(&ext.as_str())
+        || AUDIO_EXTENSIONS.contains(&ext.as_str())
+        || VIDEO_EXTENSIONS.contains(&ext.as_str())
 }
 
 pub(crate) fn ext_of(path: &std::path::Path) -> String {

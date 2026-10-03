@@ -51,6 +51,7 @@ fn audio_footage() -> Footage {
         missing: false,
         sequence: vec![],
         color_profile: None,
+        layer: None,
     }
 }
 
@@ -174,7 +175,17 @@ fn blocks_match_one_long_mix() {
         let x = ((t * 12345.678).sin() * 43758.5453).fract() as f32;
         (x, -x)
     }
-    for id in ["ec.audio.reverb", "ec.audio.basstreble", "ec.audio.flangechorus", "ec.audio.modulator", "ec.audio.delay", "ec.audio.parametriceq"] {
+    for id in [
+        "ec.audio.reverb",
+        "ec.audio.basstreble",
+        "ec.audio.flangechorus",
+        "ec.audio.modulator",
+        "ec.audio.delay",
+        "ec.audio.parametriceq",
+        "ec.audio.compressor",
+        "ec.audio.gate",
+        "ec.audio.distortion",
+    ] {
         let vals: Vec<(&str, Value)> = match id {
             "ec.audio.basstreble" => vec![("bass", Value::Scalar(50.0))],
             "ec.audio.parametriceq" => vec![("band1BoostCut", Value::Scalar(9.0))],

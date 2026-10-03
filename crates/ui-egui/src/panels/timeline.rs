@@ -93,30 +93,207 @@ const LABEL_W: f32 = 20.0;
 const NUM_W: f32 = 26.0;
 const SW: f32 = 19.0;
 
+/// The Timeline's columns in After Effects' order: (id, header label). Right-click a column
+/// header to show or hide them; the name column is always shown.
+pub const COLUMNS: [(&str, &str); 13] = [
+    ("av", "A/V Features"),
+    ("keys", "Keys"),
+    ("label", "Label"),
+    ("num", "#"),
+    ("name", "Layer Name"),
+    ("comment", "Comment"),
+    ("switches", "Switches"),
+    ("modes", "Modes"),
+    ("parent", "Parent & Link"),
+    ("in", "In"),
+    ("out", "Out"),
+    ("duration", "Duration"),
+    ("stretch", "Stretch"),
+];
+
+/// Is a column shown?
+pub fn column_visible(tl: &crate::state::TimelineState, id: &str) -> bool {
+    match id {
+        "name" => true,
+        "modes" => tl.show_modes,
+        _ => tl.columns.contains(id),
+    }
+}
+
+/// Show or hide a column (`modes` is the Switches/Modes toggle, F4).
+pub fn set_column(tl: &mut crate::state::TimelineState, id: &str, on: bool) -> Result<(), String> {
+    match id {
+        "name" if on => Ok(()),
+        "name" => Err("the name column can't be hidden".into()),
+        "modes" => {
+            tl.show_modes = on;
+            Ok(())
+        }
+        _ if COLUMNS.iter().any(|c| c.0 == id) => {
+            if on {
+                tl.columns.insert(id.to_string());
+            } else {
+                tl.columns.remove(id);
+            }
+            Ok(())
+        }
+        _ => Err(format!("unknown column `{id}` (one of: {})", COLUMNS.map(|c| c.0).join(", "))),
+    }
+}
+
+const KEYS_W: f32 = 56.0;
+const COMMENT_W: f32 = 120.0;
+const TIME_W: f32 = 72.0;
+const STRETCH_W: f32 = 60.0;
+const PARENT_W: f32 = 116.0;
+const MODES_W: f32 = 92.0 + 112.0;
+
+#[derive(Clone, Copy, Default)]
+struct Vis {
+    av: bool,
+    keys: bool,
+    label: bool,
+    num: bool,
+    comment: bool,
+    switches: bool,
+    modes: bool,
+    parent: bool,
+    in_: bool,
+    out: bool,
+    duration: bool,
+    stretch: bool,
+}
+
+impl Vis {
+    fn of(tl: &crate::state::TimelineState) -> Vis {
+        let v = |id| column_visible(tl, id);
+        Vis {
+            av: v("av"),
+            keys: v("keys"),
+            label: v("label"),
+            num: v("num"),
+            comment: v("comment"),
+            switches: v("switches"),
+            modes: v("modes"),
+            parent: v("parent"),
+            in_: v("in"),
+            out: v("out"),
+            duration: v("duration"),
+            stretch: v("stretch"),
+        }
+    }
+    /// Width of every visible column but the name.
+    fn fixed(&self) -> f32 {
+        let w = |on: bool, w: f32| if on { w } else { 0.0 };
+        w(self.av, AV_W)
+            + w(self.keys, KEYS_W)
+            + w(self.label, LABEL_W)
+            + w(self.num, NUM_W)
+            + w(self.comment, COMMENT_W)
+            + w(self.switches, SW * 8.0 + 6.0)
+            + w(self.modes, MODES_W)
+            + w(self.parent, PARENT_W)
+            + w(self.in_, TIME_W)
+            + w(self.out, TIME_W)
+            + w(self.duration, TIME_W)
+            + w(self.stretch, STRETCH_W)
+    }
+}
+
 struct Cols {
+    vis: Vis,
     av: f32,
+    keys: f32,
     label: f32,
     num: f32,
     name: f32,
+    /// End of the name column.
+    name_end: f32,
+    comment: f32,
     switches: f32,
     mode: f32,
     trkmat: f32,
     parent: f32,
+    in_: f32,
+    out: f32,
+    duration: f32,
+    stretch: f32,
     end: f32,
 }
 
-fn cols(x0: f32, width: f32, show_modes: bool) -> Cols {
-    let fixed = AV_W + LABEL_W + NUM_W + SW * 8.0 + if show_modes { 92.0 + 112.0 } else { 0.0 } + 116.0;
-    let name_w = (width - fixed).max(120.0);
-    let av = x0;
-    let label = av + AV_W;
-    let num = label + LABEL_W;
-    let name = num + NUM_W;
-    let switches = name + name_w;
-    let mode = switches + SW * 8.0 + 6.0;
-    let trkmat = mode + if show_modes { 92.0 } else { 0.0 };
-    let parent = trkmat + if show_modes { 112.0 } else { 0.0 };
-    Cols { av, label, num, name, switches, mode, trkmat, parent, end: parent + 116.0 }
+fn cols(x0: f32, width: f32, vis: Vis) -> Cols {
+    let name_w = (width - vis.fixed()).max(120.0);
+    let mut x = x0;
+    let mut next = |on: bool, w: f32| {
+        let at = x;
+        if on {
+            x += w;
+        }
+        at
+    };
+    let av = next(vis.av, AV_W);
+    let keys = next(vis.keys, KEYS_W);
+    let label = next(vis.label, LABEL_W);
+    let num = next(vis.num, NUM_W);
+    let name = next(true, name_w);
+    let comment = next(vis.comment, COMMENT_W);
+    let switches = next(vis.switches, SW * 8.0 + 6.0);
+    let mode = next(vis.modes, 92.0);
+    let trkmat = next(vis.modes, 112.0);
+    let parent = next(vis.parent, PARENT_W);
+    let in_ = next(vis.in_, TIME_W);
+    let out = next(vis.out, TIME_W);
+    let duration = next(vis.duration, TIME_W);
+    let stretch = next(vis.stretch, STRETCH_W);
+    let end = next(true, 0.0);
+    Cols { vis, av, keys, label, num, name, name_end: name + name_w, comment, switches, mode, trkmat, parent, in_, out, duration, stretch, end }
+}
+
+/// Which column a header x position falls in.
+fn column_at(cw: &Cols, x: f32) -> Option<&'static str> {
+    let v = cw.vis;
+    let spans = [
+        ("av", v.av, cw.av, cw.av + AV_W),
+        ("keys", v.keys, cw.keys, cw.keys + KEYS_W),
+        ("label", v.label, cw.label, cw.label + LABEL_W),
+        ("num", v.num, cw.num, cw.num + NUM_W),
+        ("name", true, cw.name, cw.name_end),
+        ("comment", v.comment, cw.comment, cw.comment + COMMENT_W),
+        ("switches", v.switches, cw.switches, cw.switches + SW * 8.0 + 6.0),
+        ("modes", v.modes, cw.mode, cw.mode + MODES_W),
+        ("parent", v.parent, cw.parent, cw.parent + PARENT_W),
+        ("in", v.in_, cw.in_, cw.in_ + TIME_W),
+        ("out", v.out, cw.out, cw.out + TIME_W),
+        ("duration", v.duration, cw.duration, cw.duration + TIME_W),
+        ("stretch", v.stretch, cw.stretch, cw.stretch + STRETCH_W),
+    ];
+    spans.into_iter().find(|(_, on, a, b)| *on && x >= *a && x < *b).map(|s| s.0)
+}
+
+/// Snap a time to the nearest candidate within `tolerance` (all seconds); Shift-dragging the
+/// current-time indicator snaps to keyframes, layer in/out points, markers and the work area.
+pub fn snap_time(candidates: &[f64], t: f64, tolerance: f64) -> f64 {
+    candidates.iter().copied().filter(|c| (c - t).abs() <= tolerance).min_by(|a, b| (a - t).abs().total_cmp(&(b - t).abs())).unwrap_or(t)
+}
+
+/// Times the current-time indicator snaps to (comp seconds).
+fn snap_candidates(comp: &Comp, rows: &[Row]) -> Vec<f64> {
+    let mut v = vec![0.0, comp.work_area.0.seconds(), comp.work_area.1.seconds(), comp.duration.seconds()];
+    v.extend(comp.markers.iter().map(|m| m.time.seconds()));
+    for l in &comp.layers {
+        v.push(l.in_point.seconds());
+        v.push(l.out_point.seconds());
+        v.extend(l.markers.iter().map(|m| l.comp_time(m.time).seconds()));
+    }
+    for r in rows {
+        if let RowKind::Prop { uid } = r.kind
+            && let Some(l) = comp.layer(r.layer)
+            && let Some(p) = l.props.find(uid)
+        {
+            v.extend(p.keys.iter().map(|k| l.comp_time(k.time).seconds()));
+        }
+    }
+    v
 }
 
 /// Timeline horizontal mapping.
@@ -222,127 +399,106 @@ fn reveal_matches(p: &Property, path_matches: &[&str], kind: &str) -> bool {
     }
 }
 
+/// The name shown for a layer: its name, or its source's name (Source Name column).
+fn display_name(app: &EffectcraftApp, l: &Layer) -> String {
+    if app.ui.timeline.source_name
+        && let Some(item) = l.source.item().and_then(|i| app.session.project.item(i))
+    {
+        return item.name.clone();
+    }
+    l.name.clone()
+}
+
+/// The timeline search (After Effects' search field): rows for the properties and groups of a
+/// layer whose names contain `q` (lowercase), each with its enclosing groups. A matching group
+/// brings its whole contents.
+fn search_rows(l: &Layer, q: &str) -> Vec<Row> {
+    fn group_row(l: &Layer, g: &PropGroup, depth: usize, parent: &PropGroup) -> Row {
+        let fx = matches!(g.kind, GroupKind::Effect { .. }).then_some(g.enabled);
+        let eye =
+            (parent.match_id == effectcraft_engine::project::styles::GROUP && g.match_id != effectcraft_engine::project::styles::BLENDING).then_some(g.enabled);
+        Row { layer: l.id, depth, kind: RowKind::Group { uid: g.uid, name: g.name.clone(), open: true, has_children: !g.children.is_empty(), fx, eye } }
+    }
+    fn all(l: &Layer, g: &PropGroup, depth: usize, out: &mut Vec<Row>) {
+        for c in &g.children {
+            match c {
+                Node::Group(sg) => {
+                    out.push(group_row(l, sg, depth, g));
+                    all(l, sg, depth + 1, out);
+                }
+                Node::Prop(p) if prop_visible(p, l) => out.push(Row { layer: l.id, depth, kind: RowKind::Prop { uid: p.uid } }),
+                _ => {}
+            }
+        }
+    }
+    fn rec(l: &Layer, g: &PropGroup, depth: usize, q: &str, out: &mut Vec<Row>) {
+        for c in &g.children {
+            match c {
+                Node::Group(sg) if depth > 1 || group_visible(sg, l) => {
+                    if sg.name.to_lowercase().contains(q) {
+                        out.push(group_row(l, sg, depth, g));
+                        all(l, sg, depth + 1, out);
+                        continue;
+                    }
+                    let mut inner = vec![];
+                    rec(l, sg, depth + 1, q, &mut inner);
+                    if !inner.is_empty() {
+                        out.push(group_row(l, sg, depth, g));
+                        out.extend(inner);
+                    }
+                }
+                Node::Prop(p) if prop_visible(p, l) && p.name.to_lowercase().contains(q) => {
+                    out.push(Row { layer: l.id, depth, kind: RowKind::Prop { uid: p.uid } });
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut out = vec![];
+    rec(l, &l.props, 1, q, &mut out);
+    out
+}
+
+/// The property each reveal key shows (P, S, R, T, A, F, L; `animated` = keyframed or with an
+/// expression): (group searched, property match ids).
+fn reveal_targets(kind: &str) -> Option<(&'static str, &'static [&'static str])> {
+    Some(match kind {
+        "position" => ("transform", &["position", "positionX", "positionY", "positionZ"]),
+        "scale" => ("transform", &["scale"]),
+        "rotation" => ("transform", &["rotation", "rotationX", "rotationY", "orientation"]),
+        "opacity" => ("transform", &["opacity"]),
+        "anchor" => ("transform", &["anchor"]),
+        "feather" => ("masks", &["feather"]),
+        "levels" => ("audio", &["levels"]),
+        "animated" => ("", &[]),
+        _ => return None,
+    })
+}
+
 fn build_rows(app: &EffectcraftApp, comp: &Comp) -> Vec<Row> {
     let tl = &app.ui.timeline;
-    let search = tl.search.to_lowercase();
+    let search = tl.search.trim().to_lowercase();
     let mut rows = Vec::new();
     for l in &comp.layers {
         if comp.hide_shy && l.switches.shy {
             continue;
         }
-        if !search.is_empty() && !l.name.to_lowercase().contains(&search) {
+        if !search.is_empty() {
+            // Layers whose name or properties match; matching properties are revealed.
+            let matches = search_rows(l, &search);
+            if matches.is_empty() && !display_name(app, l).to_lowercase().contains(&search) {
+                continue;
+            }
+            rows.push(Row { layer: l.id, depth: 0, kind: RowKind::Layer });
+            rows.extend(matches);
             continue;
         }
         rows.push(Row { layer: l.id, depth: 0, kind: RowKind::Layer });
         if !tl.open_layers.contains(&l.id.0) {
             continue;
         }
-        if let Some(kind) = tl.reveal.first() {
-            let (group, props): (&str, Vec<&str>) = match kind.as_str() {
-                "position" => ("transform", vec!["position", "positionX", "positionY", "positionZ"]),
-                "scale" => ("transform", vec!["scale"]),
-                "rotation" => ("transform", vec!["rotation", "rotationX", "rotationY", "orientation"]),
-                "opacity" => ("transform", vec!["opacity"]),
-                "anchor" => ("transform", vec!["anchor"]),
-                "feather" => ("masks", vec!["feather"]),
-                "levels" => ("audio", vec!["levels"]),
-                _ => ("", vec![]),
-            };
-            match kind.as_str() {
-                "waveform" => {
-                    if let Some(item) = super::waveform::audio_item(&app.session.project, l) {
-                        rows.push(Row { layer: l.id, depth: 1, kind: RowKind::Waveform { item: item.0 } });
-                    }
-                }
-                "effects" => {
-                    if let Some(fx) = l.effects() {
-                        for g in fx.groups() {
-                            rows.push(Row {
-                                layer: l.id,
-                                depth: 1,
-                                kind: RowKind::Group {
-                                    uid: g.uid,
-                                    name: g.name.clone(),
-                                    open: tl.open_groups.contains(&g.uid),
-                                    has_children: true,
-                                    fx: Some(g.enabled),
-                                    eye: None,
-                                },
-                            });
-                            if tl.open_groups.contains(&g.uid) {
-                                push_group(&mut rows, l, g, 2, &tl.open_groups);
-                            }
-                        }
-                    }
-                }
-                "masks" => {
-                    if let Some(m) = l.masks() {
-                        for g in m.groups() {
-                            rows.push(Row {
-                                layer: l.id,
-                                depth: 1,
-                                kind: RowKind::Group {
-                                    uid: g.uid,
-                                    name: g.name.clone(),
-                                    open: tl.open_groups.contains(&g.uid),
-                                    has_children: true,
-                                    fx: None,
-                                    eye: None,
-                                },
-                            });
-                            if tl.open_groups.contains(&g.uid) {
-                                push_group(&mut rows, l, g, 2, &tl.open_groups);
-                            }
-                        }
-                    }
-                }
-                "props" => {
-                    // Animation ▸ Reveal Properties…: the engine picked the uids.
-                    fn groups_in<'a>(g: &'a PropGroup, set: &std::collections::BTreeSet<u64>, out: &mut Vec<&'a PropGroup>) {
-                        for sg in g.groups() {
-                            if set.contains(&sg.uid) {
-                                out.push(sg);
-                            } else {
-                                groups_in(sg, set, out);
-                            }
-                        }
-                    }
-                    let mut groups = vec![];
-                    groups_in(&l.props, &tl.reveal_props, &mut groups);
-                    for g in groups {
-                        let open = tl.open_groups.contains(&g.uid);
-                        rows.push(Row {
-                            layer: l.id,
-                            depth: 1,
-                            kind: RowKind::Group { uid: g.uid, name: g.name.clone(), open, has_children: !g.children.is_empty(), fx: None, eye: None },
-                        });
-                        if open {
-                            push_group(&mut rows, l, g, 2, &tl.open_groups);
-                        }
-                    }
-                    let mut found = vec![];
-                    collect_props(&l.props, &mut found, &|p| prop_visible(p, l) && tl.reveal_props.contains(&p.uid));
-                    for uid in found {
-                        rows.push(Row { layer: l.id, depth: 1, kind: RowKind::Prop { uid } });
-                    }
-                }
-                _ => {
-                    let mut found = vec![];
-                    let root = if group.is_empty() {
-                        Some(&l.props)
-                    } else if group == "masks" {
-                        l.masks()
-                    } else {
-                        l.props.sub(group)
-                    };
-                    if let Some(g) = root {
-                        collect_props(g, &mut found, &|p| prop_visible(p, l) && reveal_matches(p, &props, kind));
-                    }
-                    for uid in found {
-                        rows.push(Row { layer: l.id, depth: 1, kind: RowKind::Prop { uid } });
-                    }
-                }
-            }
+        if !tl.reveal.is_empty() {
+            reveal_rows(app, l, &mut rows);
             continue;
         }
         for c in &l.props.children {
@@ -388,6 +544,95 @@ fn build_rows(app: &EffectcraftApp, comp: &Comp) -> Vec<Row> {
     rows
 }
 
+/// Rows of a twirled-open layer under the reveal shortcuts (one, or several added with Shift):
+/// masks, effects, the revealed properties in property-tree order, the Reveal Properties
+/// selection, then the waveform.
+fn reveal_rows(app: &EffectcraftApp, l: &Layer, rows: &mut Vec<Row>) {
+    let tl = &app.ui.timeline;
+    let has = |k: &str| tl.reveal.iter().any(|r| r == k);
+    let group_rows = |rows: &mut Vec<Row>, g: &PropGroup, fx: bool| {
+        for g in g.groups() {
+            rows.push(Row {
+                layer: l.id,
+                depth: 1,
+                kind: RowKind::Group {
+                    uid: g.uid,
+                    name: g.name.clone(),
+                    open: tl.open_groups.contains(&g.uid),
+                    has_children: true,
+                    fx: fx.then_some(g.enabled),
+                    eye: None,
+                },
+            });
+            if tl.open_groups.contains(&g.uid) {
+                push_group(rows, l, g, 2, &tl.open_groups);
+            }
+        }
+    };
+    if has("masks")
+        && let Some(m) = l.masks()
+    {
+        group_rows(rows, m, false);
+    }
+    if has("effects")
+        && let Some(fx) = l.effects()
+    {
+        group_rows(rows, fx, true);
+    }
+    // P/S/R/T/A/F/L/animated: matching properties, in tree order, each once.
+    let mut wanted = std::collections::BTreeSet::new();
+    for kind in &tl.reveal {
+        let Some((group, ids)) = reveal_targets(kind) else { continue };
+        let root = match group {
+            "" => Some(&l.props),
+            "masks" => l.masks(),
+            g => l.props.sub(g),
+        };
+        if let Some(g) = root {
+            let mut found = vec![];
+            collect_props(g, &mut found, &|p| prop_visible(p, l) && reveal_matches(p, ids, kind));
+            wanted.extend(found);
+        }
+    }
+    if !wanted.is_empty() {
+        let mut found = vec![];
+        collect_props(&l.props, &mut found, &|p| wanted.contains(&p.uid));
+        rows.extend(found.into_iter().map(|uid| Row { layer: l.id, depth: 1, kind: RowKind::Prop { uid } }));
+    }
+    if has("props") {
+        // Animation ▸ Reveal Properties…: the engine picked the uids.
+        fn groups_in<'a>(g: &'a PropGroup, set: &std::collections::BTreeSet<u64>, out: &mut Vec<&'a PropGroup>) {
+            for sg in g.groups() {
+                if set.contains(&sg.uid) {
+                    out.push(sg);
+                } else {
+                    groups_in(sg, set, out);
+                }
+            }
+        }
+        let mut groups = vec![];
+        groups_in(&l.props, &tl.reveal_props, &mut groups);
+        for g in groups {
+            let open = tl.open_groups.contains(&g.uid);
+            rows.push(Row {
+                layer: l.id,
+                depth: 1,
+                kind: RowKind::Group { uid: g.uid, name: g.name.clone(), open, has_children: !g.children.is_empty(), fx: None, eye: None },
+            });
+            if open {
+                push_group(rows, l, g, 2, &tl.open_groups);
+            }
+        }
+        let mut found = vec![];
+        collect_props(&l.props, &mut found, &|p| prop_visible(p, l) && tl.reveal_props.contains(&p.uid) && !wanted.contains(&p.uid));
+        rows.extend(found.into_iter().map(|uid| Row { layer: l.id, depth: 1, kind: RowKind::Prop { uid } }));
+    }
+    if has("waveform")
+        && let Some(item) = super::waveform::audio_item(&app.session.project, l)
+    {
+        rows.push(Row { layer: l.id, depth: 1, kind: RowKind::Waveform { item: item.0 } });
+    }
+}
 fn collect_props(g: &PropGroup, out: &mut Vec<u64>, f: &dyn Fn(&Property) -> bool) {
     for c in &g.children {
         match c {
@@ -433,6 +678,7 @@ fn layer_icon(l: &Layer, project: &effectcraft_engine::project::Project) -> Icon
         LayerSource::Null => Icon::Null,
         LayerSource::Camera => Icon::Camera,
         LayerSource::Light { .. } => Icon::Light,
+        LayerSource::Model { .. } | LayerSource::Primitive { .. } => Icon::Cube,
         LayerSource::Comp { .. } => Icon::Comp,
         LayerSource::Solid { .. } => {
             if l.switches.adjustment {
@@ -466,9 +712,9 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let ruler_h = 34.0;
     let colhdr_h = 22.0;
     let footer_h = 24.0;
-    let fixed = AV_W + LABEL_W + NUM_W + SW * 8.0 + if app.ui.timeline.show_modes { 92.0 + 112.0 } else { 0.0 } + 116.0 + 6.0;
-    let left_w = (fixed + 190.0).clamp(420.0, (rect.width() * 0.62).max(420.0));
-    let cw = cols(rect.min.x, left_w, app.ui.timeline.show_modes);
+    let vis = Vis::of(&app.ui.timeline);
+    let left_w = (vis.fixed() + 190.0).clamp(420.0, (rect.width() * 0.72).max(420.0));
+    let cw = cols(rect.min.x, left_w, vis);
     let graph_x0 = rect.min.x + left_w + 1.0;
     let graph_x1 = rect.max.x - 10.0;
     ctx.data_mut(|d| d.insert_temp(egui::Id::new("timeline-graph-area"), (graph_x0, graph_x1 - graph_x0)));
@@ -486,6 +732,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     p.rect_filled(Rect::from_min_max(pos2(graph_x0, top), rect.max), 0.0, t.tl_bg);
     p.line_segment([pos2(graph_x0 - 1.0, top), pos2(graph_x0 - 1.0, rect.max.y)], Stroke::new(1.0, t.app_bg));
 
+    let mut actions: Vec<(String, serde_json::Value)> = Vec::new();
     // ---- header (left): time display, search, switches.
     let tc = crate::panels::timecode(&app.session, &comp, time);
     let tc_rect = Rect::from_min_size(pos2(rect.min.x + 12.0, top + 6.0), vec2(150.0, 24.0));
@@ -602,6 +849,31 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     if let Some((a, b)) = run {
         draw_run(a, b);
     }
+    // Disk-cached frames not in RAM (blue), like After Effects.
+    if app.session.disk_cache.is_some() {
+        let frames = comp.frame_rate.frame_at(comp.duration);
+        let opts = app.frame_opts(cid, scale_key as f64 / 1000.0);
+        let disk = app.frames.disk_frames(&app.render_source(), app.session.revision, cid.0, scale_key, app.view_hash(cid), frames, &opts);
+        let draw_blue = |a: i64, b: i64| {
+            let x0 = tm.x(a as f64 * fd);
+            let x1 = tm.x((b + 1) as f64 * fd);
+            p.rect_filled(Rect::from_min_max(pos2(x0, cy0), pos2(x1, cy0 + 2.5)), 0.0, t.cache_blue);
+        };
+        let mut run: Option<(i64, i64)> = None;
+        for f in disk {
+            run = match run {
+                Some((a, b)) if f == b + 1 => Some((a, f)),
+                Some((a, b)) => {
+                    draw_blue(a, b);
+                    Some((f, f))
+                }
+                None => Some((f, f)),
+            };
+        }
+        if let Some((a, b)) = run {
+            draw_blue(a, b);
+        }
+    }
     // Ticks + labels.
     // Label spacing in whole frames (AE: `00:15f`-style seconds:frames labels).
     let fps_i = fr.as_f64().round().max(1.0) as i64;
@@ -635,36 +907,118 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     if (rresp.dragged() || rresp.clicked())
         && let Some(pt) = rresp.interact_pointer_pos()
     {
-        let tt = Tick::from_seconds_f64(tm.t(pt.x).max(0.0));
+        let mut secs = tm.t(pt.x).max(0.0);
+        // Shift-drag: snap to keyframes, in/out points, markers and the work area (8 px).
+        if ui.input(|i| i.modifiers.shift) {
+            let cands = snap_candidates(&comp, &build_rows(app, &comp));
+            secs = snap_time(&cands, secs, 8.0 / pps.max(1e-6));
+        }
+        let tt = Tick::from_seconds_f64(secs);
         app.session.set_time(tt);
         app.stop();
     }
 
-    // ---- column headers.
+    // ---- column headers (right-click: show/hide columns; click the name header: Source/Layer Name).
     let ch = Rect::from_min_max(pos2(rect.min.x, top + header_h), pos2(rect.max.x, top + header_h + colhdr_h));
     p.rect_filled(Rect::from_min_max(ch.min, pos2(graph_x0 - 1.0, ch.max.y)), 0.0, t.panel_bg);
     p.line_segment([pos2(rect.min.x, ch.max.y), pos2(rect.max.x, ch.max.y)], Stroke::new(1.0, t.separator));
     let hy = ch.center().y;
     let hic = |icon: Icon, x: f32| icons::paint(&p, Rect::from_center_size(pos2(x, hy), vec2(12.0, 12.0)), icon, t.text_dim);
-    hic(Icon::Eye, cw.av + 10.0);
-    hic(Icon::Speaker, cw.av + 28.0);
-    hic(Icon::Solo, cw.av + 46.0);
-    hic(Icon::Lock, cw.av + 64.0);
-    icons::paint(&p, Rect::from_center_size(pos2(cw.label + 10.0, hy), vec2(10.0, 10.0)), Icon::Keyframe, t.text_dim);
-    p.text(pos2(cw.num + 6.0, hy), Align2::LEFT_CENTER, "#", Tokens::ui(11.0), t.text_dim);
-    p.text(pos2(cw.name + 22.0, hy), Align2::LEFT_CENTER, "Layer Name", Tokens::ui(11.0), t.text_dim);
-    for (i, icon) in
-        [Icon::Shy, Icon::Collapse, Icon::Quality, Icon::Fx, Icon::FrameBlend, Icon::MotionBlur, Icon::Adjustment, Icon::Cube].into_iter().enumerate()
+    let htext = |x: f32, s: &str| p.text(pos2(x, hy), Align2::LEFT_CENTER, s, Tokens::ui(11.0), t.text_dim);
+    if vis.av {
+        hic(Icon::Eye, cw.av + 10.0);
+        hic(Icon::Speaker, cw.av + 28.0);
+        hic(Icon::Solo, cw.av + 46.0);
+        hic(Icon::Lock, cw.av + 64.0);
+    }
+    if vis.keys {
+        htext(cw.keys + 6.0, "Keys");
+    }
+    if vis.label {
+        icons::paint(&p, Rect::from_center_size(pos2(cw.label + 10.0, hy), vec2(10.0, 10.0)), Icon::Keyframe, t.text_dim);
+    }
+    if vis.num {
+        htext(cw.num + 6.0, "#");
+    }
+    let name_hdr = if app.ui.timeline.source_name { "Source Name" } else { "Layer Name" };
+    htext(cw.name + 22.0, name_hdr);
+    if vis.comment {
+        htext(cw.comment + 6.0, "Comment");
+    }
+    if vis.switches {
+        for (i, icon) in
+            [Icon::Shy, Icon::Collapse, Icon::Quality, Icon::Fx, Icon::FrameBlend, Icon::MotionBlur, Icon::Adjustment, Icon::Cube].into_iter().enumerate()
+        {
+            hic(icon, cw.switches + SW * i as f32 + SW / 2.0);
+        }
+    }
+    if vis.modes {
+        htext(cw.mode + 4.0, "Mode");
+        htext(cw.mode + 74.0, "T");
+        htext(cw.trkmat + 4.0, "Track Matte");
+    }
+    if vis.parent {
+        icons::paint(&p, Rect::from_center_size(pos2(cw.parent + 10.0, hy), vec2(12.0, 12.0)), Icon::PickWhip, t.text_dim);
+        htext(cw.parent + 20.0, "Parent & Link");
+    }
+    for (on, x, s) in [(vis.in_, cw.in_, "In"), (vis.out, cw.out, "Out"), (vis.duration, cw.duration, "Duration"), (vis.stretch, cw.stretch, "Stretch")] {
+        if on {
+            htext(x + 6.0, s);
+        }
+    }
+    let hdr_rect = Rect::from_min_max(ch.min, pos2(graph_x0 - 1.0, ch.max.y));
+    let hresp = ui.interact(hdr_rect, egui::Id::new("tl-colhdr"), Sense::click());
+    app.auto.add("timeline.header", hdr_rect, "Columns (right-click)");
+    for (id, label) in COLUMNS {
+        if let Some(x0) = match id {
+            "av" => vis.av.then_some((cw.av, AV_W)),
+            "keys" => vis.keys.then_some((cw.keys, KEYS_W)),
+            "label" => vis.label.then_some((cw.label, LABEL_W)),
+            "num" => vis.num.then_some((cw.num, NUM_W)),
+            "name" => Some((cw.name, cw.name_end - cw.name)),
+            "comment" => vis.comment.then_some((cw.comment, COMMENT_W)),
+            "switches" => vis.switches.then_some((cw.switches, SW * 8.0 + 6.0)),
+            "modes" => vis.modes.then_some((cw.mode, MODES_W)),
+            "parent" => vis.parent.then_some((cw.parent, PARENT_W)),
+            "in" => vis.in_.then_some((cw.in_, TIME_W)),
+            "out" => vis.out.then_some((cw.out, TIME_W)),
+            "duration" => vis.duration.then_some((cw.duration, TIME_W)),
+            _ => vis.stretch.then_some((cw.stretch, STRETCH_W)),
+        } {
+            app.auto.add(&format!("timeline.header.{id}"), Rect::from_min_size(pos2(x0.0, ch.min.y), vec2(x0.1, colhdr_h)), label);
+        }
+    }
+    if hresp.clicked()
+        && let Some(pt) = hresp.interact_pointer_pos()
+        && column_at(&cw, pt.x) == Some("name")
     {
-        hic(icon, cw.switches + SW * i as f32 + SW / 2.0);
+        app.ui.timeline.source_name = !app.ui.timeline.source_name;
     }
-    if app.ui.timeline.show_modes {
-        p.text(pos2(cw.mode + 4.0, hy), Align2::LEFT_CENTER, "Mode", Tokens::ui(11.0), t.text_dim);
-        p.text(pos2(cw.mode + 74.0, hy), Align2::LEFT_CENTER, "T", Tokens::ui(11.0), t.text_dim);
-        p.text(pos2(cw.trkmat + 4.0, hy), Align2::LEFT_CENTER, "Track Matte", Tokens::ui(11.0), t.text_dim);
+    if hresp.secondary_clicked() {
+        let under = hresp.interact_pointer_pos().and_then(|pt| column_at(&cw, pt.x));
+        ctx.data_mut(|d| d.insert_temp(egui::Id::new("tl-colhdr-under"), under.unwrap_or("")));
     }
-    icons::paint(&p, Rect::from_center_size(pos2(cw.parent + 10.0, hy), vec2(12.0, 12.0)), Icon::PickWhip, t.text_dim);
-    p.text(pos2(cw.parent + 20.0, hy), Align2::LEFT_CENTER, "Parent & Link", Tokens::ui(11.0), t.text_dim);
+    hresp.context_menu(|ui| {
+        let under: &str = ctx.data(|d| d.get_temp(egui::Id::new("tl-colhdr-under"))).unwrap_or("");
+        if !under.is_empty() && under != "name" && ui.button("Hide This").clicked() {
+            actions.push(("timeline.column".into(), json!({"column": under, "visible": false})));
+            ui.close();
+        }
+        ui.menu_button("Columns", |ui| {
+            for (id, label) in COLUMNS {
+                let label = if id == "name" { if app.ui.timeline.source_name { "Source Name" } else { "Layer Name" } } else { label };
+                let on = column_visible(&app.ui.timeline, id);
+                if ui.add_enabled(id != "name", egui::Button::new(label).selected(on)).clicked() {
+                    actions.push(("timeline.column".into(), json!({"column": id, "visible": !on})));
+                    ui.close();
+                }
+            }
+        });
+        if ui.button(if app.ui.timeline.source_name { "Show Layer Name" } else { "Show Source Name" }).clicked() {
+            actions.push(("timeline.sourceName".into(), json!({})));
+            ui.close();
+        }
+    });
     let _ = cw.end;
 
     // ---- rows.
@@ -692,7 +1046,6 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let mut y = rows_rect.min.y - app.ui.timeline.scroll_y;
     let selected = app.session.state.selected_layers.clone();
     let sel_keys = app.session.state.selected_keys.clone();
-    let mut actions: Vec<(String, serde_json::Value)> = Vec::new();
     let mut ui_actions: Vec<UiAct> = Vec::new();
     let idx_of = |id: LayerId| comp.index_of(id).unwrap_or(0);
     let graph_on = app.ui.timeline.graph_editor;
@@ -742,7 +1095,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 ];
                 for (i, (icon, on, name, applicable)) in av_items.into_iter().enumerate() {
                     let br = Rect::from_center_size(pos2(cw.av + 10.0 + 18.0 * i as f32, cy), vec2(17.0, 17.0));
-                    if !applicable {
+                    if !applicable || !vis.av {
                         continue;
                     }
                     lp.rect_stroke(br.shrink(1.5), 2.0, Stroke::new(1.0, t.separator), StrokeKind::Inside);
@@ -753,19 +1106,24 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     }
                 }
                 // Label swatch.
-                let lr = Rect::from_center_size(pos2(cw.label + 10.0, cy), vec2(12.0, 12.0));
-                lp.rect_filled(lr, 2.0, t.label(layer.label));
-                let lresp = ui.interact(lr, egui::Id::new(("label", layer.id.0)), Sense::click());
-                lresp.context_menu(|ui| {
-                    for lab in effectcraft_engine::color::Label::ALL {
-                        let name = if lab == effectcraft_engine::color::Label::None { lab.name().to_string() } else { app.session.prefs.label_name(lab) };
-                        if ui.button(name).clicked() {
-                            actions.push(("edit.label".into(), json!({"layers": [layer.id.0], "label": lab.name()})));
-                            ui.close();
+                if vis.label {
+                    let lr = Rect::from_center_size(pos2(cw.label + 10.0, cy), vec2(12.0, 12.0));
+                    lp.rect_filled(lr, 2.0, t.label(layer.label));
+                    let lresp = ui.interact(lr, egui::Id::new(("label", layer.id.0)), Sense::click());
+                    lresp.context_menu(|ui| {
+                        for lab in effectcraft_engine::color::Label::ALL {
+                            let name = if lab == effectcraft_engine::color::Label::None { lab.name().to_string() } else { app.session.prefs.label_name(lab) };
+                            if ui.button(name).clicked() {
+                                actions.push(("edit.label".into(), json!({"layers": [layer.id.0], "label": lab.name()})));
+                                ui.close();
+                            }
                         }
-                    }
-                });
-                lp.text(pos2(cw.num + 13.0, cy), Align2::CENTER_CENTER, format!("{}", idx_of(layer.id)), Tokens::ui(11.5), t.text_dim);
+                    });
+                }
+                if vis.num {
+                    lp.text(pos2(cw.num + 13.0, cy), Align2::CENTER_CENTER, format!("{}", idx_of(layer.id)), Tokens::ui(11.5), t.text_dim);
+                }
+                layer_cells(app, ui, &lp, &cw, &comp, layer, r, cy, &mut actions);
                 // Twirl + icon + name.
                 let tw = Rect::from_center_size(pos2(cw.name + 8.0, cy), vec2(14.0, 14.0));
                 let open = app.ui.timeline.open_layers.contains(&layer.id.0);
@@ -774,7 +1132,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 }
                 app.auto.add(&format!("timeline.layer.{}.twirl", layer.id.0), tw, "twirl");
                 icons::paint(&lp, Rect::from_center_size(pos2(cw.name + 24.0, cy), vec2(13.0, 13.0)), layer_icon(layer, &app.session.project), t.text_dim);
-                let name_rect = Rect::from_min_max(pos2(cw.name + 34.0, r.min.y), pos2(cw.switches - 4.0, r.max.y));
+                let name_rect = Rect::from_min_max(pos2(cw.name + 34.0, r.min.y), pos2(cw.name_end - 4.0, r.max.y));
                 let rename_id = egui::Id::new("tl-rename");
                 let renaming: Option<(u64, String)> = ctx.data(|d| d.get_temp(rename_id));
                 if let Some((rl, mut buf)) = renaming.filter(|(rl, _)| *rl == layer.id.0) {
@@ -792,11 +1150,12 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 } else {
                     let name_col = if is_sel { Color32::WHITE } else { t.text };
                     let lpn = lp.with_clip_rect(name_rect.intersect(lp.clip_rect()));
-                    lpn.text(pos2(name_rect.min.x, cy), Align2::LEFT_CENTER, &layer.name, Tokens::ui(12.0), name_col);
+                    lpn.text(pos2(name_rect.min.x, cy), Align2::LEFT_CENTER, display_name(app, layer), Tokens::ui(12.0), name_col);
                 }
                 // Row click → select; double-click → rename; drag → reorder (later).
+                let row_x0 = if vis.num { cw.num } else { cw.name + 16.0 };
                 let row_resp =
-                    ui.interact(Rect::from_min_max(pos2(cw.num, r.min.y), pos2(cw.switches, r.max.y)), egui::Id::new(("row", layer.id.0)), Sense::click());
+                    ui.interact(Rect::from_min_max(pos2(row_x0, r.min.y), pos2(cw.name_end, r.max.y)), egui::Id::new(("row", layer.id.0)), Sense::click());
                 app.auto.add(&format!("timeline.layer.{}.row", layer.id.0), left, &layer.name);
                 if row_resp.clicked() {
                     let m = ui.input(|i| i.modifiers);
@@ -832,7 +1191,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     (Icon::Cube, layer.is_3d(), "threeD", layer.source.is_av() || matches!(layer.source, LayerSource::Null)),
                 ];
                 for (i, (icon, on, name, applicable)) in sws.into_iter().enumerate() {
-                    if !applicable {
+                    if !applicable || !vis.switches {
                         continue;
                     }
                     let br = Rect::from_center_size(pos2(cw.switches + SW * i as f32 + SW / 2.0, cy), vec2(16.0, 16.0));
@@ -903,28 +1262,31 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     }
                 }
                 // Parent.
-                let pw_rect = Rect::from_center_size(pos2(cw.parent + 9.0, cy), vec2(15.0, 15.0));
-                let pw = ui.interact(pw_rect, egui::Id::new(("parent-whip", layer.id.0)), Sense::drag()).on_hover_text("Parent pick whip: drag onto a layer");
-                icons::paint(&lp, pw_rect.shrink(1.0), Icon::PickWhip, if pw.hovered() || pw.dragged() { t.text } else { t.text_dim });
-                app.auto.add(&format!("timeline.layer.{}.pickWhip", layer.id.0), pw_rect, "Parent pick whip");
-                if pw.drag_started() {
-                    let pw_state: PickWhip = (0, layer.id.0, 0, pw_rect.center());
-                    ctx.data_mut(|d| d.insert_temp(pick_whip_id(), pw_state));
-                }
-                let pr_rect = Rect::from_min_size(pos2(cw.parent + 20.0, cy - 9.0), vec2(94.0, 18.0));
-                let plabel = layer.parent.and_then(|p| comp.layer(p)).map(|l| format!("{}. {}", idx_of(l.id), l.name)).unwrap_or_else(|| "None".into());
-                let presp = widgets::dropdown(ui, pr_rect, &plabel, &t, egui::Id::new(("parent", layer.id.0)));
-                app.auto.add(&format!("timeline.layer.{}.parent", layer.id.0), pr_rect, "Parent");
-                let pop = egui::Id::new(("par-pop", layer.id.0));
-                if presp.clicked() {
-                    widgets::open_popup(ui, pop);
-                }
-                let cands: Vec<&Layer> = comp.layers.iter().filter(|l| l.id != layer.id).collect();
-                let mut popts = vec!["None".to_string(), "-".to_string()];
-                popts.extend(cands.iter().map(|l| format!("{}. {}", idx_of(l.id), l.name)));
-                if let Some(i) = widgets::popup_menu(ui, pop, pr_rect.left_bottom(), &popts, None) {
-                    let par = if i == 0 { serde_json::Value::Null } else { json!(cands[i - 2].id.0) };
-                    actions.push(("layer.setParent".into(), json!({"layers": [layer.id.0], "parent": par})));
+                if vis.parent {
+                    let pw_rect = Rect::from_center_size(pos2(cw.parent + 9.0, cy), vec2(15.0, 15.0));
+                    let pw =
+                        ui.interact(pw_rect, egui::Id::new(("parent-whip", layer.id.0)), Sense::drag()).on_hover_text("Parent pick whip: drag onto a layer");
+                    icons::paint(&lp, pw_rect.shrink(1.0), Icon::PickWhip, if pw.hovered() || pw.dragged() { t.text } else { t.text_dim });
+                    app.auto.add(&format!("timeline.layer.{}.pickWhip", layer.id.0), pw_rect, "Parent pick whip");
+                    if pw.drag_started() {
+                        let pw_state: PickWhip = (0, layer.id.0, 0, pw_rect.center());
+                        ctx.data_mut(|d| d.insert_temp(pick_whip_id(), pw_state));
+                    }
+                    let pr_rect = Rect::from_min_size(pos2(cw.parent + 20.0, cy - 9.0), vec2(94.0, 18.0));
+                    let plabel = layer.parent.and_then(|p| comp.layer(p)).map(|l| format!("{}. {}", idx_of(l.id), l.name)).unwrap_or_else(|| "None".into());
+                    let presp = widgets::dropdown(ui, pr_rect, &plabel, &t, egui::Id::new(("parent", layer.id.0)));
+                    app.auto.add(&format!("timeline.layer.{}.parent", layer.id.0), pr_rect, "Parent");
+                    let pop = egui::Id::new(("par-pop", layer.id.0));
+                    if presp.clicked() {
+                        widgets::open_popup(ui, pop);
+                    }
+                    let cands: Vec<&Layer> = comp.layers.iter().filter(|l| l.id != layer.id).collect();
+                    let mut popts = vec!["None".to_string(), "-".to_string()];
+                    popts.extend(cands.iter().map(|l| format!("{}. {}", idx_of(l.id), l.name)));
+                    if let Some(i) = widgets::popup_menu(ui, pop, pr_rect.left_bottom(), &popts, None) {
+                        let par = if i == 0 { serde_json::Value::Null } else { json!(cands[i - 2].id.0) };
+                        actions.push(("layer.setParent".into(), json!({"layers": [layer.id.0], "parent": par})));
+                    }
                 }
                 // Layer bar.
                 ui.set_clip_rect(right_clip);
@@ -1189,10 +1551,11 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 gp.rect_filled(Rect::from_min_max(pos2(graph_x0, r.min.y), r.max), 0.0, t.tl_bg);
                 let indent = cw.name + 6.0 + 14.0 * row.depth as f32;
                 // Keyframe navigator (in the A/V column, like AE).
-                if prop.is_animated() {
+                // (in the Keys column when it is shown).
+                if prop.is_animated() && (vis.keys || vis.av) {
                     let lt = layer.layer_time(time);
                     let at_key = effectcraft_engine::keyframe::key_at(&prop.keys, lt).is_some();
-                    let nav_x = cw.av + 18.0;
+                    let nav_x = if vis.keys { cw.keys + 12.0 } else { cw.av + 18.0 };
                     let prev = Rect::from_center_size(pos2(nav_x, cy), vec2(12.0, 14.0));
                     let mid = Rect::from_center_size(pos2(nav_x + 16.0, cy), vec2(14.0, 14.0));
                     let next = Rect::from_center_size(pos2(nav_x + 32.0, cy), vec2(12.0, 14.0));
@@ -1555,6 +1918,101 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     }
 }
 
+/// The optional per-layer cells: Comment (double-click to edit), In / Out / Duration (drag to
+/// change by frames), Stretch (click: Time Stretch dialog).
+#[allow(clippy::too_many_arguments)]
+fn layer_cells(
+    app: &mut EffectcraftApp,
+    ui: &mut egui::Ui,
+    lp: &egui::Painter,
+    cw: &Cols,
+    comp: &Comp,
+    layer: &Layer,
+    r: Rect,
+    cy: f32,
+    actions: &mut Vec<(String, serde_json::Value)>,
+) {
+    let t = app.tokens;
+    let ctx = ui.ctx().clone();
+    let lid = layer.id.0;
+    if cw.vis.comment {
+        let cr = Rect::from_min_max(pos2(cw.comment + 4.0, r.min.y + 1.0), pos2(cw.comment + COMMENT_W - 4.0, r.max.y - 1.0));
+        let edit_id = egui::Id::new("tl-comment-edit");
+        let editing: Option<(u64, String)> = ctx.data(|d| d.get_temp(edit_id));
+        app.auto.add(&format!("timeline.layer.{lid}.comment"), cr, &layer.comment);
+        if let Some((el, mut buf)) = editing.filter(|(el, _)| *el == lid) {
+            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(cr));
+            let er = child.add(egui::TextEdit::singleline(&mut buf).font(Tokens::ui(11.5)).desired_width(cr.width()));
+            er.request_focus();
+            if er.lost_focus() {
+                if !ui.input(|i| i.key_pressed(egui::Key::Escape)) && buf != layer.comment {
+                    actions.push(("layer.setComment".into(), json!({"layers": [el], "comment": buf})));
+                }
+                ctx.data_mut(|d| d.remove::<(u64, String)>(edit_id));
+            } else {
+                ctx.data_mut(|d| d.insert_temp(edit_id, (el, buf)));
+            }
+        } else {
+            let resp = ui.interact(cr, egui::Id::new(("tl-comment", lid)), Sense::click()).on_hover_text("Double-click to edit the comment");
+            lp.with_clip_rect(cr.intersect(lp.clip_rect())).text(pos2(cr.min.x + 2.0, cy), Align2::LEFT_CENTER, &layer.comment, Tokens::ui(11.5), t.text_dim);
+            if resp.double_clicked() {
+                ctx.data_mut(|d| d.insert_temp(edit_id, (lid, layer.comment.clone())));
+            }
+        }
+    }
+    let fd = comp.frame_duration().seconds();
+    let cells = [
+        (cw.vis.in_, cw.in_, "in", layer.in_point.seconds()),
+        (cw.vis.out, cw.out, "out", layer.out_point.seconds()),
+        (cw.vis.duration, cw.duration, "duration", (layer.out_point - layer.in_point).seconds()),
+    ];
+    for (on, x, kind, secs) in cells {
+        if !on {
+            continue;
+        }
+        let cr = Rect::from_min_max(pos2(x + 2.0, r.min.y + 1.0), pos2(x + TIME_W - 2.0, r.max.y - 1.0));
+        let tc = crate::panels::timecode(&app.session, comp, Tick::from_seconds_f64(secs) - if kind == "duration" { comp.display_start } else { Tick(0) });
+        let resp = ui.interact(cr, egui::Id::new(("tl-cell", kind, lid)), Sense::drag()).on_hover_text("Drag to change");
+        lp.text(pos2(cr.min.x + 4.0, cy), Align2::LEFT_CENTER, &tc, Tokens::mono(11.0), if resp.hovered() || resp.dragged() { t.hot_text } else { t.timecode });
+        app.auto.add(&format!("timeline.layer.{lid}.{kind}"), cr, &tc);
+        if resp.hovered() || resp.dragged() {
+            ctx.set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+        }
+        let acc_id = egui::Id::new(("tl-cell-acc", kind, lid));
+        if resp.dragged() {
+            let mut acc: f32 = ctx.data(|d| d.get_temp(acc_id).unwrap_or(0.0));
+            acc += resp.drag_delta().x;
+            let frames = (acc / 4.0).trunc() as i64;
+            if frames != 0 {
+                acc -= frames as f32 * 4.0;
+                let d = frames as f64 * fd;
+                let merge = format!("cell-{kind}-{lid}");
+                let params = match kind {
+                    "in" => json!({"layers": [lid], "in": (layer.in_point.seconds() + d).max(0.0), "merge": merge}),
+                    _ => json!({"layers": [lid], "out": (layer.out_point.seconds() + d).max(layer.in_point.seconds() + fd), "merge": merge}),
+                };
+                actions.push(("layer.timing".into(), params));
+            }
+            ctx.data_mut(|d| d.insert_temp(acc_id, acc));
+        }
+        if resp.drag_stopped() {
+            ctx.data_mut(|d| d.remove::<f32>(acc_id));
+            actions.push(("__endMerge".into(), json!({})));
+        }
+    }
+    if cw.vis.stretch {
+        let cr = Rect::from_min_max(pos2(cw.stretch + 2.0, r.min.y + 1.0), pos2(cw.stretch + STRETCH_W - 2.0, r.max.y - 1.0));
+        let label = format!("{:.1}%", layer.stretch * 100.0);
+        let resp = ui.interact(cr, egui::Id::new(("tl-stretch", lid)), Sense::click()).on_hover_text("Time Stretch…");
+        lp.text(pos2(cr.min.x + 4.0, cy), Align2::LEFT_CENTER, &label, Tokens::ui(11.5), if resp.hovered() { t.hot_text } else { t.text });
+        app.auto.add(&format!("timeline.layer.{lid}.stretch"), cr, &label);
+        if resp.clicked() {
+            actions.push(("layer.select".into(), json!({"layers": [lid]})));
+            actions.push(("layer.timeStretch".into(), json!({})));
+        }
+    }
+}
+
 enum UiAct {
     ToggleLayer(u64, bool),
     ToggleGroup(u64),
@@ -1853,5 +2311,138 @@ fn value_editor(
         Value::Str(s) => {
             p.text(pos2(x, at.y), Align2::LEFT_CENTER, s.chars().take(30).collect::<String>(), Tokens::ui(12.0), t.text_dim);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A comp with two solids; "Box" has an animated Position and a Gaussian Blur.
+    fn app() -> EffectcraftApp {
+        let mut s = effectcraft_engine::Session::default();
+        s.execute("comp.new", json!({"name": "T", "width": 320, "height": 180, "duration": 4})).unwrap();
+        s.execute("layer.newSolid", json!({"name": "Plate", "color": "#406080", "width": 320, "height": 180})).unwrap();
+        s.execute("layer.newSolid", json!({"name": "Box", "color": "#e04020", "width": 40, "height": 40})).unwrap();
+        let comp = s.active_comp().unwrap();
+        let bx = comp.layers.iter().find(|l| l.name == "Box").unwrap().id.0;
+        s.execute("layer.select", json!({"layers": [bx]})).unwrap();
+        s.execute("effect.apply", json!({"effect": "ec.blur.gaussian"})).unwrap();
+        let pos = s.active_comp().unwrap().layer(LayerId(bx)).unwrap().transform().unwrap().get("position").unwrap().uid;
+        s.execute("prop.toggleAnimation", json!({"layer": bx, "prop": pos})).unwrap();
+        EffectcraftApp::new(s)
+    }
+
+    fn labels(app: &EffectcraftApp) -> Vec<String> {
+        let comp = app.session.active_comp().unwrap().clone();
+        build_rows(app, &comp)
+            .into_iter()
+            .map(|r| {
+                let l = comp.layer(r.layer).unwrap();
+                match r.kind {
+                    RowKind::Layer => l.name.clone(),
+                    RowKind::Group { name, .. } => format!("{}>{name}", "  ".repeat(r.depth)),
+                    RowKind::Prop { uid } => format!("{}{}", "  ".repeat(r.depth), l.props.find(uid).unwrap().name),
+                    _ => "?".into(),
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn search_filters_layers_and_reveals_matching_properties() {
+        let mut app = app();
+        app.ui.timeline.search = "opac".into();
+        let rows = labels(&app);
+        // Both layers have Transform > Opacity; nothing else shows.
+        assert_eq!(rows.iter().filter(|r| r.trim() == "Opacity").count(), 2, "{rows:?}");
+        assert!(rows.iter().any(|r| r.trim() == ">Transform"), "{rows:?}");
+        assert!(!rows.iter().any(|r| r.trim() == "Position"), "{rows:?}");
+        // A layer name match shows the layer alone; a group match brings its contents.
+        app.ui.timeline.search = "plate".into();
+        assert_eq!(labels(&app), vec!["Plate".to_string()]);
+        app.ui.timeline.search = "GAUSSIAN".into();
+        let rows = labels(&app);
+        assert_eq!(rows[0], "Box");
+        assert!(rows.iter().any(|r| r.trim() == ">Effects") && rows.iter().any(|r| r.trim() == "Blurriness"), "{rows:?}");
+        assert!(!rows.contains(&"Plate".to_string()));
+        // Nothing matches → no rows.
+        app.ui.timeline.search = "zzz".into();
+        assert!(labels(&app).is_empty());
+        // Through the command.
+        let ctx = egui::Context::default();
+        crate::menus::invoke(&mut app, &ctx, "timeline.search", json!({"query": "scale"})).unwrap();
+        assert!(labels(&app).iter().any(|r| r.trim() == "Scale"));
+    }
+
+    #[test]
+    fn columns_toggle_and_layout() {
+        let mut app = app();
+        let tl = &mut app.ui.timeline;
+        assert!(column_visible(tl, "switches") && !column_visible(tl, "comment") && !column_visible(tl, "modes"));
+        set_column(tl, "comment", true).unwrap();
+        set_column(tl, "stretch", true).unwrap();
+        set_column(tl, "keys", false).unwrap();
+        set_column(tl, "label", false).unwrap();
+        set_column(tl, "modes", true).unwrap();
+        assert!(tl.show_modes && column_visible(tl, "comment") && !column_visible(tl, "label"));
+        assert!(set_column(tl, "name", false).is_err());
+        assert!(set_column(tl, "bogus", true).is_err());
+        let vis = Vis::of(tl);
+        let cw = cols(0.0, 1400.0, vis);
+        // Hidden columns take no room; visible ones are in After Effects' order.
+        assert_eq!(cw.keys, cw.label);
+        assert_eq!(cw.label, cw.num);
+        assert!(cw.name < cw.comment && cw.comment < cw.switches && cw.switches < cw.mode && cw.parent < cw.stretch);
+        assert_eq!(column_at(&cw, cw.comment + 5.0), Some("comment"));
+        assert_eq!(column_at(&cw, cw.name + 5.0), Some("name"));
+        assert_eq!(column_at(&cw, cw.stretch + 5.0), Some("stretch"));
+        // Through the command (as agents do).
+        let ctx = egui::Context::default();
+        let r = crate::menus::invoke(&mut app, &ctx, "timeline.column", json!({"column": "duration"})).unwrap();
+        assert!(r["columns"].as_array().unwrap().iter().any(|c| c == "duration"));
+        crate::menus::invoke(&mut app, &ctx, "timeline.column", json!({"column": "duration", "visible": false})).unwrap();
+        assert!(!column_visible(&app.ui.timeline, "duration"));
+        crate::menus::invoke(&mut app, &ctx, "timeline.sourceName", json!({})).unwrap();
+        assert!(app.ui.timeline.source_name);
+    }
+
+    #[test]
+    fn reveal_keys_add_with_shift_and_uu_reveals_modified() {
+        let mut app = app();
+        let ctx = egui::Context::default();
+        crate::menus::invoke(&mut app, &ctx, "timeline.reveal.opacity", json!({})).unwrap();
+        assert_eq!(app.ui.timeline.reveal, vec!["opacity"]);
+        crate::menus::invoke(&mut app, &ctx, "timeline.revealAdd.scale", json!({})).unwrap();
+        crate::menus::invoke(&mut app, &ctx, "timeline.revealAdd.effects", json!({})).unwrap();
+        assert_eq!(app.ui.timeline.reveal, vec!["opacity", "scale", "effects"]);
+        let rows = labels(&app);
+        assert!(rows.iter().any(|r| r.trim() == "Scale") && rows.iter().any(|r| r.trim() == "Opacity"), "{rows:?}");
+        assert!(rows.iter().any(|r| r.trim() == ">Gaussian Blur"), "{rows:?}");
+        // Tree order: Scale before Opacity.
+        let si = rows.iter().position(|r| r.trim() == "Scale").unwrap();
+        let oi = rows.iter().position(|r| r.trim() == "Opacity").unwrap();
+        assert!(si < oi);
+        // Shift+S again removes Scale.
+        crate::menus::invoke(&mut app, &ctx, "timeline.revealAdd.scale", json!({})).unwrap();
+        assert_eq!(app.ui.timeline.reveal, vec!["opacity", "effects"]);
+        // U: keyframed properties (Position); UU (twice quickly): every modified property.
+        crate::menus::invoke(&mut app, &ctx, "anim.reveal", json!({"kind": "keyframes"})).unwrap();
+        let n_keys = app.ui.timeline.reveal_props.len();
+        assert_eq!(app.ui.timeline.reveal, vec!["props"]);
+        assert!(n_keys >= 1);
+        crate::menus::invoke(&mut app, &ctx, "anim.reveal", json!({"kind": "keyframes"})).unwrap();
+        assert!(app.ui.timeline.reveal_props.len() > n_keys, "UU reveals modified properties too");
+    }
+
+    #[test]
+    fn cti_snaps_to_the_nearest_candidate() {
+        assert_eq!(snap_time(&[0.0, 1.0, 2.0], 1.04, 0.1), 1.0);
+        assert_eq!(snap_time(&[0.0, 1.0, 2.0], 1.5, 0.1), 1.5);
+        assert_eq!(snap_time(&[1.0, 1.1], 1.06, 0.1), 1.1);
+        let app = app();
+        let comp = app.session.active_comp().unwrap().clone();
+        let c = snap_candidates(&comp, &build_rows(&app, &comp));
+        assert!(c.contains(&comp.duration.seconds()) && c.contains(&0.0));
     }
 }

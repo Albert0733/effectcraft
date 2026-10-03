@@ -153,7 +153,7 @@ fn cineon(ctx: &EffectCtx, mut b: Buf) -> Buf {
 // ---- Colour LUTs (.cube) ----
 
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct Lut {
+pub struct Lut {
     pub n1: usize,
     pub d1: Vec<[f32; 3]>,
     pub n3: usize,
@@ -163,7 +163,7 @@ pub(crate) struct Lut {
 }
 
 /// Parse `.cube` text (TITLE, LUT_1D_SIZE, LUT_3D_SIZE, DOMAIN_MIN/MAX, data red-fastest).
-pub(crate) fn parse_cube(text: &str) -> Option<Lut> {
+pub fn parse_cube(text: &str) -> Option<Lut> {
     let mut lut = Lut { n1: 0, d1: vec![], n3: 0, d3: vec![], dmin: [0.0; 3], dmax: [1.0; 3] };
     let mut rows: Vec<[f32; 3]> = Vec::new();
     let three = |it: &mut std::str::SplitWhitespace| -> Option<[f32; 3]> {
@@ -237,6 +237,57 @@ impl Lut {
             c = self.tetra(self.norm(c));
         }
         c
+    }
+    /// Apply with a choice of 3D interpolation: 0 nearest, 1 trilinear, otherwise tetrahedral.
+    pub fn apply_interp(&self, c: [f32; 3], interp: u32) -> [f32; 3] {
+        let mut c = c;
+        if self.n1 > 1 {
+            let t = self.norm(c);
+            c = [0, 1, 2].map(|i| {
+                let x = t[i] * (self.n1 - 1) as f32;
+                if interp == 0 {
+                    return self.d1[(x.round() as usize).min(self.n1 - 1)][i];
+                }
+                let i0 = (x.floor() as usize).min(self.n1 - 2);
+                let f = x - i0 as f32;
+                self.d1[i0][i] + (self.d1[i0 + 1][i] - self.d1[i0][i]) * f
+            });
+        }
+        if self.n3 > 1 {
+            let t = self.norm(c);
+            c = match interp {
+                0 => self.nearest(t),
+                1 => self.trilinear(t),
+                _ => self.tetra(t),
+            };
+        }
+        c
+    }
+    fn nearest(&self, t: [f32; 3]) -> [f32; 3] {
+        let n = self.n3;
+        let s = (n - 1) as f32;
+        let i = |x: f32| ((x * s).round() as usize).min(n - 1);
+        self.d3[i(t[0]) + i(t[1]) * n + i(t[2]) * n * n]
+    }
+    /// Trilinear interpolation on the lattice (red fastest).
+    pub fn trilinear(&self, t: [f32; 3]) -> [f32; 3] {
+        let n = self.n3;
+        let s = (n - 1) as f32;
+        let idx = |x: f32| {
+            let v = x * s;
+            let i = (v.floor() as usize).min(n - 2);
+            (i, v - i as f32)
+        };
+        let (r, fr) = idx(t[0]);
+        let (g, fg) = idx(t[1]);
+        let (b, fb) = idx(t[2]);
+        let at = |dr: usize, dg: usize, db: usize| self.d3[(r + dr) + (g + dg) * n + (b + db) * n * n];
+        let l = |a: [f32; 3], b: [f32; 3], f: f32| [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f];
+        let c00 = l(at(0, 0, 0), at(1, 0, 0), fr);
+        let c10 = l(at(0, 1, 0), at(1, 1, 0), fr);
+        let c01 = l(at(0, 0, 1), at(1, 0, 1), fr);
+        let c11 = l(at(0, 1, 1), at(1, 1, 1), fr);
+        l(l(c00, c10, fg), l(c01, c11, fg), fb)
     }
     fn tetra(&self, t: [f32; 3]) -> [f32; 3] {
         let n = self.n3;

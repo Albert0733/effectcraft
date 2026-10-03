@@ -7,10 +7,12 @@ pub mod dialogs;
 pub mod dialogs_3d;
 pub mod effect_controls;
 pub mod effects_presets;
+pub mod flowchart;
 pub mod forms;
 pub mod fx_widgets;
 pub mod graph;
 pub mod graph_tools;
+pub mod home;
 pub mod info;
 pub mod key_dialogs;
 pub mod layer_panel;
@@ -22,6 +24,8 @@ pub mod project;
 pub mod properties;
 pub mod puppet_tool;
 pub mod render_queue;
+pub mod roto_tool;
+pub mod script_console;
 pub mod settings;
 pub mod shortcut_editor;
 pub mod text_panels;
@@ -64,7 +68,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: PanelKind, rect: Rec
     match p {
         PanelKind::Composition => {
             if app.ui.start_screen {
-                misc::start_screen(app, ui, rect);
+                home::show(app, ui, rect);
             } else {
                 viewer::show(app, ui, rect)
             }
@@ -83,6 +87,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: PanelKind, rect: Rec
         PanelKind::History => misc::history(app, ui, rect),
         PanelKind::Markers => misc::markers(app, ui, rect),
         PanelKind::MaskInterpolation => anim_tools::mask_interpolation(app, ui, rect),
+        PanelKind::ScriptConsole => script_console::show(app, ui, rect),
         PanelKind::Wiggler => anim_tools::wiggler(app, ui, rect),
         PanelKind::Smoother => anim_tools::smoother(app, ui, rect),
         PanelKind::MotionSketch => anim_tools::motion_sketch(app, ui, rect),
@@ -91,7 +96,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: PanelKind, rect: Rec
         PanelKind::Layer => layer_panel::show(app, ui, rect),
         PanelKind::Paint => paint_panels::paint(app, ui, rect),
         PanelKind::Brushes => paint_panels::brushes(app, ui, rect),
-        other => misc::placeholder(app, ui, rect, other),
+        PanelKind::Flowchart => flowchart::show(app, ui, rect),
     }
 }
 

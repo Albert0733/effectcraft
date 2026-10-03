@@ -323,6 +323,12 @@ pub(crate) fn draw_run(r: &Renderer, ctx: &EvalCtx, run: &[&Layer], canvas: &mut
     if run.is_empty() {
         return;
     }
+    // Advanced 3D comps: meshes, physically based lights, shadow maps (collapsed precomps keep
+    // the parent's Classic 3D planes).
+    if ctx.comp.renderer == effectcraft_project::Renderer::Advanced3D && r.collapse3d.is_none() {
+        super::adv::draw_run(r, ctx, run, canvas);
+        return;
+    }
     let out = (canvas.width, canvas.height);
     // A collapsed precomp's 3D layers are lit by the outer comp's lights.
     let lights = scene_lights(&r.collapse3d.map_or(*ctx, |c| c.parent));
@@ -582,4 +588,183 @@ fn occlusion(c: &Item, p: Vec3, l: &LightState) -> [f32; 3] {
         out[k] = 1.0 - dark * (1.0 - pass);
     }
     out
+}
+
+// ------------------------------------------------------------------ auxiliary render pass
+
+/// One surface seen through an output pixel (aux pass).
+#[derive(Clone, Copy)]
+struct AuxFrag {
+    z: f32,
+    a: f32,
+    obj: f32,
+    mat: f32,
+    n: [f32; 3],
+    uv: [f32; 2],
+    obj_hash: u32,
+    mat_hash: u32,
+}
+
+/// The comp's auxiliary channels at the context time, at output resolution: camera-space depth
+/// (`Z`), `ObjectID` (layer number), `MaterialID` (source item id), `Coverage`, camera-space
+/// normals (`N.X/Y/Z`), texture coordinates (`UV.U/V`) and Cryptomatte `CryptoObject` (layer
+/// names) / `CryptoMaterial` (source names) with two ranks each, plus their manifests.
+///
+/// Layers are gathered in stack order (top first); a run of 3D layers contributes its planes
+/// sorted near → far at each pixel, a 2D layer its coverage on the plane of the comp. The
+/// front-most surface with ≥ 50 % opacity (else the strongest one) provides depth, IDs, normal
+/// and UV; Cryptomatte coverage is each surface's visible share (`α · Π(1 − α_front)`).
+pub(crate) fn aux_pass(r: &Renderer, ctx: &EvalCtx) -> effectcraft_raster::AuxChannels {
+    use effectcraft_raster::channels3d::{BACKGROUND_DEPTH, crypto_float, crypto_hash};
+    let s = r.opts.scale;
+    let (w, h) = (((ctx.comp.width as f64 * s).round() as u32).max(1), ((ctx.comp.height as f64 * s).round() as u32).max(1));
+    let out = (w, h);
+    let (wu, n) = (w as usize, w as usize * h as usize);
+    let cam = camera_for(r, ctx);
+    let visible: Vec<&Layer> = r.visible_layers(ctx).into_iter().filter(|l| !l.switches.adjustment).collect();
+    let number = |l: &Layer| ctx.comp.layers.iter().position(|x| x.id == l.id).map_or(0.0, |i| i as f32 + 1.0);
+    let source_name = |l: &Layer| l.source.item().and_then(|i| r.project.item(i)).map(|it| it.name.clone()).unwrap_or_else(|| l.name.clone());
+    let source_id = |l: &Layer| l.source.item().map_or(0.0, |i| i.0 as f32);
+    let mut manifest_obj: Vec<(String, u32)> = vec![];
+    let mut manifest_mat: Vec<(String, u32)> = vec![];
+    for l in &visible {
+        let (on, mn) = (l.name.clone(), source_name(l));
+        if !manifest_obj.iter().any(|(x, _)| *x == on) {
+            manifest_obj.push((on.clone(), crypto_hash(&on)));
+        }
+        if !manifest_mat.iter().any(|(x, _)| *x == mn) {
+            manifest_mat.push((mn.clone(), crypto_hash(&mn)));
+        }
+    }
+    // Groups in stack order: runs of 3D layers, single 2D layers.
+    let mut groups: Vec<&[&Layer]> = vec![];
+    let mut i = 0;
+    while i < visible.len() {
+        let mut j = i + 1;
+        if visible[i].is_3d() {
+            while j < visible.len() && visible[j].is_3d() {
+                j += 1;
+            }
+        }
+        groups.push(&visible[i..j]);
+        i = j;
+    }
+    let mut frags: Vec<Vec<AuxFrag>> = vec![Vec::new(); n];
+    let plane_z = cam.depth(vec3(ctx.comp.width as f64 * 0.5, ctx.comp.height as f64 * 0.5, 0.0)) as f32;
+    for g in groups.iter().rev() {
+        if g[0].is_3d() {
+            let items: Vec<Item> = g.iter().enumerate().flat_map(|(k, l)| prepare_all(r, ctx, l, k, out, true)).collect();
+            let meta: Vec<(f32, f32, u32, u32, [f32; 3], [f64; 2])> = items
+                .iter()
+                .map(|it| {
+                    let nrm = it.geos.first().map_or(vec3(0.0, 0.0, -1.0), |gm| cam.view.apply_vec(gm.normal));
+                    let mut nv = [nrm.x as f32, nrm.y as f32, nrm.z as f32];
+                    if nv[2] > 0.0 {
+                        nv = nv.map(|v| -v);
+                    }
+                    let (sw, sh) = crate::source_size(r.project, it.layer);
+                    let size = if sw == 0 { [ctx.comp.width as f64, ctx.comp.height as f64] } else { [sw as f64, sh as f64] };
+                    (number(it.layer), source_id(it.layer), crypto_hash(&it.layer.name), crypto_hash(&source_name(it.layer)), nv, size)
+                })
+                .collect();
+            frags.par_chunks_mut(wu).enumerate().for_each(|(y, row)| {
+                let yi = y as i64;
+                let mut local: Vec<AuxFrag> = Vec::new();
+                for (x, cell) in row.iter_mut().enumerate() {
+                    let xi = x as i64;
+                    local.clear();
+                    for (it, m) in items.iter().zip(&meta) {
+                        if xi < it.bbox[0] || xi >= it.bbox[2] || yi < it.bbox[1] || yi >= it.bbox[3] {
+                            continue;
+                        }
+                        let Some(gm) = it.geos.first() else { continue };
+                        let Some((u, v, z)) = unproject(gm, x as f64 + 0.5, y as f64 + 0.5) else { continue };
+                        let a = it.texel(u, v)[3] * it.opacity;
+                        if a > 1e-4 {
+                            let uv = [(u / m.5[0]) as f32, (v / m.5[1]) as f32];
+                            local.push(AuxFrag { z: z as f32, a: a.min(1.0), obj: m.0, mat: m.1, n: m.4, uv, obj_hash: m.2, mat_hash: m.3 });
+                        }
+                    }
+                    local.sort_by(|p, q| p.z.total_cmp(&q.z));
+                    cell.extend_from_slice(&local);
+                }
+            });
+        } else {
+            let l = g[0];
+            let mut img = Image::new(w, h);
+            if let Some(b) = r.layer_buf(ctx, l) {
+                r.place(ctx, l, &b, &mut img, BlendMode::Normal, ctx.opacity(l) as f32);
+            }
+            let (obj, mat, oh, mh) = (number(l), source_id(l), crypto_hash(&l.name), crypto_hash(&source_name(l)));
+            frags.par_chunks_mut(wu).zip(img.data.par_chunks(wu)).enumerate().for_each(|(y, (row, px))| {
+                for (x, (cell, p)) in row.iter_mut().zip(px).enumerate() {
+                    if p[3] > 1e-4 {
+                        let uv = [(x as f32 + 0.5) / w as f32, (y as f32 + 0.5) / h as f32];
+                        cell.push(AuxFrag { z: plane_z, a: p[3].min(1.0), obj, mat, n: [0.0, 0.0, -1.0], uv, obj_hash: oh, mat_hash: mh });
+                    }
+                }
+            });
+        }
+    }
+    // Resolve per pixel.
+    const NAMES: [&str; 9] = ["Z", "ObjectID", "MaterialID", "Coverage", "N.X", "N.Y", "N.Z", "UV.U", "UV.V"];
+    const CRYPTO: usize = 16;
+    let resolved: Vec<([f32; 9], [f32; CRYPTO])> = frags
+        .par_iter()
+        .map(|fs| {
+            let mut o = [BACKGROUND_DEPTH, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+            let mut crypto = [0.0f32; CRYPTO];
+            if fs.is_empty() {
+                return (o, crypto);
+            }
+            let mut t = 1.0f32;
+            let mut obj: Vec<(u32, f32)> = vec![];
+            let mut mat: Vec<(u32, f32)> = vec![];
+            let mut best: Option<(usize, f32)> = None;
+            let mut front: Option<usize> = None;
+            for (k, f) in fs.iter().enumerate() {
+                let c = f.a * t;
+                if front.is_none() && f.a >= 0.5 {
+                    front = Some(k);
+                }
+                if best.is_none_or(|(_, bc)| c > bc) {
+                    best = Some((k, c));
+                }
+                for (list, hsh) in [(&mut obj, f.obj_hash), (&mut mat, f.mat_hash)] {
+                    match list.iter_mut().find(|(x, _)| *x == hsh) {
+                        Some(e) => e.1 += c,
+                        None => list.push((hsh, c)),
+                    }
+                }
+                t *= 1.0 - f.a;
+                if t <= 1e-5 {
+                    break;
+                }
+            }
+            let f = fs[front.or(best.map(|b| b.0)).unwrap_or(0)];
+            o = [f.z, f.obj, f.mat, 1.0 - t, f.n[0], f.n[1], f.n[2], f.uv[0], f.uv[1]];
+            for (base, list) in [(0usize, &mut obj), (8usize, &mut mat)] {
+                list.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+                for (rank, (hsh, c)) in list.iter().take(4).enumerate() {
+                    crypto[base + rank * 2] = crypto_float(*hsh);
+                    crypto[base + rank * 2 + 1] = *c;
+                }
+            }
+            (o, crypto)
+        })
+        .collect();
+    let mut aux = effectcraft_raster::AuxChannels::new(w, h, s);
+    for (k, name) in NAMES.iter().enumerate() {
+        aux.channels.push((name.to_string(), resolved.iter().map(|r| r.0[k]).collect()));
+    }
+    for (base, layer) in [(0usize, "CryptoObject"), (8usize, "CryptoMaterial")] {
+        for rank_pair in 0..2 {
+            for (c, ch) in ["R", "G", "B", "A"].iter().enumerate() {
+                let k = base + rank_pair * 4 + c;
+                aux.channels.push((format!("{layer}{rank_pair:02}.{ch}"), resolved.iter().map(|r| r.1[k]).collect()));
+            }
+        }
+    }
+    aux.manifests = vec![("CryptoObject".into(), manifest_obj), ("CryptoMaterial".into(), manifest_mat)];
+    aux
 }

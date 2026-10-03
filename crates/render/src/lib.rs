@@ -9,6 +9,7 @@
 pub mod audio;
 pub mod cache;
 pub mod color;
+pub mod disk_cache;
 use color::Region;
 pub mod eval;
 pub mod masks;
@@ -39,6 +40,16 @@ pub trait FootageSource: Send + Sync {
     fn audio(&self, _item: ItemId, _footage: &Footage, _t: Tick, _frames: usize, _rate: u32) -> Option<Vec<f32>> {
         None
     }
+    /// Auxiliary 3D channels of `item` at source time `t` (multi-layer OpenEXR: depth, IDs,
+    /// Cryptomatte, any named channel), with `scale` relative to the file's pixels. `None` when
+    /// the footage has none.
+    fn aux(&self, _item: ItemId, _footage: &Footage, _t: Tick) -> Option<Arc<effectcraft_raster::AuxChannels>> {
+        None
+    }
+    /// The parsed 3D model of a [`effectcraft_project::FootageKind::Model`] item (Advanced 3D).
+    fn model(&self, _item: ItemId, _footage: &Footage) -> Option<Arc<effectcraft_model::Model>> {
+        None
+    }
     /// Set the decoded-frame cache budget in bytes (Settings ▸ Memory & CPU); sources without
     /// a cache ignore it.
     fn set_cache_budget(&self, _bytes: usize) {}
@@ -46,6 +57,16 @@ pub trait FootageSource: Send + Sync {
     fn cache_budget(&self) -> Option<usize> {
         None
     }
+    /// Vector footage (SVG) rasterised at `scale` × its pixel size, for Continuously Rasterize.
+    /// `None` when the footage is not vector or cannot be read.
+    fn vector_frame(&self, _item: ItemId, _footage: &Footage, _scale: f64) -> Option<Arc<Image>> {
+        None
+    }
+}
+
+/// Footage that can be rasterised at any scale (SVG).
+pub fn is_vector_footage(f: &Footage) -> bool {
+    f.codec == "SVG"
 }
 
 /// Layer parameters and audio for effects (see [`effectcraft_effects::EffectHost`]).
@@ -105,6 +126,29 @@ impl EffectHost for FxHost<'_, '_, '_> {
         let t = self.layer.comp_time(Tick::from_seconds_f64(layer_time));
         let sub = self.r.nested();
         sub.layer_input(&self.ctx.at(t), self.layer, n).map(|b| (*b).clone())
+    }
+
+    fn aux(&self) -> Option<Arc<effectcraft_raster::AuxChannels>> {
+        match &self.layer.source {
+            LayerSource::Footage { item } => {
+                let ItemKind::Footage(f) = &self.r.project.item(*item)?.kind else { return None };
+                let a = self.r.footage.aux(*item, f, self.ctx.source_time(self.layer))?;
+                // Aux pixels per layer pixel (the layer is the footage at its nominal size).
+                if f.width > 0 && a.width > 0 {
+                    let mut a = (*a).clone();
+                    a.scale = a.width as f64 / f.width as f64;
+                    return Some(Arc::new(a));
+                }
+                Some(a)
+            }
+            LayerSource::Comp { item } => {
+                if self.r.depth > MAX_FX_DEPTH || self.r.project.comp_contains(*item, self.ctx.comp_id) {
+                    return None;
+                }
+                self.r.nested().comp_aux(*item, self.ctx.source_time(self.layer)).map(Arc::new)
+            }
+            _ => None,
+        }
     }
 
     fn layer_at(&self, id: u64, comp_time: f64, masks_and_effects: bool) -> Option<LayerPixels> {
@@ -174,6 +218,12 @@ pub trait Accelerator: Send + Sync {
     /// Run a chain of supported effects on `buf`, clamping and quantising to `levels` after
     /// every effect when set (8/16 bpc). `None` = not handled.
     fn effects(&self, chain: &[FxStep], buf: &Buf, levels: Option<f32>) -> Option<Buf>;
+    /// Rasterise and shade an Advanced 3D scene at its raster size (depth buffer, PBR, image
+    /// based light, shadow maps), with the CPU rasteriser's semantics
+    /// ([`three_d::adv::raster::render`]). `None` = not handled (the CPU renders it).
+    fn raster_3d(&self, _scene: &three_d::adv::Scene) -> Option<three_d::adv::Target> {
+        None
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -348,7 +398,12 @@ impl<'a> Renderer<'a> {
     /// stays sharp when scaled up).
     pub fn raster_scale(&self, ctx: &EvalCtx, layer: &Layer) -> f64 {
         let s = self.opts.scale;
-        if !layer.switches.collapse || !matches!(layer.source, LayerSource::Text | LayerSource::Shape) {
+        let vector = match layer.source {
+            LayerSource::Text | LayerSource::Shape => true,
+            LayerSource::Footage { item } => matches!(self.project.item(item).map(|i| &i.kind), Some(ItemKind::Footage(f)) if is_vector_footage(f)),
+            _ => false,
+        };
+        if !layer.switches.collapse || !vector {
             return s;
         }
         let (l2c, _) = ctx.layer_to_comp(layer);
@@ -527,8 +582,15 @@ impl<'a> Renderer<'a> {
         let layer_size = if size.0 == 0 { [ctx.comp.width as f64, ctx.comp.height as f64] } else { [size.0 as f64, size.1 as f64] };
         let mask_shapes = masks::shapes(ctx, layer);
         let host = FxHost { r: self, ctx, layer, index: Default::default() };
-        let env =
-            EffectEnv { masks: &mask_shapes, host: Some(&host), comp_time: ctx.time.seconds(), frame_rate: ctx.comp.frame_rate.as_f64(), effect_index: 0 };
+        let env = EffectEnv {
+            masks: &mask_shapes,
+            host: Some(&host),
+            comp_time: ctx.time.seconds(),
+            frame_rate: ctx.comp.frame_rate.as_f64(),
+            effect_index: 0,
+            working_space: self.pipe.space,
+            working_linear: self.pipe.linear,
+        };
         // Video effects in stack order (index, group, spec); disabled and audio effects skipped.
         let stack: Vec<(usize, &effectcraft_project::PropGroup, &'static effectcraft_effects::EffectSpec)> = fx
             .groups()
@@ -630,6 +692,17 @@ impl<'a> Renderer<'a> {
                 let ItemKind::Footage(f) = &it.kind else { return None };
                 if !f.has_video {
                     return None;
+                }
+                // Continuously rasterised vector footage: drawn at the on-screen scale.
+                if layer.switches.collapse && is_vector_footage(f) {
+                    let k = self.raster_scale(ctx, layer);
+                    if let Some(img) = self.footage.vector_frame(*item, f, k) {
+                        let mut buf = Buf { img: (*img).clone(), offset: [0.0; 2], scale: k };
+                        if let Some(c) = self.pipe.media_in(f.color_profile) {
+                            color::convert(&mut buf.img, &c);
+                        }
+                        return Some(buf);
+                    }
                 }
                 let lt = ctx.source_time(layer);
                 let img = self.footage_frame(ctx, layer, *item, f, lt)?;
@@ -1168,6 +1241,13 @@ impl<'a> Renderer<'a> {
         self.depth
     }
 
+    /// The auxiliary 3D channels of comp `comp_id` at comp time `t` (depth, layer IDs, normals,
+    /// UVs, Cryptomatte; see `three_d::compose::aux_pass`), at the renderer's output scale.
+    pub fn comp_aux(&self, comp_id: ItemId, t: Tick) -> Option<effectcraft_raster::AuxChannels> {
+        let ctx = self.eval_ctx(comp_id, t)?;
+        Some(three_d::compose::aux_pass(self, &ctx))
+    }
+
     /// Evaluation context of comp `comp_id` at comp time `t`.
     pub fn eval_ctx(&self, comp_id: ItemId, t: Tick) -> Option<EvalCtx<'a>> {
         Some(self.ctx(comp_id, self.project.comp(comp_id)?, t))
@@ -1181,7 +1261,7 @@ impl<'a> Renderer<'a> {
         comp.layers
             .iter()
             .rev()
-            .filter(|l| l.is_active_at(t) && l.has_video() && (!any_solo || l.switches.solo) && (self.opts.guides || !l.switches.guide))
+            .filter(|l| l.is_active_at(t) && l.has_video() && !l.environment && (!any_solo || l.switches.solo) && (self.opts.guides || !l.switches.guide))
             .collect()
     }
 
@@ -1287,6 +1367,8 @@ pub fn kurbo_path(sp: &effectcraft_keyframe::ShapePath) -> kurbo::BezPath {
 }
 #[cfg(test)]
 mod tests_audio_fx;
+#[cfg(test)]
+mod tests_aux;
 #[cfg(test)]
 mod tests_collapse;
 #[cfg(test)]

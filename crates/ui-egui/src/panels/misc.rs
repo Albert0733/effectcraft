@@ -1,10 +1,10 @@
-//! Smaller panels: Preview, Audio, History, Markers, the Home screen and placeholders.
+//! Smaller panels: Preview, Audio, History, Markers and placeholders.
 
 use egui::{Align2, Color32, Rect, Sense, Stroke, pos2, vec2};
 use serde_json::json;
 
 use crate::dock::PanelKind;
-use crate::icons::{self, Icon};
+use crate::icons::Icon;
 use crate::theme::Tokens;
 use crate::{EffectcraftApp, widgets};
 
@@ -221,75 +221,5 @@ pub fn markers(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         if ui.interact(r, egui::Id::new(("mk", m.time.0)), Sense::click()).clicked() {
             app.session.set_time(m.time);
         }
-    }
-}
-
-/// Home screen: new/open, recent, and community links.
-pub fn start_screen(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
-    let t = app.tokens;
-    let ctx = ui.ctx().clone();
-    let p = ui.painter().with_clip_rect(rect);
-    p.rect_filled(rect, 0.0, Color32::from_rgb(0x1b, 0x1d, 0x24));
-    let c = rect.center();
-    let logo = Rect::from_center_size(c + vec2(0.0, -150.0), vec2(64.0, 64.0));
-    crate::header::paint_logo(&p, logo);
-    p.text(c + vec2(0.0, -96.0), Align2::CENTER_CENTER, "EffectCraft", Tokens::semibold(28.0), Color32::WHITE);
-    p.text(c + vec2(0.0, -66.0), Align2::CENTER_CENTER, "Motion graphics and visual effects, in pure Rust.", Tokens::ui(13.0), t.text_dim);
-    let mut y = c.y - 30.0;
-    for (label, id, primary) in [
-        ("New Composition", "app.newComp", true),
-        ("Open Demo Project", "file.openDemoProject", false),
-        ("Open Project…", "file.open", false),
-        ("Import Footage…", "file.import", false),
-    ] {
-        let r = Rect::from_center_size(pos2(c.x, y + 16.0), vec2(240.0, 32.0));
-        if widgets::text_button(ui, r, label, primary, &t, egui::Id::new(("home", id))).clicked() {
-            let _ = crate::menus::invoke(app, &ctx, id, json!({}));
-            app.ui.start_screen = false;
-        }
-        app.auto.add(&format!("home.{id}"), r, label);
-        y += 40.0;
-    }
-    // Community.
-    y += 14.0;
-    let links = [(Icon::Chat, "Join the Discord", "help.discord"), (Icon::Globe, "getartcraft.com", "help.website"), (Icon::Code, "GitHub", "help.github")];
-    let w = 170.0;
-    let mut x = c.x - w * 1.5 - 8.0;
-    for (icon, label, cmd) in links {
-        let r = Rect::from_min_size(pos2(x, y), vec2(w, 30.0));
-        let resp = ui.interact(r, egui::Id::new(("home-link", cmd)), Sense::click());
-        let discord = cmd == "help.discord";
-        let bg = if discord {
-            Color32::from_rgb(0x58, 0x65, 0xf2)
-        } else if resp.hovered() {
-            t.hover
-        } else {
-            Color32::from_rgb(0x2a, 0x2c, 0x34)
-        };
-        p.rect_filled(r, 15.0, bg);
-        icons::paint(&p, Rect::from_center_size(pos2(r.min.x + 20.0, r.center().y), vec2(14.0, 14.0)), icon, Color32::WHITE);
-        p.text(pos2(r.min.x + 34.0, r.center().y), Align2::LEFT_CENTER, label, Tokens::medium(12.0), Color32::WHITE);
-        app.auto.add(&format!("home.{cmd}"), r, label);
-        if resp.clicked() {
-            let _ = app.session.execute(cmd, json!({}));
-        }
-        x += w + 8.0;
-    }
-    // Siblings.
-    y += 52.0;
-    p.text(pos2(c.x, y), Align2::CENTER_CENTER, "More ArtCraft apps", Tokens::ui(11.5), t.text_faint);
-    y += 18.0;
-    let sib = effectcraft_engine::links::SIBLINGS;
-    let sw = 104.0;
-    let mut x = c.x - sw * sib.len() as f32 / 2.0;
-    for (name, slug) in sib {
-        let r = Rect::from_min_size(pos2(x + 2.0, y), vec2(sw - 4.0, 24.0));
-        let resp = ui.interact(r, egui::Id::new(("sib", *slug)), Sense::click());
-        p.rect_filled(r, 12.0, if resp.hovered() { t.hover } else { Color32::from_rgb(0x24, 0x26, 0x2e) });
-        p.text(r.center(), Align2::CENTER_CENTER, *name, Tokens::ui(11.5), t.text);
-        if resp.clicked() {
-            let _ = app.session.execute("help.sibling", json!({"app": slug}));
-        }
-        x += sw;
     }
 }

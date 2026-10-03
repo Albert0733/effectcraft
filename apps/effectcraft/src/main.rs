@@ -7,6 +7,8 @@
 
 mod audio_out;
 mod control_server;
+#[cfg(target_os = "macos")]
+mod native_menu;
 
 use effectcraft_ui_egui::EffectcraftApp;
 use serde_json::json;
@@ -100,14 +102,50 @@ fn main() -> eframe::Result {
             app.hooks.pick_save_file = Some(Box::new(|name: &str, ext: &str| {
                 rfd::FileDialog::new().add_filter(ext, &[ext]).set_file_name(name).save_file().map(|p| p.to_string_lossy().to_string())
             }));
+            #[cfg(target_os = "macos")]
+            {
+                app.hooks.app_action = Some(Box::new(native_menu::app_action));
+                app.hooks.clipboard_text = Some(Box::new(native_menu::clipboard_text));
+            }
             if let Some(port) = control_port {
                 disable_app_nap();
                 let rx = control_server::start(port, cc.egui_ctx.clone());
                 app = app.with_control(rx);
             }
-            Ok(Box::new(app))
+            Ok(Box::new(Desktop {
+                #[cfg(target_os = "macos")]
+                menu: native_menu::NativeBar::new(&cc.egui_ctx),
+                app,
+            }))
         }),
     )
+}
+
+/// The desktop app: the egui app plus, on macOS, the system menu bar.
+struct Desktop {
+    app: EffectcraftApp,
+    #[cfg(target_os = "macos")]
+    menu: native_menu::NativeBar,
+}
+
+impl eframe::App for Desktop {
+    fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        #[cfg(target_os = "macos")]
+        self.menu.update(&mut self.app, ctx);
+        self.app.logic(ctx, frame);
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        self.app.ui(ui, frame);
+    }
+
+    fn on_exit(&mut self) {
+        self.app.on_exit();
+    }
+
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        self.app.raw_input_hook(ctx, raw_input);
+    }
 }
 
 /// The platform config directory for EffectCraft (`EFFECTCRAFT_CONFIG_DIR` overrides):
