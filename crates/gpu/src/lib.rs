@@ -55,6 +55,7 @@ mod fx_generate;
 mod fx_key;
 mod fx_lut;
 mod fx_noise;
+mod fx_sim;
 mod fx_stylize;
 mod fx_tone;
 mod fx_vr;
@@ -217,6 +218,8 @@ mod tests_fx_key;
 mod tests_fx_lut;
 #[cfg(test)]
 mod tests_fx_noise;
+#[cfg(test)]
+mod tests_fx_sim;
 #[cfg(test)]
 mod tests_fx_stylize;
 #[cfg(test)]

@@ -5,7 +5,7 @@
 
 EffectCraft ships 306 effects with 3009 parameters in total, grouped into the same categories as the Effects & Presets panel. Every effect is our own implementation, written from public behaviour descriptions and standard image-processing literature. Parameter names, order, popup options, units, defaults and ranges follow the reference application so that projects, expressions and muscle memory carry over.
 
-- **GPU**: 193 effects also run on the GPU compositor with identical results.
+- **GPU**: 206 effects also run on the GPU compositor with identical results.
 - **32**: 306 effects process 32-bit float (HDR, overbright) pixels without clamping.
 - **Status**: 306 implemented in full, 0 partial (what is missing is listed).
 
@@ -318,23 +318,23 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 | Effect | Id | Params | GPU | 32 | Status |
 |---|---|---:|:-:|:-:|---|
 | CC Ball Action | `ec.sim.ccballaction` | 8 |  | 32 | Implemented |
-| CC Bubbles | `ec.sim.ccbubbles` | 7 |  | 32 | Implemented |
-| CC Drizzle | `ec.sim.ccdrizzle` | 14 |  | 32 | Implemented |
-| CC Hair | `ec.sim.cchair` | 20 |  | 32 | Implemented |
-| CC Mr. Mercury | `ec.sim.ccmrmercury` | 23 |  | 32 | Implemented |
+| CC Bubbles | `ec.sim.ccbubbles` | 7 | GPU | 32 | Implemented |
+| CC Drizzle | `ec.sim.ccdrizzle` | 14 | GPU | 32 | Implemented |
+| CC Hair | `ec.sim.cchair` | 20 | GPU | 32 | Implemented |
+| CC Mr. Mercury | `ec.sim.ccmrmercury` | 23 | GPU | 32 | Implemented |
 | CC Particle Systems II | `ec.sim.ccparticlesystems2` | 21 |  | 32 | Implemented |
 | CC Particle World | `ec.sim.ccparticleworld` | 30 |  | 32 | Implemented |
 | CC Pixel Polly | `ec.sim.ccpixelpolly` | 10 |  | 32 | Implemented |
-| CC Rainfall | `ec.sim.ccrainfall` | 14 |  | 32 | Implemented |
+| CC Rainfall | `ec.sim.ccrainfall` | 14 | GPU | 32 | Implemented |
 | CC Scatterize | `ec.sim.ccscatterize` | 4 |  | 32 | Implemented |
-| CC Snowfall | `ec.sim.ccsnowfall` | 19 |  | 32 | Implemented |
-| CC Star Burst | `ec.sim.ccstarburst` | 6 |  | 32 | Implemented |
-| Card Dance | `ec.sim.carddance` | 53 |  | 32 | Implemented |
-| Caustics | `ec.sim.caustics` | 28 |  | 32 | Implemented |
-| Foam | `ec.sim.foam` | 36 |  | 32 | Implemented |
+| CC Snowfall | `ec.sim.ccsnowfall` | 19 | GPU | 32 | Implemented |
+| CC Star Burst | `ec.sim.ccstarburst` | 6 | GPU | 32 | Implemented |
+| Card Dance | `ec.sim.carddance` | 53 | GPU | 32 | Implemented |
+| Caustics | `ec.sim.caustics` | 28 | GPU | 32 | Implemented |
+| Foam | `ec.sim.foam` | 36 | GPU | 32 | Implemented |
 | Particle Playground | `ec.sim.particleplayground` | 92 |  | 32 | Implemented |
-| Shatter | `ec.sim.shatter` | 60 |  | 32 | Implemented |
-| Wave World | `ec.sim.waveworld` | 35 |  | 32 | Implemented |
+| Shatter | `ec.sim.shatter` | 60 | GPU | 32 | Implemented |
+| Wave World | `ec.sim.waveworld` | 35 | GPU | 32 | Implemented |
 
 ## Stylize
 
@@ -401,7 +401,7 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 | CC Scale Wipe | `ec.transition.ccscalewipe` | 3 |  | 32 | Implemented |
 | CC Twister | `ec.transition.cctwister` | 5 |  | 32 | Implemented |
 | CC WarpoMatic | `ec.transition.ccwarpomatic` | 8 |  | 32 | Implemented |
-| Card Wipe | `ec.transition.cardwipe` | 44 |  | 32 | Implemented |
+| Card Wipe | `ec.transition.cardwipe` | 44 | GPU | 32 | Implemented |
 | Gradient Wipe | `ec.transition.gradientwipe` | 5 | GPU | 32 | Implemented |
 | Iris Wipe | `ec.transition.iriswipe` | 7 | GPU | 32 | Implemented |
 | Linear Wipe | `ec.transition.linearwipe` | 3 | GPU | 32 | Implemented |

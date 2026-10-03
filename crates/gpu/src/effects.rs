@@ -135,6 +135,7 @@ fn apply(e: &mut Enc, id: &str, ctx: &EffectCtx, b: GBuf) -> Option<GBuf> {
         _ if crate::fx_extra::IDS.contains(&id) => crate::fx_extra::apply(e, id, ctx, b),
         _ if crate::fx_depth::IDS.contains(&id) => crate::fx_depth::apply(e, id, ctx, b),
         _ if crate::fx_lut::IDS.contains(&id) => crate::fx_lut::apply(e, id, ctx, b),
+        _ if crate::fx_sim::IDS.contains(&id) => crate::fx_sim::apply(e, id, ctx, b),
         _ if crate::fx_vr::IDS.contains(&id) => crate::fx_vr::apply(e, id, ctx, b),
         _ => pointwise(e, id, ctx, b),
     }

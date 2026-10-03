@@ -27,7 +27,7 @@ use effectcraft_project::ParamUi;
 use effectcraft_raster::{Image, Px};
 use rayon::prelude::*;
 
-use crate::sim::{Acc, SPS, Shape, Sprite, combine, splat, steps_at};
+use crate::sim::{Acc, Post, SPS, Shape, Sprite, SpritePlan, Tint, combine, splat, steps_at};
 use crate::util::{SimCache, hash1, params_key, point_in_poly, unpremul};
 use crate::{Buf, EffectCtx, EffectSpec, col, num, p, popup, slider};
 
@@ -897,12 +897,20 @@ fn particle_playground(ctx: &EffectCtx, mut b: Buf) -> Buf {
 
 // ---------------------------------------------------------------- CC Hair
 
-fn cc_hair(ctx: &EffectCtx, mut b: Buf) -> Buf {
+fn cc_hair(ctx: &EffectCtx, b: Buf) -> Buf {
+    let Some(mut plan) = hair_plan(ctx, &b) else { return b };
+    plan.resolve(&b.img);
+    plan.finish(b)
+}
+
+/// CC Hair's strands as line sprites (each coloured from its root, see [`Tint::Root`]);
+/// `None` = no hair (the layer passes through).
+pub(crate) fn hair_plan(ctx: &EffectCtx, b: &Buf) -> Option<SpritePlan> {
     let pr = ctx.params;
     let len = pr.f("length").max(0.0) as f32;
     let density = pr.f("density").max(0.0) as f32 / 100.0;
     if len <= 0.0 || density <= 0.0 {
-        return b;
+        return None;
     }
     let thick = pr.f("thickness").max(0.05) as f32;
     let weight = pr.f("weight") as f32;
@@ -924,19 +932,13 @@ fn cc_hair(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let (lw, lh) = (ctx.layer_size[0] as f32, ctx.layer_size[1] as f32);
     // Roots: a jittered grid over the layer, density per 1 000 px².
     let count = ((lw * lh / 1000.0) * density * 10.0).min(200_000.0) as u32;
-    let src = b.img.clone();
     let segs = 6u32;
-    let strands: Vec<Vec<Sprite>> = (0..count)
+    let strands: Vec<Vec<(Sprite, Tint)>> = (0..count)
         .into_par_iter()
-        .filter_map(|i| {
+        .map(|i| {
             let rx = hash1(i, 1, seed) * lw;
             let ry = hash1(i, 2, seed) * lh;
             let (bx, by) = b.to_px([rx as f64, ry as f64]);
-            let root = src.sample_bilinear(bx, by);
-            if root[3] < 0.5 {
-                return None;
-            }
-            let (rc, _) = unpremul(root);
             let mut l = len * (0.75 + 0.5 * hash1(i, 3, seed));
             // Lean: random, plus the map's local gradient (hairfall map).
             let mut lean = [(hash1(i, 4, seed) * 2.0 - 1.0) * 0.6, -1.0 + hash1(i, 5, seed) * 0.4];
@@ -957,7 +959,6 @@ fn cc_hair(ctx: &EffectCtx, mut b: Buf) -> Buf {
             let dir = [lean[0] / ll, lean[1] / ll];
             // Droop: heavier (or thinner with Constant Mass off) hair bends more.
             let droop = weight * if const_mass { 1.0 } else { 1.0 / thick.max(0.2) } * l;
-            let base = [rc[0] + (hc[0] - rc[0]) * (1.0 - inherit), rc[1] + (hc[1] - rc[1]) * (1.0 - inherit), rc[2] + (hc[2] - rc[2]) * (1.0 - inherit)];
             let pt = |s: f32| [rx + dir[0] * l * s, ry + dir[1] * l * s + droop * s * s];
             let mut out = Vec::with_capacity(segs as usize);
             for k in 0..segs {
@@ -974,24 +975,23 @@ fn cc_hair(ctx: &EffectCtx, mut b: Buf) -> Buf {
                 let spec = (1.0 - tl.abs()).powf(1.0 / rough) * spe;
                 let shade = (amb + dif * diff * light_i) * bright;
                 let tip = 1.0 - 0.6 * s1;
-                let c3 = [base[0] * shade + spec * light_i, base[1] * shade + spec * light_i, base[2] * shade + spec * light_i];
                 let (pa, pc) = (b.to_px([a[0] as f64, a[1] as f64]), b.to_px([c[0] as f64, c[1] as f64]));
-                out.push(Sprite {
+                let sp = Sprite {
                     x: pa.0 as f32,
                     y: pa.1 as f32,
                     r: thick * 0.5 * b.scale as f32 * tip,
-                    c: [c3[0], c3[1], c3[2], opacity],
+                    c: [0.0, 0.0, 0.0, opacity],
                     shape: Shape::Line { dx: (pc.0 - pa.0) as f32, dy: (pc.1 - pa.1) as f32 },
                     rot: 0.0,
-                });
+                };
+                // The root's colour mixed with the hair colour (no strand where it is clear).
+                out.push((sp, Tint::Root { x: bx, y: by, hair: [hc[0], hc[1], hc[2]], inherit, shade, spec: spec * light_i }));
             }
-            Some(out)
+            out
         })
         .collect();
-    let sprites: Vec<Sprite> = strands.into_iter().flatten().collect();
-    let fx = splat(b.img.width, b.img.height, &sprites, Acc::Over);
-    b.img = combine(&b.img, &fx, 0);
-    b
+    let (sprites, tints) = strands.into_iter().flatten().unzip();
+    Some(SpritePlan { sprites, tints, acc: Acc::Over, post: Post::Combine(0) })
 }
 
 pub fn specs() -> Vec<EffectSpec> {

@@ -316,6 +316,7 @@ impl GpuContext {
             include_str!("shaders/fx_extra.wgsl"),
             include_str!("shaders/fx_depth.wgsl"),
             include_str!("shaders/fx_lut.wgsl"),
+            include_str!("shaders/fx_sim.wgsl"),
             include_str!("shaders/fx_vr.wgsl"),
         ]
         .concat();
@@ -378,6 +379,7 @@ impl GpuContext {
             .chain(crate::fx_extra::KERNELS)
             .chain(crate::fx_depth::KERNELS)
             .chain(crate::fx_lut::KERNELS)
+            .chain(crate::fx_sim::KERNELS)
             .chain(crate::fx_vr::KERNELS)
             .map(|e| (e, &layout))
             .chain(EXT_ENTRIES.iter().map(|e| (e, &layout_ext)))
