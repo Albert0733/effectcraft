@@ -1,4 +1,5 @@
-//! Movie export: FilmCraft H.264 → MP4 (+ AAC) and ProRes → MOV (+ PCM), muxed by
+//! Movie export: FilmCraft H.264, HEVC (`effectcraft-hevcenc`) and AV1 (`effectcraft-av1enc`)
+//! → MP4 (+ AAC) and ProRes → MOV (+ PCM), muxed by
 //! FilmCraft's ISO BMFF / QuickTime writer.
 
 use std::io::Write;
@@ -18,14 +19,14 @@ fn mux_err(e: impl std::fmt::Display) -> ExportError {
     ExportError::Io(e.to_string())
 }
 
-struct Packet {
-    data: Vec<u8>,
-    key: bool,
+pub(crate) struct Packet {
+    pub(crate) data: Vec<u8>,
+    pub(crate) key: bool,
     /// pts − dts in the track timescale.
-    cto: i32,
+    pub(crate) cto: i32,
 }
 
-trait VideoEncoder {
+pub(crate) trait VideoEncoder {
     fn sample_entry(&self) -> SampleEntry;
     fn encode(&mut self, rgba: &[u8], index: u64) -> Result<Vec<Packet>>;
     fn flush(&mut self) -> Result<Vec<Packet>>;
@@ -257,9 +258,11 @@ pub(crate) fn movie(job: &Cx, comp: &Comp, w: u32, h: u32, st: &mut State) -> Re
     };
     let mut venc: Box<dyn VideoEncoder> = match fmt {
         OutputFormat::H264 => Box::new(H264::new(w, h, rate, job.output.bitrate_kbps)?),
+        OutputFormat::Hevc => Box::new(crate::hevc_av1::Hevc::new(w, h, rate, job.output)?),
+        OutputFormat::Av1 => Box::new(crate::hevc_av1::Av1::new(w, h, rate, job.output)?),
         _ => Box::new(ProRes::new(w, h, job.output.prores_profile, if channels == Channels::Alpha { Channels::Rgb } else { channels })),
     };
-    let brand = if fmt == OutputFormat::H264 { Brand::Mp4 } else { Brand::Mov };
+    let brand = if fmt == OutputFormat::ProRes { Brand::Mov } else { Brand::Mp4 };
     let batch = batch_size();
     let render = |k: u64| -> Vec<u8> { job.pixels(&job.frame(comp, k), comp, channels, w, h) };
 

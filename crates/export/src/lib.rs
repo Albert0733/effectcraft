@@ -7,7 +7,9 @@
 //! | PNG / JPEG / TIFF sequence | one file per frame | 8-bit | PNG, TIFF | — |
 //! | OpenEXR sequence | one file per frame | 32-bit float, linear light, premultiplied | yes | — |
 //! | Animated GIF | GIF89a | 256-colour palette per frame (NeuQuant) | 1-bit | — |
-//! | WebM | WebM (Matroska) | VP9 profile 0 (`effectcraft-vp9enc`: key + inter frames, a key frame every 2 s, loop filter), 8-bit 4:2:0 | VP9 alpha (BlockAdditional) | Opus (`effectcraft-opusenc`), 48 kHz stereo |
+//! | WebM | WebM (Matroska) | VP9 profile 0 (`effectcraft-vp9enc`: key + inter frames, a key frame every 2 s, loop filter), 8-bit 4:2:0; or AV1 (`effectcraft-av1enc`) | VP9 alpha (BlockAdditional) | Opus (`effectcraft-opusenc`: SILK / hybrid / CELT by bitrate and application), 48 kHz |
+//! | HEVC | MP4 (`hvc1`) | `effectcraft-hevcenc` Main / Main 10 4:2:0, I + P slices, bitrate or constant quality, level, key-frame interval | no | AAC-LC (FilmCraft) |
+//! | AV1 | MP4 (`av01`) | `effectcraft-av1enc` Main 8/10-bit 4:2:0, key + inter frames | no | AAC-LC (FilmCraft) |
 //! | WAV / AIFF | RIFF WAVE / AIFF | — | — | PCM 16/24-bit (WAV also 32-bit float), mono/stereo (audio only) |
 //!
 //! Every frame goes through [`pipeline`]: the Render Settings overrides (Effects, Solo Switches,
@@ -27,9 +29,11 @@
 //! output is a single pixel wide/high).
 
 mod encode;
+mod hevc_av1;
 mod out;
 mod pipeline;
 mod webm;
+mod webm_av1;
 
 use web_time::Instant;
 
@@ -173,7 +177,7 @@ fn export_with(cx: &Cx, progress: &mut dyn FnMut(&Progress) -> bool, t0: Instant
     st.advance(0)?;
     let (w, h) = output_size(comp, cx.settings, cx.output);
     let mut report = match cx.output.format {
-        OutputFormat::H264 | OutputFormat::ProRes => encode::movie(cx, comp, w, h, &mut st)?,
+        OutputFormat::H264 | OutputFormat::Hevc | OutputFormat::Av1 | OutputFormat::ProRes => encode::movie(cx, comp, w, h, &mut st)?,
         OutputFormat::Gif => gif_export(cx, comp, w, h, &mut st)?,
         OutputFormat::WebM => webm::webm(cx, comp, w, h, &mut st)?,
         OutputFormat::Wav => webm::audio_file(cx, comp, false, &mut st)?,
