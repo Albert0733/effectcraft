@@ -74,7 +74,7 @@ library groundwork for mask tracking and Warp Stabilizer.
 | Wall clock, five parallel agents | 42–50 h | **≈ 8–10 h at today's measured pace; ≈ 25 h by the audit's conservative figures** |
 
 What is left is concentrated in large systems: Roto Brush and Refine Edge, the 3D camera tracker,
-Advanced 3D (models, PBR, image-based lighting), the Warp Stabilizer and mask-tracking UI on top of
+the Warp Stabilizer and mask-tracking UI on top of
 the new tracking library, a JavaScript scripting object model, SVG/PSD import, WebM, a disk cache,
 the missing effect categories (3D Channel, Immersive Video, OCIO), native macOS menus, and
 wasm threads.
@@ -91,9 +91,9 @@ wasm threads.
 | Shapes | 68% | 3.9 | taper and wave strokes (pen tool for shape paths and vertex editing landed in M6.5) |
 | Compositions | 67% | 7.4 | marker dialog, flowchart, Essential Graphics |
 | Animation | 65% | 10.4 | puppet, Wiggler/Smoother/Motion Sketch (motion-path handles and the graph editor transform box landed in M5.8) |
-| Text | ≈ 85% | 1.5 | vertical type is basic (upright characters, no tate-chu-yoko), no OpenType feature panel, no text on 3D bevels; per-character styles, paragraph settings, on-canvas editing and the `sourceText` style API landed (M9.9–M9.10) |
+| Text | ≈ 86% | 1.3 | vertical type is basic (upright characters, no tate-chu-yoko), no OpenType feature panel, no extruded strokes (extruded, bevelled text landed in M7.6); per-character styles, paragraph settings, on-canvas editing and the `sourceText` style API landed (M9.9–M9.10) |
 | Web | 60% | 2.5 | threads, browser storage, audio |
-| 3D | 58% | 20.5 | Advanced 3D (models, PBR, image-based light), 3D camera tracker, multi-view layouts |
+| 3D | 72% | 12.0 | 3D camera tracker, multi-view layouts, Advanced 3D motion blur and blend modes, cameras/lights from models; Advanced 3D (glTF/OBJ models, primitives, extruded text and shapes, PBR, image-based light, shadow maps, GPU rasteriser) landed in M7.4–M7.6 |
 | Effects | 58% | 13.6 | Effect Controls widgets (angle dial, point crosshair, eyedropper, curves), GPU versions of more effects, 41 missing effects |
 | Interface | 55% | 10.4 | drag-to-dock and floating panels, preferences, native macOS menus (viewer rulers/snapping/channels/snapshots landed in M0.13) |
 | Project | 53% | 8.1 | 8/16/32-bit pipeline and colour management, auto-save, proxies, folder moves |
@@ -132,4 +132,4 @@ Mocha and Cineware are third-party and not counted.
 The engine underneath (keyframes, expressions, shape operators, text animators, Classic 3D, all
 38 blend modes, the render queue) is deep. Most of what is missing is interactive tooling in the
 viewer, settings that are stored but not yet rendered, about 69 menu entries that are still
-disabled, and the large systems: tracking, puppet, paint, roto, Advanced 3D and GPU rendering.
+disabled, and the large systems: tracking, puppet, paint and roto (Advanced 3D landed in M7.4–M7.6).

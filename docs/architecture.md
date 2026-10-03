@@ -22,6 +22,7 @@ cpal or muda. Everything in L0 to L4, the egui UI and the web app also build for
 | L2 | `project` | The document: items, compositions, layers, the property tree, render queue model, `.ecproj` serde |
 | L2 | `text` | Fonts, shaping, layout, per-glyph geometry, text animators and selectors |
 | L2 | `effects` | The effect registry (241 effects) and their CPU implementations |
+| L2 | `model` | 3D models for Advanced 3D: glTF 2.0 (`.gltf`/`.glb`) and OBJ/MTL import (meshes, PBR metallic-roughness materials and textures, node hierarchy, skins, animations), parametric primitives, extruded/bevelled outline meshes and polygon triangulation |
 | L2 | `track` | Motion tracking: feature/search region point tracking (pyramid normalized cross-correlation, Lucas–Kanade sub-pixel refinement), confidence, homography/affine/similarity solves |
 | L3 | `render` | Evaluation and compositing: sources, masks, effects, transforms, 3D, motion blur, mattes, blending, layer cache, audio mixdown |
 | L3 | `media` | Footage decoding (FilmCraft's pure-Rust codecs), image sequences, frame cache |
@@ -68,7 +69,35 @@ the **source** (solid, footage frame, text, shape contents, or a nested comp), a
 then **effects** in order, then **layer styles**, then the **transform** into comp space (with motion blur sub-samples
 when enabled), the **track matte**, and finally **blends** into the accumulator. Adjustment layers
 apply their effects to the accumulator. Runs of 3D layers are composited per pixel through the
-active camera, with lights, shadows and depth of field.
+active camera, with lights, shadows and depth of field (Classic 3D), or rasterised as meshes by
+the Advanced 3D renderer (below).
+
+**Advanced 3D** (Composition Settings ▸ 3D Renderer ▸ Advanced 3D, `comp.renderer`;
+`crates/render/src/three_d/adv`, `crates/model`). A run of 3D layers becomes one scene of
+world-space triangles: 3D model layers (glTF 2.0 / OBJ footage, mapped from +Y-up model units
+into the layer by Geometry Options ▸ Model Scale; skins and animation clips played along layer
+time), primitive layers (Layer ▸ New ▸ Cube/Sphere/Plane/Torus/Cone/Cylinder, parametric in
+Geometry Options), text and shape layers with Geometry Options ▸ Extrusion Depth (glyph and
+fill outlines flattened, triangulated with holes and extruded with Angular/Concave/Convex
+bevels, per character so per-character 3D carries over), and a textured card for every other
+3D layer. Shading is physically based in linear light (glTF metallic-roughness; Cook–Torrance
+GGX specular, Smith–Schlick geometry, Schlick Fresnel, Lambert diffuse, after Karis 2013):
+parallel, spot and point lights with After Effects' falloffs, ambient lights, image-based
+light from an Environment light whose Source (or the comp's Environment Layer, Layer ▸
+Environment Layer) is an equirectangular image (cosine irradiance map; roughness-indexed mip
+chain with the split-sum environment BRDF fit), and percentage-closer-filtered shadow maps
+(spot: perspective, parallel: orthographic over the scene, point: six cube faces). Cards keep
+Material Options (Accepts Lights/Shadows, Casts Shadows On/Only, Ambient, Diffuse, Specular);
+models and primitives add Base Color, Metallic, Roughness, Emissive. Rasterisation runs at 2×2
+supersampling with a reversed-Z depth buffer; opaque triangles resolve visibility first, the
+transparent ones are sorted back to front and blended. The software rasteriser
+(`adv::raster`) is the reference and the headless/CI path; `effectcraft-gpu` implements
+`Accelerator::raster_3d` with a wgpu render pipeline (`advanced3d.wgsl`) that repeats the
+shading step for step, and tests compare the two. Resolve, depth of field (a gather blur by
+each pixel's circle of confusion from the camera's Depth of Field settings) and the conversion
+back to the working encoding run on the CPU for both. Not yet: motion blur, track mattes and
+blend modes inside an Advanced 3D run, collapsed 3D precomps (drawn flattened), morph targets,
+extruded strokes.
 
 A **layer cache** keeps each layer's finished pixels (source, masks and effects) keyed by a hash of
 its evaluated inputs, excluding the transform. Static and transform-only layers render once;

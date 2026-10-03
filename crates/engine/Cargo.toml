@@ -21,6 +21,7 @@ effectcraft-text = { workspace = true }
 effectcraft-effects = { workspace = true }
 effectcraft-render = { workspace = true }
 effectcraft-track = { workspace = true }
+effectcraft-model = { workspace = true }
 effectcraft-lottie = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

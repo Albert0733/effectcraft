@@ -24,7 +24,11 @@ pub(crate) fn color_p(p: &Value, k: &str) -> Option<[f32; 3]> {
 }
 
 /// Insert a new layer above the selection (or at the top) and select it.
-pub(crate) fn insert_layer(proj: &mut Project, st: &mut crate::EditorState, cid: ItemId, layer: Layer) -> Result<LayerId> {
+pub(crate) fn insert_layer(proj: &mut Project, st: &mut crate::EditorState, cid: ItemId, mut layer: Layer) -> Result<LayerId> {
+    // Text and shape layers in Advanced 3D comps get Geometry Options (extrusion, bevels).
+    if proj.comp(cid).is_some_and(|c| c.renderer == effectcraft_project::Renderer::Advanced3D) {
+        super::model3d::add_geometry_options(&mut proj.next_id, &mut layer);
+    }
     let comp = proj.comp_mut(cid).ok_or(EngineError::NoComp)?;
     let at = st.selected_layers.first().and_then(|id| comp.layers.iter().position(|l| l.id == *id)).unwrap_or(0);
     let id = layer.id;
@@ -234,6 +238,9 @@ fn add_item(s: &mut Session, p: &Value) -> Result<Value> {
             // Settings ▸ Import ▸ Still Footage: length of the composition or a duration.
             let d = (s.prefs.import.still_footage == "seconds").then(|| Tick::from_seconds_f64(s.prefs.import.still_seconds));
             (LayerSource::Footage { item }, (f.width, f.height), d)
+        }
+        ItemKind::Footage(f) if f.kind == effectcraft_project::FootageKind::Model => {
+            return super::model3d::new_model(s, &serde_json::json!({"comp": cid.0, "item": item.0, "time": f_p(p, "time")}));
         }
         ItemKind::Footage(f) => (LayerSource::Footage { item }, (f.width, f.height), Some(f.duration)),
         ItemKind::Solid(so) => (LayerSource::Solid { item }, (so.width, so.height), None),

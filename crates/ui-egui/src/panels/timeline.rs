@@ -433,6 +433,7 @@ fn layer_icon(l: &Layer, project: &effectcraft_engine::project::Project) -> Icon
         LayerSource::Null => Icon::Null,
         LayerSource::Camera => Icon::Camera,
         LayerSource::Light { .. } => Icon::Light,
+        LayerSource::Model { .. } | LayerSource::Primitive { .. } => Icon::Cube,
         LayerSource::Comp { .. } => Icon::Comp,
         LayerSource::Solid { .. } => {
             if l.switches.adjustment {
