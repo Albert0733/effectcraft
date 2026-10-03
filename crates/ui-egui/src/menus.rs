@@ -716,7 +716,7 @@ fn file_dialog(app: &mut EffectcraftApp, id: &str, params: &Value) -> Option<Res
             let Some(f) = app.hooks.pick_files.as_ref() else { return Some(Err("no file dialog available (pass `paths`)".into())) };
             let paths = f(&[
                 "mp4", "mov", "m4v", "mkv", "webm", "png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "bmp", "exr", "wav", "aif", "aiff", "mp3", "flac",
-                "ogg", "opus", "svg",
+                "ogg", "opus", "svg", "gltf", "glb", "obj",
             ]);
             match (paths.is_empty(), key) {
                 (true, _) => None,

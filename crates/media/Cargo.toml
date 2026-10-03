@@ -14,12 +14,15 @@ effectcraft-time = { workspace = true }
 effectcraft-project = { workspace = true }
 effectcraft-raster = { workspace = true }
 effectcraft-render = { workspace = true }
+effectcraft-model = { workspace = true }
 filmcraft-codecs = { workspace = true }
 filmcraft-media = { workspace = true }
 filmcraft-frame = { workspace = true }
 filmcraft-color = { workspace = true }
 filmcraft-time = { workspace = true }
+exr = { workspace = true }
 image = { workspace = true, features = ["gif", "webp", "tiff", "bmp", "exr"] }
 rayon = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 log = { workspace = true }

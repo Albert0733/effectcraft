@@ -227,3 +227,26 @@ fn project_with_paint_and_puppet_round_trips() {
     let v: Value = serde_json::from_str(&j).unwrap();
     assert!(v.to_string().contains("ec.paint.paint") && v.to_string().contains("ec.distort.puppet"));
 }
+
+#[test]
+fn liquify_stroke_adds_the_effect_and_warps() {
+    let (mut s, id) = setup();
+    // Layer (5, 30) is comp (55, 50). Before: opaque blue.
+    assert!(px(&s, 0.0, 55, 50)[3] > 0.99);
+    let r = s.execute("liquify.stroke", json!({"layer": id, "tool": "warp", "points": [[-20, 30], [10, 30]], "size": 40, "pressure": 100})).unwrap();
+    assert_eq!(r["strokes"], 1);
+    let l = layer(&s, id);
+    let fx = l.effects().unwrap().groups().next().unwrap().clone();
+    assert!(matches!(&fx.kind, effectcraft_project::GroupKind::Effect { effect } if effect == "ec.distort.liquify"));
+    // The warp pulls transparent pixels from outside the layer over its left edge.
+    assert!(px(&s, 0.0, 55, 50)[3] < 0.9, "{:?}", px(&s, 0.0, 55, 50));
+    // A second stroke goes into the same effect.
+    let r2 = s.execute("liquify.stroke", json!({"layer": id, "tool": "reconstruction", "points": [[0, 30]], "size": 60, "pressure": 100})).unwrap();
+    assert_eq!(r2["strokes"], 2);
+    assert_eq!(r2["effect"], r["effect"]);
+    assert!(s.execute("liquify.stroke", json!({"layer": id, "tool": "smudge", "points": [[0, 0]]})).is_err());
+    s.execute("edit.undo", json!({})).unwrap();
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(layer(&s, id).effects().unwrap().groups().next().is_none());
+    assert!(px(&s, 0.0, 55, 50)[3] > 0.99);
+}

@@ -125,6 +125,7 @@ fn settings(s: &mut Session, p: &Value) -> Result<Value> {
         }
         let c = proj.comp_mut(cid).ok_or(EngineError::NoComp)?;
         apply_settings(c, p);
+        super::model3d::sync_geometry_options(proj, cid);
         Ok(())
     })?;
     let c = s.project.comp(cid).ok_or(EngineError::NoComp)?;

@@ -77,6 +77,39 @@ mod tests {
         assert!(img.data.iter().any(|p| p[3] > 0.5));
     }
 
+    /// File ▸ Import of glTF/GLB/OBJ models through the media layer, placed as model layers and
+    /// drawn by the Advanced 3D renderer.
+    #[test]
+    fn imported_models_render_in_advanced_3d() {
+        let fx = |n: &str| format!("{}/../model/tests/fixtures/{n}", env!("CARGO_MANIFEST_DIR"));
+        let mut s = super::session();
+        s.execute("comp.new", json!({"name": "M", "width": 160, "height": 120, "renderer": "advanced3d"})).unwrap();
+        let r = s.execute("file.import", json!({"paths": [fx("cube.obj"), fx("quad.glb"), fx("quad.gltf")]})).unwrap();
+        assert_eq!(r["errors"], json!([]), "{r}");
+        let items: Vec<u64> = r["items"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap()).collect();
+        assert_eq!(items.len(), 3);
+        let cube = s.execute("layer.addItem", json!({"item": items[0]})).unwrap()["layer"].as_u64().unwrap();
+        s.execute("prop.set", json!({"layer": cube, "path": "transform/rotationY", "value": 30})).unwrap();
+        s.execute("prop.set", json!({"layer": cube, "path": "transform/rotationX", "value": 20})).unwrap();
+        let cid = s.active_comp_id().unwrap();
+        let opts = effectcraft_engine::render::RenderOpts::default();
+        let img = s.render(cid, s.time(), opts);
+        let covered = img.data.iter().filter(|p| p[3] > 0.99).count();
+        assert!(covered > 1000, "the cube covers part of the frame: {covered}");
+        // Red faces (material Red) are visible.
+        assert!(img.data.iter().any(|p| p[3] > 0.99 && p[0] > 0.5 && p[1] < 0.2));
+        // The textured binary glTF quad.
+        for _ in 0..3 {
+            s.execute("edit.undo", json!({})).unwrap();
+        }
+        s.execute("layer.addItem", json!({"item": items[1]})).unwrap();
+        let img = s.render(cid, s.time(), opts);
+        assert!(img.data.iter().filter(|p| p[3] > 0.99).count() > 1000);
+        // Classic 3D doesn't draw models.
+        s.execute("comp.renderer", json!({"renderer": "classic3d"})).unwrap();
+        assert!(s.render(cid, s.time(), opts).data.iter().all(|p| p[3] == 0.0));
+    }
+
     /// The web app's path: outputs go to a sink (downloads), never to the file system.
     #[test]
     fn render_queue_exports_to_a_sink() {

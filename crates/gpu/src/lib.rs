@@ -9,6 +9,9 @@
 //! clamping and quantisation, and converts colour spaces. 3D runs, adjustment layers and
 //! wireframes run on the CPU between GPU steps (read back, draw, upload).
 //!
+//! Advanced 3D comps rasterise on a render pipeline (`advanced3d.wgsl`: depth buffer, PBR,
+//! image-based light, shadow maps), see [`Accelerator::raster_3d`].
+//!
 //! GPU effects ([`effectcraft_effects::GPU_EFFECTS`]) run as compute kernels with the CPU
 //! effect's exact steps (padding, box-blur radii, parameter conversions); chains of them are
 //! uploaded and read back once.
@@ -18,6 +21,7 @@
 //! skip readback entirely with [`Gpu::render_display`], which leaves an RGBA8 texture for
 //! egui-wgpu to draw.
 
+mod adv3d;
 mod context;
 mod effects;
 mod ops;
@@ -121,7 +125,13 @@ impl Accelerator for Gpu {
     fn effects(&self, chain: &[FxStep], buf: &Buf, levels: Option<f32>) -> Option<Buf> {
         effects::run_chain(&mut Enc::new(&self.ctx), chain, buf, levels)
     }
+
+    fn raster_3d(&self, scene: &effectcraft_render::three_d::adv::Scene) -> Option<effectcraft_render::three_d::adv::Target> {
+        adv3d::render(&self.ctx, scene)
+    }
 }
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_adv3d;

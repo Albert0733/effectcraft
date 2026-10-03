@@ -117,7 +117,18 @@ impl LightState {
 
 /// All lights switched on and active at the context time.
 pub fn lights_at(ctx: &EvalCtx) -> Vec<LightState> {
-    ctx.comp.layers.iter().filter(|l| l.is_light() && l.switches.video && l.is_active_at(ctx.time)).filter_map(|l| LightState::from_layer(ctx, l)).collect()
+    // Environment lights only light Advanced 3D comps (image-based light).
+    ctx.comp
+        .layers
+        .iter()
+        .filter(|l| {
+            l.is_light()
+                && l.switches.video
+                && l.is_active_at(ctx.time)
+                && l.source != (effectcraft_project::LayerSource::Light { kind: LightKind::Environment })
+        })
+        .filter_map(|l| LightState::from_layer(ctx, l))
+        .collect()
 }
 
 /// Material Options of a 3D layer.
