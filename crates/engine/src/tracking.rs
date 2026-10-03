@@ -155,7 +155,7 @@ pub struct TrackShared {
     pub frames: Mutex<Vec<FrameResult>>,
 }
 
-fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+pub(crate) fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
@@ -197,7 +197,7 @@ pub(crate) struct Work {
 
 /// The layer's source frame at comp time `t` at 100 % (layer pixels + offset = image pixels).
 /// Footage at its native size is used straight from the footage source (no copy).
-fn source_frame(
+pub(crate) fn source_frame(
     r: &Renderer,
     project: &Project,
     cid: ItemId,

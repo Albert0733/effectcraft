@@ -42,6 +42,7 @@ mod transition2;
 pub mod util;
 mod utility;
 mod utility2;
+pub mod warp_stab;
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -352,6 +353,7 @@ pub fn registry() -> &'static [EffectSpec] {
         v.extend(audio_fx::specs());
         v.extend(paint::specs());
         v.extend(puppet::specs());
+        v.extend(warp_stab::specs());
         v.sort_by(|a, b| a.category.cmp(b.category).then(a.name.cmp(b.name)));
         for s in v.iter_mut() {
             if GPU_EFFECTS.contains(&s.id) {
@@ -396,14 +398,20 @@ pub fn instantiate(spec: &EffectSpec, ids: &mut Ids, instance_name: &str, layer_
     g.kind = GroupKind::Effect { effect: spec.id.to_string() };
     for ps in &spec.params {
         let default = default_value(ps, layer_size);
-        let mut pr = Property::new(ids.alloc(), ps.id, ps.name, default).with_ui(ps.ui.clone());
+        // `group/sub/param` ids nest the parameter in twirl-down groups (Warp Stabilizer's
+        // Stabilization / Borders / Advanced).
+        let (path, leaf) = ps.id.rsplit_once('/').map(|(g, l)| (Some(g), l)).unwrap_or((None, ps.id));
+        let mut pr = Property::new(ids.alloc(), leaf, ps.name, default).with_ui(ps.ui.clone());
         if matches!(ps.ui, ParamUi::Point) {
             pr.spatial = true;
         }
         if matches!(ps.ui, ParamUi::Checkbox | ParamUi::Popup { .. } | ParamUi::Layer) {
             pr.hold_only = true;
         }
-        g.children.push(pr.into());
+        match path {
+            Some(path) => nested_group(&mut g, ids, path).children.push(pr.into()),
+            None => g.children.push(pr.into()),
+        }
         // Layer parameters carry a source choice (Source / Masks / Effects & Masks) unless the
         // effect declares its own (with its own default).
         let sid = layer_source_id(ps.id);
@@ -414,6 +422,27 @@ pub fn instantiate(spec: &EffectSpec, ids: &mut Ids, instance_name: &str, layer_
         }
     }
     g
+}
+
+/// Display names of nested parameter groups by match id.
+fn group_name(m: &str) -> &str {
+    warp_stab::GROUPS.iter().find(|(id, _)| *id == m).map(|(_, n)| *n).unwrap_or(m)
+}
+
+/// The nested group at `path` (`borders/autoScale`) under `g`, created on first use.
+fn nested_group<'a>(g: &'a mut PropGroup, ids: &mut Ids, path: &str) -> &'a mut PropGroup {
+    let (first, rest) = match path.split_once('/') {
+        Some((a, b)) => (a, Some(b)),
+        None => (path, None),
+    };
+    if g.sub(first).is_none() {
+        g.children.push(ids.group(first, group_name(first)).into());
+    }
+    let sub = g.sub_mut(first).expect("just added");
+    match rest {
+        Some(r) => nested_group(sub, ids, r),
+        None => sub,
+    }
 }
 
 /// Effects the GPU compositor (`effectcraft-gpu`) implements with the CPU effect's semantics
@@ -463,6 +492,8 @@ pub const TIME_DEPENDENT: &[&str] = &[
     "ec.time.ccforcemotionblur",
     "ec.time.ccwidetime",
     "ec.time.pixelmotionblur",
+    // Each frame gets its own stabilizing warp.
+    warp_stab::ID,
 ];
 
 /// See [`TIME_DEPENDENT`].

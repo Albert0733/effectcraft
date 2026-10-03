@@ -33,10 +33,11 @@ pub enum PanelKind {
     Flowchart,
     History,
     Markers,
+    MaskInterpolation,
 }
 
 impl PanelKind {
-    pub const ALL: [PanelKind; 23] = [
+    pub const ALL: [PanelKind; 24] = [
         PanelKind::Project,
         PanelKind::EffectControls,
         PanelKind::Composition,
@@ -60,6 +61,7 @@ impl PanelKind {
         PanelKind::Flowchart,
         PanelKind::History,
         PanelKind::Markers,
+        PanelKind::MaskInterpolation,
     ];
     pub fn title(self) -> &'static str {
         match self {
@@ -86,6 +88,7 @@ impl PanelKind {
             PanelKind::Flowchart => "Flowchart",
             PanelKind::History => "History",
             PanelKind::Markers => "Markers",
+            PanelKind::MaskInterpolation => "Mask Interpolation",
         }
     }
     pub fn id(self) -> String {

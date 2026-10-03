@@ -15,6 +15,7 @@ effectcraft-color = { workspace = true }
 effectcraft-keyframe = { workspace = true }
 effectcraft-project = { workspace = true }
 effectcraft-raster = { workspace = true }
+effectcraft-track = { workspace = true }
 rayon = { workspace = true }
 
 [dev-dependencies]

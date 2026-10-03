@@ -69,7 +69,7 @@ pub fn specs() -> Vec<CommandSpec> {
             has_track,
             analyze
         ),
-        cmd!("track.stop", "Stop Analysis", [], None, "{}", is_tracking, |s, _| Ok(json!({"stopped": s.stop_track()}))),
+        cmd!("track.stop", "Stop Analysis", [], None, "{}", is_tracking, |s, _| Ok(json!({"stopped": s.stop_track() | s.stop_mask_track() | s.stop_warp()}))),
         cmd!("track.apply", "Apply", [], None, "{layer?, tracker?, dimensions?: xy|x|y}", has_track, apply),
         cmd!("track.reset", "Reset", [], None, "{layer?, tracker?}", has_track, reset),
         cmd!("track.delete", "Delete Tracker", [], None, "{layer?, tracker?}", has_track, delete),
@@ -105,7 +105,7 @@ fn has_track(s: &Session) -> std::result::Result<(), String> {
 }
 
 fn is_tracking(s: &Session) -> std::result::Result<(), String> {
-    if s.is_tracking() { Ok(()) } else { Err("no track analysis is running".into()) }
+    if s.is_tracking() || s.is_mask_tracking() || s.is_warp_analyzing() { Ok(()) } else { Err("no track analysis is running".into()) }
 }
 
 // ---------- addressing ----------
@@ -432,31 +432,10 @@ fn analyze(s: &mut Session, p: &V) -> Result<V> {
     let comp = s.project.comp(cid).ok_or(EngineError::NoComp)?;
     let layer = comp.layer(lid).ok_or(EngineError::NoComp)?;
     let (tg, settings) = layer.tracker(uid).ok_or_else(|| bad("track.analyze", "no tracker"))?;
-    let fd = comp.frame_duration();
     let now = comp.frame_rate.snap_nearest(if s.state.active_comp == Some(cid) { s.time() } else { Tick::ZERO });
     let start = f_p(p, "start").map(|v| comp.frame_rate.snap_nearest(Tick::from_seconds_f64(v)));
     let end = f_p(p, "end").map(|v| comp.frame_rate.snap_nearest(Tick::from_seconds_f64(v)));
-    let lo = layer.in_point.max(Tick::ZERO);
-    let hi = layer.out_point.min(comp.duration) - fd;
-    let mut times = vec![];
-    match dir {
-        Direction::Forward | Direction::FrameForward => {
-            let mut t = start.unwrap_or(now).clamp(lo, hi);
-            let stop = if dir == Direction::FrameForward { t + fd } else { end.unwrap_or(hi).min(hi) };
-            while t <= stop && t <= hi {
-                times.push(t);
-                t += fd;
-            }
-        }
-        Direction::Backward | Direction::FrameBackward => {
-            let mut t = end.unwrap_or(now).clamp(lo, hi);
-            let stop = if dir == Direction::FrameBackward { t - fd } else { start.unwrap_or(lo).max(lo) };
-            while t >= stop && t >= lo {
-                times.push(t);
-                t -= fd;
-            }
-        }
-    }
+    let times = analysis_times(comp, layer, dir, now, start, end);
     if times.len() < 2 {
         return Err(bad("track.analyze", "nothing to analyze in that direction (at the layer's end)"));
     }
@@ -487,6 +466,34 @@ fn analyze(s: &mut Session, p: &V) -> Result<V> {
         "running": s.is_tracking(),
         "progress": prog,
     }))
+}
+
+/// Comp times to analyse from the CTI (`now`) in `dir`, bounded by `start` / `end` and the
+/// layer's In/Out points; the first is the start frame.
+pub(crate) fn analysis_times(comp: &effectcraft_project::Comp, layer: &Layer, dir: Direction, now: Tick, start: Option<Tick>, end: Option<Tick>) -> Vec<Tick> {
+    let fd = comp.frame_duration();
+    let lo = layer.in_point.max(Tick::ZERO);
+    let hi = layer.out_point.min(comp.duration) - fd;
+    let mut times = vec![];
+    match dir {
+        Direction::Forward | Direction::FrameForward => {
+            let mut t = start.unwrap_or(now).clamp(lo, hi);
+            let stop = if dir == Direction::FrameForward { t + fd } else { end.unwrap_or(hi).min(hi) };
+            while t <= stop && t <= hi {
+                times.push(t);
+                t += fd;
+            }
+        }
+        Direction::Backward | Direction::FrameBackward => {
+            let mut t = end.unwrap_or(now).clamp(lo, hi);
+            let stop = if dir == Direction::FrameBackward { t - fd } else { start.unwrap_or(lo).max(lo) };
+            while t >= stop && t >= lo {
+                times.push(t);
+                t -= fd;
+            }
+        }
+    }
+    times
 }
 
 fn apply(s: &mut Session, p: &V) -> Result<V> {
@@ -560,9 +567,10 @@ fn delete(s: &mut Session, p: &V) -> Result<V> {
 
 fn status(s: &mut Session, p: &V) -> Result<V> {
     s.poll_track();
+    s.poll_mask_track();
     let progress = s.track_progress();
     let cur = current(s, p, "track.status").ok();
-    let mut out = json!({"running": s.is_tracking(), "progress": progress});
+    let mut out = json!({"running": s.is_tracking() || s.is_mask_tracking(), "progress": progress, "mask": s.mask_track_progress(), "maskMethod": s.state.mask_track_method.id()});
     if let Some((cid, lid, uid)) = cur
         && let Some(layer) = s.project.comp(cid).and_then(|c| c.layer(lid))
         && let Some((g, st)) = layer.tracker(uid)
