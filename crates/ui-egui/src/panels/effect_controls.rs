@@ -510,6 +510,33 @@ fn group_rows(
     }
 }
 
+/// Warp Stabilizer's Analyze / Cancel buttons and analysis status.
+fn warp_editor(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: &egui::Painter, layer: &Layer, g: &PropGroup, r: Rect, actions: &mut Actions) {
+    let t = app.tokens;
+    let running = app.session.warp_target().is_some_and(|(_, l, u)| l == layer.id && u == g.uid) && app.session.is_warp_analyzing();
+    let busy = app.session.is_warp_analyzing();
+    let b1 = Rect::from_min_size(pos2(r.min.x + 24.0, r.min.y + 4.0), vec2(84.0, 22.0));
+    let b2 = Rect::from_min_size(pos2(b1.max.x + 8.0, b1.min.y), vec2(84.0, 22.0));
+    if widgets::text_button(ui, b1, "Analyze", false, &t, egui::Id::new(("warp-analyze", g.uid))).clicked() && !busy {
+        actions.push(("warp.analyze".into(), json!({"layer": layer.id.0, "effect": g.uid})));
+    }
+    app.auto.add(&format!("effectControls.warp.{}.analyze", g.uid), b1, "Analyze");
+    if running {
+        if widgets::text_button(ui, b2, "Cancel", false, &t, egui::Id::new(("warp-cancel", g.uid))).clicked() {
+            actions.push(("warp.cancel".into(), json!({})));
+        }
+        app.auto.add(&format!("effectControls.warp.{}.cancel", g.uid), b2, "Cancel");
+    }
+    let analysed = matches!(g.get(effectcraft_engine::effects::warp_stab::ANALYSIS).map(|p| &p.value), Some(Value::Str(s)) if !s.is_empty());
+    let status = match app.session.warp_progress() {
+        Some(pr) if running => pr.banner(),
+        _ if analysed => "Analysis complete".to_string(),
+        _ if app.session.warp_pending.iter().any(|(_, l, u)| *l == layer.id && *u == g.uid) => "Waiting to analyze".to_string(),
+        _ => "Not analyzed: click Analyze".to_string(),
+    };
+    p.text(pos2(r.min.x + 24.0, r.min.y + 38.0), Align2::LEFT_CENTER, status, Tokens::ui(11.5), t.text_dim);
+}
+
 // ---------------------------------------------------------------------------------------------
 // Curves / Levels editors
 
@@ -517,6 +544,7 @@ fn group_rows(
 fn editor_height(effect: &str, width: f32) -> f32 {
     match effect {
         "ec.color.curves" => 34.0 + curves_size(width) + 26.0,
+        effectcraft_engine::effects::warp_stab::ID => 50.0,
         "ec.color.levels" | "ec.color.levelsic" => 34.0 + 80.0 + 58.0,
         "ec.color.autolevels" | "ec.color.autocontrast" | "ec.color.autocolor" => 24.0 + 80.0 + 12.0,
         _ => 0.0,
@@ -891,6 +919,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 if er.max.y >= body.min.y && er.min.y <= body.max.y {
                     match effect.as_str() {
                         "ec.color.curves" => curves_editor(app, ui, &bp, &layer, g, &ectx, er, &mut actions),
+                        effectcraft_engine::effects::warp_stab::ID => warp_editor(app, ui, &bp, &layer, g, er, &mut actions),
                         "ec.color.levels" | "ec.color.levelsic" => levels_editor(app, ui, &bp, &layer, g, effect, &ectx, er, &mut actions),
                         _ => histogram_only(app, ui, &bp, g, er),
                     }

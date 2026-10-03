@@ -56,6 +56,7 @@ const SAME_LAYER: &[(&str, &str)] = &[
     ("effects", "project"),
     ("effects", "text"),
     ("effects", "path"),
+    ("effects", "track"),
     ("media", "render"),
     ("expr", "render"),
     ("export", "render"),

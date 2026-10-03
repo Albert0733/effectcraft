@@ -36,7 +36,7 @@ cpal or muda. Everything in L0 to L4, the egui UI and the web app also build for
 | L5 | `automation` | The MCP server, headless or bridged to the running app |
 | L6 | apps `effectcraft`, `effectcraft-cli`, `effectcraft-web` | Desktop app; command-line tool (render, exec, get/set, MCP); the browser app (wasm32, [web.md](web.md)) |
 
-Allowed same-layer edges: `path → keyframe, raster`, `text → path`, `effects → project, text, path`,
+Allowed same-layer edges: `path → keyframe, raster`, `text → path`, `effects → project, text, path, track`,
 `media / expr / export / gpu → render`, `export → media`, `lottie → format`, `host → engine`.
 
 ## 2. Time
@@ -186,6 +186,24 @@ keyframed per analysed frame. `track.analyze` renders the layer's source frames
 queue; blocking with `wait`), and `effectcraft-track` matches each point in parallel. One undo step
 covers an analysis. `track.apply` keys the target's Position/Rotation/Scale, the tracked layer's
 Anchor Point and Position (Stabilize), or a Corner Pin effect (Parallel / Perspective).
+
+**Mask tracking** (`track.mask`, `engine::mask_track`) runs the same kind of background job over
+the layer's source frames: `effectcraft-track`'s mask tracker detects features inside the mask,
+tracks them with pyramidal Lucas–Kanade and fits the chosen model (position … perspective) with
+RANSAC; the motion moves the Mask Path's vertices and tangents and is keyed per frame. **Mask
+Interpolation** (`mask.interpolate`) uses `effectcraft-path`'s smart interpolation (arc-length
+vertex insertion, shape-context matching, rigid in-betweens) to key in-between shapes.
+
+**Warp Stabilizer** (`effects::warp_stab`, `engine::warp`): `warp.analyze` renders the layer's
+input to the effect (`Renderer::layer_input`: source, masks and the effects above it) for every
+frame on a background thread and stores `effectcraft-track`'s `WarpAnalysis` (per-frame
+translation / similarity / homography fits) as JSON in the effect's hidden Analysis parameter,
+with a key of the layer's source, In/Out, start, stretch and Time Remap. `Session::edit` clears
+analyses whose key no longer matches and queues them; the desktop app re-analyses them in the
+background. Rendering derives the stabilization plan (smoothed camera path or No Motion, framing,
+auto-scale; cached per analysis and settings) and warps each frame; Synthesize Edges fills the
+borders from neighbouring frames read with `EffectHost::self_at`. The effect lives in the
+effects crate, hence the `effects → track` edge.
 
 ## 5. Expressions
 

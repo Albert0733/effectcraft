@@ -562,6 +562,26 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         track_hits = super::tracker::draw_overlay(app, &painter, &map, &m, layer, tu, time);
     }
 
+    // Warp Stabilizer banner over the layer being analysed ("Analyzing in background (step 1
+    // of 2)…" / "Stabilizing…").
+    if let Some((wc, wl, _)) = app.session.warp_target()
+        && wc == cid
+        && let Some(pr) = app.session.warp_progress()
+        && let Some(layer) = comp.layer(wl)
+        && layer.is_active_at(time)
+    {
+        let (m, _) = l2c(&ectx, layer);
+        let (w, h) = effectcraft_engine::render::source_size(&app.session.project, layer);
+        let c = m.apply(effectcraft_engine::geom::vec2(w as f64 / 2.0, h as f64 / 2.0));
+        let at = map.to_screen([c.x, c.y]);
+        let text = pr.banner();
+        let galley = painter.layout_no_wrap(text.clone(), Tokens::medium(13.0), Color32::WHITE);
+        let r = Rect::from_center_size(at, galley.size() + vec2(28.0, 14.0)).intersect(map.area);
+        painter.rect_filled(r, 3.0, Color32::from_rgba_unmultiplied(0x1d, 0x4f, 0x9c, 0xe0));
+        painter.galley(pos2(r.center().x - galley.size().x / 2.0, r.center().y - galley.size().y / 2.0), galley, Color32::WHITE);
+        app.auto.add("viewer.warpBanner", r, &text);
+    }
+
     // Free transform box of a path (double-click a path with the Selection tool).
     let ft = ov::draw_free_transform(app, &ctx, &painter, &map, &paths);
 

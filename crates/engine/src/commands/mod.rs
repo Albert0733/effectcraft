@@ -20,6 +20,7 @@ mod link;
 mod lottie;
 mod markers;
 mod mask;
+pub mod mask_interp;
 pub(crate) mod model3d;
 pub mod paint;
 mod paths;
@@ -38,6 +39,7 @@ mod time;
 mod track;
 mod view;
 pub mod viewer_cmds;
+mod warp_cmds;
 #[cfg(test)]
 pub(crate) use mask::split_segment as split_segment_for_tests;
 
@@ -127,6 +129,8 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(comp_more::specs());
         v.extend(frontend::specs());
         v.extend(track::specs());
+        v.extend(mask_interp::specs());
+        v.extend(warp_cmds::specs());
         v.extend(paint::specs());
         v.extend(puppet::specs());
         v.extend(settings::specs());
