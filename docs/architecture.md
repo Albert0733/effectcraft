@@ -152,7 +152,10 @@ strokes rasterize as brush-tip dabs and composite in order, and the layer cache 
 strokes are visible at the frame. Puppet (`effects::puppet`) holds meshes and pins: the mesh is
 traced from the input alpha, expanded, and triangulated (Delaunay + constraint recovery, cached
 by content); pins drive an as-rigid-as-possible solve (Igarashi et al. 2005) each frame and the
-input is texture-mapped through the deformed triangles. The renderer flattens nested effect
+input is texture-mapped through the deformed triangles. Pins are selected like properties
+(`puppet.selectPins`, marquee, Select All by kind) and rigged with expressions: Points Follow
+Nulls / Nulls Follow Points take pins as well as paths, and `puppet.follow` gives follower pins a
+Position expression that trails the leader by a delay. The renderer flattens nested effect
 groups into `Params` keys (`effects::flatten_params`). Commands: `paint.*`, `puppet.*`.
 
 Half, Third and Quarter resolution render proportionally fewer pixels end to end.
@@ -375,7 +378,9 @@ text, disables the expression and shows a warning, like After Effects. `sampleIm
 sampled layer through the evaluating renderer's footage source (`EvalCtx::footage`), cached per
 thread and frame; `footage(name)` reads data footage (JSON, CSV, TSV imported with File ▸ Import,
 text kept in the project) through `sourceData`, `sourceText` and `dataValue`. `expr.errors`
-lists failing expressions for the viewer's error bar.
+lists failing expressions for the viewer's error bar. Each thread keeps one boa context; boa
+leaves values on its stack whenever an exception unwinds through call frames (every pending
+host request does), so a run that hits the stack limit gets a fresh context and is retried once.
 
 ## 5a. Scripting
 

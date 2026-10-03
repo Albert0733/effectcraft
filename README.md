@@ -101,6 +101,13 @@ Paragraph, Align, Info, Preview, Audio and the Render Queue, docked the way you 
   text animators with range selectors.
 - **Expressions:** JavaScript with the After Effects object model (`wiggle`, `loopOut`,
   `thisComp.layer("…")`, vector maths on arrays), an inline editor and the pick-whip.
+- **Timeline like you know it:** twirl layers open to Transform, masks, effects and the rest; drag
+  rows to reorder layers; rename with Enter or a double-click; the property shortcuts (A, P, S,
+  R, T, M, F, E, L, U and their double presses AA, PP, SS, RR, TT, MM, FF, EE, LL, UU), Shift to
+  add properties, Alt+Shift+A/P/S/R/T to key the current time, Ctrl+` to twirl selected layers.
+- **Puppet tools:** Position, Advanced, Bend, Starch and Overlap pins on a mesh built from the
+  layer, real-time pin recording, rotate/scale handles, pins driven by (or carrying) nulls for
+  rigging, and follow-through for hair and cloth.
 
 <p align="center">
   <img src="docs/images/effectcraft-graph-editor.png" alt="The Graph Editor showing an eased value curve for a text animator's Range Start, with the graph editor's button bar for hold, linear, auto Bezier and Easy Ease" width="100%">

@@ -287,6 +287,24 @@ A dialog's `show()` waits for the user: the `script.run` / `file.runScript` repl
 that closes the dialog). File ▸ Scripts: `file.scripts.list`, `file.runScript {"name": …}`,
 `file.installScript` / `file.installScriptUIPanel {"path": …}`, `window.scriptPanel {"name": …}`.
 
+### Timeline: layer order, properties and shortcuts
+
+* `layer.arrange {"layers": [...], "above": "Layer Name"}` moves layers to just above another
+  one (what dragging Timeline rows does: the selected layers move together, one undo step);
+  `to: front|forward|backward|back` and `index` still work.
+* The reveal shortcuts are UI commands (`ui.menu.invoke` or the keys themselves): A Anchor Point,
+  P Position, S Scale, R Rotation, T Opacity, M Mask Path, F Mask Feather, E Effects, L Audio
+  Levels, U keyframed properties; pressed twice quickly AA Material Options, PP paint / Roto
+  Brush / Puppet, SS selected properties, RR Time Remap, TT Mask Opacity, MM all mask
+  properties, FF missing effects, EE Expressions, LL Waveform, UU everything changed from its
+  default. Shift+key adds or removes a set; the same key again hides it; Ctrl/Cmd+` twirls the
+  selected layers open or closed. With no layer selected they apply to every layer.
+* `keys.toggleTransform {"layers"?: [...], "prop": "position"}` (Alt+Shift+A/P/S/R/T) adds or
+  removes a keyframe at the current time on that Transform property of each layer, in one undo
+  step (separated X/Y/Z Position; Orientation and X/Y/Z Rotation on 3D layers).
+* Rename a layer with Enter (or double-click a name): the whole name is selected, Enter or a
+  click elsewhere commits, Escape cancels; `layer.rename {layer, name}` does it directly.
+
 ### History, puppet recording, plug-ins
 
 * `edit.history.list` lists every undo state as a tree (undoing then editing keeps the undone
