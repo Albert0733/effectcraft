@@ -278,6 +278,12 @@ pub trait Accelerator: Send + Sync {
     fn raster_3d(&self, _scene: &three_d::adv::Scene) -> Option<three_d::adv::Target> {
         None
     }
+    /// Render a whole prepared Advanced 3D run (every motion-blur sub-sample rasterised and
+    /// resolved, averaged, depth of field, encoding) with [`three_d::adv::render_prepared`]'s
+    /// semantics. `None` = not handled (the CPU path runs, using [`Self::raster_3d`]).
+    fn render_3d(&self, _run: &three_d::adv::Prepared) -> Option<three_d::adv::Rendered> {
+        None
+    }
     /// A particle simulation backend (GPU particles) for the stepped particle effects, with
     /// the CPU simulation's semantics. `None` = they simulate on the CPU.
     fn particles(&self) -> Option<&dyn effectcraft_effects::psim::ParticleSim> {
@@ -588,22 +594,8 @@ impl<'a> Renderer<'a> {
 
     /// Draw a Wireframe-quality layer: its bounds as a one-pixel outline.
     fn draw_wireframe(&self, ctx: &EvalCtx, layer: &Layer, canvas: &mut Image) {
-        let Some(b) = content_bounds(ctx, layer) else { return };
-        let s = self.opts.scale;
-        let (l2c, _) = ctx.layer_to_comp(layer);
-        let m = Mat3::scale(vec2(s, s)) * self.outer.map_or(l2c, |o| o * l2c);
-        let c = [(b[0], b[1]), (b[2], b[1]), (b[2], b[3]), (b[0], b[3])].map(|(x, y)| m.apply(vec2(x, y)));
-        let (w, h) = (canvas.width as i64, canvas.height as i64);
-        for i in 0..4 {
-            let (p, q) = (c[i], c[(i + 1) % 4]);
-            let n = ((q.x - p.x).abs().max((q.y - p.y).abs()) * 2.0).ceil().clamp(1.0, 1.0e5) as usize;
-            for j in 0..=n {
-                let t = j as f64 / n as f64;
-                let (x, y) = ((p.x + (q.x - p.x) * t).floor() as i64, (p.y + (q.y - p.y) * t).floor() as i64);
-                if x >= 0 && y >= 0 && x < w && y < h {
-                    canvas.set(x as u32, y as u32, [1.0, 1.0, 1.0, 1.0]);
-                }
-            }
+        for (x, y) in self.wireframe_pixels(ctx, layer, (canvas.width, canvas.height)) {
+            canvas.set(x, y, [1.0, 1.0, 1.0, 1.0]);
         }
     }
 
@@ -1565,6 +1557,39 @@ impl<'a> Renderer<'a> {
     /// [`Self::draw_3d_run`] (adjustment or wireframe layers in the run, Advanced 3D).
     pub fn prepare_3d_run(&self, ctx: &EvalCtx<'a>, run: &[&Layer], out: (u32, u32)) -> Option<three_d::Run3d> {
         three_d::compose::gpu_run(self, ctx, run, out)
+    }
+
+    /// A run of consecutive 3D layers of an Advanced 3D comp prepared for an accelerator's
+    /// compositor ([`three_d::adv::Prepared`]): rendered as one scene and composited (Normal,
+    /// premultiplied over) onto the canvas. `None` = not an Advanced 3D comp, or a layer needs the
+    /// 2D compositing path (blend mode, track matte, Preserve Transparency): draw it with
+    /// [`Self::draw_3d_run`].
+    pub fn prepare_adv_run<'p>(&'p self, ctx: &'p EvalCtx<'a>, run: &'p [&'p Layer], out: (u32, u32)) -> Option<three_d::adv::Prepared<'p, 'a>> {
+        three_d::adv::prepare_run(self, ctx, run, out)
+    }
+
+    /// The pixels a Wireframe-quality layer sets (white, opaque) on a `size` canvas: its
+    /// bounds' outline, one pixel wide. Empty when the layer has no bounds.
+    pub fn wireframe_pixels(&self, ctx: &EvalCtx, layer: &Layer, size: (u32, u32)) -> Vec<(u32, u32)> {
+        let Some(b) = content_bounds(ctx, layer) else { return vec![] };
+        let s = self.opts.scale;
+        let (l2c, _) = ctx.layer_to_comp(layer);
+        let m = Mat3::scale(vec2(s, s)) * self.outer.map_or(l2c, |o| o * l2c);
+        let c = [(b[0], b[1]), (b[2], b[1]), (b[2], b[3]), (b[0], b[3])].map(|(x, y)| m.apply(vec2(x, y)));
+        let (w, h) = (size.0 as i64, size.1 as i64);
+        let mut out = vec![];
+        for i in 0..4 {
+            let (p, q) = (c[i], c[(i + 1) % 4]);
+            let n = ((q.x - p.x).abs().max((q.y - p.y).abs()) * 2.0).ceil().clamp(1.0, 1.0e5) as usize;
+            for j in 0..=n {
+                let t = j as f64 / n as f64;
+                let (x, y) = ((p.x + (q.x - p.x) * t).floor() as i64, (p.y + (q.y - p.y) * t).floor() as i64);
+                if x >= 0 && y >= 0 && x < w && y < h {
+                    out.push((x as u32, y as u32));
+                }
+            }
+        }
+        out
     }
 
     /// Run the layer's effect stack on `target` (an accelerator's resident image): GPU-capable

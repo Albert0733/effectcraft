@@ -99,32 +99,81 @@ fn mb_samples(r: &Renderer, ctx: &EvalCtx, layers: &[&Layer]) -> usize {
     if r.opts.draft { 4 } else { ctx.comp.motion_blur_samples.clamp(2, 64) as usize }
 }
 
-/// Render `layers` as one Advanced 3D scene: premultiplied pixels in the canvas's encoding and
-/// the camera depth of each pixel (∞ where nothing was drawn). With motion blur the scene is
-/// rendered at sub-samples spread over the comp's shutter (angle and phase) and averaged; the
-/// depth is the nearest over the samples.
-pub(crate) fn render_layers(r: &Renderer, ctx: &EvalCtx, layers: &[&Layer], out: (u32, u32)) -> Option<(Image, Vec<f32>)> {
-    let n = mb_samples(r, ctx, layers);
-    let (mut img, depth, linear) = if n <= 1 {
-        let s = scene::build(r, ctx, layers, out);
+/// An Advanced 3D run prepared for an accelerator ([`crate::Accelerator::render_3d`], the GPU
+/// compositor's walk): the motion-blur sub-sample scenes (built on demand, one at a time), the
+/// camera's depth of field and the output encoding. The accelerator rasterises every
+/// sub-sample, resolves the supersampling, averages the sub-samples (nearest depth), applies
+/// the depth of field and encodes, as [`render_prepared`] does on the CPU.
+pub struct Prepared<'p, 'a> {
+    r: &'p Renderer<'a>,
+    ctx: &'p EvalCtx<'a>,
+    layers: &'p [&'p Layer],
+    /// Output size (pixels).
+    pub out: (u32, u32),
+    /// Motion-blur sub-samples (1 = none).
+    pub samples: usize,
+    /// Depth of field (the camera at the frame time; `None` = off, Draft 3D or draft renders).
+    pub dof: Option<super::camera::Dof>,
+    /// Render scale (circles of confusion are in comp pixels).
+    pub scale: f64,
+    /// The scene is in the working encoding already (linear projects): no sRGB encode.
+    pub linear: bool,
+}
+
+impl<'p, 'a> Prepared<'p, 'a> {
+    pub fn new(r: &'p Renderer<'a>, ctx: &'p EvalCtx<'a>, layers: &'p [&'p Layer], out: (u32, u32)) -> Self {
+        let cam = camera_for(r, ctx);
+        Prepared {
+            r,
+            ctx,
+            layers,
+            out,
+            samples: mb_samples(r, ctx, layers),
+            dof: cam.dof.filter(|_| !ctx.comp.draft_3d && !r.opts.draft),
+            scale: r.opts.scale,
+            linear: r.pipe.linear || r.pipe.linear_blend,
+        }
+    }
+
+    /// The scene of sub-sample `i` (`0..samples`), spread over the comp's shutter (angle and
+    /// phase).
+    pub fn scene(&self, i: usize) -> Scene {
+        let n = self.samples;
+        if n <= 1 {
+            return scene::build(self.r, self.ctx, self.layers, self.out);
+        }
+        let ctx = self.ctx;
+        let fd = ctx.comp.frame_duration().seconds();
+        let (angle, phase) = (ctx.comp.shutter_angle / 360.0, ctx.comp.shutter_phase / 360.0);
+        let f = phase + angle * i as f64 / (n - 1) as f64;
+        let sub = ctx.at(ctx.time + effectcraft_time::Tick::from_seconds_f64(f * fd));
+        scene::build_at(self.r, ctx, Some(&sub), self.layers, self.out)
+    }
+}
+
+/// What an accelerator returns for a [`Prepared`] run: `None` when nothing was drawn, else the
+/// premultiplied image in the canvas's encoding and the camera depth of each pixel (∞ where
+/// nothing was drawn; the nearest over the motion-blur sub-samples).
+pub type Rendered = Option<(Image, Vec<f32>)>;
+
+/// Render a prepared run on the CPU compositor (each scene rasterised by the accelerator's
+/// [`crate::Accelerator::raster_3d`] when there is one): the reference for
+/// [`crate::Accelerator::render_3d`].
+pub fn render_prepared(p: &Prepared) -> Rendered {
+    let (r, n, out) = (p.r, p.samples, p.out);
+    let (mut img, depth) = if n <= 1 {
+        let s = p.scene(0);
         if s.indices.is_empty() {
             return None;
         }
-        let (img, depth) = raster_resolved(r, &s);
-        (img, depth, s.linear_io)
+        raster_resolved(r, &s)
     } else {
-        let fd = ctx.comp.frame_duration().seconds();
-        let (angle, phase) = (ctx.comp.shutter_angle / 360.0, ctx.comp.shutter_phase / 360.0);
         let mut acc = Image::new(out.0, out.1);
         let mut depth = vec![f32::INFINITY; (out.0 * out.1) as usize];
-        let mut linear = false;
         let mut any = false;
         let k = 1.0 / n as f32;
         for i in 0..n {
-            let f = phase + angle * i as f64 / (n - 1) as f64;
-            let sub = ctx.at(ctx.time + effectcraft_time::Tick::from_seconds_f64(f * fd));
-            let s = scene::build_at(r, ctx, Some(&sub), layers, out);
-            linear = s.linear_io;
+            let s = p.scene(i);
             if s.indices.is_empty() {
                 continue;
             }
@@ -140,16 +189,41 @@ pub(crate) fn render_layers(r: &Renderer, ctx: &EvalCtx, layers: &[&Layer], out:
         if !any {
             return None;
         }
-        (acc, depth, linear)
+        (acc, depth)
     };
-    let cam = camera_for(r, ctx);
-    if let Some(dof) = cam.dof.filter(|_| !ctx.comp.draft_3d && !r.opts.draft) {
-        img = depth_of_field(&img, &depth, &dof, r.opts.scale);
+    if let Some(dof) = &p.dof {
+        img = depth_of_field(&img, &depth, dof, p.scale);
     }
-    if !linear {
+    if !p.linear {
         encode(&mut img);
     }
     Some((img, depth))
+}
+
+/// Render `layers` as one Advanced 3D scene: premultiplied pixels in the canvas's encoding and
+/// the camera depth of each pixel (∞ where nothing was drawn). With motion blur the scene is
+/// rendered at sub-samples spread over the comp's shutter (angle and phase) and averaged; the
+/// depth is the nearest over the samples. The whole run goes to the accelerator when it
+/// implements [`crate::Accelerator::render_3d`].
+pub(crate) fn render_layers(r: &Renderer, ctx: &EvalCtx, layers: &[&Layer], out: (u32, u32)) -> Option<(Image, Vec<f32>)> {
+    let p = Prepared::new(r, ctx, layers, out);
+    if let Some(a) = r.active_accel()
+        && let Some(res) = a.render_3d(&p)
+    {
+        return res;
+    }
+    render_prepared(&p)
+}
+
+/// The run as one prepared scene for an accelerator's compositor when it can be composited
+/// directly over the canvas (Normal-mode layers without track mattes or Preserve Transparency;
+/// those go through [`draw_run`]'s 2D path; environment backgrounds draw their sky first). `None`
+/// when the comp isn't Advanced 3D.
+pub(crate) fn prepare_run<'p, 'a>(r: &'p Renderer<'a>, ctx: &'p EvalCtx<'a>, run: &'p [&'p Layer], out: (u32, u32)) -> Option<Prepared<'p, 'a>> {
+    if !active(r, ctx) || run.iter().any(|l| l.environment_background || needs_2d_composite(ctx, l)) {
+        return None;
+    }
+    Some(Prepared::new(r, ctx, run, out))
 }
 
 /// Layers whose blend mode, track matte or Preserve Transparency needs the 2D compositing path.

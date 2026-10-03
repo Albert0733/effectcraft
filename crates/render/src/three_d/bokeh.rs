@@ -203,6 +203,32 @@ pub fn bokeh_blur(img: &Image, iris: &Iris, r: f64) -> Image {
         let ry = (r / a).round().max(0.0) as usize;
         return effectcraft_raster::box_blur(img, rx, ry, 1, false);
     }
+    match kernel(iris, r) {
+        Some((kernels, norm)) => span_gather(img, &kernels, norm),
+        None => img.clone(),
+    }
+}
+
+/// Weighted row-span kernels (see [`Iris::spans`]).
+pub type SpanKernels = Vec<(f32, Vec<(i32, f64, f64)>)>;
+
+/// [`bokeh_blur`]'s gather kernel at radius `r` as weighted row spans and their normaliser
+/// (accelerators run the same gather). Fast Rectangle is the box of the iris' width and height
+/// (what [`bokeh_blur`]'s separable box computes). `None` = the identity (no blur).
+pub fn kernel(iris: &Iris, r: f64) -> Option<(SpanKernels, f32)> {
+    if r < 0.3 {
+        return None;
+    }
+    if iris.sides == 0 {
+        let a = iris.aspect.clamp(0.01, 100.0).sqrt();
+        let rx = (r * a).round().max(0.0) as i32;
+        let ry = (r / a).round().max(0.0) as i32;
+        if rx == 0 && ry == 0 {
+            return None;
+        }
+        let spans = (-ry..=ry).map(|dy| (dy, -rx as f64 - 0.5, rx as f64 + 0.5)).collect();
+        return Some((vec![(1.0, spans)], ((2 * rx + 1) * (2 * ry + 1)) as f32));
+    }
     // The iris as row spans (prefix-sum gather: cost ∝ kernel height, not area). The
     // diffraction fringe adds the rim: the full iris minus a shrunken one.
     let outer = iris.spans(r);
@@ -216,10 +242,21 @@ pub fn bokeh_blur(img: &Image, iris: &Iris, r: f64) -> Image {
         kernels.push((-f, inner));
     }
     let norm: f32 = kernels.iter().map(|(wt, sp)| wt * area(sp)).sum();
-    if norm <= 0.0 {
-        return img.clone();
+    (norm > 0.0).then_some((kernels, norm))
+}
+
+/// [`progressive_blur`]'s blur levels for a radius range: `None` = no blur at all; one level
+/// when the range is narrow (every pixel takes it); else up to eight spanning `lo..=hi`
+/// (each pixel blends the two around its own radius).
+pub fn progressive_levels(lo: f32, hi: f32) -> Option<Vec<f32>> {
+    if !lo.is_finite() || hi < 0.3 {
+        return None;
     }
-    span_gather(img, &kernels, norm)
+    if hi - lo < 0.75 {
+        return Some(vec![(lo + hi) * 0.5]);
+    }
+    let n = (((hi - lo) / 2.0).ceil() as usize + 1).clamp(2, 8);
+    Some((0..n).map(|i| lo + (hi - lo) * i as f32 / (n - 1) as f32).collect())
 }
 
 /// Depth-varying blur: `radius` gives each pixel's blur radius. The image is blurred at up to
@@ -227,14 +264,11 @@ pub fn bokeh_blur(img: &Image, iris: &Iris, r: f64) -> Image {
 /// its own radius.
 pub fn progressive_blur(img: &Image, iris: &Iris, radius: &[f32]) -> Image {
     let (lo, hi) = radius.iter().fold((f32::INFINITY, 0.0f32), |(a, b), &r| (a.min(r), b.max(r)));
-    if !lo.is_finite() || hi < 0.3 {
-        return img.clone();
+    let Some(levels) = progressive_levels(lo, hi) else { return img.clone() };
+    let n = levels.len();
+    if n == 1 {
+        return bokeh_blur(img, iris, levels[0] as f64);
     }
-    if hi - lo < 0.75 {
-        return bokeh_blur(img, iris, ((lo + hi) * 0.5) as f64);
-    }
-    let n = (((hi - lo) / 2.0).ceil() as usize + 1).clamp(2, 8);
-    let levels: Vec<f32> = (0..n).map(|i| lo + (hi - lo) * i as f32 / (n - 1) as f32).collect();
     let blurred: Vec<Image> = levels.par_iter().map(|&r| bokeh_blur(img, iris, r as f64)).collect();
     let mut out = Image::new(img.width, img.height);
     out.data.par_iter_mut().enumerate().for_each(|(i, o)| {

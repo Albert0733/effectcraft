@@ -394,7 +394,7 @@ impl<'g> Enc<'g> {
         Enc { g, enc: None, pending: 0 }
     }
 
-    fn encoder(&mut self) -> &mut wgpu::CommandEncoder {
+    pub(crate) fn encoder(&mut self) -> &mut wgpu::CommandEncoder {
         let g = self.g;
         self.enc.get_or_insert_with(|| g.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("effectcraft") }))
     }
