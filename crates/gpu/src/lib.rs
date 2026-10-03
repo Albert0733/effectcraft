@@ -6,8 +6,10 @@
 //! layer buffers (once per buffer), applies the layer transforms with the CPU's sampling
 //! (nearest / bilinear / bicubic, minification pre-filter), motion-blur sub-samples, track
 //! mattes, Preserve Transparency, layer styles' passes, all 38 blend modes and the 8/16 bpc
-//! clamping and quantisation, and converts colour spaces. 3D runs, adjustment layers and
-//! wireframes run on the CPU between GPU steps (read back, draw, upload).
+//! clamping and quantisation, and converts colour spaces. Classic 3D runs composite here too
+//! (`classic3d`: per-pixel fragment sort, lights, ray-cast shadows), and adjustment layers run
+//! their effect stacks on the GPU-resident comp. Advanced 3D compositing and wireframes run on
+//! the CPU between GPU steps (read back, draw, upload).
 //!
 //! Advanced 3D comps rasterise on a render pipeline (`advanced3d.wgsl`: depth buffer, PBR,
 //! image-based light, shadow maps), see [`Accelerator::raster_3d`].
@@ -15,6 +17,10 @@
 //! GPU effects ([`effectcraft_effects::GPU_EFFECTS`]) run as compute kernels with the CPU
 //! effect's exact steps (padding, box-blur radii, parameter conversions); chains of them are
 //! uploaded and read back once.
+//!
+//! GPU particles (`particles`): the stepped particle effects hand their simulation to
+//! [`effectcraft_effects::psim::ParticleSim`], implemented here with one invocation per particle
+//! and GPU-resident checkpoints.
 //!
 //! Plug a [`Gpu`] into [`Renderer::accel`] (it implements [`Accelerator`]); renders then use it
 //! when [`RenderOpts::backend`](effectcraft_render::RenderOpts) asks for it. The viewer can

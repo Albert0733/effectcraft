@@ -289,7 +289,7 @@ impl GpuContext {
         let (device, queue) =
             pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor { label: Some("effectcraft gpu"), required_limits, ..Default::default() }))
                 .ok()?;
-        device.on_uncaptured_error(Arc::new(|e| eprintln!("wgpu: {e}")));
+        device.on_uncaptured_error(Arc::new(|e| log::error!("wgpu: {e}")));
         GpuContext::new(&adapter, device, queue).map_err(|e| log::info!("gpu: {e}")).ok()
     }
 

@@ -1,8 +1,9 @@
 //! The per-frame compositing walk on the GPU: the same steps as `Renderer::draw_comp` (layer
 //! order, 3D runs, collapsed precomps, track mattes, Preserve Transparency, layer styles, motion
 //! blur, bit-depth quantisation, colour conversions), with layer pixels taken from the CPU
-//! renderer and its layer cache. Steps without a GPU implementation (3D runs, adjustment and
-//! wireframe layers) read the canvas back, run on the CPU and upload the result.
+//! renderer and its layer cache. Classic 3D runs and adjustment layers run on the GPU; steps
+//! without a GPU implementation (Advanced 3D runs, wireframes, anything a kernel declines) read
+//! the canvas back, run on the CPU and upload the result.
 
 use std::sync::Arc;
 
