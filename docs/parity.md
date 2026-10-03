@@ -20,12 +20,11 @@ Animation 94%, Masks 94%, Preview 94%, Interface 93%, Shapes 93%, 3D 91%, Audio 
 Tracking 88%, Effects 85%, Web 65%.
 
 What is left, in priority order: the web app's depth (threads, storage, audio, non-blocking
-renders); stroke taper/wave and multi-segment dashes; variable mask feather points; real
-`sampleImage` and `footage()` in expressions; camera iris/bokeh and focus-link commands; GPU
+renders); stroke taper/wave and multi-segment dashes; variable mask feather points; camera iris/bokeh and focus-link commands; GPU
 rendering of 3D runs and adjustment layers; Render Queue field render, crop/resize and templates;
 approximated effects (Subspace Warp, Key Cleaner) and Liquify's viewer brush; Advanced 3D motion blur
 and blend modes; a few viewer and colour-management menu items; OpenType features and variable
-font axes; AI/EPS/PDF import; more codecs; 59 preferences not yet wired; proxies; ScriptUI;
+font axes; AI/EPS/PDF import; more codecs; 59 preferences not yet wired; ScriptUI;
 Lumetri Scopes, Footage, Media Browser and Metadata panels; Content-Aware Fill; face tracking; and
 the "better than After Effects" items (a plug-in API, branching history, GPU particles).
 
