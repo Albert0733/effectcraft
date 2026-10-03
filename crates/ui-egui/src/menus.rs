@@ -801,6 +801,12 @@ pub fn frontend(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, p: Valu
             crate::panels::dialogs::open_form(app, "file.interpretFootage", &json!({}));
             Value::Null
         }
+        // Help ▸ In-App Tutorials: the Home screen's Learn tab.
+        "help.inAppTutorials" => {
+            app.ui.start_screen = true;
+            app.ui.home_learn = true;
+            Value::Null
+        }
         "effect.manage" | "anim.browsePresets" => {
             app.show_panel(PanelKind::EffectsPresets);
             Value::Null
@@ -831,6 +837,9 @@ fn file_dialog(app: &mut EffectcraftApp, id: &str, params: &Value) -> Option<Res
         "file.save" if app.session.path.is_none() => ("path", Ask::Save("Untitled Project.ecproj")),
         "file.saveAs" | "file.saveCopy" => ("path", Ask::Save("Untitled Project.ecproj")),
         "comp.saveFrameAs" => ("path", Ask::Save("Frame.png")),
+        "comp.saveFrameAsPsd" => ("path", Ask::Save("Frame.psd")),
+        "comp.saveFrameAsExr" => ("path", Ask::Save("Frame.exr")),
+        "file.watchFolder" if params.get("stop").is_none() => ("folder", Ask::Save("Watch Folder")),
         "anim.savePreset" => ("path", Ask::Save("Preset.ecpreset")),
         "anim.applyPreset" => ("path", Ask::Open(&["ecpreset", "json"])),
         "view.exportGuides" => ("path", Ask::Save("Guides.json")),

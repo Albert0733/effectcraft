@@ -218,6 +218,10 @@ pub struct EditorState {
     /// Essential Graphics can expose).
     #[serde(default)]
     pub essential_solo: bool,
+    /// File ▸ Watch Folder: the folder being watched for projects to render (frontends call
+    /// `file.watchFolder.poll` periodically while it is set).
+    #[serde(default)]
+    pub watch_folder: Option<String>,
     /// The Footage panel: the footage shown, its time and In/Out marks (source time).
     #[serde(default)]
     pub footage_panel: Option<commands::footage_panel::FootageView>,
@@ -791,7 +795,11 @@ mod tests_face;
 #[cfg(test)]
 mod tests_fidelity;
 #[cfg(test)]
+mod tests_frame_export;
+#[cfg(test)]
 mod tests_lottie;
+#[cfg(test)]
+mod tests_m137;
 #[cfg(test)]
 mod tests_m145;
 #[cfg(test)]

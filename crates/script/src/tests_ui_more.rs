@@ -186,6 +186,32 @@ fn essential_graphics_scripting_hooks() {
 }
 
 #[test]
+fn create_nulls_from_paths_expressions_evaluate() {
+    let mut s = session();
+    s.execute("comp.new", json!({"name": "Paths", "width": 100, "height": 80, "frameRate": 10, "duration": 1})).unwrap();
+    let l = s.execute("layer.newSolid", json!({"name": "Plate", "color": "#808080", "width": 40, "height": 40})).unwrap()["layer"].as_u64().unwrap();
+    s.execute("mask.new", json!({"layer": l, "vertices": [[0, 0], [40, 0], [40, 40], [0, 40]], "closed": true})).unwrap();
+    s.execute("paths.nullsFollowPoints", json!({"layer": l})).unwrap();
+    s.execute("paths.tracePath", json!({"layer": l})).unwrap();
+    // Layer 1: the trace null; layers 2..5: the vertex nulls (top = last vertex).
+    let pos = |i: u32, t: f64| format!("app.project.activeItem.layer({i}).property('ADBE Transform Group').property('ADBE Position').valueAtTime({t}, false)");
+    let o = run_code(&mut s, &format!("[{}, {}, {}].join('|')", pos(2, 0.0), pos(1, 0.0), pos(1, 0.5)), "x.jsx");
+    assert!(o.error.is_none(), "{:?}", o.error);
+    let parts: Vec<Vec<f64>> = o.result.as_str().unwrap().split('|').map(|p| p.split(',').map(|x| x.parse().unwrap()).collect()).collect();
+    assert_eq!(&parts[0][..2], &[30.0, 60.0], "vertex 4 (0, 40) in comp space");
+    assert_eq!(&parts[1][..2], &[30.0, 20.0], "progress 0: the first vertex");
+    // Halfway in time along the closed square: the opposite corner.
+    assert!((parts[2][0] - 70.0).abs() < 0.5 && (parts[2][1] - 60.0).abs() < 0.5, "{:?}", parts[2]);
+    // Points Follow Nulls: moving the last vertex's null moves the vertex.
+    let r = s.execute("paths.pointsFollowNulls", json!({"layer": l})).unwrap();
+    let last = r["nulls"][3].as_u64().unwrap();
+    s.execute("prop.set", json!({"layer": last, "path": "transform/position", "value": [10, 10]})).unwrap();
+    let code = "var c = app.project.activeItem; var m = c.layer(c.numLayers).property('ADBE Mask Parade').property(1).property('ADBE Mask Shape').valueAtTime(0, false); [m.vertices[3][0], m.vertices[3][1], m.vertices[0][0], m.vertices.length].join(',')";
+    let o = run_code(&mut s, code, "x.jsx");
+    assert_eq!(o.result, json!("-20,-10,0,4"), "{:?}", o.error);
+}
+
+#[test]
 fn sockets_talk_tcp_behind_the_network_preference() {
     use std::io::{BufRead, BufReader, Write};
     let mut s = session();
