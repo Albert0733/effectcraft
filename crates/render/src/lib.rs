@@ -6,6 +6,8 @@
 //! with motion blur sub-samples) → **track matte** → **blend** with the layer's mode and opacity.
 //! Adjustment layers run their effects on everything below, limited by their own bounds/masks.
 
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
+
 pub mod audio;
 pub mod auto;
 pub mod cache;
