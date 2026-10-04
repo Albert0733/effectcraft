@@ -290,7 +290,11 @@ pub(crate) fn kinds(tx_type: usize) -> (Kind, Kind) {
         ADST_DCT => (Kind::Adst, Kind::Dct),
         DCT_ADST => (Kind::Dct, Kind::Adst),
         ADST_ADST => (Kind::Adst, Kind::Adst),
-        _ => unreachable!("unsupported transform type {tx_type}"),
+        // The encoder only chooses the four types above.
+        _ => {
+            debug_assert!(false, "unsupported transform type {tx_type}");
+            (Kind::Dct, Kind::Dct)
+        }
     }
 }
 

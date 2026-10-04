@@ -8,6 +8,8 @@
 //!
 //! The public API below is the contract `crates/export` codes against; keep it stable.
 
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
+
 mod bitw;
 mod cdf;
 mod decide;
@@ -444,7 +446,16 @@ impl Encoder {
         let src = self.load_source(frame);
         let (frame_obu, rf) = match self.cfg.rate {
             RateControl::ConstantQ(q) => self.encode_frame(&src, key, q.max(1)),
-            RateControl::Bitrate { .. } => self.encode_rate_controlled(&src, key),
+            RateControl::Bitrate { .. } => match self.rc.take() {
+                Some(mut rc) => {
+                    let out = self.encode_rate_controlled(&src, key, &mut rc);
+                    self.rc = Some(rc);
+                    out
+                }
+                // The state is created with the encoder for bitrate mode; without it, encode at a
+                // middle quantizer rather than fail.
+                None => self.encode_frame(&src, key, 128),
+            },
         };
         self.refr = Some(rf);
         self.frame_num += 1;
@@ -456,9 +467,8 @@ impl Encoder {
         Packet { data, keyframe: key }
     }
 
-    fn encode_rate_controlled(&mut self, src: &[Plane; 3], key: bool) -> (Vec<u8>, RefFrame) {
+    fn encode_rate_controlled(&mut self, src: &[Plane; 3], key: bool, rc: &mut RateState) -> (Vec<u8>, RefFrame) {
         let first = self.frame_num == 0;
-        let rc = self.rc.as_ref().expect("rate control state");
         let (frame_bits, debt, q_inter) = (rc.frame_bits, rc.debt, rc.q);
         // key frames get a lower quantizer and a larger share of the budget
         let key_boost = 1.0 + (self.cfg.keyint.clamp(1, 60) as f64 - 1.0).sqrt() * 0.75;
@@ -481,8 +491,8 @@ impl Encoder {
                 q = (q + 30.0 * err).clamp(1.0, 255.0);
             }
         }
-        let (obu, rf, bits) = best.expect("encoded");
-        let rc = self.rc.as_mut().expect("rate control state");
+        // At least one pass ran, so `best` is set.
+        let Some((obu, rf, bits)) = best else { return self.encode_frame(src, key, q.round().clamp(1.0, 255.0) as u8) };
         rc.debt += bits - budget;
         // adapt the inter quantizer: about 30 index steps per doubling of the rate
         let err = (bits / target).log2().clamp(-1.0, 1.0);

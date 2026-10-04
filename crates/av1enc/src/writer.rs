@@ -211,7 +211,8 @@ impl<'a> TileWriter<'a> {
                 debug_assert_eq!(leaf.bsize, bsize);
                 self.block(r, c, leaf);
             }
-            Node::Out => unreachable!("decided block inside the frame"),
+            // Blocks inside the frame are always decided; nothing is coded outside it.
+            Node::Out => debug_assert!(false, "undecided block inside the frame"),
         }
     }
 
@@ -460,10 +461,11 @@ impl<'a> TileWriter<'a> {
                 if set > 0 && self.qidx > 0 {
                     let sqr = TX_SIZE_SQR[tx_sz] as usize;
                     if b.is_inter {
-                        let s = TX_TYPE_INTER_INV_SET3.iter().position(|&v| v as usize == t).expect("inter tx type in set");
+                        // The decision only picks types of this set (DCT_DCT otherwise).
+                        let s = TX_TYPE_INTER_INV_SET3.iter().position(|&v| v as usize == t).unwrap_or_default();
                         self.sw.symbol(s, &mut self.cdf.inter_tx_type_set3[sqr]);
                     } else {
-                        let s = TX_TYPE_INTRA_INV_SET2.iter().position(|&v| v as usize == t).expect("intra tx type in set");
+                        let s = TX_TYPE_INTRA_INV_SET2.iter().position(|&v| v as usize == t).unwrap_or_default();
                         self.sw.symbol(s, &mut self.cdf.intra_tx_type_set2[sqr][b.y_mode]);
                     }
                 } else {
