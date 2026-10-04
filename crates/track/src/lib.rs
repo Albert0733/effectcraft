@@ -18,6 +18,8 @@
 //! Coordinates are *layer* pixels: the frame image's pixel `(i, j)` covers `[i, i+1) × [j, j+1)`
 //! after subtracting the frame's `offset` (see [`Frame`]).
 
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
+
 pub mod camtrack;
 pub mod face;
 pub mod fit;
