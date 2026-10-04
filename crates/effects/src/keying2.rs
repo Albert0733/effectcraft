@@ -101,24 +101,40 @@ fn mask_sdf(ctx: &EffectCtx, b: &Buf, idx: &[u32]) -> Option<Plane> {
     Some(pl)
 }
 
-fn inner_outer_key(ctx: &EffectCtx, mut b: Buf) -> Buf {
+/// Inner/Outer Key's geometry (shared with the GPU compositor, effectcraft-gpu `fx_pixel2`):
+/// the trimap of the selected masks and the Cleanup brush strokes, in buffer pixels.
+pub struct InnerOuterPlan {
+    /// 1 = known foreground, 0 = known background, 0.5 = unknown.
+    pub tri: Plane,
+    /// Some pixel is unknown (edge colours are estimated and decontaminated).
+    pub unknown: bool,
+    /// Blur radius of the local foreground / background colour estimates.
+    pub sigma: f64,
+    /// Cleanup strokes in order: (matte target, coverage per pixel; negative = beyond the brush).
+    pub strokes: Vec<(f32, Vec<f32>)>,
+    /// Edge Thin, Edge Feather (buffer px), Edge Threshold, Invert Extraction, Blend with Original.
+    pub thin: f64,
+    pub feather: f64,
+    pub threshold: f32,
+    pub invert: bool,
+    pub original: f32,
+}
+
+/// [`InnerOuterPlan`] of an Inner/Outer Key instance on `b`'s geometry (`None` = no foreground
+/// mask: the layer passes through).
+pub fn inner_outer_plan(ctx: &EffectCtx, b: &Buf) -> Option<InnerOuterPlan> {
     // Foreground (Inside) plus Additional Foreground 1–10; likewise for the background.
     let fg_idx: Vec<u32> =
         std::iter::once(ctx.params.e("foreground")).chain((1..=10).map(|k| ctx.params.e(&format!("additionalForeground/foreground{k}")))).collect();
     let bg_idx: Vec<u32> =
         std::iter::once(ctx.params.e("background")).chain((1..=10).map(|k| ctx.params.e(&format!("additionalBackground/background{k}")))).collect();
     let radius = (ctx.params.f("singleMaskHighlightRadius") * b.scale) as f32;
-    let thin = ctx.params.f("edgeThin") * b.scale;
-    let feather = ctx.params.f("edgeFeather") * b.scale;
-    let thr = (ctx.params.f("edgeThreshold") / 100.0) as f32;
-    let invert = ctx.params.b("invertExtraction");
-    let orig = (ctx.params.f("blendWithOriginal") / 100.0) as f32;
     let (w, h) = (b.img.width as usize, b.img.height as usize);
     // Trimap: 1 = known foreground, 0 = known background, 0.5 = unknown.
-    let fg = mask_plane(ctx, &b, &fg_idx);
-    let bg = mask_plane(ctx, &b, &bg_idx);
+    let fg = mask_plane(ctx, b, &fg_idx);
+    let bg = mask_plane(ctx, b, &bg_idx);
     let tri: Plane = match (fg, bg) {
-        (None, _) => return b,
+        (None, _) => return None,
         (Some(f), Some(bk)) => f.zip_map(&bk, |f, bk| {
             if f > 0.5 {
                 1.0
@@ -132,7 +148,7 @@ fn inner_outer_key(ctx: &EffectCtx, mut b: Buf) -> Buf {
             if radius <= 0.0 {
                 f
             } else {
-                let sdf = mask_sdf(ctx, &b, &fg_idx).unwrap_or(f);
+                let sdf = mask_sdf(ctx, b, &fg_idx).unwrap_or(f);
                 sdf.map(|d| {
                     if d > radius {
                         1.0
@@ -146,11 +162,50 @@ fn inner_outer_key(ctx: &EffectCtx, mut b: Buf) -> Buf {
         }
     };
     let unknown = tri.data.par_iter().any(|&t| t > 0.25 && t < 0.75);
+    let sigma = (radius.max(4.0) as f64).max(w.min(h) as f64 * 0.02);
+    // Cleanup Foreground / Background: brush strokes along mask paths that paint the matte
+    // towards opaque / transparent (Brush Radius, Brush Pressure).
+    let mut strokes = Vec::new();
+    for (side, target) in [("Foreground", 1.0f32), ("Background", 0.0)] {
+        for k in 1..=10 {
+            let g = format!("cleanup{side}/cleanup{side}{k}");
+            let idx = ctx.params.e(&format!("{g}/path"));
+            let Some(m) = (idx > 0).then(|| ctx.env.masks.get(idx as usize - 1)).flatten() else { continue };
+            let rad = (ctx.params.f(&format!("{g}/brushRadius")) * b.scale).max(0.5);
+            let pressure = (ctx.params.f(&format!("{g}/brushPressure")) / 100.0).clamp(0.0, 1.0) as f32;
+            let pts: Vec<[f64; 2]> = m.points.iter().map(|q| [q[0] * b.scale + b.offset[0], q[1] * b.scale + b.offset[1]]).collect();
+            let cov: Vec<f32> = (0..w * h)
+                .into_par_iter()
+                .map(|i| {
+                    let (x, y) = ((i % w) as f64 + 0.5, (i / w) as f64 + 0.5);
+                    let d = dist_to_poly(&pts, m.closed, x, y);
+                    if d < rad + 1.0 { ((rad - d) / rad.max(1.0) * 2.0).clamp(0.0, 1.0) as f32 * pressure } else { -1.0 }
+                })
+                .collect();
+            strokes.push((target, cov));
+        }
+    }
+    Some(InnerOuterPlan {
+        tri,
+        unknown,
+        sigma,
+        strokes,
+        thin: ctx.params.f("edgeThin") * b.scale,
+        feather: ctx.params.f("edgeFeather") * b.scale,
+        threshold: (ctx.params.f("edgeThreshold") / 100.0) as f32,
+        invert: ctx.params.b("invertExtraction"),
+        original: (ctx.params.f("blendWithOriginal") / 100.0) as f32,
+    })
+}
+
+fn inner_outer_key(ctx: &EffectCtx, mut b: Buf) -> Buf {
+    let Some(plan) = inner_outer_plan(ctx, &b) else { return b };
+    let InnerOuterPlan { tri, unknown, sigma, strokes, thin, feather, threshold: thr, invert, original: orig } = plan;
+    let (w, h) = (b.img.width as usize, b.img.height as usize);
     let mut alpha = tri.clone();
     let mut colours: Option<Vec<[f32; 3]>> = None;
     if unknown {
         // Local foreground / background colour estimates: normalised blurs over known regions.
-        let sigma = (radius.max(4.0) as f64).max(w.min(h) as f64 * 0.02);
         let known_f = tri.map(|t| if t > 0.75 { 1.0 } else { 0.0 });
         let known_b = tri.map(|t| if t < 0.25 { 1.0 } else { 0.0 });
         let straight: Vec<[f32; 3]> = b.img.data.par_iter().map(|&px| unpremul(px).0).collect();
@@ -190,25 +245,12 @@ fn inner_outer_key(ctx: &EffectCtx, mut b: Buf) -> Buf {
                 .collect(),
         );
     }
-    // Cleanup Foreground / Background: brush strokes along mask paths that paint the matte
-    // towards opaque / transparent (Brush Radius, Brush Pressure).
-    for (side, target) in [("Foreground", 1.0f32), ("Background", 0.0)] {
-        for k in 1..=10 {
-            let g = format!("cleanup{side}/cleanup{side}{k}");
-            let idx = ctx.params.e(&format!("{g}/path"));
-            let Some(m) = (idx > 0).then(|| ctx.env.masks.get(idx as usize - 1)).flatten() else { continue };
-            let rad = (ctx.params.f(&format!("{g}/brushRadius")) * b.scale).max(0.5);
-            let pressure = (ctx.params.f(&format!("{g}/brushPressure")) / 100.0).clamp(0.0, 1.0) as f32;
-            let pts: Vec<[f64; 2]> = m.points.iter().map(|q| [q[0] * b.scale + b.offset[0], q[1] * b.scale + b.offset[1]]).collect();
-            alpha.data.par_iter_mut().enumerate().for_each(|(i, a)| {
-                let (x, y) = ((i % w) as f64 + 0.5, (i / w) as f64 + 0.5);
-                let d = dist_to_poly(&pts, m.closed, x, y);
-                if d < rad + 1.0 {
-                    let cov = ((rad - d) / rad.max(1.0) * 2.0).clamp(0.0, 1.0) as f32 * pressure;
-                    *a += (target - *a) * cov;
-                }
-            });
-        }
+    for (target, cov) in &strokes {
+        alpha.data.par_iter_mut().zip(cov.par_iter()).for_each(|(a, &c)| {
+            if c >= 0.0 {
+                *a += (target - *a) * c;
+            }
+        });
     }
     if thin.abs() > 0.01 {
         alpha = morph_frac(&alpha, thin.abs(), thin < 0.0);

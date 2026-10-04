@@ -5,7 +5,7 @@
 
 EffectCraft ships 306 effects with 3009 parameters in total, grouped into the same categories as the Effects & Presets panel. Every effect is our own implementation, written from public behaviour descriptions and standard image-processing literature. Parameter names, order, popup options, units, defaults and ranges follow the reference application so that projects, expressions and muscle memory carry over.
 
-- **GPU**: 236 effects also run on the GPU compositor with identical results.
+- **GPU**: 256 effects also run on the GPU compositor with identical results.
 - **32**: 306 effects process 32-bit float (HDR, overbright) pixels without clamping.
 - **Status**: 306 implemented in full, 0 partial (what is missing is listed).
 
@@ -47,10 +47,10 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 | Effect | Id | Params | GPU | 32 | Status |
 |---|---|---:|:-:|:-:|---|
 | Bilateral Blur | `ec.blur.bilateral` | 3 | GPU | 32 | Implemented |
-| CC Cross Blur | `ec.blur.cccross` | 3 |  | 32 | Implemented |
-| CC Radial Blur | `ec.blur.ccradial` | 4 |  | 32 | Implemented |
+| CC Cross Blur | `ec.blur.cccross` | 3 | GPU | 32 | Implemented |
+| CC Radial Blur | `ec.blur.ccradial` | 4 | GPU | 32 | Implemented |
 | CC Radial Fast Blur | `ec.blur.ccradialfast` | 3 | GPU | 32 | Implemented |
-| CC Vector Blur | `ec.blur.ccvector` | 4 |  | 32 | Implemented |
+| CC Vector Blur | `ec.blur.ccvector` | 4 | GPU | 32 | Implemented |
 | Camera Lens Blur | `ec.blur.cameralens` | 16 | GPU | 32 | Implemented |
 | Camera-Shake Deblur | `ec.blur.camerashakedeblur` | 8 |  | 32 | Implemented |
 | Channel Blur | `ec.blur.channel` | 6 | GPU | 32 | Implemented |
@@ -69,7 +69,7 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 |---|---|---:|:-:|:-:|---|
 | Arithmetic | `ec.channel.arithmetic` | 5 | GPU | 32 | Implemented |
 | Blend | `ec.channel.blend` | 4 | GPU | 32 | Implemented |
-| CC Composite | `ec.channel.cccomposite` | 3 |  | 32 | Implemented |
+| CC Composite | `ec.channel.cccomposite` | 3 | GPU | 32 | Implemented |
 | Calculations | `ec.channel.calculations` | 9 | GPU | 32 | Implemented |
 | Channel Combiner | `ec.channel.combiner` | 6 | GPU | 32 | Implemented |
 | Compound Arithmetic | `ec.channel.compoundarithmetic` | 6 | GPU | 32 | Implemented |
@@ -100,7 +100,7 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 | Channel Mixer | `ec.color.channelmixer` | 13 | GPU | 32 | Implemented |
 | Color Balance | `ec.color.colorbalance` | 10 | GPU | 32 | Implemented |
 | Color Balance (HLS) | `ec.color.colorbalancehls` | 3 | GPU | 32 | Implemented |
-| Color Link | `ec.color.colorlink` | 6 |  | 32 | Implemented |
+| Color Link | `ec.color.colorlink` | 6 | GPU | 32 | Implemented |
 | Color Stabilizer | `ec.color.colorstabilizer` | 6 | GPU | 32 | Implemented |
 | Colorama | `ec.color.colorama` | 20 | GPU | 32 | Implemented |
 | Curves | `ec.color.curves` | 0 | GPU | 32 | Implemented |
@@ -237,12 +237,12 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 | Effect | Id | Params | GPU | 32 | Status |
 |---|---|---:|:-:|:-:|---|
 | Advanced Spill Suppressor | `ec.key.advancedspill` | 8 | GPU | 32 | Implemented |
-| CC Simple Wire Removal | `ec.key.ccsimplewireremoval` | 7 |  | 32 | Implemented |
+| CC Simple Wire Removal | `ec.key.ccsimplewireremoval` | 7 | GPU | 32 | Implemented |
 | Color Difference Key | `ec.key.colordifference` | 16 | GPU | 32 | Implemented |
 | Color Range | `ec.key.colorrange` | 8 | GPU | 32 | Implemented |
 | Difference Matte | `ec.key.differencematte` | 6 | GPU | 32 | Implemented |
 | Extract | `ec.key.extract` | 6 | GPU | 32 | Implemented |
-| Inner/Outer Key | `ec.key.innerouter` | 88 |  | 32 | Implemented |
+| Inner/Outer Key | `ec.key.innerouter` | 88 | GPU | 32 | Implemented |
 | Key Cleaner | `ec.key.keycleaner` | 4 | GPU | 32 | Implemented |
 | Key Light | `ec.keying.keylight` | 56 | GPU | 32 | Implemented |
 | Linear Color Key | `ec.key.linearcolor` | 6 | GPU | 32 | Implemented |
@@ -282,14 +282,14 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 
 | Effect | Id | Params | GPU | 32 | Status |
 |---|---|---:|:-:|:-:|---|
-| Basic 3D | `ec.obsolete.basic3d` | 5 |  | 32 | Implemented |
+| Basic 3D | `ec.obsolete.basic3d` | 5 | GPU | 32 | Implemented |
 | Basic Text | `ec.obsolete.basictext` | 11 |  | 32 | Implemented |
 | Color Key | `ec.key.colorkey` | 4 | GPU | 32 | Implemented |
 | Gaussian Blur (Legacy) | `ec.obsolete.gaussianlegacy` | 2 | GPU | 32 | Implemented |
 | Lightning | `ec.obsolete.lightning` | 25 |  | 32 | Implemented |
 | Luma Key | `ec.key.luma` | 5 | GPU | 32 | Implemented |
 | Path Text | `ec.obsolete.pathtext` | 32 |  | 32 | Implemented |
-| Reduce Interlace Flicker | `ec.blur.reduceflicker` | 1 |  | 32 | Implemented |
+| Reduce Interlace Flicker | `ec.blur.reduceflicker` | 1 | GPU | 32 | Implemented |
 | Spill Suppressor | `ec.key.spill` | 3 | GPU | 32 | Implemented |
 
 ## Paint
@@ -341,13 +341,13 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 | Effect | Id | Params | GPU | 32 | Status |
 |---|---|---:|:-:|:-:|---|
 | Brush Strokes | `ec.stylize.brushstrokes` | 7 | GPU | 32 | Implemented |
-| CC Block Load | `ec.stylize.ccblockload` | 5 |  | 32 | Implemented |
-| CC Burn Film | `ec.stylize.ccburnfilm` | 3 |  | 32 | Implemented |
-| CC Glass | `ec.stylize.ccglass` | 17 |  | 32 | Implemented |
-| CC HexTile | `ec.stylize.cchextile` | 5 |  | 32 | Implemented |
+| CC Block Load | `ec.stylize.ccblockload` | 5 | GPU | 32 | Implemented |
+| CC Burn Film | `ec.stylize.ccburnfilm` | 3 | GPU | 32 | Implemented |
+| CC Glass | `ec.stylize.ccglass` | 17 | GPU | 32 | Implemented |
+| CC HexTile | `ec.stylize.cchextile` | 5 | GPU | 32 | Implemented |
 | CC Kaleida | `ec.stylize.cckaleida` | 4 | GPU | 32 | Implemented |
-| CC Mr. Smoothie | `ec.stylize.ccmrsmoothie` | 7 |  | 32 | Implemented |
-| CC Plastic | `ec.stylize.ccplastic` | 18 |  | 32 | Implemented |
+| CC Mr. Smoothie | `ec.stylize.ccmrsmoothie` | 7 | GPU | 32 | Implemented |
+| CC Plastic | `ec.stylize.ccplastic` | 18 | GPU | 32 | Implemented |
 | CC RepeTile | `ec.stylize.ccrepetile` | 5 | GPU | 32 | Implemented |
 | CC Threshold | `ec.stylize.ccthreshold` | 4 | GPU | 32 | Implemented |
 | CC Threshold RGB | `ec.stylize.ccthresholdrgb` | 7 | GPU | 32 | Implemented |
@@ -413,12 +413,12 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 | Effect | Id | Params | GPU | 32 | Status |
 |---|---|---:|:-:|:-:|---|
 | Apply Color LUT | `ec.utility.applylut` | 0 | GPU | 32 | Implemented |
-| CC Overbrights | `ec.utility.ccoverbrights` | 2 |  | 32 | Implemented |
-| Cineon Converter | `ec.utility.cineon` | 7 |  | 32 | Implemented |
+| CC Overbrights | `ec.utility.ccoverbrights` | 2 | GPU | 32 | Implemented |
+| Cineon Converter | `ec.utility.cineon` | 7 | GPU | 32 | Implemented |
 | Color Profile Converter | `ec.utility.colorprofileconverter` | 7 | GPU | 32 | Implemented |
 | Face Measurements | `ec.utility.facemeasurements` | 14 |  | 32 | Implemented |
 | Face Track Points | `ec.utility.facetrackpoints` | 26 |  | 32 | Implemented |
-| Grow Bounds | `ec.utility.growbounds` | 1 |  | 32 | Implemented |
-| HDR Compander | `ec.utility.hdrcompander` | 3 |  | 32 | Implemented |
-| HDR Highlight Compression | `ec.utility.hdrcompression` | 1 |  | 32 | Implemented |
+| Grow Bounds | `ec.utility.growbounds` | 1 | GPU | 32 | Implemented |
+| HDR Compander | `ec.utility.hdrcompander` | 3 | GPU | 32 | Implemented |
+| HDR Highlight Compression | `ec.utility.hdrcompression` | 1 | GPU | 32 | Implemented |
 

@@ -23,7 +23,7 @@
 //! effect's exact steps (padding, box-blur radii, parameter conversions); chains of them are
 //! uploaded and read back once. Each family lives in its own module with its own WGSL file
 //! (`fx_color`, `fx_depth`, `fx_distort`, `fx_extra`, `fx_generate`, `fx_key`, `fx_light`,
-//! `fx_lut`, `fx_noise`, `fx_sim`, `fx_stylize`, `fx_text`, `fx_time`, `fx_tone`,
+//! `fx_lut`, `fx_noise`, `fx_pixel2`, `fx_sim`, `fx_stylize`, `fx_text`, `fx_time`, `fx_tone`,
 //! `fx_transition`, `fx_vr`, `fx_warp`); settings a kernel cannot match fall back to the CPU
 //! (`catalog::gpu_supported`, or `None` from the family's `apply`).
 //! The 3D Channel effects read the layer's aux channels as an extra texture (`fx_depth`), the
@@ -64,6 +64,7 @@ mod fx_key;
 mod fx_light;
 mod fx_lut;
 mod fx_noise;
+mod fx_pixel2;
 mod fx_sim;
 mod fx_stylize;
 mod fx_text;
@@ -331,6 +332,8 @@ mod tests_fx_light;
 mod tests_fx_lut;
 #[cfg(test)]
 mod tests_fx_noise;
+#[cfg(test)]
+mod tests_fx_pixel2;
 #[cfg(test)]
 mod tests_fx_sim;
 #[cfg(test)]

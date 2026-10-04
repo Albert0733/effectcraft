@@ -716,13 +716,26 @@ fn sample_color(img: &Image, how: u32, clip: f64) -> ([f32; 3], f32) {
 
 /// Color Link: colours the layer with a colour sampled from the Source Layer (its source, no
 /// masks or effects) or, with no source layer, from the layer itself.
-fn color_link(ctx: &EffectCtx, mut b: Buf) -> Buf {
+/// Color Link's sampled colour (RGB) and alpha: from the Source Layer, or from `img` (the
+/// layer's own pixels; `None` = the caller has not read them back) when no source is chosen.
+/// `None` when the own pixels are needed but not given.
+pub fn color_link_sample(ctx: &EffectCtx, img: Option<&Image>) -> Option<([f32; 3], f32)> {
     let how = ctx.params.e("sampleSource");
     let clip = ctx.params.f("clip") / 100.0;
-    let (c, sa) = match ctx.layer_param("sourceLayer", false) {
+    Some(match ctx.layer_param("sourceLayer", false) {
         Some(lp) => sample_color(&lp.buf.img, how, clip),
-        None => sample_color(&b.img, how, clip),
-    };
+        None => sample_color(img?, how, clip),
+    })
+}
+
+/// Color Link's Blending Mode.
+pub fn color_link_mode(ctx: &EffectCtx) -> BlendMode {
+    LINK_MODES[(ctx.params.e("blendingMode") as usize).min(LINK_MODES.len() - 1)].1
+}
+
+fn color_link(ctx: &EffectCtx, mut b: Buf) -> Buf {
+    let how = ctx.params.e("sampleSource");
+    let Some((c, sa)) = color_link_sample(ctx, Some(&b.img)) else { return b };
     let op = (ctx.params.f("opacity") / 100.0).clamp(0.0, 1.0) as f32;
     let stencil = ctx.params.b("stencilOriginalAlpha");
     if how >= 6 {
@@ -737,7 +750,7 @@ fn color_link(ctx: &EffectCtx, mut b: Buf) -> Buf {
         });
         return b;
     }
-    let mode = LINK_MODES[(ctx.params.e("blendingMode") as usize).min(LINK_MODES.len() - 1)].1;
+    let mode = color_link_mode(ctx);
     let src = [c[0] * op, c[1] * op, c[2] * op, op];
     b.img.data.par_iter_mut().for_each(|px| {
         let a0 = px[3];

@@ -180,9 +180,14 @@ fn burn_film(ctx: &EffectCtx, mut b: Buf) -> Buf {
 
 const BUMP_PROPS: [&str; 6] = ["Red", "Green", "Blue", "Alpha", "Luminance", "Lightness"];
 
+/// The bump-map layer parameter: CC Glass's Bump Map, CC Plastic's Bump Layer.
+pub fn bump_layer_id(ctx: &EffectCtx) -> &'static str {
+    if ctx.params.get("bumpLayer").is_some() { "bumpLayer" } else { "bumpMap" }
+}
+
 /// Height field (0..1) from the bump-map layer (or the layer itself), softened.
 fn height_field(ctx: &EffectCtx, b: &Buf) -> Plane {
-    let src = layer_or_self(ctx, b, "bumpMap", true, false);
+    let src = layer_or_self(ctx, b, bump_layer_id(ctx), true, false);
     let prop = ctx.params.e("property");
     let mut pl = Plane::from_image(&src, |p| {
         let (c, a) = unpremul(p);
@@ -203,30 +208,31 @@ fn height_field(ctx: &EffectCtx, b: &Buf) -> Plane {
     pl
 }
 
-struct Light {
-    intensity: f32,
-    color: [f32; 3],
-    point: bool,
-    pos: (f64, f64),
+/// The effect light and surface of CC Glass / CC Plastic (shared with the GPU compositor).
+pub struct BumpLight {
+    pub intensity: f32,
+    pub color: [f32; 3],
+    pub point: bool,
+    pub pos: (f64, f64),
     /// Distant light direction (towards the light).
-    dir: [f32; 3],
-    height: f32,
-    ambient: f32,
-    diffuse: f32,
-    specular: f32,
-    shininess: f32,
-    metal: f32,
+    pub dir: [f32; 3],
+    pub height: f32,
+    pub ambient: f32,
+    pub diffuse: f32,
+    pub specular: f32,
+    pub shininess: f32,
+    pub metal: f32,
 }
 
-impl Light {
-    fn from(ctx: &EffectCtx, b: &Buf) -> Light {
+impl BumpLight {
+    pub fn from(ctx: &EffectCtx, b: &Buf) -> BumpLight {
         let pr = &ctx.params;
         let elev = (pr.f("lightHeight").clamp(-100.0, 100.0) / 100.0 * 90.0).to_radians();
         let az = pr.f("lightDirection").to_radians();
         let dir = [(az.sin() * elev.cos()) as f32, (-az.cos() * elev.cos()) as f32, elev.sin() as f32];
         let c = pr.color("lightColor");
         let rough = pr.f("roughness").clamp(0.001, 1.0) as f32;
-        Light {
+        BumpLight {
             intensity: (pr.f("lightIntensity") / 100.0) as f32,
             color: [c[0], c[1], c[2]],
             point: pr.e("lightType") == 1,
@@ -288,7 +294,7 @@ fn glass(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let height = ctx.params.f("height") as f32 / 100.0;
     let k = height * 25.0;
     let disp = ctx.params.f("displacement") * b.scale * 0.25;
-    let light = Light::from(ctx, &b);
+    let light = BumpLight::from(ctx, &b);
     let src = b.img.clone();
     b.img.rows_mut().for_each(|(y, row)| {
         for (x, px) in row.iter_mut().enumerate() {
@@ -321,7 +327,7 @@ fn plastic(ctx: &EffectCtx, mut b: Buf) -> Buf {
         hf = hf.map(|v| v.clamp(lo.min(hi), hi.max(lo)));
     }
     let k = ctx.params.f("height") as f32 / 100.0 * 25.0;
-    let light = Light::from(ctx, &b);
+    let light = BumpLight::from(ctx, &b);
     b.img.rows_mut().for_each(|(y, row)| {
         for (x, px) in row.iter_mut().enumerate() {
             if px[3] <= 0.0 {

@@ -71,7 +71,7 @@ pub use color_fx::{
     HUESAT_CHANNELS, HUESAT_RANGES, LEVELS_CHANNELS, PHOTO_FILTER_CUSTOM, PHOTO_FILTERS, exposure_settings, fill_uses_masks, huesat_ranges_identity,
     levels_channel_ids, levels_channel_settings, levels_channels_identity, levels_clip,
 };
-pub use color2::{Curve, auto_correct_settings, equalize_tables, luma_clip_points, shadow_highlight_amounts};
+pub use color2::{Curve, auto_correct_settings, color_link_mode, color_link_sample, equalize_tables, luma_clip_points, shadow_highlight_amounts};
 pub use color3::OffsetCurve;
 pub use distort::transform_shutter;
 pub use distort2::{MAGNIFY_MODES, bezier_grid, parse_mesh};
@@ -92,8 +92,10 @@ pub use generate2::pattern_kind as cell_pattern_kind;
 pub use noise::GrainLook;
 pub use transition::place_layer;
 // effectcraft-gpu fx_noise.
+pub use keying2::{InnerOuterPlan, inner_outer_plan};
 pub use noise::remove_grain_level;
 pub use noise3::{FractalGpu, fractal_gpu};
+pub use stylize3::{BumpLight, bump_layer_id};
 pub use textfx::{TextLayer, text_layer};
 pub use time_fx::{PixelMotion, TimewarpPlan, TwStep, posterized_time, time_frames, timewarp_crop, timewarp_plan};
 // effectcraft-gpu fx_tone.
@@ -1017,6 +1019,27 @@ pub const GPU_EFFECTS: &[&str] = &[
     "ec.time.ccwidetime",
     "ec.time.pixelmotionblur",
     "ec.time.timewarp",
+    // effectcraft-gpu fx_pixel2 (pixel ports, part C)
+    "ec.blur.cccross",
+    "ec.blur.ccradial",
+    "ec.blur.ccvector",
+    "ec.blur.reduceflicker",
+    "ec.channel.cccomposite",
+    "ec.color.colorlink",
+    "ec.utility.cineon",
+    "ec.utility.hdrcompander",
+    "ec.utility.hdrcompression",
+    "ec.utility.growbounds",
+    "ec.utility.ccoverbrights",
+    "ec.stylize.ccblockload",
+    "ec.stylize.ccburnfilm",
+    "ec.stylize.ccglass",
+    "ec.stylize.cchextile",
+    "ec.stylize.ccmrsmoothie",
+    "ec.stylize.ccplastic",
+    "ec.key.innerouter",
+    "ec.key.ccsimplewireremoval",
+    "ec.obsolete.basic3d",
 ];
 
 /// Effects whose output depends on [`EffectCtx::time`] directly (not only through animated

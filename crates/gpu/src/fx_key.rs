@@ -88,7 +88,7 @@ fn src_index(s: Src) -> u32 {
 
 /// Layer parameter `id` resampled into the buffer's pixel grid (`util::fit_layer`):
 /// `Some(None)` when no layer is chosen (the effect then uses its own layer).
-fn fitted(e: &mut Enc, ctx: &EffectCtx, b: &GBuf, id: &str, masks_and_effects: bool, stretch: bool) -> Option<Option<GpuImage>> {
+pub(crate) fn fitted(e: &mut Enc, ctx: &EffectCtx, b: &GBuf, id: &str, masks_and_effects: bool, stretch: bool) -> Option<Option<GpuImage>> {
     let Some(o) = ctx.layer_param(id, masks_and_effects) else { return Some(None) };
     let (w, h) = (b.img.width, b.img.height);
     if o.buf.img.is_empty() {
