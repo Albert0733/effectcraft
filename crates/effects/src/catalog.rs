@@ -91,36 +91,12 @@ const CPU_ONLY_CONTROLS: &[(&str, &[&str])] = &[
 ];
 
 /// Whether the GPU kernel of effect `id` covers the instance's current settings (see
-/// [`CPU_ONLY_CONTROLS`]; plus Cell Pattern's HQ variants, Turbulent Displace's locked
-/// pinning, Warp's strong Fisheye / Twist and Timewarp with a Matte Layer).
+/// [`CPU_ONLY_CONTROLS`]; plus Cell Pattern's HQ variants and Turbulent Displace's locked
+/// pinning).
 pub fn gpu_supported(id: &str, ctx: &crate::EffectCtx) -> bool {
     match id {
         "ec.generate.cellpattern" if (6..=10).contains(&ctx.params.e("cellPattern")) => return false,
         "ec.distort.turbulentdisplace" if ctx.params.e("pinning") >= 8 => return false,
-        // Shatter's wireframe views; Foam's User Defined texture, Environment Map and flow-map
-        // preview (the GPU draws the rendered pieces and the sprite bubbles only).
-        "ec.sim.shatter" if ctx.params.e("view") != 0 => return false,
-        "ec.sim.foam" => {
-            let set = |id: &str| matches!(ctx.params.get(id), Some(effectcraft_keyframe::Value::Layer(Some(_))));
-            let view = ctx.params.e("view");
-            if (view == 2 && ctx.params.e("rendering/bubbleTexture") == 5)
-                || (view == 2 && ctx.params.f("rendering/reflectionStrength") > 0.0 && set("rendering/environmentMap"))
-                || (view == 1 && set("flowMap/flowMap"))
-            {
-                return false;
-            }
-        }
-        // Timewarp's Matte Layer (foreground and background on their own vectors).
-        "ec.time.timewarp" if ctx.params.get("matteLayer").and_then(effectcraft_keyframe::Value::as_layer).is_some() => return false,
-        // Fisheye / Twist (a crease at the unit circle) bent past 50 % or with Horizontal /
-        // Vertical Distortion: Newton's inverse wanders chaotically before converging near the
-        // fold, so f32 lands on other pixels than the CPU's f64.
-        "ec.distort.warp"
-            if matches!(ctx.params.e("warpStyle"), 11 | 14)
-                && (ctx.params.f("bend").abs() > 50.0 || ctx.params.f("horizontalDistortion") != 0.0 || ctx.params.f("verticalDistortion") != 0.0) =>
-        {
-            return false;
-        }
         _ => {}
     }
     let Some((_, controls)) = CPU_ONLY_CONTROLS.iter().find(|(e, _)| *e == id) else { return true };

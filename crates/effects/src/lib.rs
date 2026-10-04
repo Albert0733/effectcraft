@@ -75,7 +75,7 @@ pub use color2::{Curve, auto_correct_settings, equalize_tables, luma_clip_points
 pub use color3::OffsetCurve;
 pub use distort::transform_shutter;
 pub use distort2::{MAGNIFY_MODES, bezier_grid, parse_mesh};
-pub use distort3::{RESHAPE_POINTS, ReshapeSetup, SmearSetup, reshape_setup, smear_setup};
+pub use distort3::{RESHAPE_POINTS, ReshapeSetup, SmearSetup, reshape_setup, smear_setup, warp_inverse_map};
 pub use distort4::liquify_mesh;
 use effectcraft_keyframe::Value;
 use effectcraft_project::build::Ids;
@@ -83,7 +83,7 @@ use effectcraft_project::{GroupKind, ParamUi, PropGroup, Property};
 pub use effectcraft_raster::{AuxChannels, Image};
 pub use misc::{INVERT_ALPHA, INVERT_CHANNELS, glow_ab_t, glow_operation};
 pub use sim::particle_state;
-pub use sim3::playground_state;
+pub use sim3::{PgBlit, PgPlan, playground_plan, playground_state};
 pub use stylize2::strobe_on;
 // CPU helpers the GPU kernels share (effectcraft-gpu).
 pub use blur2::{camera_lens_plain, camera_lens_spans};
@@ -102,7 +102,10 @@ pub use ocio::color_stabilizer_maps;
 pub use channel3d::{CRYPTO_LAYERS, id_color, selection_hashes};
 pub use ocio::{ColorOp, Straight, Tf, color_program};
 pub use sim::{Acc, Blob, Bubble, Post, Shape, Sprite, SpritePlan, Tint, bubble_list, drizzle_drops, mercury_blobs, sprite_plan};
-pub use sim2::{CausticsSetup, Piece, PiecePlan, PieceTex, WavePlan, Waves, caustics_setup, piece_plan, wave_world_plan};
+pub use sim2::{
+    CausticsSetup, FoamDisc, FoamEnv, FoamPlan, Piece, PiecePlan, PieceTex, PixelPlan, WavePlan, Waves, caustics_setup, foam_full_plan, piece_plan, pixel_plan,
+    wave_world_plan,
+};
 pub use utility::{Lut, load_lut};
 pub use vr::{equi_dir as vr_equi_dir, rotation as vr_rotation};
 
@@ -983,6 +986,14 @@ pub const GPU_EFFECTS: &[&str] = &[
     "ec.sim.shatter",
     "ec.sim.carddance",
     "ec.transition.cardwipe",
+    // effectcraft-gpu fx_particles (particle render passes)
+    "ec.sim.ccparticleworld",
+    "ec.sim.ccparticlesystems2",
+    "ec.sim.particleplayground",
+    "ec.sim.ccballaction",
+    "ec.sim.ccpixelpolly",
+    "ec.sim.ccscatterize",
+    "ec.noise.curlnoise",
     // effectcraft-gpu fx_light (the CC light family)
     "ec.generate.cclightrays",
     "ec.generate.cclightburst",

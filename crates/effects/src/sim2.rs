@@ -12,7 +12,7 @@ use rayon::prelude::*;
 
 use crate::card3d::{Lighting, Proj};
 use crate::generate::value_noise;
-use crate::sim::{Acc, Shape, Sprite, h, hs, pct, pt, raster, spec, splat};
+use crate::sim::{Acc, Post, Shape, Sprite, SpritePlan, h, hs, pct, pt, raster, spec, splat};
 use crate::util::{Plane, SimCache, gauss_plane, layer_or_self, params_key, unpremul};
 use crate::{Buf, EffectCtx, EffectSpec, col, num, p, popup, slider};
 
@@ -146,7 +146,10 @@ impl PiecePlan {
 pub fn piece_plan(id: &str, ctx: &EffectCtx, b: &Buf) -> Option<PiecePlan> {
     match id {
         "ec.sim.carddance" => Some(card_dance_plan(ctx, b)),
-        "ec.sim.shatter" if ctx.params.e("view") == 0 => shatter_impl(ctx, b, true).err(),
+        "ec.sim.shatter" if ctx.params.e("view") == 0 => match shatter_impl(ctx, b) {
+            ShatterPlan::Pieces(plan) => Some(plan),
+            ShatterPlan::Wire(_) => None,
+        },
         "ec.transition.cardwipe" => crate::transition::card_wipe_plan(ctx, b),
         _ => None,
     }
@@ -290,7 +293,12 @@ pub(crate) fn sort_far_first(pieces: &mut [Piece]) {
 
 // ------------------------------------------------------------------ CC Ball Action
 
-fn ball_action(ctx: &EffectCtx, mut b: Buf) -> Buf {
+fn ball_action(ctx: &EffectCtx, b: Buf) -> Buf {
+    ball_action_plan(ctx, &b).finish(b)
+}
+
+/// CC Ball Action's balls (far to near), coloured by the layer's pixels.
+fn ball_action_plan(ctx: &EffectCtx, b: &Buf) -> SpritePlan {
     let pr = ctx.params;
     let scatter = pr.f("scatter") as f32;
     let axis = pr.e("rotationAxis");
@@ -307,7 +315,7 @@ fn ball_action(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let ny = (lh / spacing).ceil().max(1.0) as u32;
     let d = 2.0 * lw.max(lh) as f64;
     let (cx, cy) = (lw as f64 * 0.5, lh as f64 * 0.5);
-    let src = b.img.clone();
+    let src = &b.img;
     let ax: [f64; 3] = match axis {
         0 => [1.0, 0.0, 0.0],
         1 => [0.0, 1.0, 0.0],
@@ -353,17 +361,24 @@ fn ball_action(ctx: &EffectCtx, mut b: Buf) -> Buf {
         .collect();
     balls.sort_by(|a, b| b.0.total_cmp(&a.0));
     let sprites: Vec<Sprite> = balls.into_iter().map(|(_, s)| s).collect();
-    b.img = splat(src.width, src.height, &sprites, Acc::Over);
-    b
+    SpritePlan { sprites, tints: vec![], acc: Acc::Over, post: Post::Replace }
 }
 
 // ------------------------------------------------------------------ CC Pixel Polly
 
-fn pixel_polly(ctx: &EffectCtx, mut b: Buf) -> Buf {
+fn pixel_polly(ctx: &EffectCtx, b: Buf) -> Buf {
+    match pixel_polly_plan(ctx, &b) {
+        Some(plan) => plan.finish(b),
+        None => b,
+    }
+}
+
+/// CC Pixel Polly's pieces, `None` before Start Time (the layer as is).
+fn pixel_polly_plan(ctx: &EffectCtx, b: &Buf) -> Option<PiecePlan> {
     let pr = ctx.params;
     let t = ctx.time - pr.f("startTime");
     if t <= 0.0 {
-        return b;
+        return None;
     }
     let force = pr.f("force");
     let gravity = pr.f("gravity");
@@ -383,7 +398,7 @@ fn pixel_polly(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let tri = object <= 1;
     let textured = object == 1 || object == 3;
     let maxd = lw.max(lh);
-    let src = b.img.clone();
+    let src = &b.img;
     let per = if tri { 2 } else { 1 };
     let mut pieces: Vec<Piece> = (0..nx * ny * per)
         .into_par_iter()
@@ -425,21 +440,26 @@ fn pixel_polly(ctx: &EffectCtx, mut b: Buf) -> Buf {
     if depth_sort {
         sort_far_first(&mut pieces);
     }
-    let mut out = Image::new(src.width, src.height);
-    draw_pieces(&mut out, &pieces, &src, None);
-    b.img = out;
-    b
+    Some(PiecePlan { pieces, front: PieceTex::Layer, back: None })
 }
 
 // ------------------------------------------------------------------ CC Scatterize
 
-fn scatterize(ctx: &EffectCtx, mut b: Buf) -> Buf {
+fn scatterize(ctx: &EffectCtx, b: Buf) -> Buf {
+    match scatterize_plan(ctx, &b) {
+        Some(plan) => plan.finish(b),
+        None => b,
+    }
+}
+
+/// CC Scatterize's pixel dots, `None` when nothing moves (the layer as is).
+fn scatterize_plan(ctx: &EffectCtx, b: &Buf) -> Option<SpritePlan> {
     let pr = ctx.params;
     let scatter = pr.f("scatter") as f32;
     let right = pr.f("rightTwist").to_radians();
     let left = pr.f("leftTwist").to_radians();
     if scatter == 0.0 && right == 0.0 && left == 0.0 {
-        return b;
+        return None;
     }
     let add = pr.e("transferMode") == 1;
     let seed = ctx.seed.wrapping_mul(0x7feb352d);
@@ -471,8 +491,29 @@ fn scatterize(ctx: &EffectCtx, mut b: Buf) -> Buf {
             Some(Sprite::new(sx as f32, sy as f32, 0.6 * persp as f32, [c[0], c[1], c[2], a], Shape::Disc))
         })
         .collect();
-    b.img = splat(w, hh, &sprites, if add { Acc::Add } else { Acc::Over });
-    b
+    Some(SpritePlan { sprites, tints: vec![], acc: if add { Acc::Add } else { Acc::Over }, post: Post::Replace })
+}
+
+/// What a particle effect that reads the layer's pixels draws this frame (CC Ball Action, CC
+/// Pixel Polly, CC Scatterize, Shatter's wireframe views), for layer `b`; `None` for other
+/// effects or a frame showing the layer as is.
+pub enum PixelPlan {
+    Sprites(SpritePlan),
+    Pieces(PiecePlan),
+}
+
+/// The [`PixelPlan`] of effect `id` for layer `b` (its pixels are read).
+pub fn pixel_plan(id: &str, ctx: &EffectCtx, b: &Buf) -> Option<PixelPlan> {
+    match id {
+        "ec.sim.ccballaction" => Some(PixelPlan::Sprites(ball_action_plan(ctx, b))),
+        "ec.sim.ccpixelpolly" => pixel_polly_plan(ctx, b).map(PixelPlan::Pieces),
+        "ec.sim.ccscatterize" => scatterize_plan(ctx, b).map(PixelPlan::Sprites),
+        "ec.sim.shatter" => Some(match shatter_impl(ctx, b) {
+            ShatterPlan::Pieces(plan) => PixelPlan::Pieces(plan),
+            ShatterPlan::Wire(plan) => PixelPlan::Sprites(plan),
+        }),
+        _ => None,
+    }
 }
 
 // ------------------------------------------------------------------ Card Dance
@@ -686,14 +727,19 @@ fn map_key(c: [f32; 4]) -> u32 {
 }
 
 fn shatter(ctx: &EffectCtx, b: Buf) -> Buf {
-    match shatter_impl(ctx, &b, false) {
-        Ok(img) => Buf { img, ..b },
-        Err(plan) => plan.finish(b),
+    match shatter_impl(ctx, &b) {
+        ShatterPlan::Pieces(plan) => plan.finish(b),
+        ShatterPlan::Wire(plan) => plan.finish(b),
     }
 }
 
-/// Shatter: the frame (`Ok`), or with `plan_only` in the Rendered view its pieces (`Err`).
-fn shatter_impl(ctx: &EffectCtx, b: &Buf, plan_only: bool) -> Result<Image, PiecePlan> {
+/// What Shatter draws: the pieces (Rendered view) or the wireframe lines.
+enum ShatterPlan {
+    Pieces(PiecePlan),
+    Wire(SpritePlan),
+}
+
+fn shatter_impl(ctx: &EffectCtx, b: &Buf) -> ShatterPlan {
     let pr = ctx.params;
     let view = pr.e("view");
     let render = pr.e("render");
@@ -770,7 +816,6 @@ fn shatter_impl(ctx: &EffectCtx, b: &Buf, plan_only: bool) -> Result<Image, Piec
         e.1 += 1.0;
     }
     let g3 = [gdir.sin() * ginc.cos() * gravity * unit, -gdir.cos() * ginc.cos() * gravity * unit, ginc.sin() * gravity * unit];
-    let src = b.img.clone();
     let mut pieces: Vec<Piece> = polys
         .par_iter()
         .zip(keys.par_iter())
@@ -902,13 +947,8 @@ fn shatter_impl(ctx: &EffectCtx, b: &Buf, plan_only: bool) -> Result<Image, Piec
         let tex = |i: &Option<Image>| i.clone().map(PieceTex::Image);
         let front_t = tex(&front.img).unwrap_or(PieceTex::Layer);
         let back_t = tex(&backf.img).unwrap_or_else(|| front_t.clone());
-        let plan = PiecePlan { pieces, front: front_t, back: Some(back_t) };
-        if plan_only {
-            return Err(plan);
-        }
-        return Ok(plan.finish(Buf { img: src, offset: b.offset, scale: b.scale }).img);
+        return ShatterPlan::Pieces(PiecePlan { pieces, front: front_t, back: Some(back_t) });
     }
-    let out;
     {
         // Wireframes: piece outlines (front view: at rest; otherwise animated), plus forces.
         let animated = view == 2 || view == 4;
@@ -948,9 +988,8 @@ fn shatter_impl(ctx: &EffectCtx, b: &Buf, plan_only: bool) -> Result<Image, Piec
                 }
             }
         }
-        out = splat(src.width, src.height, &lines, Acc::Over);
+        ShatterPlan::Wire(SpritePlan { sprites: lines, tints: vec![], acc: Acc::Over, post: Post::Replace })
     }
-    Ok(out)
 }
 
 // ------------------------------------------------------------------ Caustics
@@ -1516,22 +1555,97 @@ fn foam_pop_age(id: u32, lifespan: f32, frailty: f32, seed: u32) -> f32 {
 /// neighbours away at Pop Velocity. Rendered bubbles use a built-in texture or the Bubble
 /// Texture Layer, oriented by Bubble Orientation, and reflect the Environment Map.
 fn foam(ctx: &EffectCtx, b: Buf) -> Buf {
-    match foam_impl(ctx, &b, false) {
-        Ok(img) => Buf { img, ..b },
-        Err(plan) => plan.finish(b),
-    }
+    foam_full_plan(ctx, &b).finish(b)
 }
 
 /// Foam's bubbles as sprites, `None` when it draws more than sprites (a User Defined bubble
 /// texture, an Environment Map reflection or the Draft + Flow Map view's flow map).
 pub(crate) fn foam_plan(ctx: &EffectCtx, b: &Buf) -> Option<crate::sim::SpritePlan> {
-    if !crate::catalog::gpu_supported("ec.sim.foam", ctx) {
-        return None;
-    }
-    foam_impl(ctx, b, true).err()
+    let plan = foam_full_plan(ctx, b);
+    (plan.user.is_none() && plan.env.is_none() && plan.flow.is_none()).then_some(plan.sprites)
 }
 
-fn foam_impl(ctx: &EffectCtx, b: &Buf, plan_only: bool) -> Result<Image, crate::sim::SpritePlan> {
+/// A bubble disc filled by Foam's User Defined texture (buffer px; `rot` radians).
+#[derive(Clone, Copy, Debug)]
+pub struct FoamDisc {
+    pub x: f64,
+    pub y: f64,
+    pub r: f32,
+    pub rot: f32,
+    pub fade: f32,
+}
+
+/// Foam's Environment Map reflection: the map fitted to the buffer, Reflection Convergence and
+/// Strength, and the bubble discs reflecting it (`rot` and `fade` unused).
+pub struct FoamEnv {
+    pub img: Image,
+    pub conv: f64,
+    pub strength: f32,
+    pub discs: Vec<FoamDisc>,
+}
+
+/// What Foam draws this frame over a transparent frame of the layer's size: the bubble sprites,
+/// then the User Defined texture's discs, the Environment Map's reflections and (Draft + Flow
+/// Map) the flow map under it all, each [`foam_disc`]-composited in bubble order.
+pub struct FoamPlan {
+    pub sprites: crate::sim::SpritePlan,
+    pub user: Option<(crate::LayerPixels, Vec<FoamDisc>)>,
+    pub env: Option<FoamEnv>,
+    /// The flow map fitted to the buffer.
+    pub flow: Option<Image>,
+}
+
+impl FoamPlan {
+    pub fn finish(&self, b: Buf) -> Buf {
+        let mut out = splat(b.img.width, b.img.height, &self.sprites.sprites, self.sprites.acc);
+        // User Defined: the texture layer fills each bubble's disc.
+        if let Some((tex, discs)) = &self.user {
+            for d in discs {
+                let (rot, fade) = (d.rot, d.fade);
+                foam_disc(&mut out, d.x, d.y, d.r as f64, |u, v| {
+                    // u, v in −1..1 across the bubble, rotated into the texture.
+                    let (sr, cr) = rot.sin_cos();
+                    let (tu, tv) = (u as f32 * cr + v as f32 * sr, -u as f32 * sr + v as f32 * cr);
+                    let (x, y) = ((tu as f64 * 0.5 + 0.5) * tex.size[0], (tv as f64 * 0.5 + 0.5) * tex.size[1]);
+                    let px = tex.buf.img.sample_bilinear(x * tex.buf.scale + tex.buf.offset[0], y * tex.buf.scale + tex.buf.offset[1]);
+                    px.map(|c| c * fade)
+                });
+            }
+        }
+        // Environment Map: each bubble reflects the map along its sphere normal (Reflection
+        // Convergence pulls the reflection towards the bubble's own spot of the map).
+        if let Some(env) = &self.env {
+            let (conv, strength) = (env.conv, env.strength);
+            let (w, h) = (b.img.width as f64, b.img.height as f64);
+            for d in &env.discs {
+                let (bx, by) = (d.x, d.y);
+                foam_disc(&mut out, bx, by, d.r as f64, |u, v| {
+                    // Sphere normal; the reflection looks across the whole map, or (convergence 1)
+                    // just behind the bubble.
+                    let (ex, ey) =
+                        if conv >= 1.0 { (bx, by) } else { (bx * conv + (u * 0.5 + 0.5) * w * (1.0 - conv), by * conv + (v * 0.5 + 0.5) * h * (1.0 - conv)) };
+                    let e = env.img.sample_bilinear(ex, ey);
+                    let rim = ((u * u + v * v) as f32).min(1.0);
+                    let k = strength * (0.3 + 0.7 * rim);
+                    [e[0] * k, e[1] * k, e[2] * k, 0.0]
+                });
+            }
+        }
+        // Draft + Flow Map shows the flow map under the bubbles.
+        if let Some(fm) = &self.flow {
+            out.data.par_iter_mut().zip(fm.data.par_iter()).for_each(|(o, f)| {
+                let k = 1.0 - o[3];
+                for c in 0..4 {
+                    o[c] += f[c] * 0.5 * k;
+                }
+            });
+        }
+        Buf { img: out, ..b }
+    }
+}
+
+/// Foam's [`FoamPlan`] for layer geometry `b` (its size; its pixels are not read).
+pub fn foam_full_plan(ctx: &EffectCtx, b: &Buf) -> FoamPlan {
     let pr = ctx.params;
     let (lw, lh) = (ctx.layer_size[0] as f32, ctx.layer_size[1] as f32);
     let unit = lw * 0.01;
@@ -1754,62 +1868,34 @@ fn foam_impl(ctx: &EffectCtx, b: &Buf, plan_only: bool) -> Result<Image, crate::
         })
         .collect();
     let acc = if blend == 0 && view == 2 { Acc::Add } else { Acc::Over };
-    if plan_only {
-        return Err(crate::sim::SpritePlan { sprites, tints: vec![], acc, post: crate::sim::Post::Replace });
-    }
-    let mut out = splat(b.img.width, b.img.height, &sprites, acc);
-    // User Defined: the texture layer fills each bubble's disc.
-    if let Some(tex) = &user_tex {
-        for q in &order {
-            let (bx, by, r, rot) = place(q);
-            let fade = ((foam_pop_age(q.id, lifespan, frailty, seed) - q.age) / 5.0).clamp(0.0, 1.0);
-            foam_disc(&mut out, bx, by, r as f64, |u, v| {
-                // u, v in −1..1 across the bubble, rotated into the texture.
-                let (sr, cr) = rot.sin_cos();
-                let (tu, tv) = (u as f32 * cr + v as f32 * sr, -u as f32 * sr + v as f32 * cr);
-                let (x, y) = ((tu as f64 * 0.5 + 0.5) * tex.size[0], (tv as f64 * 0.5 + 0.5) * tex.size[1]);
-                let px = tex.buf.img.sample_bilinear(x * tex.buf.scale + tex.buf.offset[0], y * tex.buf.scale + tex.buf.offset[1]);
-                px.map(|c| c * fade)
-            });
-        }
-    }
-    // Environment Map: each bubble reflects the map along its sphere normal (Reflection
-    // Convergence pulls the reflection towards the bubble's own spot of the map).
+    let disc = |q: &&FoamBubble| {
+        let (x, y, r, rot) = place(q);
+        let fade = ((foam_pop_age(q.id, lifespan, frailty, seed) - q.age) / 5.0).clamp(0.0, 1.0);
+        FoamDisc { x, y, r, rot, fade }
+    };
+    let user = user_tex.map(|tex| (tex, order.iter().map(disc).collect()));
     let strength = pr.f("rendering/reflectionStrength").clamp(0.0, 1.0) as f32;
-    if view == 2
+    let env = if view == 2
         && strength > 0.0
         && let Some(env) = ctx.layer_param("rendering/environmentMap", true)
     {
-        let env_img = crate::util::fit_layer(ctx, b, &env, true);
-        let conv = pr.f("rendering/reflectionConvergence").clamp(0.0, 1.0);
-        let (w, h) = (b.img.width as f64, b.img.height as f64);
-        for q in &order {
-            let (bx, by, r, _) = place(q);
-            foam_disc(&mut out, bx, by, r as f64, |u, v| {
-                // Sphere normal; the reflection looks across the whole map, or (convergence 1)
-                // just behind the bubble.
-                let (ex, ey) =
-                    if conv >= 1.0 { (bx, by) } else { (bx * conv + (u * 0.5 + 0.5) * w * (1.0 - conv), by * conv + (v * 0.5 + 0.5) * h * (1.0 - conv)) };
-                let e = env_img.sample_bilinear(ex, ey);
-                let rim = ((u * u + v * v) as f32).min(1.0);
-                let k = strength * (0.3 + 0.7 * rim);
-                [e[0] * k, e[1] * k, e[2] * k, 0.0]
-            });
-        }
-    }
-    // Draft + Flow Map shows the flow map under the bubbles.
-    if view == 1
+        Some(FoamEnv {
+            img: crate::util::fit_layer(ctx, b, &env, true),
+            conv: pr.f("rendering/reflectionConvergence").clamp(0.0, 1.0),
+            strength,
+            discs: order.iter().map(disc).collect(),
+        })
+    } else {
+        None
+    };
+    let flow = if view == 1
         && let Some(lp) = &flow
     {
-        let fm = crate::util::fit_layer(ctx, b, lp, true);
-        out.data.par_iter_mut().zip(fm.data.par_iter()).for_each(|(o, f)| {
-            let k = 1.0 - o[3];
-            for c in 0..4 {
-                o[c] += f[c] * 0.5 * k;
-            }
-        });
-    }
-    Ok(out)
+        Some(crate::util::fit_layer(ctx, b, lp, true))
+    } else {
+        None
+    };
+    FoamPlan { sprites: crate::sim::SpritePlan { sprites, tints: vec![], acc, post: crate::sim::Post::Replace }, user, env, flow }
 }
 
 /// Add `f(u, v)` (premultiplied; u, v ∈ −1..1 across the disc) over the disc of radius `r` at

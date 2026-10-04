@@ -28,15 +28,12 @@ fn warp_styles() {
     effect_case("ec.distort.warp", &[("warpStyle", e(4)), ("bend", n(80.0)), ("verticalDistortion", n(-35.0))]);
     effect_case("ec.distort.warp", &[("warpStyle", e(11)), ("bend", n(-50.0))]);
     effect_case("ec.distort.warp", &[("warpStyle", e(14)), ("bend", n(-35.0))]);
-    // Fisheye / Twist with a distortion render on the CPU (see catalog::gpu_supported).
-    let spec = effectcraft_effects::find("ec.distort.warp").unwrap();
-    let mut params = effectcraft_effects::Params {
-        values: spec.params.iter().map(|ps| (ps.id.to_string(), effectcraft_effects::default_value(ps, [70.0, 44.0]))).collect(),
-    };
-    params.values.insert("warpStyle".into(), e(14));
-    params.values.insert("verticalDistortion".into(), n(-35.0));
-    let ctx = effectcraft_effects::EffectCtx { params: &params, time: 0.0, layer_size: [70.0, 44.0], seed: 0, adjustment: false, env: Default::default() };
-    assert!(!effectcraft_effects::catalog::gpu_supported("ec.distort.warp", &ctx));
+    // Strong Fisheye / Twist bends and either with a distortion: the CPU's f64 inverse map.
+    for (style, bend) in [(11, 90.0), (11, -100.0), (14, 75.0), (14, -100.0)] {
+        effect_case("ec.distort.warp", &[("warpStyle", e(style)), ("bend", n(bend))]);
+    }
+    effect_case("ec.distort.warp", &[("warpStyle", e(14)), ("verticalDistortion", n(-35.0))]);
+    effect_case("ec.distort.warp", &[("warpStyle", e(11)), ("warpAxis", e(1)), ("bend", n(60.0)), ("horizontalDistortion", n(30.0))]);
     effect_case("ec.distort.warp", &[("warpStyle", e(3)), ("bend", n(0.0)), ("horizontalDistortion", n(-40.0)), ("verticalDistortion", n(25.0))]);
 }
 
