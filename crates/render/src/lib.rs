@@ -841,11 +841,7 @@ impl<'a> Renderer<'a> {
             effect_index: 0,
             working_space: self.pipe.space,
             working_linear: self.pipe.linear,
-            shutter: (ctx.comp.enable_motion_blur && layer.switches.motion_blur).then_some((
-                ctx.comp.shutter_angle,
-                ctx.comp.shutter_phase,
-                ctx.comp.motion_blur_samples,
-            )),
+            shutter: self.mb_on(ctx, layer).then_some((ctx.comp.shutter_angle, ctx.comp.shutter_phase, ctx.comp.motion_blur_samples)),
         };
         // Video effects in stack order (index, group, spec); disabled and audio effects skipped.
         let stack: Vec<(usize, &effectcraft_project::PropGroup, &'static effectcraft_effects::EffectSpec)> = fx
@@ -1085,7 +1081,7 @@ impl<'a> Renderer<'a> {
         let mut buf = self.source(ctx, layer)?;
         // A solid is filled with a quantised colour: only masks can take it off the grid.
         let solid = matches!(layer.source, LayerSource::Solid { .. });
-        if masks::apply(ctx, layer, &mut buf) || !solid {
+        if masks::apply(ctx, layer, &mut buf, self.mask_blur(ctx, layer)) || !solid {
             self.pipe.quantize(&mut buf.img);
         }
         Some(buf)
@@ -1152,7 +1148,7 @@ impl<'a> Renderer<'a> {
     }
 
     fn content_buf_timed(&self, ctx: &EvalCtx, layer: &Layer, mut timing: Option<&mut LayerTiming>) -> Option<(Arc<Buf>, Option<u64>)> {
-        let key = self.cache.and_then(|_| cache::layer_key(ctx, layer, self.raster_scale(ctx, layer), self.opts.draft));
+        let key = self.cache.and_then(|_| cache::layer_key(ctx, layer, self.raster_scale(ctx, layer), self.opts.draft, self.mb_on(ctx, layer)));
         if let (Some(c), Some(k)) = (self.cache, key)
             && let Some(b) = c.get(k)
         {
@@ -1173,7 +1169,7 @@ impl<'a> Renderer<'a> {
     /// (what Time effects read at neighbouring times). Served from / stored in the layer cache
     /// under its own key, so scrubbing reuses frames rendered for earlier output frames.
     pub fn layer_input(&self, ctx: &EvalCtx, layer: &Layer, effects: usize) -> Option<Arc<Buf>> {
-        let key = self.cache.and_then(|_| cache::input_key(ctx, layer, self.raster_scale(ctx, layer), self.opts.draft, effects));
+        let key = self.cache.and_then(|_| cache::input_key(ctx, layer, self.raster_scale(ctx, layer), self.opts.draft, self.mb_on(ctx, layer), effects));
         if let (Some(c), Some(k)) = (self.cache, key)
             && let Some(b) = c.get(k)
         {
@@ -1285,9 +1281,20 @@ impl<'a> Renderer<'a> {
             * Mat3::translate(vec2(-buf.offset[0], -buf.offset[1]))
     }
 
-    /// Whether a layer is motion blurred.
-    fn mb_on(&self, ctx: &EvalCtx, layer: &Layer) -> bool {
+    /// Whether a layer is motion blurred: the render options, the comp's switch and the layer's
+    /// switch (limited by the precomp layers above when switches affect nested comps). Layer
+    /// motion, mask motion blur, effects that read the shutter and Advanced 3D all ask this.
+    pub(crate) fn mb_on(&self, ctx: &EvalCtx, layer: &Layer) -> bool {
         self.opts.motion_blur && ctx.comp.enable_motion_blur && self.layer_motion_blur(layer)
+    }
+
+    /// What a layer's mask motion blur may do in this render (see [`masks::MaskBlur`]).
+    fn mask_blur(&self, ctx: &EvalCtx, layer: &Layer) -> masks::MaskBlur {
+        masks::MaskBlur {
+            allowed: self.opts.motion_blur && ctx.comp.enable_motion_blur && self.inherited.is_none_or(|(_, mb)| mb),
+            layer: self.layer_motion_blur(layer),
+            samples: if self.opts.draft { 4 } else { ctx.comp.motion_blur_samples as usize },
+        }
     }
 
     /// Motion-blur sub-samples for a layer buffer (1 = no motion blur). As in After Effects, a 2D
@@ -1545,7 +1552,7 @@ impl<'a> Renderer<'a> {
     /// Adjustment layer: effects applied to the comp below, limited to the layer's footprint.
     fn draw_adjustment(&self, ctx: &EvalCtx, layer: &Layer, canvas: &mut Image, opacity: f32) {
         let Some(mut foot) = self.source(ctx, layer) else { return };
-        let _ = masks::apply(ctx, layer, &mut foot);
+        let _ = masks::apply(ctx, layer, &mut foot, self.mask_blur(ctx, layer));
         let mut matte = Image::new(canvas.width, canvas.height);
         self.place(ctx, layer, &foot, &mut matte, BlendMode::Normal, 1.0);
         let o = self.roi_offset().map(|(x, y, _, _)| [-x, -y]).unwrap_or([0.0; 2]);
@@ -1708,14 +1715,14 @@ impl<'a> Renderer<'a> {
     /// its effects show. `None` = the layer changes nothing.
     pub fn adjustment_footprint(&self, ctx: &EvalCtx, layer: &Layer) -> Option<Arc<Buf>> {
         // Cached, so an accelerator sees the same buffer (and uploads it once) every frame.
-        let key = self.cache.and_then(|_| cache::footprint_key(ctx, layer, self.raster_scale(ctx, layer), self.opts.draft));
+        let key = self.cache.and_then(|_| cache::footprint_key(ctx, layer, self.raster_scale(ctx, layer), self.opts.draft, self.mb_on(ctx, layer)));
         if let (Some(c), Some(k)) = (self.cache, key)
             && let Some(b) = c.get(k)
         {
             return Some(b);
         }
         let mut foot = self.source(ctx, layer)?;
-        let _ = masks::apply(ctx, layer, &mut foot);
+        let _ = masks::apply(ctx, layer, &mut foot, self.mask_blur(ctx, layer));
         let foot = Arc::new(foot);
         if let (Some(c), Some(k)) = (self.cache, key) {
             c.insert(k, foot.clone());
@@ -1913,6 +1920,8 @@ mod tests_collapse;
 mod tests_color;
 #[cfg(test)]
 mod tests_frame_blend;
+#[cfg(test)]
+mod tests_mask_blur;
 #[cfg(test)]
 mod tests_nested;
 #[cfg(test)]
