@@ -32,6 +32,8 @@ use crate::eval::EvalCtx;
 pub struct LayerCache {
     inner: Mutex<Inner>,
     disk: Mutex<Option<(Arc<crate::disk_cache::DiskCache>, u64)>>,
+    /// Another persistent store when there is no disk cache (the browser's, [`PrefetchStore`]).
+    store: Mutex<Option<(Arc<dyn LayerStore>, u64)>>,
     /// While set, inserts are dropped (see [`LayerCache::set_gate`]).
     gate: Mutex<Option<Arc<std::sync::atomic::AtomicBool>>>,
 }
@@ -74,6 +76,7 @@ impl LayerCache {
         LayerCache {
             inner: Mutex::new(Inner { map: HashMap::new(), bytes: 0, budget, clock: 0, hits: 0, misses: 0, missed_at: HashMap::new() }),
             disk: Mutex::new(None),
+            store: Mutex::new(None),
             gate: Mutex::new(None),
         }
     }
@@ -113,10 +116,32 @@ impl LayerCache {
         self.disk.lock().ok()?.as_ref().map(|d| d.0.clone())
     }
 
-    fn disk_key(&self, key: u64) -> Option<(Arc<crate::disk_cache::DiskCache>, u128)> {
-        let d = self.disk.lock().ok()?;
-        let (dc, salt) = d.as_ref()?;
-        Some((dc.clone(), ((*salt as u128) << 64) | key as u128))
+    /// Attach (or detach) a [`LayerStore`] used when no disk cache is attached (the browser's
+    /// Origin Private File System through a [`PrefetchStore`]); `salt` as in
+    /// [`LayerCache::set_disk`].
+    pub fn set_store(&self, store: Option<(Arc<dyn LayerStore>, u64)>) {
+        if let Ok(mut s) = self.store.lock() {
+            *s = store;
+        }
+    }
+
+    /// Change the store's salt (a new project or footage), keeping the store.
+    pub fn set_store_salt(&self, salt: u64) {
+        if let Ok(mut d) = self.store.lock()
+            && let Some((_, s)) = d.as_mut()
+        {
+            *s = salt;
+        }
+    }
+
+    fn disk_key(&self, key: u64) -> Option<(Arc<dyn LayerStore>, u128)> {
+        let salted = |salt: u64| ((salt as u128) << 64) | key as u128;
+        if let Some((dc, salt)) = self.disk.lock().ok()?.as_ref() {
+            return Some((dc.clone() as Arc<dyn LayerStore>, salted(*salt)));
+        }
+        let s = self.store.lock().ok()?;
+        let (st, salt) = s.as_ref()?;
+        Some((st.clone(), salted(*salt)))
     }
 
     pub fn get(&self, key: u64) -> Option<Arc<Buf>> {
@@ -139,7 +164,7 @@ impl LayerCache {
                 drop(g);
                 // Disk cache: a hit comes back into memory.
                 let (dc, dk) = self.disk_key(key)?;
-                let buf = Arc::new(dc.get_layer(dk)?);
+                let buf = dc.get_layer(dk)?;
                 self.insert_mem(key, buf.clone());
                 Some(buf)
             }
@@ -220,6 +245,148 @@ impl LayerCache {
 
     pub fn stats(&self) -> CacheStats {
         self.inner.lock().map(|g| CacheStats { entries: g.map.len(), bytes: g.bytes, hits: g.hits, misses: g.misses }).unwrap_or_default()
+    }
+}
+
+/// Persistent storage of layer buffers behind a [`LayerCache`] (keys salted per project).
+pub trait LayerStore: Send + Sync {
+    /// A stored buffer (synchronous: mid-render).
+    fn get_layer(&self, key: u128) -> Option<Arc<Buf>>;
+    /// Keep a buffer that was slow to render.
+    fn put_layer(&self, key: u128, buf: &Buf);
+    /// Buffers faster to render than this (ms) are not stored.
+    fn min_layer_ms(&self) -> u64 {
+        0
+    }
+}
+
+/// Layers buffers rendered slower than this go to the browser's disk cache (ms).
+pub const PREFETCH_MIN_LAYER_MS: u64 = 20;
+
+/// A [`LayerStore`] over storage that can't be read in the middle of a render (the browser's
+/// Origin Private File System, read asynchronously). Lookups are served from buffers fetched
+/// before the frame ([`PrefetchStore::provide`]); the keys a render looked up and didn't find
+/// are recorded ([`PrefetchStore::take_misses`]) so the transport can fetch them before the next
+/// frame; buffers to store queue up as sealed entries ([`PrefetchStore::take_writes`]) for the
+/// transport to write after the frame. Fetched buffers are kept least recently used first, up
+/// to a byte budget.
+pub struct PrefetchStore {
+    st: Mutex<Prefetched>,
+    budget: usize,
+    min_ms: u64,
+}
+
+#[derive(Default)]
+struct Prefetched {
+    ready: HashMap<u128, (Arc<Buf>, u64)>,
+    bytes: usize,
+    clock: u64,
+    misses: Vec<u128>,
+    hits: Vec<u128>,
+    writes: Vec<(u128, Vec<u8>)>,
+    /// Keys stored or queued (not written twice).
+    known: std::collections::HashSet<u128>,
+}
+
+impl Default for PrefetchStore {
+    fn default() -> Self {
+        PrefetchStore::new(256 << 20)
+    }
+}
+
+impl PrefetchStore {
+    pub fn new(budget: usize) -> PrefetchStore {
+        PrefetchStore { st: Mutex::new(Prefetched::default()), budget, min_ms: PREFETCH_MIN_LAYER_MS }
+    }
+
+    /// Store buffers that took at least `ms` to render (default [`PREFETCH_MIN_LAYER_MS`]).
+    pub fn with_min_ms(mut self, ms: u64) -> PrefetchStore {
+        self.min_ms = ms;
+        self
+    }
+
+    /// Whether `key`'s buffer is here.
+    pub fn has(&self, key: u128) -> bool {
+        self.st.lock().is_ok_and(|s| s.ready.contains_key(&key))
+    }
+
+    /// A fetched entry (sealed bytes, [`crate::disk_cache::layer_entry`]) for `key`; `false`
+    /// when damaged.
+    pub fn provide(&self, key: u128, entry: &[u8]) -> bool {
+        let Some(buf) = crate::disk_cache::read_layer_entry(entry) else { return false };
+        let bytes = buf.img.data.len() * std::mem::size_of::<effectcraft_raster::Px>();
+        let Ok(mut s) = self.st.lock() else { return false };
+        s.clock += 1;
+        let now = s.clock;
+        if let Some((old, _)) = s.ready.insert(key, (Arc::new(buf), now)) {
+            s.bytes -= old.img.data.len() * std::mem::size_of::<effectcraft_raster::Px>();
+        }
+        s.bytes += bytes;
+        s.known.insert(key);
+        while s.bytes > self.budget {
+            let Some((&k, _)) = s.ready.iter().min_by_key(|(_, (_, t))| *t) else { break };
+            if let Some((b, _)) = s.ready.remove(&k) {
+                s.bytes -= b.img.data.len() * std::mem::size_of::<effectcraft_raster::Px>();
+            }
+        }
+        true
+    }
+
+    /// Keys looked up and not found since the last call (each once).
+    pub fn take_misses(&self) -> Vec<u128> {
+        self.st.lock().map(|mut s| std::mem::take(&mut s.misses)).unwrap_or_default()
+    }
+
+    /// Keys served since the last call (each once).
+    pub fn take_hits(&self) -> Vec<u128> {
+        self.st.lock().map(|mut s| std::mem::take(&mut s.hits)).unwrap_or_default()
+    }
+
+    /// Entries to write: (key, sealed bytes).
+    pub fn take_writes(&self) -> Vec<(u128, Vec<u8>)> {
+        self.st.lock().map(|mut s| std::mem::take(&mut s.writes)).unwrap_or_default()
+    }
+
+    /// Forget everything (Empty Disk Cache, Purge).
+    pub fn clear(&self) {
+        if let Ok(mut s) = self.st.lock() {
+            *s = Prefetched::default();
+        }
+    }
+}
+
+impl LayerStore for PrefetchStore {
+    fn get_layer(&self, key: u128) -> Option<Arc<Buf>> {
+        let mut s = self.st.lock().ok()?;
+        s.clock += 1;
+        let now = s.clock;
+        match s.ready.get_mut(&key) {
+            Some((b, t)) => {
+                *t = now;
+                let b = b.clone();
+                if !s.hits.contains(&key) {
+                    s.hits.push(key);
+                }
+                Some(b)
+            }
+            None => {
+                if !s.misses.contains(&key) && s.misses.len() < 1024 {
+                    s.misses.push(key);
+                }
+                None
+            }
+        }
+    }
+
+    fn put_layer(&self, key: u128, buf: &Buf) {
+        let Ok(mut s) = self.st.lock() else { return };
+        if s.known.insert(key) {
+            s.writes.push((key, crate::disk_cache::layer_entry(buf)));
+        }
+    }
+
+    fn min_layer_ms(&self) -> u64 {
+        self.min_ms
     }
 }
 

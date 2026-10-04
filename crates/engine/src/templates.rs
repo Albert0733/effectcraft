@@ -8,6 +8,13 @@
 //!   (the open template container of `essential.exportTemplate`: a stored ZIP with
 //!   `manifest.json` (`kind: "project"`), `project.ecproj`, `poster.png` and `thumb.txt`) into
 //!   the config store's `Templates` folder.
+//! - **Embedded footage**: saving embeds the footage files the project reads (default on,
+//!   `embedFootage`), as `media/<item>/<file>` entries like `essential.exportTemplate`, up to
+//!   [`EMBED_LIMIT_MB`] in all (`embedLimitMB`); footage beyond the cap stays referenced by its
+//!   path and the save warns. Creating from the template extracts the files next to the new
+//!   project (`projectPath`: `<project dir>/<stem> Footage/`), into `footageDir`, or into the
+//!   settings folder's `Template Footage/<name>/` (the browser: its storage), and points the
+//!   footage at them.
 //! - Opening a template (`templates.create`) makes an untitled copy: the template itself is never
 //!   changed.
 //!
@@ -31,6 +38,10 @@ use crate::{EngineError, Result, Session, cmd, query};
 pub const TEMPLATES_DIR: &str = "Templates";
 /// Template file extension.
 pub const EXT: &str = "ectemplate";
+/// Default cap on the footage a saved template embeds (MB, all files together).
+pub const EMBED_LIMIT_MB: f64 = 256.0;
+/// Folder (under the settings folder) that footage extracted from templates goes to.
+pub const FOOTAGE_DIR: &str = "Template Footage";
 /// Gallery thumbnail size (RGB, letterboxed).
 pub const THUMB_W: usize = 256;
 pub const THUMB_H: usize = 144;
@@ -611,20 +622,148 @@ pub fn list(s: &Session) -> Vec<TemplateInfo> {
     v
 }
 
-/// The project of a template id (or of an `.ectemplate` file).
-fn project_of(s: &Session, id: Option<&str>, path: Option<&str>) -> Result<(Project, String)> {
+/// A template's project, its name and its archive entries (embedded footage), by id or by
+/// `.ectemplate` file.
+type Opened = (Project, String, Vec<(String, Vec<u8>)>);
+
+fn project_of(s: &Session, id: Option<&str>, path: Option<&str>) -> Result<Opened> {
     if let Some(path) = path {
         let bytes = s.services.read_file(path).map_err(|e| EngineError::Other(format!("cannot read {path}: {e}")))?;
-        let (m, p, _) = read_template(&bytes).map_err(|e| bad("templates.create", e))?;
-        return Ok((p, str_of(&m, "name")));
+        let (m, p, e) = read_template(&bytes).map_err(|e| bad("templates.create", e))?;
+        return Ok((p, str_of(&m, "name"), e));
     }
     let id = id.ok_or_else(|| bad("templates.create", "missing `id` (see templates.list) or `path`"))?;
     if let Some(f) = id.strip_prefix("user/") {
-        let (m, p, _) = read_template(&read_user(s, f)?).map_err(|e| bad("templates.create", e))?;
-        return Ok((p, str_of(&m, "name")));
+        let (m, p, e) = read_template(&read_user(s, f)?).map_err(|e| bad("templates.create", e))?;
+        return Ok((p, str_of(&m, "name"), e));
     }
     let b = builtin(id).ok_or_else(|| bad("templates.create", format!("unknown template `{id}` (see templates.list)")))?;
-    Ok((cached_builtin(id)?, b.name.to_string()))
+    Ok((cached_builtin(id)?, b.name.to_string(), vec![]))
+}
+
+fn base_name(path: &str) -> String {
+    path.rsplit(['/', '\\']).next().filter(|n| !n.is_empty()).unwrap_or("footage").to_string()
+}
+
+/// What [`embed_footage`] did.
+#[derive(Default)]
+struct Embedded {
+    /// `{item, files, bytes}` per embedded footage item (the manifest's `media`).
+    media: Vec<Value>,
+    bytes: u64,
+    /// Footage left referenced: `{item, name, bytes?, reason}`.
+    skipped: Vec<Value>,
+}
+
+/// Embed the footage files `proj` reads as `media/<item>/<file>` entries (paths rewritten to
+/// the entries), until `limit` bytes; the rest stays referenced.
+fn embed_footage(s: &Session, proj: &mut Project, entries: &mut Vec<(String, Vec<u8>)>, limit: u64) -> Embedded {
+    let mut out = Embedded::default();
+    let mut ids: Vec<ItemId> = proj.items.keys().copied().collect();
+    ids.sort_by_key(|i| i.0);
+    for id in ids {
+        let Some(it) = proj.items.get_mut(&id) else { continue };
+        let name = it.name.clone();
+        let effectcraft_project::ItemKind::Footage(f) = &mut it.kind else { continue };
+        if f.data.is_some() || f.path.is_empty() {
+            continue;
+        }
+        let files: Vec<String> = if f.sequence.is_empty() { vec![f.path.clone()] } else { f.sequence.clone() };
+        let mut data = vec![];
+        let mut missing = None;
+        for file in &files {
+            match s.services.read_file(file) {
+                Ok(b) => data.push((file.clone(), b)),
+                Err(e) => {
+                    missing = Some(format!("{file}: {e}"));
+                    break;
+                }
+            }
+        }
+        if let Some(reason) = missing {
+            out.skipped.push(json!({"item": id.0, "name": name, "reason": reason}));
+            continue;
+        }
+        let size: u64 = data.iter().map(|(_, b)| b.len() as u64).sum();
+        if out.bytes + size > limit {
+            out.skipped.push(json!({"item": id.0, "name": name, "bytes": size, "reason": "over the size limit"}));
+            continue;
+        }
+        let mut stored = vec![];
+        for (file, bytes) in data {
+            let entry = format!("media/{}/{}", id.0, base_name(&file));
+            entries.push((entry.clone(), bytes));
+            stored.push(entry);
+        }
+        f.path = stored[0].clone();
+        if !f.sequence.is_empty() {
+            f.sequence = stored.clone();
+        }
+        out.bytes += size;
+        out.media.push(json!({"item": id.0, "files": stored, "bytes": size}));
+    }
+    out
+}
+
+/// Where footage extracted from template `name` goes (see the module docs).
+fn footage_dir(s: &Session, name: &str, footage_dir: Option<&str>, project_path: Option<&str>) -> String {
+    if let Some(d) = footage_dir.filter(|d| !d.is_empty()) {
+        return d.trim_end_matches(['/', '\\']).to_string();
+    }
+    if let Some(pp) = project_path.map(std::path::Path::new) {
+        let stem = pp.file_stem().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "Project".into());
+        return pp.parent().unwrap_or(std::path::Path::new("")).join(format!("{stem} Footage")).to_string_lossy().into_owned();
+    }
+    let safe: String = name.chars().map(|c| if c.is_alphanumeric() || " -_()".contains(c) { c } else { '_' }).collect();
+    let safe = if safe.trim().is_empty() { "Template".to_string() } else { safe.trim().to_string() };
+    let base = match s.config.as_ref().and_then(|c| c.dir()) {
+        Some(d) => d.join(FOOTAGE_DIR),
+        None => PathBuf::from(format!("/{FOOTAGE_DIR}")),
+    };
+    // A fresh folder per created project.
+    let mut k = 1;
+    loop {
+        let d = base.join(if k == 1 { safe.clone() } else { format!("{safe} {k}") });
+        let ds = d.to_string_lossy().into_owned();
+        if !s.services.exists(&ds) || k > 999 {
+            return ds;
+        }
+        k += 1;
+    }
+}
+
+/// Write a template's embedded footage (`media/…` entries) into `dir` and point the project's
+/// footage at the files. Returns the files written.
+fn extract_footage(s: &Session, proj: &mut Project, entries: &[(String, Vec<u8>)], dir: &str) -> Result<Vec<String>> {
+    let mut written = std::collections::HashMap::new();
+    let mut used = std::collections::HashSet::new();
+    for (k, v) in entries.iter().filter(|(k, _)| k.starts_with("media/")) {
+        // `media/<item>/<file>` → one folder; a name another item took gets the item's id.
+        let file = base_name(k);
+        let item = k.trim_start_matches("media/").split('/').next().unwrap_or("0");
+        let name = if used.insert(file.clone()) { file } else { format!("{item}-{file}") };
+        let out = format!("{dir}/{name}");
+        s.services.store_file(&out, v).map_err(|e| EngineError::Other(format!("cannot write {out}: {e}")))?;
+        if let Some(imp) = &s.importer {
+            imp.register(&out, v);
+        }
+        written.insert(k.clone(), out);
+    }
+    for it in proj.items.values_mut() {
+        if let effectcraft_project::ItemKind::Footage(f) = &mut it.kind {
+            if let Some(w) = written.get(&f.path) {
+                f.path = w.clone();
+            }
+            for x in &mut f.sequence {
+                if let Some(w) = written.get(x) {
+                    *x = w.clone();
+                }
+            }
+        }
+    }
+    let mut v: Vec<String> = written.into_values().collect();
+    v.sort();
+    Ok(v)
 }
 
 // ------------------------------------------------------------------------- commands
@@ -648,7 +787,13 @@ fn thumb_cmd(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 fn create(s: &mut Session, p: &Value) -> Result<Value> {
-    let (proj, name) = project_of(s, str_p(p, "id"), str_p(p, "path"))?;
+    let (mut proj, name, entries) = project_of(s, str_p(p, "id"), str_p(p, "path"))?;
+    let project_path = str_p(p, "projectPath").filter(|p| !p.is_empty());
+    let mut footage = vec![];
+    if entries.iter().any(|(k, _)| k.starts_with("media/")) {
+        let dir = footage_dir(s, &name, str_p(p, "footageDir"), project_path);
+        footage = extract_footage(s, &mut proj, &entries, &dir)?;
+    }
     let cid = main_comp(&proj);
     let poster = cid.and_then(|c| proj.comp(c)).map(|c| c.poster_time).unwrap_or(Tick::ZERO);
     s.replace_project(proj, None);
@@ -657,8 +802,13 @@ fn create(s: &mut Session, p: &Value) -> Result<Value> {
         s.open_comp(c);
         s.set_time(poster);
     }
+    let mut untitled = true;
+    if let Some(pp) = project_path {
+        s.execute("file.saveAs", json!({"path": pp}))?;
+        untitled = false;
+    }
     s.toast(format!("New project from template “{name}”"));
-    Ok(json!({"template": name, "comp": cid.map(|c| c.0), "untitled": true}))
+    Ok(json!({"template": name, "comp": cid.map(|c| c.0), "untitled": untitled, "footage": footage}))
 }
 
 fn save_as(s: &mut Session, p: &Value) -> Result<Value> {
@@ -700,9 +850,26 @@ fn save_as(s: &mut Session, p: &Value) -> Result<Value> {
         "poster": "poster.png",
         "thumbnail": "thumb.txt",
     });
+    let mut manifest = manifest;
+    // Embedded footage (default on, capped): the rest stays referenced, with a warning.
+    let mut media_entries = vec![];
+    let mut warning = None;
+    if p.get("embedFootage").and_then(Value::as_bool).unwrap_or(true) {
+        let limit_mb = p.get("embedLimitMB").and_then(Value::as_f64).unwrap_or(EMBED_LIMIT_MB).max(0.0);
+        let e = embed_footage(s, &mut proj, &mut media_entries, (limit_mb * 1024.0 * 1024.0) as u64);
+        let over: Vec<&Value> = e.skipped.iter().filter(|v| v["reason"] == "over the size limit").collect();
+        if !over.is_empty() {
+            let mb = over.iter().filter_map(|v| v["bytes"].as_u64()).sum::<u64>() as f64 / 1048576.0;
+            warning = Some(format!("{} footage item(s) ({mb:.1} MB) are over the {limit_mb:.0} MB embedding limit and stay linked to their files", over.len()));
+        }
+        manifest["media"] = json!(e.media);
+        manifest["embeddedBytes"] = json!(e.bytes);
+        manifest["linkedFootage"] = json!(e.skipped);
+    }
     let t = s.time_of(cid);
     let mut entries: Vec<(String, Vec<u8>)> =
         vec![("manifest.json".into(), serde_json::to_vec_pretty(&manifest).unwrap_or_default()), ("project.ecproj".into(), proj.to_json().into_bytes())];
+    entries.extend(media_entries);
     if let Ok((w, h, rgba)) = s.render_rgba8(cid, t, 320) {
         if let Ok(png) = crate::commands::comp_more::encode_png(&rgba, w, h) {
             entries.push(("poster.png".into(), png));
@@ -711,8 +878,20 @@ fn save_as(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let bytes = effectcraft_lottie::zip::store(&entries);
     let at = write_user(s, &file, &bytes)?;
-    s.toast(format!("Saved template “{name}”"));
-    Ok(json!({"id": format!("user/{file}"), "name": name, "path": at, "bytes": bytes.len()}))
+    match &warning {
+        Some(w) => s.events.push(crate::Event::Toast { message: format!("Saved template “{name}”: {w}"), error: false }),
+        None => s.toast(format!("Saved template “{name}”")),
+    }
+    Ok(json!({
+        "id": format!("user/{file}"),
+        "name": name,
+        "path": at,
+        "bytes": bytes.len(),
+        "embedded": manifest["media"].as_array().map_or(0, |m| m.len()),
+        "embeddedBytes": manifest["embeddedBytes"],
+        "linked": manifest["linkedFootage"],
+        "warning": warning,
+    }))
 }
 
 fn delete(s: &mut Session, p: &Value) -> Result<Value> {
@@ -735,13 +914,21 @@ pub fn specs() -> Vec<CommandSpec> {
             list_cmd
         ),
         query!("templates.thumbnail", "Template Thumbnail", "{id} → {id, width, height, rgb (hex)}", thumb_cmd),
-        cmd!("templates.create", "New Project from Template", [], None, "{id (templates.list) | path (.ectemplate)} → an untitled copy", always, create),
+        cmd!(
+            "templates.create",
+            "New Project from Template",
+            [],
+            None,
+            "{id (templates.list) | path (.ectemplate), projectPath? (save the new project there; embedded footage goes to `<stem> Footage/` next to it), footageDir?} → an untitled copy (embedded footage extracted: `footage` lists the files)",
+            always,
+            create
+        ),
         cmd!(
             "templates.saveAs",
             "Save as Template...",
             ["File"],
             None,
-            "{name, description?, category?, overwrite?: bool (default true)} → {id, path}",
+            "{name, description?, category?, overwrite?: bool (default true), embedFootage?: bool (default true: the footage files go into the template), embedLimitMB? (default 256: footage beyond it stays linked, with a warning)} → {id, path, embedded, embeddedBytes, linked: [{item, name, reason}], warning?}",
             has_comps,
             save_as
         ),
@@ -862,6 +1049,150 @@ mod tests {
             let png = crate::commands::comp_more::encode_png(&rgba, w, h).unwrap();
             std::fs::write(d.join(format!("{}.png", b.id)), png).unwrap();
         }
+    }
+
+    fn add_footage(s: &mut Session, name: &str, path: &str, sequence: Vec<String>) -> ItemId {
+        let f = effectcraft_project::Footage { path: path.into(), width: 4, height: 4, has_video: true, sequence, ..Default::default() };
+        Arc::make_mut(&mut s.project).add_item(name, effectcraft_color::Label::Aqua, None, effectcraft_project::ItemKind::Footage(f))
+    }
+
+    fn footage_paths(s: &Session) -> Vec<(String, String, Vec<String>)> {
+        let mut v: Vec<_> = s
+            .project
+            .items
+            .values()
+            .filter_map(|i| match &i.kind {
+                effectcraft_project::ItemKind::Footage(f) => Some((i.name.clone(), f.path.clone(), f.sequence.clone())),
+                _ => None,
+            })
+            .collect();
+        v.sort();
+        v
+    }
+
+    /// Saving embeds the footage (capped, with a warning); creating extracts it next to the
+    /// new project, or into the settings folder, and points the footage at the copies.
+    #[test]
+    fn templates_embed_and_extract_footage() {
+        let root = std::env::temp_dir().join(format!("ec-tpl-footage-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let media = root.join("media");
+        std::fs::create_dir_all(&media).unwrap();
+        let file = |n: &str, len: usize, b: u8| {
+            let p = media.join(n);
+            std::fs::write(&p, vec![b; len]).unwrap();
+            p.to_string_lossy().into_owned()
+        };
+        let still = file("still.png", 1000, 1);
+        let seq: Vec<String> = (0..3).map(|k| file(&format!("shot_{k:03}.png"), 500, 10 + k as u8)).collect();
+        let big = file("big.mov", 2 * 1024 * 1024, 7);
+        let mut s = Session { config: Some(Arc::new(DirConfig::new(root.join("config")))), ..Default::default() };
+        s.execute("templates.create", json!({"id": "lower-third"})).unwrap();
+        add_footage(&mut s, "Still", &still, vec![]);
+        add_footage(&mut s, "Shot", &seq[0], seq.clone());
+        add_footage(&mut s, "Big", &big, vec![]);
+        add_footage(&mut s, "Gone", &media.join("gone.png").to_string_lossy(), vec![]);
+        let r = s.execute("templates.saveAs", json!({"name": "With Footage", "embedLimitMB": 1})).unwrap();
+        assert_eq!(r["embedded"], 2, "{r}");
+        assert_eq!(r["embeddedBytes"], 2500);
+        let linked = r["linked"].as_array().unwrap();
+        assert_eq!(linked.len(), 2, "{r}");
+        let warning = r["warning"].as_str().unwrap();
+        assert!(warning.contains("1 footage item") && warning.contains("1 MB"), "{warning}");
+        assert!(s.events.iter().any(|e| matches!(e, crate::Event::Toast { message, .. } if message.contains("embedding limit"))));
+        // The archive holds the files under media/<item>/.
+        let bytes = read_user(&s, "With Footage.ectemplate").unwrap();
+        let entries = effectcraft_lottie::zip::read_stored(&bytes);
+        let names: Vec<&str> = entries.iter().map(|(k, _)| k.as_str()).filter(|k| k.starts_with("media/")).collect();
+        assert_eq!(names.len(), 4, "{names:?}");
+        assert!(names.iter().any(|n| n.ends_with("/still.png")) && names.iter().any(|n| n.ends_with("/shot_002.png")));
+        // The originals go away: the template still has them.
+        std::fs::remove_file(&still).unwrap();
+        for f in &seq {
+            std::fs::remove_file(f).unwrap();
+        }
+        let proj_path = root.join("work").join("Promo.ecproj");
+        std::fs::create_dir_all(proj_path.parent().unwrap()).unwrap();
+        let r = s.execute("templates.create", json!({"id": "user/With Footage.ectemplate", "projectPath": proj_path.to_string_lossy()})).unwrap();
+        assert_eq!(r["untitled"], false);
+        assert_eq!(r["footage"].as_array().unwrap().len(), 4, "{r}");
+        assert_eq!(s.path.as_deref(), Some(&*proj_path.to_string_lossy()));
+        assert!(proj_path.exists());
+        let dir = root.join("work").join("Promo Footage");
+        let fp = footage_paths(&s);
+        let get = |n: &str| fp.iter().find(|f| f.0 == n).unwrap().clone();
+        assert_eq!(get("Still").1, dir.join("still.png").to_string_lossy());
+        assert_eq!(std::fs::read(dir.join("still.png")).unwrap(), vec![1u8; 1000]);
+        let shot = get("Shot");
+        assert_eq!(shot.2.len(), 3);
+        assert_eq!(shot.1, shot.2[0]);
+        assert_eq!(std::fs::read(&shot.2[2]).unwrap(), vec![12u8; 500]);
+        // Over the cap: still linked to the original file.
+        assert_eq!(get("Big").1, big);
+        // Without a project path: a fresh folder under the settings folder each time.
+        s.execute("templates.create", json!({"id": "user/With Footage.ectemplate"})).unwrap();
+        let base = root.join("config").join(FOOTAGE_DIR);
+        assert!(base.join("With Footage").join("still.png").exists());
+        assert!(s.path.is_none());
+        s.execute("templates.create", json!({"id": "user/With Footage.ectemplate"})).unwrap();
+        assert!(base.join("With Footage 2").join("still.png").exists());
+        // Not embedding: no media entries.
+        let r = s.execute("templates.saveAs", json!({"name": "Linked", "embedFootage": false})).unwrap();
+        assert_eq!(r["embedded"], 0);
+        let entries = effectcraft_lottie::zip::read_stored(&read_user(&s, "Linked.ectemplate").unwrap());
+        assert!(entries.iter().all(|(k, _)| !k.starts_with("media/")));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The browser: no settings folder; the files go to browser storage quietly
+    /// (`Services::store_file`) and the media layer is told about them (`Importer::register`).
+    #[test]
+    fn template_footage_into_browser_storage() {
+        #[derive(Default)]
+        struct Mem(Mutex<std::collections::HashMap<String, Vec<u8>>>, Mutex<Vec<String>>);
+        struct Svc(Arc<Mem>);
+        impl crate::Services for Svc {
+            fn read_file(&self, path: &str) -> std::io::Result<Vec<u8>> {
+                self.0.0.lock().unwrap().get(path).cloned().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, path.to_string()))
+            }
+            fn write_file(&self, _: &str, _: &[u8]) -> std::io::Result<()> {
+                Err(std::io::Error::other("downloads are not for extracted footage"))
+            }
+            fn store_file(&self, path: &str, data: &[u8]) -> std::io::Result<()> {
+                self.0.0.lock().unwrap().insert(path.into(), data.to_vec());
+                Ok(())
+            }
+            fn exists(&self, path: &str) -> bool {
+                self.0.0.lock().unwrap().keys().any(|k| k == path || k.starts_with(&format!("{path}/")))
+            }
+        }
+        struct Imp(Arc<Mem>);
+        impl crate::Importer for Imp {
+            fn probe(&self, path: &str) -> std::result::Result<effectcraft_project::Footage, String> {
+                Err(path.into())
+            }
+            fn register(&self, path: &str, _: &[u8]) {
+                self.0.1.lock().unwrap().push(path.into());
+            }
+        }
+        let mem = Arc::new(Mem::default());
+        mem.0.lock().unwrap().insert("/clip.png".into(), vec![3; 64]);
+        let mut s = Session {
+            config: Some(Arc::new(MemoryConfig::default())),
+            services: Arc::new(Svc(mem.clone())),
+            importer: Some(Arc::new(Imp(mem.clone()))),
+            ..Default::default()
+        };
+        s.execute("templates.create", json!({"id": "title-card"})).unwrap();
+        add_footage(&mut s, "Clip", "/clip.png", vec![]);
+        s.execute("templates.saveAs", json!({"name": "Web"})).unwrap();
+        s.execute("templates.create", json!({"id": "user/Web.ectemplate"})).unwrap();
+        let want = format!("/{FOOTAGE_DIR}/Web/clip.png");
+        assert_eq!(mem.0.lock().unwrap().get(&want), Some(&vec![3; 64]));
+        assert_eq!(*mem.1.lock().unwrap(), vec![want.clone()]);
+        assert!(footage_paths(&s).iter().any(|f| f.1 == want));
+        s.execute("templates.create", json!({"id": "user/Web.ectemplate"})).unwrap();
+        assert!(mem.0.lock().unwrap().contains_key(&format!("/{FOOTAGE_DIR}/Web 2/clip.png")));
     }
 
     #[test]

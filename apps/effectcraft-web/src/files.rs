@@ -124,6 +124,10 @@ impl Services for WebServices {
         }
         download(file_name(path), data).map_err(|e| std::io::Error::other(format!("download failed: {e:?}")))
     }
+    fn store_file(&self, path: &str, data: &[u8]) -> std::io::Result<()> {
+        put(path, data.into());
+        Ok(())
+    }
 }
 
 /// Media import from the table (the bytes are also handed to the media pool, which decodes them).
@@ -136,6 +140,9 @@ impl effectcraft_engine::Importer for WebImporter {
         let bytes = get(path).ok_or_else(|| format!("{path}: not loaded (import it with File ▸ Import or drop it on the page)"))?;
         self.pool.add_bytes(path, bytes.clone());
         effectcraft_media::probe_bytes(path, bytes).map_err(|e| e.to_string())
+    }
+    fn register(&self, path: &str, data: &[u8]) {
+        self.pool.add_bytes(path, get(path).unwrap_or_else(|| data.into()));
     }
 }
 

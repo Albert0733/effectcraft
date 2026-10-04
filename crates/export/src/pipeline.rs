@@ -75,7 +75,7 @@ impl<'a> Cx<'a> {
         self.project.comp(self.job.comp)
     }
 
-    fn render_at(&self, t: Tick) -> Image {
+    async fn render_at(&self, t: Tick) -> Image {
         let s = self.job.settings;
         let opts = RenderOpts {
             scale: s.resolution.clamp(0.01, 4.0),
@@ -93,17 +93,43 @@ impl<'a> Cx<'a> {
         let mut r = Renderer::new(&self.project, self.job.footage, opts);
         r.expr = self.job.expr;
         r.accel = self.job.accel;
-        r.comp_frame(self.job.comp, t)
+        // With deferred GPU readbacks (a browser worker) the frame renders in passes.
+        effectcraft_render::passes::comp_frame(&r, self.job.comp, t).await
+    }
+
+    /// Whether frames render in passes (an accelerator with deferred readbacks).
+    pub fn deferred(&self) -> bool {
+        effectcraft_render::passes::is_deferred(self.job.accel)
+    }
+
+    /// Output frames `ks`, each mapped by `f` (encoding): rendered in parallel batches, or one
+    /// by one in passes when readbacks are deferred ([`Cx::deferred`]).
+    pub async fn frames<T: Send>(&self, comp: &Comp, ks: Vec<u64>, f: impl Fn(u64, Image) -> T + Sync + Send) -> Vec<T> {
+        if self.deferred() {
+            let mut out = Vec::with_capacity(ks.len());
+            for k in ks {
+                let img = self.frame_async(comp, k).await;
+                out.push(f(k, img));
+            }
+            return out;
+        }
+        use rayon::prelude::*;
+        ks.into_par_iter().map(|k| f(k, self.frame(comp, k))).collect()
     }
 
     /// Output frame `i`: sampled (fields, pulldown), at the colour depth, cropped and resized.
     pub fn frame(&self, comp: &Comp, i: u64) -> Image {
+        effectcraft_render::passes::block_on(self.frame_async(comp, i))
+    }
+
+    /// [`Cx::frame`] as a future (deferred readbacks: the frame renders in passes).
+    pub async fn frame_async(&self, comp: &Comp, i: u64) -> Image {
         let t0 = Instant::now();
         let img = match self.job.settings.sample(comp, i) {
-            FrameSample::Progressive(t) => self.render_at(t),
+            FrameSample::Progressive(t) => self.render_at(t).await,
             FrameSample::Fields { first, second, upper_first } => {
-                let a = self.render_at(first);
-                if second == first { a } else { interleave(&a, &self.render_at(second), upper_first) }
+                let a = self.render_at(first).await;
+                if second == first { a } else { interleave(&a, &self.render_at(second).await, upper_first) }
             }
         };
         let mut img = img;

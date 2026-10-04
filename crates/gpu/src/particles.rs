@@ -108,13 +108,29 @@ fn uniforms(req: &SimRequest, n: u32, s0: u64, prev_n: u32) -> Vec<u8> {
 }
 
 /// Simulate `req` (see [`effectcraft_effects::psim::ParticleSim`]).
+///
+/// With deferred readbacks (a browser worker) the state's readback is keyed by the request
+/// ([`crate::deferred`]): the first pass starts it and gets no particles (the pass misses and is
+/// rendered again), later passes read the bytes.
 pub(crate) fn simulate(g: &GpuContext, req: &SimRequest) -> Option<Vec<SimParticle>> {
-    if !g.can_wait() || req.steps > u32::MAX as u64 {
+    if !g.can_readback() || req.steps > u32::MAX as u64 {
         return None;
     }
     let n = req.births.len() as u32;
     if n == 0 {
         return Some(vec![]);
+    }
+    let deferred = g.deferred.clone();
+    let key = deferred.as_ref().map(|_| sim_key(req));
+    if let (Some(d), Some(k)) = (&deferred, key) {
+        match d.lookup(k) {
+            crate::deferred::Lookup::Ready(r) => return r.map(|r| parse(&r.bytes)),
+            crate::deferred::Lookup::InFlight => {
+                d.miss();
+                return Some(vec![]);
+            }
+            crate::deferred::Lookup::Absent => {}
+        }
     }
     let size = n as u64 * STATE_BYTES;
     if size > g.device.limits().max_storage_buffer_binding_size {
@@ -176,6 +192,20 @@ pub(crate) fn simulate(g: &GpuContext, req: &SimRequest) -> Option<Vec<SimPartic
     }
     enc.copy_buffer_to_buffer(&next, 0, &read, 0, size);
     g.queue.submit([enc.finish()]);
+    if let (Some(d), Some(k)) = (&deferred, key) {
+        let done = d.start(k, n, 1, [0.0; 2], 1.0);
+        let b = read.clone();
+        read.map_async(wgpu::MapMode::Read, .., move |r| {
+            let out = r.ok().and_then(|_| b.get_mapped_range(..).ok().map(|v| v.to_vec()));
+            b.unmap();
+            done(out);
+        });
+        #[cfg(not(target_arch = "wasm32"))]
+        let _ = g.device.poll(wgpu::PollType::Poll);
+        keep_checkpoint(g, req, n, next);
+        d.miss();
+        return Some(vec![]);
+    }
     let (tx, rx) = std::sync::mpsc::channel();
     read.map_async(wgpu::MapMode::Read, .., move |r| {
         let _ = tx.send(r);
@@ -183,16 +213,36 @@ pub(crate) fn simulate(g: &GpuContext, req: &SimRequest) -> Option<Vec<SimPartic
     g.device.poll(wgpu::PollType::wait_indefinitely()).ok()?;
     rx.recv().ok()?.ok()?;
     let view = read.get_mapped_range(..).ok()?;
-    let f: Vec<f32> = view.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+    let parts = parse(&view);
     drop(view);
     read.unmap();
-    let parts = f
-        .chunks_exact(12)
+    keep_checkpoint(g, req, n, next);
+    Some(parts)
+}
+
+/// The deferred readback key of a request: everything that determines the state.
+fn sim_key(req: &SimRequest) -> u128 {
+    let mut k = crate::deferred::Key::new(3);
+    k.u64(req.key);
+    k.u64(req.steps);
+    k.u64(req.births.len() as u64);
+    k.bytes(&req.births.iter().flat_map(|b| b.to_le_bytes()).collect::<Vec<u8>>());
+    k.debug(&req.system);
+    k.finish()
+}
+
+/// Live particles of a state buffer's bytes.
+fn parse(bytes: &[u8]) -> Vec<SimParticle> {
+    let f: Vec<f32> = bytes.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+    f.chunks_exact(12)
         .enumerate()
         .filter(|(_, s)| s[9] != 0.0)
         .map(|(id, s)| SimParticle { p: [s[0], s[1], s[2]], v: [s[4], s[5], s[6]], age: s[3], life: s[7], rnd: s[8], id: id as u32 })
-        .collect();
-    // Keep the new state as a checkpoint.
+        .collect()
+}
+
+/// Keep a simulated state on the GPU as a checkpoint (the oldest go beyond the limit).
+fn keep_checkpoint(g: &GpuContext, req: &SimRequest, n: u32, next: wgpu::Buffer) {
     if let Ok(mut c) = g.particle_states.lock() {
         let now = c.clock;
         c.list.retain(|k| !(k.key == req.key && k.steps == req.steps));
@@ -202,7 +252,6 @@ pub(crate) fn simulate(g: &GpuContext, req: &SimRequest) -> Option<Vec<SimPartic
             c.list.remove(i);
         }
     }
-    Some(parts)
 }
 
 pub(crate) type PipesCell = OnceLock<Pipes>;

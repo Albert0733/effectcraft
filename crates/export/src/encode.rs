@@ -249,7 +249,7 @@ pub(crate) fn pcm_bytes(buf: &[f32], fmt: AudioFormat, big_endian: bool) -> Vec<
 
 type Writer<'f, 's> = Mp4Writer<&'f mut crate::out::Out<'s>>;
 
-pub(crate) fn movie(job: &Cx, comp: &Comp, w: u32, h: u32, st: &mut State) -> Result<Report> {
+pub(crate) async fn movie(job: &Cx<'_>, comp: &Comp, w: u32, h: u32, st: &mut State<'_>) -> Result<Report> {
     let rate = job.settings.rate(comp);
     let fmt = job.output.format;
     let channels = match job.output.channels {
@@ -264,11 +264,11 @@ pub(crate) fn movie(job: &Cx, comp: &Comp, w: u32, h: u32, st: &mut State) -> Re
     };
     let brand = if fmt == OutputFormat::ProRes { Brand::Mov } else { Brand::Mp4 };
     let batch = batch_size();
-    let render = |k: u64| -> Vec<u8> { job.pixels(&job.frame(comp, k), comp, channels, w, h) };
+    let render = |_: u64, img: effectcraft_raster::Image| -> Vec<u8> { job.pixels(&img, comp, channels, w, h) };
 
     // Encode the first batch before creating tracks: encoders finalise their config on frame 1.
     let first_end = batch.min(st.total);
-    let first: Vec<Vec<u8>> = (0..first_end).into_par_iter().map(render).collect();
+    let first: Vec<Vec<u8>> = job.frames(comp, (0..first_end).collect(), render).await;
     let mut pending = Vec::new();
     for (k, px) in first.iter().enumerate() {
         pending.extend(venc.encode(px, k as u64)?);
@@ -356,7 +356,7 @@ pub(crate) fn movie(job: &Cx, comp: &Comp, w: u32, h: u32, st: &mut State) -> Re
     let mut i = first_end;
     while i < total {
         let end = (i + batch).min(total);
-        let frames: Vec<Vec<u8>> = (i..end).into_par_iter().map(render).collect();
+        let frames: Vec<Vec<u8>> = job.frames(comp, (i..end).collect(), render).await;
         for (k, px) in frames.iter().enumerate() {
             let ps = venc.encode(px, i + k as u64)?;
             write_video(&mut mux, ps)?;

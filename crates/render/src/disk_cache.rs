@@ -173,6 +173,38 @@ impl DiskIndex {
     }
 }
 
+/// Which layer buffers a browser frame worker should fetch from the disk cache before its next
+/// frame (its lookups mid-render are synchronous, the Origin Private File System is not): the
+/// layer-cache misses the workers reported for recent frames, most recent first, that are on
+/// disk ([`DiskIndex`], kind [`Kind::Layer`]).
+#[derive(Default)]
+pub struct LayerPrefetch {
+    recent: std::collections::VecDeque<u128>,
+}
+
+/// Misses [`LayerPrefetch`] remembers.
+const PREFETCH_RECENT: usize = 512;
+
+impl LayerPrefetch {
+    /// A frame's layer-cache misses (salted keys).
+    pub fn note_misses(&mut self, keys: impl IntoIterator<Item = u128>) {
+        for k in keys {
+            self.recent.retain(|x| *x != k);
+            self.recent.push_front(k);
+        }
+        self.recent.truncate(PREFETCH_RECENT);
+    }
+
+    /// Up to `max` keys to fetch before the next frame.
+    pub fn plan(&self, index: &DiskIndex, max: usize) -> Vec<u128> {
+        self.recent.iter().copied().filter(|k| index.contains(Kind::Layer, *k)).take(max).collect()
+    }
+
+    pub fn clear(&mut self) {
+        self.recent.clear();
+    }
+}
+
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 enum Job {
     Write(Kind, u128, Vec<u8>),
@@ -582,6 +614,29 @@ pub fn frame_entry(width: u32, height: u32, rgba: &[u8]) -> Vec<u8> {
 /// A frame from a sealed entry's bytes (`None` when damaged).
 pub fn read_frame_entry(data: &[u8]) -> Option<Frame8> {
     decode_frame(verify(data, Kind::Frame)?)
+}
+
+/// A sealed layer-buffer entry: what the browser's frame workers write to the Origin Private
+/// File System (`layers/<32 hex>.ecc`).
+pub fn layer_entry(buf: &Buf) -> Vec<u8> {
+    seal(Kind::Layer, &encode_layer(buf))
+}
+
+/// A layer buffer from a sealed entry's bytes (`None` when damaged).
+pub fn read_layer_entry(data: &[u8]) -> Option<Buf> {
+    decode_layer(verify(data, Kind::Layer)?)
+}
+
+impl crate::cache::LayerStore for DiskCache {
+    fn get_layer(&self, key: u128) -> Option<Arc<Buf>> {
+        DiskCache::get_layer(self, key).map(Arc::new)
+    }
+    fn put_layer(&self, key: u128, buf: &Buf) {
+        DiskCache::put_layer(self, key, buf);
+    }
+    fn min_layer_ms(&self) -> u64 {
+        DiskCache::min_layer_ms(self)
+    }
 }
 
 /// An entry's file name in its kind's folder (`<32 hex>.ecc`).

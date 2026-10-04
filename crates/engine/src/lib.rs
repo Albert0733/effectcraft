@@ -92,6 +92,15 @@ pub trait Services: Send + Sync {
     fn exists(&self, path: &str) -> bool {
         std::path::Path::new(path).exists()
     }
+    /// Keep a file the app made for itself (footage extracted from a template): like
+    /// [`Services::write_file`], creating its folder, but never offered as a download (web: it
+    /// goes to browser storage only).
+    fn store_file(&self, path: &str, data: &[u8]) -> std::io::Result<()> {
+        if let Some(d) = std::path::Path::new(path).parent().filter(|d| !d.as_os_str().is_empty()) {
+            let _ = std::fs::create_dir_all(d);
+        }
+        self.write_file(path, data)
+    }
 }
 
 /// Native filesystem.
@@ -109,6 +118,9 @@ impl Services for FsServices {
 pub trait Importer: Send + Sync {
     /// Probe a file and return footage metadata.
     fn probe(&self, path: &str) -> std::result::Result<effectcraft_project::Footage, String>;
+    /// A footage file's bytes are now at `path` (extracted from a template): hosts whose media
+    /// layer reads from memory (the browser) register them; file-based ones need nothing.
+    fn register(&self, _path: &str, _data: &[u8]) {}
 }
 
 /// A keyframe reference: layer, property uid, key time (layer time).

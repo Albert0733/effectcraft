@@ -20,7 +20,7 @@ Partial features:
 | id | Tier | Done | What is missing |
 |---|---|---|---|
 | EFF-5 GPU effects | P1 | 0.97 | GPU kernels for the audio-driven effects and the stepped particle systems' sprite pass (the CC light / transition families, Numbers, Timecode and Time effects landed in M13.22; 3D Channel, the VR family, OCIO / LUT and the simulations' render passes in M13.23); custom `.ocio` configs, Shatter's wireframe views and Foam's texture / environment / flow-map extras render on the CPU |
-| WEB-1 Web app | P0 | 0.97 | GPU effects in Render Queue / analysis job workers (they render on their CPU); layer buffers in the browser's disk cache (frames only); threads inside one engine instance (the decided design is one engine instance per worker; a threaded build needs nightly `build-std`). M13.24 added GPU effects and the GPU compositor in the frame workers (their own WebGPU devices, deferred readbacks: frames render in passes; Backend Auto per comp), the disk cache in the Origin Private File System (written by the workers with sync access handles, LRU under the settings' limit, served after a reload), the storage manager (Settings ▸ Disk ▸ Browser Storage, `storage.*`) and fixed a WGSL constant Chrome rejected (it disabled every GPU kernel in Chrome) |
+| WEB-1 Web app | P0 | 0.98 | Threads inside one engine instance (the decided design is one engine instance per worker; a threaded build needs nightly `build-std`); Content-Aware Fill runs on the page, not in a job worker. M13.30 added GPU rendering in the job workers (Render Queue frames, analysis input frames, GPU particles and Advanced 3D read back under keys and render in passes on each job worker's own WebGPU device) and layer buffers in the browser's disk cache (prefetched before a frame from the previous frames' misses). M13.24 added GPU effects and the GPU compositor in the frame workers (their own WebGPU devices, deferred readbacks: frames render in passes; Backend Auto per comp), the disk cache in the Origin Private File System (written by the workers with sync access handles, LRU under the settings' limit, served after a reload), the storage manager (Settings ▸ Disk ▸ Browser Storage, `storage.*`) and fixed a WGSL constant Chrome rejected (it disabled every GPU kernel in Chrome) |
 | UI-7 Home screen | P1 | 0.95 | A "start from a template" gallery |
 | MSK-4 Roto Brush | P2 | 0.85 | Segmentation is classical (graph cut + optical flow), not a learned model |
 | TRK-3 Face tracking | P2 | 0.9 | Classical fitter: weak on profile and occluded faces; Rolling Shutter Ripple is approximated |
@@ -154,7 +154,7 @@ the disk cache in the formats wave; the 3D Camera Tracker in M12.6.)
 | Compositions | ≈ 81% | 3.3 | Mocha-style planar tracks for templates (CMP-7: Essential Graphics mirrored and linked properties landed in M13.11; Font and uniform Scale controls, Composition ▸ Open in Essential Graphics, Save Frame As ▸ Photoshop Layers / ProEXR and the VR Comp Editor landed in M13.7; the marker dialog, Composition Flowchart, Essential Graphics with master properties, `.ectemplate` templates and Responsive Design — Time landed: CMP-6, CMP-7) |
 | Animation | 70% | 9.0 | puppet depth beyond pins, recording, rigging and follow-through (puppet pin recording with Record Options landed in M13.1; pin selection, rotate/scale handles, nulls for pins and Follow-Through in M13.14–M13.16), Wiggler/Smoother/Motion Sketch (motion-path handles and the graph editor transform box landed in M5.8; keyframe colour labels and Select Keyframe Label Group, Graph Editor snapping to markers / layer ends in M13.5) |
 | Text | ≈ 96% | 0.3 | no extruded strokes (M13.12: the Variable Font Axes animator re-spaces the text — advances follow the animated axes; M13.6: variable font axes in the character style — `layer.setText variations`, the Character panel's Variable Font Axes fields — shape with HVAR / gvar advances and draw at that design-space position; OpenType features — stylistic sets, discretionary ligatures, contextual / stylistic alternates, swash, titling, ordinals, fractions, figure styles, true small caps / all small caps and superior / inferior glyphs with faux fallback — per character with the Character panel's OpenType popup and `text.fontFeatures` landed in M13.2; vertical Roman / Tate-Chu-Yoko, forced LTR paragraphs, caret on animated and path text, Variable Font Axes and Lottie style runs landed in M13.5; extruded, bevelled text in M7.6; per-character styles, paragraph settings, on-canvas editing and the `sourceText` style API in M9.9–M9.10) |
-| Web | 97% | 0.2 | GPU effects in Render Queue / analysis workers (job workers render on their CPU), layer buffers in the browser's disk cache (frames only), no shared-memory threads inside one engine instance (the decided design is one engine instance per worker; a threaded build needs nightly `build-std`) (browser storage, Web Audio, Web Worker renders/analyses, WebGPU viewer and offline install landed in M15.2; viewer frames in frame workers fed by project diffs, Roto Brush propagation in a worker, non-blocking `wait: true` jobs and a browser Media Browser (File System Access folders, browser storage) in M13.10; WEB-1 in M13.24: GPU effects and the GPU compositor in the frame workers on their own WebGPU devices with deferred readbacks (frames render in passes; Backend Auto per comp), the disk cache in the Origin Private File System (written by the workers with sync access handles, LRU under the settings' limit, served after a reload), the storage manager (Settings ▸ Disk ▸ Browser Storage, `storage.info` / `storage.persist` / `storage.clear`), and a WGSL constant Chrome rejected (it disabled every GPU kernel in Chrome) fixed) |
+| Web | 98% | 0.1 | No shared-memory threads inside one engine instance (the decided design is one engine instance per worker; a threaded build needs nightly `build-std`); Content-Aware Fill runs on the page (M13.30: Render Queue and analyses render on each job worker's own WebGPU device in passes, particles and Advanced 3D read back under keys, layer buffers in the browser's disk cache; browser storage, Web Audio, Web Worker renders/analyses, WebGPU viewer and offline install landed in M15.2; viewer frames in frame workers fed by project diffs, Roto Brush propagation in a worker, non-blocking `wait: true` jobs and a browser Media Browser (File System Access folders, browser storage) in M13.10; WEB-1 in M13.24: GPU effects and the GPU compositor in the frame workers on their own WebGPU devices with deferred readbacks (frames render in passes; Backend Auto per comp), the disk cache in the Origin Private File System (written by the workers with sync access handles, LRU under the settings' limit, served after a reload), the storage manager (Settings ▸ Disk ▸ Browser Storage, `storage.info` / `storage.persist` / `storage.clear`), and a WGSL constant Chrome rejected (it disabled every GPU kernel in Chrome) fixed) |
 | 3D | 88% | 5.5 | multi-view layouts, the Extended Viewer for Advanced 3D comps (Classic 3D Extended Viewer landed in M13.5 UI completion); collapsed precomps of another size seen through the parent's camera render (fixed in M13.2); stereo rigs, orbit nulls, lights controlled by the camera, cameras/lights from glTF models, environment backgrounds, Advanced 3D motion blur, blend modes and track mattes landed in M7.7; Classic 3D iris-shaped bokeh with highlights, progressive depth of field on tilted layers and the focus-link commands landed in M13.5; Advanced 3D depth of field with the iris and highlight options, collapsed precomps as real Advanced 3D geometry and extruded text/shape strokes landed in M13.8; Advanced 3D (glTF/OBJ models, primitives, extruded text and shapes, PBR, image-based light, shadow maps, GPU rasteriser) in M7.4–M7.6; Advanced 3D end to end on the GPU (motion blur, iris depth of field, compositing) in M13.11 |
 | Effects | ≈ 85% | 3.0 | GPU versions of the remaining effects (236 run on the GPU since M13.23, EFF-5: M13.23 added the 3D Channel and Immersive Video families, Apply Color LUT, the OCIO effects, Color Profile Converter and the simulations' render passes (Card Wipe included); M13.22 added the CC light family, the CC transitions, Block Dissolve, Radial Shadow, CC Bender / Blobbylize / Cylinder / Sphere / Spotlight / Environment, 3D Glasses, Numbers, Timecode and the time effects joined the 166 of M13.13; audio-driven effects and the stepped particle systems still render on the CPU) and the missing controls listed as partial in [effects.md](effects.md) (every After Effects effect exists since M9.11, M12.5 and M12.6; parameter names, order, twirl-downs, popups, units and defaults were aligned in M9.12) |
 | Interface | 75% | 5.0 | more Learn tutorials and pixel-level fidelity of dialogs (the Home ▸ Templates gallery (eight original built-in templates, user templates from File ▸ Save as Template…) and View ▸ Simulate Output ▸ My Custom RGB… landed in M13.25; Timeline layer reordering by drag, a non-snapping viewer pan, a working rename field and twirl arrows, and the full set of property reveal shortcuts — double presses, Alt+Shift keyframes, Ctrl+` — landed in M13.17–M13.20; the Home ▸ Learn tab with interactive tutorials and a UI fidelity pass landed in M13.5 UI completion; visual editors for Lumetri RGB / hue-saturation curves, Colorama's output cycle wheel, Glow's colour map and Reshape's correspondence points (viewer handles), a scrolling Preview panel and AE-style Composition / Timeline tabs (close, label swatch, viewer lock) landed in M13.10; Timeline outline and Project panel columns scroll horizontally, the Layer Style dialog, ROI resize handles, Pan Behind snapping and 3D Reference Axes landed in M13.5; native macOS menu bar, Timeline columns/search/reveal-add, Home screen with recent projects and all AE workspaces landed; viewer rulers/snapping/channels/snapshots landed in M0.13) |
@@ -399,8 +399,9 @@ folder (in the browser: the settings store); the gallery lists built-in and user
 user cards can be deleted, and opening any template makes an untitled copy. Commands:
 `templates.list`, `templates.thumbnail`, `templates.create`, `templates.saveAs`,
 `templates.delete`, `file.newFromTemplate`; automation ids `home.tab.templates`,
-`home.templates.<id>` / `.open` / `.delete`, `home.templates.saveCurrent`. Not yet: footage
-used by a saved template is referenced by path, not embedded.
+`home.templates.<id>` / `.open` / `.delete`, `home.templates.saveCurrent`. M13.30: saving embeds
+the footage files (default on, capped at 256 MB with a warning; the rest stays linked) and
+creating from the template extracts them next to the new project (or into browser storage).
 
 **View ▸ Simulate Output ▸ My Custom RGB…**: a dialog defines a custom output device by
 primaries and white point (CIE xy) and a gamma or the sRGB curve, or reads them from an RGB
@@ -408,8 +409,9 @@ matrix/TRC ICC profile (v2/v4: colorants, `wtpt`, `chad`, `curv`/`para` tone cur
 parametric curves are fitted to a gamma unless they are the sRGB curve); the definition is kept
 in Settings (`customRgb`) and simulated like the built-in profiles, with Preserve RGB
 (`view.customRgb`, `view.simulateOutput {profile: "myCustom"}`). Generic dialog forms now register
-`form.field.<key>`, `form.ok` and `form.cancel` automation ids. Not yet: LUT-based (`A2B0`)
-ICC profiles.
+`form.field.<key>`, `form.ok` and `form.cancel` automation ids. M13.30: LUT-based (`A2B0`)
+ICC profiles too (`lut8Type`, `lut16Type`, `lutAToBType` / `lutBToAType`, evaluated from the
+public ICC specification and baked into a 3D LUT for the viewer).
 
 ### M13.26: Premiere Pro interop via timeline interchange
 
@@ -459,6 +461,26 @@ composited at 8 and 32 bpc:
   sampled per pixel. Piece plans read the frame back once (their gradient maps and textures
   default to the layer). Shatter's wireframe views and Foam's User Defined texture,
   Environment Map and flow-map preview render on the CPU.
+
+## Update: M13.30 web depth and polish
+
+- **GPU in the browser's job workers** (WEB-1): each job worker opens its own WebGPU device
+  (deferred readbacks) like the frame workers. The Render Queue's export and the analyses'
+  frame loops are futures (`effectcraft_render::passes`, `offload::run_request_async`): every
+  frame renders in passes on the device and the job awaits the GPU between them, so Render
+  Queue renders and the input frames of Warp Stabilizer, 3D Camera Tracker, Track Motion, mask
+  tracking and Roto Brush (prefetched before each step) use the GPU. GPU particles and
+  Advanced 3D (`raster_3d`, `render_3d`) read back under keys, so they run on the device in
+  frame and job workers too (a depth-of-field run still resolves on the CPU, its scenes on
+  the GPU). `effectcraft.info().workers` reports the job workers' adapter and each job's passes
+  and readbacks; the headless-Chrome smoke test measures them.
+- **Layer buffers in the browser's disk cache**: frame workers back their layer caches with a
+  `PrefetchStore`; the page plans which layer entries to read before a request from the
+  previous frames' misses (`LayerPrefetch` over the shared `DiskIndex`, one LRU order for
+  frames and layers), and slow buffers are written to `effectcraft-cache/v1/layers`.
+- **Templates embed footage**: `templates.saveAs {embedFootage (default true), embedLimitMB
+  (default 256)}`; `templates.create {projectPath?, footageDir?}` extracts it.
+- **ICC A2B0 profiles** in View ▸ Simulate Output ▸ My Custom RGB (see above).
 
 ## Highest-value gaps, in order
 

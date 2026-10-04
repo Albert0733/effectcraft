@@ -12,7 +12,7 @@ use effectcraft_geom::{Mat3, vec2};
 use effectcraft_project::tracking::{LowConfidence, TrackChannel, TrackKind, TrackerOptions, TrackerSettings};
 use effectcraft_project::{Comp, ItemId, Keyframe, Layer, LayerId, Project, PropGroup, Uid, Value};
 use effectcraft_raster::Image;
-use effectcraft_render::{EvalCtx, ExprHost, FootageSource, LayerCache, RenderOpts, Renderer};
+use effectcraft_render::{EvalCtx, ExprHost, FootageSource, LayerCache, Renderer};
 use effectcraft_time::Tick;
 use effectcraft_track as trk;
 use serde::{Deserialize, Serialize};
@@ -228,8 +228,11 @@ pub(crate) fn source_frame(
     Some((Arc::new(buf.img), buf.offset))
 }
 
-pub(crate) fn run_work(w: Work, shared: &TrackShared) {
+pub(crate) async fn run_work(w: Work, shared: &TrackShared) {
     let t0 = web_time::Instant::now();
+    // A browser job worker's GPU (deferred readbacks): frames render in passes.
+    let accel = crate::offload::job_accel();
+    let accel = accel.as_deref();
     let fail = |msg: &str| {
         let mut s = lock(&shared.state);
         s.error = Some(msg.to_string());
@@ -237,16 +240,18 @@ pub(crate) fn run_work(w: Work, shared: &TrackShared) {
     };
     let Some(comp) = w.project.comp(w.comp) else { return fail("composition missing") };
     let Some(layer) = comp.layer(w.layer) else { return fail("layer missing") };
-    let mut r = Renderer::new(&w.project, w.footage.as_ref(), RenderOpts { scale: 1.0, ..Default::default() });
+    let mut r = Renderer::new(&w.project, w.footage.as_ref(), crate::offload::analysis_opts(accel));
     r.expr = w.expr.as_deref();
     r.cache = Some(&w.cache);
     let r = &r;
-    let frame_at = |t: Tick| source_frame(r, &w.project, w.comp, comp, layer, t, w.expr.as_deref());
+    let wr = &w;
+    let frame_at =
+        |t: Tick| crate::offload::in_passes(accel, move |a| source_frame(&r.with_accel(a), &wr.project, wr.comp, comp, layer, t, wr.expr.as_deref()));
     {
         let mut s = lock(&shared.state);
         s.total = w.times.len().saturating_sub(1) as u64;
     }
-    let Some(first) = frame_at(w.times[0]) else { return fail("the layer has no pixels to track") };
+    let Some(first) = frame_at(w.times[0]).await else { return fail("the layer has no pixels to track") };
     let specs: Vec<trk::PointSpec> = w.points.iter().map(|p| p.spec).collect();
     let mut tracker = trk::Tracker::new(track_options(&w.settings.options), &specs, &trk::Frame { img: &first.0, offset: first.1 });
     let ref_c: Vec<[f64; 2]> = specs.iter().map(|s| s.center).collect();
@@ -263,7 +268,7 @@ pub(crate) fn run_work(w: Work, shared: &TrackShared) {
             .map(|(p, a)| (p.uid, trk::PointResult { center: p.spec.center, confidence: 100.0, rotation: 0.0, scale: 1.0, status: trk::Status::Tracked }, *a))
             .collect(),
     });
-    let mut next = if w.times.len() > 1 { frame_at(w.times[1]) } else { None };
+    let mut next = if w.times.len() > 1 { frame_at(w.times[1]).await } else { None };
     for k in 1..w.times.len() {
         if shared.cancel.load(Ordering::Relaxed) {
             lock(&shared.state).cancelled = true;
@@ -274,8 +279,12 @@ pub(crate) fn run_work(w: Work, shared: &TrackShared) {
             break;
         };
         // Track this frame while the next one renders.
-        let (res, nf) =
-            rayon::join(|| tracker.step(&trk::Frame { img: &cur.0, offset: cur.1 }), || if k + 1 < w.times.len() { frame_at(w.times[k + 1]) } else { None });
+        let (res, nf) = crate::offload::join_fetch(
+            accel.is_some(),
+            || tracker.step(&trk::Frame { img: &cur.0, offset: cur.1 }),
+            || async { if k + 1 < w.times.len() { frame_at(w.times[k + 1]).await } else { None } },
+        )
+        .await;
         next = nf;
         if res.iter().any(|p| p.status == trk::Status::Stopped) {
             lock(&shared.state).low_confidence_stop = true;
@@ -363,11 +372,19 @@ impl Session {
         let shared = Arc::new(TrackShared::default());
         let (comp, layer) = (work.comp, work.layer);
         let thread = if wait {
-            run_work(work, &shared);
+            crate::offload::run_or_queue({
+                let sh = shared.clone();
+                async move { run_work(work, &sh).await }
+            });
             None
         } else {
             let sh = shared.clone();
-            Some(std::thread::Builder::new().name("track-analyze".into()).spawn(move || run_work(work, &sh)).map_err(|e| e.to_string())?)
+            Some(
+                std::thread::Builder::new()
+                    .name("track-analyze".into())
+                    .spawn(move || effectcraft_render::passes::block_on(run_work(work, &sh)))
+                    .map_err(|e| e.to_string())?,
+            )
         };
         self.track_job = Some(TrackJob { shared, thread, comp, layer, tracker, direction });
         self.poll_track();

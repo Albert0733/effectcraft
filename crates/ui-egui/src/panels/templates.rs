@@ -218,10 +218,11 @@ mod tests {
         assert_eq!(app.dialog_state.form.command, "templates.saveAs");
         app.dialog_state.form.fields[0].kind = crate::panels::forms::FieldKind::Text("Brand Intro".into());
         frame(&mut app, &ctx);
-        for id in ["form.field.name", "form.field.description", "form.ok", "form.cancel"] {
+        for id in ["form.field.name", "form.field.description", "form.field.embedFootage", "form.field.embedLimitMB", "form.ok", "form.cancel"] {
             assert!(app.auto.find(id).is_some(), "{id}");
         }
         let params = app.dialog_state.form.params();
+        assert_eq!((params["embedFootage"].as_bool(), params["embedLimitMB"].as_f64()), (Some(true), Some(256.0)), "{params}");
         app.session.execute("templates.saveAs", params).unwrap();
         app.dialog = None;
         app.ui.start_screen = true;

@@ -324,14 +324,44 @@ fn raster_into(e: &mut Enc, s: &Scene) -> Option<(wgpu::Texture, wgpu::Texture)>
 
 /// Rasterise a scene and read it back ([`effectcraft_render::Accelerator::raster_3d`]). `None`
 /// when the device can't (no readback, size or buffer limits).
+///
+/// With deferred readbacks (a browser worker) both targets are read back under the scene's key
+/// ([`crate::deferred`]): the first pass starts them and gets an empty target (the pass misses).
 pub(crate) fn render(g: &GpuContext, s: &Scene) -> Option<Target> {
-    if !g.can_wait() {
+    if !g.can_readback() {
         return None;
     }
     let mut e = Enc::new(g);
-    let (color, zout) = raster_into(&mut e, s)?;
-    let cb = e.read_texture(&color, s.width, s.height, 8)?;
-    let zb = e.read_texture(&zout, s.width, s.height, 4)?;
+    let (cb, zb) = match g.deferred.clone() {
+        Some(d) => {
+            use crate::deferred::Lookup::*;
+            let mut k = crate::deferred::Key::new(4);
+            key_scene(&mut k, s);
+            let kc = k.finish();
+            let kz = kc ^ 1;
+            match (d.lookup(kc), d.lookup(kz)) {
+                (Ready(c), Ready(z)) => (c?.bytes, z?.bytes),
+                (Absent, Absent) => {
+                    let (color, zout) = raster_into(&mut e, s)?;
+                    e.read_texture_async(&color, s.width, s.height, 8, d.start(kc, s.width, s.height, [0.0; 2], 1.0));
+                    e.read_texture_async(&zout, s.width, s.height, 4, d.start(kz, s.width, s.height, [0.0; 2], 1.0));
+                    d.miss();
+                    return Some(empty_target(s.width, s.height));
+                }
+                _ => {
+                    d.miss();
+                    return Some(empty_target(s.width, s.height));
+                }
+            }
+        }
+        None => {
+            let (color, zout) = raster_into(&mut e, s)?;
+            (e.read_texture(&color, s.width, s.height, 8)?, e.read_texture(&zout, s.width, s.height, 4)?)
+        }
+    };
+    if cb.len() != (s.width * s.height * 8) as usize || zb.len() != (s.width * s.height * 4) as usize {
+        return None;
+    }
     let color = cb.chunks_exact(8).map(|c| [0, 1, 2, 3].map(|k| half_to_f32(u16::from_le_bytes([c[2 * k], c[2 * k + 1]])))).collect();
     let depth = zb
         .chunks_exact(4)
@@ -341,6 +371,34 @@ pub(crate) fn render(g: &GpuContext, s: &Scene) -> Option<Target> {
         })
         .collect();
     Some(Target { width: s.width, height: s.height, color, depth })
+}
+
+/// A placeholder target (a pass whose readbacks are in flight).
+fn empty_target(w: u32, h: u32) -> Target {
+    let n = (w * h) as usize;
+    Target { width: w, height: h, color: vec![[0.0; 4]; n], depth: vec![f32::INFINITY; n] }
+}
+
+/// Everything that determines a scene's pixels, for deferred readback keys: the packed
+/// buffers, the geometry, the target size.
+fn key_scene(k: &mut crate::deferred::Key, s: &Scene) {
+    k.u64(s.width as u64);
+    k.u64(s.height as u64);
+    k.u64(s.ssaa as u64);
+    k.u64(s.opaque_count as u64);
+    for b in pack(s) {
+        k.u64(b.len() as u64);
+        k.bytes(&b);
+    }
+    let mut v = Vec::with_capacity(s.vertices.len() * VERTEX_SIZE as usize);
+    for x in &s.vertices {
+        for f in x.pos.iter().chain(&x.normal).chain(&x.uv).chain(&x.tangent) {
+            v.extend_from_slice(&f.to_le_bytes());
+        }
+        v.extend_from_slice(&x.material.to_le_bytes());
+    }
+    k.bytes(&v);
+    k.bytes(&s.indices.iter().flat_map(|i| i.to_le_bytes()).collect::<Vec<u8>>());
 }
 
 // ---------------------------------------------------------------- after the rasteriser
@@ -673,8 +731,11 @@ pub(crate) fn finish(e: &mut Enc, r: &Resolved, encode: bool, canvas: Option<&Gp
 /// [`effectcraft_render::Accelerator::render_3d`]: the whole prepared run on the GPU, read
 /// back.
 pub(crate) fn render_prepared(g: &GpuContext, prep: &Prepared) -> Option<Rendered> {
-    if !g.can_wait() {
+    if !g.can_readback() {
         return None;
+    }
+    if let Some(d) = g.deferred.clone() {
+        return render_prepared_deferred(g, &d, prep);
     }
     let mut e = Enc::new(g);
     let Some(r) = resolve_run(&mut e, prep)? else { return Some(None) };
@@ -690,6 +751,84 @@ pub(crate) fn render_prepared(g: &GpuContext, prep: &Prepared) -> Option<Rendere
         })
         .collect();
     Some(Some((img, depth)))
+}
+
+/// [`render_prepared`] with deferred readbacks: the image and the depth are read back under the
+/// run's key (every sub-sample's scene, the output size and encoding). A depth of field needs a
+/// readback in the middle of the run: such runs go to the CPU path (whose scenes still
+/// rasterise here, [`render`]).
+fn render_prepared_deferred(g: &GpuContext, d: &std::sync::Arc<crate::deferred::Deferred>, prep: &Prepared) -> Option<Rendered> {
+    use crate::deferred::Lookup::*;
+    if prep.dof.is_some() {
+        return None;
+    }
+    let (w, h) = prep.out;
+    let mut k = crate::deferred::Key::new(5);
+    k.u64(w as u64);
+    k.u64(h as u64);
+    k.u64(prep.samples as u64);
+    k.f64(prep.scale);
+    k.u64(prep.linear as u64);
+    let mut any = false;
+    for i in 0..prep.samples.max(1) {
+        let s = prep.scene(i);
+        any |= !s.indices.is_empty();
+        key_scene(&mut k, &s);
+    }
+    if !any {
+        return Some(None);
+    }
+    let ki = k.finish();
+    let kz = ki ^ 1;
+    match (d.lookup(ki), d.lookup(kz)) {
+        (Ready(a), Ready(b)) => {
+            let (a, b) = (a?, b?);
+            let mut img = effectcraft_render::Image::new(a.width, a.height);
+            let dst: &mut [u8] = bytemuck::cast_slice_mut(&mut img.data);
+            if dst.len() != a.bytes.len() || b.bytes.len() != dst.len() / 4 {
+                return None;
+            }
+            dst.copy_from_slice(&a.bytes);
+            let depth = b
+                .bytes
+                .chunks_exact(4)
+                .map(|c| {
+                    let z = f32::from_le_bytes([c[0], c[1], c[2], c[3]]);
+                    if z >= BIG * 0.5 { f32::INFINITY } else { z }
+                })
+                .collect();
+            return Some(Some((img, depth)));
+        }
+        (Absent, Absent) => {}
+        _ => {
+            d.miss();
+            return Some(None);
+        }
+    }
+    let mut e = Enc::new(g);
+    let Some(r) = resolve_run(&mut e, prep)? else { return Some(None) };
+    let img = finish(&mut e, &r, !prep.linear, None);
+    let _ = e.read_keyed(&img, ki, [0.0; 2], 1.0);
+    let size = w as u64 * h as u64 * 4;
+    let rb = g.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("adv3d depth readback"),
+        size,
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    e.encoder().copy_buffer_to_buffer(&r.depth, 0, &rb, 0, size);
+    e.submit();
+    let done = d.start(kz, w, h, [0.0; 2], 1.0);
+    let b = rb.clone();
+    rb.map_async(wgpu::MapMode::Read, .., move |res| {
+        let out = res.ok().and_then(|_| b.get_mapped_range(..).ok().map(|v| v.to_vec()));
+        b.unmap();
+        done(out);
+    });
+    #[cfg(not(target_arch = "wasm32"))]
+    let _ = g.device.poll(wgpu::PollType::Poll);
+    d.miss();
+    Some(None)
 }
 
 /// Draw a prepared run over the GPU canvas (the compositor's walk; no readback unless the
