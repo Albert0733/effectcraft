@@ -411,6 +411,17 @@ in Settings (`customRgb`) and simulated like the built-in profiles, with Preserv
 `form.field.<key>`, `form.ok` and `form.cancel` automation ids. Not yet: LUT-based (`A2B0`)
 ICC profiles.
 
+### M13.26: Premiere Pro interop via timeline interchange
+
+| Feature | After Effects | EffectCraft | Status |
+|---|---|---|---|
+| File ▸ Import ▸ Adobe Premiere Pro Project… | reads `.prproj` | reads Final Cut Pro XML (Premiere's File ▸ Export ▸ Final Cut Pro XML), FCPXML, OTIO, EDL, AAF and OMF (`file.importTimeline`): comps, layers by track, timing/speed/reverse/holds, Motion and Opacity keyframes, dissolves as opacity keys, nested sequences as precomps, audio layers with levels, bins as folders, missing media as placeholders | ≈ 85% |
+| File ▸ Export ▸ Adobe Premiere Pro Project… | writes `.prproj` | writes Final Cut Pro XML `.xml` (also FCPXML, OTIO, EDL, AAF, OMF; `file.exportTimeline`): clips per layer with timing, Motion, Opacity and levels; precomps nested; rendered-only layers pre-rendered to ProRes 4444 with alpha | ≈ 85% |
+
+Not yet: native `.prproj` (no public specification; awaits a decision), media embedded in AAF/OMF
+(not extracted), Premiere effects other than Motion/Opacity/Volume, speed
+ramps, titles/graphics, and Dynamic Link.
+
 ## Update: M13.23 GPU effects, part B (EFF-5)
 
 40 more effects run on the GPU (236 in all, with M13.22's 30), each checked against the CPU oracle (≤ 1/255 at

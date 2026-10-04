@@ -22,6 +22,10 @@ pub enum FieldKind {
         value: String,
         exts: Vec<String>,
     },
+    /// A file to write, with a Browse… button (the host's save dialog).
+    SavePath(String),
+    /// Explanatory text (no parameter).
+    Note(String),
     Bool(bool),
     /// Options as (label, value); `sel` is the chosen index.
     Choice {
@@ -47,6 +51,12 @@ impl Field {
     }
     pub fn path(key: &str, label: &str, value: &str, exts: &[&str]) -> Field {
         Field { key: key.into(), label: label.into(), kind: FieldKind::Path { value: value.into(), exts: exts.iter().map(|e| e.to_string()).collect() } }
+    }
+    pub fn save_path(key: &str, label: &str, value: &str) -> Field {
+        Field { key: key.into(), label: label.into(), kind: FieldKind::SavePath(value.into()) }
+    }
+    pub fn note(key: &str, text: &str) -> Field {
+        Field { key: key.into(), label: String::new(), kind: FieldKind::Note(text.into()) }
     }
     pub fn bool(key: &str, label: &str, value: bool) -> Field {
         Field { key: key.into(), label: label.into(), kind: FieldKind::Bool(value) }
@@ -75,7 +85,8 @@ impl Form {
         for f in &self.fields {
             let v = match &f.kind {
                 FieldKind::Number { value, .. } => json!(value),
-                FieldKind::Text(s) | FieldKind::Path { value: s, .. } => json!(s),
+                FieldKind::Text(s) | FieldKind::Path { value: s, .. } | FieldKind::SavePath(s) => json!(s),
+                FieldKind::Note(_) => continue,
                 FieldKind::Bool(b) => json!(b),
                 FieldKind::Choice { options, sel } => options.get(*sel).map(|o| o.1.clone()).unwrap_or(Value::Null),
             };
@@ -499,6 +510,43 @@ pub fn open_form(app: &mut EffectcraftApp, id: &str, p: &Value) -> bool {
                 ],
             )
         }
+        // File ▸ Export ▸ Adobe Premiere Pro Project…: Final Cut Pro XML (or FCPXML / OTIO / EDL).
+        "file.exportTimeline" if !has(p, &["path"]) => {
+            let name = s.active_comp_id().and_then(|c| s.project.item(c)).map(|i| i.name.clone()).unwrap_or_else(|| "Composition".into());
+            let dir = s.path.as_deref().and_then(|p| std::path::Path::new(p).parent()).map(|d| d.to_path_buf()).unwrap_or_default();
+            let path = dir.join(format!("{name}.xml")).to_string_lossy().to_string();
+            (
+                "Export Adobe Premiere Pro Project".into(),
+                vec![
+                    Field::note("note", "Writes Final Cut Pro XML (.xml), which Premiere Pro opens with File ▸ Import. Native .prproj files are not written."),
+                    Field::save_path("path", "File", &path),
+                    Field::choice(
+                        "format",
+                        "Format",
+                        &[
+                            ("Final Cut Pro XML (.xml) – Premiere Pro", json!("xml")),
+                            ("FCPXML (.fcpxml)", json!("fcpxml")),
+                            ("OpenTimelineIO (.otio)", json!("otio")),
+                            ("CMX 3600 EDL (.edl, V1 only)", json!("edl")),
+                            ("AAF (.aaf)", json!("aaf")),
+                            ("OMF (.omf, audio)", json!("omf")),
+                        ],
+                        0,
+                    ),
+                    Field::choice(
+                        "prerender",
+                        "Pre-render (ProRes 4444)",
+                        &[
+                            ("Layers Premiere can't show (text, shapes, effects…)", json!("unsupported")),
+                            ("All layers", json!("all")),
+                            ("None (leave them out)", json!("none")),
+                        ],
+                        0,
+                    ),
+                    Field::choice("precomps", "Precomps", &[("Nested sequences", json!("nest")), ("Pre-render", json!("prerender"))], 0),
+                ],
+            )
+        }
         "file.importPlaceholder" | "file.replaceWithPlaceholder" if p.as_object().is_none_or(|m| m.is_empty()) => (
             "New Placeholder".into(),
             vec![
@@ -595,6 +643,19 @@ pub fn show_form(app: &mut EffectcraftApp, ctx: &egui::Context, t: &Tokens) {
                         })
                         .inner
                     }
+                    FieldKind::SavePath(value) => {
+                        ui.horizontal(|ui| {
+                            let r = ui.add(egui::TextEdit::singleline(value).desired_width(150.0)).rect;
+                            let b = ui.button("Browse…");
+                            regs.push((format!("form.field.{}.browse", fl.key), b.rect, "Browse…".into()));
+                            if b.clicked() {
+                                browse = Some(i);
+                            }
+                            r
+                        })
+                        .inner
+                    }
+                    FieldKind::Note(text) => ui.add(egui::Label::new(egui::RichText::new(text.as_str()).small()).wrap()).rect,
                     FieldKind::Bool(b) => ui.checkbox(b, "").rect,
                     FieldKind::Choice { options, sel } => {
                         let cur = options.get(*sel).map(|o| o.0.clone()).unwrap_or_default();
@@ -638,6 +699,19 @@ pub fn show_form(app: &mut EffectcraftApp, ctx: &egui::Context, t: &Tokens) {
         match app.hooks.pick_files.as_ref() {
             Some(pick) => {
                 if let Some(path) = pick(&exts).into_iter().next() {
+                    *value = path;
+                }
+            }
+            None => app.ui.status = "no file dialog available: type the path".into(),
+        }
+    }
+    if let Some(i) = browse
+        && let Some(FieldKind::SavePath(value)) = f.fields.get_mut(i).map(|f| &mut f.kind)
+    {
+        let default = std::path::Path::new(value.as_str()).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        match app.hooks.pick_save.as_ref() {
+            Some(pick) => {
+                if let Some(path) = pick(&default) {
                     *value = path;
                 }
             }
@@ -716,5 +790,40 @@ mod tests {
             ],
         };
         assert_eq!(f.params(), json!({"prop": "position", "value": [10.0, 20.0], "mode": "b"}));
+    }
+
+    /// File ▸ Export ▸ Adobe Premiere Pro Project… opens a form that says it writes Final Cut Pro
+    /// XML; its fields register automation ids and OK runs `file.exportTimeline`.
+    #[test]
+    fn premiere_export_dialog() {
+        let mut app = EffectcraftApp::new(effectcraft_engine::Session::default());
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx, &app.tokens);
+        app.session.execute("comp.new", json!({"name": "Spot", "width": 64, "height": 36, "frameRate": 25, "duration": 1})).unwrap();
+        app.session.execute("layer.newSolid", json!({"color": "#ff0000"})).unwrap();
+        crate::menus::invoke(&mut app, &ctx, "file.exportTimeline", json!({})).unwrap();
+        assert!(matches!(app.dialog, Some(Dialog::Form)));
+        let f = &app.dialog_state.form;
+        assert_eq!(f.command, "file.exportTimeline");
+        assert!(matches!(&f.fields[0].kind, FieldKind::Note(t) if t.contains("Final Cut Pro XML (.xml)")));
+        let dir = std::env::temp_dir().join(format!("effectcraft-ui-premiere-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("Spot.xml").to_string_lossy().to_string();
+        app.dialog_state.form.fields[1].kind = FieldKind::SavePath(path.clone());
+        ctx.run_ui(Default::default(), |ui| {
+            app.auto.begin_frame();
+            crate::panels::dialogs::show(&mut app, ui.ctx());
+        })
+        .textures_delta
+        .clear();
+        for id in ["form.field.path", "form.field.path.browse", "form.field.format", "form.field.prerender", "form.field.precomps", "form.ok"] {
+            assert!(app.auto.find(id).is_some(), "{id}");
+        }
+        let params = app.dialog_state.form.params();
+        assert!(params.get("note").is_none());
+        assert_eq!(params["format"], "xml");
+        let r = app.session.execute("file.exportTimeline", params).unwrap();
+        assert_eq!(r["path"], path.as_str());
+        assert!(std::fs::read_to_string(&path).unwrap().contains("<xmeml"));
     }
 }

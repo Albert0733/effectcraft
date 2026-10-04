@@ -61,6 +61,7 @@ mod text_anim;
 pub mod text_edit;
 mod three_d;
 pub mod time;
+mod timeline;
 mod track;
 mod view;
 pub mod viewer_cmds;
@@ -168,6 +169,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(key_transform::specs());
         v.extend(file_more::specs());
         v.extend(lottie::specs());
+        v.extend(timeline::specs());
         v.extend(comp_more::specs());
         v.extend(frame_export::specs());
         v.extend(watch_folder::specs());

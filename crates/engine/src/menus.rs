@@ -505,6 +505,7 @@ File
   Import
     File... | file.import
     Multiple Files... | file.importMultiple
+    Adobe Premiere Pro Project... | file.importTimeline
     Placeholder... | file.importPlaceholder
     Solid... | file.importSolid
     Lottie... | file.importLottie
@@ -516,6 +517,7 @@ File
     Clear Recent Footage | file.clearRecentFootage
   Export
     Add to Render Queue | renderQueue.add
+    Adobe Premiere Pro Project... | file.exportTimeline
     Lottie JSON... | file.exportLottie
     Essential Graphics Template... | essential.exportTemplate
   ---

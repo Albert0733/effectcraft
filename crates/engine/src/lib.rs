@@ -928,6 +928,8 @@ mod tests_text_edit;
 #[cfg(test)]
 mod tests_timeline;
 #[cfg(test)]
+mod tests_timeline_interchange;
+#[cfg(test)]
 mod tests_track;
 #[cfg(test)]
 mod tests_vector_import;
