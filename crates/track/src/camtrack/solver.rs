@@ -113,7 +113,7 @@ fn keyframes(d: &Data) -> Vec<usize> {
         j += 1;
     }
     if let Some(lastf) = (0..d.n).rev().find(|k| d.by_frame[*k].len() >= 8)
-        && *kf.last().expect("one") < lastf
+        && kf.last().is_some_and(|l| *l < lastf)
     {
         kf.push(lastf);
     }
@@ -237,10 +237,10 @@ impl Recon {
                     .iter()
                     .map(|k| {
                         let c = &self.cams[k];
-                        let uv = d.at(*ti, *k).expect("seen");
-                        (c.pose, [uv[0] / c.f, uv[1] / c.f], c)
+                        let uv = d.at(*ti, *k)?;
+                        Some((c.pose, [uv[0] / c.f, uv[1] / c.f], c))
                     })
-                    .collect();
+                    .collect::<Option<_>>()?;
                 let x = match kind {
                     Kind::Tripod => normalize(views.iter().fold([0.0; 3], |a, (p, o, _)| add(a, normalize(mtv(&p.r, [o[0], o[1], 1.0]))))),
                     Kind::General => {
@@ -255,7 +255,7 @@ impl Recon {
                     }
                 };
                 for (k, (_, _, c)) in ks.iter().zip(&views) {
-                    let uv = d.at(*ti, *k).expect("seen");
+                    let uv = d.at(*ti, *k)?;
                     let r = bundle::residual(c, x, uv)?;
                     if r[0] * r[0] + r[1] * r[1] > thr2 {
                         return None;
@@ -675,7 +675,7 @@ fn undistorted(tracks: &CameraTracks, dist: &Distortion) -> CameraTracks {
 pub fn solve(tracks: &CameraTracks, s: &SolveSettings, cancel: Option<&AtomicBool>) -> Result<CameraSolve, SolveError> {
     if !s.lens_distortion {
         let c = solve_core(tracks, s, cancel)?;
-        return Ok(finish(&c.d, tracks, s, c.r, c.method, c.kind));
+        return finish(&c.d, tracks, s, c.r, c.method, c.kind);
     }
     // Lens distortion: solve, adjust (k1, k2) jointly on the raw tracks, then solve again on
     // tracks undistorted with the estimate and adjust jointly once more.
@@ -734,7 +734,7 @@ pub fn solve(tracks: &CameraTracks, s: &SolveSettings, cancel: Option<&AtomicBoo
         if debug() {
             eprintln!("lens distortion pass {pass}: k1 {:.5} k2 {:.5}", dist.k1, dist.k2);
         }
-        let mut sol = finish(&d, tracks, s, r, c.method, c.kind);
+        let mut sol = finish(&d, tracks, s, r, c.method, c.kind)?;
         sol.distortion = Some(dist);
         out = Some(sol);
     }
@@ -817,8 +817,8 @@ fn solve_core(tracks: &CameraTracks, s: &SolveSettings, cancel: Option<&AtomicBo
                 let rg = &results[g].0.recon;
                 let cs: Vec<V3> = rg.cams.values().map(|c| c.pose.c).collect();
                 let base = cs.iter().flat_map(|a| cs.iter().map(move |b| norm(sub(*a, *b)))).fold(0.0, f64::max);
-                let c0 = rg.cams.values().next().expect("camera");
-                let mut depth: Vec<f64> = rg.pts.values().map(|x| norm(sub(*x, c0.pose.c))).collect();
+                let c0 = rg.cams.values().next().map_or([0.0; 3], |c| c.pose.c);
+                let mut depth: Vec<f64> = rg.pts.values().map(|x| norm(sub(*x, c0))).collect();
                 depth.sort_by(f64::total_cmp);
                 let med = depth.get(depth.len() / 2).copied().unwrap_or(1.0);
                 if debug() {
@@ -969,8 +969,8 @@ fn cov_ratio(p: &[V3]) -> f64 {
 }
 
 /// Canonical frame, per-frame output (unsolved frames interpolated), points and errors.
-fn finish(d: &Data, tracks: &CameraTracks, s: &SolveSettings, r: Recon, method: SolveMethod, kind: Kind) -> CameraSolve {
-    let (k0, c0) = r.cams.iter().next().map(|(k, c)| (*k, *c)).expect("solved");
+fn finish(d: &Data, tracks: &CameraTracks, s: &SolveSettings, r: Recon, method: SolveMethod, kind: Kind) -> Result<CameraSolve, SolveError> {
+    let Some((k0, c0)) = r.cams.iter().next().map(|(k, c)| (*k, *c)) else { return err("the camera could not be solved (no frame was solved)") };
     // Scale: median depth of the points seen by the first solved camera is 1.
     let mut depths: Vec<f64> = d.by_frame[k0].iter().filter_map(|(ti, _)| r.pts.get(ti)).map(|x| c0.pose.to_cam(*x)[2]).filter(|z| *z > 0.0).collect();
     depths.sort_by(f64::total_cmp);
@@ -1038,7 +1038,7 @@ fn finish(d: &Data, tracks: &CameraTracks, s: &SolveSettings, r: Recon, method: 
         en += n1;
         points.push(SolvedPoint { id: *id, pos: to_world(x), error: (s1 / n1 as f64) as f32, first: *start as u32, last: (start + pts.len() - 1) as u32 });
     }
-    CameraSolve {
+    Ok(CameraSolve {
         version: 1,
         size: tracks.size,
         start: tracks.start,
@@ -1050,5 +1050,5 @@ fn finish(d: &Data, tracks: &CameraTracks, s: &SolveSettings, r: Recon, method: 
         points,
         ground: None,
         distortion: None,
-    }
+    })
 }

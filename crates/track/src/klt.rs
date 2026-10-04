@@ -65,7 +65,7 @@ impl GrayPyramid {
     pub fn from_plane(base: Plane, offset: [f64; 2], factor: f64, levels: usize) -> GrayPyramid {
         let mut lv = vec![base];
         for _ in 0..levels {
-            let last = lv.last().expect("level");
+            let Some(last) = lv.last() else { break };
             if last.w < 16 || last.h < 16 {
                 break;
             }

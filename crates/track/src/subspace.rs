@@ -367,7 +367,7 @@ pub fn smooth_trajectories(tracks: &[Track2D], frames: usize, sigma: f64, rank: 
                 let mut ata = vec![0.0; k * k];
                 let mut atb = [vec![0.0; k], vec![0.0; k]];
                 for &c in &cols {
-                    let p = tr.at((lo + c) as u32).expect("covered");
+                    let Some(p) = tr.at((lo + c) as u32) else { continue };
                     for a in 0..k {
                         for d in 0..2 {
                             atb[d][a] += cmat[a][c] * p[d];
@@ -391,8 +391,8 @@ pub fn smooth_trajectories(tracks: &[Track2D], frames: usize, sigma: f64, rank: 
                     }
                     dst[d] = x.iter().zip(&chat).map(|(a, b)| a * b).sum();
                 }
-                if ok {
-                    out.push((tr.at(t32).expect("seen"), dst));
+                if ok && let Some(p) = tr.at(t32) {
+                    out.push((p, dst));
                 }
             }
             out
