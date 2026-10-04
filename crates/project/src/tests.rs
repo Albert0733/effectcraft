@@ -84,3 +84,23 @@ fn camera_and_light_layers_build() {
     let light = build::layer(&mut p, &comp, "Light 1", LayerSource::Light { kind: crate::LightKind::Spot }, (0, 0), None);
     assert!(light.props.prop("lightOptions/coneAngle").is_some());
 }
+
+#[test]
+fn same_content_ignores_unused_ids_and_sees_comp_edits() {
+    let (p, cid) = project_with_layer();
+    let mut q = p.clone();
+    assert!(q.same_content(&p));
+    q.alloc();
+    assert!(q.same_content(&p), "an allocated but unused id is not a change");
+    // A comp copied on write but left equal is the same; a changed one is not.
+    let _ = q.comp_mut(cid).unwrap();
+    assert!(q.same_content(&p));
+    q.comp_mut(cid).unwrap().layers[0].name = "Renamed".into();
+    assert!(!q.same_content(&p));
+    let mut r = p.clone();
+    r.item_mut(cid).unwrap().name = "Other".into();
+    assert!(!r.same_content(&p));
+    let mut r = p.clone();
+    r.settings.bit_depth = crate::BitDepth::Bpc16;
+    assert!(!r.same_content(&p));
+}

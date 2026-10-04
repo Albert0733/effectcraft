@@ -133,3 +133,45 @@ fn undo_levels_trim_branches() {
     assert_eq!(s.history.branch_states(), 0);
     assert_eq!(list(&mut s).len(), 4);
 }
+
+#[test]
+fn modified_mark_follows_undo_and_no_op_edits_record_nothing() {
+    let mut s = Session::default();
+    s.execute("comp.new", json!({"name": "H", "width": 64, "height": 64, "duration": 2})).unwrap();
+    solid(&mut s, "A");
+    let path = std::env::temp_dir().join(format!("ec-dirty-{}.ecproj", std::process::id()));
+    s.execute("file.saveAs", json!({"path": path.to_string_lossy()})).unwrap();
+    assert!(!s.is_dirty());
+    // Setting a value to what it already is: no undo step, still saved.
+    let steps = s.history.undo.len();
+    s.execute("prop.set", json!({"layer": "A", "path": "transform/opacity", "value": 100})).unwrap();
+    assert_eq!(s.history.undo.len(), steps);
+    assert!(!s.is_dirty());
+    // A real change, then undo back to the saved state: not modified; redo: modified again.
+    s.execute("prop.set", json!({"layer": "A", "path": "transform/opacity", "value": 50})).unwrap();
+    assert!(s.is_dirty());
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(!s.is_dirty(), "undo back to the saved state");
+    s.execute("edit.redo", json!({})).unwrap();
+    assert!(s.is_dirty());
+    // History jumps: the saved state is the parent of the current (changed) one.
+    let states = list(&mut s);
+    let cur = states.iter().find(|n| n["current"] == true).unwrap();
+    let (changed, saved) = (cur["index"].as_u64().unwrap(), cur["parent"].as_u64().unwrap());
+    s.execute("edit.history.goto", json!({"index": saved})).unwrap();
+    assert!(!s.is_dirty(), "jumped to the saved state");
+    s.execute("edit.history.goto", json!({"index": changed})).unwrap();
+    assert!(s.is_dirty());
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(!s.is_dirty());
+    let r = s.execute(
+        "engine.batch",
+        json!({"atomic": true, "steps": [
+            {"command": "prop.set", "params": {"layer": "A", "path": "transform/opacity", "value": 10}},
+            {"command": "no.suchCommand", "params": {}}
+        ]}),
+    );
+    assert!(r.is_err());
+    assert!(!s.is_dirty(), "rolled back");
+    let _ = std::fs::remove_file(path);
+}

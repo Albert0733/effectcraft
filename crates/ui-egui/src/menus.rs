@@ -192,6 +192,10 @@ fn no_params(p: &Value) -> bool {
 /// Execute a UI or engine command by id.
 pub fn invoke(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, params: Value) -> Result<Value, String> {
     let now = ctx.input(|i| i.time);
+    // Closing a modified project asks to save it first; the command runs once answered.
+    if crate::panels::unsaved::guard(app, id, &params) {
+        return Ok(json!({"dialog": "unsavedChanges"}));
+    }
     // New Camera/Light and Camera/Light Settings without parameters open their dialogs.
     if crate::panels::dialogs_3d::route(app, id, &params)? {
         return Ok(Value::Null);

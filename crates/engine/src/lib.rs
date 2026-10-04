@@ -298,6 +298,9 @@ pub struct Session {
     pub history: History,
     pub revision: u64,
     pub saved_revision: u64,
+    /// The project as last opened or saved: the project is unmodified while it is this very
+    /// snapshot, so undoing back to the saved state clears the modified mark.
+    pub saved_project: Arc<Project>,
     pub path: Option<String>,
     pub state: EditorState,
     pub services: Arc<dyn Services>,
@@ -417,8 +420,10 @@ pub type PluginLoader = fn(&[u8], &str) -> std::result::Result<Value, String>;
 
 impl Default for Session {
     fn default() -> Self {
+        let project = Arc::new(Project::default());
         Session {
-            project: Arc::new(Project::default()),
+            saved_project: project.clone(),
+            project,
             history: History::default(),
             revision: 0,
             saved_revision: 0,
@@ -541,6 +546,11 @@ impl Session {
                 self.roto_pending.push(r);
             }
         }
+        // Nothing changed (a value set to what it already was): no undo step, not modified.
+        if p.same_content(&before) {
+            self.state = st;
+            return Ok(r);
+        }
         let same = merge.is_some() && merge.map(str::to_string) == self.history.merge_key;
         if !same {
             // Undone steps aren't lost: they stay in the History panel as a branch.
@@ -558,6 +568,10 @@ impl Session {
 
     pub fn bump(&mut self) {
         self.revision += 1;
+        // Back at the saved state (undo, redo, a history jump or a rolled-back batch).
+        if Arc::ptr_eq(&self.project, &self.saved_project) {
+            self.saved_revision = self.revision;
+        }
         if self.disk_cache.is_some() {
             self.layer_cache.set_disk_salt(effectcraft_render::disk_cache::footage_salt(&self.project));
         }
@@ -609,6 +623,12 @@ impl Session {
 
     pub fn is_dirty(&self) -> bool {
         self.revision != self.saved_revision
+    }
+
+    /// The project as it is now is the saved one (after opening or saving it).
+    pub fn mark_saved(&mut self) {
+        self.saved_project = self.project.clone();
+        self.saved_revision = self.revision;
     }
 
     pub fn active_comp(&self) -> Option<&Comp> {
@@ -840,7 +860,7 @@ impl Session {
         self.state = EditorState { snapping: true, view_layout: 1, ..Default::default() };
         self.path = path;
         self.bump();
-        self.saved_revision = self.revision;
+        self.mark_saved();
         let first = self.project.comps().next().map(|(id, _)| *id);
         if let Some(c) = first {
             self.open_comp(c);

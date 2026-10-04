@@ -44,6 +44,8 @@ pub struct DialogState {
     pub precompose: super::precomp::PrecomposeDraft,
     /// Layer Style dialog.
     pub layer_style: super::layer_styles_dialog::LayerStyleState,
+    /// The unsaved-changes prompt and the command it holds.
+    pub unsaved: super::unsaved::Pending,
 }
 
 pub fn open_new_comp(app: &mut EffectcraftApp) {
@@ -130,6 +132,7 @@ pub fn show(app: &mut EffectcraftApp, ctx: &egui::Context) {
         Dialog::TrackTarget => super::tracker::target_dialog(app, ctx, &t),
         Dialog::TrackApply => super::tracker::apply_dialog(app, ctx, &t),
         Dialog::RenderTemplates => super::rq_templates::show(app, ctx, &t),
+        Dialog::UnsavedChanges => super::unsaved::show(app, ctx, &t),
     }
 }
 

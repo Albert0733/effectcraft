@@ -158,6 +158,10 @@ pub fn home_tab(app: &mut EffectcraftApp, ui: &mut egui::Ui, area: Rect) {
             Err(e) => app.ui.status = e.to_string(),
         }
     } else if let Some(id) = open {
+        // A modified project asks to save first (the template opens once answered).
+        if super::unsaved::guard(app, "templates.create", &json!({"id": id})) {
+            return;
+        }
         match app.session.execute("templates.create", json!({"id": id})) {
             Ok(_) => app.ui.start_screen = false,
             Err(e) => app.ui.status = e.to_string(),
