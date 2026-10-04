@@ -5,6 +5,7 @@ use effectcraft_project::{GroupKind, ItemId, Layer, LayerId, PropGroup, Uid};
 use serde_json::{Value, json};
 
 use super::{CommandSpec, b_p, bad, has_comp, layer_p};
+use crate::offload::{JobKind, WorkerJob};
 use crate::{EngineError, Result, Session, cmd, query};
 
 pub fn specs() -> Vec<CommandSpec> {
@@ -101,10 +102,12 @@ fn warp_status(s: &mut Session, p: &Value) -> Result<Value> {
     s.poll_warp(false);
     let mut out = json!({"running": s.is_warp_analyzing(), "progress": s.warp_progress(), "banner": s.warp_progress().map(|p| p.banner())});
     let Ok((cid, lid, uid)) = warp_p(s, p, "warp.status") else { return Ok(out) };
-    let comp = s.project.comp(cid).ok_or(EngineError::NoComp)?;
+    // (the project's `Arc`: the borrows outlive starting a job below)
+    let project = s.project.clone();
+    let comp = project.comp(cid).ok_or(EngineError::NoComp)?;
     let layer = comp.layer(lid).ok_or(EngineError::NoComp)?;
     let g = layer.props.find_group(uid).ok_or(EngineError::NoComp)?;
-    let ctx = effectcraft_render::EvalCtx::new(&s.project, cid, comp, s.time_of(cid));
+    let ctx = effectcraft_render::EvalCtx::new(&project, cid, comp, s.time_of(cid));
     let params = effectcraft_effects::flatten_params(g, &mut |pr| ctx.value(layer, pr));
     let analysis = effectcraft_effects::warp_stab::analysis(&params);
     out["layer"] = json!(lid.0);
@@ -115,13 +118,30 @@ fn warp_status(s: &mut Session, p: &Value) -> Result<Value> {
         out["frames"] = json!(a.frames.len());
         out["size"] = json!(a.size);
         let lt = layer.layer_time(s.time_of(cid)).seconds();
-        if let Some((k, _, plan)) = effectcraft_effects::warp_stab::plan_at(&params, lt) {
-            let m = plan.warps[k].0;
+        // Solving the plan takes seconds for a long Subspace Warp clip: where jobs run
+        // elsewhere (the browser) it is never solved here but in a job worker, and the status
+        // says "stabilizing" until the summary arrives (`WorkerReply::WarpPlan`).
+        let plan = if s.offloads() {
+            let cached = effectcraft_effects::warp_stab::cached_summary_at(&params, lt);
+            if cached.is_none() {
+                out["stabilizing"] = json!(true);
+                if s.offloaded(JobKind::Warp).is_none() && s.offloaded(JobKind::WarpPlan).is_none() {
+                    let t = s.time_of(cid);
+                    if let Err(e) = s.offload_analysis(WorkerJob::WarpPlan { comp: cid, layer: lid, effect: uid, time: t }) {
+                        log::warn!("warp.status: {e}");
+                    }
+                }
+            }
+            cached
+        } else {
+            effectcraft_effects::warp_stab::summary_at(&params, lt)
+        };
+        if let Some((k, plan)) = plan {
             out["frame"] = json!(k);
             out["autoScale"] = json!(plan.auto_scale * 100.0);
             out["crop"] = json!(plan.crop);
             out["validFraction"] = json!(plan.valid_fraction);
-            out["warp"] = json!(m);
+            out["warp"] = json!(plan.warps[k]);
             let pts = &a.frames[k];
             out["features"] = json!(pts.features);
             out["inliers"] = json!(pts.inliers);

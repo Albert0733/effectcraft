@@ -203,10 +203,14 @@ fn analysis_cached(json: &str) -> Option<(u64, Arc<WarpAnalysis>)> {
     Some((key, a))
 }
 
-fn plan_cached(akey: u64, a: &WarpAnalysis, s: &StabSettings) -> Arc<Plan> {
+fn plans() -> &'static PlanCache {
     static C: OnceLock<PlanCache> = OnceLock::new();
+    C.get_or_init(Default::default)
+}
+
+fn plan_cached(akey: u64, a: &WarpAnalysis, s: &StabSettings) -> Arc<Plan> {
     let key = (akey, settings_key(s));
-    let c = C.get_or_init(Default::default);
+    let c = plans();
     if let Some(p) = c.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
         return p.clone();
     }
@@ -239,6 +243,107 @@ pub fn plan_at(params: &Params, time: f64) -> Option<(usize, Arc<WarpAnalysis>, 
     let fps = if a.frame_duration > 0.0 { 1.0 / a.frame_duration } else { 30.0 };
     let pl = plan_cached(key, &a, &settings(params, fps));
     (k < pl.warps.len()).then_some((k, a, pl))
+}
+
+/// What `warp.status` reports of a stabilization plan (no meshes): small, so another engine
+/// instance (a browser job worker) can compute it and send it over.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanSummary {
+    /// [`Plan::warps`] (row-major 3 × 3 per frame).
+    pub warps: Vec<[[f64; 3]; 3]>,
+    pub auto_scale: f64,
+    pub crop: Option<[f64; 4]>,
+    pub valid_fraction: f64,
+}
+
+impl PlanSummary {
+    fn of(p: &Plan) -> PlanSummary {
+        PlanSummary { warps: p.warps.iter().map(|h| h.0).collect(), auto_scale: p.auto_scale, crop: p.crop, valid_fraction: p.valid_fraction }
+    }
+}
+
+type SummaryCache = Mutex<HashMap<(u64, u64), Arc<PlanSummary>>>;
+
+fn summaries() -> &'static SummaryCache {
+    static C: OnceLock<SummaryCache> = OnceLock::new();
+    C.get_or_init(Default::default)
+}
+
+/// The key of an instance's plan (analysis, settings), with the analysis (`None` when not
+/// analysed). Cheap once the analysis is parsed: no plan is computed.
+fn plan_key(params: &Params) -> Option<((u64, u64), Arc<WarpAnalysis>, StabSettings)> {
+    let j = s(params, ANALYSIS);
+    if j.is_empty() {
+        return None;
+    }
+    let (akey, a) = analysis_cached(j)?;
+    let fps = if a.frame_duration > 0.0 { 1.0 / a.frame_duration } else { 30.0 };
+    let st = settings(params, fps);
+    Some(((akey, settings_key(&st)), a, st))
+}
+
+/// The key a [`PlanSummary`] of this instance is stored under ([`store_summary`]).
+pub fn summary_key(params: &Params) -> Option<[u64; 2]> {
+    plan_key(params).map(|(k, _, _)| [k.0, k.1])
+}
+
+/// Keep a summary computed elsewhere (a job worker), so [`cached_summary_at`] finds it.
+pub fn store_summary(key: [u64; 2], summary: PlanSummary) {
+    keep_summary((key[0], key[1]), Arc::new(summary));
+}
+
+fn keep_summary(key: (u64, u64), summary: Arc<PlanSummary>) {
+    let mut m = summaries().lock().unwrap_or_else(|e| e.into_inner());
+    if m.len() > 32 {
+        m.clear();
+    }
+    m.insert(key, summary);
+}
+
+/// The plan summary of an instance (its key and the summary), computing the plan when it isn't
+/// cached (seconds for a long Subspace Warp clip). `None` when not analysed.
+pub fn summary(params: &Params) -> Option<([u64; 2], Arc<PlanSummary>)> {
+    let (key, a, st) = plan_key(params)?;
+    let cached = summaries().lock().unwrap_or_else(|e| e.into_inner()).get(&key).cloned();
+    let sum = match cached {
+        Some(s) => s,
+        None => {
+            let s = Arc::new(PlanSummary::of(&plan_cached(key.0, &a, &st)));
+            keep_summary(key, s.clone());
+            s
+        }
+    };
+    Some(([key.0, key.1], sum))
+}
+
+/// The plan summary of an instance at layer time `time`: (frame index, summary). Computes the
+/// plan when it isn't cached ([`summary`]).
+pub fn summary_at(params: &Params, time: f64) -> Option<(usize, Arc<PlanSummary>)> {
+    if let Some(r) = cached_summary_at(params, time) {
+        return Some(r);
+    }
+    let (_, sum) = summary(params)?;
+    let k = analysis(params)?.frame_at(time)?;
+    (k < sum.warps.len()).then_some((k, sum))
+}
+
+/// [`summary_at`] without computing anything: from a stored summary or a cached plan; `None`
+/// when neither exists yet (or the instance is not analysed).
+pub fn cached_summary_at(params: &Params, time: f64) -> Option<(usize, Arc<PlanSummary>)> {
+    let (key, a, _) = plan_key(params)?;
+    let k = a.frame_at(time)?;
+    let sum = summaries().lock().unwrap_or_else(|e| e.into_inner()).get(&key).cloned();
+    let sum = match sum {
+        Some(s) => s,
+        None => {
+            let p = plans().lock().unwrap_or_else(|e| e.into_inner()).get(&key).cloned()?;
+            let s = Arc::new(PlanSummary::of(&p));
+            keep_summary(key, s.clone());
+            s
+        }
+    };
+    (k < sum.warps.len()).then_some((k, sum))
 }
 
 /// Motion from frame `k` to frame `j` (scene points of frame k → frame j), from the analysed

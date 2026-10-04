@@ -382,3 +382,77 @@ fn warp_analysis_invalidates_and_cancels() {
     let _ = FPS;
     let _ = Tick::ZERO;
 }
+
+/// Jobs recorded by the session (the browser's job workers), run on demand in a second session
+/// through JSON.
+#[derive(Default)]
+struct Deferred(std::sync::Mutex<Vec<(crate::offload::WorkerRequest, std::sync::Arc<crate::offload::Inbox>)>>);
+
+impl crate::offload::Offload for Deferred {
+    fn start(&self, req: crate::offload::WorkerRequest, inbox: std::sync::Arc<crate::offload::Inbox>) -> Result<(), String> {
+        self.0.lock().unwrap().push((req, inbox));
+        Ok(())
+    }
+    fn cancel(&self, _: u64) {}
+}
+
+impl Deferred {
+    fn kinds(&self) -> Vec<crate::offload::JobKind> {
+        self.0.lock().unwrap().iter().map(|(r, _)| r.job.kind()).collect()
+    }
+    /// Run the recorded jobs in a worker session (sharing `footage`).
+    fn run(&self, footage: std::sync::Arc<dyn effectcraft_render::FootageSource>) {
+        let jobs = std::mem::take(&mut *self.0.lock().unwrap());
+        for (req, inbox) in jobs {
+            let req: crate::offload::WorkerRequest = serde_json::from_str(&serde_json::to_string(&req).unwrap()).unwrap();
+            let mut w = Session { footage: footage.clone(), ..Default::default() };
+            let post: crate::offload::Post = std::rc::Rc::new(move |r| inbox.push(serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap()));
+            crate::offload::run_request(&mut w, req, &post);
+        }
+    }
+}
+
+/// M13.32: where jobs run elsewhere (the browser), `warp.status` never solves the
+/// stabilization plan on the page's thread (seconds for a long Subspace Warp clip): the
+/// analysis job sends the plan's summary with its result, and a settings change has the plan
+/// solved by a job ("stabilizing" meanwhile).
+#[test]
+fn warp_plan_is_solved_in_the_job_not_on_the_page() {
+    let (mut s, clip, solid) = setup(shaky);
+    s.execute("edit.clear", json!({"layers": [solid.0]})).unwrap();
+    s.execute("layer.select", json!({"layers": [clip.0]})).unwrap();
+    s.execute("effect.apply", json!({"effect": "Warp Stabilizer"})).unwrap();
+    // Settings no other test uses: the plans of this test are solved nowhere else.
+    set_param(&mut s, clip, "stabilization/smoothness", json!(41.25));
+    let off = std::sync::Arc::new(Deferred::default());
+    s.offload = Some(off.clone());
+    s.execute_checked("warp.analyze", json!({"layer": clip.0})).unwrap();
+    assert_eq!(off.kinds(), [crate::offload::JobKind::Warp]);
+    off.run(s.footage.clone());
+    assert!(s.poll_offload());
+    let st = s.execute("warp.status", json!({})).unwrap();
+    assert_eq!(st["analyzed"], true, "{st}");
+    assert!(st.get("stabilizing").is_none() && st["autoScale"].as_f64().is_some_and(|a| a > 100.0), "the plan came with the analysis: {st}");
+    assert!(off.kinds().is_empty(), "nothing more to solve");
+
+    // A settings change: the page doesn't solve the new plan, a job does.
+    set_param(&mut s, clip, "stabilization/smoothness", json!(23.75));
+    let st = s.execute("warp.status", json!({})).unwrap();
+    assert_eq!(st["stabilizing"], true, "{st}");
+    assert!(st.get("autoScale").is_none() && st["analyzed"] == true, "{st}");
+    s.execute("warp.status", json!({})).unwrap();
+    assert_eq!(off.kinds(), [crate::offload::JobKind::WarpPlan], "one job, however often the status is asked");
+    assert!(s.jobs().iter().any(|j| j.id == "warpPlan"));
+    let rev = s.revision;
+    off.run(s.footage.clone());
+    assert!(s.poll_offload());
+    assert_eq!(s.revision, rev, "a plan summary changes no frames");
+    let st = s.execute("warp.status", json!({})).unwrap();
+    assert!(st.get("stabilizing").is_none(), "{st}");
+    let w: [[f64; 3]; 3] = serde_json::from_value(st["warp"].clone()).unwrap_or_else(|_| panic!("{st}"));
+    // The same plan as solved here (without jobs).
+    s.offload = None;
+    let here = s.execute("warp.status", json!({})).unwrap();
+    assert_eq!(here["warp"], json!(w));
+    assert_eq!(here["autoScale"], st["autoScale"]);
+}

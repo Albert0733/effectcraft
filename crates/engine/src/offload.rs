@@ -14,7 +14,8 @@
 //! | Job | Worker runs | Reply applied on the UI thread |
 //! |---|---|---|
 //! | Render Queue | the export of every queued item | item status, progress; files arrive through the host |
-//! | Warp Stabilizer analysis | [`Session::start_warp`] | the effect's property group (one undo step) |
+//! | Warp Stabilizer analysis | [`Session::start_warp`], then the stabilization plan | the effect's property group (one undo step); the plan's summary ([`WorkerReply::WarpPlan`]) |
+//! | Warp Stabilizer stabilization (settings changed after the analysis) | the plan ([`effectcraft_effects::warp_stab::summary_at`]) | its summary, for `warp.status` |
 //! | Track Motion / Stabilize Motion | the tracker analysis | the tracker group |
 //! | Mask tracking | the mask track | the mask group |
 //! | Roto Brush Freeze | the freeze | the effect group |
@@ -73,6 +74,15 @@ pub enum WorkerJob {
         layer: LayerId,
         effect: Uid,
     },
+    /// The stabilization plan of an analysed Warp Stabilizer at comp time `time` (its settings
+    /// there): seconds of solving for a long Subspace Warp clip, so not on the page. The
+    /// summary comes back as [`WorkerReply::WarpPlan`].
+    WarpPlan {
+        comp: ItemId,
+        layer: LayerId,
+        effect: Uid,
+        time: Tick,
+    },
     Camera {
         comp: ItemId,
         layer: LayerId,
@@ -120,6 +130,7 @@ impl WorkerJob {
         match self {
             WorkerJob::Render { .. } => JobKind::Render,
             WorkerJob::Warp { .. } => JobKind::Warp,
+            WorkerJob::WarpPlan { .. } => JobKind::WarpPlan,
             WorkerJob::Camera { .. } => JobKind::Camera,
             WorkerJob::RotoFreeze { .. } => JobKind::RotoFreeze,
             WorkerJob::RotoPropagate { .. } => JobKind::RotoPropagate,
@@ -134,6 +145,7 @@ impl WorkerJob {
         match *self {
             WorkerJob::Render { .. } => None,
             WorkerJob::Warp { comp, layer, effect }
+            | WorkerJob::WarpPlan { comp, layer, effect, .. }
             | WorkerJob::Camera { comp, layer, effect }
             | WorkerJob::RotoFreeze { comp, layer, effect }
             | WorkerJob::RotoPropagate { comp, layer, effect, .. } => Some((comp, layer, effect)),
@@ -149,6 +161,7 @@ impl WorkerJob {
 pub enum JobKind {
     Render,
     Warp,
+    WarpPlan,
     Camera,
     RotoFreeze,
     RotoPropagate,
@@ -163,6 +176,7 @@ impl JobKind {
         match self {
             JobKind::Render => "Render",
             JobKind::Warp => "Warp Stabilizer Analysis",
+            JobKind::WarpPlan => "Warp Stabilizer: Stabilizing",
             JobKind::Camera => "3D Camera Tracker Analysis",
             JobKind::RotoFreeze => "Freeze",
             JobKind::RotoPropagate => "Roto Brush Propagation",
@@ -196,6 +210,12 @@ pub enum WorkerReply {
         layer: LayerId,
         group: Box<PropGroup>,
         message: String,
+    },
+    /// A Warp Stabilizer plan's summary ([`effectcraft_effects::warp_stab::summary_key`]): the
+    /// page keeps it for `warp.status` instead of solving the plan itself.
+    WarpPlan {
+        key: [u64; 2],
+        summary: Box<effectcraft_effects::warp_stab::PlanSummary>,
     },
     /// Roto Brush segmentations computed so far (propagation), not sent before.
     Segs {
@@ -456,6 +476,11 @@ async fn run_job(s: &mut Session, job: WorkerJob, post: Post) -> Result<(), Stri
             Ok(())
         }
         WorkerJob::Warp { comp, layer, effect } => analysis(s, kind, target, post, |s| s.start_warp(comp, layer, effect, true).map(|_| ())).await,
+        WorkerJob::WarpPlan { comp, layer, effect, time } => {
+            let r = warp_plan(s, comp, layer, effect, time).ok_or("the Warp Stabilizer is not analysed")?;
+            post(r);
+            Ok(())
+        }
         WorkerJob::Camera { comp, layer, effect } => analysis(s, kind, target, post, |s| s.start_camera(comp, layer, effect, true).map(|_| ())).await,
         WorkerJob::RotoFreeze { comp, layer, effect } => {
             analysis(s, kind, target, post, |s| {
@@ -612,8 +637,27 @@ async fn analysis(
         return Err(if message.is_empty() { "nothing was analysed".into() } else { message });
     }
     let group = s.project.comp(comp).and_then(|c| c.layer(layer)).and_then(|l| l.props.find_group(uid)).cloned().ok_or("the analysed property is gone")?;
+    // The stabilization plan too (before the group, so the page has it once it shows the
+    // analysis): solving it would otherwise stall the page at its first `warp.status`.
+    if kind == JobKind::Warp
+        && let Some(r) = warp_plan(s, comp, layer, uid, s.time_of(comp))
+    {
+        post(r);
+    }
     post(WorkerReply::Group { comp, layer, group: Box::new(group), message });
     Ok(())
+}
+
+/// The Warp Stabilizer plan summary of (comp, layer, effect) with its settings at comp time `t`
+/// (computing the plan), as a reply.
+fn warp_plan(s: &Session, comp: ItemId, layer: LayerId, effect: Uid, t: Tick) -> Option<WorkerReply> {
+    let c = s.project.comp(comp)?;
+    let l = c.layer(layer)?;
+    let g = l.props.find_group(effect)?;
+    let ctx = effectcraft_render::EvalCtx::new(&s.project, comp, c, t);
+    let params = effectcraft_effects::flatten_params(g, &mut |pr| ctx.value(l, pr));
+    let (key, summary) = effectcraft_effects::warp_stab::summary(&params)?;
+    Some(WorkerReply::WarpPlan { key, summary: Box::new((*summary).clone()) })
 }
 
 // ---------------------------------------------------------------- UI side
@@ -735,6 +779,7 @@ impl Session {
                     }
                     WorkerReply::Group { comp, layer, group, message } => results.push((j.kind, comp, layer, group, message)),
                     WorkerReply::Fill { plan, files } => fills.push((plan, files)),
+                    WorkerReply::WarpPlan { key, summary } => effectcraft_effects::warp_stab::store_summary(key, *summary),
                     WorkerReply::Segs { segs } => {
                         for sd in &segs {
                             sd.store();
@@ -792,8 +837,11 @@ impl Session {
             } else if kind == JobKind::RotoPropagate {
                 self.events.push(Event::Toast { message: format!("Roto Brush: propagated {} frame(s) in {:.1} s", segs, p.elapsed), error: false });
             }
-            // Rendered frames depend on the result (an analysis' group, the segmentation cache).
-            self.bump();
+            // Rendered frames depend on the result (an analysis' group, the segmentation cache);
+            // not on a plan summary (`warp.status` only).
+            if kind != JobKind::WarpPlan {
+                self.bump();
+            }
         }
         changed
     }
@@ -852,6 +900,7 @@ mod tests {
         let reqs = [
             WorkerJob::Render { items: vec![vec![(item.clone(), "/out.gif".into())]] },
             WorkerJob::Warp { comp, layer: LayerId(3), effect: 9 },
+            WorkerJob::WarpPlan { comp, layer: LayerId(3), effect: 9, time: Tick::from_seconds_f64(0.5) },
             WorkerJob::RotoFreeze { comp, layer: LayerId(3), effect: 9 },
             WorkerJob::Camera { comp, layer: LayerId(3), effect: 9 },
             WorkerJob::RotoPropagate { comp, layer: LayerId(3), effect: 9, direction: crate::roto::Direction::Forward },
@@ -908,6 +957,15 @@ mod tests {
             WorkerReply::Item { update: ItemUpdate::Started { id: 3, unix: 1_700_000_000 } },
             WorkerReply::Item { update: ItemUpdate::Finished { id: 3, status: RenderStatus::Failed("x".into()), seconds: 1.5, output: Some("/a.gif".into()) } },
             WorkerReply::Progress { done: 1, total: 2 },
+            WorkerReply::WarpPlan {
+                key: [1, u64::MAX],
+                summary: Box::new(effectcraft_effects::warp_stab::PlanSummary {
+                    warps: vec![[[1.0, 0.0, 2.5], [0.0, 1.0, -1.0], [0.0, 0.0, 1.0]]],
+                    auto_scale: 1.08,
+                    crop: Some([1.0, 2.0, 300.0, 200.0]),
+                    valid_fraction: 0.9,
+                }),
+            },
             WorkerReply::Group { comp, layer: LayerId(1), group: Box::new(g), message: "ok".into() },
             WorkerReply::Segs { segs: vec![SegData::new(5, &effectcraft_track::roto::FrameSeg::empty(4, 3))] },
             WorkerReply::Fill {
