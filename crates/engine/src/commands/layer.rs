@@ -1031,8 +1031,8 @@ fn set_text(s: &mut Session, p: &Value) -> Result<Value> {
         && let Some(doc) = super::text_edit::layer_doc(s, lid)
         && doc.char_len() > 0
         && let Some(obj) = p.as_object()
+        && let Some(e) = s.state.text_edit.as_mut()
     {
-        let e = s.state.text_edit.as_mut().expect("checked");
         let mut st = e.pending.clone().unwrap_or_else(|| doc.insertion_style(r.start));
         let mut any = false;
         for (k, v) in obj {

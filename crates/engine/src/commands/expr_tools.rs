@@ -2,7 +2,7 @@
 //! Language menu (the ⓕ button next to an expression), written from the public Expression
 //! Language Reference.
 
-use effectcraft_project::{ItemId, Layer, Property};
+use effectcraft_project::{Expression, ItemId, Layer, Property};
 use effectcraft_render::EvalCtx;
 use effectcraft_time::Tick;
 use serde::Serialize;
@@ -45,14 +45,13 @@ pub fn errors(s: &Session, cid: ItemId, t: Tick) -> Vec<ExprError> {
     let ctx = EvalCtx { footage: Some(s.footage.as_ref()), expr: s.expr.as_deref(), ..EvalCtx::new(&s.project, cid, comp, t) };
     let mut out = vec![];
     for (i, l) in comp.layers.iter().enumerate() {
-        let mut props: Vec<&Property> = vec![];
+        let mut props: Vec<(&Property, &Expression)> = vec![];
         l.props.walk("", &mut |_, p| {
-            if p.expr.as_ref().is_some_and(|e| !e.text.trim().is_empty()) {
-                props.push(p);
+            if let Some(e) = p.expr.as_ref().filter(|e| !e.text.trim().is_empty()) {
+                props.push((p, e));
             }
         });
-        for p in props {
-            let e = p.expr.as_ref().expect("filtered");
+        for (p, e) in props {
             let msg = if e.enabled {
                 match &ctx.expr {
                     Some(h) => h.eval(&ctx, l, p, &p.value_at(l.layer_time(t))).err(),

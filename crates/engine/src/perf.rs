@@ -3,6 +3,10 @@
 //! frame). The UI-side numbers (first UI frame, timeline and Project panel draw) live in
 //! `effectcraft-ui-egui`'s `bench` module. See `docs/architecture.md` ▸ Performance.
 
+// A benchmark harness (`effectcraft-cli bench --ops`, tests): a failed step should fail loudly,
+// as in tests and benches (AGENTS.md, "Never crash"). Nothing here runs in the app.
+#![allow(clippy::expect_used)]
+
 use std::sync::Arc;
 
 use effectcraft_keyframe::Value as KValue;

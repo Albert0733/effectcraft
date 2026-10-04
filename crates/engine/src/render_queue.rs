@@ -513,8 +513,8 @@ impl Session {
                         off.cancel(r.id);
                     }
                     self.drain_remote_render();
-                    let j = self.render_job.as_ref().expect("job");
-                    let r = j.remote.as_ref().expect("remote");
+                    let Some(j) = self.render_job.as_ref() else { return true };
+                    let Some(r) = j.remote.as_ref() else { return true };
                     let finished: Vec<u64> =
                         lock(&j.shared.updates).iter().filter_map(|u| if let ItemUpdate::Finished { id, .. } = u { Some(*id) } else { None }).collect();
                     for id in &r.ids {
@@ -570,8 +570,7 @@ impl Session {
             }
             self.bump();
         }
-        if finished {
-            let mut job = self.render_job.take().expect("job");
+        if finished && let Some(mut job) = self.render_job.take() {
             if let Some(t) = job.thread.take() {
                 let _ = t.join();
             }

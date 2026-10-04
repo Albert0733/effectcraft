@@ -185,7 +185,7 @@ fn opening_an_old_project_upgrades_effect_instances() {
     {
         let comp = std::sync::Arc::make_mut(match &mut old.items.get_mut(&cid).unwrap().kind {
             effectcraft_project::ItemKind::Comp(c) => c,
-            _ => unreachable!(),
+            _ => panic!("not a composition"),
         });
         let l = comp.layers.iter_mut().find(|l| l.id == LayerId(a)).unwrap();
         for n in &mut l.props.sub_mut("effects").unwrap().children {

@@ -407,8 +407,7 @@ impl Session {
             }
             self.bump();
         }
-        if finished {
-            let mut job = self.track_job.take().expect("job");
+        if finished && let Some(mut job) = self.track_job.take() {
             if let Some(t) = job.thread.take() {
                 let _ = t.join();
             }

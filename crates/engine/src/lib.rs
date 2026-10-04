@@ -8,6 +8,8 @@
 //! The project is an `Arc<Project>` edited copy-on-write; undo keeps whole-project snapshots
 //! (compositions are `Arc`s, so untouched comps are shared).
 
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
+
 pub mod autosave;
 pub mod camera_track;
 pub mod commands;

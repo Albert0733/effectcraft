@@ -455,8 +455,9 @@ pub(crate) fn sanitize(s: &mut Session) {
     match layer_doc(s, e.layer) {
         Some(d) => {
             let n = d.char_len();
-            if e.anchor > n || e.caret > n {
-                let ed = s.state.text_edit.as_mut().expect("checked");
+            if (e.anchor > n || e.caret > n)
+                && let Some(ed) = s.state.text_edit.as_mut()
+            {
                 ed.anchor = ed.anchor.min(n);
                 ed.caret = ed.caret.min(n);
             }

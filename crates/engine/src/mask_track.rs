@@ -439,8 +439,7 @@ impl Session {
             }
             self.bump();
         }
-        if finished {
-            let mut job = self.mask_job.take().expect("job");
+        if finished && let Some(mut job) = self.mask_job.take() {
             if let Some(t) = job.thread.take() {
                 let _ = t.join();
             }
