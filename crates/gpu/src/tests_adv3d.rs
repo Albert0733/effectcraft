@@ -466,7 +466,7 @@ fn gpu_compositor_draws_split_advanced_3d_runs_and_skies() {
         // A varying environment image (so the sky's lookup shows; a CPU effect, so the frame's
         // only readback is its own).
         let mut next = p.next_id;
-        let spec = effectcraft_effects::find("ec.generate.lensflare").unwrap();
+        let spec = effectcraft_effects::find("ec.generate.fractal").unwrap();
         let ramp = effectcraft_effects::instantiate(spec, &mut build::Ids(&mut next), spec.name, [32.0, 16.0]);
         p.next_id = next;
         if case == 3 {

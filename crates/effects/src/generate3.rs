@@ -33,7 +33,7 @@ fn pct() -> ParamUi {
 
 /// A round-capped line segment in buffer pixels with radius `r` and intensity `v`.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct Seg {
+pub struct Seg {
     pub a: [f64; 2],
     pub b: [f64; 2],
     pub r: f64,
@@ -89,7 +89,7 @@ pub(crate) fn raster_segs(w: usize, h: usize, segs: &[Seg], hardness: f64) -> Pl
 }
 
 /// Segments along a polyline (buffer px).
-pub(crate) fn poly_segs(pts: &[[f64; 2]], closed: bool, r: f64, v: f32, out: &mut Vec<Seg>) {
+pub fn poly_segs(pts: &[[f64; 2]], closed: bool, r: f64, v: f32, out: &mut Vec<Seg>) {
     let n = pts.len();
     if n == 1 {
         out.push(Seg { a: pts[0], b: pts[0], r, v });
@@ -145,6 +145,81 @@ pub(crate) fn paint(img: &mut Image, cov: &Plane, color: [f32; 4], opacity: f32,
             _ => over(*px, s),
         };
     });
+}
+
+/// Coverage of a plan-drawn generator: round-capped segments rasterised by [`raster_segs`]
+/// with `hardness`, or the union of convex polygons ([`raster_convex`]).
+#[derive(Clone, Debug)]
+pub enum Coverage {
+    Segs { segs: Vec<Seg>, hardness: f64 },
+    Convex(Vec<Vec<[f64; 2]>>),
+}
+
+impl Coverage {
+    fn raster(&self, w: usize, h: usize) -> Plane {
+        match self {
+            Coverage::Segs { segs, hardness } => raster_segs(w, h, segs, *hardness),
+            Coverage::Convex(polys) => raster_convex(w, h, polys),
+        }
+    }
+}
+
+/// Stroke, Scribble, Vegas and Write-on, shared with the GPU compositor (effectcraft-gpu
+/// `fx_gen2`): the coverage and how it is painted. `style` 0–2 as [`paint`] (On Original
+/// Image, On Transparent, Reveal Original Image), 3 = under the layer (Vegas' Composite Under).
+#[derive(Clone, Debug)]
+pub struct PaintPlan {
+    pub cov: Coverage,
+    pub color: [f32; 4],
+    pub opacity: f32,
+    pub style: u32,
+}
+
+/// Draw a [`PaintPlan`].
+fn draw_paint(b: &mut Buf, plan: &PaintPlan) {
+    let cov = plan.cov.raster(b.img.width as usize, b.img.height as usize);
+    if plan.style == 3 {
+        let color = plan.color;
+        b.img.data.par_iter_mut().zip(cov.data.par_iter()).for_each(|(px, &c)| {
+            let a = c * color[3];
+            *px = over([color[0] * a, color[1] * a, color[2] * a, a], *px);
+        });
+    } else {
+        paint(&mut b.img, &cov, plan.color, plan.opacity, plan.style);
+    }
+}
+
+/// Generators drawn from a plan that need the layer's own pixels (`b.img`) to build it.
+pub fn plan_reads_pixels(id: &str, ctx: &EffectCtx) -> bool {
+    match id {
+        // Image Contours read the layer itself when no (resolvable) Input Layer is chosen.
+        "ec.generate.vegas" => ctx.params.e("stroke") == 0,
+        "ec.generate.paintbucket" | "ec.generate.eyedropperfill" => true,
+        "ec.generate.advancedlightning" => ctx.params.f("alphaObstacle").clamp(-10.0, 10.0) != 0.0,
+        _ => false,
+    }
+}
+
+/// [`PaintPlan`] of Stroke, Scribble, Vegas or Write-on on `b`'s geometry (`b.img` is read
+/// only when [`plan_reads_pixels`]). `None`: Scribble without a usable mask (the layer is
+/// cleared when it composites On Transparent, else kept).
+pub fn paint_plan(id: &str, ctx: &EffectCtx, b: &Buf) -> Option<PaintPlan> {
+    match id {
+        "ec.generate.stroke" => Some(stroke_plan(ctx, b)),
+        "ec.generate.scribble" => scribble_plan(ctx, b),
+        "ec.generate.vegas" => Some(vegas_plan(ctx, b)),
+        "ec.generate.writeon" => Some(write_on_plan(ctx, b)),
+        _ => None,
+    }
+}
+
+/// Scribble's Composite as a [`paint`] style.
+pub fn scribble_style(ctx: &EffectCtx) -> u32 {
+    match ctx.params.e("composite") {
+        0 => 0,
+        2 => 2,
+        _ => 1,
+    }
 }
 
 #[inline]
@@ -602,21 +677,22 @@ pub(crate) fn raster_convex(w: usize, h: usize, polys: &[Vec<[f64; 2]>]) -> Plan
 }
 
 fn scribble(ctx: &EffectCtx, mut b: Buf) -> Buf {
+    match scribble_plan(ctx, &b) {
+        Some(plan) => draw_paint(&mut b, &plan),
+        None if scribble_style(ctx) == 1 => b.img = Image::new(b.img.width, b.img.height),
+        None => {}
+    }
+    b
+}
+
+fn scribble_plan(ctx: &EffectCtx, b: &Buf) -> Option<PaintPlan> {
     let pr = ctx.params;
     let which = pr.e("scribble");
-    let polys: Vec<_> = if which == 0 { mask_px(ctx, &b, pr.f("mask").round().max(1.0) as usize).into_iter().collect() } else { all_masks_px(ctx, &b) };
+    let polys: Vec<_> = if which == 0 { mask_px(ctx, b, pr.f("mask").round().max(1.0) as usize).into_iter().collect() } else { all_masks_px(ctx, b) };
     let polys: Vec<_> = polys.into_iter().filter(|p| p.0.len() >= 3).map(|(p, c, i)| (p, c, i && which == 2)).collect();
-    let style = match pr.e("composite") {
-        0 => 0,
-        2 => 2,
-        _ => 1,
-    };
-    let (w, h) = (b.img.width as usize, b.img.height as usize);
+    let style = scribble_style(ctx);
     if polys.is_empty() {
-        if style == 1 {
-            b.img = Image::new(b.img.width, b.img.height);
-        }
-        return b;
+        return None;
     }
     let sc = b.scale;
     let fill = pr.e("fillType");
@@ -742,24 +818,26 @@ fn scribble(ctx: &EffectCtx, mut b: Buf) -> Buf {
         for part in &parts {
             poly_segs(part, false, r, 1.0, &mut segs);
         }
-        raster_segs(w, h, &segs, 0.9)
+        Coverage::Segs { segs, hardness: 0.9 }
     } else {
-        let polys = stroke_outline(&parts, r, cap, join, pr.f("edgeOptions/miterLimit").max(1.0));
-        raster_convex(w, h, &polys)
+        Coverage::Convex(stroke_outline(&parts, r, cap, join, pr.f("edgeOptions/miterLimit").max(1.0)))
     };
-    let color = pr.color("color");
-    paint(&mut b.img, &cov, color, (pr.f("opacity") / 100.0) as f32, style);
-    b
+    Some(PaintPlan { cov, color: pr.color("color"), opacity: (pr.f("opacity") / 100.0) as f32, style })
 }
 
 // ---------------------------------------------------------------- Stroke
 
 fn stroke(ctx: &EffectCtx, mut b: Buf) -> Buf {
+    let plan = stroke_plan(ctx, &b);
+    draw_paint(&mut b, &plan);
+    b
+}
+
+fn stroke_plan(ctx: &EffectCtx, b: &Buf) -> PaintPlan {
     let pr = ctx.params;
     let all = pr.b("allMasks");
-    let polys: Vec<_> = if all { all_masks_px(ctx, &b) } else { mask_px(ctx, &b, pr.f("path").round() as usize).into_iter().collect() };
+    let polys: Vec<_> = if all { all_masks_px(ctx, b) } else { mask_px(ctx, b, pr.f("path").round() as usize).into_iter().collect() };
     let style = pr.e("paintStyle");
-    let (w, h) = (b.img.width as usize, b.img.height as usize);
     let size = (pr.f("brushSize") * b.scale).max(0.1);
     let r = size * 0.5;
     let hard = pr.f("brushHardness") / 100.0;
@@ -795,9 +873,7 @@ fn stroke(ctx: &EffectCtx, mut b: Buf) -> Buf {
             }
         }
     }
-    let cov = raster_segs(w, h, &segs, hard);
-    paint(&mut b.img, &cov, pr.color("color"), (pr.f("opacity") / 100.0) as f32, style);
-    b
+    PaintPlan { cov: Coverage::Segs { segs, hardness: hard }, color: pr.color("color"), opacity: (pr.f("opacity") / 100.0) as f32, style }
 }
 
 // ---------------------------------------------------------------- Vegas
@@ -889,13 +965,19 @@ fn contours(pl: &Plane, thr: f32) -> Vec<(Vec<[f64; 2]>, bool)> {
 }
 
 fn vegas(ctx: &EffectCtx, mut b: Buf) -> Buf {
+    let plan = vegas_plan(ctx, &b);
+    draw_paint(&mut b, &plan);
+    b
+}
+
+fn vegas_plan(ctx: &EffectCtx, b: &Buf) -> PaintPlan {
     let pr = ctx.params;
     let (w, h) = (b.img.width as usize, b.img.height as usize);
     let sc = b.scale;
     let paths: Vec<(Vec<[f64; 2]>, bool)> = if pr.e("stroke") == 1 {
-        mask_px(ctx, &b, pr.f("path").round() as usize).map(|(p, c, _)| vec![(p, c)]).unwrap_or_default()
+        mask_px(ctx, b, pr.f("path").round() as usize).map(|(p, c, _)| vec![(p, c)]).unwrap_or_default()
     } else {
-        let src = layer_or_self(ctx, &b, "inputLayer", true, pr.e("ifLayerSizesDiffer") == 1);
+        let src = layer_or_self(ctx, b, "inputLayer", true, pr.e("ifLayerSizesDiffer") == 1);
         let ch = pr.e("channel");
         let inv = pr.b("invertInput");
         let mut pl = Plane::from_image(&src, |px| {
@@ -981,20 +1063,13 @@ fn vegas(ctx: &EffectCtx, mut b: Buf) -> Buf {
             }
         }
     }
-    let cov = raster_segs(w, h, &segs, hard);
-    let color = pr.color("color");
-    match pr.e("blendMode") {
-        1 => paint(&mut b.img, &cov, color, 1.0, 0),
-        2 => {
-            b.img.data.par_iter_mut().zip(cov.data.par_iter()).for_each(|(px, &c)| {
-                let a = c * color[3];
-                *px = over([color[0] * a, color[1] * a, color[2] * a, a], *px);
-            });
-        }
-        3 => paint(&mut b.img, &cov, color, 1.0, 2),
-        _ => paint(&mut b.img, &cov, color, 1.0, 1),
-    }
-    b
+    let style = match pr.e("blendMode") {
+        1 => 0,
+        2 => 3,
+        3 => 2,
+        _ => 1,
+    };
+    PaintPlan { cov: Coverage::Segs { segs, hardness: hard }, color: pr.color("color"), opacity: 1.0, style }
 }
 
 // ---------------------------------------------------------------- Write-on / Glue Gun
@@ -1003,13 +1078,21 @@ fn vegas(ctx: &EffectCtx, mut b: Buf) -> Buf {
 /// (parameter histories are not passed in), so the stroke is drawn as the dabs laid along
 /// the current position — a single dab when the brush is static. Deterministic.
 fn write_on(ctx: &EffectCtx, mut b: Buf) -> Buf {
+    let plan = write_on_plan(ctx, &b);
+    draw_paint(&mut b, &plan);
+    b
+}
+
+fn write_on_plan(ctx: &EffectCtx, b: &Buf) -> PaintPlan {
     let pr = ctx.params;
-    let (w, h) = (b.img.width as usize, b.img.height as usize);
     let q = b.to_px(pr.v2("brushPosition"));
     let r = (pr.f("brushSize") * b.scale * 0.5).max(0.05);
-    let cov = raster_segs(w, h, &[Seg { a: [q.0, q.1], b: [q.0, q.1], r, v: 1.0 }], pr.f("brushHardness") / 100.0);
-    paint(&mut b.img, &cov, pr.color("color"), (pr.f("brushOpacity") / 100.0) as f32, pr.e("paintStyle"));
-    b
+    PaintPlan {
+        cov: Coverage::Segs { segs: vec![Seg { a: [q.0, q.1], b: [q.0, q.1], r, v: 1.0 }], hardness: pr.f("brushHardness") / 100.0 },
+        color: pr.color("color"),
+        opacity: (pr.f("brushOpacity") / 100.0) as f32,
+        style: pr.e("paintStyle"),
+    }
 }
 
 fn glue_gun(ctx: &EffectCtx, mut b: Buf) -> Buf {
@@ -1071,12 +1154,11 @@ fn glue_gun(ctx: &EffectCtx, mut b: Buf) -> Buf {
 
 // ---------------------------------------------------------------- Paint Bucket
 
-fn paint_bucket(ctx: &EffectCtx, mut b: Buf) -> Buf {
+/// Paint Bucket's filled region (1 inside) on `b`: the flood fill from the Fill Point over the
+/// layer's pixels (shared with the GPU compositor, which reads the layer back for it).
+pub fn paint_bucket_region(ctx: &EffectCtx, b: &Buf) -> Plane {
     let pr = ctx.params;
     let (w, h) = (b.img.width as usize, b.img.height as usize);
-    if w == 0 || h == 0 {
-        return b;
-    }
     let fp = b.to_px(pr.v2("fillPoint"));
     let (sx, sy) = (fp.0.floor() as i64, fp.1.floor() as i64);
     let sel = pr.e("fillSelector");
@@ -1127,6 +1209,16 @@ fn paint_bucket(ctx: &EffectCtx, mut b: Buf) -> Buf {
             }
         }
     }
+    region
+}
+
+fn paint_bucket(ctx: &EffectCtx, mut b: Buf) -> Buf {
+    let pr = ctx.params;
+    let (w, h) = (b.img.width as usize, b.img.height as usize);
+    if w == 0 || h == 0 {
+        return b;
+    }
+    let region = paint_bucket_region(ctx, &b);
     if pr.b("viewThreshold") {
         b.img.data.par_iter_mut().zip(region.data.par_iter()).for_each(|(px, &v)| *px = [v, v, v, 1.0]);
         return b;
@@ -1201,6 +1293,21 @@ fn paint_bucket(ctx: &EffectCtx, mut b: Buf) -> Buf {
 
 fn eyedropper_fill(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let pr = ctx.params;
+    let fill = eyedropper_color(ctx, &b);
+    let keep_alpha = pr.b("maintainOriginalAlpha");
+    let blend = (pr.f("blendWithOriginal") / 100.0) as f32;
+    b.img.data.par_iter_mut().for_each(|px| {
+        let a = if keep_alpha { px[3] } else { fill[3] };
+        let f = premul([fill[0], fill[1], fill[2]], a);
+        *px = crate::util::lerp4(f, *px, blend);
+    });
+    b
+}
+
+/// Eyedropper Fill's sampled colour (straight RGB, alpha) from the layer's pixels (shared with
+/// the GPU compositor, which reads the layer back for it).
+pub fn eyedropper_color(ctx: &EffectCtx, b: &Buf) -> Px {
+    let pr = ctx.params;
     let (w, h) = (b.img.width as i64, b.img.height as i64);
     let c = b.to_px(pr.v2("samplePoint"));
     let r = (pr.f("sampleRadius") * b.scale).max(0.0);
@@ -1250,7 +1357,7 @@ fn eyedropper_fill(ctx: &EffectCtx, mut b: Buf) -> Buf {
             }
         }
     }
-    let fill: Px = if n > 0.0 {
+    if n > 0.0 {
         if mode == 3 {
             let a = (acc[3] / n) as f32;
             let s = if a > 1e-6 { [(acc[0] / n) as f32 / a, (acc[1] / n) as f32 / a, (acc[2] / n) as f32 / a] } else { [0.0; 3] };
@@ -1260,15 +1367,7 @@ fn eyedropper_fill(ctx: &EffectCtx, mut b: Buf) -> Buf {
         }
     } else {
         [0.0, 0.0, 0.0, 0.0]
-    };
-    let keep_alpha = pr.b("maintainOriginalAlpha");
-    let blend = (pr.f("blendWithOriginal") / 100.0) as f32;
-    b.img.data.par_iter_mut().for_each(|px| {
-        let a = if keep_alpha { px[3] } else { fill[3] };
-        let f = premul([fill[0], fill[1], fill[2]], a);
-        *px = crate::util::lerp4(f, *px, blend);
-    });
-    b
+    }
 }
 
 // ---------------------------------------------------------------- CC Threads
@@ -1455,9 +1554,57 @@ fn draw_marks(b: &mut Buf, segs_core: &[Seg], thickness: f64, softness: f64, ins
     });
 }
 
-fn audio_spectrum(ctx: &EffectCtx, mut b: Buf) -> Buf {
+/// Audio Spectrum / Audio Waveform, shared with the GPU compositor (effectcraft-gpu `fx_gen2`):
+/// the marks (the audio analysis runs on the CPU) and how [`draw_marks`] colours them.
+#[derive(Clone, Debug)]
+pub struct MarksPlan {
+    pub segs: Vec<Seg>,
+    pub thickness: f64,
+    pub softness: f64,
+    pub inside: [f32; 4],
+    pub outside: [f32; 4],
+    pub composite: bool,
+}
+
+/// [`MarksPlan`] of Audio Spectrum or Audio Waveform on `b`'s geometry (`None` = no audio:
+/// the layer passes through).
+pub fn marks_plan(id: &str, ctx: &EffectCtx, b: &Buf) -> Option<MarksPlan> {
+    match id {
+        "ec.generate.audiospectrum" => spectrum_plan(ctx, b),
+        "ec.generate.audiowaveform" => waveform_plan(ctx, b),
+        _ => None,
+    }
+}
+
+fn marks(ctx: &EffectCtx, segs: Vec<Seg>, thick: f64, soft: f64) -> MarksPlan {
     let pr = ctx.params;
-    let Some(samples) = audio_window(ctx, pr.f("audioDuration"), pr.f("audioOffset"), 0) else { return b };
+    MarksPlan {
+        segs,
+        thickness: thick,
+        softness: soft * 2.0,
+        inside: pr.color("insideColor"),
+        outside: pr.color("outsideColor"),
+        composite: pr.b("compositeOnOriginal"),
+    }
+}
+
+fn audio_spectrum(ctx: &EffectCtx, mut b: Buf) -> Buf {
+    if let Some(m) = spectrum_plan(ctx, &b) {
+        draw_marks(&mut b, &m.segs, m.thickness, m.softness, m.inside, m.outside, m.composite);
+    }
+    b
+}
+
+fn audio_waveform(ctx: &EffectCtx, mut b: Buf) -> Buf {
+    if let Some(m) = waveform_plan(ctx, &b) {
+        draw_marks(&mut b, &m.segs, m.thickness, m.softness, m.inside, m.outside, m.composite);
+    }
+    b
+}
+
+fn spectrum_plan(ctx: &EffectCtx, b: &Buf) -> Option<MarksPlan> {
+    let pr = ctx.params;
+    let samples = audio_window(ctx, pr.f("audioDuration"), pr.f("audioOffset"), 0)?;
     let n = samples.len().next_power_of_two().max(64);
     let mut re = vec![0.0; n];
     let mut im = vec![0.0; n];
@@ -1480,7 +1627,7 @@ fn audio_spectrum(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let soft = pr.f("softness") / 100.0;
     let disp = pr.e("displayOptions");
     let side = pr.e("sideOptions");
-    let base = Baseline::new(ctx, &b);
+    let base = Baseline::new(ctx, b);
     let mut tops = Vec::with_capacity(bands);
     let mut segs = Vec::new();
     for i in 0..bands {
@@ -1522,19 +1669,18 @@ fn audio_spectrum(ctx: &EffectCtx, mut b: Buf) -> Buf {
             }
         }
     }
-    draw_marks(&mut b, &segs, thick, soft * 2.0, pr.color("insideColor"), pr.color("outsideColor"), pr.b("compositeOnOriginal"));
-    b
+    Some(marks(ctx, segs, thick, soft))
 }
 
-fn audio_waveform(ctx: &EffectCtx, mut b: Buf) -> Buf {
+fn waveform_plan(ctx: &EffectCtx, b: &Buf) -> Option<MarksPlan> {
     let pr = ctx.params;
-    let Some(samples) = audio_window(ctx, pr.f("audioDuration"), pr.f("audioOffset"), pr.e("waveformOptions")) else { return b };
+    let samples = audio_window(ctx, pr.f("audioDuration"), pr.f("audioOffset"), pr.e("waveformOptions"))?;
     let count = pr.f("displayedSamples").round().clamp(2.0, 4096.0) as usize;
     let max_h = pr.f("maximumHeight") * b.scale;
     let thick = (pr.f("thickness") * b.scale).max(0.1);
     let soft = pr.f("softness") / 100.0;
     let disp = pr.e("displayOptions");
-    let base = Baseline::new(ctx, &b);
+    let base = Baseline::new(ctx, b);
     let m = samples.len();
     let mut pts = Vec::with_capacity(count);
     let mut segs = Vec::new();
@@ -1567,8 +1713,7 @@ fn audio_waveform(ctx: &EffectCtx, mut b: Buf) -> Buf {
     } else if disp == 2 {
         segs.extend(pts.iter().map(|&q| Seg { a: q, b: q, r: thick * 0.5, v: 1.0 }));
     }
-    draw_marks(&mut b, &segs, thick, soft * 2.0, pr.color("insideColor"), pr.color("outsideColor"), pr.b("compositeOnOriginal"));
-    b
+    Some(marks(ctx, segs, thick, soft))
 }
 
 // ---------------------------------------------------------------- registry

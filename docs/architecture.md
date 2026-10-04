@@ -209,7 +209,7 @@ Preserve Transparency / blend kernels (a 3D track matte renders solo through the
 Environment Light Background layers draw their sky in a kernel (`adv_sky`, from
 `Renderer::sky_draw`) before the rest of the run, in Classic and Advanced 3D comps. Wireframe
 outlines draw on the GPU from the CPU's pixel list (`Renderer::wireframe_pixels`). GPU effects
-(`effects::GPU_EFFECTS`, 243 of them: blurs, colour correction, keying incl. Key Light, mattes,
+(`effects::GPU_EFFECTS`, 280 of them: blurs, colour correction, keying incl. Key Light, mattes,
 channel, stylize, distortion and warps (Warp, Bezier Warp, Smear, Reshape, CC Bend It, CC Page
 Turn, CC Bender, CC Blobbylize), Cartoon, bevels, shapes, the transitions (CC light family, CC
 transitions, Block Dissolve), perspective (Radial Shadow, CC Cylinder / Sphere / Spotlight /
@@ -219,8 +219,11 @@ extra texture), Immersive Video, colour management (colour programs from
 simulation stays on the CPU and hands its plan — sprites, pieces, blobs, grids — to a tiled
 rasteriser; the particle effects too, `gpu::fx_particles`: CC Particle World / Systems II,
 Particle Playground with its Layer Map frames in one atlas, CC Ball Action, CC Pixel Polly, CC
-Scatterize; plans too large for one item table draw in several passes over the previous one);
-see
+Scatterize; plans too large for one item table draw in several passes over the previous one),
+and the geometry generators (Lightning, Advanced Lightning, Radio Waves, Stroke, Scribble,
+Vegas, Write-on, Audio Spectrum / Waveform, Basic / Path Text: bolts, strokes, waves, audio
+marks and glyphs are planned on the CPU, shared with the CPU effect, and rasterised in tiles
+with the CPU's coverage functions); see
 [effects.md](effects.md)) repeat the CPU effect's steps (padding, box radii, parameters, hashes)
 as kernels, in one module per family (`gpu::fx_*` with `shaders/fx_*.wgsl`); consecutive GPU
 effects run as one chain with one upload and one readback. Statistics that need the whole frame
