@@ -6,6 +6,8 @@
 //! [`instantiate`]), so parameters animate, take expressions and are addressable like any other
 //! property.
 
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
+
 pub mod audio_fx;
 mod blur2;
 mod blur3;
@@ -551,8 +553,8 @@ pub fn instantiate(spec: &EffectSpec, ids: &mut Ids, instance_name: &str, layer_
         if matches!(ps.ui, ParamUi::Checkbox | ParamUi::Popup { .. } | ParamUi::Layer) {
             pr.hold_only = true;
         }
-        match path {
-            Some(path) => nested_group(&mut g, ids, path).children.push(pr.into()),
+        match path.and_then(|path| nested_group(&mut g, ids, path)) {
+            Some(sub) => sub.children.push(pr.into()),
             None => g.children.push(pr.into()),
         }
         // Layer parameters carry a source choice (Source / Masks / Effects & Masks) unless the
@@ -563,8 +565,8 @@ pub fn instantiate(spec: &EffectSpec, ids: &mut Ids, instance_name: &str, layer_
         if matches!(ps.ui, ParamUi::Layer) && !spec.params.iter().any(|q| q.id == sid) {
             let mut src = Property::new(ids.alloc(), &layer_source_id(leaf), &format!("{} Source", ps.name), Value::Enum(2)).with_ui(ParamUi::Hidden);
             src.hold_only = true;
-            match path {
-                Some(path) => nested_group(&mut g, ids, path).children.push(src.into()),
+            match path.and_then(|path| nested_group(&mut g, ids, path)) {
+                Some(sub) => sub.children.push(src.into()),
                 None => g.children.push(src.into()),
             }
         }
@@ -765,7 +767,7 @@ fn group_name(m: &str) -> &str {
 }
 
 /// The nested group at `path` (`borders/autoScale`) under `g`, created on first use.
-fn nested_group<'a>(g: &'a mut PropGroup, ids: &mut Ids, path: &str) -> &'a mut PropGroup {
+fn nested_group<'a>(g: &'a mut PropGroup, ids: &mut Ids, path: &str) -> Option<&'a mut PropGroup> {
     let (first, rest) = match path.split_once('/') {
         Some((a, b)) => (a, Some(b)),
         None => (path, None),
@@ -773,10 +775,10 @@ fn nested_group<'a>(g: &'a mut PropGroup, ids: &mut Ids, path: &str) -> &'a mut 
     if g.sub(first).is_none() {
         g.children.push(ids.group(first, group_name(first)).into());
     }
-    let sub = g.sub_mut(first).expect("just added");
+    let sub = g.sub_mut(first)?;
     match rest {
         Some(r) => nested_group(sub, ids, r),
-        None => sub,
+        None => Some(sub),
     }
 }
 
