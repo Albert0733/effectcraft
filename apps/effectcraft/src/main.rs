@@ -26,6 +26,7 @@ fn app_icon() -> egui::IconData {
 fn main() -> eframe::Result {
     // Help ▸ Enable Logging writes through this logger; warnings feed the compatibility report.
     effectcraft_engine::logging::install();
+    effectcraft_engine::logging::install_panic_hook();
     let mut control_port: Option<u16> = std::env::var("EFFECTCRAFT_CONTROL_PORT").ok().and_then(|p| p.parse().ok());
     let mut files = Vec::new();
     let mut demo = true;
