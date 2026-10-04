@@ -4,6 +4,8 @@
 //! ([`Doc`]): groups with transforms and opacity, and shapes with fills and strokes in their own
 //! user space. [`rasterize`] draws it at any scale; the engine converts it to shape layers.
 
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
+
 mod color;
 mod pathdata;
 mod raster;
@@ -1042,10 +1044,65 @@ pub fn parse_transform(s: &str) -> Affine {
     m
 }
 
+/// The deepest element nesting accepted. The XML parser recurses per level and overflowed a
+/// 2 MiB thread's stack (aborting the app) at a few thousand levels; real documents stay far
+/// below this.
+const MAX_XML_DEPTH: usize = 256;
+
+/// The deepest element nesting of `text` (a quick scan that skips comments, CDATA, processing
+/// instructions, declarations and quoted attribute values).
+fn xml_depth(text: &str) -> usize {
+    let b = text.as_bytes();
+    let (mut i, mut depth, mut max) = (0usize, 0usize, 0usize);
+    let skip_to = |from: usize, end: &[u8]| b.get(from..).and_then(|r| r.windows(end.len()).position(|w| w == end)).map_or(b.len(), |p| from + p + end.len());
+    while i < b.len() {
+        if b[i] != b'<' {
+            i += 1;
+            continue;
+        }
+        let rest = &b[i..];
+        if rest.starts_with(b"<!--") {
+            i = skip_to(i + 4, b"-->");
+        } else if rest.starts_with(b"<![CDATA[") {
+            i = skip_to(i + 9, b"]]>");
+        } else if rest.starts_with(b"<?") {
+            i = skip_to(i + 2, b"?>");
+        } else if rest.starts_with(b"<!") {
+            i = skip_to(i + 2, b">");
+        } else if rest.starts_with(b"</") {
+            depth = depth.saturating_sub(1);
+            i = skip_to(i + 2, b">");
+        } else {
+            // A start tag: find its end outside quotes; `/>` closes it at once.
+            let mut j = i + 1;
+            let mut quote = None;
+            while let Some(&c) = b.get(j) {
+                match quote {
+                    Some(q) if c == q => quote = None,
+                    Some(_) => {}
+                    None if c == b'"' || c == b'\'' => quote = Some(c),
+                    None if c == b'>' => break,
+                    None => {}
+                }
+                j += 1;
+            }
+            if b.get(j.wrapping_sub(1)) != Some(&b'/') {
+                depth += 1;
+                max = max.max(depth);
+            }
+            i = j + 1;
+        }
+    }
+    max
+}
+
 /// Parse an SVG document.
 pub fn parse(bytes: &[u8]) -> Result<Doc, Error> {
     let text = String::from_utf8_lossy(bytes);
     let text = text.trim_start_matches('\u{feff}');
+    if xml_depth(text) > MAX_XML_DEPTH {
+        return Err(Error::Xml(format!("elements nested more than {MAX_XML_DEPTH} levels deep")));
+    }
     let opts = roxmltree::ParsingOptions { allow_dtd: true, ..Default::default() };
     let xml = roxmltree::Document::parse_with_options(text, opts).map_err(|e| Error::Xml(e.to_string()))?;
     let root = xml.root_element();

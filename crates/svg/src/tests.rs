@@ -106,3 +106,20 @@ fn transforms() {
     let p = m * kurbo::Point::new(0.0, 1.0);
     assert!((p.x - 6.0).abs() < 1e-9 && (p.y - 7.0).abs() < 1e-9);
 }
+
+#[test]
+fn deep_nesting_errors_instead_of_overflowing_the_stack() {
+    // 100 000 nested groups overflowed the XML parser's stack and aborted the process.
+    let deep = |n: usize| format!("<svg xmlns=\"http://www.w3.org/2000/svg\">{}<rect width=\"5\" height=\"5\"/>{}</svg>", "<g>".repeat(n), "</g>".repeat(n));
+    assert!(matches!(crate::parse(deep(100_000).as_bytes()), Err(crate::Error::Xml(_))));
+    assert!(crate::parse(deep(100).as_bytes()).is_ok());
+    // Comments, CDATA, quoted '>' and self-closing tags don't count.
+    let s = format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\"><!-- {} --><![CDATA[{}]]><g title=\"a>b\">{}</g></svg>",
+        "<g>".repeat(1000),
+        "<g>".repeat(1000),
+        "<rect/>".repeat(1000)
+    );
+    assert_eq!(crate::xml_depth(&s), 2);
+    assert!(crate::parse(s.as_bytes()).is_ok());
+}

@@ -109,8 +109,9 @@ pub fn parse_path_data(d: &str) -> BezPath {
         let c = match l.command() {
             Some(c) => c,
             None => match cmd {
-                // Implicit repeat (a moveto repeats as lineto).
-                Some(c) if l.at_number() => match c {
+                // Implicit repeat (a moveto repeats as lineto). Z takes no numbers, so a number
+                // after it is an error: repeating Z would loop forever without consuming input.
+                Some(c) if l.at_number() && !c.eq_ignore_ascii_case(&b'z') => match c {
                     b'M' => b'L',
                     b'm' => b'l',
                     other => other,
@@ -282,6 +283,15 @@ mod tests {
         assert_eq!(p.elements().len(), 2);
         assert!(parse_path_data("garbage").elements().is_empty());
         assert!(parse_path_data("").elements().is_empty());
+    }
+
+    #[test]
+    fn number_after_close_stops_instead_of_looping() {
+        // "Z9": Z was repeated implicitly without consuming the number, appending close-paths
+        // until memory ran out.
+        let p = parse_path_data("M0 0 L10 0 L10 10 Z9 C1 2 3 4 5 6");
+        assert_eq!(p.elements().len(), 4);
+        assert!(parse_path_data("M0 0 L10 0 z 9 9").elements().len() <= 4);
     }
 
     #[test]
