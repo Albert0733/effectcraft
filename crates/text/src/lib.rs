@@ -5,6 +5,8 @@
 //! - This module turns a layer's [`TextDoc`] into per-character glyph outlines (Bezier paths) with
 //!   character / word / line indices, which is what text animators and selectors work on.
 
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
+
 pub mod fonts;
 pub mod layout;
 pub mod path_text;

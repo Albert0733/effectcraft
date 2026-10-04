@@ -309,6 +309,9 @@ pub fn system_scanned() -> bool {
 /// A face by id (panics never: unknown ids give the default face).
 pub fn face(id: FaceId) -> Arc<Face> {
     let d = db().read().unwrap_or_else(|e| e.into_inner());
+    // The bundled fonts are compiled in and always parse (`tests::bundled_families_and_resolution` checks them), so
+    // the database is never empty.
+    #[allow(clippy::expect_used)]
     d.faces.get(id).or_else(|| d.faces.first()).cloned().expect("bundled fonts present")
 }
 
@@ -388,7 +391,8 @@ pub fn resolve(family: &str, style: &str) -> Resolved {
             return r;
         }
     }
-    let mut r = resolve_in(DEFAULT_FAMILY, style).expect("Inter is bundled");
+    // Inter is bundled; face 0 (the first bundled face) is the last resort.
+    let mut r = resolve_in(DEFAULT_FAMILY, style).unwrap_or(Resolved { face: 0, synth_bold: false, synth_italic: false, missing: true });
     r.missing = !family.is_empty() && !family.eq_ignore_ascii_case(DEFAULT_FAMILY);
     r
 }
@@ -403,13 +407,10 @@ fn resolve_in(family: &str, style: &str) -> Option<Resolved> {
         return Some(Resolved { face: f.id, synth_bold: false, synth_italic: false, missing: false });
     }
     let (w, it) = style_wants(style);
-    let best = fam
-        .iter()
-        .min_by_key(|f| {
-            let italic_pen = if f.info.italic == it { 0 } else { 1000 };
-            italic_pen + (f.info.weight as i32 - w as i32).unsigned_abs()
-        })
-        .expect("non-empty");
+    let best = fam.iter().min_by_key(|f| {
+        let italic_pen = if f.info.italic == it { 0 } else { 1000 };
+        italic_pen + (f.info.weight as i32 - w as i32).unsigned_abs()
+    })?;
     Some(Resolved { face: best.id, synth_bold: w >= 600 && best.info.weight <= 500, synth_italic: it && !best.info.italic, missing: false })
 }
 
