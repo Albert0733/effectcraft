@@ -136,7 +136,7 @@ fn apply(s: &mut Session, cid: ItemId, lid: LayerId, mode: Mode, cuts: &[Tick]) 
         let i = cm.layers.iter().position(|l| l.id == lid).ok_or(EngineError::NoComp)?;
         let mut ids = vec![lid];
         for t in cuts {
-            let cur = cm.layers.iter().position(|l| l.id == *ids.last().expect("piece")).unwrap_or(i);
+            let cur = ids.last().and_then(|last| cm.layers.iter().position(|l| l.id == *last)).unwrap_or(i);
             let l = &mut cm.layers[cur];
             if !(*t > l.in_point && *t < l.out_point) {
                 continue;

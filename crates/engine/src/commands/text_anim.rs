@@ -72,14 +72,11 @@ fn animator_uid(s: &Session, l: &Layer, p: &Value, cmd: &str) -> Result<u64> {
 /// Add the properties of `kind` to an animator's Properties group (skipping ones it has).
 fn add_props(ids: &mut Ids, anim: &mut PropGroup, kind: &str, three_d: bool) -> usize {
     let list = build::text_anim_props(ids, kind, three_d);
-    let props = match anim.sub_mut("properties") {
-        Some(p) => p,
-        None => {
-            let g = ids.group("properties", "Properties");
-            anim.children.push(g.into());
-            anim.sub_mut("properties").expect("just added")
-        }
-    };
+    if anim.sub("properties").is_none() {
+        let g = ids.group("properties", "Properties");
+        anim.children.push(g.into());
+    }
+    let Some(props) = anim.sub_mut("properties") else { return 0 };
     let mut n = 0;
     for pr in list {
         if props.get(&pr.match_id).is_none() {
@@ -161,14 +158,11 @@ pub(crate) fn add_selector(s: &mut Session, p: &Value) -> Result<Value> {
         let mut ids = Ids(&mut next);
         let l = layer_mut(proj, cid, lid)?;
         let anim = l.props.find_group_mut(auid).ok_or_else(|| bad(C, "no such animator"))?;
-        let sels = match anim.sub_mut("selectors") {
-            Some(g) => g,
-            None => {
-                let g = ids.group("selectors", "Selectors");
-                anim.children.insert(0, g.into());
-                anim.sub_mut("selectors").expect("just added")
-            }
-        };
+        if anim.sub("selectors").is_none() {
+            let g = ids.group("selectors", "Selectors");
+            anim.children.insert(0, g.into());
+        }
+        let sels = anim.sub_mut("selectors").ok_or_else(|| bad(C, "the animator has no Selectors group"))?;
         let (m, label) = match kind.as_str() {
             "range" => ("rangeSelector", "Range Selector"),
             "wiggly" => ("wigglySelector", "Wiggly Selector"),

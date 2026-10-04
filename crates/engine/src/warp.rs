@@ -375,7 +375,7 @@ impl Session {
         if !job.is_finished() {
             return false;
         }
-        let mut job = self.warp_job.take().expect("job");
+        let Some(mut job) = self.warp_job.take() else { return false };
         if let Some(t) = job.thread.take() {
             let _ = t.join();
         }

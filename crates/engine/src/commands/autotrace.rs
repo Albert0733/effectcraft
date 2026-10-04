@@ -162,7 +162,7 @@ fn run(s: &mut Session, p: &Value) -> Result<Value> {
         let base = masks.children.len();
         for k in 0..n_masks {
             // Depth decides the mode: outlines add, holes subtract.
-            let first = frames.iter().find_map(|f| f.get(k)).expect("mask");
+            let Some(first) = frames.iter().find_map(|f| f.get(k)) else { continue };
             let mode = if first.depth % 2 == 0 { MaskMode::Add } else { MaskMode::Subtract };
             let mode = if k == 0 { MaskMode::Add } else { mode };
             let mut g = build::mask(
@@ -173,14 +173,16 @@ fn run(s: &mut Session, p: &Value) -> Result<Value> {
                 build::MASK_COLORS[(base + k) % build::MASK_COLORS.len()],
             );
             if frames.len() > 1 {
-                let path = g.get_mut("path").expect("path");
-                for (f, lt) in frames.iter().zip(&layer_times) {
-                    if let Some(tr) = f.get(k) {
-                        effectcraft_keyframe::set_key(&mut path.keys, Keyframe::new(*lt, KV::Path(tr.path.clone())));
+                if let Some(path) = g.get_mut("path") {
+                    for (f, lt) in frames.iter().zip(&layer_times) {
+                        if let Some(tr) = f.get(k) {
+                            effectcraft_keyframe::set_key(&mut path.keys, Keyframe::new(*lt, KV::Path(tr.path.clone())));
+                        }
                     }
                 }
-                let op = g.get_mut("opacity").expect("opacity");
-                if frames.iter().any(|f| f.get(k).is_none()) {
+                if let Some(op) = g.get_mut("opacity")
+                    && frames.iter().any(|f| f.get(k).is_none())
+                {
                     for (f, lt) in frames.iter().zip(&layer_times) {
                         let mut key = Keyframe::new(*lt, KV::Scalar(if f.get(k).is_some() { 100.0 } else { 0.0 }));
                         key.in_interp = Interp::Hold;

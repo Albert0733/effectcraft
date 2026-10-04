@@ -182,7 +182,7 @@ fn interpret_proxy_settings_apply_to_the_proxy() {
     assert!(px.footage.invert_alpha);
     let f = match &s.project.item(full).unwrap().kind {
         ItemKind::Footage(f) => f.clone(),
-        _ => unreachable!(),
+        _ => panic!("not footage"),
     };
     assert_eq!(f.alpha, AlphaMode::Straight, "the main footage keeps its interpretation");
 }
@@ -243,7 +243,7 @@ fn guess_alpha_invert_and_linear_light() {
     let h = import(&mut s, "/m/half.png");
     let foot = |s: &Session, i: ItemId| match &s.project.item(i).unwrap().kind {
         ItemKind::Footage(f) => f.clone(),
-        _ => unreachable!(),
+        _ => panic!("not footage"),
     };
     s.execute("file.interpretFootage", json!({"items": [b.0, w.0, h.0], "alpha": "guess"})).unwrap();
     assert_eq!(foot(&s, b).alpha, AlphaMode::Premultiplied);

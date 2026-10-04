@@ -196,7 +196,13 @@ pub fn top_level() -> Vec<&'static str> {
 /// The menu bar for this platform.
 pub fn menu_bar() -> &'static [MenuNode] {
     static BAR: OnceLock<Vec<MenuNode>> = OnceLock::new();
-    BAR.get_or_init(|| parse(TREE, cfg!(target_os = "macos")).expect("menu tree parses"))
+    BAR.get_or_init(|| {
+        // The tree is a constant (a test parses it on every platform); never panic over it.
+        parse(TREE, cfg!(target_os = "macos")).unwrap_or_else(|e| {
+            log::error!("menu tree: {e}");
+            Vec::new()
+        })
+    })
 }
 
 /// Every entry with its submenu path (`["Layer", "Blending Mode"]`), depth first.
