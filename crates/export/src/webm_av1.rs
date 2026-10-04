@@ -9,7 +9,6 @@ use std::io::{Seek, SeekFrom, Write};
 use effectcraft_project::Comp;
 use effectcraft_project::render_queue::Channels;
 use effectcraft_time::{TICKS_PER_SECOND, Tick};
-use rayon::prelude::*;
 
 use crate::encode::VideoEncoder;
 use crate::encode::mix;
@@ -41,7 +40,7 @@ fn cluster(blocks: &mut [Block]) -> Vec<u8> {
     out
 }
 
-pub(crate) fn webm_av1(job: &Cx, comp: &Comp, w: u32, h: u32, st: &mut State) -> Result<Report> {
+pub(crate) async fn webm_av1(job: &Cx<'_>, comp: &Comp, w: u32, h: u32, st: &mut State<'_>) -> Result<Report> {
     let rate = job.settings.rate(comp);
     let mut venc = crate::hevc_av1::Av1::new(w, h, rate, job.output)?;
     let with_audio = wants_audio(job);
@@ -149,7 +148,7 @@ pub(crate) fn webm_av1(job: &Cx, comp: &Comp, w: u32, h: u32, st: &mut State) ->
         let end = (i + batch).min(total);
         // RGB, or the alpha matte alone (Channels: Alpha); AV1 in WebM carries no alpha track.
         let channels = if job.output.channels == Channels::Alpha { Channels::Alpha } else { Channels::Rgb };
-        let frames: Vec<Vec<u8>> = (i..end).into_par_iter().map(|k| job.pixels(&job.frame(comp, k), comp, channels, w, h)).collect();
+        let frames: Vec<Vec<u8>> = job.frames(comp, (i..end).collect(), |_, img| job.pixels(&img, comp, channels, w, h)).await;
         for (j, px) in frames.iter().enumerate() {
             let k = i + j as u64;
             for p in venc.encode(px, k)? {

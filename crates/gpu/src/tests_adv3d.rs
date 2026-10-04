@@ -35,7 +35,7 @@ fn set(l: &mut effectcraft_project::Layer, path: &str, v: Value) {
 
 /// Primitives with metal/dielectric materials, a shadow-casting spot light and a point light,
 /// an environment light, a semi-transparent textured card.
-fn scene_project() -> (Project, ItemId) {
+pub(crate) fn scene_project() -> (Project, ItemId) {
     let mut p = Project::default();
     let mut c = Comp::new(240, 160, FrameRate::FPS_30, Tick::from_seconds_f64(1.0));
     c.renderer = R3::Advanced3D;
@@ -90,7 +90,7 @@ fn scene_project() -> (Project, ItemId) {
     (p, cid)
 }
 
-fn scene(p: &Project, cid: ItemId) -> Scene {
+pub(crate) fn scene(p: &Project, cid: ItemId) -> Scene {
     let r = Renderer::new(p, &NoFootage, RenderOpts::default());
     let ctx = EvalCtx { project: p, comp_id: cid, comp: p.comp(cid).unwrap(), time: Tick::ZERO, expr: None, footage: None };
     let run: Vec<&effectcraft_project::Layer> = ctx.comp.layers.iter().rev().filter(|l| l.is_3d() && l.has_video()).collect();
@@ -177,7 +177,7 @@ fn gpu_raster_perf_smoke() {
 
 /// The lit scene seen through a depth-of-field camera (hexagonal iris, diffraction fringe,
 /// highlight boost) with the sphere moving under motion blur.
-fn dof_mb_project() -> (Project, ItemId) {
+pub(crate) fn dof_mb_project() -> (Project, ItemId) {
     let (mut p, cid) = scene_project();
     add(&mut p, cid, LayerSource::Camera, |l| {
         let zoom = match l.props.prop_mut("cameraOptions/zoom").unwrap().value {
@@ -208,7 +208,7 @@ fn dof_mb_project() -> (Project, ItemId) {
 
 /// Share of pixels (0–1) differing by more than 1/255 on any channel, and the largest
 /// difference.
-fn off_share(a: &[[f32; 4]], b: &[[f32; 4]]) -> (f64, f32) {
+pub(crate) fn off_share(a: &[[f32; 4]], b: &[[f32; 4]]) -> (f64, f32) {
     let mut off = 0;
     let mut max = 0.0f32;
     for (p, q) in a.iter().zip(b) {
@@ -222,7 +222,7 @@ fn off_share(a: &[[f32; 4]], b: &[[f32; 4]]) -> (f64, f32) {
     (off as f64 / a.len().max(1) as f64, max)
 }
 
-fn run_of(p: &Project, cid: ItemId) -> (EvalCtx<'_>, Vec<&effectcraft_project::Layer>) {
+pub(crate) fn run_of(p: &Project, cid: ItemId) -> (EvalCtx<'_>, Vec<&effectcraft_project::Layer>) {
     let ctx = EvalCtx { project: p, comp_id: cid, comp: p.comp(cid).unwrap(), time: Tick::ZERO, expr: None, footage: None };
     let run: Vec<&effectcraft_project::Layer> = ctx.comp.layers.iter().rev().filter(|l| l.is_3d() && l.has_video()).collect();
     (ctx, run)

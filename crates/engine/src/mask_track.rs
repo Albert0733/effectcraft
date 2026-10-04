@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex};
 
 use effectcraft_keyframe::{Keyframe, ShapePath, Value};
 use effectcraft_project::{ItemId, LayerId, Project, Uid};
-use effectcraft_render::{ExprHost, FootageSource, LayerCache, RenderOpts, Renderer};
+use effectcraft_render::{ExprHost, FootageSource, LayerCache, Renderer};
 use effectcraft_time::Tick;
 use effectcraft_track as trk;
 use effectcraft_track::fit::Model;
@@ -200,8 +200,11 @@ pub(crate) struct MaskWork {
     pub times: Vec<Tick>,
 }
 
-fn run_work(w: MaskWork, shared: &MaskTrackShared) {
+async fn run_work(w: MaskWork, shared: &MaskTrackShared) {
     let t0 = web_time::Instant::now();
+    // A browser job worker's GPU (deferred readbacks): frames render in passes.
+    let accel = crate::offload::job_accel();
+    let accel = accel.as_deref();
     let fail = |msg: &str| {
         let mut s = lock(&shared.state);
         s.error = Some(msg.to_string());
@@ -209,20 +212,22 @@ fn run_work(w: MaskWork, shared: &MaskTrackShared) {
     };
     let Some(comp) = w.project.comp(w.comp) else { return fail("composition missing") };
     let Some(layer) = comp.layer(w.layer) else { return fail("layer missing") };
-    let mut r = Renderer::new(&w.project, w.footage.as_ref(), RenderOpts { scale: 1.0, ..Default::default() });
+    let mut r = Renderer::new(&w.project, w.footage.as_ref(), crate::offload::analysis_opts(accel));
     r.expr = w.expr.as_deref();
     r.cache = Some(&w.cache);
     let r = &r;
-    let frame_at = |t: Tick| source_frame(r, &w.project, w.comp, comp, layer, t, w.expr.as_deref());
+    let wr = &w;
+    let frame_at =
+        |t: Tick| crate::offload::in_passes(accel, move |a| source_frame(&r.with_accel(a), &wr.project, wr.comp, comp, layer, t, wr.expr.as_deref()));
     lock(&shared.state).total = w.times.len().saturating_sub(1) as u64;
-    let Some(first) = frame_at(w.times[0]) else { return fail("the layer has no pixels to track") };
+    let Some(first) = frame_at(w.times[0]).await else { return fail("the layer has no pixels to track") };
     if w.method.is_face() {
-        return run_face(&w, shared, first, &frame_at, layer, t0);
+        return run_face(&w, shared, first, &frame_at, accel.is_some(), layer, t0).await;
     }
     let mut tracker = trk::mask::MaskTracker::new(w.method.model(), flatten(&w.path, 8), &trk::Frame { img: &first.0, offset: first.1 });
     let mut path = w.path.clone();
     lock(&shared.frames).push((layer.layer_time(w.times[0]), w.times[0], path.clone(), None));
-    let mut next = if w.times.len() > 1 { frame_at(w.times[1]) } else { None };
+    let mut next = if w.times.len() > 1 { frame_at(w.times[1]).await } else { None };
     for k in 1..w.times.len() {
         if shared.cancel.load(Ordering::Relaxed) {
             lock(&shared.state).cancelled = true;
@@ -232,8 +237,12 @@ fn run_work(w: MaskWork, shared: &MaskTrackShared) {
             lock(&shared.state).error = Some(format!("no frame at {:.3} s", w.times[k].seconds()));
             break;
         };
-        let (res, nf) =
-            rayon::join(|| tracker.step(&trk::Frame { img: &cur.0, offset: cur.1 }), || if k + 1 < w.times.len() { frame_at(w.times[k + 1]) } else { None });
+        let (res, nf) = crate::offload::join_fetch(
+            accel.is_some(),
+            || tracker.step(&trk::Frame { img: &cur.0, offset: cur.1 }),
+            || async { if k + 1 < w.times.len() { frame_at(w.times[k + 1]).await } else { None } },
+        )
+        .await;
         next = nf;
         let Some(step) = res else {
             lock(&shared.state).error = Some(format!("lost the mask's pixels at {:.3} s (too little texture inside the mask)", w.times[k].seconds()));
@@ -254,11 +263,13 @@ fn run_work(w: MaskWork, shared: &MaskTrackShared) {
 }
 
 /// Face tracking: the face outline keys the mask; Detailed Features adds the landmarks.
-fn run_face(
+/// `deferred`: frames render in passes (awaited one after the other).
+async fn run_face<F: std::future::Future<Output = Option<(Arc<effectcraft_raster::Image>, [f64; 2])>>>(
     w: &MaskWork,
     shared: &MaskTrackShared,
     first: (Arc<effectcraft_raster::Image>, [f64; 2]),
-    frame_at: &(dyn Fn(Tick) -> Option<(Arc<effectcraft_raster::Image>, [f64; 2])> + Sync),
+    frame_at: &(impl Fn(Tick) -> F + Sync),
+    deferred: bool,
     layer: &effectcraft_project::Layer,
     t0: web_time::Instant,
 ) {
@@ -273,7 +284,7 @@ fn run_face(
     let key = |fit: &trk::face::FaceFit| (outline_path(&fit.outline, 16, &w.path), detailed.then_some(fit.landmarks));
     let (path, pts) = key(&fit);
     lock(&shared.frames).push((layer.layer_time(w.times[0]), w.times[0], path, pts));
-    let mut next = if w.times.len() > 1 { frame_at(w.times[1]) } else { None };
+    let mut next = if w.times.len() > 1 { frame_at(w.times[1]).await } else { None };
     for k in 1..w.times.len() {
         if shared.cancel.load(Ordering::Relaxed) {
             lock(&shared.state).cancelled = true;
@@ -283,8 +294,12 @@ fn run_face(
             lock(&shared.state).error = Some(format!("no frame at {:.3} s", w.times[k].seconds()));
             break;
         };
-        let (res, nf) =
-            rayon::join(|| tracker.step(&trk::Frame { img: &cur.0, offset: cur.1 }), || if k + 1 < w.times.len() { frame_at(w.times[k + 1]) } else { None });
+        let (res, nf) = crate::offload::join_fetch(
+            deferred,
+            || tracker.step(&trk::Frame { img: &cur.0, offset: cur.1 }),
+            || async { if k + 1 < w.times.len() { frame_at(w.times[k + 1]).await } else { None } },
+        )
+        .await;
         next = nf;
         let Some(fit) = res else {
             lock(&shared.state).error = Some(format!("lost the face at {:.3} s", w.times[k].seconds()));
@@ -389,11 +404,19 @@ impl Session {
         let shared = Arc::new(MaskTrackShared::default());
         let (comp, layer) = (work.comp, work.layer);
         let thread = if wait {
-            run_work(work, &shared);
+            crate::offload::run_or_queue({
+                let sh = shared.clone();
+                async move { run_work(work, &sh).await }
+            });
             None
         } else {
             let sh = shared.clone();
-            Some(std::thread::Builder::new().name("mask-track".into()).spawn(move || run_work(work, &sh)).map_err(|e| e.to_string())?)
+            Some(
+                std::thread::Builder::new()
+                    .name("mask-track".into())
+                    .spawn(move || effectcraft_render::passes::block_on(run_work(work, &sh)))
+                    .map_err(|e| e.to_string())?,
+            )
         };
         self.mask_job = Some(MaskTrackJob { shared, thread, comp, layer, mask, direction });
         self.poll_mask_track();

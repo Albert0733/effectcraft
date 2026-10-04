@@ -30,39 +30,49 @@ impl Exporter for FileExporter {
         effectcraft_export::available_formats()
     }
     fn export(&self, job: &ExportJob, progress: &mut dyn FnMut(u64, u64) -> bool) -> Result<ExportResult, String> {
-        let j = effectcraft_export::Job {
-            project: job.project,
-            footage: job.footage,
-            expr: job.expr,
-            accel: job.accel,
-            comp: job.item.comp,
-            settings: &job.item.settings,
-            output: &job.item.output,
-            path: job.path,
-            sink: self.sink.as_deref(),
-            options: effectcraft_export::JobOptions {
-                log: job.item.log,
-                label: job.label.clone(),
-                storage: job.storage,
-                overflow: job.project.render_prefs.overflow_folders.clone(),
-            },
-            nested_switches: job.nested_switches,
-        };
-        match effectcraft_export::export(&j, &mut |p| progress(p.done, p.total)) {
-            Ok(r) => Ok(ExportResult {
-                path: r.path,
-                frames: r.frames,
-                width: r.width,
-                height: r.height,
-                bytes: r.bytes,
-                seconds: r.seconds,
-                audio: r.audio,
-                log: r.log,
-                overflow: r.overflow,
-            }),
-            Err(effectcraft_export::ExportError::Cancelled) => Err(effectcraft_engine::render_queue::CANCELLED.into()),
-            Err(e) => Err(e.to_string()),
-        }
+        effectcraft_engine::render::passes::block_on(self.export_async(job, progress))
+    }
+
+    fn export_async<'a>(
+        &'a self,
+        job: &'a ExportJob<'a>,
+        progress: &'a mut dyn FnMut(u64, u64) -> bool,
+    ) -> effectcraft_engine::render_queue::LocalFuture<'a, Result<ExportResult, String>> {
+        Box::pin(async move {
+            let j = effectcraft_export::Job {
+                project: job.project,
+                footage: job.footage,
+                expr: job.expr,
+                accel: job.accel,
+                comp: job.item.comp,
+                settings: &job.item.settings,
+                output: &job.item.output,
+                path: job.path,
+                sink: self.sink.as_deref(),
+                options: effectcraft_export::JobOptions {
+                    log: job.item.log,
+                    label: job.label.clone(),
+                    storage: job.storage,
+                    overflow: job.project.render_prefs.overflow_folders.clone(),
+                },
+                nested_switches: job.nested_switches,
+            };
+            match effectcraft_export::export_async(&j, &mut |p| progress(p.done, p.total)).await {
+                Ok(r) => Ok(ExportResult {
+                    path: r.path,
+                    frames: r.frames,
+                    width: r.width,
+                    height: r.height,
+                    bytes: r.bytes,
+                    seconds: r.seconds,
+                    audio: r.audio,
+                    log: r.log,
+                    overflow: r.overflow,
+                }),
+                Err(effectcraft_export::ExportError::Cancelled) => Err(effectcraft_engine::render_queue::CANCELLED.into()),
+                Err(e) => Err(e.to_string()),
+            }
+        })
     }
 }
 

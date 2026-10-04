@@ -274,7 +274,7 @@ impl Accelerator for Gpu {
     }
 
     fn particles(&self) -> Option<&dyn effectcraft_effects::psim::ParticleSim> {
-        self.ctx.can_wait().then_some(self as &dyn effectcraft_effects::psim::ParticleSim)
+        self.ctx.can_readback().then_some(self as &dyn effectcraft_effects::psim::ParticleSim)
     }
 
     fn auto_pick(&self) -> Option<&effectcraft_render::AutoPick> {
@@ -300,6 +300,16 @@ impl Accelerator for Gpu {
     fn miss_gate(&self) -> Option<Arc<std::sync::atomic::AtomicBool>> {
         self.ctx.deferred().map(|d| d.gate())
     }
+
+    fn settle(&self) -> Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + '_>>> {
+        let d = self.ctx.deferred()?.clone();
+        // Natively the device delivers the readbacks when polled: wait for them here.
+        #[cfg(not(target_arch = "wasm32"))]
+        if d.in_flight() > 0 {
+            let _ = self.ctx.device.poll(wgpu::PollType::wait_indefinitely());
+        }
+        Some(Box::pin(async move { d.settled().await }))
+    }
 }
 
 impl effectcraft_effects::psim::ParticleSim for Gpu {
@@ -318,6 +328,8 @@ mod tests_adjust;
 mod tests_adv3d;
 #[cfg(test)]
 mod tests_deferred;
+#[cfg(test)]
+mod tests_deferred_jobs;
 #[cfg(test)]
 mod tests_fx_color;
 #[cfg(test)]

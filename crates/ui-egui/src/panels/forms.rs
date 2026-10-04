@@ -583,6 +583,8 @@ pub fn open_form(app: &mut EffectcraftApp, id: &str, p: &Value) -> bool {
                     Field::text("name", "Template name", &name),
                     Field::text("description", "Description", ""),
                     Field::text("category", "Category", "My Templates"),
+                    Field::bool("embedFootage", "Embed footage files", true),
+                    Field::num("embedLimitMB", "Embed up to (MB)", effectcraft_engine::templates::EMBED_LIMIT_MB),
                 ],
             )
         }

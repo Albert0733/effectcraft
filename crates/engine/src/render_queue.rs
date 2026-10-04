@@ -60,7 +60,16 @@ pub trait Exporter: Send + Sync {
     /// Render and write one item (blocking). `progress(done, total)` returns `false` to cancel;
     /// a cancelled export returns `Err("cancelled")`.
     fn export(&self, job: &ExportJob, progress: &mut dyn FnMut(u64, u64) -> bool) -> Result<ExportResult, String>;
+    /// [`Exporter::export`] as a future: renders whose GPU readbacks are deferred (a browser
+    /// job worker's WebGPU device) await the device between a frame's passes. The default runs
+    /// the blocking export.
+    fn export_async<'a>(&'a self, job: &'a ExportJob<'a>, progress: &'a mut dyn FnMut(u64, u64) -> bool) -> LocalFuture<'a, Result<ExportResult, String>> {
+        Box::pin(async move { self.export(job, progress) })
+    }
 }
+
+/// A boxed future that stays on its thread.
+pub type LocalFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + 'a>>;
 
 /// The error string an [`Exporter`] returns when cancelled.
 pub const CANCELLED: &str = "cancelled";
@@ -196,8 +205,10 @@ fn unix_now() -> u64 {
     web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
-/// Render `items` with the session's footage, expressions and GPU (a worker's render).
-pub(crate) fn run_items(
+/// Render `items` with the session's footage, expressions and GPU (a worker's render). A
+/// future: with deferred GPU readbacks (a browser job worker) each frame awaits the device
+/// between its passes.
+pub(crate) async fn run_items(
     s: &Session,
     exporter: Arc<dyn Exporter>,
     items: Vec<Vec<(RenderQueueItem, String)>>,
@@ -214,10 +225,10 @@ pub(crate) fn run_items(
         items,
         nested_switches: s.prefs.general.switches_affect_nested_comps,
     };
-    run_work(work, shared, notify);
+    run_work(work, shared, notify).await;
 }
 
-fn run_work(w: Work, shared: &JobShared, notify: &mut dyn FnMut(&JobShared)) {
+async fn run_work(w: Work, shared: &JobShared, notify: &mut dyn FnMut(&JobShared)) {
     let t0 = web_time::Instant::now();
     {
         let mut s = lock(&shared.state);
@@ -257,18 +268,21 @@ fn run_work(w: Work, shared: &JobShared, notify: &mut dyn FnMut(&JobShared)) {
                 label: format!("#{index} {name} (output module {})", mi + 1),
                 nested_switches: w.nested_switches,
             };
-            let rr = w.exporter.export(&job, &mut |done, total| {
-                {
-                    let mut s = lock(&shared.state);
-                    s.done = done;
-                    s.total = total;
-                    s.elapsed = t0.elapsed().as_secs_f64();
-                    s.item_elapsed = t1.elapsed().as_secs_f64();
-                    s.remaining = (done > 0).then(|| s.item_elapsed / done as f64 * total.saturating_sub(done) as f64);
-                }
-                notify(shared);
-                !shared.cancel.load(Ordering::Relaxed)
-            });
+            let rr = w
+                .exporter
+                .export_async(&job, &mut |done, total| {
+                    {
+                        let mut s = lock(&shared.state);
+                        s.done = done;
+                        s.total = total;
+                        s.elapsed = t0.elapsed().as_secs_f64();
+                        s.item_elapsed = t1.elapsed().as_secs_f64();
+                        s.remaining = (done > 0).then(|| s.item_elapsed / done as f64 * total.saturating_sub(done) as f64);
+                    }
+                    notify(shared);
+                    !shared.cancel.load(Ordering::Relaxed)
+                })
+                .await;
             match rr {
                 Ok(res) if mi == 0 => r = Ok(res),
                 Ok(_) => {}
@@ -474,11 +488,14 @@ impl Session {
         };
         let shared = Arc::new(JobShared::default());
         if wait {
-            run_work(work, &shared, &mut |_| {});
+            effectcraft_render::passes::block_on(run_work(work, &shared, &mut |_| {}));
             self.render_job = Some(RenderJob { shared, thread: None, remote: None });
         } else {
             let sh = shared.clone();
-            let thread = std::thread::Builder::new().name("render-queue".into()).spawn(move || run_work(work, &sh, &mut |_| {})).map_err(|e| e.to_string())?;
+            let thread = std::thread::Builder::new()
+                .name("render-queue".into())
+                .spawn(move || effectcraft_render::passes::block_on(run_work(work, &sh, &mut |_| {})))
+                .map_err(|e| e.to_string())?;
             self.render_job = Some(RenderJob { shared, thread: Some(thread), remote: None });
         }
         self.poll_render();

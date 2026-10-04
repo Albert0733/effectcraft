@@ -282,20 +282,37 @@ export function audioStop() {
 // worker once.
 const idle = [];
 const running = new Map(); // job id → {worker, done}
+// Job workers open a WebGPU device of their own (unless `?nogpuworkers`): their jobs' frames
+// render on it. `jobGpu`: what the last started worker reported; `jobStats`: the last jobs'
+// {kind, gpu, passes, readbacks, ms}.
+let jobWorkerGpu = true;
+let jobGpu = null;
+const jobStats = [];
+
+export function setJobWorkerGpu(on) {
+  jobWorkerGpu = !!on;
+}
 
 function spawn(base) {
   const worker = new Worker(new URL("worker.js", base), { type: "module", name: "effectcraft-worker" });
-  const w = { worker, files: new Map(), ready: null };
+  const w = { worker, files: new Map(), ready: null, gpu: null };
   w.ready = new Promise((res, rej) => {
-    worker.onmessage = (e) => { if (e.data && e.data.type === "ready") res(); };
+    worker.onmessage = (e) => {
+      if (e.data && e.data.type === "gpu") {
+        w.gpu = e.data.gpu ? { adapter: e.data.gpu } : { cpu: e.data.error || "no GPU" };
+        jobGpu = w.gpu;
+      }
+      if (e.data && e.data.type === "ready") res();
+    };
     worker.onerror = (e) => rej(new Error(e.message || "worker failed to start"));
   });
-  worker.postMessage({ type: "init", module: self.effectcraftModule ?? null, base });
+  worker.postMessage({ type: "init", module: self.effectcraftModule ?? null, base, gpu: jobWorkerGpu });
   return w;
 }
 
 /// Run a job in a worker. `files`: [[path, Uint8Array]] the job reads; `onMessage(type, json,
-/// path, bytes)` receives "reply" (json), "file" (path, bytes) and "error" (json = message).
+/// path, bytes)` receives "reply" (json), "file" (path, bytes: a rendered file to download),
+/// "store" (path, bytes: a file to keep in browser storage) and "error" (json = message).
 export function workerRun(id, json, files, base, onMessage) {
   const w = idle.pop() ?? spawn(base);
   running.set(id, w);
@@ -310,6 +327,11 @@ export function workerRun(id, json, files, base, onMessage) {
         }
       } else if (m.type === "file") {
         onMessage("file", null, m.path, new Uint8Array(m.bytes));
+      } else if (m.type === "store") {
+        onMessage("store", null, m.path, new Uint8Array(m.bytes));
+      } else if (m.type === "stats") {
+        jobStats.push({ kind: m.kind, gpu: m.gpu, passes: m.passes, readbacks: m.readbacks, ms: m.ms });
+        if (jobStats.length > 16) jobStats.shift();
       }
     };
     w.worker.onerror = (e) => {
@@ -337,9 +359,9 @@ export function workerCancel(id) {
   w.worker.terminate();
 }
 
-/// {running, idle}.
+/// {running, idle, gpu, jobs: [{kind, gpu, passes, readbacks, ms}]}.
 export function workerStats() {
-  return { running: running.size, idle: idle.length };
+  return { running: running.size, idle: idle.length, gpu: jobGpu, jobs: jobStats.slice() };
 }
 
 // ------------------------------------------------------------------ frame workers
@@ -370,53 +392,65 @@ export function frameWorkerStart(base, onMessage, gpu) {
 
 // ------------------------------------------------------------------ disk cache (OPFS)
 
-// The disk cache's frames (src/diskcache.rs): one file per frame under
-// effectcraft-cache/v1/frames/<32 hex>.ecc in the Origin Private File System. Frame workers write
-// them with synchronous access handles (a temporary file moved into place, so a reader never
-// sees a partial entry; every entry also ends in a checksum); the page lists, reads and deletes.
+// The disk cache (src/diskcache.rs): one file per frame under
+// effectcraft-cache/v1/frames/<32 hex>.ecc and one per layer buffer under
+// effectcraft-cache/v1/layers/<32 hex>.ecc in the Origin Private File System (entry names with a
+// `layers/` prefix are layer buffers). Frame workers write them with synchronous access handles
+// (a temporary file moved into place, so a reader never sees a partial entry; every entry also
+// ends in a checksum) and read the layer buffers they prefetch; the page lists, reads and
+// deletes.
 const CACHE_ROOT = "effectcraft-cache";
-const CACHE_PATH = [CACHE_ROOT, "v1", "frames"];
-let cacheDirHandle = null;
+const CACHE_KINDS = ["frames", "layers"];
+const cacheDirHandles = {};
 
-async function cacheDir() {
-  if (cacheDirHandle) return cacheDirHandle;
+async function cacheDir(kind = "frames") {
+  if (cacheDirHandles[kind]) return cacheDirHandles[kind];
   if (!navigator.storage || !navigator.storage.getDirectory) throw new Error("no Origin Private File System");
   let d = await navigator.storage.getDirectory();
-  for (const n of CACHE_PATH) d = await d.getDirectoryHandle(n, { create: true });
-  cacheDirHandle = d;
+  for (const n of [CACHE_ROOT, "v1", kind]) d = await d.getDirectoryHandle(n, { create: true });
+  cacheDirHandles[kind] = d;
   return d;
 }
 
-/// Every cached entry: [{name, size, modified}]. Temporaries older than ten minutes (a writer
-/// that died) are removed.
+/// The folder and file name of an entry name (`layers/<hex>.ecc` or `<hex>.ecc`).
+async function entryDir(name) {
+  if (name.startsWith("layers/")) return [await cacheDir("layers"), name.slice(7)];
+  return [await cacheDir("frames"), name];
+}
+
+/// Every cached entry: [{name, size, modified}] (layer buffers named `layers/…`). Temporaries
+/// older than ten minutes (a writer that died) are removed.
 export async function cacheList() {
-  const dir = await cacheDir();
   const out = [];
-  const stale = [];
-  for await (const [name, h] of dir.entries()) {
-    if (h.kind !== "file") continue;
-    const f = await h.getFile();
-    if (name.includes(".tmp")) {
-      if (Date.now() - f.lastModified > 600000) stale.push(name);
-      continue;
+  for (const kind of CACHE_KINDS) {
+    const dir = await cacheDir(kind);
+    const prefix = kind === "frames" ? "" : `${kind}/`;
+    const stale = [];
+    for await (const [name, h] of dir.entries()) {
+      if (h.kind !== "file") continue;
+      const f = await h.getFile();
+      if (name.includes(".tmp")) {
+        if (Date.now() - f.lastModified > 600000) stale.push(name);
+        continue;
+      }
+      out.push({ name: prefix + name, size: f.size, modified: f.lastModified });
     }
-    out.push({ name, size: f.size, modified: f.lastModified });
+    for (const n of stale) { try { await dir.removeEntry(n); } catch {} }
   }
-  for (const n of stale) { try { await dir.removeEntry(n); } catch {} }
   return out;
 }
 
 /// An entry's bytes.
 export async function cacheRead(name) {
-  const dir = await cacheDir();
-  const f = await (await dir.getFileHandle(name)).getFile();
+  const [dir, file] = await entryDir(name);
+  const f = await (await dir.getFileHandle(file)).getFile();
   return new Uint8Array(await f.arrayBuffer());
 }
 
 /// Write an entry (in a worker: a synchronous access handle; elsewhere a writable stream);
 /// resolves with its size.
-export async function cacheWrite(name, bytes) {
-  const dir = await cacheDir();
+export async function cacheWrite(fullName, bytes) {
+  const [dir, name] = await entryDir(fullName);
   const canMove = typeof FileSystemHandle !== "undefined" && "move" in FileSystemHandle.prototype;
   const tmp = canMove ? `${name}.tmp.${Math.random().toString(36).slice(2)}` : name;
   const fh = await dir.getFileHandle(tmp, { create: true });
@@ -442,13 +476,17 @@ export async function cacheWrite(name, bytes) {
 
 /// Delete entries (names); missing ones are ignored.
 export async function cacheDelete(names) {
-  const dir = await cacheDir();
-  for (const n of names) { try { await dir.removeEntry(n); } catch {} }
+  for (const n of names) {
+    try {
+      const [dir, file] = await entryDir(n);
+      await dir.removeEntry(file);
+    } catch {}
+  }
 }
 
 /// Delete the whole cache.
 export async function cacheClear() {
-  cacheDirHandle = null;
+  for (const k of CACHE_KINDS) delete cacheDirHandles[k];
   try {
     const root = await navigator.storage.getDirectory();
     await root.removeEntry(CACHE_ROOT, { recursive: true });

@@ -41,7 +41,6 @@ use effectcraft_project::render_queue::{AudioOutput, Channels, OutputFormat, Out
 use effectcraft_project::{Comp, ItemId, Project};
 use effectcraft_raster::Image;
 use effectcraft_render::{ExprHost, FootageSource};
-use rayon::prelude::*;
 
 pub use effectcraft_project::render_queue;
 pub use effectcraft_project::render_queue::StorageQuota;
@@ -159,9 +158,17 @@ pub fn wants_audio(job: &Job) -> bool {
 
 /// Run the export (blocking). `progress` is called after every batch; returning `false` cancels.
 pub fn export(job: &Job, progress: &mut dyn FnMut(&Progress) -> bool) -> Result<Report> {
+    effectcraft_render::passes::block_on(export_async(job, progress))
+}
+
+/// [`export`] as a future: with an accelerator whose readbacks are deferred (WebGPU in a
+/// browser worker) every frame renders in passes, awaiting the device in between
+/// ([`effectcraft_render::passes`]); otherwise it never waits and frames render in parallel
+/// batches as in [`export`].
+pub async fn export_async(job: &Job<'_>, progress: &mut dyn FnMut(&Progress) -> bool) -> Result<Report> {
     let t0 = Instant::now();
     let cx = Cx::new(job);
-    let mut r = export_with(&cx, progress, t0);
+    let mut r = export_with(&cx, progress, t0).await;
     let log = cx.write_log(&r, t0.elapsed().as_secs_f64());
     if let Ok(rep) = &mut r {
         rep.log = log;
@@ -170,19 +177,19 @@ pub fn export(job: &Job, progress: &mut dyn FnMut(&Progress) -> bool) -> Result<
     r
 }
 
-fn export_with(cx: &Cx, progress: &mut dyn FnMut(&Progress) -> bool, t0: Instant) -> Result<Report> {
+async fn export_with(cx: &Cx<'_>, progress: &mut dyn FnMut(&Progress) -> bool, t0: Instant) -> Result<Report> {
     let comp = cx.comp().ok_or(ExportError::NoComp)?;
     let total = cx.settings.frame_count(comp);
     let mut st = State { t0, total, done: 0, progress };
     st.advance(0)?;
     let (w, h) = output_size(comp, cx.settings, cx.output);
     let mut report = match cx.output.format {
-        OutputFormat::H264 | OutputFormat::Hevc | OutputFormat::Av1 | OutputFormat::ProRes => encode::movie(cx, comp, w, h, &mut st)?,
-        OutputFormat::Gif => gif_export(cx, comp, w, h, &mut st)?,
-        OutputFormat::WebM => webm::webm(cx, comp, w, h, &mut st)?,
+        OutputFormat::H264 | OutputFormat::Hevc | OutputFormat::Av1 | OutputFormat::ProRes => encode::movie(cx, comp, w, h, &mut st).await?,
+        OutputFormat::Gif => gif_export(cx, comp, w, h, &mut st).await?,
+        OutputFormat::WebM => webm::webm(cx, comp, w, h, &mut st).await?,
         OutputFormat::Wav => webm::audio_file(cx, comp, false, &mut st)?,
         OutputFormat::Aiff => webm::audio_file(cx, comp, true, &mut st)?,
-        f if f.is_sequence() => sequence(cx, comp, w, h, &mut st)?,
+        f if f.is_sequence() => sequence(cx, comp, w, h, &mut st).await?,
         f => return Err(ExportError::Unsupported(f.label().into())),
     };
     report.seconds = t0.elapsed().as_secs_f64();
@@ -233,7 +240,7 @@ fn first_frame_number(job: &Job, comp: &Comp) -> i64 {
     job.settings.first_frame(comp)
 }
 
-fn sequence(cx: &Cx, comp: &Comp, w: u32, h: u32, st: &mut State) -> Result<Report> {
+async fn sequence(cx: &Cx<'_>, comp: &Comp, w: u32, h: u32, st: &mut State<'_>) -> Result<Report> {
     let f0 = first_frame_number(cx, comp);
     let fmt = cx.output.format;
     let channels = match cx.output.channels {
@@ -245,14 +252,10 @@ fn sequence(cx: &Cx, comp: &Comp, w: u32, h: u32, st: &mut State) -> Result<Repo
     let mut i = 0;
     while i < st.total {
         let end = (i + batch).min(st.total);
-        let written: Vec<Result<u64>> = (i..end)
-            .into_par_iter()
-            .map(|k| {
+        let ks: Vec<u64> = (i..end).filter(|k| !(cx.settings.skip_existing && out::exists(cx.sink, &sequence_path(cx.path, f0 + *k as i64)))).collect();
+        let written: Vec<Result<u64>> = cx
+            .frames(comp, ks, |k, img| {
                 let path = sequence_path(cx.path, f0 + k as i64);
-                if cx.settings.skip_existing && out::exists(cx.sink, &path) {
-                    return Ok(0);
-                }
-                let img = cx.frame(comp, k);
                 // Encode in memory first: the storage hook decides where it fits.
                 let mut buf = std::io::Cursor::new(Vec::new());
                 write_still(cx, &mut buf, fmt, &img, comp, channels, w, h, cx.output.quality)?;
@@ -262,7 +265,7 @@ fn sequence(cx: &Cx, comp: &Comp, w: u32, h: u32, st: &mut State) -> Result<Repo
                 std::io::Write::write_all(&mut f, &data).map_err(io)?;
                 f.finish()
             })
-            .collect();
+            .await;
         for r in written {
             bytes += r?;
         }
@@ -340,7 +343,7 @@ fn write_still<W: std::io::Write + std::io::Seek>(
     }
 }
 
-fn gif_export(job: &Cx, comp: &Comp, w: u32, h: u32, st: &mut State) -> Result<Report> {
+async fn gif_export(job: &Cx<'_>, comp: &Comp, w: u32, h: u32, st: &mut State<'_>) -> Result<Report> {
     if w > u16::MAX as u32 || h > u16::MAX as u32 {
         return Err(ExportError::Unsupported("GIF frames are limited to 65535 px".into()));
     }
@@ -357,14 +360,12 @@ fn gif_export(job: &Cx, comp: &Comp, w: u32, h: u32, st: &mut State) -> Result<R
     let mut i = 0;
     while i < st.total {
         let end = (i + batch).min(st.total);
-        let frames: Vec<gif::Frame<'static>> = (i..end)
-            .into_par_iter()
-            .map(|k| {
-                let img = job.frame(comp, k);
+        let frames: Vec<gif::Frame<'static>> = job
+            .frames(comp, (i..end).collect(), |_, img| {
                 let mut px = job.pixels(&img, comp, job.output.channels, w, h);
                 gif::Frame::from_rgba_speed(w as u16, h as u16, &mut px, 10)
             })
-            .collect();
+            .await;
         for mut f in frames {
             clock += cs_per_frame;
             let d = (clock.round() as u64).saturating_sub(emitted).max(1);

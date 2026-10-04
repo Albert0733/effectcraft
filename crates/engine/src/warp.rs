@@ -19,7 +19,7 @@ use effectcraft_effects::warp_stab::{self, ANALYSIS, ANALYSIS_KEY};
 use effectcraft_keyframe::Value;
 use effectcraft_project::{GroupKind, ItemId, ItemKind, Layer, LayerId, LayerSource, Project, PropGroup, Uid};
 use effectcraft_raster::Image;
-use effectcraft_render::{EvalCtx, ExprHost, FootageSource, LayerCache, RenderOpts, Renderer};
+use effectcraft_render::{EvalCtx, ExprHost, FootageSource, LayerCache, Renderer};
 use effectcraft_time::Tick;
 use effectcraft_track::stabilize::{AnalyzeOpts, Analyzer, StabSettings, WarpAnalysis};
 use serde::Serialize;
@@ -193,8 +193,11 @@ fn input_frame(r: &Renderer, ctx: &EvalCtx, layer: &Layer, effect_index: usize) 
     Some((Arc::new(buf.img.clone()), buf.offset))
 }
 
-fn run_work(w: WarpWork, shared: &WarpShared) {
+async fn run_work(w: WarpWork, shared: &WarpShared) {
     let t0 = web_time::Instant::now();
+    // A browser job worker's GPU (deferred readbacks): frames render in passes.
+    let accel = crate::offload::job_accel();
+    let accel = accel.as_deref();
     let fail = |msg: &str| {
         let mut s = lock(&shared.state);
         s.error = Some(msg.to_string());
@@ -202,20 +205,21 @@ fn run_work(w: WarpWork, shared: &WarpShared) {
     };
     let Some(comp) = w.project.comp(w.comp) else { return fail("composition missing") };
     let Some(layer) = comp.layer(w.layer) else { return fail("layer missing") };
-    let mut r = Renderer::new(&w.project, w.footage.as_ref(), RenderOpts { scale: 1.0, ..Default::default() });
+    let mut r = Renderer::new(&w.project, w.footage.as_ref(), crate::offload::analysis_opts(accel));
     r.expr = w.expr.as_deref();
     r.cache = Some(&w.cache);
     let r = &r;
     let ctx0 = EvalCtx::new(&w.project, w.comp, comp, Tick::ZERO);
     let ctx0 = EvalCtx { expr: w.expr.as_deref(), ..ctx0 };
-    let frame_at = |t: Tick| input_frame(r, &ctx0.at(t), layer, w.effect_index);
+    let ctx0 = &ctx0;
+    let frame_at = |t: Tick| crate::offload::in_passes(accel, move |a| input_frame(&r.with_accel(a), &ctx0.at(t), layer, w.effect_index));
     {
         let mut s = lock(&shared.state);
         s.step = 1;
         s.total = w.times.len() as u64;
     }
     let mut an = Analyzer::new(w.size, AnalyzeOpts { detailed: w.detailed });
-    let mut next = frame_at(w.times[0]);
+    let mut next = frame_at(w.times[0]).await;
     for k in 0..w.times.len() {
         if shared.cancel.load(Ordering::Relaxed) {
             let mut s = lock(&shared.state);
@@ -224,10 +228,12 @@ fn run_work(w: WarpWork, shared: &WarpShared) {
             return;
         }
         let Some(cur) = next.take() else { return fail(&format!("no frame at {:.3} s", w.times[k].seconds())) };
-        let ((), nf) = rayon::join(
+        let ((), nf) = crate::offload::join_fetch(
+            accel.is_some(),
             || an.push(&effectcraft_track::Frame { img: &cur.0, offset: cur.1 }),
-            || if k + 1 < w.times.len() { frame_at(w.times[k + 1]) } else { None },
-        );
+            || async { if k + 1 < w.times.len() { frame_at(w.times[k + 1]).await } else { None } },
+        )
+        .await;
         next = nf;
         let mut s = lock(&shared.state);
         s.done = k as u64 + 1;
@@ -343,11 +349,19 @@ impl Session {
         let wait = wait || cfg!(target_arch = "wasm32");
         let shared = Arc::new(WarpShared::default());
         let thread = if wait {
-            run_work(work, &shared);
+            crate::offload::run_or_queue({
+                let sh = shared.clone();
+                async move { run_work(work, &sh).await }
+            });
             None
         } else {
             let sh = shared.clone();
-            Some(std::thread::Builder::new().name("warp-analyze".into()).spawn(move || run_work(work, &sh)).map_err(|e| e.to_string())?)
+            Some(
+                std::thread::Builder::new()
+                    .name("warp-analyze".into())
+                    .spawn(move || effectcraft_render::passes::block_on(run_work(work, &sh)))
+                    .map_err(|e| e.to_string())?,
+            )
         };
         self.warp_job = Some(WarpJob { shared, thread, comp, layer, effect, key });
         self.events.push(Event::ProjectChanged { revision: self.revision });

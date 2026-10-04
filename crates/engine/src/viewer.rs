@@ -522,11 +522,72 @@ pub struct CustomRgb {
     pub srgb_curve: bool,
     /// The ICC profile the numbers were read from (empty: typed in).
     pub icc: String,
+    /// A LUT-based (`A2B0`) profile's bytes: the simulation runs the profile's tables (baked
+    /// into a 3D LUT) instead of the numbers above, which then only approximate it.
+    #[serde(skip_serializing_if = "IccLut::is_empty")]
+    pub icc_lut: IccLut,
+}
+
+/// The bytes of a LUT-based ICC profile, kept in Settings as base64.
+#[derive(Clone, Default, PartialEq)]
+pub struct IccLut(pub Option<Arc<Vec<u8>>>);
+
+impl IccLut {
+    pub fn is_empty(&self) -> bool {
+        self.0.is_none()
+    }
+
+    /// The parsed profile.
+    pub fn profile(&self) -> Option<effectcraft_color::icc::LutProfile> {
+        match effectcraft_color::icc::parse_profile(self.0.as_deref()?) {
+            Ok(effectcraft_color::icc::Profile::Lut(p)) => Some(p),
+            _ => None,
+        }
+    }
+
+    fn hash(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        self.0.as_deref().hash(&mut h);
+        h.finish()
+    }
+}
+
+impl std::fmt::Debug for IccLut {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.0 {
+            Some(b) => write!(f, "IccLut({} bytes, {:016x})", b.len(), self.hash()),
+            None => write!(f, "IccLut(none)"),
+        }
+    }
+}
+
+impl Serialize for IccLut {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
+        s.serialize_str(&self.0.as_deref().map(|b| effectcraft_track::roto::rle::base64_encode(b)).unwrap_or_default())
+    }
+}
+
+impl<'de> Deserialize<'de> for IccLut {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        Ok(IccLut(effectcraft_track::roto::rle::base64_decode(&s).filter(|b| !b.is_empty()).map(Arc::new)))
+    }
 }
 
 impl Default for CustomRgb {
     fn default() -> Self {
-        CustomRgb { name: "My Custom RGB".into(), red: P709[0], green: P709[1], blue: P709[2], white: D65, gamma: 2.2, srgb_curve: false, icc: String::new() }
+        CustomRgb {
+            name: "My Custom RGB".into(),
+            red: P709[0],
+            green: P709[1],
+            blue: P709[2],
+            white: D65,
+            gamma: 2.2,
+            srgb_curve: false,
+            icc: String::new(),
+            icc_lut: IccLut::default(),
+        }
     }
 }
 
@@ -564,26 +625,54 @@ impl CustomRgb {
         Ok(())
     }
 
-    /// Take primaries, white and curve from an RGB ICC profile.
+    /// Take primaries, white and curve from an RGB ICC profile. A LUT-based profile is kept
+    /// whole ([`CustomRgb::icc_lut`]); its numbers are the primaries' and white's colours
+    /// (adapted to D65) and the gamma that fits its neutral ramp.
     pub fn from_icc(bytes: &[u8], path: &str) -> std::result::Result<CustomRgb, String> {
-        let p = effectcraft_color::icc::parse(bytes)?;
-        let name = if p.description.trim().is_empty() {
-            std::path::Path::new(path).file_stem().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "ICC Profile".into())
-        } else {
-            p.description.trim().to_string()
-        };
-        let gamma = (p.trc.iter().map(|t| t.fit_gamma()).sum::<f64>() / 3.0 * 1000.0).round() / 1000.0;
+        use effectcraft_color::icc::{Profile, parse_profile};
+        let stem = || std::path::Path::new(path).file_stem().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "ICC Profile".into());
+        let name = |d: &str| if d.trim().is_empty() { stem() } else { d.trim().to_string() };
         let r = |c: [f64; 2]| c.map(|v| (v * 1e5).round() / 1e5);
-        Ok(CustomRgb {
-            name,
-            red: r(p.primaries[0]),
-            green: r(p.primaries[1]),
-            blue: r(p.primaries[2]),
-            white: r(p.white),
-            gamma,
-            srgb_curve: p.trc[0].is_srgb(),
-            icc: path.to_string(),
-        })
+        match parse_profile(bytes)? {
+            Profile::Matrix(p) => {
+                let gamma = (p.trc.iter().map(|t| t.fit_gamma()).sum::<f64>() / 3.0 * 1000.0).round() / 1000.0;
+                Ok(CustomRgb {
+                    name: name(&p.description),
+                    red: r(p.primaries[0]),
+                    green: r(p.primaries[1]),
+                    blue: r(p.primaries[2]),
+                    white: r(p.white),
+                    gamma,
+                    srgb_curve: p.trc[0].is_srgb(),
+                    icc: path.to_string(),
+                    icc_lut: IccLut::default(),
+                })
+            }
+            Profile::Lut(p) => {
+                let (prims, _, gamma) = p.approximate();
+                // The PCS is D50-relative: the device white shows as the viewer's D65.
+                let a = space::bradford(effectcraft_color::icc::D50, D65);
+                let adapt = |c: [f64; 2]| {
+                    let v = space::mul_vec(&a, [c[0] / c[1], 1.0, (1.0 - c[0] - c[1]) / c[1]]);
+                    let sum = v[0] + v[1] + v[2];
+                    let c = [(v[0] / sum).clamp(1e-4, 0.9998), (v[1] / sum).clamp(1e-4, 0.9998)];
+                    // Table rounding can put a primary a hair outside the spectrum locus.
+                    let k = (0.9999 / (c[0] + c[1])).min(1.0);
+                    [c[0] * k, c[1] * k]
+                };
+                Ok(CustomRgb {
+                    name: name(&p.description),
+                    red: r(adapt(prims[0])),
+                    green: r(adapt(prims[1])),
+                    blue: r(adapt(prims[2])),
+                    white: D65,
+                    gamma: (gamma * 1000.0).round() / 1000.0,
+                    srgb_curve: false,
+                    icc: path.to_string(),
+                    icc_lut: IccLut(Some(Arc::new(bytes.to_vec()))),
+                })
+            }
+        }
     }
 
     fn prof(&self) -> Prof {
@@ -643,10 +732,12 @@ const D65: [f64; 2] = [0.3127, 0.3290];
 /// The viewer's colour conversion from the rendered frame (sRGB-encoded display pixels) to
 /// what the monitor shows (View ▸ Use Display Color Management, View ▸ Simulate Output and
 /// the display profile in Settings ▸ Previews). `None` when nothing changes.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct DisplayColor {
     sim: Option<(Conv, Option<Conv>)>,
     display: Option<Conv>,
+    /// A LUT-based My Custom RGB profile: the whole simulation baked into a 3D LUT.
+    lut: Option<Arc<effectcraft_color::icc::Lut3d>>,
 }
 
 impl DisplayColor {
@@ -669,7 +760,12 @@ impl DisplayColor {
         if !dcm {
             // Without display colour management the working space's numbers go to the screen.
             let raw = Conv::new(src, Prof::of(ws, linear));
-            return Some(DisplayColor { sim: None, display: Some(raw) });
+            return Some(DisplayColor { sim: None, display: Some(raw), lut: None });
+        }
+        if sim.profile == SimProfile::MyCustom
+            && let Some(lut) = lut_simulation(custom, src, display, sim.preserve_rgb)
+        {
+            return Some(DisplayColor { sim: None, display: None, lut: Some(lut) });
         }
         let out = match sim.profile {
             SimProfile::MyCustom => Some(custom.prof()),
@@ -686,7 +782,7 @@ impl DisplayColor {
             )
         });
         let display = (display != source).then(|| Conv::new(src, Prof::of(display, false)));
-        (sim.is_some() || display.is_some()).then_some(DisplayColor { sim, display })
+        (sim.is_some() || display.is_some()).then_some(DisplayColor { sim, display, lut: None })
     }
 
     /// The conversion a session's viewer uses.
@@ -706,8 +802,16 @@ impl DisplayColor {
         )
     }
 
+    /// Whether the simulation runs a LUT-based ICC profile (baked into a 3D LUT).
+    pub fn is_lut(&self) -> bool {
+        self.lut.is_some()
+    }
+
     /// One straight colour (0..1 floats).
     pub fn apply_straight(&self, c: [f32; 3]) -> [f32; 3] {
+        if let Some(l) = &self.lut {
+            return l.eval(c.map(|v| v.clamp(0.0, 1.0))).map(|v| v.clamp(0.0, 1.0));
+        }
         let c = match &self.sim {
             // Through the output's 8-bit encoding (clipped and quantised like the real output),
             // then shown on the display: converted from the output profile, or — Preserve RGB —
@@ -737,6 +841,53 @@ impl DisplayColor {
             }
         });
     }
+}
+
+/// Grid points per axis of a baked LUT simulation (a profile without `B2A0` is inverted
+/// numerically per point, so its grid is coarser).
+const SIM_LUT_SIZE: usize = 33;
+const SIM_LUT_SIZE_INVERTED: usize = 17;
+
+/// My Custom RGB with a LUT-based profile: rendered colours (`src`) → the device's numbers
+/// (`B2A0`, or `A2B0` inverted), clipped and quantised to 8 bits like the real output → what the
+/// device shows (`A2B0`; Preserve RGB: the numbers taken as sRGB) → the display. Baked once per
+/// profile and conversion (the last one is cached).
+fn lut_simulation(custom: &CustomRgb, src: Prof, display: ColorSpace, preserve: bool) -> Option<Arc<effectcraft_color::icc::Lut3d>> {
+    type Cache = Option<(u64, Arc<effectcraft_color::icc::Lut3d>)>;
+    static CACHE: std::sync::Mutex<Cache> = std::sync::Mutex::new(None);
+    custom.icc_lut.0.as_ref()?;
+    let key = {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (custom.icc_lut.hash(), format!("{src:?}{display:?}{preserve}")).hash(&mut h);
+        h.finish()
+    };
+    if let Some((k, l)) = CACHE.lock().ok()?.as_ref()
+        && *k == key
+    {
+        return Some(l.clone());
+    }
+    let prof = custom.icc_lut.profile()?;
+    let to_d50 = space::mul(&space::bradford(D65, effectcraft_color::icc::D50), &src.xyz);
+    let from_d50 = space::bradford(effectcraft_color::icc::D50, D65);
+    let disp = Prof::of(display, false);
+    let disp_inv = space::invert(&disp.xyz);
+    let srgb_to_display = Conv::new(Prof::new(P709, Curve::Srgb), disp);
+    let size = if prof.b2a.is_some() { SIM_LUT_SIZE } else { SIM_LUT_SIZE_INVERTED };
+    let lut = effectcraft_color::icc::Lut3d::bake(size, |c| {
+        let lin = c.map(|v| src.curve.decode(v as f32) as f64);
+        let dev = prof.from_xyz(space::mul_vec(&to_d50, lin), c).map(|v| (v.clamp(0.0, 1.0) * 255.0).round() / 255.0);
+        if preserve {
+            return srgb_to_display.apply(dev.map(|v| v as f32)).map(|v| v as f64);
+        }
+        let xyz = space::mul_vec(&from_d50, prof.to_xyz(dev));
+        space::mul_vec(&disp_inv, xyz).map(|v| disp.curve.encode(v as f32) as f64)
+    });
+    let lut = Arc::new(lut);
+    if let Ok(mut c) = CACHE.lock() {
+        *c = Some((key, lut.clone()));
+    }
+    Some(lut)
 }
 
 // ---------------------------------------------------------------- snapshot

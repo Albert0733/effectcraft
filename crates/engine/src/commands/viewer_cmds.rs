@@ -346,7 +346,13 @@ fn simulate_output(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 fn custom_rgb_json(c: &CustomRgb) -> Value {
-    serde_json::to_value(c).unwrap_or_default()
+    let mut v = serde_json::to_value(c).unwrap_or_default();
+    // A LUT-based profile's tables stay in Settings; the reply says it is one.
+    if let Some(o) = v.as_object_mut() {
+        o.remove("iccLut");
+        o.insert("lutProfile".into(), json!(!c.icc_lut.is_empty()));
+    }
+    v
 }
 
 /// View ▸ Simulate Output ▸ My Custom RGB…: define the custom output device (kept in Settings)
@@ -367,6 +373,7 @@ fn custom_rgb(s: &mut Session, p: &Value) -> Result<Value> {
                 _ => (1.0, false),
             };
             c.icc.clear();
+            c.icc_lut = Default::default();
             c.name = format!("Custom ({})", prof.label());
         }
     }
@@ -380,22 +387,33 @@ fn custom_rgb(s: &mut Session, p: &Value) -> Result<Value> {
             }
         }
     };
+    let mut typed = false;
     for (k, slot) in [("red", &mut c.red), ("green", &mut c.green), ("blue", &mut c.blue), ("white", &mut c.white)] {
         if let Some(v) = pt(k)? {
+            typed |= *slot != v;
             *slot = v;
         }
     }
     if let Some(g) = f_p(p, "gamma") {
+        typed |= c.gamma != g;
         c.gamma = g;
     }
     if let Some(b) = b_p(p, "srgbCurve") {
+        typed |= c.srgb_curve != b;
         c.srgb_curve = b;
+    }
+    // Typed-in numbers replace a LUT-based profile's tables (they only approximated it).
+    if typed {
+        c.icc_lut = Default::default();
     }
     if let Some(n) = str_p(p, "name").map(str::trim).filter(|n| !n.is_empty()) {
         c.name = n.to_string();
     }
     match str_p(p, "icc").map(str::trim) {
-        Some("") => c.icc.clear(),
+        Some("") => {
+            c.icc.clear();
+            c.icc_lut = Default::default();
+        }
         Some(path) if path != c.icc || b_p(p, "reload") == Some(true) => {
             let bytes = s.services.read_file(path).map_err(|e| EngineError::Other(format!("cannot read {path}: {e}")))?;
             let mut from = CustomRgb::from_icc(&bytes, path).map_err(|e| bad(cmd, format!("{path}: {e}")))?;
@@ -475,7 +493,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "My Custom RGB...",
             [],
             None,
-            "{name?, red?/green?/blue?/white?: [x, y] (CIE xy), gamma?, srgbCurve?: bool, icc?: path (RGB ICC profile; read when it changes, \"\" clears), reload?, from?: a Simulate Output profile to start from, reset?, preserveRgb?, apply?: bool (default true: simulate it)} → the definition (kept in Settings)",
+            "{name?, red?/green?/blue?/white?: [x, y] (CIE xy), gamma?, srgbCurve?: bool, icc?: path (RGB ICC profile, matrix/TRC or LUT-based A2B0: read when it changes, \"\" clears; a LUT profile simulates through its tables, `lutProfile` in the reply; typed-in numbers replace it), reload?, from?: a Simulate Output profile to start from, reset?, preserveRgb?, apply?: bool (default true: simulate it)} → the definition (kept in Settings)",
             always,
             custom_rgb
         ),

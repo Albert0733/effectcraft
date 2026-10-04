@@ -17,7 +17,6 @@ use std::io::{Seek, SeekFrom, Write};
 use effectcraft_project::Comp;
 use effectcraft_project::render_queue::{AudioFormat, Channels};
 use effectcraft_time::{TICKS_PER_SECOND, Tick};
-use rayon::prelude::*;
 
 use crate::encode::{mix, pcm_bytes};
 use crate::{Cx, Report, Result, State, batch_size, io, wants_audio};
@@ -134,9 +133,9 @@ pub(crate) fn opus_encoder(job: &Cx) -> effectcraft_opusenc::OpusEncoder {
     effectcraft_opusenc::OpusEncoder::with_application(channels, job.output.opus_bitrate_kbps.clamp(6, 510) * 1000, app)
 }
 
-pub(crate) fn webm(job: &Cx, comp: &Comp, w: u32, h: u32, st: &mut State) -> Result<Report> {
+pub(crate) async fn webm(job: &Cx<'_>, comp: &Comp, w: u32, h: u32, st: &mut State<'_>) -> Result<Report> {
     if job.output.webm_codec == effectcraft_project::render_queue::WebmVideoCodec::Av1 {
-        return crate::webm_av1::webm_av1(job, comp, w, h, st);
+        return crate::webm_av1::webm_av1(job, comp, w, h, st).await;
     }
     let rate = job.settings.rate(comp);
     let alpha = job.output.channels == Channels::Rgba;
@@ -260,7 +259,7 @@ pub(crate) fn webm(job: &Cx, comp: &Comp, w: u32, h: u32, st: &mut State) -> Res
         // Frames render in parallel; the VP9 streams (inter-coded) encode in order, colour and
         // alpha side by side.
         let pixels: Vec<Vec<u8>> =
-            (i..end).into_par_iter().map(|k| job.pixels(&job.frame(comp, k), comp, if alpha { Channels::Rgba } else { colour_channels }, w, h)).collect();
+            job.frames(comp, (i..end).collect(), |_, img| job.pixels(&img, comp, if alpha { Channels::Rgba } else { colour_channels }, w, h)).await;
         let mut frames: Vec<Frame> = Vec::with_capacity(pixels.len());
         for (j, px) in pixels.iter().enumerate() {
             let (color, a) = rayon::join(

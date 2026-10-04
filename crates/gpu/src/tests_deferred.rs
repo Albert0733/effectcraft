@@ -16,7 +16,7 @@ use crate::tests::{Pattern, Scene, diff, n, set, tolerance, v3};
 
 /// The device, held exclusively: deferred state is per device and a frame renders at a time
 /// (a frame worker renders one frame at a time too).
-fn deferred_gpu() -> Option<(&'static Gpu, std::sync::MutexGuard<'static, ()>)> {
+pub(crate) fn deferred_gpu() -> Option<(&'static Gpu, std::sync::MutexGuard<'static, ()>)> {
     static G: OnceLock<Option<Gpu>> = OnceLock::new();
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let g = G.get_or_init(|| pollster::block_on(Gpu::request_deferred()).map_err(|e| eprintln!("deferred gpu tests skipped: {e}")).ok()).as_ref()?;
@@ -25,7 +25,7 @@ fn deferred_gpu() -> Option<(&'static Gpu, std::sync::MutexGuard<'static, ()>)> 
 
 /// Footage with GPU effects around a CPU-only one, a solid with Glow, and a precomp whose
 /// layer is blurred inside and outside (a chain whose input is another chain's result).
-fn scene() -> Scene {
+pub(crate) fn scene() -> Scene {
     let cpu_only = "ec.generate.fractal";
     assert!(!effectcraft_effects::GPU_EFFECTS.contains(&cpu_only));
     let mut s = Scene::new(BitDepth::Bpc32);
@@ -56,7 +56,7 @@ fn scene() -> Scene {
 }
 
 /// Render in passes with deferred readbacks; returns the frame and the number of passes.
-fn render_passes(g: &Gpu, s: &Scene, opts: RenderOpts, cache: &LayerCache, t: Tick) -> (effectcraft_raster::Image, usize) {
+pub(crate) fn render_passes(g: &Gpu, s: &Scene, opts: RenderOpts, cache: &LayerCache, t: Tick) -> (effectcraft_raster::Image, usize) {
     cache.set_gate(g.miss_gate());
     let mut r = Renderer::new(&s.p, &Pattern, opts);
     r.accel = Some(g);

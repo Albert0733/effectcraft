@@ -38,7 +38,7 @@ extern "C" {
     #[wasm_bindgen(js_name = frameWorkerPost)]
     fn frame_worker_post(index: u32, msg: &JsValue, transfer: &js_sys::Array);
     #[wasm_bindgen(js_name = hasWebGpu)]
-    fn has_web_gpu() -> bool;
+    pub(crate) fn has_web_gpu() -> bool;
 }
 
 /// One frame worker as the page sees it.
@@ -134,7 +134,10 @@ impl WebFrames {
                 frame_worker_post(index, &obj(&[("type", "frame".into()), ("json", t.into())]), &js_sys::Array::new());
             }
             let disk = job.disk_key.map(|k| format!("{k:032x}"));
-            let req = FrameMsg::Render { id, revision: job.revision, comp: job.comp, time: job.t, opts: Box::new(job.opts), disk };
+            // Layer buffers from the disk cache: what to read before rendering.
+            let layers = crate::diskcache::active();
+            let prefetch = crate::diskcache::layer_prefetch(64);
+            let req = FrameMsg::Render { id, revision: job.revision, comp: job.comp, time: job.t, opts: Box::new(job.opts), disk, layers, prefetch };
             frame_worker_post(
                 index,
                 &obj(&[("type", "frame".into()), ("json", serde_json::to_string(&req).unwrap_or_default().into())]),
@@ -210,7 +213,8 @@ fn on_message(index: u32, json: JsValue, bytes: JsValue, error: JsValue) {
         }
         let reply: FrameReply = serde_json::from_str(&json.as_string()?).ok()?;
         match reply {
-            FrameReply::Frame { id, width, height, ms, passes, gpu } => {
+            FrameReply::Frame { id, width, height, ms, passes, gpu, layer_misses, layer_hits } => {
+                crate::diskcache::note_layers(&layer_misses, &layer_hits);
                 let (_, d) = w.busy.take_if(|b| b.0 == id)?;
                 let rgba = bytes.dyn_into::<js_sys::Uint8Array>().map(|b| b.to_vec()).unwrap_or_default();
                 st.rendered += 1;
@@ -231,9 +235,9 @@ fn on_message(index: u32, json: JsValue, bytes: JsValue, error: JsValue) {
                 w.mirror.reset();
                 None
             }
-            FrameReply::Stored { key, bytes } => {
+            FrameReply::Stored { key, bytes, layer } => {
                 if let Ok(k) = u128::from_str_radix(&key, 16) {
-                    crate::diskcache::stored(k, bytes);
+                    crate::diskcache::stored(k, bytes, layer);
                 }
                 None
             }
@@ -410,7 +414,9 @@ fn post_reply(r: &FrameReply, px: Option<&[u8]>) {
 }
 
 fn new_server() -> FrameServer {
-    FrameServer::new(crate::worker::pool(), Some(Arc::new(effectcraft_expr::Expressions)))
+    let mut s = FrameServer::new(crate::worker::pool(), Some(Arc::new(effectcraft_expr::Expressions)));
+    s.set_layer_store(Some(Arc::new(effectcraft_engine::render::PrefetchStore::default())));
+    s
 }
 
 /// Set up a frame worker (called once by `web/worker.js` after `workerInit`): its frame
@@ -450,9 +456,14 @@ pub async fn worker_frame(json: String) {
             return;
         }
     };
-    let disk = match &msg {
-        FrameMsg::Render { disk, .. } => disk.clone(),
-        _ => None,
+    let (disk, layers) = match &msg {
+        FrameMsg::Render { disk, layers, prefetch, .. } => {
+            if *layers {
+                prefetch_layers(prefetch).await;
+            }
+            (disk.clone(), *layers)
+        }
+        _ => (None, false),
     };
     let mut replies = SERVER.with(|c| c.borrow_mut().get_or_insert_with(new_server).handle(msg));
     while SERVER.with(|c| c.borrow().as_ref().is_some_and(|s| s.waiting())) {
@@ -466,9 +477,41 @@ pub async fn worker_frame(json: String) {
             let entry = effectcraft_engine::render::disk_cache::frame_entry(*width, *height, px);
             let name = format!("{key}.ecc");
             match JsFuture::from(crate::diskcache::cache_write(&name, js_sys::Uint8Array::from(&entry[..]))).await {
-                Ok(n) => post_reply(&FrameReply::Stored { key: key.clone(), bytes: n.as_f64().unwrap_or(entry.len() as f64) as u64 }, None),
+                Ok(n) => post_reply(&FrameReply::Stored { key: key.clone(), bytes: n.as_f64().unwrap_or(entry.len() as f64) as u64, layer: false }, None),
                 Err(e) => log::warn!("frame worker: disk cache write failed: {e:?}"),
             }
+        }
+    }
+    if layers {
+        store_layers().await;
+    }
+}
+
+/// Read the layer entries the page named into the server's store (those it lacks).
+async fn prefetch_layers(keys: &[String]) {
+    let Some(store) = SERVER.with(|c| c.borrow().as_ref().and_then(|s| s.layer_store().cloned())) else { return };
+    for k in keys {
+        let Ok(key) = u128::from_str_radix(k, 16) else { continue };
+        if store.has(key) {
+            continue;
+        }
+        let name = crate::diskcache::name_of(effectcraft_engine::render::disk_cache::Kind::Layer, key);
+        if let Ok(b) = JsFuture::from(crate::diskcache::cache_read(&name)).await
+            && let Ok(b) = b.dyn_into::<js_sys::Uint8Array>()
+        {
+            store.provide(key, &b.to_vec());
+        }
+    }
+}
+
+/// Write the slow layer buffers of the frame just rendered and report them.
+async fn store_layers() {
+    let Some(store) = SERVER.with(|c| c.borrow().as_ref().and_then(|s| s.layer_store().cloned())) else { return };
+    for (key, entry) in store.take_writes() {
+        let name = crate::diskcache::name_of(effectcraft_engine::render::disk_cache::Kind::Layer, key);
+        match JsFuture::from(crate::diskcache::cache_write(&name, js_sys::Uint8Array::from(&entry[..]))).await {
+            Ok(n) => post_reply(&FrameReply::Stored { key: format!("{key:032x}"), bytes: n.as_f64().unwrap_or(entry.len() as f64) as u64, layer: true }, None),
+            Err(e) => log::warn!("frame worker: layer cache write failed: {e:?}"),
         }
     }
 }

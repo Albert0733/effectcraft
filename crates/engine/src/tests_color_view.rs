@@ -286,3 +286,69 @@ fn my_custom_rgb_simulation() {
     assert_eq!(s.prefs.custom_rgb, crate::viewer::CustomRgb::default());
     assert_eq!(s.execute("view.displayColor", json!({})).unwrap()["customRgb"]["gamma"], json!(2.2));
 }
+
+/// My Custom RGB from a LUT-based (`A2B0`) ICC profile: the viewer runs the profile's tables
+/// (baked into a 3D LUT) and matches the same device described as a matrix/TRC profile.
+#[test]
+fn my_custom_rgb_lut_profiles() {
+    use effectcraft_color::icc::{D50, LutKind, write_lut_profile};
+    use effectcraft_color::space;
+    let mut s = session();
+    s.config = Some(std::sync::Arc::new(crate::config::MemoryConfig::default()));
+    s.execute("file.projectSettings", json!({"workingSpace": "srgb"})).unwrap();
+    // The device: P3 primaries, D65 white, gamma 2.4.
+    let p3 = [[0.680, 0.320], [0.265, 0.690], [0.150, 0.060]];
+    let d65 = [0.3127, 0.3290];
+    let m = space::mul(&space::bradford(d65, D50), &space::rgb_to_xyz(p3, d65));
+    let mi = space::invert(&m);
+    let to = move |c: [f64; 3]| space::mul_vec(&m, c.map(|v| v.powf(2.4)));
+    let from = move |x: [f64; 3]| space::mul_vec(&mi, x).map(|v| v.clamp(0.0, 1.0).powf(1.0 / 2.4));
+    s.execute(
+        "view.customRgb",
+        json!({"name": "Matrix", "red": p3[0], "green": p3[1], "blue": p3[2], "white": d65, "gamma": 2.4, "srgbCurve": false, "preserveRgb": false}),
+    )
+    .unwrap();
+    // (Inside both gamuts, away from the edges where a coarse B2A0 grid bends.)
+    let colors = [px(128, 90, 200), px(90, 170, 110), px(225, 225, 225), px(60, 60, 60), px(200, 120, 100)];
+    let reference: Vec<Vec<[u8; 4]>> = colors
+        .iter()
+        .map(|c| {
+            let mut c = c.clone();
+            DisplayColor::of(&s).unwrap().apply(&mut c);
+            c
+        })
+        .collect();
+    let dir = std::env::temp_dir();
+    for (k, (kind, b2a)) in [(LutKind::Lut16, true), (LutKind::AToB, true), (LutKind::Lut8, true), (LutKind::Lut16, false)].into_iter().enumerate() {
+        let icc = write_lut_profile("LUT Display", kind, 33, &to, if b2a { Some(&from) } else { None });
+        let path = dir.join(format!("ec-lut-{}-{k}.icc", std::process::id()));
+        std::fs::write(&path, &icc).unwrap();
+        let r = s.execute("view.customRgb", json!({"icc": path.to_string_lossy(), "preserveRgb": false})).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!((r["name"].as_str(), r["lutProfile"].as_bool()), (Some("LUT Display"), Some(true)), "{r}");
+        assert!(r.get("iccLut").is_none());
+        // The numbers approximate the device.
+        let c = s.prefs.custom_rgb.clone();
+        assert!((c.red[0] - 0.680).abs() < 0.01 && (c.green[1] - 0.690).abs() < 0.01, "{kind:?} {c:?}");
+        assert!((c.gamma - 2.4).abs() < 0.1, "{kind:?} {}", c.gamma);
+        let dc = DisplayColor::of(&s).unwrap();
+        assert!(dc.is_lut());
+        let tol = if kind == LutKind::Lut8 { 6 } else { 4 };
+        for (c, want) in colors.iter().zip(&reference) {
+            let mut got = c.clone();
+            dc.apply(&mut got);
+            let d = (0..3).map(|i| (got[0][i] as i32 - want[0][i] as i32).abs()).max().unwrap();
+            assert!(d <= tol, "{kind:?} b2a {b2a}: {c:?} → {got:?}, matrix {want:?}");
+        }
+    }
+    // Kept in Settings (base64) and restored with the preferences.
+    let saved = s.config.as_ref().unwrap().read(crate::prefs::PREFS_FILE).unwrap();
+    assert!(saved.contains("\"iccLut\""));
+    let back: crate::viewer::CustomRgb = serde_json::from_value(serde_json::from_str::<serde_json::Value>(&saved).unwrap()["customRgb"].clone()).unwrap();
+    assert_eq!(back, s.prefs.custom_rgb);
+    assert!(format!("{back:?}").len() < 400);
+    // Typed-in numbers replace the tables.
+    s.execute("view.customRgb", json!({"gamma": 2.2})).unwrap();
+    assert!(s.prefs.custom_rgb.icc_lut.is_empty());
+    assert!(!DisplayColor::of(&s).unwrap().is_lut());
+}

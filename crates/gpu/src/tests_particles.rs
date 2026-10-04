@@ -10,7 +10,7 @@ use effectcraft_keyframe::Value;
 use crate::Gpu;
 use crate::tests::{gpu, n};
 
-struct Host(&'static Gpu);
+pub(crate) struct Host(pub(crate) &'static Gpu);
 
 impl EffectHost for Host {
     fn layer(&self, _id: u64, _masks_and_effects: bool) -> Option<LayerPixels> {
@@ -24,7 +24,7 @@ impl EffectHost for Host {
     }
 }
 
-fn params(id: &str, vals: &[(&str, Value)]) -> Params {
+pub(crate) fn params(id: &str, vals: &[(&str, Value)]) -> Params {
     let spec = effectcraft_effects::find(id).unwrap();
     let size = [320.0, 240.0];
     let mut p = Params { values: spec.params.iter().map(|ps| (ps.id.to_string(), effectcraft_effects::default_value(ps, size))).collect() };
@@ -47,7 +47,7 @@ fn states(id: &str, p: &Params, t: f64, host: &Host) -> (Vec<SimParticle>, Vec<S
 
 /// Same ids alive (up to `id_slack` particles dying a step apart), positions within `tol`
 /// (world units) for 99 % of them and on average within `tol / 10`.
-fn agree(label: &str, cpu: &[SimParticle], gpu: &[SimParticle], tol: f32, id_slack: usize) {
+pub(crate) fn agree(label: &str, cpu: &[SimParticle], gpu: &[SimParticle], tol: f32, id_slack: usize) {
     assert!(cpu.len() > 20, "{label}: the scene has particles ({})", cpu.len());
     let gi: std::collections::HashMap<u32, &SimParticle> = gpu.iter().map(|q| (q.id, q)).collect();
     let mut missing = 0;

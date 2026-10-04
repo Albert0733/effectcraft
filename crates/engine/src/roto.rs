@@ -277,9 +277,14 @@ struct Work {
     task: RotoTask,
 }
 
-/// Renders the effect's input frames for a worker, keeping the last few.
+/// Renders the effect's input frames for a worker, keeping the last few. With a browser job
+/// worker's GPU (deferred readbacks), [`FrameSource::prefetch`] renders the frames a step
+/// will read in passes beforehand; [`FrameSource::get`] renders on the CPU what it lacks.
 pub(crate) struct FrameSource<'a> {
     r: Renderer<'a>,
+    accel: Option<&'a dyn effectcraft_render::Accelerator>,
+    /// Frames in `memo`, oldest first.
+    order: std::collections::VecDeque<i64>,
     ctx0: EvalCtx<'a>,
     comp: &'a effectcraft_project::Comp,
     layer: &'a Layer,
@@ -305,15 +310,55 @@ impl<'a> FrameSource<'a> {
         r.expr = expr;
         r.cache = Some(cache);
         let ctx0 = EvalCtx { expr, ..EvalCtx::new(project, cid, comp, Tick::ZERO) };
-        FrameSource { r, ctx0, comp, layer, index, size, memo: HashMap::new() }
+        FrameSource { r, accel: None, order: Default::default(), ctx0, comp, layer, index, size, memo: HashMap::new() }
+    }
+
+    /// Render with `accel` (deferred readbacks: see [`FrameSource::prefetch`]).
+    pub(crate) fn with_accel(mut self, accel: Option<&'a dyn effectcraft_render::Accelerator>) -> Self {
+        self.accel = accel;
+        self.r.opts = crate::offload::analysis_opts(accel);
+        self
+    }
+
+    /// Render frames `fs` (those not kept yet) in passes on the GPU, so the step that reads
+    /// them finds them ([`FrameSource::get`] can't wait for the GPU).
+    pub(crate) async fn prefetch(&mut self, fs: &[i64]) {
+        let Some(a) = self.accel else { return };
+        for &f in fs {
+            if self.memo.contains_key(&f) {
+                continue;
+            }
+            let this = &*self;
+            let img = crate::offload::in_passes(Some(a), |acc| this.render(f, &this.r.with_accel(acc))).await;
+            if let Some(img) = img {
+                self.keep(f, img);
+            }
+        }
+    }
+
+    fn keep(&mut self, f: i64, img: Arc<Image>) {
+        while self.order.len() >= 8 {
+            if let Some(old) = self.order.pop_front() {
+                self.memo.remove(&old);
+            }
+        }
+        self.order.push_back(f);
+        self.memo.insert(f, img);
     }
 
     pub(crate) fn get(&mut self, f: i64) -> Option<Arc<Image>> {
         if let Some(i) = self.memo.get(&f) {
             return Some(i.clone());
         }
+        // Not prefetched: the CPU (a pass of the GPU could only return placeholders here).
+        let img = self.render(f, &self.r.with_accel(None))?;
+        self.keep(f, img.clone());
+        Some(img)
+    }
+
+    fn render(&self, f: i64, r: &Renderer) -> Option<Arc<Image>> {
         let t = comp_time_of(self.comp, self.layer, f);
-        let buf = self.r.layer_input(&self.ctx0.at(t), self.layer, self.index)?;
+        let buf = r.layer_input(&self.ctx0.at(t), self.layer, self.index)?;
         let buf = if (buf.scale - 1.0).abs() > 1e-9 && buf.scale > 0.0 {
             let w = (buf.img.width as f64 / buf.scale).round().max(1.0) as u32;
             let h = (buf.img.height as f64 / buf.scale).round().max(1.0) as u32;
@@ -325,17 +370,14 @@ impl<'a> FrameSource<'a> {
         } else {
             (*buf).clone()
         };
-        let img = Arc::new(fx::layer_grid(&buf, self.size));
-        if self.memo.len() > 4 {
-            self.memo.clear();
-        }
-        self.memo.insert(f, img.clone());
-        Some(img)
+        Some(Arc::new(fx::layer_grid(&buf, self.size)))
     }
 }
 
-fn run_work(w: Work, shared: &RotoShared) {
+async fn run_work(w: Work, shared: &RotoShared) {
     let t0 = web_time::Instant::now();
+    // A browser job worker's GPU (deferred readbacks): input frames render in passes.
+    let accel = crate::offload::job_accel();
     let fail = |msg: &str| {
         let mut s = lock(&shared.state);
         s.error = Some(msg.to_string());
@@ -343,7 +385,8 @@ fn run_work(w: Work, shared: &RotoShared) {
     };
     let Some(comp) = w.project.comp(w.comp) else { return fail("composition missing") };
     let Some(layer) = comp.layer(w.layer) else { return fail("layer missing") };
-    let mut src = FrameSource::new(&w.project, w.footage.as_ref(), w.expr.as_deref(), &w.cache, w.comp, comp, layer, w.effect_index, w.size);
+    let mut src =
+        FrameSource::new(&w.project, w.footage.as_ref(), w.expr.as_deref(), &w.cache, w.comp, comp, layer, w.effect_index, w.size).with_accel(accel.as_deref());
     {
         let mut s = lock(&shared.state);
         s.task = Some(w.task);
@@ -359,6 +402,8 @@ fn run_work(w: Work, shared: &RotoShared) {
             s.finished = true;
             return;
         }
+        // The frame and its neighbours (what a step reads), on the GPU.
+        src.prefetch(&[*f, f - 1, f + 1]).await;
         let mut get = |g: i64| src.get(g);
         let ok = match w.task {
             RotoTask::Propagate => chain.ensure(*f, &mut get, &cancel).is_some(),
@@ -516,11 +561,19 @@ impl Session {
         let wait = wait || cfg!(target_arch = "wasm32");
         let shared = Arc::new(RotoShared::default());
         let thread = if wait {
-            run_work(work, &shared);
+            crate::offload::run_or_queue({
+                let sh = shared.clone();
+                async move { run_work(work, &sh).await }
+            });
             None
         } else {
             let sh = shared.clone();
-            Some(std::thread::Builder::new().name("roto".into()).spawn(move || run_work(work, &sh)).map_err(|e| e.to_string())?)
+            Some(
+                std::thread::Builder::new()
+                    .name("roto".into())
+                    .spawn(move || effectcraft_render::passes::block_on(run_work(work, &sh)))
+                    .map_err(|e| e.to_string())?,
+            )
         };
         self.roto_job = Some(RotoJob { shared, thread, comp, layer, effect, task, strokes });
         self.events.push(Event::ProjectChanged { revision: self.revision });

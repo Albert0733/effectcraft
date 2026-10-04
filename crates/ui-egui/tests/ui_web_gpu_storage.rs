@@ -79,6 +79,8 @@ impl RemoteFrames for GpuWorker {
             time: job.t,
             opts: Box::new(job.opts),
             disk: disk.clone(),
+            layers: false,
+            prefetch: vec![],
         }));
         // The worker awaits its device between passes (`Gpu::settled`); natively a poll.
         while server.waiting() {

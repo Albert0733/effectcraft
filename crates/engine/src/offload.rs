@@ -6,8 +6,10 @@
 //! [`Offload`] (set as [`Session::offload`]) ships a [`WorkerRequest`] — the serialized project,
 //! the footage files it reads and the job — and feeds the worker's [`WorkerReply`]s back into an
 //! [`Inbox`] that the session drains every frame ([`Session::poll_render`],
-//! [`Session::poll_offload`]). The worker side is [`run_request`]: a plain session fed the
-//! project runs the job blocking and reports through a callback.
+//! [`Session::poll_offload`]). The worker side is [`run_request_async`]: a plain session fed the
+//! project runs the job and reports through a callback. With a WebGPU device of the worker's
+//! own (deferred readbacks, `effectcraft_render::passes`) the job's frames render on the GPU in
+//! passes, the job awaiting the device between them; [`run_request`] runs it blocking.
 //!
 //! | Job | Worker runs | Reply applied on the UI thread |
 //! |---|---|---|
@@ -18,6 +20,7 @@
 //! | Roto Brush Freeze | the freeze | the effect group |
 //! | Roto Brush propagation | the propagation | segmentations ([`WorkerReply::Segs`], streamed while it runs) go into the page's segmentation cache |
 //! | 3D Camera Tracker analysis | [`Session::start_camera`] | the effect's property group |
+//! | Content-Aware Fill | the fill ([`crate::commands::content_fill::FillPlan`]) | its PNG files (to the host's storage), then the fill layer (one undo step) |
 //!
 //! Viewer frames go to a separate, long-lived frame worker fed with project diffs
 //! ([`crate::remote`]).
@@ -26,6 +29,8 @@
 //! Queue item being rendered becomes "User Stopped".
 
 use std::cell::{Cell, RefCell};
+use std::future::Future;
+use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -34,6 +39,7 @@ use effectcraft_keyframe::ShapePath;
 use effectcraft_project::render_queue::{RenderQueueItem, RenderStatus};
 use effectcraft_project::tracking::TrackerSettings;
 use effectcraft_project::{ItemId, ItemKind, LayerId, Project, PropGroup, Uid};
+use effectcraft_render::{Accelerator, Backend, RenderOpts};
 use effectcraft_time::Tick;
 use serde::{Deserialize, Serialize};
 
@@ -102,6 +108,11 @@ pub enum WorkerJob {
         method: MaskMethod,
         times: Vec<Tick>,
     },
+    /// Content-Aware Fill: the files go to the host's storage, the plan and their paths come
+    /// back as [`WorkerReply::Fill`].
+    ContentFill {
+        plan: Box<crate::commands::content_fill::FillPlan>,
+    },
 }
 
 impl WorkerJob {
@@ -114,6 +125,7 @@ impl WorkerJob {
             WorkerJob::RotoPropagate { .. } => JobKind::RotoPropagate,
             WorkerJob::Track { .. } => JobKind::Track,
             WorkerJob::MaskTrack { .. } => JobKind::MaskTrack,
+            WorkerJob::ContentFill { .. } => JobKind::ContentFill,
         }
     }
 
@@ -127,6 +139,7 @@ impl WorkerJob {
             | WorkerJob::RotoPropagate { comp, layer, effect, .. } => Some((comp, layer, effect)),
             WorkerJob::Track { comp, layer, tracker, .. } => Some((comp, layer, tracker)),
             WorkerJob::MaskTrack { comp, layer, mask, .. } => Some((comp, layer, mask)),
+            WorkerJob::ContentFill { ref plan } => Some((plan.comp, plan.layer, 0)),
         }
     }
 }
@@ -141,6 +154,7 @@ pub enum JobKind {
     RotoPropagate,
     Track,
     MaskTrack,
+    ContentFill,
 }
 
 impl JobKind {
@@ -154,6 +168,7 @@ impl JobKind {
             JobKind::RotoPropagate => "Roto Brush Propagation",
             JobKind::Track => "Analyze Track",
             JobKind::MaskTrack => "Track Mask",
+            JobKind::ContentFill => "Content-Aware Fill",
         }
     }
 }
@@ -185,6 +200,12 @@ pub enum WorkerReply {
     /// Roto Brush segmentations computed so far (propagation), not sent before.
     Segs {
         segs: Vec<SegData>,
+    },
+    /// A Content-Aware Fill finished: its plan and the PNG files written (already in the
+    /// host's storage).
+    Fill {
+        plan: Box<crate::commands::content_fill::FillPlan>,
+        files: Vec<String>,
     },
     Failed {
         error: String,
@@ -288,11 +309,90 @@ pub fn report(done: u64, total: u64) {
     });
 }
 
-fn with_hook<R>(hook: Box<dyn FnMut(u64, u64)>, f: impl FnOnce() -> R) -> R {
+/// Run `f` (a future: an analysis awaited to its end) with `hook` receiving its progress.
+async fn with_hook<R>(hook: Box<dyn FnMut(u64, u64)>, f: impl Future<Output = R>) -> R {
     HOOK.with(|h| *h.borrow_mut() = Some(hook));
-    let r = f();
+    let r = f.await;
     HOOK.with(|h| *h.borrow_mut() = None);
     r
+}
+
+// ---------------------------------------------------------------- GPU in job workers
+
+/// A boxed analysis future (see [`run_or_queue`]).
+type Queued = Pin<Box<dyn Future<Output = ()>>>;
+
+thread_local! {
+    /// The job worker's accelerator while it runs a request: a WebGPU device with deferred
+    /// readbacks (see [`job_accel`]).
+    static JOB_ACCEL: RefCell<Option<Arc<dyn Accelerator>>> = const { RefCell::new(None) };
+    /// Analyses started while [`run_request_async`] runs a request on this thread: awaited by it
+    /// (`None`: not inside one, analyses run to completion when started).
+    static QUEUED: RefCell<Option<Vec<Queued>>> = const { RefCell::new(None) };
+}
+
+/// The accelerator analyses render their input frames with: the job worker's GPU while it runs
+/// a request ([`run_request_async`] with a session whose accelerator defers its readbacks).
+/// Elsewhere (the desktop's analysis threads) analyses render on the CPU, as before.
+pub(crate) fn job_accel() -> Option<Arc<dyn Accelerator>> {
+    JOB_ACCEL.with(|a| a.borrow().clone())
+}
+
+/// Render options of an analysis's input frames: 100 %; with an accelerator, the project's
+/// renderer (Mercury GPU Acceleration: its GPU effects on the device; Software Only: the CPU).
+pub(crate) fn analysis_opts(accel: Option<&dyn Accelerator>) -> RenderOpts {
+    RenderOpts { scale: 1.0, backend: if accel.is_some() { Backend::Auto } else { Backend::Cpu }, ..Default::default() }
+}
+
+/// A render in passes ([`effectcraft_render::passes::in_passes`]): its value.
+pub(crate) async fn in_passes<'a, T>(accel: Option<&'a dyn Accelerator>, render: impl FnMut(Option<&'a dyn Accelerator>) -> T) -> T {
+    effectcraft_render::passes::in_passes(accel, render).await.value
+}
+
+/// `work()` while the next frame renders (`fetch`): side by side on the thread pool, or — with
+/// `deferred` readbacks, where a frame renders in passes awaiting the GPU — one after the other.
+pub(crate) async fn join_fetch<R: Send, F: Send, Fut: Future<Output = F>>(
+    deferred: bool,
+    work: impl FnOnce() -> R + Send,
+    fetch: impl FnOnce() -> Fut + Send,
+) -> (R, F) {
+    if deferred {
+        let r = work();
+        return (r, fetch().await);
+    }
+    rayon::join(work, || effectcraft_render::passes::block_on(fetch()))
+}
+
+/// Run an analysis started with `wait`: inside [`run_request_async`] it is queued and awaited
+/// there (its frames may render in passes); anywhere else it runs to completion now.
+pub(crate) fn run_or_queue(f: impl Future<Output = ()> + 'static) {
+    let f: Queued = Box::pin(f);
+    let now = QUEUED.with(|q| match q.borrow_mut().as_mut() {
+        Some(v) => {
+            v.push(f);
+            None
+        }
+        None => Some(f),
+    });
+    if let Some(f) = now {
+        effectcraft_render::passes::block_on(f);
+    }
+}
+
+/// Await the analyses [`run_or_queue`] queued, then let the session apply their results.
+async fn drain(s: &mut Session) {
+    loop {
+        let next = QUEUED.with(|q| q.borrow_mut().as_mut().and_then(|v| (!v.is_empty()).then(|| v.remove(0))));
+        match next {
+            Some(f) => f.await,
+            None => break,
+        }
+    }
+    s.poll_track();
+    s.poll_mask_track();
+    s.poll_warp(false);
+    s.poll_camera(false);
+    s.poll_roto(false);
 }
 
 // ---------------------------------------------------------------- worker side
@@ -303,19 +403,36 @@ pub type Post = Rc<dyn Fn(WorkerReply)>;
 /// Run `req` on `s` (a session with footage, expressions and an exporter, but no project yet),
 /// blocking, reporting through `post`. Always ends with [`WorkerReply::Done`].
 pub fn run_request(s: &mut Session, req: WorkerRequest, post: &Post) {
+    effectcraft_render::passes::block_on(run_request_async(s, req, post));
+}
+
+/// [`run_request`] as a future: with an accelerator whose readbacks are deferred
+/// ([`Session::accel`]: a browser job worker's own WebGPU device) the Render Queue's frames
+/// and the analyses' input frames render on it in passes, awaiting the device between them
+/// (the browser delivers readbacks only while the worker is back in its event loop).
+pub async fn run_request_async(s: &mut Session, req: WorkerRequest, post: &Post) {
+    let accel = s.accel.clone().filter(|a| a.miss_gate().is_some());
+    if let Some(a) = &accel {
+        // Buffers computed from placeholders of a pass that missed are not kept.
+        s.layer_cache.set_gate(a.miss_gate());
+    }
+    JOB_ACCEL.with(|a| *a.borrow_mut() = accel);
+    QUEUED.with(|q| *q.borrow_mut() = Some(vec![]));
     match Project::from_json(&req.project) {
         Ok(p) => {
             s.replace_project(p, None);
-            if let Err(e) = run_job(s, req.job, post.clone()) {
+            if let Err(e) = run_job(s, req.job, post.clone()).await {
                 post(WorkerReply::Failed { error: e });
             }
         }
         Err(e) => post(WorkerReply::Failed { error: format!("project: {e}") }),
     }
+    QUEUED.with(|q| *q.borrow_mut() = None);
+    JOB_ACCEL.with(|a| *a.borrow_mut() = None);
     post(WorkerReply::Done);
 }
 
-fn run_job(s: &mut Session, job: WorkerJob, post: Post) -> Result<(), String> {
+async fn run_job(s: &mut Session, job: WorkerJob, post: Post) -> Result<(), String> {
     let kind = job.kind();
     let target = job.target();
     match job {
@@ -334,50 +451,90 @@ fn run_job(s: &mut Session, job: WorkerJob, post: Post) -> Result<(), String> {
                     post(WorkerReply::Render { state: sh.snapshot() });
                 }
             };
-            crate::render_queue::run_items(s, exporter, items, &shared, &mut |sh| notify(sh, false));
+            crate::render_queue::run_items(s, exporter, items, &shared, &mut |sh| notify(sh, false)).await;
             notify(&shared, true);
             Ok(())
         }
-        WorkerJob::Warp { comp, layer, effect } => analysis(s, kind, target, post, |s| s.start_warp(comp, layer, effect, true).map(|_| ())),
-        WorkerJob::Camera { comp, layer, effect } => analysis(s, kind, target, post, |s| s.start_camera(comp, layer, effect, true).map(|_| ())),
-        WorkerJob::RotoFreeze { comp, layer, effect } => analysis(s, kind, target, post, |s| {
-            s.start_roto(comp, layer, effect, crate::roto::RotoTask::Freeze, crate::roto::Direction::Both, true).map(|_| ())
-        }),
-        WorkerJob::RotoPropagate { comp, layer, effect, direction } => propagate(s, comp, layer, effect, direction, post),
-        WorkerJob::Track { comp, layer, tracker, direction, settings, points, times } => analysis(s, kind, target, post, |s| {
-            let work = crate::tracking::Work {
-                project: s.project.clone(),
-                footage: s.footage.clone(),
-                expr: s.expr.clone(),
-                cache: s.layer_cache.clone(),
-                comp,
-                layer,
-                settings,
-                points,
-                times,
-            };
-            s.start_track(work, tracker, direction, true)
-        }),
-        WorkerJob::MaskTrack { comp, layer, mask, direction, path, method, times } => analysis(s, kind, target, post, |s| {
-            let work = crate::mask_track::MaskWork {
-                project: s.project.clone(),
-                footage: s.footage.clone(),
-                expr: s.expr.clone(),
-                cache: s.layer_cache.clone(),
-                comp,
-                layer,
-                path,
-                method,
-                times,
-            };
-            s.start_mask_track(work, mask, direction, true)
-        }),
+        WorkerJob::Warp { comp, layer, effect } => analysis(s, kind, target, post, |s| s.start_warp(comp, layer, effect, true).map(|_| ())).await,
+        WorkerJob::Camera { comp, layer, effect } => analysis(s, kind, target, post, |s| s.start_camera(comp, layer, effect, true).map(|_| ())).await,
+        WorkerJob::RotoFreeze { comp, layer, effect } => {
+            analysis(s, kind, target, post, |s| {
+                s.start_roto(comp, layer, effect, crate::roto::RotoTask::Freeze, crate::roto::Direction::Both, true).map(|_| ())
+            })
+            .await
+        }
+        WorkerJob::RotoPropagate { comp, layer, effect, direction } => propagate(s, comp, layer, effect, direction, post).await,
+        WorkerJob::ContentFill { plan } => fill(s, *plan, post).await,
+        WorkerJob::Track { comp, layer, tracker, direction, settings, points, times } => {
+            analysis(s, kind, target, post, |s| {
+                let work = crate::tracking::Work {
+                    project: s.project.clone(),
+                    footage: s.footage.clone(),
+                    expr: s.expr.clone(),
+                    cache: s.layer_cache.clone(),
+                    comp,
+                    layer,
+                    settings,
+                    points,
+                    times,
+                };
+                s.start_track(work, tracker, direction, true)
+            })
+            .await
+        }
+        WorkerJob::MaskTrack { comp, layer, mask, direction, path, method, times } => {
+            analysis(s, kind, target, post, |s| {
+                let work = crate::mask_track::MaskWork {
+                    project: s.project.clone(),
+                    footage: s.footage.clone(),
+                    expr: s.expr.clone(),
+                    cache: s.layer_cache.clone(),
+                    comp,
+                    layer,
+                    path,
+                    method,
+                    times,
+                };
+                s.start_mask_track(work, mask, direction, true)
+            })
+            .await
+        }
     }
+}
+
+/// Content-Aware Fill in a worker: the layer's frames render on the worker's GPU (in passes),
+/// the files are written through the session's services (the browser: back to the page's
+/// storage) and the plan comes back for the page to add the fill layer.
+async fn fill(s: &mut Session, plan: crate::commands::content_fill::FillPlan, post: Post) -> Result<(), String> {
+    let p = post.clone();
+    let mut last = None::<web_time::Instant>;
+    let mut progress = move |done: u64, total: u64| {
+        if last.is_none_or(|t: web_time::Instant| t.elapsed().as_millis() >= 100) {
+            last = Some(web_time::Instant::now());
+            p(WorkerReply::Progress { done, total });
+        }
+        true
+    };
+    let accel = job_accel();
+    let files = crate::commands::content_fill::run_plan(
+        &plan,
+        &s.project,
+        s.footage.as_ref(),
+        s.expr.as_deref(),
+        &s.layer_cache,
+        s.services.as_ref(),
+        accel.as_deref(),
+        &mut progress,
+        &mut |_| {},
+    )
+    .await?;
+    post(WorkerReply::Fill { plan: Box::new(plan), files });
+    Ok(())
 }
 
 /// Roto Brush propagation in a worker: the segmentations stream back (at most every 250 ms)
 /// as they are computed, so stopping the job keeps what was propagated.
-fn propagate(s: &mut Session, comp: ItemId, layer: LayerId, effect: Uid, dir: crate::roto::Direction, post: Post) -> Result<(), String> {
+async fn propagate(s: &mut Session, comp: ItemId, layer: LayerId, effect: Uid, dir: crate::roto::Direction, post: Post) -> Result<(), String> {
     let keys: Vec<u64> = s.roto_chain(comp, layer, effect).map(|c| c.keys.values().copied().collect()).ok_or("no Roto Brush strokes")?;
     let sent = Rc::new(RefCell::new(std::collections::HashSet::new()));
     let (p, k2, s2) = (post.clone(), keys.clone(), sent.clone());
@@ -393,7 +550,12 @@ fn propagate(s: &mut Session, comp: ItemId, layer: LayerId, effect: Uid, dir: cr
         }
     });
     s.events.clear();
-    with_hook(hook, || s.start_roto(comp, layer, effect, crate::roto::RotoTask::Propagate, dir, true))?;
+    with_hook(hook, async {
+        let r = s.start_roto(comp, layer, effect, crate::roto::RotoTask::Propagate, dir, true);
+        drain(s).await;
+        r
+    })
+    .await?;
     let segs = segs_to_send(&keys, &mut sent.borrow_mut());
     if !segs.is_empty() {
         post(WorkerReply::Segs { segs });
@@ -407,7 +569,7 @@ fn propagate(s: &mut Session, comp: ItemId, layer: LayerId, effect: Uid, dir: cr
     Ok(())
 }
 
-fn analysis(
+async fn analysis(
     s: &mut Session,
     kind: JobKind,
     target: Option<(ItemId, LayerId, Uid)>,
@@ -425,7 +587,13 @@ fn analysis(
             p(WorkerReply::Progress { done, total });
         }
     });
-    with_hook(hook, || run(s))?;
+    with_hook(hook, async {
+        let r = run(s);
+        // The analysis was queued: await it, then the session writes its result.
+        drain(s).await;
+        r
+    })
+    .await?;
     let message = s
         .events
         .iter()
@@ -553,6 +721,7 @@ impl Session {
         }
         let mut changed = false;
         let mut results = vec![];
+        let mut fills = vec![];
         for j in &mut self.offloaded {
             if j.progress.cancelled {
                 continue;
@@ -565,6 +734,7 @@ impl Session {
                         j.progress.total = total;
                     }
                     WorkerReply::Group { comp, layer, group, message } => results.push((j.kind, comp, layer, group, message)),
+                    WorkerReply::Fill { plan, files } => fills.push((plan, files)),
                     WorkerReply::Segs { segs } => {
                         for sd in &segs {
                             sd.store();
@@ -577,6 +747,13 @@ impl Session {
                 }
             }
             j.progress.elapsed = j.started.elapsed().as_secs_f64();
+        }
+        for (plan, files) in fills {
+            let n = files.len();
+            match crate::commands::content_fill::apply_plan(self, &plan, files) {
+                Ok(_) => self.events.push(Event::Toast { message: format!("Content-Aware Fill: {n} frame(s) filled"), error: false }),
+                Err(e) => self.events.push(Event::Toast { message: format!("Content-Aware Fill: {e}"), error: true }),
+            }
         }
         for (kind, comp, layer, group, message) in results {
             let uid = group.uid;
@@ -700,6 +877,21 @@ mod tests {
                 method: MaskMethod::Perspective,
                 times: vec![Tick::from_seconds_f64(1.0)],
             },
+            WorkerJob::ContentFill {
+                plan: Box::new(crate::commands::content_fill::FillPlan {
+                    comp,
+                    layer: LayerId(2),
+                    name: "Clip".into(),
+                    width: 4,
+                    height: 3,
+                    times: vec![Tick::ZERO],
+                    method: "object".into(),
+                    lighting: 0.5,
+                    expand: 1,
+                    reference: Some((LayerId(1), Tick::ZERO)),
+                    dir: "/Fill/Clip_Fill_1".into(),
+                }),
+            },
         ];
         for job in reqs {
             let kind = job.kind();
@@ -718,6 +910,22 @@ mod tests {
             WorkerReply::Progress { done: 1, total: 2 },
             WorkerReply::Group { comp, layer: LayerId(1), group: Box::new(g), message: "ok".into() },
             WorkerReply::Segs { segs: vec![SegData::new(5, &effectcraft_track::roto::FrameSeg::empty(4, 3))] },
+            WorkerReply::Fill {
+                plan: Box::new(crate::commands::content_fill::FillPlan {
+                    comp,
+                    layer: LayerId(2),
+                    name: "Clip".into(),
+                    width: 4,
+                    height: 3,
+                    times: vec![Tick::ZERO],
+                    method: "object".into(),
+                    lighting: 0.5,
+                    expand: 1,
+                    reference: Some((LayerId(1), Tick::ZERO)),
+                    dir: "/Fill/Clip_Fill_1".into(),
+                }),
+                files: vec!["/Fill/Clip_Fill_1/fill_00000.png".into()],
+            },
             WorkerReply::Failed { error: "boom".into() },
             WorkerReply::Done,
         ] {
@@ -856,10 +1064,10 @@ mod tests {
         report(1, 2); // no hook: nothing happens
         let seen = Rc::new(RefCell::new(vec![]));
         let s2 = seen.clone();
-        with_hook(Box::new(move |d, t| s2.borrow_mut().push((d, t))), || {
+        effectcraft_render::passes::block_on(with_hook(Box::new(move |d, t| s2.borrow_mut().push((d, t))), async {
             report(1, 3);
             report(2, 3);
-        });
+        }));
         report(3, 3);
         assert_eq!(*seen.borrow(), vec![(1, 3), (2, 3)]);
     }

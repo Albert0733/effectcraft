@@ -11,7 +11,10 @@
 // AudioContext starts on a user gesture; preview playback feeds it), File ▸ Save As (download),
 // re-opening the saved project through `effectcraft.addFile`, persistence across a reload (the
 // session, imported media, settings, a project saved to browser storage, Open Recent) and an
-// offline reload through the service worker. Prints a JSON report; exits non-zero on failure.
+// offline reload through the service worker; M13.24: GPU frame workers, the storage manager and
+// the disk cache; M13.30: GPU job workers (Render Queue frames and an analysis's input frames on
+// the worker's WebGPU device, in passes) and layer buffers in the disk cache. Prints a JSON
+// report; exits non-zero on failure.
 // `--headed` shows the browser.
 import { spawn } from "node:child_process";
 import { mkdirSync, writeFileSync, readdirSync, statSync, mkdtempSync } from "node:fs";
@@ -310,6 +313,81 @@ try {
   check(bg.maxGapMs < 400, `event loop blocked ${bg.maxGapMs} ms during the render`);
   check(bg.progressFrames > 0, "progress reported while rendering");
 
+  // GPU in the job workers (M13.30): a Render Queue job and a Warp Stabilizer analysis whose
+  // frames have GPU effects render on the job worker's own WebGPU device, in passes (the job
+  // awaits the device's readbacks between them), while the page's event loop stays free.
+  if (report.steps.gpuWorkers.effects) {
+    await js(`effectcraft.execute("renderQueue.setRender", {index: 3, render: false})`);
+    report.steps.gpuJobs = await js(`(async () => {
+      let maxGapMs = 0, last = performance.now();
+      const timer = setInterval(() => { const now = performance.now(); maxGapMs = Math.max(maxGapMs, now - last); last = now; }, 10);
+      const gaps = {};
+      const phase = (n) => { gaps[n] = maxGapMs; maxGapMs = 0; };
+      await effectcraft.execute("layer.newSolid", {name: "GPU Job Solid", color: "#3366cc", width: 320, height: 180});
+      await effectcraft.execute("effect.apply", {effect: "Fractal Noise"});
+      await effectcraft.execute("prop.addKey", {path: "effects/#1/transform/offset", time: 0, value: [0.5, 0.5]});
+      await effectcraft.execute("prop.addKey", {path: "effects/#1/transform/offset", time: 1, value: [0.65, 0.58]});
+      await effectcraft.execute("effect.apply", {effect: "Gaussian Blur"});
+      await effectcraft.execute("prop.set", {path: "effects/#2/blurriness", value: 12});
+      // (A resolution no earlier render used: Backend Auto warms this comp and scale up afresh,
+      // GPU first.)
+      await effectcraft.request("ui.menu.invoke", {id: "renderQueue.add", params: {format: "png", output: "gpujob_[####].png", resolution: 0.2, timeSpan: "custom", start: 0, end: 0.4}});
+      const t0 = performance.now();
+      const r = await effectcraft.execute("renderQueue.render", {});
+      const renderMs = performance.now() - t0;
+      phase("render");
+      // Applying Warp Stabilizer starts its analysis in a job worker (as in After Effects).
+      await effectcraft.execute("effect.apply", {effect: "Warp Stabilizer"});
+      const t1 = performance.now();
+      let warp;
+      do {
+        await new Promise((res) => setTimeout(res, 200));
+        warp = await effectcraft.execute("warp.status", {});
+      } while (!warp.analyzed && performance.now() - t1 < 180000);
+      const warpMs = performance.now() - t1;
+      phase("warp");
+      // Content-Aware Fill (a job worker too): its input is the layer's source, so the noise and
+      // blur go into a precomp (rendered on the worker's GPU); cut a hole, fill half a second.
+      // (Editing on the page — pre-composing, the mask — is not part of the measured jobs.)
+      await effectcraft.execute("effect.remove", {effect: "Warp Stabilizer"});
+      await effectcraft.execute("layer.precompose", {name: "GPU Fill Source", mode: "move", open: false});
+      await effectcraft.execute("layer.addMask", {rect: [140, 70, 40, 40], mode: "subtract"});
+      const wa = await effectcraft.execute("comp.info", {}).then((c) => c.workArea).catch(() => null);
+      await effectcraft.execute("comp.workArea", {start: 0, end: 0.5});
+      phase("prepareFill");
+      const t2 = performance.now();
+      const fill = await effectcraft.execute("contentFill.generate", {method: "edgeBlend", wait: true}).catch((e) => ({error: String(e)}));
+      const fillMs = performance.now() - t2;
+      const fillLayers = await effectcraft.execute("comp.info", {}).then((c) => c.layers.map((l) => l.name).filter((n) => n.startsWith("Fill ")));
+      phase("fill");
+      clearInterval(timer);
+      maxGapMs = Math.max(gaps.render, gaps.warp, gaps.fill);
+      // Back to the project as it was.
+      const c = await effectcraft.execute("comp.info", {});
+      const ids = c.layers.filter((l) => l.name === "GPU Fill Source" || l.name.startsWith("Fill ")).map((l) => l.id);
+      await effectcraft.execute("edit.clear", {layers: ids});
+      if (wa) await effectcraft.execute("comp.workArea", {start: wa[0], end: wa[1]});
+      const workers = effectcraft.info().workers;
+      return {status: r.items.map((i) => i.status), renderMs, warp, warpMs, fill, fillMs, fillLayers, workArea: wa, workers, maxGapMs, gaps};
+    })()`);
+    const gj = report.steps.gpuJobs;
+    gj.download = await waitDownload((n) => n.startsWith("gpujob"));
+    const jobs = gj.workers.jobs || [];
+    const rj = jobs.filter((j) => j.kind === "Render").pop();
+    const wj = jobs.filter((j) => j.kind === "Warp").pop();
+    check(gj.workers.gpu && gj.workers.gpu.adapter, `job workers have a GPU: ${JSON.stringify(gj.workers)}`);
+    check(gj.status.every((st) => st === "Done"), `GPU job render: ${JSON.stringify(gj.status)}`);
+    check(rj && rj.gpu && rj.readbacks >= 3 && rj.passes >= 6, `Render Queue frames on the job worker's GPU, in passes: ${JSON.stringify(rj)}`);
+    check(gj.warp.analyzed, `Warp Stabilizer analysed in a job worker: ${JSON.stringify(gj.warp)}`);
+    check(wj && wj.gpu && wj.readbacks > 0, `Warp Stabilizer input frames on the job worker's GPU: ${JSON.stringify(wj)}`);
+    const fj = jobs.filter((j) => j.kind === "ContentFill").pop();
+    check(!gj.fill.error && gj.fillLayers.length > 0, `Content-Aware Fill in a job worker: ${JSON.stringify(gj.fill)} ${JSON.stringify(gj.fillLayers)}`);
+    check(fj && fj.gpu && fj.readbacks > 0, `Content-Aware Fill frames on the job worker's GPU: ${JSON.stringify(fj)}`);
+    check(gj.maxGapMs < 400, `event loop blocked ${gj.maxGapMs} ms during the GPU jobs: ${JSON.stringify(gj.gaps)}`);
+  } else {
+    report.steps.gpuJobs = { note: "no WebGPU in workers here: job workers render on their CPU" };
+  }
+
   // Audio: the AudioContext starts on a user gesture.
   report.steps.audio = { before: (await js("effectcraft.info()")).audio };
   check(report.steps.audio.before.state !== "running", "audio context not running before a gesture");
@@ -367,6 +445,13 @@ try {
   await js(`effectcraft.execute("prefs.set", {key: "general.recentItems", value: 7})`);
   const saved = await js(`effectcraft.saveToBrowser("/persist-test.ecproj")`);
   await js(`effectcraft.execute("layer.newSolid", {name: "Unsaved Solid"})`);
+  // A layer slow enough on the CPU for its buffer to go to the disk cache too (M13.30).
+  await js(`(async () => {
+    await effectcraft.execute("effect.apply", {effect: "Fractal Noise"});
+    await effectcraft.execute("prop.set", {path: "effects/#1/complexity", value: 10});
+    await effectcraft.execute("effect.apply", {effect: "Gaussian Blur"});
+    await effectcraft.execute("prop.set", {path: "effects/#2/blurriness", value: 60});
+  })()`);
   // Disk cache: frames the workers render now are stored in the Origin Private File System
   // (the CPU renderer sends every frame to the workers).
   await js(`effectcraft.execute("render.backend", {backend: "cpu"})`);
@@ -386,6 +471,7 @@ try {
     return {writesBefore: w0, after: st};
   })()`);
   check(stored.after.writes >= stored.writesBefore + diskTimes.length, `frames written to the disk cache: ${JSON.stringify(stored)}`);
+  check(stored.after.layers > 0 && stored.after.layerWrites > 0, `layer buffers written to the disk cache: ${JSON.stringify(stored.after)}`);
   await sleep(1500); // the session snapshot is taken at most every second
   await js("effectcraft.flush()");
   const before = await js("effectcraft.listStored()");
@@ -424,6 +510,23 @@ try {
   })()`);
   const dcr = report.steps.diskCache;
   dcr.stored = stored;
+  // Layer buffers from the disk cache (M13.30): after a purge (the workers' memory is empty), a
+  // frame not seen yet renders and reports its layer misses; the page then names the ones on
+  // disk, and the worker of the next frame reads them before rendering: its lookups hit.
+  dcr.layers = await js(`(async () => {
+    const before = await effectcraft.execute("cache.diskStats", {});
+    const hits = [];
+    for (const t of [2.05, 2.15, 2.25]) {
+      await effectcraft.execute("edit.purge", {what: "memory"});
+      await effectcraft.execute("time.set", {time: t});
+      const r0 = effectcraft.info().frameWorkers.rendered, t0 = performance.now();
+      while (effectcraft.info().frameWorkers.rendered <= r0 && performance.now() - t0 < 30000) await new Promise((r) => setTimeout(r, 100));
+      hits.push((await effectcraft.execute("cache.diskStats", {})).layerHits);
+    }
+    return {before, after: await effectcraft.execute("cache.diskStats", {}), hits};
+  })()`);
+  check(dcr.layers.before.layers > 0, `layer entries after reload: ${JSON.stringify(dcr.layers.before)}`);
+  check(dcr.layers.after.layerHits > dcr.layers.before.layerHits, `layer buffers served from the disk cache: ${JSON.stringify(dcr.layers)}`);
   check(dcr.listed >= diskTimes.length, `disk cache entries after reload: ${JSON.stringify(dcr)}`);
   check(dcr.frameWorkers.diskHits >= diskTimes.length, `cache hits after reload: ${JSON.stringify(dcr.frameWorkers)}`);
   const cleared = await js(`effectcraft.execute("storage.clear", {what: "diskCache"})`);

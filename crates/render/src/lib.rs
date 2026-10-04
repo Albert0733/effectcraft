@@ -14,6 +14,7 @@ pub mod disk_cache;
 use color::Region;
 pub mod eval;
 pub mod masks;
+pub mod passes;
 pub mod shapes;
 pub mod styles;
 pub mod text;
@@ -22,7 +23,7 @@ pub mod three_d;
 use std::sync::Arc;
 
 pub use auto::{AutoKey, AutoPick};
-pub use cache::{CacheStats, LayerCache};
+pub use cache::{CacheStats, LayerCache, LayerStore, PrefetchStore};
 use effectcraft_color::BlendMode;
 use effectcraft_effects::{Buf, EffectCtx, EffectEnv, EffectHost, LayerPixels, Params};
 use effectcraft_geom::{Mat3, Mat4, vec2};
@@ -311,6 +312,13 @@ pub trait Accelerator: Send + Sync {
     /// Raised from a pass's first miss to its end (results computed meanwhile may hold
     /// placeholders): give it to [`LayerCache::set_gate`] so they are not cached.
     fn miss_gate(&self) -> Option<Arc<std::sync::atomic::AtomicBool>> {
+        None
+    }
+    /// With deferred readbacks: a future that resolves once the readbacks in flight have
+    /// landed (the browser delivers them from its event loop; natively the device is polled
+    /// before it returns, so the future is ready). `None` = nothing to wait for. See
+    /// [`passes::in_passes`].
+    fn settle(&self) -> Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + '_>>> {
         None
     }
 }
@@ -629,6 +637,12 @@ impl<'a> Renderer<'a> {
 
     fn ctx(&self, comp_id: ItemId, comp: &'a Comp, t: Tick) -> EvalCtx<'a> {
         EvalCtx { project: self.project, comp_id, comp, time: t, expr: self.expr, footage: Some(self.footage) }
+    }
+
+    /// This renderer with another accelerator (or none): the passes of
+    /// [`passes::in_passes`] render with the accelerator, its CPU fallback without.
+    pub fn with_accel(&self, accel: Option<&'a dyn Accelerator>) -> Renderer<'a> {
+        Renderer { accel, ..*self }
     }
 
     /// The accelerator to use for this render, if any (see [`Backend`]).
