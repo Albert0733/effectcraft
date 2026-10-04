@@ -10,7 +10,7 @@ once.
 | M1 | Keyframes: temporal and spatial interpolation, Easy Ease, roving, velocity | Done |
 | M2 | Compositing: 38 blend modes, track mattes, parenting, adjustment layers | Done |
 | M3 | Project operations: settings dialogs, layer commands, `.ecproj`, undo, After Effects menu bar | Done (unsaved-changes prompts, Solid / Layer Settings, lock-aware layer commands, safe project files; View ▸ New Viewer still opens only the one locked viewer) |
-| M4 | Preview: precomps, motion blur, cached playback | Mostly done |
+| M4 | Preview: precomps, motion blur, cached playback | Mostly done (Preserve frame rate / resolution when nested, one motion blur gate, RAM preview fixes, Cache Frames When Idle; left: motion blur of collapsed precomps and of animated layer content) |
 | M5 | Timeline depth: graph editor, keyframe clipboard and dialogs, time remapping, pick-whips, expression editor | Done |
 | M6 | Shapes, masks and footage: shape operators, masks and the pen tool, video and image import | Done |
 | M7 | 3D: 3D layers, cameras, lights, shadows, depth of field, 3D views and camera tools | In review |

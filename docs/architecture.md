@@ -299,6 +299,19 @@ Continuously Rasterize: the source is rasterised at its on-screen scale. Quality
 nearest-neighbour, Wireframe draws the layer bounds. Slip edit (`layer.slip`, Alt+PageUp/Down,
 dragging the source bar in the timeline) moves the source under fixed in/out points.
 
+**Nested comps** show nothing before they start or after they end (`Comp::covers`), even when
+the precomp layer is trimmed or remapped past them. A comp with **Preserve frame rate when nested
+or in render queue** shows only its own frames when nested (`EvalCtx::nested_time` floors the
+precomp layer's source time to its frame rate) and renders at its own rate in the Render Queue;
+one with **Preserve resolution when nested** renders at full size inside a comp drawn at a lower
+resolution (the buffer's scale places it).
+
+**Motion blur** has one gate, `Renderer::mb_on`: the render options (Render Settings ▸ Motion
+Blur, previews), the comp's switch and the layer's switch, limited by the precomp layers above
+when switches affect nested comps. Layer motion, mask motion blur (the comp's Samples Per Frame,
+four in Draft), effects that read the shutter and Advanced 3D all follow it, and the layer cache
+key of a layer with masks or effects records it.
+
 **Motion tracking** (Animation ▸ Track Motion / Stabilize Motion, Window ▸ Tracker): a tracker
 is a `Tracker` group under the layer's Motion Trackers group, with Track Point groups (Feature
 Center, Feature Size, Search Offset, Search Size, Confidence, Attach Point, Attach Point Offset)
