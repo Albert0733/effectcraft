@@ -278,7 +278,7 @@ impl Src<'_> {
                     None => {
                         // Radix numbers (16#FF).
                         let s = String::from_utf8_lossy(w).into_owned();
-                        match s.split_once('#').and_then(|(r, v)| i64::from_str_radix(v, r.parse().ok()?).ok()) {
+                        match s.split_once('#').and_then(|(r, v)| i64::from_str_radix(v, r.parse::<u32>().ok().filter(|r| (2..=36).contains(r))?).ok()) {
                             Some(n) => V::Num(n as f64),
                             None => V::Name(s.into()),
                         }

@@ -646,12 +646,21 @@ impl T2<'_> {
         self.path.move_to((self.x, self.y));
         self.open = true;
     }
+    /// A segment before the first moveto starts at the current point.
+    fn ensure_open(&mut self) {
+        if !self.open {
+            self.path.move_to((self.x, self.y));
+            self.open = true;
+        }
+    }
     fn line_to(&mut self, dx: f64, dy: f64) {
+        self.ensure_open();
         self.x += dx;
         self.y += dy;
         self.path.line_to((self.x, self.y));
     }
     fn curve(&mut self, d: [f64; 6]) {
+        self.ensure_open();
         let (x1, y1) = (self.x + d[0], self.y + d[1]);
         let (x2, y2) = (x1 + d[2], y1 + d[3]);
         self.x = x2 + d[4];

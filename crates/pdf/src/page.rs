@@ -332,7 +332,7 @@ impl<'a> Interp<'a> {
                 // Painting.
                 "S" => self.paint(false, None, true, depth),
                 "s" => {
-                    self.path.close_path();
+                    self.close_subpath();
                     self.paint(false, None, true, depth)
                 }
                 "f" | "F" => self.paint(true, Some(FillRule::NonZero), false, depth),
@@ -340,11 +340,11 @@ impl<'a> Interp<'a> {
                 "B" => self.paint(true, Some(FillRule::NonZero), true, depth),
                 "B*" => self.paint(true, Some(FillRule::EvenOdd), true, depth),
                 "b" => {
-                    self.path.close_path();
+                    self.close_subpath();
                     self.paint(true, Some(FillRule::NonZero), true, depth)
                 }
                 "b*" => {
-                    self.path.close_path();
+                    self.close_subpath();
                     self.paint(true, Some(FillRule::EvenOdd), true, depth)
                 }
                 "n" => self.paint(false, None, false, depth),
@@ -546,6 +546,13 @@ impl<'a> Interp<'a> {
         match self.file.get(d, "Name") {
             Some(Obj::Str(s)) => Some(text_string(s)),
             _ => None,
+        }
+    }
+
+    /// Close the current subpath; nothing to close without a current point.
+    fn close_subpath(&mut self) {
+        if self.cur.is_some() {
+            self.path.close_path();
         }
     }
 
