@@ -242,6 +242,22 @@ fn keyframes_eases_and_interpolation() {
 }
 
 #[test]
+fn spatial_tangents_round_trip() {
+    let mut s = session();
+    let o = ok(
+        &mut s,
+        r#"
+        var c = app.project.items.addComp("T", 100, 100, 1, 2, 25);
+        var p = c.layers.addNull().transform.position;
+        p.setValuesAtTimes([0, 1], [[0, 0], [100, 0]]);
+        p.setSpatialTangentsAtKey(1, [0, 0], [30, 40]);
+        [p.keyOutSpatialTangent(1)[0], p.keyOutSpatialTangent(1)[1], p.keyInSpatialTangent(1)[0]]
+        "#,
+    );
+    assert_eq!(o.result, json!([30, 40, 0]));
+}
+
+#[test]
 fn text_documents() {
     let mut s = session();
     let o = ok(
