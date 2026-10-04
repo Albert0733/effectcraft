@@ -118,7 +118,7 @@ pub(crate) fn read_id(r: &mut Reader) -> Result<String> {
 
 pub(crate) fn read_unicode(r: &mut Reader) -> Result<String> {
     let n = r.u32()? as usize;
-    let mut v = Vec::with_capacity(n);
+    let mut v = Vec::with_capacity(n.min(r.remaining() / 2));
     for _ in 0..n {
         v.push(r.u16()?);
     }

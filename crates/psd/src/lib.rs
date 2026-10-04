@@ -7,6 +7,8 @@
 //! out as straight (unpremultiplied) RGBA `f32` in 0..1, display-encoded (32-bit documents,
 //! which are linear, are encoded to sRGB).
 
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
+
 pub mod descriptor;
 pub mod engine_data;
 pub mod placed;
@@ -40,6 +42,19 @@ impl std::fmt::Display for Error {
 impl std::error::Error for Error {}
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+/// The most pixels one decoded image (the composite, a layer or a mask) may have: 2^28, e.g.
+/// 16 384 × 16 384, 4 GiB as float RGBA. Bounds read from a file are untrusted, so a few bytes
+/// can't make the reader allocate more than that.
+const MAX_DECODE_PIXELS: u64 = 1 << 28;
+
+/// `w × h` as a pixel count, or an error when it exceeds [`MAX_DECODE_PIXELS`].
+fn decode_pixels(w: usize, h: usize) -> Result<usize> {
+    match (w as u64).checked_mul(h as u64) {
+        Some(n) if n <= MAX_DECODE_PIXELS => Ok(n as usize),
+        _ => Err(Error::Unsupported(format!("{w}×{h} pixels is too large to decode"))),
+    }
+}
 
 /// Whether `bytes` start like a Photoshop document.
 pub fn is_psd(bytes: &[u8]) -> bool {
@@ -108,10 +123,10 @@ impl Rect {
         Rect { top, left, bottom: top + height, right: left + width }
     }
     pub fn width(&self) -> u32 {
-        (self.right - self.left).max(0) as u32
+        (i64::from(self.right) - i64::from(self.left)).clamp(0, i64::from(u32::MAX)) as u32
     }
     pub fn height(&self) -> u32 {
-        (self.bottom - self.top).max(0) as u32
+        (i64::from(self.bottom) - i64::from(self.top)).clamp(0, i64::from(u32::MAX)) as u32
     }
     pub fn is_empty(&self) -> bool {
         self.width() == 0 || self.height() == 0
@@ -780,11 +795,12 @@ impl Psd {
         let end = offset.checked_add(len).filter(|&e| e <= self.data.len()).ok_or(Error::Truncated)?;
         let mut r = Reader::at(&self.data[..end], offset);
         let comp = r.u16()?;
+        decode_pixels(w, h)?;
         let rowb = self.row_bytes(w);
         let raw = match comp {
             0 => r.bytes(rowb * h)?.to_vec(),
             1 => {
-                let mut counts = Vec::with_capacity(h);
+                let mut counts = Vec::with_capacity(h.min(r.remaining() / 2));
                 for _ in 0..h {
                     counts.push(if self.psb { r.u32()? as usize } else { r.u16()? as usize });
                 }
@@ -796,7 +812,7 @@ impl Psd {
             }
             2 | 3 => {
                 let rest = r.bytes(r.remaining())?;
-                let mut v = miniz_oxide::inflate::decompress_to_vec_zlib(rest).map_err(|e| Error::Invalid(format!("zip: {e:?}")))?;
+                let mut v = miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(rest, rowb * h).map_err(|e| Error::Invalid(format!("zip: {e:?}")))?;
                 v.resize(rowb * h, 0);
                 if comp == 3 {
                     self.unpredict(&mut v, w, h);
@@ -891,6 +907,7 @@ impl Psd {
     /// The merged (flattened) image.
     pub fn composite(&self) -> Result<Pixels> {
         let (w, h) = (self.width as usize, self.height as usize);
+        decode_pixels(w, h)?;
         let mut r = Reader::at(&self.data, self.merged_offset);
         let comp = r.u16()?;
         let nch = self.channels as usize;
@@ -905,7 +922,7 @@ impl Psd {
                 }
             }
             1 => {
-                let mut counts = Vec::with_capacity(nch * h);
+                let mut counts = Vec::with_capacity((nch * h).min(r.remaining() / 2));
                 for _ in 0..nch * h {
                     counts.push(if self.psb { r.u32()? as usize } else { r.u16()? as usize });
                 }
@@ -919,7 +936,7 @@ impl Psd {
             }
             2 | 3 => {
                 let rest = r.bytes(r.remaining())?;
-                let v = miniz_oxide::inflate::decompress_to_vec_zlib(rest).map_err(|e| Error::Invalid(format!("zip: {e:?}")))?;
+                let v = miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(rest, want * rowb * h).map_err(|e| Error::Invalid(format!("zip: {e:?}")))?;
                 for (c, p) in planes.iter_mut().enumerate().take(want) {
                     let mut plane = v.get(c * rowb * h..(c + 1) * rowb * h).ok_or(Error::Truncated)?.to_vec();
                     if comp == 3 {
@@ -956,7 +973,7 @@ impl Psd {
             fill_rect
         };
         let (ow, oh) = (out_rect.width() as usize, out_rect.height() as usize);
-        let mut out = vec![[0.0f32; 4]; ow * oh];
+        let mut out = vec![[0.0f32; 4]; decode_pixels(ow, oh)?];
         let src = fill_rect;
         let (sw, sh) = (src.width() as usize, src.height() as usize);
         if sw > 0 && sh > 0 {
@@ -972,22 +989,26 @@ impl Psd {
                 }
             }
             let fill = l.fill.map(|c| c.map(|v| v as f32));
-            for y in 0..sh {
-                let dy = src.top + y as i32 - out_rect.top;
-                if dy < 0 || dy >= oh as i32 {
-                    continue;
-                }
-                for x in 0..sw {
-                    let dx = src.left + x as i32 - out_rect.left;
-                    if dx < 0 || dx >= ow as i32 {
-                        continue;
-                    }
+            // The source rows / columns that land inside the output (64-bit: file bounds can span
+            // the whole i32 range).
+            let span = |s0: i32, n: usize, o0: i32, on: usize| {
+                let off = i64::from(o0) - i64::from(s0);
+                let lo = off.clamp(0, n as i64);
+                let hi = (off + on as i64).clamp(lo, n as i64);
+                (lo as usize..hi as usize, off)
+            };
+            let (ys, oy) = span(src.top, sh, out_rect.top, oh);
+            let (xs, ox) = span(src.left, sw, out_rect.left, ow);
+            for y in ys {
+                let dy = (y as i64 - oy) as usize;
+                for x in xs.clone() {
+                    let dx = (x as i64 - ox) as usize;
                     let i = y * sw + x;
                     let (rgb, a) = match fill {
                         Some(f) if !l.has_pixels() => (f, 1.0),
                         _ => (self.to_rgb(&planes, i), alpha.as_ref().map_or(1.0, |a| a[i])),
                     };
-                    out[dy as usize * ow + dx as usize] = [rgb[0], rgb[1], rgb[2], a];
+                    out[dy * ow + dx] = [rgb[0], rgb[1], rgb[2], a];
                 }
             }
         }

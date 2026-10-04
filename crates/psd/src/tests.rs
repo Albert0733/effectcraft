@@ -218,3 +218,37 @@ fn smart_objects_and_embedded_files() {
     assert_eq!((e.width, e.height), (20, 10));
     assert!(p.layers[0].smart_object.is_none());
 }
+
+/// Replace the first layer record's bounds (`top, left, bottom, right`) in a written document.
+fn patch_layer_rect(bytes: &mut [u8], from: Rect, to: Rect) {
+    let enc = |r: Rect| [r.top, r.left, r.bottom, r.right].iter().flat_map(|v| v.to_be_bytes()).collect::<Vec<u8>>();
+    let (old, new) = (enc(from), enc(to));
+    let at = bytes.windows(16).position(|w| w == old.as_slice()).expect("layer rect in the written file");
+    bytes[at..at + 16].copy_from_slice(&new);
+}
+
+#[test]
+fn extreme_layer_bounds_error_instead_of_overflowing() {
+    // A layer spanning the whole i32 range: its width overflowed i32 subtraction.
+    let r = Rect::new(2, 3, 4, 5);
+    let mut d = WDoc::new(8, 8);
+    d.layers = vec![WLayer::solid("L", r, [1.0, 0.0, 0.0, 1.0])];
+    let mut bytes = write(&d);
+    patch_layer_rect(&mut bytes, r, Rect { top: i32::MIN, left: i32::MIN, bottom: i32::MAX, right: i32::MAX });
+    let p = Psd::parse(bytes).unwrap();
+    assert_eq!(p.layers[0].rect.width(), u32::MAX);
+    assert!(p.layer_pixels(0, false).is_err());
+    assert!(p.layer_pixels(0, true).is_err());
+}
+
+#[test]
+fn huge_layer_bounds_error_instead_of_allocating() {
+    // A few bytes claiming a 2-billion-pixel-square layer must not try to allocate it.
+    let r = Rect::new(2, 3, 4, 5);
+    let mut d = WDoc::new(8, 8);
+    d.layers = vec![WLayer::solid("L", r, [1.0, 0.0, 0.0, 1.0])];
+    let mut bytes = write(&d);
+    patch_layer_rect(&mut bytes, r, Rect { top: 0, left: 0, bottom: i32::MAX, right: i32::MAX });
+    let p = Psd::parse(bytes).unwrap();
+    assert!(matches!(p.layer_pixels(0, false), Err(Error::Unsupported(_))));
+}
