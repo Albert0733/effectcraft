@@ -14,6 +14,7 @@ pub mod commands;
 pub mod config;
 pub mod demo;
 pub mod footage_check;
+pub mod guard;
 pub mod history;
 pub mod jobs;
 pub mod learn;
@@ -495,7 +496,8 @@ impl Session {
                 return Err(EngineError::Disabled(id.to_string(), why));
             }
         }
-        let r = (spec.run)(self, &params)?;
+        // Last-resort guard: a panicking command reports an error instead of crashing the app.
+        let r = guard::guarded(&format!("command `{id}`"), || (spec.run)(self, &params))?;
         self.learn_observe(id, &params);
         if spec.journal {
             self.journal.push((id.to_string(), params));

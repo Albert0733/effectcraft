@@ -62,6 +62,16 @@ pub fn install() {
     }
 }
 
+/// Log every panic (message and location) through the logger, then run the previous hook
+/// (which prints it). Panics in commands are then caught by [`crate::guard::guarded`].
+pub fn install_panic_hook() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        log::error!("panic: {info}");
+        previous(info);
+    }));
+}
+
 /// The log file inside `config_dir` (the settings folder), or the temporary folder.
 pub fn log_path(config_dir: Option<&Path>) -> PathBuf {
     config_dir.map(Path::to_path_buf).unwrap_or_else(std::env::temp_dir).join("Logs").join("EffectCraft Log.txt")
