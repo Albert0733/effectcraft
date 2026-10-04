@@ -24,6 +24,10 @@ cargo xtask ci                           # what every commit must pass
 - **Everything is a command.** New features are engine commands with an id, label, menu path,
   shortcut and parameters, so the UI, the CLI and the MCP server get them at once. Interactive
   widgets register an automation id.
+- **Never crash.** Non-test code returns errors instead of panicking: no `unwrap()`, `expect()`,
+  `panic!`, `unreachable!`, `todo!`, `unimplemented!` or `unsafe`, checked indexing and arithmetic on
+  input-derived values, and a regression test with every crash fix. See the "Never crash" section of
+  [AGENTS.md](AGENTS.md).
 - **Tests with every change**, and green `cargo xtask ci` before every commit. One task per commit.
 
 ## How to add…

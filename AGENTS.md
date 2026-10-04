@@ -3,6 +3,39 @@
 These rules apply to every human and AI contributor. `CLAUDE.md` holds the working instructions; this
 file holds the rules that must never be broken. When the two disagree, this file wins.
 
+## Never crash
+
+People trust EffectCraft with hours of work. A malformed project, PSD, SVG, Lottie or media file, a bad
+expression or script, a broken plug-in, a bad control-channel or MCP argument, a corrupt preferences file
+or a full disk must produce an error the user (or agent) can act on, never a crash and never lost work.
+**This rule outranks feature work:** don't ship a feature by adding a panic path, and fix a crash before
+building on top of it. Full standard: [craftrules `standards/never-crash.md`](https://github.com/storytold/craftrules/blob/main/standards/never-crash.md).
+
+- **Fail with `Result<T, E>`** through the crate's error type and propagate with `?`; add context
+  (`map_err`, an error variant) rather than discarding it. Lenient readers fall back and record the repair.
+- **No panicking shortcuts in non-test code:** no `unwrap()`, `expect()`, `panic!`, `unreachable!`,
+  `todo!` or `unimplemented!`. Use `?`, `ok_or(..)?`, `let … else`, `if let`, or `unwrap_or*` where a
+  fallback is genuinely correct (never where it would silently corrupt a document). Unfinished features
+  return an "unsupported" error. The only exception is a provably infallible literal, written as
+  `#[allow(clippy::expect_used)]` + `.expect("why this cannot fail")`.
+- **No `unsafe`** (`unsafe_code = "forbid"` for the workspace).
+- **Every input-derived number is hostile.** Use `get()` instead of `[i]`/`[a..b]` when the position
+  comes from a file, a user, an agent or arithmetic on those; slice strings only at char boundaries; use
+  checked or saturating arithmetic for lengths, offsets and counts; guard division by zero and NaN/inf
+  casts; cap allocations sized by input.
+- **Bound recursion:** projects, precomps, expressions and SVG/PSD trees can be cyclic or deeply nested;
+  walk them with seen-sets or depth limits.
+- **Don't cascade:** handle lock poisoning (`lock().unwrap_or_else(PoisonError::into_inner)` or an
+  error), and treat worker-thread join results as `Result`s.
+- **Last-resort guard:** the app wraps command execution and file import/export in a panic hook /
+  `catch_unwind` boundary that turns an escaped panic into an error and keeps the document. It is a
+  safety net, not a substitute for the rules above; keep `panic = "unwind"`.
+- **Prove it:** every crash fix comes with a small synthetic regression test that panicked before the fix.
+
+Tests, benches, fuzz targets and `xtask` may `unwrap()`; `clippy.toml` allows it in tests. Crates that are
+clean carry `#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented,
+clippy::todo, clippy::unreachable)]`; new crates start with it.
+
 ## 1. Assets: no Adobe artwork, every asset licensed and attributed
 
 This rule is absolute. Breaking it is the most serious mistake a contributor can make on this project.
