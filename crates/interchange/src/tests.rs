@@ -519,3 +519,21 @@ fn export_survives_a_precomp_layer_pointing_at_a_non_comp() {
     }
     assert!(matches!(export(&p, footage, &ExportOptions::default(), &HashMap::new()), Err(Error::NoComp(_))));
 }
+
+#[test]
+fn deeply_nested_documents_error_instead_of_overflowing_the_stack() {
+    // A few hundred kilobytes nested 100 000 levels deep overflowed the parsers' stack.
+    let n = 100_000;
+    let docs = [
+        (TimelineFormat::Fcp7Xml, format!("<?xml version=\"1.0\"?><xmeml version=\"5\">{}{}</xmeml>", "<a>".repeat(n), "</a>".repeat(n))),
+        (TimelineFormat::Fcpxml, format!("<?xml version=\"1.0\"?><fcpxml version=\"1.9\">{}{}</fcpxml>", "<a>".repeat(n), "</a>".repeat(n))),
+        (TimelineFormat::Otio, format!("{{\"OTIO_SCHEMA\":\"Timeline.1\",\"tracks\":{}{}}}", "[".repeat(n), "]".repeat(n))),
+    ];
+    for (format, doc) in docs {
+        let mut p = Project::default();
+        let r = import(&mut p, doc.as_bytes(), Some(format), &ImportOptions::default(), &mut |_| None);
+        assert!(matches!(r, Err(Error::TooDeep(_))), "{format:?}");
+    }
+    assert_eq!(super::import::xml_depth(b"<a><!-- <b><b> --><c x='>'/><![CDATA[<d>]]><e></e></a>"), 2);
+    assert_eq!(super::import::json_depth(br#"{"a": "[[[{{", "b": [[1], {"c": "\\\"["}]}"#), 3);
+}

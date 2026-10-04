@@ -158,6 +158,8 @@ pub enum Error {
     UnknownFormat,
     #[error("no composition {0}")]
     NoComp(u64),
+    #[error("the timeline document nests more than {0} levels deep")]
+    TooDeep(usize),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

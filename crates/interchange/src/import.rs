@@ -45,6 +45,83 @@ pub struct ImportResult {
 
 /// Import a timeline document into `project`. `probe` reads a media file's footage metadata
 /// (None = missing or unreadable: the item becomes a placeholder with the document's metadata).
+/// The deepest element / array nesting accepted in XML and OTIO documents. Real timelines nest
+/// a few levels per nested sequence; parsing several thousand levels overflowed the stack.
+pub const MAX_DEPTH: usize = 256;
+
+/// The deepest element nesting of an XML document (a quick scan that skips comments, CDATA,
+/// processing instructions, declarations and quoted attribute values).
+pub(crate) fn xml_depth(b: &[u8]) -> usize {
+    let (mut i, mut depth, mut max) = (0usize, 0usize, 0usize);
+    let skip_to = |from: usize, end: &[u8]| b.get(from..).and_then(|r| r.windows(end.len()).position(|w| w == end)).map_or(b.len(), |p| from + p + end.len());
+    while let Some(&c) = b.get(i) {
+        if c != b'<' {
+            i += 1;
+            continue;
+        }
+        let rest = b.get(i..).unwrap_or_default();
+        if rest.starts_with(b"<!--") {
+            i = skip_to(i + 4, b"-->");
+        } else if rest.starts_with(b"<![CDATA[") {
+            i = skip_to(i + 9, b"]]>");
+        } else if rest.starts_with(b"<?") {
+            i = skip_to(i + 2, b"?>");
+        } else if rest.starts_with(b"<!") {
+            i = skip_to(i + 2, b">");
+        } else if rest.starts_with(b"</") {
+            depth = depth.saturating_sub(1);
+            i = skip_to(i + 2, b">");
+        } else {
+            // A start tag: find its end outside quotes; `/>` closes it at once.
+            let mut j = i + 1;
+            let mut quote = None;
+            while let Some(&c) = b.get(j) {
+                match quote {
+                    Some(q) if c == q => quote = None,
+                    Some(_) => {}
+                    None if c == b'"' || c == b'\'' => quote = Some(c),
+                    None if c == b'>' => break,
+                    None => {}
+                }
+                j += 1;
+            }
+            if b.get(j.wrapping_sub(1)) != Some(&b'/') {
+                depth += 1;
+                max = max.max(depth);
+            }
+            i = j + 1;
+        }
+    }
+    max
+}
+
+/// The deepest array / object nesting of a JSON document (strings skipped).
+pub(crate) fn json_depth(b: &[u8]) -> usize {
+    let (mut depth, mut max, mut in_str, mut esc) = (0usize, 0usize, false, false);
+    for &c in b {
+        if in_str {
+            if esc {
+                esc = false;
+            } else if c == b'\\' {
+                esc = true;
+            } else if c == b'"' {
+                in_str = false;
+            }
+            continue;
+        }
+        match c {
+            b'"' => in_str = true,
+            b'[' | b'{' => {
+                depth += 1;
+                max = max.max(depth);
+            }
+            b']' | b'}' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    max
+}
+
 pub fn import(
     project: &mut Project,
     bytes: &[u8],
@@ -56,6 +133,16 @@ pub fn import(
         Some(f) => f,
         None => TimelineFormat::detect(bytes, Some(&opts.name)).ok_or(Error::UnknownFormat)?,
     };
+    // The XML and JSON parsers recurse per nesting level: a small file nested thousands of levels
+    // deep overflowed the stack and aborted the app.
+    let depth = match format {
+        TimelineFormat::Fcp7Xml | TimelineFormat::Fcpxml => xml_depth(bytes),
+        TimelineFormat::Otio => json_depth(bytes),
+        _ => 0,
+    };
+    if depth > MAX_DEPTH {
+        return Err(Error::TooDeep(MAX_DEPTH));
+    }
     let fc_opts = filmcraft_interchange::ImportOptions {
         base_dir: opts.base_dir.clone(),
         edl_frame_rate: opts.edl_frame_rate.map(|f| {
