@@ -10,7 +10,7 @@ How close EffectCraft is to After Effects 2026, feature by feature, and how much
 | Unweighted | ≈ 97% (half-credit) / 99% (fractions) |
 | P0 / P1 / P2 | ≈ 99% / 96% / 90% (half-credit); 99.8% / 99.2% / 97.5% (fractions) |
 | Features done / partial / missing | 87 / 5 / 0 of 92 |
-| **Effects** | **306** effects (all After Effects 2026 effects), every one implemented in full ([effects.md](effects.md)); 166 run on the GPU |
+| **Effects** | **306** effects (all After Effects 2026 effects), every one implemented in full ([effects.md](effects.md)); 196 run on the GPU |
 | Disabled menu entries left | 1, on purpose: Import ▸ Vanishing Point (.vpe), whose format has no public specification |
 | Remaining work | ≈ 9–11 agent-hours at the pace measured so far (≈ 29 on the conservative audit scale); ≈ 6–7 without the learned-model items |
 | **Wall-clock estimate** | **≈ 2–2.5 hours** with five agents in parallel; ≈ 1.5 hours for 100% of P0 + P1 |
@@ -20,7 +20,7 @@ Partial features:
 | id | Tier | Done | What is missing |
 |---|---|---|---|
 | EFF-5 GPU effects | P1 | 0.85 | GPU kernels for the CC light / transition families, Numbers and Timecode, 3D Channel, the VR family, OCIO / LUT, Time effects and the simulations; Advanced 3D runs with blend modes, track mattes or environment backgrounds composite on the CPU |
-| WEB-1 Web app | P0 | 0.9 | GPU effects in the browser (needs WebGPU in the render workers or async readback), a disk cache in browser storage (OPFS), a storage manager, threads inside one engine instance |
+| WEB-1 Web app | P0 | 0.97 | GPU effects in Render Queue / analysis job workers (they render on their CPU); layer buffers in the browser's disk cache (frames only); threads inside one engine instance (the decided design is one engine instance per worker; a threaded build needs nightly `build-std`). M13.24 added GPU effects and the GPU compositor in the frame workers (their own WebGPU devices, deferred readbacks: frames render in passes; Backend Auto per comp), the disk cache in the Origin Private File System (written by the workers with sync access handles, LRU under the settings' limit, served after a reload), the storage manager (Settings ▸ Disk ▸ Browser Storage, `storage.*`) and fixed a WGSL constant Chrome rejected (it disabled every GPU kernel in Chrome) |
 | UI-7 Home screen | P1 | 0.95 | A "start from a template" gallery |
 | MSK-4 Roto Brush | P2 | 0.85 | Segmentation is classical (graph cut + optical flow), not a learned model |
 | TRK-3 Face tracking | P2 | 0.9 | Classical fitter: weak on profile and occluded faces; Rolling Shutter Ripple is approximated |
@@ -35,7 +35,8 @@ effects, a texture pool and per-comp CPU/GPU choice; M13.10 render workers in th
 visual editors for curves and palettes; M13.11 Advanced 3D on the GPU and Essential Graphics
 mirrors; M13.14–M13.20 puppet pin editing and rigging; M13.15 end-to-end tests through MCP and
 the CLI; M13.21 lazy project open, virtualised panels, background auto-save and an audit that
-every command is reachable over MCP, the control channel and the CLI.
+every command is reachable over MCP, the control channel and the CLI; M13.24 GPU effects in the
+browser's frame workers, the browser disk cache (OPFS) and a storage manager.
 
 Out of clean-room scope (no public specification or no permissively licensed data): `.jsxbin`,
 Vanishing Point `.vpe`, the predefined CJK CMaps in PDF import, Kodak film emulations. Adobe
@@ -153,13 +154,13 @@ the disk cache in the formats wave; the 3D Camera Tracker in M12.6.)
 | Compositions | ≈ 81% | 3.3 | Mocha-style planar tracks for templates (CMP-7: Essential Graphics mirrored and linked properties landed in M13.11; Font and uniform Scale controls, Composition ▸ Open in Essential Graphics, Save Frame As ▸ Photoshop Layers / ProEXR and the VR Comp Editor landed in M13.7; the marker dialog, Composition Flowchart, Essential Graphics with master properties, `.ectemplate` templates and Responsive Design — Time landed: CMP-6, CMP-7) |
 | Animation | 70% | 9.0 | puppet depth beyond pins, recording, rigging and follow-through (puppet pin recording with Record Options landed in M13.1; pin selection, rotate/scale handles, nulls for pins and Follow-Through in M13.14–M13.16), Wiggler/Smoother/Motion Sketch (motion-path handles and the graph editor transform box landed in M5.8; keyframe colour labels and Select Keyframe Label Group, Graph Editor snapping to markers / layer ends in M13.5) |
 | Text | ≈ 96% | 0.3 | no extruded strokes (M13.12: the Variable Font Axes animator re-spaces the text — advances follow the animated axes; M13.6: variable font axes in the character style — `layer.setText variations`, the Character panel's Variable Font Axes fields — shape with HVAR / gvar advances and draw at that design-space position; OpenType features — stylistic sets, discretionary ligatures, contextual / stylistic alternates, swash, titling, ordinals, fractions, figure styles, true small caps / all small caps and superior / inferior glyphs with faux fallback — per character with the Character panel's OpenType popup and `text.fontFeatures` landed in M13.2; vertical Roman / Tate-Chu-Yoko, forced LTR paragraphs, caret on animated and path text, Variable Font Axes and Lottie style runs landed in M13.5; extruded, bevelled text in M7.6; per-character styles, paragraph settings, on-canvas editing and the `sourceText` style API in M9.9–M9.10) |
-| Web | 93% | 0.5 | GPU effects in the browser (WebGPU compositing only on the page), no disk cache, no shared-memory threads inside one engine instance (browser storage, Web Audio, Web Worker renders/analyses, WebGPU viewer and offline install landed in M15.2; viewer frames in frame workers fed by project diffs, Roto Brush propagation in a worker, non-blocking `wait: true` jobs and a browser Media Browser (File System Access folders, browser storage) in M13.10) |
+| Web | 97% | 0.2 | GPU effects in Render Queue / analysis workers (job workers render on their CPU), layer buffers in the browser's disk cache (frames only), no shared-memory threads inside one engine instance (the decided design is one engine instance per worker; a threaded build needs nightly `build-std`) (browser storage, Web Audio, Web Worker renders/analyses, WebGPU viewer and offline install landed in M15.2; viewer frames in frame workers fed by project diffs, Roto Brush propagation in a worker, non-blocking `wait: true` jobs and a browser Media Browser (File System Access folders, browser storage) in M13.10; WEB-1 in M13.24: GPU effects and the GPU compositor in the frame workers on their own WebGPU devices with deferred readbacks (frames render in passes; Backend Auto per comp), the disk cache in the Origin Private File System (written by the workers with sync access handles, LRU under the settings' limit, served after a reload), the storage manager (Settings ▸ Disk ▸ Browser Storage, `storage.info` / `storage.persist` / `storage.clear`), and a WGSL constant Chrome rejected (it disabled every GPU kernel in Chrome) fixed) |
 | 3D | 88% | 5.5 | multi-view layouts, the Extended Viewer for Advanced 3D comps (Classic 3D Extended Viewer landed in M13.5 UI completion); collapsed precomps of another size seen through the parent's camera render (fixed in M13.2); stereo rigs, orbit nulls, lights controlled by the camera, cameras/lights from glTF models, environment backgrounds, Advanced 3D motion blur, blend modes and track mattes landed in M7.7; Classic 3D iris-shaped bokeh with highlights, progressive depth of field on tilted layers and the focus-link commands landed in M13.5; Advanced 3D depth of field with the iris and highlight options, collapsed precomps as real Advanced 3D geometry and extruded text/shape strokes landed in M13.8; Advanced 3D (glTF/OBJ models, primitives, extruded text and shapes, PBR, image-based light, shadow maps, GPU rasteriser) in M7.4–M7.6; Advanced 3D end to end on the GPU (motion blur, iris depth of field, compositing) in M13.11 |
-| Effects | ≈ 85% | 3.0 | GPU versions of the remaining effects (166 run on the GPU since M13.13, EFF-5: Warp, Bezier Warp, Reshape, Smear, CC Bend It, CC Page Turn, Cartoon, Color Emboss, Circle, Ellipse, Iris Wipe, Bevel Alpha / Edges and Gaussian Blur (Legacy) joined the 152 of M13.9; simulations, 3D channel, VR, audio-driven, OCIO, text and the CC light / transition families still render on the CPU) and the missing controls listed as partial in [effects.md](effects.md) (every After Effects effect exists since M9.11, M12.5 and M12.6; parameter names, order, twirl-downs, popups, units and defaults were aligned in M9.12) |
+| Effects | ≈ 85% | 3.0 | GPU versions of the remaining effects (196 run on the GPU since M13.22, EFF-5: the CC light family, the CC transitions, Block Dissolve, Radial Shadow, CC Bender / Blobbylize / Cylinder / Sphere / Spotlight / Environment, 3D Glasses, Numbers, Timecode and the time effects joined the 166 of M13.13; simulations, 3D channel, VR, audio-driven, OCIO and Card Wipe still render on the CPU) and the missing controls listed as partial in [effects.md](effects.md) (every After Effects effect exists since M9.11, M12.5 and M12.6; parameter names, order, twirl-downs, popups, units and defaults were aligned in M9.12) |
 | Interface | 75% | 5.0 | more Learn tutorials and pixel-level fidelity of dialogs (the Home ▸ Templates gallery (eight original built-in templates, user templates from File ▸ Save as Template…) and View ▸ Simulate Output ▸ My Custom RGB… landed in M13.25; Timeline layer reordering by drag, a non-snapping viewer pan, a working rename field and twirl arrows, and the full set of property reveal shortcuts — double presses, Alt+Shift keyframes, Ctrl+` — landed in M13.17–M13.20; the Home ▸ Learn tab with interactive tutorials and a UI fidelity pass landed in M13.5 UI completion; visual editors for Lumetri RGB / hue-saturation curves, Colorama's output cycle wheel, Glow's colour map and Reshape's correspondence points (viewer handles), a scrolling Preview panel and AE-style Composition / Timeline tabs (close, label swatch, viewer lock) landed in M13.10; Timeline outline and Project panel columns scroll horizontally, the Layer Style dialog, ROI resize handles, Pan Behind snapping and 3D Reference Axes landed in M13.5; native macOS menu bar, Timeline columns/search/reveal-add, Home screen with recent projects and all AE workspaces landed; viewer rulers/snapping/channels/snapshots landed in M0.13) |
 | Project | ≈ 68% | 5.5 | auto-save, folder moves, OCIO displays beyond the built-in tone map (Color Engine with OCIO/ACES working spaces, HDR compand/tone mapping, Rec. 2100 PQ/HLG output, Feet + Frames, display colour management, Simulate Output and the locked viewer landed in M7.7; proxies and Interpret Footage fields / pixel aspect / alpha guess landed: PRJ-8, PRJ-3) |
 | Masks & roto | 74% | 5.0 | Roto Brush's learned (3.0) segmentation model (variable-width mask feather points with the Mask Feather tool landed in M13.5; mask tracking and Mask Interpolation landed in M6.6; Roto Brush & Refine Edge with graph-cut segmentation, flow propagation, edge matting, decontamination and Freeze in M6.7) |
-| Preview | 77% | 2.8 | GPU compositing of Advanced 3D layers with blend modes / track mattes and of environment backgrounds (pooled GPU textures and fused quantisation since M13.13: Lower Third GPU warm 21 → 4 ms/frame, and Auto now picks the CPU or the GPU per comp from measured frame times; Advanced 3D runs — raster, motion blur, iris depth of field, compositing — and wireframes run on the GPU since M13.11: CPU warm 3394 → GPU warm 290 ms/frame at 1920×1080 (11.7×; Half 968 → 85 ms), GPU ≠ CPU on 0.005 % of pixels, on an M4 Pro under load; Classic 3D bokeh depth of field — iris shapes, highlights, fringe, progressive blur on tilted planes — runs in WGSL since M13.6: 3D Showcase GPU warm 205 → 54 ms/frame at full size on an M4 Pro; the Preview panel's five shortcuts with their own Include / Loop / Cache Before Playback / Range / Play From / Frame Rate / Skip / Resolution / Full Screen / stop options and `playback.settings.get/set` landed in M13.8; Classic 3D runs and adjustment layers composite on the GPU since M12.7; persistent disk cache with the blue cache bar landed; region of interest, snapshots, exposure and Fast Previews landed in M0.13) |
+| Preview | 77% | 2.8 | GPU effects for simulations, 3D channel, VR, OCIO and Card Wipe (Advanced 3D layers with blend modes / track mattes / Preserve Transparency and environment backgrounds composite on the GPU since M13.22; pooled GPU textures and fused quantisation since M13.13: Lower Third GPU warm 21 → 4 ms/frame, and Auto now picks the CPU or the GPU per comp from measured frame times; Advanced 3D runs — raster, motion blur, iris depth of field, compositing — and wireframes run on the GPU since M13.11: CPU warm 3394 → GPU warm 290 ms/frame at 1920×1080 (11.7×; Half 968 → 85 ms), GPU ≠ CPU on 0.005 % of pixels, on an M4 Pro under load; Classic 3D bokeh depth of field — iris shapes, highlights, fringe, progressive blur on tilted planes — runs in WGSL since M13.6: 3D Showcase GPU warm 205 → 54 ms/frame at full size on an M4 Pro; the Preview panel's five shortcuts with their own Include / Loop / Cache Before Playback / Range / Play From / Frame Rate / Skip / Resolution / Full Screen / stop options and `playback.settings.get/set` landed in M13.8; Classic 3D runs and adjustment layers composite on the GPU since M12.7; persistent disk cache with the blue cache bar landed; region of interest, snapshots, exposure and Fast Previews landed in M0.13) |
 | Tracking | ≈ 96% | 0.3 | face tracking is a classical (skin model + feature components + shape model) fitter, not a learned detector: profile views and occluded faces are weak; Rolling Shutter Ripple is approximated by Subspace Warp's mesh density (face tracking (Outline Only / Detailed Features with Face Track Points and Extract & Copy Face Measurements), Subspace Warp's content-preserving mesh warp on subspace-smoothed trajectories, and radial lens distortion (k1, k2) in the camera bundle adjustment with Undistort Footage landed in M13.3; Rolling Shutter Repair in M9.11; point tracker, mask tracking, Warp Stabilizer and the 3D Camera Tracker in M6.x / M12.5 / M12.6) |
 | Paint | 0% | 4.0 | Brush, Clone Stamp, Eraser |
 
@@ -222,6 +223,43 @@ axes since M13.6; Advanced 3D's DOF has iris shapes since M13.8).
   Classic 3D bokeh kernel, by each pixel's depth); collapsed precomps add their nested layers
   as real geometry lit by the parent (2D collapsed precomps draw nested 3D layers with the
   parent's renderer); text and shape strokes extrude as bevelled meshes in paint order.
+
+## Update: M13.22 GPU effects, part A
+
+- **GPU ports (EFF-5)**: 30 more effects run on the GPU (196 GPU effects), each matching the
+  CPU oracle within 1/255 (8 bpc) / 1e-3 (32 bpc) on every tested pixel, directly on a buffer
+  (full and half resolution, as adjustment) and composited at 8 and 32 bpc:
+  - the CC light family: CC Light Rays, CC Light Burst 2.5, CC Light Sweep, CC Light Wipe
+    (`gpu::fx_light`);
+  - transitions and perspective (`gpu::fx_transition`): Block Dissolve (block indices computed
+    on the CPU per column / row sub-sample, so the hash sees the CPU's integers), CC Glass Wipe,
+    CC Grid Wipe, CC Image Wipe, CC Jaws, CC Line Sweep, CC Radial ScaleWipe, CC Scale Wipe, CC
+    Twister, CC WarpoMatic, Radial Shadow, CC Bender, CC Blobbylize, CC Cylinder, CC Sphere, CC
+    Spotlight, CC Environment, 3D Glasses; other layers they read (gradient, reveal, backside,
+    environment, stereo views) are fitted on the CPU and uploaded;
+  - Numbers and Timecode (`gpu::fx_text`): the glyph coverage (fill and stroke ring) is
+    rasterised on the CPU with the effect's own stroke font and composited on the GPU with the
+    box, fill and stroke;
+  - time (`gpu::fx_time`): Time Difference, Time Displacement, CC Force Motion Blur, CC Wide
+    Time, Pixel Motion Blur and Timewarp fetch their frames through the host as Echo does and
+    combine them on the GPU (weighted sums one frame per pass, in the CPU's order); Time
+    Displacement's per-pixel times and Timewarp's motion vectors (block matching and smoothing)
+    are computed on the CPU, Timewarp's Whole Frames / Frame Mix / Pixel Motion frame building
+    and shutter average on the GPU.
+- **Fallbacks and deviations**: Timewarp with a Matte Layer renders on the CPU
+  (`gpu_supported`); Card Wipe (the 3D card renderer shared with Card Dance and Shatter) and the
+  3D Camera Tracker stay on the CPU. CC Environment now fades nearly transparent environment
+  texels to black continuously (colour / max(alpha, 1e-3), on both paths) instead of a hard
+  1e-6 un-premultiply cut-off, which turned the filtered map's float noise into colour. CC
+  Sphere / CC Environment keep their longitude on the side of the ±180° seam the ray's sign
+  puts it (a GPU's approximate `atan2` can land across it).
+- **Advanced 3D compositing on the GPU (3D-3, PRV-3)**: runs with blend modes, track mattes
+  (2D, or 3D mattes drawn through the camera) or Preserve Transparency no longer read back:
+  `Renderer::split_adv_run` hands `draw_run`'s split path to the GPU (main scene, then each
+  special layer far to near, hidden behind the nearer main scene and composited through the 2D
+  kernels), and Environment Light Background skies draw in a kernel in Classic and Advanced 3D
+  comps. The GPU walk matches the CPU compositor on the same rasters exactly at 8 and 32 bpc,
+  with only the frame's own readback.
 
 ## Update: M13.13 GPU performance and the remaining GPU ports
 

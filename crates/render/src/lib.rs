@@ -296,6 +296,23 @@ pub trait Accelerator: Send + Sync {
     fn auto_pick(&self) -> Option<&AutoPick> {
         None
     }
+    /// Deferred readbacks: where a GPU readback cannot be waited for (WebGPU in a browser
+    /// worker), a frame renders in *passes*. A readback the accelerator does not have yet is
+    /// started, the step returns a cheap placeholder and the pass is marked missed
+    /// ([`Self::pass_missed`]); the caller waits for the readbacks in flight (asynchronously)
+    /// and renders the frame again, and the steps whose results arrived are served from them.
+    /// The frame is done after a pass with no miss. `frame_begin` forgets the previous frame's
+    /// results, `pass_begin` clears the miss. Synchronous accelerators never miss.
+    fn frame_begin(&self) {}
+    fn pass_begin(&self) {}
+    fn pass_missed(&self) -> bool {
+        false
+    }
+    /// Raised from a pass's first miss to its end (results computed meanwhile may hold
+    /// placeholders): give it to [`LayerCache::set_gate`] so they are not cached.
+    fn miss_gate(&self) -> Option<Arc<std::sync::atomic::AtomicBool>> {
+        None
+    }
 }
 
 /// Where an effect stack runs (see [`Renderer::run_effects_on`]): a CPU buffer, or an image
@@ -1604,6 +1621,25 @@ impl<'a> Renderer<'a> {
     /// [`Self::draw_3d_run`].
     pub fn prepare_adv_run<'p>(&'p self, ctx: &'p EvalCtx<'a>, run: &'p [&'p Layer], out: (u32, u32)) -> Option<three_d::adv::Prepared<'p, 'a>> {
         three_d::adv::prepare_run(self, ctx, run, out)
+    }
+
+    /// A run of consecutive 3D layers of an Advanced 3D comp whose layers need the 2D
+    /// compositing path (blend mode, track matte, Preserve Transparency), split for an
+    /// accelerator's compositor ([`three_d::adv::SplitRun`]). `None` = [`Self::prepare_adv_run`]
+    /// covers it, or it isn't an Advanced 3D run.
+    pub fn split_adv_run<'p>(&'p self, ctx: &'p EvalCtx<'a>, run: &'p [&'p Layer], out: (u32, u32)) -> Option<three_d::adv::SplitRun<'p, 'a>> {
+        three_d::adv::split_run(self, ctx, run, out)
+    }
+
+    /// Whether the comp's 3D layers draw with the Advanced 3D renderer.
+    pub fn is_adv3d(&self, ctx: &EvalCtx) -> bool {
+        three_d::adv::active(self, ctx)
+    }
+
+    /// An Environment Light Background layer ready to draw on an accelerator
+    /// ([`three_d::SkyDraw`]; the CPU draws it in `draw_3d_run`). `None` = nothing to draw.
+    pub fn sky_draw(&self, ctx: &EvalCtx, layer: &Layer) -> Option<three_d::SkyDraw> {
+        three_d::compose::sky_draw(self, ctx, layer)
     }
 
     /// The pixels a Wireframe-quality layer sets (white, opaque) on a `size` canvas: its

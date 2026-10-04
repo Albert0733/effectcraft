@@ -112,7 +112,10 @@ Commands (CLI, MCP, control channel):
 - `audio.previewSampleRate`: the rate previews are mixed at (and the device is opened at, when
   it supports it)
 - `disk.diskCacheEnabled`, `disk.diskCacheMaxGb`, `disk.diskCacheFolder`: the persistent disk
-  cache of processed layers
+  cache of processed layers and frames (in the browser: frames in the Origin Private File System,
+  at most half the origin's quota; the folder setting does not apply there). The Disk page also
+  shows **Browser Storage** in the web app: usage and quota, persistent storage, Clear buttons
+  (`storage.info` / `storage.persist` / `storage.clear`, see [web.md](web.md))
 - `disk.mediaCacheFolder`: audio waveform summaries kept between sessions (`Peaks/`)
 - `disk.conformedMediaFolder`: decoded (conformed) footage audio, written once per file and
   sample rate and read back instead of decoding again

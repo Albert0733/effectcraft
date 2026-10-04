@@ -13,15 +13,18 @@
 //! Advanced 3D comps rasterise on a render pipeline (`advanced3d.wgsl`: depth buffer, PBR,
 //! image-based light, shadow maps) and finish in compute kernels (`adv3d.wgsl`: supersampling
 //! resolve, motion-blur sub-samples, iris depth of field, encoding, compositing), see
-//! [`Accelerator::render_3d`] and `Renderer::prepare_adv_run`. Advanced 3D layers with blend
-//! modes, track mattes or Preserve Transparency still composite on the CPU (their scenes
-//! render here through [`Accelerator::render_3d`]).
+//! [`Accelerator::render_3d`] and `Renderer::prepare_adv_run`. Runs with layers on the 2D
+//! compositing path (blend modes, track mattes, Preserve Transparency:
+//! `Renderer::split_adv_run`) render each such layer alone, hide it behind the nearer main
+//! scene and composite it through the 2D path here too; environment backgrounds (Classic and
+//! Advanced 3D) draw their sky in a kernel (`Renderer::sky_draw`).
 //!
 //! GPU effects ([`effectcraft_effects::GPU_EFFECTS`]) run as compute kernels with the CPU
 //! effect's exact steps (padding, box-blur radii, parameter conversions); chains of them are
 //! uploaded and read back once. Each family lives in its own module with its own WGSL file
-//! (`fx_color`, `fx_distort`, `fx_extra`, `fx_generate`, `fx_key`, `fx_noise`, `fx_stylize`,
-//! `fx_tone`, `fx_warp`); settings a kernel cannot match fall back to the CPU
+//! (`fx_color`, `fx_distort`, `fx_extra`, `fx_generate`, `fx_key`, `fx_light`, `fx_noise`,
+//! `fx_stylize`, `fx_text`, `fx_time`, `fx_tone`, `fx_transition`, `fx_warp`); settings a
+//! kernel cannot match fall back to the CPU
 //! (`catalog::gpu_supported`, or `None` from the family's `apply`).
 //!
 //! Working textures come from a pool (`context::Pool`): a frame allocates several full-frame
@@ -46,15 +49,20 @@ mod adv3d;
 mod bokeh;
 mod classic3d;
 mod context;
+pub mod deferred;
 mod effects;
 mod fx_color;
 mod fx_distort;
 mod fx_extra;
 mod fx_generate;
 mod fx_key;
+mod fx_light;
 mod fx_noise;
 mod fx_stylize;
+mod fx_text;
+mod fx_time;
 mod fx_tone;
+mod fx_transition;
 mod fx_warp;
 mod ops;
 mod particles;
@@ -105,6 +113,44 @@ impl Gpu {
         Gpu { ctx: Arc::new(ctx), auto: Default::default() }
     }
 
+    /// A device of its own without blocking, with deferred readbacks (a browser worker, see
+    /// [`deferred`]); natively the same device works too (tests). `Err` says why there is none.
+    pub async fn request_deferred() -> Result<Gpu, String> {
+        let mut ctx = GpuContext::request().await?;
+        ctx.set_deferred(true);
+        Ok(Gpu::from_context(ctx))
+    }
+
+    /// [`Gpu::request_deferred`] blocking (tests of the browser worker's path, natively).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn headless_deferred() -> Option<Gpu> {
+        pollster::block_on(Gpu::request_deferred()).map_err(|e| log::info!("gpu: {e}")).ok()
+    }
+
+    /// The deferred readback state, when readbacks are deferred.
+    pub fn deferred(&self) -> Option<&Arc<deferred::Deferred>> {
+        self.ctx.deferred()
+    }
+
+    /// Resolves once no deferred readback is in flight (immediately without deferred readbacks).
+    pub async fn settled(&self) {
+        if let Some(d) = self.ctx.deferred() {
+            d.settled().await;
+        }
+    }
+
+    /// Deliver finished readbacks without blocking (native; the browser delivers them itself).
+    pub fn poll(&self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        let _ = self.ctx.device.poll(wgpu::PollType::Poll);
+    }
+
+    /// `{passes, readbacks, inFlight}` of deferred rendering (diagnostics).
+    pub fn deferred_stats(&self) -> Option<(u64, u64, usize)> {
+        let d = self.ctx.deferred()?;
+        Some((d.passes.load(std::sync::atomic::Ordering::Relaxed), d.readbacks.load(std::sync::atomic::Ordering::Relaxed), d.in_flight()))
+    }
+
     pub fn context(&self) -> &GpuContext {
         &self.ctx
     }
@@ -139,9 +185,48 @@ impl Gpu {
         if !self.ctx.can_readback() {
             return None;
         }
+        if let Some(d) = self.ctx.deferred.clone() {
+            return self.render_deferred(&d, r, comp, t);
+        }
         let mut e = Enc::new(&self.ctx);
         let img = walk::render(&mut e, r, comp, t)?;
         e.download(&img)
+    }
+
+    /// [`Gpu::render`] with deferred readbacks: the frame's readback is keyed by comp, time and
+    /// render options; until it arrives (or while layer steps still miss) the pass gets a
+    /// placeholder.
+    fn render_deferred(&self, d: &Arc<deferred::Deferred>, r: &Renderer, comp: ItemId, t: Tick) -> Option<Image> {
+        let mut k = deferred::Key::new(2);
+        k.u64(comp.0);
+        k.u64(t.0 as u64);
+        k.debug(&r.opts);
+        let key = k.finish();
+        let image = |rb: deferred::Readback| -> Option<Image> {
+            let mut img = Image::new(rb.width, rb.height);
+            let dst: &mut [u8] = bytemuck::cast_slice_mut(&mut img.data);
+            (dst.len() == rb.bytes.len()).then(|| dst.copy_from_slice(&rb.bytes))?;
+            Some(img)
+        };
+        match d.lookup(key) {
+            deferred::Lookup::Ready(rb) => return rb.and_then(image),
+            deferred::Lookup::InFlight => {
+                d.miss();
+                return Some(Image::new(1, 1));
+            }
+            deferred::Lookup::Absent => {}
+        }
+        let misses = d.misses();
+        let mut e = Enc::new(&self.ctx);
+        let img = walk::render(&mut e, r, comp, t)?;
+        if d.misses() != misses {
+            // Layer steps are still in flight: this pass's canvas is not the frame.
+            return Some(Image::new(1, 1));
+        }
+        match e.read_keyed(&img, key, [0.0; 2], 1.0) {
+            Some(rb) => rb.and_then(image),
+            None => Some(Image::new(1, 1)),
+        }
     }
 
     /// Wait for all submitted GPU work (benchmarks).
@@ -176,11 +261,31 @@ impl Accelerator for Gpu {
     }
 
     fn particles(&self) -> Option<&dyn effectcraft_effects::psim::ParticleSim> {
-        self.ctx.can_readback().then_some(self as &dyn effectcraft_effects::psim::ParticleSim)
+        self.ctx.can_wait().then_some(self as &dyn effectcraft_effects::psim::ParticleSim)
     }
 
     fn auto_pick(&self) -> Option<&effectcraft_render::AutoPick> {
         Some(&self.auto)
+    }
+
+    fn frame_begin(&self) {
+        if let Some(d) = self.ctx.deferred() {
+            d.frame_begin();
+        }
+    }
+
+    fn pass_begin(&self) {
+        if let Some(d) = self.ctx.deferred() {
+            d.pass_begin();
+        }
+    }
+
+    fn pass_missed(&self) -> bool {
+        self.ctx.deferred().is_some_and(|d| d.missed())
+    }
+
+    fn miss_gate(&self) -> Option<Arc<std::sync::atomic::AtomicBool>> {
+        self.ctx.deferred().map(|d| d.gate())
     }
 }
 
@@ -199,6 +304,8 @@ mod tests_adjust;
 #[cfg(test)]
 mod tests_adv3d;
 #[cfg(test)]
+mod tests_deferred;
+#[cfg(test)]
 mod tests_fx_color;
 #[cfg(test)]
 mod tests_fx_distort;
@@ -209,11 +316,19 @@ mod tests_fx_generate;
 #[cfg(test)]
 mod tests_fx_key;
 #[cfg(test)]
+mod tests_fx_light;
+#[cfg(test)]
 mod tests_fx_noise;
 #[cfg(test)]
 mod tests_fx_stylize;
 #[cfg(test)]
+mod tests_fx_text;
+#[cfg(test)]
+mod tests_fx_time;
+#[cfg(test)]
 mod tests_fx_tone;
+#[cfg(test)]
+mod tests_fx_transition;
 #[cfg(test)]
 mod tests_fx_warp;
 #[cfg(test)]

@@ -1623,6 +1623,7 @@ dependencies = [
  "effectcraft-engine",
  "effectcraft-export",
  "effectcraft-expr",
+ "effectcraft-gpu",
  "effectcraft-host",
  "effectcraft-media",
  "effectcraft-ui-egui",
