@@ -262,6 +262,9 @@ impl Session {
         {
             out.push(info("roto", "roto", "Roto Brush propagation".into(), p.done, p.total, true, String::new()));
         }
+        if let Some(j) = self.offloaded(crate::offload::JobKind::WarpPlan) {
+            out.push(info("warpPlan", "warp", "Warp Stabilizer: Stabilizing".into(), j.progress.done, j.progress.total, true, String::new()));
+        }
         if let Some(j) = self.offloaded(crate::offload::JobKind::ContentFill) {
             out.push(info("contentFill", "contentFill", "Content-Aware Fill".into(), j.progress.done, j.progress.total, true, String::new()));
         }
@@ -281,6 +284,7 @@ impl Session {
             "warp" => self.stop_warp(),
             "camera" => self.stop_camera(),
             "roto" => self.stop_roto(),
+            "warpPlan" => self.cancel_offloaded(crate::offload::JobKind::WarpPlan),
             "contentFill" => self.cancel_offloaded(crate::offload::JobKind::ContentFill),
             "all" => {
                 let ids: Vec<String> = self.jobs().into_iter().map(|j| j.id).collect();

@@ -188,6 +188,16 @@ the same futures with `passes::block_on`; they never wait there).
 `effectcraft.info().workers` reports `{running, idle, gpu: {adapter} | {cpu: why}, jobs:
 [{kind, gpu, passes, readbacks, ms}]}` (the last jobs).
 
+**Warp Stabilizer plans off the page (M13.32).** Solving a stabilization plan (Subspace Warp:
+an eigen-decomposition per frame, then a mesh fit) takes seconds for a long clip, and
+`warp.status` used to solve it on the page the first time it saw the analysis (a ≈ 5 s
+stall). Now the analysis job solves the plan for the analysed settings and sends its summary
+(`WorkerReply::WarpPlan`: per-frame warps, auto-scale, crop, valid fraction) with the result.
+When the settings change later, `warp.status` reports `stabilizing: true` and starts a
+`WorkerJob::WarpPlan` job (`jobs.list` id `warpPlan`) instead of solving it; the next status
+after it ends has the plan. Frames with the effect render in the frame workers, which solve
+their own plans. The desktop solves the plan in place, as before.
+
 **Content-Aware Fill in a job worker (M13.30).** `contentFill.generate` (the panel's Generate
 Fill Layer) sends its plan (`content_fill::FillPlan`: layer, frames, method, folder) to a job
 worker (`WorkerJob::ContentFill`, `jobs.list` id `contentFill`): the worker renders the
@@ -411,13 +421,15 @@ System, served from it after a reload without rendering, and cleared with `stora
 the M13.30 ones: a Render Queue job and a Warp Stabilizer analysis on the job worker's own
 WebGPU device (`workers.jobs`: GPU passes and readbacks per job) while the page stays
 responsive, and layer buffers written to the disk cache and served from it after a reload and a
-purge (`layerHits`).
+purge (`layerHits`); M13.32: editing after the Warp Stabilizer analysis (removing it,
+pre-composing, a mask) keeps the page's event-loop gaps under 50 ms.
 
 Native unit tests cover the storage model (`apps/effectcraft-web/src/store.rs`: write
 coalescing, file table, `ConfigStore` / `FileOps`, auto-save and crash recovery through the
 browser store) and the worker protocol (`crates/engine/src/offload.rs`: serde round trips of
 every request and reply, a render through an in-process offload; `tests_roto.rs`: Roto Brush
-propagation through an offload streaming segmentations), the frame-worker protocol
+propagation through an offload streaming segmentations; `tests_mask_warp.rs`: Warp Stabilizer
+plans solved in the job, never by `warp.status` on the page), the frame-worker protocol
 (`crates/engine/src/remote.rs`: diff / patch, a replica following edits renders the same pixels;
 `crates/ui-egui/tests/ui_web_offload.rs`: the frame cache through a remote renderer, `wait: true`
 deferred until the offloaded job ends) and the Media Browser's virtual tree (`media_browser.rs`,
