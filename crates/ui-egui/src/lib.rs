@@ -127,6 +127,33 @@ pub struct Playback {
     pub restore_max: Option<Option<PanelKind>>,
     /// Audio-only previews: the frame under the audible sample (the current time stays put).
     pub audio_frame: Option<i64>,
+    /// When the last frames were shown (seconds, the last second's worth): the achieved rate.
+    pub shown_at: std::collections::VecDeque<f64>,
+}
+
+impl Playback {
+    /// A new frame went on screen at `now`.
+    pub fn frame_shown(&mut self, now: f64) {
+        self.shown += 1;
+        self.shown_at.push_back(now);
+        while self.shown_at.front().is_some_and(|t| now - t > 1.0) {
+            self.shown_at.pop_front();
+        }
+    }
+
+    /// Frames per second shown over the last second while the preview plays (`None` before two
+    /// frames were shown, while caching, or stopped).
+    pub fn achieved_fps(&self) -> Option<f64> {
+        let (a, b) = (self.shown_at.front()?, self.shown_at.back()?);
+        (self.playing && !self.caching && self.shown_at.len() > 1 && b > a).then(|| (self.shown_at.len() - 1) as f64 / (b - a))
+    }
+
+    /// The preview keeps up with its frame rate (within 5 %; previews that skip frames count
+    /// the frames they mean to show).
+    pub fn real_time(&self) -> Option<bool> {
+        let step = self.plan.map_or(1, |p| p.step).max(1) as f64;
+        self.achieved_fps().map(|f| f * step >= self.fps * 0.95)
+    }
 }
 
 pub struct EffectcraftApp {
@@ -462,12 +489,8 @@ impl EffectcraftApp {
             };
             return r.scale(zoom, ppp);
         }
-        if self.playback.playing && self.ui.viewer.res == state::Resolution::Auto {
-            // Keep previews snappy: half the displayed size, but no lower than Settings ▸
-            // Previews ▸ Adaptive Resolution Limit.
-            let full = self.ui.viewer.res.scale(zoom, ppp);
-            return full.min((full * 0.5).max(self.session.prefs.adaptive_limit()));
-        }
+        // Auto follows the zoom alike while playing and paused, so frames cached while scrubbing
+        // play back, and frames cached by a preview stay on screen when it stops.
         let full = self.ui.viewer.res.scale(zoom, ppp);
         // Fast Previews ▸ Adaptive Resolution / Fast Draft: lower resolution while dragging.
         let (_, k) = self.session.state.viewer.fast_previews.render(self.ui.viewer.interacting);
@@ -611,6 +634,7 @@ impl EffectcraftApp {
             layer_controls: preset.include_layer_controls,
             restore_max,
             audio_frame: (!plan.video).then_some(plan.first),
+            shown_at: Default::default(),
         };
         if !self.playback.caching {
             self.start_audio(fr.tick_of(plan.first));
@@ -751,9 +775,20 @@ impl EffectcraftApp {
         if self.playback.caching
             && let Some(p) = plan
         {
-            // Cache Before Playback: the whole range in play order, then start the clock.
+            // Cache Before Playback: the range in play order, then start the clock. A range
+            // larger than the RAM preview budget is cut to the frames that fit (caching more
+            // would evict the first ones and never finish).
             let mut all = true;
             let n = (p.end - p.start) / p.step + 1;
+            let fit = self.frames_that_fit(&c, scale);
+            if n > fit {
+                let mut cut = p;
+                (cut.start, cut.end) = (p.first, (p.first + (fit - 1) * p.step).min(p.end));
+                self.playback.plan = Some(cut);
+                self.toast = Some((format!("Preview cut to {fit} of {n} frames: no more fit in the RAM preview (Settings ▸ Memory & CPU)"), now));
+                ctx.request_repaint();
+                return;
+            }
             let order: Vec<i64> = (0..n).filter_map(|k| p.frame_after(p.first, k)).collect();
             for f in order {
                 if self.frames.is_cached(&FrameKey { frame: f, ..series }) {
@@ -829,7 +864,7 @@ impl EffectcraftApp {
                 self.playback.waiting = !self.frames.is_cached(&FrameKey { frame: target, ..series });
                 if target != cur {
                     self.session.set_time(fr.tick_of(target));
-                    self.playback.shown += 1;
+                    self.playback.frame_shown(now);
                 }
             }
             ctx.request_repaint();
@@ -869,7 +904,7 @@ impl EffectcraftApp {
             self.playback.waiting = false;
             if target != cur {
                 self.session.set_time(fr.tick_of(target));
-                self.playback.shown += 1;
+                self.playback.frame_shown(now);
             }
         } else {
             // Not cached yet: hold the clock at the current frame (cache first, then play).
@@ -882,6 +917,14 @@ impl EffectcraftApp {
             self.playback.start_frame = fr.frame_at(self.session.time());
         }
         ctx.request_repaint();
+    }
+
+    /// How many viewer frames of `comp` at `scale` the RAM preview budget holds (90 % of it,
+    /// at least one).
+    fn frames_that_fit(&self, comp: &effectcraft_engine::project::Comp, scale: f64) -> i64 {
+        let side = |n: u32| (n as f64 * scale).ceil().max(1.0);
+        let frame = side(comp.width) * side(comp.height) * 4.0;
+        ((self.frames.budget() as f64 * 0.9 / frame) as i64).max(1)
     }
 
     fn frames_parallelism(&self) -> usize {

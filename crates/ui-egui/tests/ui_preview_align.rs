@@ -184,3 +184,50 @@ fn align_panel_runs_align_and_distribute() {
     click(&mut h, "distribute.hcenter");
     assert_eq!(pos(&h), p);
 }
+
+#[test]
+fn cache_before_playback_plays_what_fits_in_ram() {
+    let mut h = harness();
+    set(&mut h, json!({"shortcut": "spacebar", "cacheBeforePlayback": true, "range": "entireDuration", "playFrom": "rangeStart"}));
+    h.run_steps(2);
+    // Room for about 12 full-size frames: the 240-frame range can't all be cached.
+    h.state().frames.set_budget(320 * 180 * 4 * 12);
+    invoke(&mut h, "playback.toggle", json!({}));
+    assert!(h.state().playback.caching);
+    for _ in 0..600 {
+        h.step();
+        if !h.state().playback.caching {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let st = &h.state().playback;
+    assert!(st.playing && !st.caching, "caching finished and the preview plays");
+    let pl = st.plan.unwrap();
+    assert!(pl.start == 0 && pl.end < 239 && pl.end >= 9, "cut to what fits: {}..{}", pl.start, pl.end);
+}
+
+#[test]
+fn auto_resolution_is_the_same_playing_and_paused() {
+    let mut h = harness();
+    let paused = h.state().viewer_scale(0.5, 2.0);
+    h.state_mut().playback.playing = true;
+    assert_eq!(h.state().viewer_scale(0.5, 2.0), paused);
+}
+
+#[test]
+fn achieved_frame_rate_and_real_time() {
+    let mut p = effectcraft_ui_egui::Playback { playing: true, fps: 24.0, ..Default::default() };
+    assert_eq!(p.achieved_fps(), None);
+    for i in 0..25 {
+        p.frame_shown(i as f64 / 24.0);
+    }
+    assert!((p.achieved_fps().unwrap() - 24.0).abs() < 1e-9);
+    assert_eq!(p.real_time(), Some(true));
+    let mut slow = effectcraft_ui_egui::Playback { playing: true, fps: 24.0, ..Default::default() };
+    for i in 0..13 {
+        slow.frame_shown(i as f64 / 12.0);
+    }
+    assert_eq!(slow.real_time(), Some(false));
+    assert_eq!(slow.shown_at.len(), 13, "only the last second counts");
+}
