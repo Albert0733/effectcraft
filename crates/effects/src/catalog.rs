@@ -63,10 +63,7 @@ pub fn param_shown(effect: &str, param: &str, value: &dyn Fn(&str) -> Option<eff
 /// Controls of GPU-accelerated effects that only the CPU implements: while any of them is away
 /// from its default the effect renders on the CPU. (Prefixes ending in `/` cover a whole group.)
 const CPU_ONLY_CONTROLS: &[(&str, &[&str])] = &[
-    (
-        "ec.color.lumetri",
-        &["highDynamicRange", "basicCorrection/inputLut", "creative/look", "curves/rgbCurves/", "curves/hueSaturationCurves/", "hslSecondary/"],
-    ),
+    ("ec.color.lumetri", &["highDynamicRange", "curves/rgbCurves/", "curves/hueSaturationCurves/", "hslSecondary/"]),
     (
         "ec.color.colorama",
         &["inputPhase/addPhase", "outputCycle/usePresetPalette", "modify/", "pixelSelection/matchingMode", "masking/maskingMode", "masking/compositeOverLayer"],
@@ -100,6 +97,19 @@ pub fn gpu_supported(id: &str, ctx: &crate::EffectCtx) -> bool {
     match id {
         "ec.generate.cellpattern" if (6..=10).contains(&ctx.params.e("cellPattern")) => return false,
         "ec.distort.turbulentdisplace" if ctx.params.e("pinning") >= 8 => return false,
+        // Shatter's wireframe views; Foam's User Defined texture, Environment Map and flow-map
+        // preview (the GPU draws the rendered pieces and the sprite bubbles only).
+        "ec.sim.shatter" if ctx.params.e("view") != 0 => return false,
+        "ec.sim.foam" => {
+            let set = |id: &str| matches!(ctx.params.get(id), Some(effectcraft_keyframe::Value::Layer(Some(_))));
+            let view = ctx.params.e("view");
+            if (view == 2 && ctx.params.e("rendering/bubbleTexture") == 5)
+                || (view == 2 && ctx.params.f("rendering/reflectionStrength") > 0.0 && set("rendering/environmentMap"))
+                || (view == 1 && set("flowMap/flowMap"))
+            {
+                return false;
+            }
+        }
         // Timewarp's Matte Layer (foreground and background on their own vectors).
         "ec.time.timewarp" if ctx.params.get("matteLayer").and_then(effectcraft_keyframe::Value::as_layer).is_some() => return false,
         // Fisheye / Twist (a crease at the unit circle) bent past 50 % or with Horizontal /

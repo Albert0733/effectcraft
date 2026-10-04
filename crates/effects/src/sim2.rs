@@ -80,29 +80,76 @@ impl Cam {
 }
 
 /// A planar textured piece ready to draw.
-#[derive(Clone, Copy)]
-pub(crate) struct Piece {
+#[derive(Clone, Copy, Debug)]
+pub struct Piece {
     /// Screen (buffer px, homogeneous) → piece-local (a, b, w).
-    inv: M3,
+    pub inv: [[f64; 3]; 3],
     /// Rest centre of the piece in texture pixels.
-    c0: [f32; 2],
+    pub c0: [f32; 2],
     /// Convex polygon (texture pixels), counter-clockwise in y-down space.
-    poly: [[f32; 2]; 6],
-    n: u8,
-    bbox: [f32; 4],
-    shade: f32,
+    pub poly: [[f32; 2]; 6],
+    pub n: u8,
+    pub bbox: [f32; 4],
+    pub shade: f32,
     /// Lighting: colour multiplier and additive specular highlight.
-    tint: [f32; 3],
-    spec: [f32; 3],
-    pub(crate) alpha: f32,
+    pub tint: [f32; 3],
+    pub spec: [f32; 3],
+    pub alpha: f32,
     /// Flat straight colour instead of the texture.
-    pub(crate) flat: Option<[f32; 3]>,
+    pub flat: Option<[f32; 3]>,
     /// Facing away from the camera (draw the back texture).
-    pub(crate) back: bool,
+    pub back: bool,
     /// Back faces sample their texture mirrored about the piece centre: 0 no, 1 vertically
     /// (flipped about the X axis), 2 horizontally (about the Y axis).
-    pub(crate) back_mirror: u8,
+    pub back_mirror: u8,
     depth: f64,
+}
+
+/// A piece texture: the layer itself or another image (buffer-aligned).
+#[derive(Clone, Debug)]
+pub enum PieceTex {
+    Layer,
+    Image(Image),
+}
+
+/// What a piece-drawing effect (Card Dance, Shatter, Card Wipe) draws this frame: pieces sorted
+/// far to near over a transparent frame, textured by `front` (and `back` for pieces facing
+/// away; none = they take `front`).
+#[derive(Clone, Debug)]
+pub struct PiecePlan {
+    pub pieces: Vec<Piece>,
+    pub front: PieceTex,
+    pub back: Option<PieceTex>,
+}
+
+impl PiecePlan {
+    /// Rasterise over a transparent frame of the layer `b`'s size.
+    pub fn finish(&self, mut b: Buf) -> Buf {
+        let mut out = Image::new(b.img.width, b.img.height);
+        let front = match &self.front {
+            PieceTex::Layer => &b.img,
+            PieceTex::Image(i) => i,
+        };
+        let back = self.back.as_ref().map(|t| match t {
+            PieceTex::Layer => &b.img,
+            PieceTex::Image(i) => i,
+        });
+        draw_pieces(&mut out, &self.pieces, front, back);
+        b.img = out;
+        b
+    }
+}
+
+/// The piece plan of Card Dance, Shatter (Rendered view) or Card Wipe for layer `b` (its pixels
+/// may be read: gradient maps and textures default to the layer), `None` for other effects or
+/// views drawn otherwise.
+pub fn piece_plan(id: &str, ctx: &EffectCtx, b: &Buf) -> Option<PiecePlan> {
+    match id {
+        "ec.sim.carddance" => Some(card_dance_plan(ctx, b)),
+        "ec.sim.shatter" if ctx.params.e("view") == 0 => shatter_impl(ctx, b, true).err(),
+        "ec.transition.cardwipe" => crate::transition::card_wipe_plan(ctx, b),
+        _ => None,
+    }
 }
 
 impl Piece {
@@ -462,22 +509,25 @@ fn card_source(src: u32, g1: [f32; 4], g2: [f32; 4]) -> f32 {
     }
 }
 
-fn card_dance(ctx: &EffectCtx, mut b: Buf) -> Buf {
+fn card_dance(ctx: &EffectCtx, b: Buf) -> Buf {
+    card_dance_plan(ctx, &b).finish(b)
+}
+
+fn card_dance_plan(ctx: &EffectCtx, b: &Buf) -> PiecePlan {
     let pr = ctx.params;
     let rows = pr.f("rows").clamp(1.0, 1000.0) as u32;
     let cols = if pr.e("rowsColumns") == 1 { rows } else { pr.f("columns").clamp(1.0, 1000.0) as u32 };
-    let g1 = layer_or_self(ctx, &b, "gradientLayer1", true, true);
-    let g2 = layer_or_self(ctx, &b, "gradientLayer2", true, true);
-    let back = ctx.layer_param("backLayer", true).map(|o| crate::util::fit_layer(ctx, &b, &o, true));
+    let g1 = layer_or_self(ctx, b, "gradientLayer1", true, true);
+    let g2 = layer_or_self(ctx, b, "gradientLayer2", true, true);
+    let back = ctx.layer_param("backLayer", true).map(|o| crate::util::fit_layer(ctx, b, &o, true));
     let [lw, lh] = ctx.layer_size;
     let s = b.scale;
     let (cw, ch) = (lw / cols as f64, lh / rows as f64);
-    let cam = crate::card3d::projection(ctx, &b);
+    let cam = crate::card3d::projection(ctx, b);
     let eye = cam.eye();
-    let light = Lighting::from(ctx, &b);
+    let light = Lighting::from(ctx, b);
     let props: Vec<(u32, f64, f64)> =
         CD_PROPS.iter().map(|(id, g)| (pr.e(&format!("{g}/{id}Source")), pr.f(&format!("{g}/{id}Multiplier")), pr.f(&format!("{g}/{id}Offset")))).collect();
-    let src = b.img.clone();
     let mut pieces: Vec<Piece> = (0..rows * cols)
         .into_par_iter()
         .filter_map(|i| {
@@ -502,10 +552,7 @@ fn card_dance(ctx: &EffectCtx, mut b: Buf) -> Buf {
         })
         .collect();
     sort_far_first(&mut pieces);
-    let mut out = Image::new(src.width, src.height);
-    draw_pieces(&mut out, &pieces, &src, back.as_ref());
-    b.img = out;
-    b
+    PiecePlan { pieces, front: PieceTex::Layer, back: back.map(PieceTex::Image) }
 }
 
 // ------------------------------------------------------------------ Shatter
@@ -638,7 +685,15 @@ fn map_key(c: [f32; 4]) -> u32 {
     q(c[0]) << 8 | q(c[1]) << 4 | q(c[2])
 }
 
-fn shatter(ctx: &EffectCtx, mut b: Buf) -> Buf {
+fn shatter(ctx: &EffectCtx, b: Buf) -> Buf {
+    match shatter_impl(ctx, &b, false) {
+        Ok(img) => Buf { img, ..b },
+        Err(plan) => plan.finish(b),
+    }
+}
+
+/// Shatter: the frame (`Ok`), or with `plan_only` in the Rendered view its pieces (`Err`).
+fn shatter_impl(ctx: &EffectCtx, b: &Buf, plan_only: bool) -> Result<Image, PiecePlan> {
     let pr = ctx.params;
     let view = pr.e("view");
     let render = pr.e("render");
@@ -666,21 +721,21 @@ fn shatter(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let unit = lw * 0.1;
     let cell = lw / reps;
     let extrude = pr.f("shape/extrusionDepth").max(0.0) * cell * s;
-    let cam = crate::card3d::projection(ctx, &b);
+    let cam = crate::card3d::projection(ctx, b);
     let eye = cam.eye();
-    let light = Lighting::from(ctx, &b);
+    let light = Lighting::from(ctx, b);
     // Gradient: with a gradient layer only pieces at least as bright as 1 − Shatter Threshold
     // (Invert Gradient: as dark) break.
-    let gradient = ctx.layer_param("gradient/gradientLayer", true).map(|o| crate::util::fit_layer(ctx, &b, &o, true));
+    let gradient = ctx.layer_param("gradient/gradientLayer", true).map(|o| crate::util::fit_layer(ctx, b, &o, true));
     let threshold = pr.get("gradient/shatterThreshold").map(Value::as_f64).unwrap_or(0.0) / 100.0;
     let invert_gradient = pr.b("gradient/invertGradient");
     // Textures.
     let tex_color = pr.get("textures/color").map(|v| v.as_color()).unwrap_or([1.0; 4]);
     let tex_opacity = pr.get("textures/opacity").map(Value::as_f64).unwrap_or(1.0).clamp(0.0, 1.0) as f32;
-    let front = Face::from(ctx, &b, "textures/frontMode", "textures/frontLayer", 1);
-    let side = Face::from(ctx, &b, "textures/sideMode", "textures/sideLayer", 0);
-    let backf = Face::from(ctx, &b, "textures/backMode", "textures/backLayer", 1);
-    let custom_map = custom.then(|| layer_or_self(ctx, &b, "shape/customShatterMap", true, true));
+    let front = Face::from(ctx, b, "textures/frontMode", "textures/frontLayer", 1);
+    let side = Face::from(ctx, b, "textures/sideMode", "textures/sideLayer", 0);
+    let backf = Face::from(ctx, b, "textures/backMode", "textures/backLayer", 1);
+    let custom_map = custom.then(|| layer_or_self(ctx, b, "shape/customShatterMap", true, true));
     let white_fixed = pr.b("shape/whiteTilesFixed");
     let (sd, cd) = dir.sin_cos();
     let to_layer = |q: [f64; 2]| [origin[0] + q[0] * cd - q[1] * sd, origin[1] + q[0] * sd + q[1] * cd];
@@ -843,12 +898,18 @@ fn shatter(ctx: &EffectCtx, mut b: Buf) -> Buf {
         })
         .collect();
     sort_far_first(&mut pieces);
-    let mut out = Image::new(src.width, src.height);
-    let front_img = front.img.as_ref().unwrap_or(&src);
-    let back_img = backf.img.as_ref().unwrap_or(front_img);
     if view == 0 {
-        draw_pieces(&mut out, &pieces, front_img, Some(back_img));
-    } else {
+        let tex = |i: &Option<Image>| i.clone().map(PieceTex::Image);
+        let front_t = tex(&front.img).unwrap_or(PieceTex::Layer);
+        let back_t = tex(&backf.img).unwrap_or_else(|| front_t.clone());
+        let plan = PiecePlan { pieces, front: front_t, back: Some(back_t) };
+        if plan_only {
+            return Err(plan);
+        }
+        return Ok(plan.finish(Buf { img: src, offset: b.offset, scale: b.scale }).img);
+    }
+    let out;
+    {
         // Wireframes: piece outlines (front view: at rest; otherwise animated), plus forces.
         let animated = view == 2 || view == 4;
         let mut lines = Vec::new();
@@ -889,8 +950,7 @@ fn shatter(ctx: &EffectCtx, mut b: Buf) -> Buf {
         }
         out = splat(src.width, src.height, &lines, Acc::Over);
     }
-    b.img = out;
-    b
+    Ok(out)
 }
 
 // ------------------------------------------------------------------ Caustics
@@ -911,35 +971,62 @@ fn sample_repeat(img: &Image, x: f64, y: f64, mode: u32) -> Px {
     }
 }
 
-fn caustics(ctx: &EffectCtx, mut b: Buf) -> Buf {
+/// Everything Caustics' per-pixel pass needs, prepared on the CPU (the other layers it reads
+/// and the parameter conversions); the layer's own pixels are not read.
+pub struct CausticsSetup {
+    /// The Bottom layer fitted to the buffer, `None` = the layer itself.
+    pub bottom: Option<Image>,
+    /// Gaussian σ (buffer px) blurring the bottom (transparent edges), 0 = none.
+    pub bottom_sigma: f64,
+    /// The water surface's height field (smoothed luminance), `None` = flat.
+    pub height: Option<Plane>,
+    /// The Sky layer fitted to the buffer.
+    pub sky: Option<Image>,
+    pub scaling: f64,
+    pub repeat: u32,
+    pub wave_h: f64,
+    /// Displacement per unit of height gradient.
+    pub k: f64,
+    /// Layer centre (buffer px).
+    pub cx: f64,
+    pub cy: f64,
+    /// Layer width (buffer px).
+    pub lw: f64,
+    pub surf: [f32; 4],
+    pub surf_op: f32,
+    pub cstr: f32,
+    pub lc: [f32; 4],
+    pub li: f32,
+    /// Light position (buffer px) and height (layer widths); `point` = from the position to
+    /// each pixel, else one direction from above the layer centre.
+    pub lx: f64,
+    pub ly: f64,
+    pub lheight: f64,
+    pub point: bool,
+    pub ambient: f32,
+    pub diffuse: f32,
+    pub specular: f32,
+    pub sharp: f32,
+    pub sky_scaling: f64,
+    pub sky_repeat: u32,
+    pub sky_int: f32,
+    pub convergence: f64,
+}
+
+/// Caustics' setup for layer geometry `b` (see [`CausticsSetup`]).
+pub fn caustics_setup(ctx: &EffectCtx, b: &Buf) -> CausticsSetup {
     let pr = ctx.params;
     let s = b.scale;
-    let mut bottom = layer_or_self(ctx, &b, "bottom/bottom", true, pr.e("bottom/bottomSizeDiffers") == 1);
+    let bottom = ctx.layer_param("bottom/bottom", true).map(|o| crate::util::fit_layer(ctx, b, &o, pr.e("bottom/bottomSizeDiffers") == 1));
     let blur = pr.f("bottom/blur") * s;
-    if blur > 0.05 {
-        bottom = effectcraft_raster::gaussian_blur(&bottom, blur * 0.5, blur * 0.5, false);
-    }
-    let scaling = pr.f("bottom/scaling").max(0.01);
-    let repeat = pr.e("bottom/repeatMode");
     let wave_h = pr.f("water/waveHeight");
     let smoothing = pr.f("water/smoothing") * s;
     let depth = pr.f("water/waterDepth");
     let ior = pr.f("water/refractiveIndex").max(1.0);
-    let surf = pr.color("water/surfaceColor");
-    let surf_op = pr.f("water/surfaceOpacity") as f32;
-    let cstr = pr.f("water/causticsStrength") as f32;
-    let li = pr.f("lighting/lightIntensity") as f32;
-    let lc = pr.color("lighting/lightColor");
     let lpos = pr.v2("lighting/lightPosition");
-    let lheight = pr.f("lighting/lightHeight").max(0.01);
-    let ambient = pr.f("lighting/ambientLight") as f32;
-    let diffuse = pr.f("material/diffuse") as f32;
-    let specular = pr.f("material/specular") as f32;
-    let sharp = pr.f("material/highlightSharpness").max(1.0) as f32;
-    let (w, hh) = (b.img.width as usize, b.img.height as usize);
     // Height field of the water surface (luminance of the chosen layer; none = flat).
     let height = ctx.layer_param("water/waterSurface", true).map(|o| {
-        let img = crate::util::fit_layer(ctx, &b, &o, true);
+        let img = crate::util::fit_layer(ctx, b, &o, true);
         let pl = Plane::luma(&img);
         if smoothing > 0.05 { gauss_plane(&pl, smoothing * 0.5, smoothing * 0.5) } else { pl }
     });
@@ -947,6 +1034,7 @@ fn caustics(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let k = wave_h * depth * (1.0 - 1.0 / ior) * lw * 2.0;
     let (cx, cy) = (b.offset[0] + ctx.layer_size[0] * 0.5 * s, b.offset[1] + ctx.layer_size[1] * 0.5 * s);
     let (lx, ly) = b.to_px(lpos);
+    let (lc, li, lheight) = (pr.color("lighting/lightColor"), pr.f("lighting/lightIntensity") as f32, pr.f("lighting/lightHeight").max(0.01));
     // Light Type: Distant Source (one direction, from the light position above the layer
     // centre), Point Source (from the light position to each pixel) or First Comp Light.
     let light_type = pr.e("lighting/lightType");
@@ -962,6 +1050,75 @@ fn caustics(ctx: &EffectCtx, mut b: Buf) -> Buf {
         (1, _) => (lc, li, lx, ly, lheight, true),
         _ => (lc, li, lx, ly, lheight, false),
     };
+    // Sky: the layer the water surface reflects (Surface Opacity 1 = a mirror of it).
+    let sky = ctx.layer_param("sky/sky", true).map(|o| crate::util::fit_layer(ctx, b, &o, pr.e("sky/skySizeDiffers") == 1));
+    CausticsSetup {
+        bottom,
+        bottom_sigma: if blur > 0.05 { blur * 0.5 } else { 0.0 },
+        height,
+        sky,
+        scaling: pr.f("bottom/scaling").max(0.01),
+        repeat: pr.e("bottom/repeatMode"),
+        wave_h,
+        k,
+        cx,
+        cy,
+        lw,
+        surf: pr.color("water/surfaceColor"),
+        surf_op: pr.f("water/surfaceOpacity") as f32,
+        cstr: pr.f("water/causticsStrength") as f32,
+        lc,
+        li,
+        lx,
+        ly,
+        lheight,
+        point,
+        ambient: pr.f("lighting/ambientLight") as f32,
+        diffuse: pr.f("material/diffuse") as f32,
+        specular: pr.f("material/specular") as f32,
+        sharp: pr.f("material/highlightSharpness").max(1.0) as f32,
+        sky_scaling: pr.get("sky/scaling").map(Value::as_f64).unwrap_or(1.0).max(0.01),
+        sky_repeat: pr.e("sky/repeatMode"),
+        sky_int: pr.get("sky/intensity").map(Value::as_f64).unwrap_or(0.3) as f32,
+        convergence: pr.get("sky/convergence").map(Value::as_f64).unwrap_or(0.5).clamp(0.0, 1.0),
+    }
+}
+
+fn caustics(ctx: &EffectCtx, mut b: Buf) -> Buf {
+    let st = caustics_setup(ctx, &b);
+    let mut bottom = st.bottom.clone().unwrap_or_else(|| b.img.clone());
+    if st.bottom_sigma > 0.0 {
+        bottom = effectcraft_raster::gaussian_blur(&bottom, st.bottom_sigma, st.bottom_sigma, false);
+    }
+    let CausticsSetup {
+        scaling,
+        repeat,
+        wave_h,
+        k,
+        cx,
+        cy,
+        lw,
+        surf,
+        surf_op,
+        cstr,
+        lc,
+        li,
+        lx,
+        ly,
+        lheight,
+        point,
+        ambient,
+        diffuse,
+        specular,
+        sharp,
+        sky_scaling,
+        sky_repeat,
+        sky_int,
+        convergence,
+        ..
+    } = st;
+    let (height, sky) = (&st.height, &st.sky);
+    let (w, hh) = (b.img.width as usize, b.img.height as usize);
     let norm3 = |v: [f64; 3]| {
         let n = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt().max(1e-12);
         [(v[0] / n) as f32, (v[1] / n) as f32, (v[2] / n) as f32]
@@ -973,14 +1130,8 @@ fn caustics(ctx: &EffectCtx, mut b: Buf) -> Buf {
             norm3([(lx - cx) / lw.max(1.0), (ly - cy) / lw.max(1.0), lheight])
         }
     };
-    // Sky: the layer the water surface reflects (Surface Opacity 1 = a mirror of it).
-    let sky = ctx.layer_param("sky/sky", true).map(|o| crate::util::fit_layer(ctx, &b, &o, pr.e("sky/skySizeDiffers") == 1));
-    let sky_scaling = pr.get("sky/scaling").map(Value::as_f64).unwrap_or(1.0).max(0.01);
-    let sky_repeat = pr.e("sky/repeatMode");
-    let sky_int = pr.get("sky/intensity").map(Value::as_f64).unwrap_or(0.3) as f32;
-    let convergence = pr.get("sky/convergence").map(Value::as_f64).unwrap_or(0.5).clamp(0.0, 1.0);
     let grad = |x: usize, y: usize| -> (f64, f64) {
-        match &height {
+        match height {
             Some(pl) => {
                 let gx = (pl.get_clamped(x as i64 + 1, y as i64) - pl.get_clamped(x as i64 - 1, y as i64)) as f64 * 0.5;
                 let gy = (pl.get_clamped(x as i64, y as i64 + 1) - pl.get_clamped(x as i64, y as i64 - 1)) as f64 * 0.5;
@@ -1052,12 +1203,13 @@ fn caustics(ctx: &EffectCtx, mut b: Buf) -> Buf {
 
 // ------------------------------------------------------------------ Wave World
 
+/// Wave World's simulated surface: an `nx` × `ny` grid of heights `u` and velocities `v`.
 #[derive(Clone, Debug)]
-struct Waves {
-    nx: usize,
-    ny: usize,
-    u: Vec<f32>,
-    v: Vec<f32>,
+pub struct Waves {
+    pub nx: usize,
+    pub ny: usize,
+    pub u: Vec<f32>,
+    pub v: Vec<f32>,
 }
 
 struct Producer {
@@ -1091,7 +1243,27 @@ impl Producer {
 
 static WAVE_CACHE: SimCache<Waves> = SimCache::new(4);
 
-fn wave_world(ctx: &EffectCtx, mut b: Buf) -> Buf {
+/// What Wave World draws: the Height Map view of the simulated surface (grid heights and,
+/// with a ground layer, water depths per grid point), or the wireframe preview's lines.
+pub enum WavePlan {
+    Height { st: std::sync::Arc<Waves>, depth: Option<Vec<f32>> },
+    Wire(crate::sim::SpritePlan),
+}
+
+fn wave_world(ctx: &EffectCtx, b: Buf) -> Buf {
+    match wave_world_impl(ctx, &b, false) {
+        Ok(img) => Buf { img, ..b },
+        Err(WavePlan::Wire(plan)) => plan.finish(b),
+        Err(WavePlan::Height { .. }) => b,
+    }
+}
+
+/// Wave World's simulation state for the frame, as a [`WavePlan`] (its pixels are not read).
+pub fn wave_world_plan(ctx: &EffectCtx, b: &Buf) -> Option<WavePlan> {
+    wave_world_impl(ctx, b, true).err()
+}
+
+fn wave_world_impl(ctx: &EffectCtx, b: &Buf, plan_only: bool) -> Result<Image, WavePlan> {
     let pr = ctx.params;
     let [lw, lh] = ctx.layer_size;
     let res = pr.f("simulation/gridResolution").clamp(1.0, 400.0) as usize;
@@ -1239,7 +1411,11 @@ fn wave_world(ctx: &EffectCtx, mut b: Buf) -> Buf {
         let c = g(x0, y1) + (g(x1, y1) - g(x0, y1)) * tx;
         a + (c - a) * ty
     };
+    if plan_only && pr.e("view") == 1 {
+        return Err(WavePlan::Height { st, depth });
+    }
     if pr.e("view") == 1 {
+        let mut img = Image::new(bw, bh);
         let bright = pr.f("heightMapControls/brightness") as f32;
         let contrast = pr.f("heightMapControls/contrast") as f32;
         let gamma = pr.f("heightMapControls/gamma").max(0.01) as f32;
@@ -1251,7 +1427,7 @@ fn wave_world(ctx: &EffectCtx, mut b: Buf) -> Buf {
             let gy = (y / lw.max(1.0) * (st.nx - 1) as f64).round().clamp(0.0, (st.ny - 1) as f64) as usize;
             d[gy * st.nx + gx] <= 0.0
         };
-        b.img.rows_mut().for_each(|(y, row)| {
+        img.rows_mut().for_each(|(y, row)| {
             for (x, px) in row.iter_mut().enumerate() {
                 let lx = (x as f64 + 0.5 - b.offset[0]) / s;
                 let ly = (y as f64 + 0.5 - b.offset[1]) / s;
@@ -1260,6 +1436,7 @@ fn wave_world(ctx: &EffectCtx, mut b: Buf) -> Buf {
                 *px = [v * al, v * al, v * al, al];
             }
         });
+        Ok(img)
     } else {
         // Wireframe preview: the grid turned by Horizontal Rotation about the vertical axis,
         // tilted by Vertical Rotation, heights scaled by Vertical Scale.
@@ -1291,10 +1468,12 @@ fn wave_world(ctx: &EffectCtx, mut b: Buf) -> Buf {
                 }
             }
         }
-        let wire = splat(bw, bh, &lines, Acc::Over);
-        b.img = crate::sim::combine(&Image::filled(bw, bh, [0.0, 0.0, 0.0, 1.0]), &wire, 0);
+        let plan = crate::sim::SpritePlan { sprites: lines, tints: vec![], acc: Acc::Over, post: crate::sim::Post::OverBlack };
+        if plan_only {
+            return Err(WavePlan::Wire(plan));
+        }
+        Ok(plan.finish(Buf { img: Image::new(bw, bh), offset: b.offset, scale: b.scale }).img)
     }
-    b
 }
 
 // ------------------------------------------------------------------ Foam
@@ -1336,7 +1515,23 @@ fn foam_pop_age(id: u32, lifespan: f32, frailty: f32, seed: u32) -> f32 {
 /// other, wobble, and pop at the end of their (Strength-shortened) lifespan, pushing their
 /// neighbours away at Pop Velocity. Rendered bubbles use a built-in texture or the Bubble
 /// Texture Layer, oriented by Bubble Orientation, and reflect the Environment Map.
-fn foam(ctx: &EffectCtx, mut b: Buf) -> Buf {
+fn foam(ctx: &EffectCtx, b: Buf) -> Buf {
+    match foam_impl(ctx, &b, false) {
+        Ok(img) => Buf { img, ..b },
+        Err(plan) => plan.finish(b),
+    }
+}
+
+/// Foam's bubbles as sprites, `None` when it draws more than sprites (a User Defined bubble
+/// texture, an Environment Map reflection or the Draft + Flow Map view's flow map).
+pub(crate) fn foam_plan(ctx: &EffectCtx, b: &Buf) -> Option<crate::sim::SpritePlan> {
+    if !crate::catalog::gpu_supported("ec.sim.foam", ctx) {
+        return None;
+    }
+    foam_impl(ctx, b, true).err()
+}
+
+fn foam_impl(ctx: &EffectCtx, b: &Buf, plan_only: bool) -> Result<Image, crate::sim::SpritePlan> {
     let pr = ctx.params;
     let (lw, lh) = (ctx.layer_size[0] as f32, ctx.layer_size[1] as f32);
     let unit = lw * 0.01;
@@ -1558,7 +1753,11 @@ fn foam(ctx: &EffectCtx, mut b: Buf) -> Buf {
             sp
         })
         .collect();
-    let mut out = splat(b.img.width, b.img.height, &sprites, if blend == 0 && view == 2 { Acc::Add } else { Acc::Over });
+    let acc = if blend == 0 && view == 2 { Acc::Add } else { Acc::Over };
+    if plan_only {
+        return Err(crate::sim::SpritePlan { sprites, tints: vec![], acc, post: crate::sim::Post::Replace });
+    }
+    let mut out = splat(b.img.width, b.img.height, &sprites, acc);
     // User Defined: the texture layer fills each bubble's disc.
     if let Some(tex) = &user_tex {
         for q in &order {
@@ -1581,7 +1780,7 @@ fn foam(ctx: &EffectCtx, mut b: Buf) -> Buf {
         && strength > 0.0
         && let Some(env) = ctx.layer_param("rendering/environmentMap", true)
     {
-        let env_img = crate::util::fit_layer(ctx, &b, &env, true);
+        let env_img = crate::util::fit_layer(ctx, b, &env, true);
         let conv = pr.f("rendering/reflectionConvergence").clamp(0.0, 1.0);
         let (w, h) = (b.img.width as f64, b.img.height as f64);
         for q in &order {
@@ -1602,7 +1801,7 @@ fn foam(ctx: &EffectCtx, mut b: Buf) -> Buf {
     if view == 1
         && let Some(lp) = &flow
     {
-        let fm = crate::util::fit_layer(ctx, &b, lp, true);
+        let fm = crate::util::fit_layer(ctx, b, lp, true);
         out.data.par_iter_mut().zip(fm.data.par_iter()).for_each(|(o, f)| {
             let k = 1.0 - o[3];
             for c in 0..4 {
@@ -1610,8 +1809,7 @@ fn foam(ctx: &EffectCtx, mut b: Buf) -> Buf {
             }
         });
     }
-    b.img = out;
-    b
+    Ok(out)
 }
 
 /// Add `f(u, v)` (premultiplied; u, v ∈ −1..1 across the disc) over the disc of radius `r` at

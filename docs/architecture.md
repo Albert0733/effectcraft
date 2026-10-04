@@ -208,11 +208,15 @@ Preserve Transparency / blend kernels (a 3D track matte renders solo through the
 Environment Light Background layers draw their sky in a kernel (`adv_sky`, from
 `Renderer::sky_draw`) before the rest of the run, in Classic and Advanced 3D comps. Wireframe
 outlines draw on the GPU from the CPU's pixel list (`Renderer::wireframe_pixels`). GPU effects
-(`effects::GPU_EFFECTS`, 196 of them: blurs, colour correction, keying incl. Key Light, mattes,
+(`effects::GPU_EFFECTS`, 236 of them: blurs, colour correction, keying incl. Key Light, mattes,
 channel, stylize, distortion and warps (Warp, Bezier Warp, Smear, Reshape, CC Bend It, CC Page
 Turn, CC Bender, CC Blobbylize), Cartoon, bevels, shapes, the transitions (CC light family, CC
 transitions, Block Dissolve), perspective (Radial Shadow, CC Cylinder / Sphere / Spotlight /
-Environment, 3D Glasses), generators, noise, grain, text (Numbers, Timecode) and time; see
+Environment, 3D Glasses), generators, noise, grain, text (Numbers, Timecode), time, 3D Channel (aux channels as an
+extra texture), Immersive Video, colour management (colour programs from
+`effects::color_program`, LUTs in a storage buffer) and the simulations' render passes (the
+simulation stays on the CPU and hands its plan — sprites, pieces, blobs, grids — to a tiled
+rasteriser); see
 [effects.md](effects.md)) repeat the CPU effect's steps (padding, box radii, parameters, hashes)
 as kernels, in one module per family (`gpu::fx_*` with `shaders/fx_*.wgsl`); consecutive GPU
 effects run as one chain with one upload and one readback. Statistics that need the whole frame
