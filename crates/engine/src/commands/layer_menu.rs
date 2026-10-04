@@ -209,6 +209,7 @@ fn set_transform(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn center_anchor(s: &mut Session, p: &Value) -> Result<Value> {
     let (cid, ids) = layers_p(s, p)?;
+    let ids = super::unlocked(s, cid, ids, "layer.centerAnchor")?;
     let t = s.time();
     let comp = s.project.comp(cid).ok_or(EngineError::NoComp)?;
     let ctx = effectcraft_render::EvalCtx::new(&s.project, cid, comp, t);
@@ -234,17 +235,25 @@ fn center_anchor(s: &mut Session, p: &Value) -> Result<Value> {
             if let Some(a) = tr.get_mut("anchor") {
                 a.set_value_at(lt, KV::Vec3([c[0], c[1], anchor[2]]));
             }
-            if let Some(pos) = tr.get_mut("position") {
-                // Shift every key so the layer stays put over its whole animation.
-                if pos.keys.is_empty() {
-                    let v = pos.value.as_vec3();
-                    pos.value = KV::Vec3([v[0] + shift[0], v[1] + shift[1], v[2]]);
-                } else {
-                    for k in &mut pos.keys {
-                        let v = k.value.as_vec3();
-                        k.value = KV::Vec3([v[0] + shift[0], v[1] + shift[1], v[2]]);
+            // Shift every key so the layer stays put over its whole animation (X and Y Position
+            // when the dimensions are separated).
+            let offset = |pr: &mut effectcraft_project::Property, f: &dyn Fn(&KV) -> KV| {
+                pr.value = f(&pr.value);
+                for k in &mut pr.keys {
+                    k.value = f(&k.value);
+                }
+            };
+            if tr.get("positionX").is_some() {
+                for (m, d) in [("positionX", shift[0]), ("positionY", shift[1])] {
+                    if let Some(pr) = tr.get_mut(m) {
+                        offset(pr, &|v| KV::Scalar(v.as_f64() + d));
                     }
                 }
+            } else if let Some(pr) = tr.get_mut("position") {
+                offset(pr, &|v| {
+                    let c = v.as_vec3();
+                    KV::Vec3([c[0] + shift[0], c[1] + shift[1], c[2]])
+                });
             }
         }
         Ok(())

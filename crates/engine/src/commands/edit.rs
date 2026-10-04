@@ -1,7 +1,7 @@
 //! Edit menu.
 
 use effectcraft_color::Label;
-use effectcraft_project::{Expression, ItemKind, Layer, LayerId, LayerSource};
+use effectcraft_project::{Comp, Expression, ItemKind, Layer, LayerId, LayerSource, TrackMatte};
 use effectcraft_time::Tick;
 use serde_json::{Value, json};
 
@@ -60,8 +60,9 @@ fn select_all(s: &mut Session, _: &Value) -> Result<Value> {
     if let Some(r) = super::puppet::select_all_of_kind(s) {
         return Ok(r);
     }
+    // Locked layers (and shy layers while they are hidden) can't be selected.
     if let Some(c) = s.active_comp() {
-        s.state.selected_layers = c.layers.iter().map(|l| l.id).collect();
+        s.state.selected_layers = c.layers.iter().filter(|l| super::selectable(c, l)).map(|l| l.id).collect();
     }
     Ok(json!(s.state.selected_layers.len()))
 }
@@ -71,6 +72,17 @@ fn deselect_all(s: &mut Session, _: &Value) -> Result<Value> {
     s.state.selected_keys.clear();
     s.state.selected_vertices.clear();
     Ok(Value::Null)
+}
+
+/// Copied layers keep their parent and track matte: the copy of that layer when it was copied
+/// too, else the layer itself when it is in `comp`, else none. `map`: (original, copy).
+fn relink_copies(comp: &mut Comp, map: &[(LayerId, LayerId)]) {
+    let present: Vec<LayerId> = comp.layers.iter().map(|l| l.id).collect();
+    let link = |id: LayerId| map.iter().find(|(o, _)| *o == id).map(|(_, c)| *c).or(present.contains(&id).then_some(id));
+    for l in comp.layers.iter_mut().filter(|l| map.iter().any(|(_, c)| *c == l.id)) {
+        l.parent = l.parent.and_then(link);
+        l.track_matte = l.track_matte.and_then(|m| link(m.layer).map(|layer| TrackMatte { layer, ..m }));
+    }
 }
 
 /// Fresh ids for a copied layer (and its property uids).
@@ -98,14 +110,17 @@ fn duplicate(s: &mut Session, p: &Value) -> Result<Value> {
         let mut next = proj.next_id;
         let comp = proj.comp_mut(cid).ok_or(crate::EngineError::NoComp)?;
         let mut created = vec![];
+        let mut map = vec![];
         for id in &ids {
             let Some(i) = comp.layers.iter().position(|l| l.id == *id) else { continue };
             let mut l = comp.layers[i].clone();
             reid(&mut l, &mut next);
             l.name = comp.unique_layer_name(&l.name);
             created.push(l.id);
+            map.push((*id, l.id));
             comp.layers.insert(i, l);
         }
+        relink_copies(comp, &map);
         proj.next_id = next;
         st.selected_layers = created.clone();
         Ok(created)
@@ -133,12 +148,20 @@ fn delete(s: &mut Session, p: &Value) -> Result<Value> {
         return s.execute("effect.remove", json!({}));
     }
     let (cid, ids) = layers_p(s, p)?;
+    let ids = super::unlocked(s, cid, ids, "edit.clear")?;
+    // Children of deleted layers are unparented where they are (like After Effects).
+    let comp = s.project.comp(cid).ok_or(crate::EngineError::NoComp)?;
+    let orphans: Vec<LayerId> = comp.layers.iter().filter(|l| !ids.contains(&l.id) && l.parent.is_some_and(|p| ids.contains(&p))).map(|l| l.id).collect();
+    let fixes = super::layer::parent_fixes(s, cid, &orphans, None);
     s.edit("Clear", None, |proj, st| {
         let comp = proj.comp_mut(cid).ok_or(crate::EngineError::NoComp)?;
         comp.layers.retain(|l| !ids.contains(&l.id));
         for l in &mut comp.layers {
             if l.parent.is_some_and(|p| ids.contains(&p)) {
                 l.parent = None;
+                if let Some(f) = fixes.iter().find(|f| f.layer == l.id) {
+                    f.apply(l);
+                }
             }
             if l.track_matte.is_some_and(|m| ids.contains(&m.layer)) {
                 l.track_matte = None;
@@ -374,14 +397,16 @@ fn paste(s: &mut Session, p: &Value) -> Result<Value> {
         let comp = proj.comp_mut(cid).ok_or(crate::EngineError::NoComp)?;
         let at = st.selected_layers.first().and_then(|id| comp.layers.iter().position(|l| l.id == *id)).unwrap_or(0);
         let mut created = vec![];
+        let mut map = vec![];
         for (k, mut l) in clip.into_iter().enumerate() {
+            let original = l.id;
             reid(&mut l, &mut next);
             l.name = comp.unique_layer_name(&l.name);
-            l.parent = None;
-            l.track_matte = None;
             created.push(l.id);
+            map.push((original, l.id));
             comp.layers.insert(at + k, l);
         }
+        relink_copies(comp, &map);
         proj.next_id = next;
         st.selected_layers = created.clone();
         Ok(created)

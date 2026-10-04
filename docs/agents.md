@@ -111,6 +111,10 @@ build real projects through these interfaces; they are worked examples of everyt
 * **Name things when you create them**: `layer.newText`, `layer.newShape`, `layer.newSolid`,
   `layer.newNull`, `layer.newCamera` and `layer.newLight` take `name`, so later calls can say
   `"layer": "Title"`. A reference that matches no layer is an error, never a silent no-op.
+* **Locked layers** are left alone: `edit.clear`, `layer.arrange`, `layer.transform` and
+  `layer.centerAnchor` skip them and fail when every target is locked ("… is locked"); Select
+  All and `layer.selectNext` / `selectPrevious` step over them. Unlock with
+  `layer.setSwitch {"layers": [...], "switch": "lock", "value": false}` or `layer.unlockAll`.
 * **Solid Settings**: `layer.settings {layer, name?, color?, width?, height?, pixelAspect?,
   affectAll?}` edits a solid or adjustment layer's solid (and renames the layer and the solid).
   A solid shared by several layers (duplicates share theirs) changes for all of them unless

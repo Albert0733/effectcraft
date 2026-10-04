@@ -542,3 +542,132 @@ fn layer_settings_edit_the_solid_or_give_the_layer_its_own() {
     s.execute("layer.newText", json!({"text": "T"})).unwrap();
     assert!(!s.is_enabled("layer.settings"));
 }
+
+fn order(s: &Session) -> Vec<u64> {
+    s.active_comp().unwrap().layers.iter().map(|l| l.id.0).collect()
+}
+
+fn pos(s: &Session, l: u64) -> [f64; 3] {
+    let ly = layer(s, l);
+    let tr = ly.transform().unwrap();
+    match tr.get("positionX") {
+        Some(x) => [x.value.as_f64(), tr.get("positionY").unwrap().value.as_f64(), tr.get("positionZ").map(|z| z.value.as_f64()).unwrap_or(0.0)],
+        None => tr.get("position").unwrap().value.as_vec3(),
+    }
+}
+
+#[test]
+fn locked_layers_are_not_selected_deleted_or_moved() {
+    let mut s = comp();
+    let a = solid(&mut s, "#ff0000");
+    let b = solid(&mut s, "#00ff00");
+    s.execute("layer.setSwitch", json!({"layers": [b], "switch": "lock", "value": true})).unwrap();
+    assert!(layer(&s, b).switches.locked);
+    s.execute("edit.selectAll", json!({})).unwrap();
+    assert_eq!(s.state.selected_layers.iter().map(|l| l.0).collect::<Vec<_>>(), vec![a]);
+    // Ctrl+Up / Down step over it.
+    s.execute("layer.select", json!({"layers": [a]})).unwrap();
+    s.execute("layer.selectPrevious", json!({})).unwrap();
+    assert_eq!(s.state.selected_layers[0].0, a, "nothing above the locked layer to step to");
+    // Deleting, arranging or transforming only the locked layer is refused; with others, it stays.
+    let e = s.execute("edit.clear", json!({"layers": [b]})).unwrap_err().to_string();
+    assert!(e.contains("locked"), "{e}");
+    assert!(s.execute("layer.arrange", json!({"layers": [b], "to": "back"})).is_err());
+    assert!(s.execute("layer.transform", json!({"layers": [b], "op": "center"})).is_err());
+    s.execute("edit.clear", json!({"layers": [a, b]})).unwrap();
+    assert_eq!(order(&s), vec![b]);
+}
+
+#[test]
+fn deleting_a_parent_keeps_its_children_in_place() {
+    let mut s = comp();
+    let parent = solid(&mut s, "#ff0000");
+    s.execute("prop.set", json!({"layer": parent, "path": "transform/position", "value": [300, 200]})).unwrap();
+    s.execute("prop.set", json!({"layer": parent, "path": "transform/rotation", "value": 90})).unwrap();
+    let child = solid(&mut s, "#00ff00");
+    s.execute("prop.set", json!({"layer": child, "path": "transform/position", "value": [210, 160]})).unwrap();
+    s.execute("layer.setParent", json!({"layers": [child], "parent": parent})).unwrap();
+    assert_ne!(pos(&s, child)[..2], [210.0, 160.0], "expressed in the parent's space");
+    s.execute("edit.clear", json!({"layers": [parent]})).unwrap();
+    let p = pos(&s, child);
+    assert!((p[0] - 210.0).abs() < 1e-6 && (p[1] - 160.0).abs() < 1e-6, "{p:?}");
+    assert_eq!(layer(&s, child).parent, None);
+    let r = layer(&s, child).transform().unwrap().get("rotation").unwrap().value.as_f64();
+    assert!(r.abs() < 1e-6, "{r}");
+    // One undo step restores both.
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(layer(&s, child).parent.map(|l| l.0), Some(parent));
+}
+
+#[test]
+fn bring_forward_and_send_backward_move_each_layer_one_step() {
+    let mut s = comp();
+    let ids: Vec<u64> = (0..4).map(|_| solid(&mut s, "#ffffff")).collect();
+    let top = order(&s);
+    assert_eq!(top, ids.iter().rev().copied().collect::<Vec<_>>());
+    let (l0, l1, l2, l3) = (top[0], top[1], top[2], top[3]);
+    // A non-contiguous selection: each moves down one step.
+    s.execute("layer.arrange", json!({"layers": [l0, l2], "to": "backward"})).unwrap();
+    assert_eq!(order(&s), vec![l1, l0, l3, l2]);
+    // Forward again; a layer already at the top stays there.
+    s.execute("layer.arrange", json!({"layers": [l0, l2], "to": "forward"})).unwrap();
+    assert_eq!(order(&s), vec![l0, l1, l2, l3]);
+    s.execute("layer.arrange", json!({"layers": [l0, l2], "to": "forward"})).unwrap();
+    assert_eq!(order(&s), vec![l0, l2, l1, l3]);
+    // Front / Back keep the layers' order.
+    s.execute("layer.arrange", json!({"layers": [l0, l1], "to": "back"})).unwrap();
+    assert_eq!(order(&s), vec![l2, l3, l0, l1]);
+}
+
+#[test]
+fn transform_commands_keep_depth_and_follow_separated_dimensions() {
+    let mut s = comp();
+    let a = solid(&mut s, "#ff0000");
+    s.execute("layer.setSwitch", json!({"layers": [a], "switch": "threeD", "value": true})).unwrap();
+    s.execute("prop.set", json!({"layer": a, "path": "transform/position", "value": [10, 20, -300]})).unwrap();
+    s.execute("layer.transform", json!({"layers": [a], "op": "center"})).unwrap();
+    assert_eq!(pos(&s, a), [320.0, 180.0, -300.0]);
+    s.execute("layer.transform", json!({"layers": [a], "op": "fit"})).unwrap();
+    assert_eq!(pos(&s, a), [320.0, 180.0, -300.0]);
+    let b = solid(&mut s, "#00ff00");
+    s.execute("prop.set", json!({"layer": b, "path": "transform/position", "value": [10, 20]})).unwrap();
+    s.execute("prop.separateDimensions", json!({"layer": b, "value": true})).unwrap();
+    s.execute("layer.transform", json!({"layers": [b], "op": "center"})).unwrap();
+    assert_eq!(pos(&s, b)[..2], [320.0, 180.0]);
+    s.execute("layer.transform", json!({"layers": [b], "op": "reset"})).unwrap();
+    assert_eq!(pos(&s, b)[..2], [320.0, 180.0]);
+    // Center Anchor Point moves separated X / Y Position too, so the layer stays put.
+    s.execute("prop.set", json!({"layer": b, "path": "transform/anchor", "value": [0, 0]})).unwrap();
+    s.execute("prop.set", json!({"layer": b, "path": "transform/positionX", "value": 100})).unwrap();
+    s.execute("prop.set", json!({"layer": b, "path": "transform/positionY", "value": 50})).unwrap();
+    s.execute("layer.centerAnchor", json!({"layers": [b]})).unwrap();
+    assert_eq!(pos(&s, b)[..2], [200.0, 100.0], "the 200×100 solid's centre");
+}
+
+#[test]
+fn duplicated_and_pasted_layers_keep_their_links() {
+    let mut s = comp();
+    let parent = solid(&mut s, "#ff0000");
+    let matte = solid(&mut s, "#ffffff");
+    let child = solid(&mut s, "#00ff00");
+    s.execute("layer.setParent", json!({"layers": [child], "parent": parent})).unwrap();
+    s.execute("layer.setTrackMatte", json!({"layer": child, "matte": matte, "kind": "alpha"})).unwrap();
+    let m = layer(&s, child).track_matte.unwrap().layer;
+    assert_eq!(m.0, matte);
+    // Duplicating the child alone keeps the original parent and matte.
+    let d = s.execute("edit.duplicate", json!({"layers": [child]})).unwrap()[0].as_u64().unwrap();
+    assert_eq!((layer(&s, d).parent.map(|l| l.0), layer(&s, d).track_matte.map(|t| t.layer)), (Some(parent), Some(m)));
+    // Duplicating parent and child together: the copy follows the copied parent.
+    let r = s.execute("edit.duplicate", json!({"layers": [parent, child]})).unwrap();
+    let (p2, c2) = (r[0].as_u64().unwrap(), r[1].as_u64().unwrap());
+    assert_eq!(layer(&s, c2).parent.map(|l| l.0), Some(p2));
+    // Copy / paste in the same composition keeps the links; in another one they are dropped.
+    s.execute("layer.select", json!({"layers": [child]})).unwrap();
+    s.execute("edit.copy", json!({})).unwrap();
+    let pasted = s.execute("edit.paste", json!({})).unwrap()[0].as_u64().unwrap();
+    assert_eq!(layer(&s, pasted).parent.map(|l| l.0), Some(parent));
+    assert_eq!(layer(&s, pasted).track_matte.map(|t| t.layer), Some(m));
+    s.execute("comp.new", json!({"name": "Other", "width": 64, "height": 64})).unwrap();
+    let other = s.execute("edit.paste", json!({})).unwrap()[0].as_u64().unwrap();
+    assert_eq!((layer(&s, other).parent, layer(&s, other).track_matte), (None, None));
+}
