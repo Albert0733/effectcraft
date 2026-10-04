@@ -57,7 +57,7 @@ fn gpu_adjustment_chains_match_the_cpu() {
 #[test]
 fn mixed_adjustment_chains_fall_back_per_effect() {
     let mut stack = gpu_stack();
-    stack.insert(1, ("ec.stylize.ccplastic", vec![]));
+    stack.insert(1, ("ec.distort.rollingshutterrepair", vec![]));
     stack.push(("ec.stylize.glow", vec![("threshold", n(30.0))]));
     for depth in [BitDepth::Bpc8, BitDepth::Bpc32] {
         let s = adjustment_scene(depth, &stack, true);
@@ -93,7 +93,7 @@ impl FxTarget for Probe {
 fn adjustment_stacks_split_into_gpu_runs_and_cpu_steps() {
     let Some(g) = gpu() else { return };
     let mut stack = gpu_stack();
-    stack.insert(1, ("ec.stylize.ccplastic", vec![]));
+    stack.insert(1, ("ec.generate.fractal", vec![]));
     let s = adjustment_scene(BitDepth::Bpc32, &stack, false);
     let mut r = Renderer::new(&s.p, &Pattern, RenderOpts { backend: Backend::Gpu, ..opts() });
     r.accel = Some(g);

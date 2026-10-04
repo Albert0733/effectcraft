@@ -120,6 +120,11 @@ pub(crate) fn env_case(id: &str, vals: &[(&str, Value)]) {
 
 /// [`env_case`] allowing a fraction of pixels over the tolerance (documented exceptions).
 pub(crate) fn env_case_allow(id: &str, vals: &[(&str, Value)], allow: f64) {
+    env_case_at(id, vals, allow, Tick::ZERO);
+}
+
+/// [`env_case_allow`] with the composited frames at comp time `t`.
+pub(crate) fn env_case_at(id: &str, vals: &[(&str, Value)], allow: f64, t: Tick) {
     direct_env(id, vals, allow);
     for depth in [BitDepth::Bpc8, BitDepth::Bpc32] {
         let mut s = Scene::new(depth);
@@ -135,8 +140,8 @@ pub(crate) fn env_case_allow(id: &str, vals: &[(&str, Value)], allow: f64) {
         s.effect(&mut l, id, vals);
         set(&mut l, "transform/rotation", Value::Scalar(8.0));
         s.push(l);
-        check(&format!("{id} {vals:?} {depth:?}"), compare_at(&s, opts(), Tick::ZERO), allow);
-        check(&format!("{id} {vals:?} {depth:?} half"), compare_at(&s, RenderOpts { scale: 0.5, ..opts() }, Tick::ZERO), allow);
+        check(&format!("{id} {vals:?} {depth:?}"), compare_at(&s, opts(), t), allow);
+        check(&format!("{id} {vals:?} {depth:?} half"), compare_at(&s, RenderOpts { scale: 0.5, ..opts() }, t), allow);
     }
 }
 

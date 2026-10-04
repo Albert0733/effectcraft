@@ -325,6 +325,7 @@ impl GpuContext {
             include_str!("shaders/fx_text.wgsl"),
             include_str!("shaders/fx_time.wgsl"),
             include_str!("shaders/fx_pixel2.wgsl"),
+            include_str!("shaders/fx_gen2.wgsl"),
             include_str!("shaders/sky.wgsl"),
         ]
         .concat();
@@ -394,6 +395,7 @@ impl GpuContext {
             .chain(crate::fx_text::KERNELS)
             .chain(crate::fx_time::KERNELS)
             .chain(crate::fx_pixel2::KERNELS)
+            .chain(crate::fx_gen2::KERNELS)
             .chain(crate::adv3d::SKY_KERNELS)
             .map(|e| (e, &layout))
             .chain(EXT_ENTRIES.iter().map(|e| (e, &layout_ext)))

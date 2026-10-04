@@ -89,7 +89,12 @@ pub use stylize2::strobe_on;
 pub use blur2::{camera_lens_plain, camera_lens_spans};
 pub use generate::gen_mode;
 pub use generate2::pattern_kind as cell_pattern_kind;
+pub use generate2::{BoltSeg, Contour, Ghost, RadioPlan, Wave, flare_ghosts, lightning_segments, radio_plan};
+pub use generate3::{
+    Coverage, MarksPlan, PaintPlan, Seg, eyedropper_color, marks_plan, paint_bucket_region, paint_plan, plan_reads_pixels, poly_segs, scribble_style,
+};
 pub use noise::GrainLook;
+pub use textfx::{BoltPlan, TextLook, TextPass, bolt_plan, text_passes};
 pub use transition::place_layer;
 // effectcraft-gpu fx_noise.
 pub use keying2::{InnerOuterPlan, inner_outer_plan};
@@ -1040,6 +1045,24 @@ pub const GPU_EFFECTS: &[&str] = &[
     "ec.key.innerouter",
     "ec.key.ccsimplewireremoval",
     "ec.obsolete.basic3d",
+    // effectcraft-gpu fx_gen2 (generators, part C: CPU plans rasterised on the GPU)
+    "ec.obsolete.lightning",
+    "ec.generate.advancedlightning",
+    "ec.generate.beam",
+    "ec.generate.lensflare",
+    "ec.generate.radiowaves",
+    "ec.generate.vegas",
+    "ec.generate.stroke",
+    "ec.generate.scribble",
+    "ec.generate.writeon",
+    "ec.generate.paintbucket",
+    "ec.generate.eyedropperfill",
+    "ec.generate.ccgluegun",
+    "ec.generate.ccthreads",
+    "ec.generate.audiospectrum",
+    "ec.generate.audiowaveform",
+    "ec.obsolete.basictext",
+    "ec.obsolete.pathtext",
 ];
 
 /// Effects whose output depends on [`EffectCtx::time`] directly (not only through animated

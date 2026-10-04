@@ -22,14 +22,15 @@
 //! GPU effects ([`effectcraft_effects::GPU_EFFECTS`]) run as compute kernels with the CPU
 //! effect's exact steps (padding, box-blur radii, parameter conversions); chains of them are
 //! uploaded and read back once. Each family lives in its own module with its own WGSL file
-//! (`fx_color`, `fx_depth`, `fx_distort`, `fx_extra`, `fx_generate`, `fx_key`, `fx_light`,
-//! `fx_lut`, `fx_noise`, `fx_pixel2`, `fx_sim`, `fx_stylize`, `fx_text`, `fx_time`, `fx_tone`,
-//! `fx_transition`, `fx_vr`, `fx_warp`); settings a kernel cannot match fall back to the CPU
-//! (`catalog::gpu_supported`, or `None` from the family's `apply`).
+//! (`fx_color`, `fx_depth`, `fx_distort`, `fx_extra`, `fx_gen2`, `fx_generate`, `fx_key`,
+//! `fx_light`, `fx_lut`, `fx_noise`, `fx_pixel2`, `fx_sim`, `fx_stylize`, `fx_text`, `fx_time`,
+//! `fx_tone`, `fx_transition`, `fx_vr`, `fx_warp`); settings a kernel cannot match fall back to
+//! the CPU (`catalog::gpu_supported`, or `None` from the family's `apply`).
 //! The 3D Channel effects read the layer's aux channels as an extra texture (`fx_depth`), the
 //! colour-management effects interpret colour programs built next to the CPU effects
-//! (`fx_lut`), and simulations keep their state on the CPU and rasterise its per-frame plan here
-//! (`fx_sim`).
+//! (`fx_lut`), simulations keep their state on the CPU and rasterise its per-frame plan here
+//! (`fx_sim`), and so do the geometry generators (`fx_gen2`: bolts, strokes, glyphs, audio
+//! marks, waves).
 //!
 //! Working textures come from a pool (`context::Pool`): a frame allocates several full-frame
 //! RGBA f32 images per layer, and creating and zeroing those cost more than compositing a small
@@ -59,6 +60,7 @@ mod fx_color;
 mod fx_depth;
 mod fx_distort;
 mod fx_extra;
+mod fx_gen2;
 mod fx_generate;
 mod fx_key;
 mod fx_light;
@@ -322,6 +324,8 @@ mod tests_fx_depth;
 mod tests_fx_distort;
 #[cfg(test)]
 mod tests_fx_extra;
+#[cfg(test)]
+mod tests_fx_gen2;
 #[cfg(test)]
 mod tests_fx_generate;
 #[cfg(test)]

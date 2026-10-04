@@ -5,7 +5,7 @@
 
 EffectCraft ships 306 effects with 3009 parameters in total, grouped into the same categories as the Effects & Presets panel. Every effect is our own implementation, written from public behaviour descriptions and standard image-processing literature. Parameter names, order, popup options, units, defaults and ranges follow the reference application so that projects, expressions and muscle memory carry over.
 
-- **GPU**: 256 effects also run on the GPU compositor with identical results.
+- **GPU**: 273 effects also run on the GPU compositor with identical results.
 - **32**: 306 effects process 32-bit float (HDR, overbright) pixels without clamping.
 - **Status**: 306 implemented in full, 0 partial (what is missing is listed).
 
@@ -189,31 +189,31 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 | Effect | Id | Params | GPU | 32 | Status |
 |---|---|---:|:-:|:-:|---|
 | 4-Color Gradient | `ec.generate.fourcolor` | 12 | GPU | 32 | Implemented |
-| Advanced Lightning | `ec.generate.advancedlightning` | 24 |  | 32 | Implemented |
-| Audio Spectrum | `ec.generate.audiospectrum` | 23 |  | 32 | Implemented |
-| Audio Waveform | `ec.generate.audiowaveform` | 17 |  | 32 | Implemented |
-| Beam | `ec.generate.beam` | 11 |  | 32 | Implemented |
-| CC Glue Gun | `ec.generate.ccgluegun` | 7 |  | 32 | Implemented |
+| Advanced Lightning | `ec.generate.advancedlightning` | 24 | GPU | 32 | Implemented |
+| Audio Spectrum | `ec.generate.audiospectrum` | 23 | GPU | 32 | Implemented |
+| Audio Waveform | `ec.generate.audiowaveform` | 17 | GPU | 32 | Implemented |
+| Beam | `ec.generate.beam` | 11 | GPU | 32 | Implemented |
+| CC Glue Gun | `ec.generate.ccgluegun` | 7 | GPU | 32 | Implemented |
 | CC Light Burst 2.5 | `ec.generate.cclightburst` | 6 | GPU | 32 | Implemented |
 | CC Light Rays | `ec.generate.cclightrays` | 8 | GPU | 32 | Implemented |
 | CC Light Sweep | `ec.generate.cclightsweep` | 9 | GPU | 32 | Implemented |
-| CC Threads | `ec.generate.ccthreads` | 8 |  | 32 | Implemented |
+| CC Threads | `ec.generate.ccthreads` | 8 | GPU | 32 | Implemented |
 | Cell Pattern | `ec.generate.cellpattern` | 14 | GPU | 32 | Implemented |
 | Checkerboard | `ec.generate.checkerboard` | 10 | GPU | 32 | Implemented |
 | Circle | `ec.generate.circle` | 11 | GPU | 32 | Implemented |
 | Ellipse | `ec.generate.ellipse` | 8 | GPU | 32 | Implemented |
-| Eyedropper Fill | `ec.generate.eyedropperfill` | 5 |  | 32 | Implemented |
+| Eyedropper Fill | `ec.generate.eyedropperfill` | 5 | GPU | 32 | Implemented |
 | Fill | `ec.generate.fill` | 7 | GPU | 32 | Implemented |
 | Fractal | `ec.generate.fractal` | 21 |  | 32 | Implemented |
 | Gradient Ramp | `ec.generate.gradientramp` | 7 | GPU | 32 | Implemented |
 | Grid | `ec.generate.grid` | 12 | GPU | 32 | Implemented |
-| Lens Flare | `ec.generate.lensflare` | 4 |  | 32 | Implemented |
-| Paint Bucket | `ec.generate.paintbucket` | 11 |  | 32 | Implemented |
-| Radio Waves | `ec.generate.radiowaves` | 31 |  | 32 | Implemented |
-| Scribble | `ec.generate.scribble` | 25 |  | 32 | Implemented |
-| Stroke | `ec.generate.stroke` | 11 |  | 32 | Implemented |
-| Vegas | `ec.generate.vegas` | 26 |  | 32 | Implemented |
-| Write-on | `ec.generate.writeon` | 10 |  | 32 | Implemented |
+| Lens Flare | `ec.generate.lensflare` | 4 | GPU | 32 | Implemented |
+| Paint Bucket | `ec.generate.paintbucket` | 11 | GPU | 32 | Implemented |
+| Radio Waves | `ec.generate.radiowaves` | 31 | GPU | 32 | Implemented |
+| Scribble | `ec.generate.scribble` | 25 | GPU | 32 | Implemented |
+| Stroke | `ec.generate.stroke` | 11 | GPU | 32 | Implemented |
+| Vegas | `ec.generate.vegas` | 26 | GPU | 32 | Implemented |
+| Write-on | `ec.generate.writeon` | 10 | GPU | 32 | Implemented |
 
 ## Immersive Video
 
@@ -283,12 +283,12 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 | Effect | Id | Params | GPU | 32 | Status |
 |---|---|---:|:-:|:-:|---|
 | Basic 3D | `ec.obsolete.basic3d` | 5 | GPU | 32 | Implemented |
-| Basic Text | `ec.obsolete.basictext` | 11 |  | 32 | Implemented |
+| Basic Text | `ec.obsolete.basictext` | 11 | GPU | 32 | Implemented |
 | Color Key | `ec.key.colorkey` | 4 | GPU | 32 | Implemented |
 | Gaussian Blur (Legacy) | `ec.obsolete.gaussianlegacy` | 2 | GPU | 32 | Implemented |
-| Lightning | `ec.obsolete.lightning` | 25 |  | 32 | Implemented |
+| Lightning | `ec.obsolete.lightning` | 25 | GPU | 32 | Implemented |
 | Luma Key | `ec.key.luma` | 5 | GPU | 32 | Implemented |
-| Path Text | `ec.obsolete.pathtext` | 32 |  | 32 | Implemented |
+| Path Text | `ec.obsolete.pathtext` | 32 | GPU | 32 | Implemented |
 | Reduce Interlace Flicker | `ec.blur.reduceflicker` | 1 | GPU | 32 | Implemented |
 | Spill Suppressor | `ec.key.spill` | 3 | GPU | 32 | Implemented |
 
