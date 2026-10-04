@@ -35,6 +35,33 @@ fn ftm_mix(@builtin(global_invocation_id) gid: vec3<u32>) {
     textureStore(out, p, a + (textureLoad(aux, p, 0) - a) * P.f[0].x);
 }
 
+// Timewarp's Matte Layer with Pixel Motion (time_fx::layered): src = foreground, aux =
+// background; u[0].x = Show (1 foreground, 2 background, 3 the foreground's alpha as a matte,
+// else foreground over background).
+@compute @workgroup_size(16, 16)
+fn ftm_layer(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let p = vec2<i32>(gid.xy);
+    if (!ftm_inside(p)) {
+        return;
+    }
+    let f = textureLoad(src, p, 0);
+    let b = textureLoad(aux, p, 0);
+    var o = f + b * (1.0 - f.w);
+    switch (P.u[0].x) {
+        case 1u: {
+            o = f;
+        }
+        case 2u: {
+            o = b;
+        }
+        case 3u: {
+            o = vec4<f32>(f.w, f.w, f.w, 1.0);
+        }
+        default: {}
+    }
+    textureStore(out, p, o);
+}
+
 // ---------------------------------------------------------------- Time Difference (time_fx::time_difference)
 // src = the layer now, aux = the target. u[0] = (absolute difference, alpha channel);
 // f[0].x = contrast gain.

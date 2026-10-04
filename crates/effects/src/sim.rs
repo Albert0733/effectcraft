@@ -268,6 +268,8 @@ pub fn sprite_plan(id: &str, ctx: &EffectCtx, b: &Buf) -> Option<SpritePlan> {
             crate::sim2::WavePlan::Height { .. } => None,
         }),
         "ec.sim.foam" => crate::sim2::foam_plan(ctx, b),
+        "ec.sim.ccparticleworld" => particle_world_plan(ctx, b),
+        "ec.sim.ccparticlesystems2" => Some(particle_systems2_plan(ctx, b)),
         _ => None,
     }
 }
@@ -1059,12 +1061,20 @@ fn pw_phys(ctx: &EffectCtx) -> Phys {
     }
 }
 
-fn particle_world(ctx: &EffectCtx, mut b: Buf) -> Buf {
+fn particle_world(ctx: &EffectCtx, b: Buf) -> Buf {
+    match particle_world_plan(ctx, &b) {
+        Some(plan) => plan.finish(b),
+        None => b,
+    }
+}
+
+/// CC Particle World's sprites (far to near), `None` before anything is born.
+fn particle_world_plan(ctx: &EffectCtx, b: &Buf) -> Option<SpritePlan> {
     let pr = ctx.params;
     let (lw, lh) = (ctx.layer_size[0] as f32, ctx.layer_size[1] as f32);
     let phys = pw_phys(ctx);
     if phys.rate <= 0.0 && ctx.time <= 0.0 {
-        return b;
+        return None;
     }
     let key = params_key(ctx, &Buf { img: Image::new(0, 0), offset: [0.0; 2], scale: 1.0 }, 1);
     let st = accelerated(ctx, key, &phys).unwrap_or_else(|| simulate(&PW_CACHE, key, ctx.time, &phys));
@@ -1097,20 +1107,24 @@ fn particle_world(ctx: &EffectCtx, mut b: Buf) -> Buf {
         .collect();
     list.sort_by(|a, b| b.0.total_cmp(&a.0));
     let sprites: Vec<Sprite> = list.into_iter().map(|(_, s)| s).collect();
-    let mode = pr.e("particle/transferMode");
-    let fx = splat(b.img.width, b.img.height, &sprites, if mode == 2 { Acc::Add } else { Acc::Over });
-    b.img = combine(
-        &b.img,
-        &fx,
-        match mode {
+    Some(particle_sprites(sprites, pr.e("particle/transferMode")))
+}
+
+/// The CC particle systems' sprites with their Transfer Mode (Composite, Screen, Add, Black
+/// Background).
+fn particle_sprites(sprites: Vec<Sprite>, mode: u32) -> SpritePlan {
+    SpritePlan {
+        sprites,
+        tints: vec![],
+        acc: if mode == 2 { Acc::Add } else { Acc::Over },
+        post: Post::Combine(match mode {
             0 => 0,
             1 => 1,
             2 => 2,
             3 => 5,
             _ => 0,
-        },
-    );
-    b
+        }),
+    }
 }
 
 // ------------------------------------------------------------------ CC Particle Systems II
@@ -1143,7 +1157,12 @@ fn ps2_phys(ctx: &EffectCtx) -> Phys {
     }
 }
 
-fn particle_systems2(ctx: &EffectCtx, mut b: Buf) -> Buf {
+fn particle_systems2(ctx: &EffectCtx, b: Buf) -> Buf {
+    particle_systems2_plan(ctx, &b).finish(b)
+}
+
+/// CC Particle Systems II's sprites.
+fn particle_systems2_plan(ctx: &EffectCtx, b: &Buf) -> SpritePlan {
     let pr = ctx.params;
     let lh = ctx.layer_size[1] as f32;
     let unit = lh.max(1.0);
@@ -1167,20 +1186,7 @@ fn particle_systems2(ctx: &EffectCtx, mut b: Buf) -> Buf {
             type_sprite(kind, bx as f32, by as f32, r, c, q.v[0] * unit * s, q.v[1] * unit * s, (q.id % 628) as f32 * 0.01 + q.age * 2.0)
         })
         .collect();
-    let mode = pr.e("particle/transferMode");
-    let fx = splat(b.img.width, b.img.height, &sprites, if mode == 2 { Acc::Add } else { Acc::Over });
-    b.img = combine(
-        &b.img,
-        &fx,
-        match mode {
-            0 => 0,
-            1 => 1,
-            2 => 2,
-            3 => 5,
-            _ => 0,
-        },
-    );
-    b
+    particle_sprites(sprites, pr.e("particle/transferMode"))
 }
 
 // ------------------------------------------------------------------ CC Mr. Mercury

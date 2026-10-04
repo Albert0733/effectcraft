@@ -6,8 +6,10 @@
 //! Smear's moved outline, Reshape's outline correspondence, Bend It's arc geometry) and goes to
 //! the kernels as parameters or tables; the kernels do the per-pixel work in f32. Warp inverts
 //! its forward map per pixel with the CPU's Newton iterations, relative to the warp centre so
-//! f32 keeps sub-pixel precision; Bend It's arc distance is evaluated in a cancellation-free
-//! form so large radii (small bends) keep their precision too.
+//! f32 keeps sub-pixel precision (strong Fisheye / Twist bends, where the iterations are chaotic
+//! near the fold, sample the CPU's f64 inverse map, `effects::warp_inverse_map`); Bend It's arc
+//! distance is evaluated in a cancellation-free form so large radii (small bends) keep their
+//! precision too.
 
 use effectcraft_effects::{Buf, EffectCtx, Image};
 
@@ -17,6 +19,7 @@ use crate::effects::{GBuf, gaussian_blur};
 /// Compute entry points in `fx_warp.wgsl`.
 pub(crate) const KERNELS: &[&str] = &[
     "fxw_warp",
+    "fxw_remap",
     "fxw_bendit",
     "fxw_pageturn",
     "fxw_smear",
@@ -92,6 +95,16 @@ fn warp(e: &mut Enc, ctx: &EffectCtx, mut b: GBuf) -> Option<GBuf> {
     if !ctx.adjustment {
         let pad = ((k.abs() + hd.abs() + vd.abs()) * 0.6 * hx.max(hy)).ceil().min(4096.0);
         b.pad(e, pad as u32 + 1)?;
+    }
+    // Fisheye / Twist (a crease at the unit circle) bent past 50 % or with Horizontal /
+    // Vertical Distortion: Newton's inverse wanders chaotically before converging near the
+    // fold, so f32 would land on other pixels than the CPU's f64. The inverse map is solved on
+    // the CPU (the CPU effect's own solver) and sampled here.
+    if matches!(style, 11 | 14) && (k.abs() > 0.5 || hd != 0.0 || vd != 0.0) {
+        let geo = Buf { img: Image::new(0, 0), offset: b.offset, scale: b.scale };
+        let map = e.g.upload_image(&effectcraft_effects::warp_inverse_map(ctx, &geo, b.img.width, b.img.height))?;
+        b.img = run(e, "fxw_remap", &Params::default(), &b.img, Some(&map), None);
+        return Some(b);
     }
     let c = b.to_px([ctx.layer_size[0] * 0.5, ctx.layer_size[1] * 0.5]);
     let mut p = Params::default();
