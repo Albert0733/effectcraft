@@ -2,46 +2,43 @@
 
 How close EffectCraft is to After Effects 2026, feature by feature, and how much work is left.
 
-## Current status (audit at commit `58163a2`, 3 October 2026, evening)
+## Current status (audit at commit `d39c0e8`, 4 October 2026)
 
 | Measure | Value |
 |---|---|
-| **Feature parity, weighted by tier** (P0 ×3, P1 ×2, P2 ×1) | **≈ 98%** counting every partial feature as half done; ≈ 99.6% using per-feature fractions |
-| Unweighted | ≈ 97% (half-credit) / 99% (fractions) |
-| P0 / P1 / P2 | ≈ 99% / 96% / 90% (half-credit); 99.8% / 99.2% / 97.5% (fractions) |
-| Features done / partial / missing | 87 / 5 / 0 of 92 |
-| **Effects** | **306** effects (all After Effects 2026 effects), every one implemented in full ([effects.md](effects.md)); 236 run on the GPU |
+| **Feature parity, weighted by tier** (P0 ×3, P1 ×2, P2 ×1) | **≈ 99%** counting every partial feature as half done; ≈ 99.8% using per-feature fractions |
+| Unweighted | ≈ 98.4% (half-credit) / 99.6% (fractions) |
+| P0 / P1 / P2 | 100% / 98% / 90% (half-credit); 100% / 99.7% / 97.5% (fractions) |
+| Features done / partial / missing | 89 / 3 / 0 of 92 |
+| **Effects** | **306** effects, every one implemented in full ([effects.md](effects.md)); 236 run on the GPU |
 | Disabled menu entries left | 1, on purpose: Import ▸ Vanishing Point (.vpe), whose format has no public specification |
-| Remaining work | ≈ 9–11 agent-hours at the pace measured so far (≈ 29 on the conservative audit scale); ≈ 6–7 without the learned-model items |
-| **Wall-clock estimate** | **≈ 2–2.5 hours** with five agents in parallel; ≈ 1.5 hours for 100% of P0 + P1 |
+| Remaining work | ≈ 8.5 agent-hours at the pace measured so far (≈ 26 on the conservative audit scale); ≈ 3.5 without the learned-model items |
+| **Wall-clock estimate** | **≈ 2–3 hours** with five agents in parallel; ≈ 1 hour without the learned-model items |
 
 Partial features:
 
 | id | Tier | Done | What is missing |
 |---|---|---|---|
-| EFF-5 GPU effects | P1 | 0.97 | GPU kernels for the audio-driven effects and the stepped particle systems' sprite pass (the CC light / transition families, Numbers, Timecode and Time effects landed in M13.22; 3D Channel, the VR family, OCIO / LUT and the simulations' render passes in M13.23); custom `.ocio` configs, Shatter's wireframe views and Foam's texture / environment / flow-map extras render on the CPU |
-| WEB-1 Web app | P0 | 0.97 | GPU effects in Render Queue / analysis job workers (they render on their CPU); layer buffers in the browser's disk cache (frames only); threads inside one engine instance (the decided design is one engine instance per worker; a threaded build needs nightly `build-std`). M13.24 added GPU effects and the GPU compositor in the frame workers (their own WebGPU devices, deferred readbacks: frames render in passes; Backend Auto per comp), the disk cache in the Origin Private File System (written by the workers with sync access handles, LRU under the settings' limit, served after a reload), the storage manager (Settings ▸ Disk ▸ Browser Storage, `storage.*`) and fixed a WGSL constant Chrome rejected (it disabled every GPU kernel in Chrome) |
-| UI-7 Home screen | P1 | 0.95 | A "start from a template" gallery |
+| EFF-5 GPU effects | P1 | 0.92 | GPU kernels for 57 visual effects (CC blur/glass family, generators such as Lightning, Beam, Lens Flare, Stroke, Write-on, Audio Spectrum, the particle systems, and analysis/tool effects) and a few settings that fall back to the CPU (Shatter wireframe views, Foam extras, Timewarp with a matte, custom `.ocio` configs). The 13 audio filters stay on the CPU by design |
 | MSK-4 Roto Brush | P2 | 0.85 | Segmentation is classical (graph cut + optical flow), not a learned model |
 | TRK-3 Face tracking | P2 | 0.9 | Classical fitter: weak on profile and occluded faces; Rolling Shutter Ripple is approximated |
 
-Since the previous audit, M9.13 completed all 42 simplified effects; M13.4 added HEVC and AV1
-export and Opus SILK / hybrid; M13.5 the Learn tab and Extended Viewer; M13.6 and M13.12 text,
-images, shadings and transparency groups in PDF/AI/EPS import, variable fonts and PSD warps;
-M13.7 ScriptUI resource strings, `onDraw` and `Socket`, Essential Graphics scripting hooks and
-the last menu items; M13.8 the Preview panel, Align to Selection / Distribute and Advanced 3D
-iris depth of field, collapsed precomps and extruded strokes; M13.9 and M13.13 107 more GPU
-effects, a texture pool and per-comp CPU/GPU choice; M13.10 render workers in the browser and
-visual editors for curves and palettes; M13.11 Advanced 3D on the GPU and Essential Graphics
-mirrors; M13.14–M13.20 puppet pin editing and rigging; M13.15 end-to-end tests through MCP and
-the CLI; M13.21 lazy project open, virtualised panels, background auto-save and an audit that
-every command is reachable over MCP, the control channel and the CLI; M13.24 GPU effects in the
-browser's frame workers, the browser disk cache (OPFS) and a storage manager.
+Since the previous audit: M13.22 and M13.23 put 70 more effects on the GPU (236) and composite every
+Advanced 3D mode on the GPU; M13.24 runs GPU effects in the browser's render workers with a disk
+cache in browser storage and a storage manager; M13.25 added the Home template gallery, Save as
+Template and View ▸ Simulate Output ▸ My Custom RGB; M13.26 Premiere Pro interop through FCP7 XML,
+FCPXML, OTIO, EDL, AAF and OMF (import and export, with pre-renders for layers a timeline can't
+hold); WebM VP9 alpha now imports (FilmCraft); M13.27 pins the CPU simulation effects with golden
+hashes.
 
-Out of clean-room scope (no public specification or no permissively licensed data): `.jsxbin`,
-Vanishing Point `.vpe`, the predefined CJK CMaps in PDF import, Kodak film emulations. Adobe
-service integrations (Team Projects, Libraries, Media Encoder, Dynamic Link, Frame.io, Exchange)
-and third-party plug-ins (Cinema 4D, Mocha) are intentionally absent.
+Out of clean-room scope (no public specification or no permissively licensed data): native
+`.prproj`, `.jsxbin`, Vanishing Point `.vpe`, the predefined CJK CMaps in PDF import, Kodak film
+emulations. Adobe service integrations (Team Projects, Libraries, Media Encoder, Dynamic Link,
+Frame.io, Exchange) and third-party plug-ins (Cinema 4D, Mocha) are intentionally absent.
+
+### Previous audit (commit `58163a2`, 3 October 2026, evening): ≈ 98%
+
+87 done / 5 partial / 0 missing.
 
 ### Previous audit (commit `978e8d7`, 3 October 2026): ≈ 94%
 
