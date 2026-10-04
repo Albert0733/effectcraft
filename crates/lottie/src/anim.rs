@@ -372,5 +372,5 @@ pub(crate) fn to_bool(j: &Json) -> Option<Value> {
 
 /// Lottie 1-based enum → 0-based popup index.
 pub(crate) fn to_enum1(j: &Json) -> Option<Value> {
-    to_scalar(j).map(|v| Value::Enum((v.as_f64().round() as i64 - 1).max(0) as u32))
+    to_scalar(j).map(|v| Value::Enum((v.as_f64().round() as i64).saturating_sub(1).max(0) as u32))
 }
