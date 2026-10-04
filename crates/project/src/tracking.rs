@@ -235,11 +235,11 @@ impl Layer {
         self.trackers().find(|(g, _)| g.uid == uid)
     }
     /// The Motion Trackers group, created (first in the layer's tree, like AE) when missing.
-    pub fn motion_trackers_mut(&mut self, ids: &mut Ids) -> &mut PropGroup {
+    pub fn motion_trackers_mut(&mut self, ids: &mut Ids) -> Option<&mut PropGroup> {
         if self.props.sub(MOTION_TRACKERS).is_none() {
             self.props.children.insert(0, motion_trackers(ids).into());
         }
-        self.props.sub_mut(MOTION_TRACKERS).expect("motion trackers group")
+        self.props.sub_mut(MOTION_TRACKERS)
     }
 }
 
