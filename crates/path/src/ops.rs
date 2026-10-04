@@ -651,7 +651,8 @@ pub fn merge(paths: &[BezPath], mode: MergeMode) -> BezPath {
         MergeMode::Subtract => crate::boolean::boolean_n(&inputs, |m| m[0] && !m[1..].iter().any(|&b| b)),
         MergeMode::Intersect => crate::boolean::boolean_n(&inputs, |m| m.iter().all(|&b| b)),
         MergeMode::Exclude => crate::boolean::boolean_n(&inputs, |m| m.iter().filter(|&&b| b).count() % 2 == 1),
-        MergeMode::Merge => unreachable!(),
+        // Handled above (no boolean operation).
+        MergeMode::Merge => crate::boolean::boolean_n(&inputs, |m| m.iter().any(|&b| b)),
     }
 }
 

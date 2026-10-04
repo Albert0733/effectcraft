@@ -497,7 +497,7 @@ pub fn patch_fill(img: &Image, hole: &[bool], init: Option<&Image>, patch: usize
     // Pyramid: stop while the image is still a few patches across.
     let mut levels = vec![fine];
     while levels.len() < 6 {
-        let last = levels.last().expect("level");
+        let Some(last) = levels.last() else { break };
         if last.w.min(last.h) / 2 < patch * 4 || !last.hole.iter().any(|b| *b) {
             break;
         }
@@ -774,7 +774,11 @@ pub fn fill_sequence(input: &FillInput, o: &FillOpts, progress: &mut dyn FnMut(u
             out[t] = Some(img.clone());
         } else {
             // Warp the previous result here along the backward flow (t → t − 1).
-            let prev = out[t - 1].as_ref().expect("previous frame");
+            // Frames after `t0` are filled in order, so the previous one is set.
+            let Some(prev) = out[t - 1].as_ref() else {
+                out[t] = Some(patch_fill(img, left, None, o.patch, o.seed));
+                continue;
+            };
             let mut warped = img.clone();
             for i in 0..w * h {
                 if left[i] {
