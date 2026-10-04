@@ -232,7 +232,8 @@ pub struct Frames {
     /// Pending jobs, picked by priority when a pool thread frees up (the viewer's frame first).
     queue: Arc<Mutex<Queue>>,
     #[cfg(not(target_arch = "wasm32"))]
-    pool: rayon::ThreadPool,
+    /// None if the OS refused the threads: jobs then go to rayon's global pool.
+    pool: Option<rayon::ThreadPool>,
     ctx: Option<egui::Context>,
     /// Render time of the last viewer (urgent) frame in ms, for the Info panel / perf readout.
     pub last_ms: Arc<Mutex<f64>>,
@@ -251,7 +252,14 @@ impl Default for Frames {
             inflight: Arc::new(Mutex::new(HashSet::new())),
             queue: Arc::new(Mutex::new(Queue::default())),
             #[cfg(not(target_arch = "wasm32"))]
-            pool: rayon::ThreadPoolBuilder::new().num_threads(threads).thread_name(|i| format!("ec-frame-{i}")).build().expect("frame pool"),
+            // A panicking job would abort the whole process (rayon's default for `spawn`): log it
+            // and lose only that frame (the panic hook has logged the message).
+            pool: rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .thread_name(|i| format!("ec-frame-{i}"))
+                .panic_handler(|_| log::error!("a frame render panicked; that frame was skipped"))
+                .build()
+                .ok(),
             ctx: None,
             last_ms: Arc::new(Mutex::new(0.0)),
             content_keys: Arc::default(),
@@ -405,9 +413,13 @@ impl Frames {
         if self.remote.is_none() {
             let w = self.worker();
             // One spawn per job; each spawn renders whichever queued job matters most right now.
-            self.pool.spawn(move || {
+            let job = move || {
                 w.run_next();
-            });
+            };
+            match &self.pool {
+                Some(pool) => pool.spawn(job),
+                None => rayon::spawn(job),
+            }
         }
         #[cfg(target_arch = "wasm32")]
         if let Some(ctx) = &self.ctx {

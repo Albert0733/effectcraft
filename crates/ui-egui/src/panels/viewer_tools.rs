@@ -380,7 +380,7 @@ pub(crate) fn draw_frame(app: &mut EffectcraftApp, ctx: &egui::Context, painter:
     // read it back first (asynchronously in the browser: from the next frame on).
     let gpu = matches!((&app.viewer_shown, &app.viewer_native), (Some(s), Some(n)) if s.0 == n.0 && s.1 == n.1 && n.1.comp == cid.0);
     let rect = if gpu {
-        let id = app.viewer_shown.map(|s| s.0).expect("shown");
+        let Some(id) = app.viewer_shown.map(|s| s.0) else { return };
         if plain || app.viewer_pixels().is_none() {
             if !plain {
                 ctx.request_repaint();

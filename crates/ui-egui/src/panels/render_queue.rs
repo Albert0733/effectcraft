@@ -570,8 +570,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         lp.text(pos2(cx_num + 2.0, row.center().y), Align2::LEFT_CENTER, n.to_string(), Tokens::ui(12.0), t.text_dim);
         let name = comp_item.map(|i| i.name.clone()).unwrap_or_else(|| "(missing composition)".into());
         lp.text(pos2(cx_name + 2.0, row.center().y), Align2::LEFT_CENTER, &name, Tokens::ui(12.0), t.text);
-        let status = if rendering && progress.as_ref().and_then(|p| p.current) == Some(it.id) {
-            let pr = progress.as_ref().expect("progress");
+        let status = if rendering && let Some(pr) = progress.as_ref().filter(|p| p.current == Some(it.id)) {
             format!("Rendering {:.0}%", if pr.total > 0 { pr.done as f64 * 100.0 / pr.total as f64 } else { 0.0 })
         } else {
             it.status.label().to_string()

@@ -5,6 +5,8 @@
 //! Everything goes through `effectcraft_engine::Session::execute` (or `menus::invoke` for
 //! frontend-only commands) so every gesture is also available to agents.
 
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
+
 pub mod audio;
 pub mod automation;
 pub mod bench;

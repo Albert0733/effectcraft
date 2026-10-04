@@ -193,8 +193,7 @@ pub fn hook(
                 handled = true;
             } else if e.contains(map, pos) {
                 let ci = e.hit(map, pos);
-                let sel = editing.as_ref().expect("editing");
-                let anchor = if mods.shift { sel.anchor } else { ci };
+                let anchor = if mods.shift { editing.as_ref().map_or(ci, |sel| sel.anchor) } else { ci };
                 exec(app, "text.setSelection", json!({"anchor": anchor, "caret": ci}));
                 typing_key(ui, true);
                 drag = Some(Drag::Select { layer: e.layer.id });
