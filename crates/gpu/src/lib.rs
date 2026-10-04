@@ -13,15 +13,18 @@
 //! Advanced 3D comps rasterise on a render pipeline (`advanced3d.wgsl`: depth buffer, PBR,
 //! image-based light, shadow maps) and finish in compute kernels (`adv3d.wgsl`: supersampling
 //! resolve, motion-blur sub-samples, iris depth of field, encoding, compositing), see
-//! [`Accelerator::render_3d`] and `Renderer::prepare_adv_run`. Advanced 3D layers with blend
-//! modes, track mattes or Preserve Transparency still composite on the CPU (their scenes
-//! render here through [`Accelerator::render_3d`]).
+//! [`Accelerator::render_3d`] and `Renderer::prepare_adv_run`. Runs with layers on the 2D
+//! compositing path (blend modes, track mattes, Preserve Transparency:
+//! `Renderer::split_adv_run`) render each such layer alone, hide it behind the nearer main
+//! scene and composite it through the 2D path here too; environment backgrounds (Classic and
+//! Advanced 3D) draw their sky in a kernel (`Renderer::sky_draw`).
 //!
 //! GPU effects ([`effectcraft_effects::GPU_EFFECTS`]) run as compute kernels with the CPU
 //! effect's exact steps (padding, box-blur radii, parameter conversions); chains of them are
 //! uploaded and read back once. Each family lives in its own module with its own WGSL file
-//! (`fx_color`, `fx_distort`, `fx_extra`, `fx_generate`, `fx_key`, `fx_noise`, `fx_stylize`,
-//! `fx_tone`, `fx_warp`); settings a kernel cannot match fall back to the CPU
+//! (`fx_color`, `fx_distort`, `fx_extra`, `fx_generate`, `fx_key`, `fx_light`, `fx_noise`,
+//! `fx_stylize`, `fx_text`, `fx_time`, `fx_tone`, `fx_transition`, `fx_warp`); settings a
+//! kernel cannot match fall back to the CPU
 //! (`catalog::gpu_supported`, or `None` from the family's `apply`).
 //!
 //! Working textures come from a pool (`context::Pool`): a frame allocates several full-frame
@@ -53,9 +56,13 @@ mod fx_distort;
 mod fx_extra;
 mod fx_generate;
 mod fx_key;
+mod fx_light;
 mod fx_noise;
 mod fx_stylize;
+mod fx_text;
+mod fx_time;
 mod fx_tone;
+mod fx_transition;
 mod fx_warp;
 mod ops;
 mod particles;
@@ -309,11 +316,19 @@ mod tests_fx_generate;
 #[cfg(test)]
 mod tests_fx_key;
 #[cfg(test)]
+mod tests_fx_light;
+#[cfg(test)]
 mod tests_fx_noise;
 #[cfg(test)]
 mod tests_fx_stylize;
 #[cfg(test)]
+mod tests_fx_text;
+#[cfg(test)]
+mod tests_fx_time;
+#[cfg(test)]
 mod tests_fx_tone;
+#[cfg(test)]
+mod tests_fx_transition;
 #[cfg(test)]
 mod tests_fx_warp;
 #[cfg(test)]

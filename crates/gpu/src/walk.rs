@@ -1,9 +1,9 @@
 //! The per-frame compositing walk on the GPU: the same steps as `Renderer::draw_comp` (layer
 //! order, 3D runs, collapsed precomps, track mattes, Preserve Transparency, layer styles, motion
 //! blur, bit-depth quantisation, colour conversions), with layer pixels taken from the CPU
-//! renderer and its layer cache. Classic 3D runs and adjustment layers run on the GPU; steps
-//! without a GPU implementation (Advanced 3D runs, wireframes, anything a kernel declines) read
-//! the canvas back, run on the CPU and upload the result.
+//! renderer and its layer cache. Classic and Advanced 3D runs (environment skies included) and
+//! adjustment layers run on the GPU; steps without a GPU implementation (anything a kernel
+//! declines) read the canvas back, run on the CPU and upload the result.
 
 use std::sync::Arc;
 
@@ -99,6 +99,17 @@ fn draw_comp<'a>(e: &mut Enc, r: &Renderer<'a>, ctx: &EvalCtx<'a>, canvas: &mut 
 /// layers splitting the run as on the CPU; Advanced 3D, wireframes and runs the kernel cannot
 /// hold draw on the CPU.
 fn draw_3d<'a>(e: &mut Enc, r: &Renderer<'a>, ctx: &EvalCtx<'a>, run: &[&'a Layer], canvas: &mut GpuImage) -> Option<()> {
+    // Environment Light Background layers: the sky behind the rest of the run (drawn first, as
+    // `three_d::compose::draw_run` does).
+    if run.iter().any(|l| l.environment_background) {
+        for l in run.iter().filter(|l| l.environment_background) {
+            if let Some(sky) = r.sky_draw(ctx, l) {
+                *canvas = crate::adv3d::sky(e, &sky, canvas)?;
+            }
+        }
+        let rest: Vec<&'a Layer> = run.iter().copied().filter(|l| !l.environment_background).collect();
+        return draw_3d(e, r, ctx, &rest, canvas);
+    }
     if let Some(k) = run.iter().position(|l| l.switches.adjustment) {
         draw_3d(e, r, ctx, &run[..k], canvas)?;
         draw_layer(e, r, ctx, run[k], canvas)?;
@@ -115,11 +126,58 @@ fn draw_3d<'a>(e: &mut Enc, r: &Renderer<'a>, ctx: &EvalCtx<'a>, run: &[&'a Laye
         }
         return Some(());
     }
+    // Advanced 3D with layers on the 2D compositing path (blend modes, track mattes, Preserve
+    // Transparency).
+    if let Some(split) = r.split_adv_run(ctx, run, (canvas.width, canvas.height)) {
+        match draw_split(e, r, ctx, &split, canvas) {
+            Some(img) => *canvas = img,
+            None => on_cpu(e, canvas, |img| r.draw_3d_run(ctx, run, img))?,
+        }
+        return Some(());
+    }
     match r.prepare_3d_run(ctx, run, (canvas.width, canvas.height)).and_then(|prep| crate::classic3d::draw_run(e, &prep, canvas)) {
         Some(img) => *canvas = img,
         None => on_cpu(e, canvas, |img| r.draw_3d_run(ctx, run, img))?,
     }
     Some(())
+}
+
+/// `three_d::adv::draw_run`'s split path on the GPU canvas: the plain layers as one scene over
+/// the canvas, then each special layer (far to near) rendered alone, hidden where the main
+/// scene is nearer, matted (a 3D matte through the camera, else the 2D placement), Preserve
+/// Transparency and blended. `None` = render the run on the CPU.
+fn draw_split(e: &mut Enc, r: &Renderer, ctx: &EvalCtx, split: &effectcraft_render::three_d::adv::SplitRun, canvas: &GpuImage) -> Option<GpuImage> {
+    let (w, h) = (canvas.width, canvas.height);
+    let main_prep = split.main();
+    if main_prep.out != (w, h) {
+        return None;
+    }
+    let encode = !main_prep.linear;
+    let main = crate::adv3d::resolve_run(e, &main_prep)?;
+    let mut cv = match &main {
+        Some(m) => crate::adv3d::finish(e, m, encode, Some(canvas)),
+        None => canvas.clone(),
+    };
+    for i in 0..split.len() {
+        let Some(iso) = crate::adv3d::resolve_run(e, &split.special(i))? else { continue };
+        let iso = match &main {
+            Some(m) => crate::adv3d::occluded(e, &iso, m, encode),
+            None => crate::adv3d::finish(e, &iso, encode, None),
+        };
+        let matte3d = split.with_matte3d(i, |p| match p {
+            None => Some(e.zeros(w, h)),
+            Some(p) => Some(match crate::adv3d::resolve_run(e, p)? {
+                Some(m) => crate::adv3d::finish(e, &m, encode, None),
+                None => e.zeros(w, h),
+            }),
+        });
+        let matte3d = match matte3d {
+            Some(m) => Some(m?),
+            None => None,
+        };
+        composite_iso_with(e, r, ctx, split.layer(i), iso, &mut cv, 1.0, matte3d, None)?;
+    }
+    Some(cv)
 }
 
 fn draw_collapsed<'a>(e: &mut Enc, r: &Renderer<'a>, ctx: &EvalCtx<'a>, layer: &Layer, item: ItemId, canvas: &mut GpuImage) -> Option<()> {
@@ -225,21 +283,44 @@ fn composite_layer(e: &mut Enc, r: &Renderer, ctx: &EvalCtx, layer: &Layer, buf:
 }
 
 /// Track matte / Preserve Transparency on an isolated layer render, then blend.
-fn composite_iso(e: &mut Enc, r: &Renderer, ctx: &EvalCtx, layer: &Layer, mut iso: GpuImage, canvas: &mut GpuImage, opacity: f32) -> Option<()> {
+fn composite_iso(e: &mut Enc, r: &Renderer, ctx: &EvalCtx, layer: &Layer, iso: GpuImage, canvas: &mut GpuImage, opacity: f32) -> Option<()> {
+    composite_iso_with(e, r, ctx, layer, iso, canvas, opacity, None, r.pipe().levels)
+}
+
+/// `Renderer::composite_iso_with`: the matte from `matte_img` when given (a 3D matte drawn
+/// through the camera), else the matte layer placed in 2D; the blend quantised to `levels`.
+#[allow(clippy::too_many_arguments)]
+fn composite_iso_with(
+    e: &mut Enc,
+    r: &Renderer,
+    ctx: &EvalCtx,
+    layer: &Layer,
+    mut iso: GpuImage,
+    canvas: &mut GpuImage,
+    opacity: f32,
+    matte_img: Option<GpuImage>,
+    levels: Option<f32>,
+) -> Option<()> {
     if let Some((m, kind)) = r.track_matte(ctx, layer) {
-        let mut mimg = e.zeros(canvas.width, canvas.height);
-        if m.is_active_at(ctx.time)
-            && let Some(mb) = r.layer_buf(ctx, m)
-        {
-            let mo = ctx.opacity(m) as f32;
-            mimg = place(e, r, ctx, m, &mb, &mimg, BlendMode::Normal, mo, None)?;
-        }
+        let mimg = match matte_img.filter(|i| (i.width, i.height) == (canvas.width, canvas.height)) {
+            Some(i) => i,
+            None => {
+                let mut mimg = e.zeros(canvas.width, canvas.height);
+                if m.is_active_at(ctx.time)
+                    && let Some(mb) = r.layer_buf(ctx, m)
+                {
+                    let mo = ctx.opacity(m) as f32;
+                    mimg = place(e, r, ctx, m, &mb, &mimg, BlendMode::Normal, mo, None)?;
+                }
+                mimg
+            }
+        };
         iso = ops::matte(e, &iso, &mimg, kind);
     }
     if layer.preserve_transparency {
         iso = ops::preserve(e, &iso, canvas);
     }
-    *canvas = ops::blend_full(e, canvas, &iso, layer.blend_mode, opacity, layer.id.0 as u32, r.pipe().levels);
+    *canvas = ops::blend_full(e, canvas, &iso, layer.blend_mode, opacity, layer.id.0 as u32, levels);
     Some(())
 }
 
