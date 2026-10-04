@@ -558,7 +558,11 @@ impl<'a> Renderer<'a> {
     /// 3D layers use this comp's camera and lights.
     pub fn collapse_into(&self, ctx: &EvalCtx<'a>, layer: &Layer, item: ItemId, opacity: f32) -> Option<(Renderer<'a>, EvalCtx<'a>)> {
         let nc = self.project.comp(item)?;
-        let nctx = EvalCtx { comp_id: item, comp: nc, time: ctx.nested_time(layer), ..*ctx };
+        let t = ctx.nested_time(layer);
+        if !nc.covers(t) {
+            return None;
+        }
+        let nctx = EvalCtx { comp_id: item, comp: nc, time: t, ..*ctx };
         let (l2c, _) = ctx.layer_to_comp(layer);
         let outer = Some(self.outer.map_or(l2c, |o| o * l2c));
         let world = ctx.world_matrix(layer);
@@ -925,10 +929,15 @@ impl<'a> Renderer<'a> {
                     return None;
                 }
                 // A composition proxy (a rendered still or movie) stands in for the comp.
+                // Nothing before the nested comp starts or after it ends.
+                let lt = ctx.nested_time(layer);
+                if !self.project.comp(*item).is_some_and(|nc| nc.covers(lt)) {
+                    return None;
+                }
                 if let Some(pf) = self.proxy_for(*item)
                     && let Some(nc) = self.project.comp(*item)
                 {
-                    let img = self.footage.frame(*item, pf, ctx.nested_time(layer))?;
+                    let img = self.footage.frame(*item, pf, lt)?;
                     return Some(self.footage_buf(&img, pf, nc.width, nc.height));
                 }
                 // Essential Properties overrides render the nested comp with this instance's
@@ -945,7 +954,6 @@ impl<'a> Renderer<'a> {
                     Some(p) => Renderer { project: p, ..base },
                     None => base,
                 };
-                let lt = ctx.nested_time(layer);
                 // Frame blending between the nested comp's frames (time-stretched/remapped).
                 let mode = frame_blend_mode(ctx, layer);
                 if mode != FrameBlend::Off

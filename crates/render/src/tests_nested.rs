@@ -65,3 +65,26 @@ fn a_comp_preserving_its_resolution_renders_full_size_and_lands_in_place() {
         assert!(img.get(20, 25)[3] < 0.01 && img.get(5, 40)[3] < 0.01, "preserve {preserve}: outside");
     }
 }
+
+#[test]
+fn a_nested_comp_shows_nothing_past_its_end() {
+    for collapse in [false, true] {
+        let mut p = Project::default();
+        let outer = Comp::new(100, 100, FrameRate::FPS_30, s(4.0));
+        // A 1 s comp with a solid covering it for 4 s (longer than the comp itself).
+        let mut inner = Comp::new(100, 100, FrameRate::FPS_30, s(1.0));
+        let sid = p.add_item("S", Label::Red, None, ItemKind::Solid(Solid { color: [1.0, 1.0, 1.0], width: 100, height: 100, pixel_aspect: 1.0 }));
+        let mut l = build::layer(&mut p, &inner, "S", LayerSource::Solid { item: sid }, (100, 100), None);
+        l.out_point = s(4.0);
+        inner.layers.push(l);
+        let iid = p.add_item("Inner", Label::Sandstone, None, ItemKind::Comp(inner.into()));
+        let cid = p.add_item("Outer", Label::Sandstone, None, ItemKind::Comp(outer.clone().into()));
+        // The precomp layer is trimmed out to 3 s, past the nested comp's end.
+        let mut pre = build::layer(&mut p, &outer, "Inner", LayerSource::Comp { item: iid }, (100, 100), None);
+        pre.out_point = s(3.0);
+        pre.switches.collapse = collapse;
+        p.comp_mut(cid).unwrap().layers.push(pre);
+        assert!(render_frame(&p, cid, s(0.5), 1.0).get(50, 50)[3] > 0.99, "collapse {collapse}: inside its span");
+        assert!(render_frame(&p, cid, s(2.0), 1.0).get(50, 50)[3] < 0.01, "collapse {collapse}: past its end");
+    }
+}

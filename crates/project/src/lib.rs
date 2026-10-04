@@ -374,6 +374,11 @@ impl Comp {
             essential: None,
         }
     }
+    /// Whether the composition has a frame at its time `t`: nested, it shows nothing before it
+    /// starts or after it ends (a precomp layer trimmed or remapped past it).
+    pub fn covers(&self, t: Tick) -> bool {
+        t >= Tick::ZERO && t < self.duration
+    }
     /// A new, empty composition with this one's settings (frame rate, pixel aspect, background,
     /// motion blur, frame blending and the 3D renderer), as Pre-compose makes.
     pub fn nested_like(&self, width: u32, height: u32, duration: Tick) -> Comp {
