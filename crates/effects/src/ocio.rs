@@ -888,6 +888,88 @@ pub enum ColorOp {
     /// A LUT (0 nearest, 1 trilinear, 2 tetrahedral) with an optional per-channel shaper, forward
     /// or inverse (as [`FileXform::apply`]).
     Lut { lut: Arc<Lut>, shaper: Option<Arc<[Vec<(f32, f32)>; 3]>>, interp: u32, inverse: bool },
+    /// `m × (c + pre) + post` (a custom config's MatrixTransform and RangeTransform).
+    Affine { m: [[f32; 3]; 3], pre: [f32; 3], post: [f32; 3] },
+    /// `max(c, 0) ^ p` per channel (ExponentTransform).
+    Pow([f32; 3]),
+    /// LogTransform / LogAffineTransform, forward or inverse (as `ocio_config::Xf::apply`).
+    LogAffine { base: f32, log_slope: [f32; 3], log_offset: [f32; 3], lin_slope: [f32; 3], lin_offset: [f32; 3], inverse: bool },
+}
+
+/// The ops of a LUT / CDL file transform (as [`FileXform::apply`]).
+fn file_ops(x: &FileXform, interp: u32, inverse: bool, ccc_id: &str, ops: &mut Vec<ColorOp>) {
+    match x {
+        FileXform::Cdl(list) => {
+            let cdl = list.iter().find(|(i, _)| !ccc_id.is_empty() && i == ccc_id).or(list.first()).map(|(_, c)| *c).unwrap_or_default();
+            ops.push(ColorOp::Cdl { cdl, clamp: true, inverse });
+        }
+        FileXform::Lut { lut, shaper } => {
+            ops.push(ColorOp::Lut { lut: Arc::new(lut.clone()), shaper: shaper.clone().map(Arc::new), interp, inverse });
+        }
+    }
+}
+
+/// The ops of a custom config's transform `x` (as `Xf::apply`).
+fn config_xf_ops(x: &crate::ocio_config::Xf, inverse: bool, ops: &mut Vec<ColorOp>) {
+    use crate::ocio_config::Xf;
+    let f3 = |v: &[f64; 3]| v.map(|x| x as f32);
+    match x {
+        Xf::Inverse(x) => config_xf_ops(x, !inverse, ops),
+        Xf::Matrix { m, offset } => {
+            if !inverse {
+                let m = [0, 1, 2].map(|r| [m[r * 4] as f32, m[r * 4 + 1] as f32, m[r * 4 + 2] as f32]);
+                ops.push(ColorOp::Affine { m, pre: [0.0; 3], post: [offset[0] as f32, offset[1] as f32, offset[2] as f32] });
+            } else if let Some(inv) = crate::ocio_config::mat3_inverse(m) {
+                let m = inv.map(|r| r.map(|v| v as f32));
+                ops.push(ColorOp::Affine { m, pre: [-offset[0] as f32, -offset[1] as f32, -offset[2] as f32], post: [0.0; 3] });
+            }
+        }
+        Xf::File { xf: Some(x), interp, ccc, .. } => file_ops(x, *interp, inverse, ccc, ops),
+        Xf::File { xf: None, .. } | Xf::Unsupported(_) => {}
+        Xf::Exponent(e) => ops.push(ColorOp::Pow([0, 1, 2].map(|k| (if inverse { 1.0 / e[k].max(1e-9) } else { e[k] }) as f32))),
+        Xf::Log { base } => {
+            ops.push(ColorOp::LogAffine { base: *base as f32, log_slope: [1.0; 3], log_offset: [0.0; 3], lin_slope: [1.0; 3], lin_offset: [0.0; 3], inverse })
+        }
+        Xf::LogAffine { base, log_slope, log_offset, lin_slope, lin_offset } => ops.push(ColorOp::LogAffine {
+            base: *base as f32,
+            log_slope: f3(log_slope),
+            log_offset: f3(log_offset),
+            lin_slope: f3(lin_slope),
+            lin_offset: f3(lin_offset),
+            inverse,
+        }),
+        Xf::Cdl(cdl) => ops.push(ColorOp::Cdl { cdl: *cdl, clamp: true, inverse }),
+        Xf::Range { min_in, max_in, min_out, max_out } => {
+            let (a0, a1, b0, b1) = if inverse { (*min_out, *max_out, *min_in, *max_in) } else { (*min_in, *max_in, *min_out, *max_out) };
+            let k = if (a1 - a0).abs() > 1e-12 { (b1 - b0) / (a1 - a0) } else { 0.0 };
+            let k = k as f32;
+            ops.push(ColorOp::Affine { m: [[k, 0.0, 0.0], [0.0, k, 0.0], [0.0, 0.0, k]], pre: [-a0 as f32; 3], post: [b0 as f32; 3] });
+        }
+        Xf::Group(list) => {
+            if inverse {
+                list.iter().rev().for_each(|x| config_xf_ops(x, true, ops));
+            } else {
+                list.iter().for_each(|x| config_xf_ops(x, false, ops));
+            }
+        }
+    }
+}
+
+/// The ops of a custom config's conversion from space `a` to space `z` (as `Config::convert`).
+fn config_ops(a: &crate::ocio_config::ConfigSpace, z: &crate::ocio_config::ConfigSpace, ops: &mut Vec<ColorOp>) {
+    if a.is_data || z.is_data || a.name == z.name {
+        return;
+    }
+    match (&a.to_ref, &a.from_ref) {
+        (Some(x), _) => config_xf_ops(x, false, ops),
+        (None, Some(x)) => config_xf_ops(x, true, ops),
+        _ => {}
+    }
+    match (&z.from_ref, &z.to_ref) {
+        (Some(x), _) => config_xf_ops(x, false, ops),
+        (None, Some(x)) => config_xf_ops(x, true, ops),
+        _ => {}
+    }
 }
 
 /// How a colour program meets premultiplied pixels.
@@ -912,8 +994,8 @@ fn xform_ops(x: &Xform, ops: &mut Vec<ColorOp>) {
 }
 
 /// Effect `id`'s per-pixel transform as a list of [`ColorOp`]s that reproduces the CPU effect
-/// (empty = the layer passes through). `None` when it has no such form (a custom OCIO config,
-/// another effect).
+/// (empty = the layer passes through; custom OCIO configs compile their transforms too). `None`
+/// for another effect.
 pub fn color_program(id: &str, ctx: &EffectCtx) -> Option<(Vec<ColorOp>, Straight)> {
     let pr = ctx.params;
     let mut ops = vec![];
@@ -926,7 +1008,16 @@ pub fn color_program(id: &str, ctx: &EffectCtx) -> Option<(Vec<ColorOp>, Straigh
         }
         "ec.color.ociocolorspace" => {
             if pr.e("config") == 1 {
-                return custom_config(ctx).is_none().then_some((ops, Straight::Unpremul));
+                // A custom config (one that can't be read, or names unknown spaces: the pixels
+                // pass through).
+                if let Some(cfg) = custom_config(ctx)
+                    && let (Some(a), Some(z)) =
+                        (custom_space(&cfg, pr.s("sourceName"), pr.e("source")), custom_space(&cfg, pr.s("destinationName"), pr.e("destination")))
+                {
+                    let (a, z) = if pr.e("direction") == 1 { (z, a) } else { (a, z) };
+                    config_ops(a, z, &mut ops);
+                }
+                return Some((ops, Straight::Unpremul));
             }
             let (a, z) = (space_at(pr.e("source")), space_at(pr.e("destination")));
             let (a, z) = if pr.e("direction") == 1 { (z, a) } else { (a, z) };
@@ -942,7 +1033,17 @@ pub fn color_program(id: &str, ctx: &EffectCtx) -> Option<(Vec<ColorOp>, Straigh
         }
         "ec.color.ociodisplay" => {
             if pr.e("config") == 1 {
-                return custom_config(ctx).is_none().then_some((ops, Straight::Unpremul));
+                if let Some(cfg) = custom_config(ctx) {
+                    let display = DISPLAYS.get(pr.e("display") as usize).map_or("", |d| d.0);
+                    let view = VIEWS.get(pr.e("view") as usize).copied().unwrap_or("");
+                    let dn = if pr.s("displayName").is_empty() { display } else { pr.s("displayName") };
+                    let vn = if pr.s("viewName").is_empty() { view } else { pr.s("viewName") };
+                    if let (Some(a), Some(z)) = (custom_space(&cfg, pr.s("sourceName"), pr.e("source")), cfg.view_space(dn, vn)) {
+                        let (a, z) = if pr.e("direction") == 1 { (z, a) } else { (a, z) };
+                        config_ops(a, z, &mut ops);
+                    }
+                }
+                return Some((ops, Straight::Unpremul));
             }
             let input = space_at(pr.e("source"));
             let (display, view, inverse) = (pr.e("display") as usize, pr.e("view") as usize, pr.e("direction") == 1);
@@ -974,17 +1075,7 @@ pub fn color_program(id: &str, ctx: &EffectCtx) -> Option<(Vec<ColorOp>, Straigh
                     1 => 1,
                     _ => 2,
                 };
-                let inverse = pr.e("direction") == 1;
-                match &*x {
-                    FileXform::Cdl(list) => {
-                        let id = pr.s("cccId");
-                        let cdl = list.iter().find(|(i, _)| !id.is_empty() && i == id).or(list.first()).map(|(_, c)| *c).unwrap_or_default();
-                        ops.push(ColorOp::Cdl { cdl, clamp: true, inverse });
-                    }
-                    FileXform::Lut { lut, shaper } => {
-                        ops.push(ColorOp::Lut { lut: Arc::new(lut.clone()), shaper: shaper.clone().map(Arc::new), interp, inverse });
-                    }
-                }
+                file_ops(&x, interp, pr.e("direction") == 1, pr.s("cccId"), &mut ops);
             }
         }
         "ec.color.ociolook" => {

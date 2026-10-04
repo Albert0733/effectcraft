@@ -10,8 +10,9 @@
 //! from its frame. Timewarp's motion vectors (block matching and smoothing,
 //! `effectcraft_raster::flow`) are estimated on the CPU (`effectcraft_effects::timewarp_plan`);
 //! the frame building (Whole Frames, Frame Mix, Pixel Motion's warp along the vectors with its
-//! error fallback, the shutter samples' average) runs on the GPU. Timewarp with a Matte Layer
-//! renders on the CPU (`catalog::gpu_supported`).
+//! error fallback, the shutter samples' average) runs on the GPU. With a Matte Layer the plan
+//! also carries the matte-masked frames (and the foreground's and background's own vectors);
+//! the GPU builds both layers and shows them as Show asks (`ftm_layer`).
 
 use effectcraft_effects::util::{fit_layer, unpremul};
 use effectcraft_effects::{Buf, EffectCtx, TwStep};
@@ -21,7 +22,7 @@ use crate::context::{Enc, GpuImage, Params};
 use crate::effects::GBuf;
 
 /// Compute entry points in `fx_time.wgsl`.
-pub(crate) const KERNELS: &[&str] = &["ftm_acc", "ftm_mix", "ftm_difference", "ftm_displace", "ftm_motion"];
+pub(crate) const KERNELS: &[&str] = &["ftm_acc", "ftm_mix", "ftm_layer", "ftm_difference", "ftm_displace", "ftm_motion"];
 
 /// Effect ids implemented here.
 pub(crate) const IDS: &[&str] =
@@ -177,11 +178,19 @@ fn timewarp(e: &mut Enc, ctx: &EffectCtx, b: GBuf) -> Option<GBuf> {
     if ctx.env.host.is_none() {
         return Some(b);
     }
-    // A Matte Layer splits foreground and background: the CPU's path.
-    if ctx.params.get("matteLayer").and_then(Value::as_layer).is_some() {
-        return None;
-    }
     let Some(plan) = effectcraft_effects::timewarp_plan(ctx) else { return Some(b) };
+    // Pixel Motion's in-between frame of frames a, b along motion field `flow`.
+    let motion = |e: &mut Enc, a: usize, bi: usize, w: f32, flow: usize| -> Option<GpuImage> {
+        let pa = e.g.upload_image(&effectcraft_effects::timewarp_crop(&plan.frames[a], &plan.pm))?;
+        let pb = e.g.upload_image(&effectcraft_effects::timewarp_crop(&plan.frames[bi], &plan.pm))?;
+        let f = &plan.flows[flow];
+        let v: Vec<f32> = f.v.iter().flat_map(|q| [q[0], q[1]]).collect();
+        let data = e.data(&v);
+        let mut p = Params::default();
+        p.u[0] = [if f.v.is_empty() { 0 } else { f.cols as u32 }, f.rows as u32, plan.pm.extreme as u32, plan.pm.build_from_one as u32];
+        p.f[0] = [f.block as f32, w, plan.pm.error_threshold, 0.0];
+        Some(kernel(e, "ftm_motion", &p, &pa, Some(&pb), Some(&data)))
+    };
     let mut up: Vec<Option<GpuImage>> = vec![None; plan.frames.len()];
     let mut frame = |e: &mut Enc, i: usize| -> Option<GpuImage> {
         if up[i].is_none() {
@@ -199,16 +208,13 @@ fn timewarp(e: &mut Enc, ctx: &EffectCtx, b: GBuf) -> Option<GBuf> {
                 p.f[0][0] = w;
                 kernel(e, "ftm_mix", &p, &a, Some(&bb), None)
             }
-            TwStep::Motion { a, b: bi, w, flow } => {
-                let pa = e.g.upload_image(&effectcraft_effects::timewarp_crop(&plan.frames[a], &plan.pm))?;
-                let pb = e.g.upload_image(&effectcraft_effects::timewarp_crop(&plan.frames[bi], &plan.pm))?;
-                let f = &plan.flows[flow];
-                let v: Vec<f32> = f.v.iter().flat_map(|q| [q[0], q[1]]).collect();
-                let data = e.data(&v);
+            TwStep::Motion { a, b: bi, w, flow } => motion(e, a, bi, w, flow)?,
+            TwStep::Layered { fg, bg, w, show } => {
+                let f = motion(e, fg[0], fg[1], w, fg[2])?;
+                let g = motion(e, bg[0], bg[1], w, bg[2])?;
                 let mut p = Params::default();
-                p.u[0] = [if f.v.is_empty() { 0 } else { f.cols as u32 }, f.rows as u32, plan.pm.extreme as u32, plan.pm.build_from_one as u32];
-                p.f[0] = [f.block as f32, w, plan.pm.error_threshold, 0.0];
-                kernel(e, "ftm_motion", &p, &pa, Some(&pb), Some(&data))
+                p.u[0][0] = show;
+                kernel(e, "ftm_layer", &p, &f, Some(&g), None)
             }
         };
         imgs.push(img);

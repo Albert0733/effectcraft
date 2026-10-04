@@ -12,8 +12,11 @@
 //! (colours that depend on the layer's own pixels — refracting rain, star-burst and hair-root
 //! colours, bubble refraction — are sampled per pixel from the layer texture). Piece plans read
 //! the layer's pixels on the CPU (gradient maps and textures default to the layer), so those
-//! effects read the frame back once. Settings drawn otherwise (Shatter's wireframe views,
-//! Foam's User Defined texture, Environment Map and flow-map preview) render on the CPU.
+//! effects read the frame back once. Shatter's wireframe views draw their lines as sprites
+//! (`effects::pixel_plan`); Foam's User Defined texture, Environment Map and flow-map preview
+//! are drawn by `fx_particles` over the bubble sprites (`effects::foam_full_plan`). Sprite
+//! layers and back-less piece plans too large for one item table are drawn in several passes
+//! (`fx_particles::Chunked`).
 
 use effectcraft_effects::{Acc, EffectCtx, PieceTex, Post, Shape, SpritePlan, Tint};
 use effectcraft_raster::Image;
@@ -58,6 +61,7 @@ pub(crate) fn apply(e: &mut Enc, id: &str, ctx: &EffectCtx, b: GBuf) -> Option<G
             effectcraft_effects::WavePlan::Height { st, depth } => wave_height(e, ctx, b, &st, depth.as_deref()),
         },
         "ec.sim.shatter" | "ec.sim.carddance" | "ec.transition.cardwipe" => pieces(e, id, ctx, b),
+        "ec.sim.foam" => crate::fx_particles::foam(e, ctx, b),
         "ec.sim.cchair" => match effectcraft_effects::sprite_plan(id, ctx, &geo) {
             Some(plan) => sprites(e, b, &plan),
             None => Some(b),
@@ -72,37 +76,56 @@ pub(crate) fn apply(e: &mut Enc, id: &str, ctx: &EffectCtx, b: GBuf) -> Option<G
 // ---------------------------------------------------------------- tiled item raster
 
 /// Items with their integer pixel bounds, binned into tiles (sim::raster's bands, finer).
-struct Items {
+pub(crate) struct Items {
     stride: usize,
     recs: Vec<f32>,
     w: i32,
     h: i32,
     tiles: Vec<Vec<u32>>,
-    tx: i32,
+    pub(crate) tx: i32,
+    /// Item indices in all tiles.
+    n_idx: usize,
 }
 
 impl Items {
-    fn new(stride: usize, w: u32, h: u32) -> Items {
+    pub(crate) fn new(stride: usize, w: u32, h: u32) -> Items {
         let (w, h) = (w as i32, h as i32);
         let tx = (w + TILE - 1) / TILE;
         let ty = (h + TILE - 1) / TILE;
-        Items { stride, recs: vec![], w, h, tiles: vec![vec![]; (tx * ty).max(0) as usize], tx }
+        Items { stride, recs: vec![], w, h, tiles: vec![vec![]; (tx * ty).max(0) as usize], tx, n_idx: 0 }
     }
 
-    /// Add an item (`rec` = its fields, without the bounds) covering float bounds `bb`
-    /// (`None` or empty = skipped, as sim::raster).
-    fn push(&mut self, bb: Option<[f32; 4]>, rec: &[f32]) {
-        let Some(b) = bb else { return };
+    /// The integer pixel bounds of float bounds `bb` (`None` = skipped, as sim::raster).
+    fn bounds(&self, bb: Option<[f32; 4]>) -> Option<[i32; 4]> {
+        let b = bb?;
         if !(b[0].is_finite() && b[1].is_finite() && b[2].is_finite() && b[3].is_finite()) {
-            return;
+            return None;
         }
         let x0 = b[0].floor().max(0.0) as i32;
         let y0 = b[1].floor().max(0.0) as i32;
         let x1 = (b[2].ceil() as i32).min(self.w - 1);
         let y1 = (b[3].ceil() as i32).min(self.h - 1);
         if x1 < x0 || y1 < y0 || b[2] < 0.0 || b[3] < 0.0 {
-            return;
+            return None;
         }
+        Some([x0, y0, x1, y1])
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.recs.is_empty()
+    }
+
+    /// Whether adding an item covering `bb` keeps the kernel data within [`MAX_FLOATS`].
+    pub(crate) fn fits(&self, bb: Option<[f32; 4]>) -> bool {
+        let Some([x0, y0, x1, y1]) = self.bounds(bb) else { return true };
+        let tiles = ((x1 / TILE - x0 / TILE + 1) * (y1 / TILE - y0 / TILE + 1)) as usize;
+        self.tiles.len() + 1 + self.n_idx + tiles + self.recs.len() + self.stride <= MAX_FLOATS
+    }
+
+    /// Add an item (`rec` = its fields, without the bounds) covering float bounds `bb`
+    /// (`None` or empty = skipped, as sim::raster).
+    pub(crate) fn push(&mut self, bb: Option<[f32; 4]>, rec: &[f32]) {
+        let Some([x0, y0, x1, y1]) = self.bounds(bb) else { return };
         let i = (self.recs.len() / self.stride) as u32;
         let start = self.recs.len();
         self.recs.extend_from_slice(rec);
@@ -111,12 +134,13 @@ impl Items {
         for ty in y0 / TILE..=y1 / TILE {
             for tx in x0 / TILE..=x1 / TILE {
                 self.tiles[(ty * self.tx + tx) as usize].push(i);
+                self.n_idx += 1;
             }
         }
     }
 
     /// Kernel data: tile offsets (tiles + 1), item indices, items. `None` when too large.
-    fn data(self) -> Option<(Vec<f32>, u32, u32)> {
+    pub(crate) fn data(self) -> Option<(Vec<f32>, u32, u32)> {
         let n_tiles = self.tiles.len();
         let n_idx: usize = self.tiles.iter().map(Vec::len).sum();
         let total = n_tiles + 1 + n_idx + self.recs.len();
@@ -167,9 +191,32 @@ fn sprite_bbox(x: f32, y: f32, r: f32, c3: f32, shape: Shape) -> Option<[f32; 4]
     })
 }
 
-fn sprites(e: &mut Enc, b: GBuf, plan: &SpritePlan) -> Option<GBuf> {
+/// Draw a sprite plan and meet the layer `b` (sim::SpritePlan::finish).
+pub(crate) fn sprites(e: &mut Enc, b: GBuf, plan: &SpritePlan) -> Option<GBuf> {
     let (w, h) = (b.img.width, b.img.height);
-    let mut items = Items::new(24, w, h);
+    let fx = sprite_layer(e, &b.img, plan)?;
+    let mut p = Params::default();
+    match plan.post {
+        Post::Combine(m) => p.u[0] = [0, m, 0, 0],
+        Post::Replace => return Some(GBuf { img: fx, ..b }),
+        Post::Lerp(t) => {
+            p.u[0][0] = 1;
+            p.f[0][0] = t;
+        }
+        Post::OverBlack => p.u[0][0] = 2,
+    }
+    let out = e.scratch(w, h);
+    e.pixels("fxm_post", &p, &b.img, Some(&fx), &out, None);
+    Some(GBuf { img: out, ..b })
+}
+
+/// sim::splat of a sprite plan over a transparent frame of `src`'s size (tints sample `src`),
+/// in as many passes as the item tables need.
+pub(crate) fn sprite_layer(e: &mut Enc, src: &GpuImage, plan: &SpritePlan) -> Option<GpuImage> {
+    let (w, h) = (src.width, src.height);
+    // Without tints the record stops after the (zero) tint kind.
+    let stride = if plan.tints.is_empty() { 16 } else { 24 };
+    let mut ch = crate::fx_particles::Chunked::new(0, (plan.acc == Acc::Add) as u32, stride, w, h);
     for (i, s) in plan.sprites.iter().enumerate() {
         let (kind, dx, dy) = match s.shape {
             Shape::Soft => (0.0, 0.0, 0.0),
@@ -191,22 +238,9 @@ fn sprites(e: &mut Enc, b: GBuf, plan: &SpritePlan) -> Option<GBuf> {
                 rec[11..20].copy_from_slice(&[3.0, x as f32, y as f32, hair[0], hair[1], hair[2], inherit, shade, spec]);
             }
         }
-        items.push(sprite_bbox(s.x, s.y, s.r, s.c[3], s.shape), &rec);
+        ch.push(e, src, sprite_bbox(s.x, s.y, s.r, s.c[3], s.shape), &rec[..stride - 4]);
     }
-    let fx = raster(e, items, 0, plan.acc == Acc::Add, &b.img, None, Params::default(), w, h)?;
-    let mut p = Params::default();
-    match plan.post {
-        Post::Combine(m) => p.u[0] = [0, m, 0, 0],
-        Post::Replace => p.u[0] = [0, 5, 0, 0],
-        Post::Lerp(t) => {
-            p.u[0][0] = 1;
-            p.f[0][0] = t;
-        }
-        Post::OverBlack => p.u[0][0] = 2,
-    }
-    let out = e.scratch(w, h);
-    e.pixels("fxm_post", &p, &b.img, Some(&fx), &out, None);
-    Some(GBuf { img: out, ..b })
+    ch.finish(e, src)
 }
 
 // ---------------------------------------------------------------- CC Bubbles / Mr. Mercury
@@ -329,10 +363,22 @@ fn pieces(e: &mut Enc, id: &str, ctx: &EffectCtx, b: GBuf) -> Option<GBuf> {
     // Planning reads the layer (gradient maps and textures default to it).
     let img = e.download(&b.img)?;
     let cpu = effectcraft_effects::Buf { img, offset: b.offset, scale: b.scale };
+    if id == "ec.sim.shatter" {
+        // The rendered pieces or the wireframe views' lines.
+        return match effectcraft_effects::pixel_plan(id, ctx, &cpu)? {
+            effectcraft_effects::PixelPlan::Pieces(plan) => piece_pass(e, b, &plan),
+            effectcraft_effects::PixelPlan::Sprites(plan) => sprites(e, b, &plan),
+        };
+    }
     let Some(plan) = effectcraft_effects::piece_plan(id, ctx, &cpu) else {
-        // Card Wipe before anything moves: the layer as is; Shatter's wireframes: the CPU.
+        // Card Wipe before anything moves: the layer as is.
         return (id == "ec.transition.cardwipe").then_some(b);
     };
+    piece_pass(e, b, &plan)
+}
+
+/// Draw a piece plan over a transparent frame of `b`'s size (sim2::PiecePlan::finish).
+pub(crate) fn piece_pass(e: &mut Enc, b: GBuf, plan: &effectcraft_effects::PiecePlan) -> Option<GBuf> {
     let (w, h) = (b.img.width, b.img.height);
     let tex = |t: &PieceTex| -> Option<GpuImage> {
         match t {
@@ -346,6 +392,9 @@ fn pieces(e: &mut Enc, id: &str, ctx: &EffectCtx, b: GBuf) -> Option<GBuf> {
         None => None,
     };
     let mut items = Items::new(48, w, h);
+    // Without a back texture the pieces can be drawn in passes over a base (CC Pixel Polly's
+    // fine grids).
+    let mut ch = back.is_none().then(|| crate::fx_particles::Chunked::new(4, 0, 48, w, h));
     for q in &plan.pieces {
         let m = q.inv;
         let mut rec = vec![11.0];
@@ -365,7 +414,13 @@ fn pieces(e: &mut Enc, id: &str, ctx: &EffectCtx, b: GBuf) -> Option<GBuf> {
             None => rec.extend([0.0; 4]),
         }
         rec.extend([q.back as u32 as f32, q.back_mirror as f32]);
-        items.push(Some(q.bbox), &rec);
+        match &mut ch {
+            Some(ch) => ch.push(e, &front, Some(q.bbox), &rec),
+            None => items.push(Some(q.bbox), &rec),
+        }
+    }
+    if let Some(ch) = ch {
+        return Some(GBuf { img: ch.finish(e, &front)?, ..b });
     }
     let mut p = Params::default();
     p.u[1][1] = back.is_some() as u32;

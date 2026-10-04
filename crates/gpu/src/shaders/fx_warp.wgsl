@@ -530,3 +530,20 @@ fn fxw_cartoon(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     textureStore(out, p, vec4<f32>(o * a, a));
 }
+
+// Warp along an inverse map solved on the CPU (aux: source x, y, valid), util::remap without
+// edge clamping.
+@compute @workgroup_size(16, 16)
+fn fxw_remap(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let dims = out_dims();
+    let p = vec2<i32>(gid.xy);
+    if (p.x >= dims.x || p.y >= dims.y) {
+        return;
+    }
+    let m = textureLoad(aux, p, 0);
+    var o = vec4<f32>(0.0);
+    if (m.z > 0.0) {
+        o = sample_bilinear(src, m.x, m.y);
+    }
+    textureStore(out, p, o);
+}

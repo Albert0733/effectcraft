@@ -444,6 +444,47 @@ fn fxl_run(c0: vec3<f32>) -> vec3<f32> {
                 c = fxl_file(o, sh, c, interp, inv);
                 pc += 5u;
             }
+            case 9u: {
+                // Affine: matrix × (c + pre) + post (a config's MatrixTransform, RangeTransform).
+                let r0 = fxl_d3(pc + 1u);
+                let r1 = fxl_d3(pc + 4u);
+                let r2 = fxl_d3(pc + 7u);
+                let d = c + fxl_d3(pc + 10u);
+                c = vec3<f32>(r0.x * d.x + r0.y * d.y + r0.z * d.z, r1.x * d.x + r1.y * d.y + r1.z * d.z, r2.x * d.x + r2.y * d.y + r2.z * d.z)
+                    + fxl_d3(pc + 13u);
+                pc += 16u;
+            }
+            case 10u: {
+                // ExponentTransform: max(c, 0) ^ p.
+                let e = fxl_d3(pc + 1u);
+                c = vec3<f32>(powz(max(c.x, 0.0), e.x), powz(max(c.y, 0.0), e.y), powz(max(c.z, 0.0), e.z));
+                pc += 4u;
+            }
+            case 11u: {
+                // Log / LogAffineTransform: base, log slope, log offset, lin slope, lin offset,
+                // inverse, ln of f64's smallest normal (the CPU's floor).
+                let base = data[pc + 1u];
+                let ls = fxl_d3(pc + 2u);
+                let lo = fxl_d3(pc + 5u);
+                let lis = fxl_d3(pc + 8u);
+                let lio = fxl_d3(pc + 11u);
+                let lnb = log(base);
+                if (data[pc + 14u] != 0.0) {
+                    for (var i = 0u; i < 3u; i++) {
+                        c[i] = (exp((c[i] - lo[i]) / ls[i] * lnb) - lio[i]) / lis[i];
+                    }
+                } else {
+                    for (var i = 0u; i < 3u; i++) {
+                        let v = lis[i] * c[i] + lio[i];
+                        var ln = data[pc + 15u];
+                        if (v >= 1.1754944e-38) {
+                            ln = log(v);
+                        }
+                        c[i] = ls[i] * (ln / lnb) + lo[i];
+                    }
+                }
+                pc += 16u;
+            }
             default: {
                 return c;
             }

@@ -663,13 +663,24 @@ fn warp(ctx: &EffectCtx, mut b: Buf) -> Buf {
     if k == 0.0 && hd == 0.0 && vd == 0.0 {
         return b;
     }
-    let style = ctx.params.e("warpStyle");
-    let vertical = ctx.params.e("warpAxis") == 1;
     let (hx, hy) = (ctx.layer_size[0] * b.scale * 0.5, ctx.layer_size[1] * b.scale * 0.5);
     if !ctx.adjustment {
         let pad = ((k.abs() + hd.abs() + vd.abs()) * 0.6 * hx.max(hy)).ceil().min(4096.0);
         b.pad(pad as u32 + 1);
     }
+    b.img = remap(&b.img, false, warp_inverse(ctx, &b));
+    b
+}
+
+/// Warp's inverse map for buffer geometry `b` (padded): the source point of an output point
+/// (buffer px), by Newton iterations on the forward warp; `None` = transparent.
+fn warp_inverse(ctx: &EffectCtx, b: &Buf) -> impl Fn(f64, f64) -> Option<(f64, f64)> + Sync + use<> {
+    let k = ctx.params.f("bend") / 100.0;
+    let hd = ctx.params.f("horizontalDistortion") / 100.0;
+    let vd = ctx.params.f("verticalDistortion") / 100.0;
+    let style = ctx.params.e("warpStyle");
+    let vertical = ctx.params.e("warpAxis") == 1;
+    let (hx, hy) = (ctx.layer_size[0] * b.scale * 0.5, ctx.layer_size[1] * b.scale * 0.5);
     let c = b.to_px([ctx.layer_size[0] * 0.5, ctx.layer_size[1] * 0.5]);
     let (hx, hy) = (hx.max(1e-6), hy.max(1e-6));
     let fwd = move |x: f64, y: f64| -> (f64, f64) {
@@ -682,7 +693,7 @@ fn warp(ctx: &EffectCtx, mut b: Buf) -> Buf {
         x1 *= 1.0 + 0.5 * vd * y1;
         (c.0 + x1 * hx, c.1 + y1 * hy)
     };
-    b.img = remap(&b.img, false, |x, y| {
+    move |x, y| {
         let (mut sx, mut sy) = (x, y);
         for _ in 0..12 {
             let (fx, fy) = fwd(sx, sy);
@@ -706,8 +717,19 @@ fn warp(ctx: &EffectCtx, mut b: Buf) -> Buf {
             return None;
         }
         Some((sx, sy))
-    });
-    b
+    }
+}
+
+/// Warp's inverse map over a `w` × `h` buffer with geometry `b` (its pixels are not read), as
+/// an image of (source x, source y, 1, 0) per pixel centre, transparent where the warp leaves
+/// the pixel empty: the plan of the GPU compositor's Warp where the Newton iterations must run
+/// in f64 to land on the CPU's pixels (strong Fisheye / Twist bends).
+pub fn warp_inverse_map(ctx: &EffectCtx, b: &Buf, w: u32, h: u32) -> Image {
+    let f = warp_inverse(ctx, b);
+    crate::util::gen_image(w, h, |x, y| match f(x as f64 + 0.5, y as f64 + 0.5) {
+        Some((sx, sy)) => [sx as f32, sy as f32, 1.0, 0.0],
+        None => [0.0; 4],
+    })
 }
 
 // ---------------------------------------------------------------- Detail-preserving Upscale
