@@ -127,6 +127,33 @@ pub struct Playback {
     pub restore_max: Option<Option<PanelKind>>,
     /// Audio-only previews: the frame under the audible sample (the current time stays put).
     pub audio_frame: Option<i64>,
+    /// When the last frames were shown (seconds, the last second's worth): the achieved rate.
+    pub shown_at: std::collections::VecDeque<f64>,
+}
+
+impl Playback {
+    /// A new frame went on screen at `now`.
+    pub fn frame_shown(&mut self, now: f64) {
+        self.shown += 1;
+        self.shown_at.push_back(now);
+        while self.shown_at.front().is_some_and(|t| now - t > 1.0) {
+            self.shown_at.pop_front();
+        }
+    }
+
+    /// Frames per second shown over the last second while the preview plays (`None` before two
+    /// frames were shown, while caching, or stopped).
+    pub fn achieved_fps(&self) -> Option<f64> {
+        let (a, b) = (self.shown_at.front()?, self.shown_at.back()?);
+        (self.playing && !self.caching && self.shown_at.len() > 1 && b > a).then(|| (self.shown_at.len() - 1) as f64 / (b - a))
+    }
+
+    /// The preview keeps up with its frame rate (within 5 %; previews that skip frames count
+    /// the frames they mean to show).
+    pub fn real_time(&self) -> Option<bool> {
+        let step = self.plan.map_or(1, |p| p.step).max(1) as f64;
+        self.achieved_fps().map(|f| f * step >= self.fps * 0.95)
+    }
 }
 
 pub struct EffectcraftApp {
@@ -152,6 +179,9 @@ pub struct EffectcraftApp {
     pending_screenshots: Vec<(u64, Option<String>, Option<[f32; 4]>, Sender<serde_json::Value>, f64)>,
     next_token: u64,
     pub(crate) last_ui_time: f64,
+    /// When the user last did something (input or an edit): Cache Frames When Idle waits for
+    /// a second of quiet. (time, project revision then)
+    last_activity: (f64, u64),
     pub(crate) toast: Option<(String, f64)>,
     /// Texture of the last CPU frame shown in the viewer and the key it came from.
     pub(crate) viewer_tex: Option<(egui::TextureHandle, FrameKey)>,
@@ -226,6 +256,7 @@ impl EffectcraftApp {
             pending_screenshots: vec![],
             next_token: 1,
             last_ui_time: 0.0,
+            last_activity: (0.0, 0),
             toast: None,
             viewer_tex: None,
             viewer_native: None,
@@ -462,12 +493,8 @@ impl EffectcraftApp {
             };
             return r.scale(zoom, ppp);
         }
-        if self.playback.playing && self.ui.viewer.res == state::Resolution::Auto {
-            // Keep previews snappy: half the displayed size, but no lower than Settings ▸
-            // Previews ▸ Adaptive Resolution Limit.
-            let full = self.ui.viewer.res.scale(zoom, ppp);
-            return full.min((full * 0.5).max(self.session.prefs.adaptive_limit()));
-        }
+        // Auto follows the zoom alike while playing and paused, so frames cached while scrubbing
+        // play back, and frames cached by a preview stay on screen when it stops.
         let full = self.ui.viewer.res.scale(zoom, ppp);
         // Fast Previews ▸ Adaptive Resolution / Fast Draft: lower resolution while dragging.
         let (_, k) = self.session.state.viewer.fast_previews.render(self.ui.viewer.interacting);
@@ -477,8 +504,32 @@ impl EffectcraftApp {
         full
     }
 
+    /// The cache key of viewer frame `frame` of `comp` at `scale` (see [`Self::frame_series`]).
     pub fn frame_key(&self, comp: ItemId, frame: i64, scale: f64) -> FrameKey {
-        FrameKey { revision: self.session.revision, comp: comp.0, frame, scale: (scale * 1000.0).round() as u32, view: self.view_hash(comp) }
+        FrameKey { frame, ..self.frame_series(comp, scale) }
+    }
+
+    /// The key of frame 0 of `comp`'s viewer frames at `scale` (the revision, view and render
+    /// options are the same for every frame: loops compute this once).
+    pub fn frame_series(&self, comp: ItemId, scale: f64) -> FrameKey {
+        FrameKey {
+            revision: self.session.revision,
+            comp: comp.0,
+            frame: 0,
+            scale: (scale * 1000.0).round() as u32,
+            view: self.view_hash(comp),
+            opts: frames::opts_hash(&self.frame_opts(comp, scale)),
+        }
+    }
+
+    /// The frame series the viewer of `comp` shows now (its scale, view and options, at the
+    /// current revision): what the cache bars count.
+    pub fn shown_series(&self, comp: ItemId) -> FrameKey {
+        match self.viewer_shown.as_ref().map(|(_, k)| *k) {
+            Some(k) if k.comp == comp.0 && k.revision == self.session.revision => FrameKey { frame: 0, ..k },
+            Some(k) => self.frame_series(comp, k.scale as f64 / 1000.0),
+            None => self.frame_series(comp, 1.0),
+        }
     }
 
     /// Hash of the comp viewer's 3D view camera (0 for the active camera view).
@@ -587,6 +638,7 @@ impl EffectcraftApp {
             layer_controls: preset.include_layer_controls,
             restore_max,
             audio_frame: (!plan.video).then_some(plan.first),
+            shown_at: Default::default(),
         };
         if !self.playback.caching {
             self.start_audio(fr.tick_of(plan.first));
@@ -666,9 +718,10 @@ impl EffectcraftApp {
     fn play_cached(&mut self, now: f64) -> bool {
         let (Some(mut pl), Some(cid)) = (self.playback.plan, self.session.active_comp_id()) else { return false };
         let scale = self.viewer_shown.as_ref().map(|(_, k)| k.scale as f64 / 1000.0).unwrap_or(1.0);
+        let series = self.frame_series(cid, scale);
         let mut last = None;
         let mut f = pl.first;
-        while f <= pl.end && self.frames.is_cached(&self.frame_key(cid, f, scale)) {
+        while f <= pl.end && self.frames.is_cached(&FrameKey { frame: f, ..series }) {
             last = Some(f);
             f += pl.step;
         }
@@ -722,16 +775,27 @@ impl EffectcraftApp {
             (self.frames_parallelism() / 2).max(2) as i64
         };
         let mut queued = self.frames.inflight();
+        let series = self.frame_series(cid, scale);
         if self.playback.caching
             && let Some(p) = plan
         {
-            // Cache Before Playback: the whole range in play order, then start the clock.
+            // Cache Before Playback: the range in play order, then start the clock. A range
+            // larger than the RAM preview budget is cut to the frames that fit (caching more
+            // would evict the first ones and never finish).
             let mut all = true;
             let n = (p.end - p.start) / p.step + 1;
+            let fit = self.frames_that_fit(&c, scale);
+            if n > fit {
+                let mut cut = p;
+                (cut.start, cut.end) = (p.first, (p.first + (fit - 1) * p.step).min(p.end));
+                self.playback.plan = Some(cut);
+                self.toast = Some((format!("Preview cut to {fit} of {n} frames: no more fit in the RAM preview (Settings ▸ Memory & CPU)"), now));
+                ctx.request_repaint();
+                return;
+            }
             let order: Vec<i64> = (0..n).filter_map(|k| p.frame_after(p.first, k)).collect();
             for f in order {
-                let key = self.frame_key(cid, f, scale);
-                if self.frames.is_cached(&key) {
+                if self.frames.is_cached(&FrameKey { frame: f, ..series }) {
                     continue;
                 }
                 all = false;
@@ -769,8 +833,7 @@ impl EffectcraftApp {
                     f
                 }
             };
-            let key = self.frame_key(cid, f, scale);
-            if !self.frames.is_cached(&key) {
+            if !self.frames.is_cached(&FrameKey { frame: f, ..series }) {
                 self.request_frame(cid, f, scale);
                 queued += 1;
             }
@@ -783,6 +846,7 @@ impl EffectcraftApp {
             ctx.request_repaint();
         }
         if !self.playback.playing {
+            self.cache_when_idle(ctx, &c, &series, now, (wa, wb));
             return;
         }
         let snap = |f: i64| wa + (f - wa).div_euclid(step) * step;
@@ -802,10 +866,10 @@ impl EffectcraftApp {
             if !video {
                 self.playback.audio_frame = Some(target);
             } else {
-                self.playback.waiting = !self.frames.is_cached(&self.frame_key(cid, target, scale));
+                self.playback.waiting = !self.frames.is_cached(&FrameKey { frame: target, ..series });
                 if target != cur {
                     self.session.set_time(fr.tick_of(target));
-                    self.playback.shown += 1;
+                    self.playback.frame_shown(now);
                 }
             }
             ctx.request_repaint();
@@ -841,24 +905,71 @@ impl EffectcraftApp {
             ctx.request_repaint();
             return;
         }
-        let key = self.frame_key(cid, target, scale);
-        if self.frames.is_cached(&key) {
+        if self.frames.is_cached(&FrameKey { frame: target, ..series }) {
             self.playback.waiting = false;
             if target != cur {
                 self.session.set_time(fr.tick_of(target));
-                self.playback.shown += 1;
+                self.playback.frame_shown(now);
             }
         } else {
             // Not cached yet: hold the clock at the current frame (cache first, then play).
             self.playback.waiting = true;
             let next = plan.and_then(|p| p.frame_after(cur, 1)).unwrap_or(if cur + 1 > wb { wa } else { cur + 1 });
-            if self.frames.is_cached(&self.frame_key(cid, next, scale)) {
+            if self.frames.is_cached(&FrameKey { frame: next, ..series }) {
                 self.session.set_time(fr.tick_of(next));
             }
             self.playback.start_wall = now;
             self.playback.start_frame = fr.frame_at(self.session.time());
         }
         ctx.request_repaint();
+    }
+
+    /// Composition ▸ Preview ▸ Cache Frames When Idle: after a second without input or edits,
+    /// render the work area's frames (from the current time on, then from its start) in the
+    /// background, a few at a time, until it is cached or the RAM preview budget is full.
+    fn cache_when_idle(&mut self, ctx: &egui::Context, comp: &effectcraft_engine::project::Comp, series: &FrameKey, now: f64, (wa, wb): (i64, i64)) {
+        let active = ctx.input(|i| !i.events.is_empty() || i.pointer.any_down() || i.pointer.is_moving());
+        if active || self.last_activity.1 != self.session.revision {
+            self.last_activity = (now, self.session.revision);
+        }
+        if !self.ui.cache_when_idle || self.frames.urgent_pending() {
+            return;
+        }
+        let quiet = now - self.last_activity.0;
+        if quiet < 1.0 {
+            ctx.request_repaint_after(std::time::Duration::from_secs_f64(1.0 - quiet));
+            return;
+        }
+        let cur = comp.frame_rate.frame_at(self.session.time()).clamp(wa, wb);
+        let n = wb - wa + 1;
+        let fit = self.frames_that_fit(comp, series.scale as f64 / 1000.0).min(n);
+        let slots = (self.frames_parallelism() / 2).max(1);
+        let mut queued = self.frames.inflight();
+        let scale = series.scale as f64 / 1000.0;
+        let mut pending = false;
+        for k in 0..fit {
+            let f = wa + (cur - wa + k).rem_euclid(n);
+            if self.frames.is_cached(&FrameKey { frame: f, ..*series }) {
+                continue;
+            }
+            pending = true;
+            if queued >= slots {
+                break;
+            }
+            self.request_frame(ItemId(series.comp), f, scale);
+            queued += 1;
+        }
+        if pending {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
+    }
+
+    /// How many viewer frames of `comp` at `scale` the RAM preview budget holds (90 % of it,
+    /// at least one).
+    fn frames_that_fit(&self, comp: &effectcraft_engine::project::Comp, scale: f64) -> i64 {
+        let side = |n: u32| (n as f64 * scale).ceil().max(1.0);
+        let frame = side(comp.width) * side(comp.height) * 4.0;
+        ((self.frames.budget() as f64 * 0.9 / frame) as i64).max(1)
     }
 
     fn frames_parallelism(&self) -> usize {
@@ -1011,7 +1122,8 @@ impl EffectcraftApp {
                 }
                 effectcraft_engine::Event::Toast { message, .. } => self.toast = Some((message, ctx.input(|i| i.time))),
                 effectcraft_engine::Event::OpenUrl(url) => ctx.open_url(egui::OpenUrl::new_tab(url)),
-                effectcraft_engine::Event::ProjectChanged { .. } => {}
+                // Frames of earlier revisions can't be shown again.
+                effectcraft_engine::Event::ProjectChanged { revision } => self.frames.drop_stale(revision),
                 effectcraft_engine::Event::Frontend { command, params } => {
                     if let Err(e) = crate::menus::frontend(self, ctx, &command, params) {
                         self.ui.status = e;

@@ -215,14 +215,12 @@ pub fn preview(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     }
 
     // Cache bar over the preview range.
-    if let Some(c) = app.session.active_comp_arc() {
-        let cid = app.session.active_comp_id().map(|i| i.0).unwrap_or(0);
-        let scale = app.viewer_shown.as_ref().map(|(_, k)| k.scale).unwrap_or(1000);
+    if let (Some(c), Some(cid)) = (app.session.active_comp_arc(), app.session.active_comp_id()) {
         let pl = match app.playback.plan.filter(|_| app.playback.playing) {
             Some(pl) => pl,
             None => effectcraft_engine::preview::plan(&o, &c, app.session.time()),
         };
-        let cached_set = app.frames.cached_frames(app.session.revision, cid, scale);
+        let cached_set = app.frames.cached_frames(&app.shown_series(cid));
         let total = pl.frames().count();
         let cached = pl.frames().filter(|f| cached_set.binary_search(f).is_ok()).count();
         let bar = Rect::from_min_size(pos2(rect.min.x + 12.0, yy), vec2(rect.width() - 24.0, 6.0));

@@ -2,7 +2,10 @@
 //!
 //! Frames render on a dedicated thread pool from immutable `Arc<Project>` snapshots, so the UI
 //! never waits for the compositor. Results land in a memory-budgeted cache keyed by (project
-//! revision, comp, frame, scale); the timeline draws the cached range as the green cache bar.
+//! revision, comp, frame, scale, view, render options); the timeline draws the cached range as
+//! the green cache bar. When the budget is full the least recently shown frames go first, and
+//! frames of an older revision are dropped as soon as the project changes (they can never be
+//! shown again).
 //!
 //! wasm32 has no threads: jobs wait in the same priority queue and [`Frames::pump`] hands them
 //! to a [`RemoteFrames`] (the browser's frame worker, a second engine instance fed with project
@@ -63,6 +66,15 @@ pub struct FrameKey {
     pub scale: u32,
     /// Hash of the 3D view camera (0 = the comp's active camera).
     pub view: u64,
+    /// Hash of the other render options (Draft / Fast Previews, shadows, nested switches…).
+    pub opts: u64,
+}
+
+impl FrameKey {
+    /// Whether `self` is a frame of the same comp, revision, scale, view and options as `base`.
+    pub fn same_series(&self, base: &FrameKey) -> bool {
+        FrameKey { frame: base.frame, ..*self } == *base
+    }
 }
 
 struct Cache {
@@ -109,6 +121,14 @@ impl Cache {
             self.forget(&i);
         }
     }
+    /// Shown again: last in line for eviction.
+    fn touch(&mut self, k: &FrameKey) {
+        if let Some(i) = self.order.iter().rposition(|o| o == k)
+            && let Some(k) = self.order.remove(i)
+        {
+            self.order.push_back(k);
+        }
+    }
     fn evict_to_budget(&mut self) {
         while self.bytes > self.budget {
             let Some(old) = self.order.pop_front() else { break };
@@ -153,7 +173,8 @@ fn content_key(keys: &ContentKeys, project: &Project, revision: u64, comp: u64) 
     k
 }
 
-fn opts_hash(o: &RenderOpts) -> u64 {
+/// Hash of render options (part of [`FrameKey`] and of the disk key).
+pub fn opts_hash(o: &RenderOpts) -> u64 {
     let mut h = disk_cache::Hash128::default();
     h.write(format!("{o:?}").as_bytes());
     h.finish() as u64
@@ -288,8 +309,24 @@ impl Frames {
         self.ctx.clone()
     }
 
+    /// The cached frame, which becomes the most recently used.
     pub fn get(&self, k: &FrameKey) -> Option<FrameImage> {
-        self.cache.lock().ok()?.map.get(k).cloned()
+        let mut c = self.cache.lock().ok()?;
+        let img = c.map.get(k).cloned()?;
+        c.touch(k);
+        Some(img)
+    }
+
+    /// Drop frames of project revisions before `revision` (and their queued jobs): an edit
+    /// makes them unreachable, so they only take memory from frames that can still be shown.
+    pub fn drop_stale(&self, revision: u64) {
+        if let Ok(mut c) = self.cache.lock() {
+            let stale: Vec<FrameKey> = c.map.keys().filter(|k| k.revision < revision).copied().collect();
+            for k in &stale {
+                c.remove(k);
+            }
+            c.order.retain(|k| k.revision >= revision);
+        }
     }
 
     pub fn is_cached(&self, k: &FrameKey) -> bool {
@@ -300,17 +337,18 @@ impl Frames {
         self.inflight.lock().map(|s| s.len()).unwrap_or(0)
     }
 
-    /// Cached frame numbers for (revision, comp, scale) — for the cache bar.
-    pub fn cached_frames(&self, revision: u64, comp: u64, scale: u32) -> Vec<i64> {
+    /// Cached frame numbers of the series of `base` (its comp, revision, scale, view and render
+    /// options) — for the cache bar.
+    pub fn cached_frames(&self, base: &FrameKey) -> Vec<i64> {
         let Ok(c) = self.cache.lock() else { return vec![] };
-        let mut v: Vec<i64> = c.map.keys().filter(|k| k.revision == revision && k.comp == comp && k.scale == scale).map(|k| k.frame).collect();
+        let mut v: Vec<i64> = c.map.keys().filter(|k| k.same_series(base)).map(|k| k.frame).collect();
         v.sort_unstable();
         v
     }
 
-    /// Frames of (revision, comp, scale) in the disk cache but not in RAM — the blue cache bar.
+    /// Frames of the series of `base` in the disk cache but not in RAM — the blue cache bar.
     /// `opts` are the viewer's render options (part of the disk key).
-    pub fn disk_frames(&self, src: &RenderSource, revision: u64, comp: u64, scale: u32, view: u64, frames: i64, opts: &RenderOpts) -> Vec<i64> {
+    pub fn disk_frames(&self, src: &RenderSource, base: &FrameKey, frames: i64, opts: &RenderOpts) -> Vec<i64> {
         let remote = self.remote.as_ref().filter(|r| r.disk());
         let contains = |k: u128| match (&src.disk, remote) {
             (Some(dc), _) => dc.contains(disk_cache::Kind::Frame, k),
@@ -320,14 +358,11 @@ impl Frames {
         if src.disk.is_none() && remote.is_none() {
             return vec![];
         }
-        let ram: HashSet<i64> = self.cached_frames(revision, comp, scale).into_iter().collect();
+        let ram: HashSet<i64> = self.cached_frames(base).into_iter().collect();
         let oh = opts_hash(opts);
         (0..frames.clamp(0, 100_000))
             .filter(|f| !ram.contains(f))
-            .filter(|f| {
-                let key = FrameKey { revision, comp, frame: *f, scale, view };
-                contains(frame_disk_key(&self.content_keys, &src.project, &key, oh))
-            })
+            .filter(|f| contains(frame_disk_key(&self.content_keys, &src.project, &FrameKey { frame: *f, ..*base }, oh)))
             .collect()
     }
 
@@ -690,5 +725,51 @@ impl Queue {
     /// The job that matters most: urgent first (newest), then prefetch in request order.
     fn best(jobs: &[Job]) -> Option<usize> {
         jobs.iter().enumerate().max_by_key(|(_, j)| (j.urgent, if j.urgent { j.seq as i64 } else { -(j.seq as i64) })).map(|(i, _)| i)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key(revision: u64, frame: i64, opts: u64) -> FrameKey {
+        FrameKey { revision, comp: 1, frame, scale: 1000, view: 0, opts }
+    }
+
+    fn img() -> FrameImage {
+        FrameImage::Cpu(Arc::new(egui::ColorImage::new([2, 2], vec![egui::Color32::BLACK; 4])))
+    }
+
+    fn insert(f: &Frames, k: FrameKey) {
+        f.cache.lock().unwrap().insert(k, img());
+    }
+
+    #[test]
+    fn least_recently_shown_frames_go_first() {
+        let f = Frames::default();
+        f.set_budget(3 * 16);
+        for i in 0..3 {
+            insert(&f, key(1, i, 0));
+        }
+        // Frame 0 is shown again, so frame 1 is now the oldest.
+        assert!(f.get(&key(1, 0, 0)).is_some());
+        insert(&f, key(1, 3, 0));
+        assert!(f.is_cached(&key(1, 0, 0)) && !f.is_cached(&key(1, 1, 0)));
+        assert!(f.is_cached(&key(1, 2, 0)) && f.is_cached(&key(1, 3, 0)));
+    }
+
+    #[test]
+    fn stale_revisions_are_dropped_and_series_are_kept_apart() {
+        let f = Frames::default();
+        insert(&f, key(1, 0, 0));
+        insert(&f, key(2, 0, 0));
+        insert(&f, key(2, 1, 7));
+        // Other render options (Draft, shadows…) are another series.
+        assert_eq!(f.cached_frames(&key(2, 0, 0)), vec![0]);
+        assert_eq!(f.cached_frames(&key(2, 0, 7)), vec![1]);
+        f.drop_stale(2);
+        assert!(!f.is_cached(&key(1, 0, 0)) && f.is_cached(&key(2, 0, 0)));
+        let c = f.cache.lock().unwrap();
+        assert_eq!((c.order.len(), c.bytes), (2, 2 * 16), "the memory is given back");
     }
 }

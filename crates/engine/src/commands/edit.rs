@@ -569,6 +569,7 @@ fn purge_caches(s: &mut Session, p: &Value) -> Result<Value> {
     let disk = matches!(what.as_str(), "all" | "memoryAndDisk" | "disk");
     if memory {
         s.layer_cache.clear();
+        s.footage.purge();
     }
     let mut disk_entries = 0;
     if disk && let Some(dc) = &s.disk_cache {
@@ -581,7 +582,11 @@ fn purge_caches(s: &mut Session, p: &Value) -> Result<Value> {
     if matches!(what.as_str(), "all" | "image" | "memory" | "memoryAndDisk") {
         effectcraft_effects::roto::purge();
     }
-    s.events.push(crate::Event::PurgeCaches);
+    // The viewers' RAM preview goes with the memory purges (and the 3D one, whose renders it
+    // holds); purging the disk cache or the snapshot leaves it.
+    if memory || what == "3d" {
+        s.events.push(crate::Event::PurgeCaches);
+    }
     s.toast(format!("Purged {what} cache"));
     Ok(json!({"purged": what, "diskEntries": disk_entries}))
 }

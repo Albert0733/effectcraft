@@ -105,7 +105,7 @@ fn viewer_frames_render_remotely_from_project_diffs() {
     let comp = s.active_comp_id().unwrap();
     let c = s.project.comp(comp).unwrap().clone();
     let opts = RenderOpts { scale: 0.25, guides: true, ..Default::default() };
-    let key = |rev: u64, f: i64| FrameKey { revision: rev, comp: comp.0, frame: f, scale: 250, view: 0 };
+    let key = |rev: u64, f: i64| FrameKey { revision: rev, comp: comp.0, frame: f, scale: 250, view: 0, opts: 0 };
     let worker = Arc::new(FakeWorker::new(&s, 2));
     let mut frames = Frames::default();
     frames.set_remote(Some(worker.clone()));
