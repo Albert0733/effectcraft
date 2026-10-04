@@ -7,7 +7,9 @@
 //! [`crate::Accelerator::raster_3d`], otherwise by the software rasteriser ([`raster`]), at 2×2
 //! supersampling. The resolve (box filter), depth of field (a gather blur by each pixel's
 //! circle of confusion, shaped by the camera's iris: [`dof`]) and the conversion back to the working encoding run on the CPU for
-//! both paths, and the result is composited over the layers below the run.
+//! both paths, and the result is composited over the layers below the run. An accelerator's
+//! compositor runs all of it on the device: [`Prepared`] for whole runs, [`SplitRun`] for runs
+//! with layers on the 2D compositing path (`draw_run`'s steps as data).
 
 pub mod dof;
 pub mod raster;
@@ -217,13 +219,109 @@ pub(crate) fn render_layers(r: &Renderer, ctx: &EvalCtx, layers: &[&Layer], out:
 
 /// The run as one prepared scene for an accelerator's compositor when it can be composited
 /// directly over the canvas (Normal-mode layers without track mattes or Preserve Transparency;
-/// those go through [`draw_run`]'s 2D path; environment backgrounds draw their sky first). `None`
+/// those go through `draw_run`'s 2D path; environment backgrounds draw their sky first). `None`
 /// when the comp isn't Advanced 3D.
 pub(crate) fn prepare_run<'p, 'a>(r: &'p Renderer<'a>, ctx: &'p EvalCtx<'a>, run: &'p [&'p Layer], out: (u32, u32)) -> Option<Prepared<'p, 'a>> {
     if !active(r, ctx) || run.iter().any(|l| l.environment_background || needs_2d_composite(ctx, l)) {
         return None;
     }
     Some(Prepared::new(r, ctx, run, out))
+}
+
+/// A run of an Advanced 3D comp whose layers need the 2D compositing path (blend modes, track
+/// mattes, Preserve Transparency), prepared for an accelerator's compositor: `draw_run`'s
+/// steps as data. The plain layers render as one scene ([`SplitRun::main`]) composited over the
+/// canvas; then each special layer, from the farthest to the nearest, renders on its own
+/// ([`SplitRun::special`]), is hidden where the main scene is nearer, and goes through the 2D
+/// path with its track matte (a 3D matte layer drawn through the camera:
+/// [`SplitRun::with_matte3d`]).
+pub struct SplitRun<'p, 'a> {
+    r: &'p Renderer<'a>,
+    ctx: &'p EvalCtx<'a>,
+    out: (u32, u32),
+    plain: Vec<&'p Layer>,
+    /// Far to near.
+    special: Vec<&'p Layer>,
+    /// Per special layer: its 3D track matte drawn solo (and whether it is active now).
+    mattes: Vec<Option<(Layer, bool)>>,
+}
+
+impl<'p, 'a> SplitRun<'p, 'a> {
+    /// The plain layers as one scene.
+    pub fn main(&self) -> Prepared<'_, 'a> {
+        Prepared::new(self.r, self.ctx, &self.plain, self.out)
+    }
+
+    /// Number of special layers.
+    pub fn len(&self) -> usize {
+        self.special.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.special.is_empty()
+    }
+
+    /// Special layer `i` (far to near).
+    pub fn layer(&self, i: usize) -> &'p Layer {
+        self.special[i]
+    }
+
+    /// Special layer `i` rendered on its own.
+    pub fn special(&self, i: usize) -> Prepared<'_, 'a> {
+        Prepared::new(self.r, self.ctx, std::slice::from_ref(&self.special[i]), self.out)
+    }
+
+    /// `f` with special layer `i`'s 3D track matte as a prepared run (`None` when the matte
+    /// layer isn't active: a transparent matte). `None` when the layer has no 3D matte (its
+    /// matte, if any, is placed in 2D as usual).
+    pub fn with_matte3d<R>(&self, i: usize, f: impl FnOnce(Option<&Prepared<'_, 'a>>) -> R) -> Option<R> {
+        let (solo, active) = self.mattes[i].as_ref()?;
+        if !*active {
+            return Some(f(None));
+        }
+        let layers = [solo];
+        let p = Prepared::new(self.r, self.ctx, &layers, self.out);
+        Some(f(Some(&p)))
+    }
+}
+
+/// The run split for an accelerator when some layer needs the 2D compositing path (`None` when
+/// the comp isn't Advanced 3D, a layer is an environment background, or no layer needs it:
+/// `prepare_run` then covers the run).
+pub(crate) fn split_run<'p, 'a>(r: &'p Renderer<'a>, ctx: &'p EvalCtx<'a>, run: &'p [&'p Layer], out: (u32, u32)) -> Option<SplitRun<'p, 'a>> {
+    if !active(r, ctx) || run.iter().any(|l| l.environment_background) || !run.iter().any(|l| needs_2d_composite(ctx, l)) {
+        return None;
+    }
+    let (special, plain): (Vec<&Layer>, Vec<&Layer>) = run.iter().copied().partition(|l| needs_2d_composite(ctx, l));
+    let special = far_to_near(r, ctx, special);
+    let mattes = special.iter().map(|l| solo_matte(ctx, l)).collect();
+    Some(SplitRun { r, ctx, out, plain, special, mattes })
+}
+
+/// Special layers sorted by their anchor's camera depth, farthest first.
+fn far_to_near<'p>(r: &Renderer, ctx: &EvalCtx, special: Vec<&'p Layer>) -> Vec<&'p Layer> {
+    let cam = camera_for(r, ctx);
+    let mut order: Vec<(f64, &Layer)> = special
+        .into_iter()
+        .map(|l| {
+            let anchor = l.transform().map_or([0.0; 3], |tr| ctx.v3(l, tr, "anchor", [0.0; 3]));
+            (cam.depth(ctx.world_matrix(l).apply(effectcraft_geom::Vec3::from(anchor))), l)
+        })
+        .collect();
+    order.sort_by(|a, b| b.0.total_cmp(&a.0));
+    order.into_iter().map(|(_, l)| l).collect()
+}
+
+/// A layer's 3D track matte, drawn through the camera on its own (no matte, Normal mode, no
+/// Preserve Transparency, visible), and whether it is active now.
+fn solo_matte(ctx: &EvalCtx, l: &Layer) -> Option<(Layer, bool)> {
+    let m = l.track_matte.and_then(|tm| ctx.comp.layer(tm.layer).filter(|m| m.id != l.id && m.is_3d()))?;
+    let mut solo = m.clone();
+    solo.track_matte = None;
+    solo.blend_mode = effectcraft_color::BlendMode::Normal;
+    solo.preserve_transparency = false;
+    solo.switches.video = true;
+    Some((solo, m.is_active_at(ctx.time)))
 }
 
 /// Layers whose blend mode, track matte or Preserve Transparency needs the 2D compositing path.
@@ -252,16 +350,7 @@ pub(crate) fn draw_run(r: &Renderer, ctx: &EvalCtx, run: &[&Layer], canvas: &mut
     if special.is_empty() {
         return;
     }
-    let cam = camera_for(r, ctx);
-    let mut order: Vec<(f64, &Layer)> = special
-        .into_iter()
-        .map(|l| {
-            let anchor = l.transform().map_or([0.0; 3], |tr| ctx.v3(l, tr, "anchor", [0.0; 3]));
-            (cam.depth(ctx.world_matrix(l).apply(effectcraft_geom::Vec3::from(anchor))), l)
-        })
-        .collect();
-    order.sort_by(|a, b| b.0.total_cmp(&a.0));
-    for (_, l) in order {
+    for l in far_to_near(r, ctx, special) {
         let Some((mut iso, depth)) = render_layers(r, ctx, &[l], out) else { continue };
         if let Some((m, md)) = &main {
             iso.data.par_iter_mut().zip(depth.par_iter()).zip(m.data.par_iter().zip(md.par_iter())).for_each(|((p, z), (q, mz))| {
@@ -274,17 +363,8 @@ pub(crate) fn draw_run(r: &Renderer, ctx: &EvalCtx, run: &[&Layer], canvas: &mut
             });
         }
         // A 3D matte layer is drawn through the camera too.
-        let matte3d = l.track_matte.and_then(|tm| ctx.comp.layer(tm.layer).filter(|m| m.id != l.id && m.is_3d())).map(|m| {
-            let mut solo = m.clone();
-            solo.track_matte = None;
-            solo.blend_mode = effectcraft_color::BlendMode::Normal;
-            solo.preserve_transparency = false;
-            solo.switches.video = true;
-            if m.is_active_at(ctx.time) {
-                render_layers(r, ctx, &[&solo], out).map(|(i, _)| i).unwrap_or_else(|| Image::new(out.0, out.1))
-            } else {
-                Image::new(out.0, out.1)
-            }
+        let matte3d = solo_matte(ctx, l).map(|(solo, active)| {
+            if active { render_layers(r, ctx, &[&solo], out).map(|(i, _)| i).unwrap_or_else(|| Image::new(out.0, out.1)) } else { Image::new(out.0, out.1) }
         });
         r.composite_iso_with(ctx, l, iso, canvas, 1.0, matte3d);
     }

@@ -192,9 +192,9 @@ fn tint(c: [f32; 4], a: f32) -> Px {
     [c[0] * a, c[1] * a, c[2] * a, a]
 }
 
-/// Draw text polylines with the given look (`r` = glyph stroke radius in px).
-fn draw_text(b: &mut Buf, polys: &[Vec<[f64; 2]>], r: f64, look: &TextLook) {
-    let (w, h) = (b.img.width as usize, b.img.height as usize);
+/// Coverage of text polylines (`r` = glyph stroke radius in px): the fill and, when the look
+/// strokes, the stroke ring.
+fn text_coverage(w: usize, h: usize, polys: &[Vec<[f64; 2]>], r: f64, look: &TextLook) -> (Plane, Option<Plane>) {
     let segs_at = |rad: f64| {
         let mut s = Vec::new();
         for pl in polys {
@@ -211,24 +211,35 @@ fn draw_text(b: &mut Buf, polys: &[Vec<[f64; 2]>], r: f64, look: &TextLook) {
         let inner = if r - sw * 0.5 > 0.05 { raster_segs(w, h, &segs_at(r - sw * 0.5), 1.0) } else { Plane::new(w, h) };
         Some(outer.zip_map(&inner, |a, b| (a - b).max(0.0)))
     };
+    (fill, ring)
+}
+
+/// One pixel of drawn text: `px` under the fill / stroke coverages `f`, `s` (opacity applied).
+fn text_px(px: Px, f: f32, s: f32, look: &TextLook) -> Px {
+    let mut out = if look.on_original { px } else { [0.0; 4] };
+    match look.display {
+        1 => out = over(out, tint(look.stroke, s)),
+        2 => {
+            out = over(out, tint(look.stroke, s));
+            out = over(out, tint(look.fill, f));
+        }
+        3 => {
+            out = over(out, tint(look.fill, f));
+            out = over(out, tint(look.stroke, s));
+        }
+        _ => out = over(out, tint(look.fill, f)),
+    }
+    out
+}
+
+/// Draw text polylines with the given look (`r` = glyph stroke radius in px).
+fn draw_text(b: &mut Buf, polys: &[Vec<[f64; 2]>], r: f64, look: &TextLook) {
+    let (fill, ring) = text_coverage(b.img.width as usize, b.img.height as usize, polys, r, look);
     let op = look.opacity;
     b.img.data.par_iter_mut().enumerate().for_each(|(i, px)| {
-        let mut out = if look.on_original { *px } else { [0.0; 4] };
         let f = fill.data[i] * op;
         let s = ring.as_ref().map(|r| r.data[i]).unwrap_or(0.0) * op;
-        match look.display {
-            1 => out = over(out, tint(look.stroke, s)),
-            2 => {
-                out = over(out, tint(look.stroke, s));
-                out = over(out, tint(look.fill, f));
-            }
-            3 => {
-                out = over(out, tint(look.fill, f));
-                out = over(out, tint(look.stroke, s));
-            }
-            _ => out = over(out, tint(look.fill, f)),
-        }
-        *px = out;
+        *px = text_px(*px, f, s, look);
     });
 }
 
@@ -337,7 +348,18 @@ fn numbers_text(ctx: &EffectCtx) -> String {
     }
 }
 
-fn numbers(ctx: &EffectCtx, mut b: Buf) -> Buf {
+/// What Numbers or Timecode draws: glyph polylines, stroke radius and look, whether the layer
+/// stays under the text, and Timecode's box (`[x0, x1, y0, y1]` in buffer pixels, colour,
+/// opacity × colour alpha).
+struct TextPlan {
+    polys: Vec<Vec<[f64; 2]>>,
+    r: f64,
+    look: TextLook,
+    keep: bool,
+    boxed: Option<([f64; 4], [f32; 4], f32)>,
+}
+
+fn numbers_plan(ctx: &EffectCtx, b: &Buf) -> TextPlan {
     let flat = ungroup(ctx.params);
     let ctx = &EffectCtx { params: &flat, time: ctx.time, layer_size: ctx.layer_size, seed: ctx.seed, adjustment: ctx.adjustment, env: ctx.env };
     let pr = ctx.params;
@@ -349,9 +371,79 @@ fn numbers(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let wdt = line_width(&text, size, tracking, prop);
     let mut polys = Vec::new();
     layout_line(&text, [pos.0 - wdt * 0.5, pos.1 + unit(size) * 3.0], size, tracking, prop, &mut polys);
-    let look = look_from(ctx, &b, "compositeOnOriginal");
-    draw_text(&mut b, &polys, weight(size), &look);
+    let mut look = look_from(ctx, b, "compositeOnOriginal");
+    let keep = look.on_original;
+    look.on_original = true;
+    TextPlan { polys, r: weight(size), look, keep, boxed: None }
+}
+
+/// Timecode's box over pixel (`x`, `y`).
+fn box_px(px: Px, x: usize, y: usize, (r, bc, a): ([f64; 4], [f32; 4], f32)) -> Px {
+    let [x0, x1, y0, y1] = r;
+    let fy = y as f64 + 0.5;
+    let cy = ((fy - y0 + 0.5).clamp(0.0, 1.0) * (y1 - fy + 0.5).clamp(0.0, 1.0)) as f32;
+    if cy <= 0.0 {
+        return px;
+    }
+    let fx = x as f64 + 0.5;
+    let cx = ((fx - x0 + 0.5).clamp(0.0, 1.0) * (x1 - fx + 0.5).clamp(0.0, 1.0)) as f32;
+    let k = cx * cy * a;
+    if k > 0.0 { over(px, [bc[0] * k, bc[1] * k, bc[2] * k, k]) } else { px }
+}
+
+fn draw_plan(mut b: Buf, plan: &TextPlan) -> Buf {
+    let w = b.img.width as usize;
+    let (fill, ring) = text_coverage(w, b.img.height as usize, &plan.polys, plan.r, &plan.look);
+    let op = plan.look.opacity;
+    b.img.data.par_iter_mut().enumerate().for_each(|(i, px)| {
+        let mut o = if plan.keep { *px } else { [0.0; 4] };
+        if let Some(bx) = plan.boxed {
+            o = box_px(o, i % w.max(1), i / w.max(1), bx);
+        }
+        let f = fill.data[i] * op;
+        let s = ring.as_ref().map(|r| r.data[i]).unwrap_or(0.0) * op;
+        *px = text_px(o, f, s, &plan.look);
+    });
     b
+}
+
+fn numbers(ctx: &EffectCtx, b: Buf) -> Buf {
+    let plan = numbers_plan(ctx, &b);
+    draw_plan(b, &plan)
+}
+
+/// Numbers and Timecode for the GPU compositor (effectcraft-gpu `fx_text`): the glyph
+/// coverage is rasterised here (the fill in x, the stroke ring in y, opacity applied), the
+/// kernel composites it.
+#[derive(Clone, Debug)]
+pub struct TextLayer {
+    pub coverage: Image,
+    /// Display Options (0 fill only, 1 stroke only, 2 fill over stroke, 3 stroke over fill).
+    pub display: u32,
+    pub fill: [f32; 4],
+    pub stroke: [f32; 4],
+    /// The layer stays under the text (else the text is drawn on transparency).
+    pub keep: bool,
+    /// Timecode's box: `[x0, x1, y0, y1]` (buffer pixels), colour, opacity × colour alpha.
+    pub boxed: Option<([f64; 4], [f32; 4], f32)>,
+}
+
+/// [`TextLayer`] of Numbers (`ec.text.numbers`) or Timecode (`ec.text.timecode`) on a buffer
+/// of `b`'s geometry.
+pub fn text_layer(id: &str, ctx: &EffectCtx, b: &Buf) -> Option<TextLayer> {
+    let plan = match id {
+        "ec.text.numbers" => numbers_plan(ctx, b),
+        "ec.text.timecode" => timecode_plan(ctx, b),
+        _ => return None,
+    };
+    let (w, h) = (b.img.width as usize, b.img.height as usize);
+    let (fill, ring) = text_coverage(w, h, &plan.polys, plan.r, &plan.look);
+    let op = plan.look.opacity;
+    let mut coverage = Image::new(b.img.width, b.img.height);
+    coverage.data.par_iter_mut().enumerate().for_each(|(i, px)| {
+        *px = [fill.data[i] * op, ring.as_ref().map(|r| r.data[i]).unwrap_or(0.0) * op, 0.0, 0.0];
+    });
+    Some(TextLayer { coverage, display: plan.look.display, fill: plan.look.fill, stroke: plan.look.stroke, keep: plan.keep, boxed: plan.boxed })
 }
 
 // ---------------------------------------------------------------- Timecode
@@ -368,7 +460,7 @@ fn drop_frame(frames: i64, nominal: i64) -> String {
     format!("{:02};{:02};{:02};{:02}", adj / (nominal * 3600), (adj / (nominal * 60)) % 60, (adj / nominal) % 60, adj % nominal)
 }
 
-fn timecode_fx(ctx: &EffectCtx, mut b: Buf) -> Buf {
+fn timecode_plan(ctx: &EffectCtx, b: &Buf) -> TextPlan {
     let pr = ctx.params;
     let src = pr.e("timeSource");
     let (t, fps) = match src {
@@ -397,36 +489,20 @@ fn timecode_fx(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let pos = b.to_px(pr.v2("textPosition"));
     let wdt = line_width(&text, size, 0.0, false);
     let op = (pr.f("opacity") / 100.0) as f32;
-    if !pr.b("renderOnOriginal") {
-        b.img = Image::new(b.img.width, b.img.height);
-    }
-    if pr.b("showBox") {
+    let boxed = pr.b("showBox").then(|| {
         let bc = pr.color("boxColor");
         let pad = size * 0.25;
-        let (x0, x1) = (pos.0 - wdt * 0.5 - pad, pos.0 + wdt * 0.5 + pad);
-        let (y0, y1) = (pos.1 - size * 0.5, pos.1 + size * 0.5);
-        let a = op * bc[3];
-        b.img.rows_mut().for_each(|(y, row)| {
-            let fy = y as f64 + 0.5;
-            let cy = ((fy - y0 + 0.5).clamp(0.0, 1.0) * (y1 - fy + 0.5).clamp(0.0, 1.0)) as f32;
-            if cy <= 0.0 {
-                return;
-            }
-            for (x, px) in row.iter_mut().enumerate() {
-                let fx = x as f64 + 0.5;
-                let cx = ((fx - x0 + 0.5).clamp(0.0, 1.0) * (x1 - fx + 0.5).clamp(0.0, 1.0)) as f32;
-                let k = cx * cy * a;
-                if k > 0.0 {
-                    *px = over(*px, [bc[0] * k, bc[1] * k, bc[2] * k, k]);
-                }
-            }
-        });
-    }
+        ([pos.0 - wdt * 0.5 - pad, pos.0 + wdt * 0.5 + pad, pos.1 - size * 0.5, pos.1 + size * 0.5], bc, op * bc[3])
+    });
     let mut polys = Vec::new();
     layout_line(&text, [pos.0 - wdt * 0.5, pos.1 + unit(size) * 3.0], size, 0.0, false, &mut polys);
     let look = TextLook { display: 0, fill: pr.color("textColor"), stroke: [0.0; 4], stroke_w: 0.0, on_original: true, opacity: op };
-    draw_text(&mut b, &polys, weight(size), &look);
-    b
+    TextPlan { polys, r: weight(size), look, keep: pr.b("renderOnOriginal"), boxed }
+}
+
+fn timecode_fx(ctx: &EffectCtx, b: Buf) -> Buf {
+    let plan = timecode_plan(ctx, &b);
+    draw_plan(b, &plan)
 }
 
 // ---------------------------------------------------------------- Basic Text

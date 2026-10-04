@@ -680,23 +680,56 @@ fn fetch_layer(ctx: &EffectCtx, id: &str, times: &[f64], grid: &Buf) -> Option<V
     )
 }
 
-/// Timewarp. Whole Frames shows the nearest source frame, Frame Mix cross-fades the two
-/// neighbouring frames and Pixel Motion builds the in-between frame along estimated motion
-/// vectors (block-matching optical flow, [`effectcraft_raster::flow`]) tuned by the Tuning
-/// group. A Matte Layer splits foreground and background so each moves on its own vectors; a
-/// Warp Layer supplies the motion instead of the layer itself. Motion Blur averages Shutter
-/// Samples instants across the shutter.
-fn timewarp(ctx: &EffectCtx, b: Buf) -> Buf {
-    if ctx.env.host.is_none() {
-        return b;
+/// One output instant of a Timewarp without a Matte Layer: a fetched frame, a cross-fade of two,
+/// or the in-between frame built along a motion field ([`TimewarpPlan::flows`]).
+#[derive(Clone, Copy, Debug)]
+pub enum TwStep {
+    Whole(usize),
+    Mix(usize, usize, f32),
+    Motion { a: usize, b: usize, w: f32, flow: usize },
+}
+
+/// Timewarp without a Matte Layer, prepared for the GPU compositor (effectcraft-gpu `fx_time`):
+/// the fetched frames on one grid, the instants across the shutter (with their weights) and the
+/// motion fields (block matching on the CPU). [`TimewarpPlan::render_cpu`] is the CPU effect.
+pub struct TimewarpPlan {
+    pub grid: Buf,
+    pub frames: Vec<Image>,
+    pub steps: Vec<(TwStep, f32)>,
+    pub flows: Vec<Flow>,
+    pub pm: PixelMotion,
+}
+
+impl TimewarpPlan {
+    pub fn render_cpu(&self) -> Buf {
+        let f = &self.frames;
+        let imgs: Vec<Image> = self
+            .steps
+            .iter()
+            .map(|(s, _)| match *s {
+                TwStep::Whole(i) => f[i].clone(),
+                TwStep::Mix(i, j, w) => effectcraft_raster::flow::mix(&f[i], &f[j], w),
+                TwStep::Motion { a, b, w, flow } => timewarp_interpolate(&f[a], &f[b], w, &self.flows[flow], &self.pm),
+            })
+            .collect();
+        let weights: Vec<f32> = self.steps.iter().map(|(_, w)| *w).collect();
+        let img = if imgs.len() == 1 { imgs.into_iter().next().unwrap_or_default() } else { average(&imgs, &weights) };
+        with_img(self.grid.clone(), img)
     }
+}
+
+/// Source-crop the edges of a frame (Pixel Motion works on cropped frames).
+pub fn timewarp_crop(img: &Image, pm: &PixelMotion) -> Image {
+    crop_edges(img, pm.crops)
+}
+
+/// The source instants Timewarp shows at the frame (with their weights) and the layer times
+/// they need: (instants, frame times, frames per second).
+fn timewarp_instants(ctx: &EffectCtx) -> (Vec<(f64, f32)>, Vec<f64>, f64) {
     let fps = ctx.fps();
     let by_frame = ctx.params.e("adjustTimeBy") == 1;
     let speed = ctx.params.f("speed");
     let src = timewarp_source_time(ctx.time, by_frame, speed, ctx.params.f("sourceFrame"), fps);
-    let method = ctx.params.e("method");
-    let one = method > 0 && ctx.params.b("tuning/buildFromOneImage");
-    // Instants of source time (with weights) across the shutter.
     let mut instants: Vec<(f64, f32)> = vec![];
     if ctx.params.b("motionBlur/enableMotionBlur") {
         let angle = if ctx.params.e("motionBlur/shutterControl") == 1 { ctx.params.f("motionBlur/shutterAngle") } else { 180.0 };
@@ -709,18 +742,88 @@ fn timewarp(ctx: &EffectCtx, b: Buf) -> Buf {
     } else {
         instants.push((src, 1.0));
     }
-    // Each instant needs the frame at or before it and the next one.
-    let split = |s: f64| {
-        let f = s * fps;
-        let f0 = (f + 1e-6).floor();
-        (f0, ((f - f0) as f32).max(0.0))
-    };
     let mut times: Vec<f64> = vec![];
     for &(s, _) in &instants {
-        let (f0, _) = split(s);
+        let (f0, _) = tw_split(s, fps);
         times.push(f0 / fps);
         times.push((f0 + 1.0) / fps);
     }
+    (instants, times, fps)
+}
+
+/// The frame at or before source time `s` and the fraction to the next one.
+fn tw_split(s: f64, fps: f64) -> (f64, f32) {
+    let f = s * fps;
+    let f0 = (f + 1e-6).floor();
+    (f0, ((f - f0) as f32).max(0.0))
+}
+
+/// [`TimewarpPlan`] of a Timewarp instance without a Matte Layer. `None` without the effect host
+/// (the layer passes through) or with a Matte Layer.
+pub fn timewarp_plan(ctx: &EffectCtx) -> Option<TimewarpPlan> {
+    ctx.env.host?;
+    if ctx.params.get("matteLayer").and_then(Value::as_layer).is_some() {
+        return None;
+    }
+    let (instants, times, fps) = timewarp_instants(ctx);
+    let method = ctx.params.e("method");
+    let one = method > 0 && ctx.params.b("tuning/buildFromOneImage");
+    let fr = fetch(ctx, &times)?;
+    let pm = PixelMotion::from(ctx, fr.grid.scale);
+    let warps = fetch_layer(ctx, "warpLayer", &times, &fr.grid);
+    let idx = |t: f64| times.iter().position(|q| (q - t).abs() < 1e-9).unwrap_or(0);
+    let mut flows: Vec<(i64, Flow)> = vec![];
+    let mut steps = vec![];
+    for &(s, wgt) in &instants {
+        let (f0, frac) = tw_split(s, fps);
+        let (i0, i1) = (idx(f0 / fps), idx((f0 + 1.0) / fps));
+        let step = if method == 0 || frac < 1e-4 || (one && method == 1) {
+            let pick = if method == 0 || frac < 1e-4 { 0.0 } else { frac.round() };
+            TwStep::Whole(if pick < 0.5 { i0 } else { i1 })
+        } else if method == 1 {
+            TwStep::Mix(i0, i1, frac)
+        } else {
+            let key = f0 as i64;
+            let flow = match flows.iter().position(|(k, _)| *k == key) {
+                Some(k) => k,
+                None => {
+                    let f = match &warps {
+                        Some(w) => timewarp_flow(&w[i0], &w[i1], &pm),
+                        None => timewarp_flow(&fr.imgs[i0], &fr.imgs[i1], &pm),
+                    };
+                    flows.push((key, f));
+                    flows.len() - 1
+                }
+            };
+            TwStep::Motion { a: i0, b: i1, w: frac, flow }
+        };
+        steps.push((step, wgt));
+    }
+    Some(TimewarpPlan { grid: fr.grid, frames: fr.imgs, steps, flows: flows.into_iter().map(|(_, f)| f).collect(), pm })
+}
+
+/// Timewarp. Whole Frames shows the nearest source frame, Frame Mix cross-fades the two
+/// neighbouring frames and Pixel Motion builds the in-between frame along estimated motion
+/// vectors (block-matching optical flow, [`effectcraft_raster::flow`]) tuned by the Tuning
+/// group. A Matte Layer splits foreground and background so each moves on its own vectors; a
+/// Warp Layer supplies the motion instead of the layer itself. Motion Blur averages Shutter
+/// Samples instants across the shutter.
+fn timewarp(ctx: &EffectCtx, b: Buf) -> Buf {
+    if ctx.env.host.is_none() {
+        return b;
+    }
+    if ctx.params.get("matteLayer").and_then(Value::as_layer).is_none() {
+        return match timewarp_plan(ctx) {
+            Some(plan) => plan.render_cpu(),
+            None => b,
+        };
+    }
+    // Instants of source time (with weights) across the shutter; each needs the frame at or
+    // before it and the next one.
+    let (instants, times, fps) = timewarp_instants(ctx);
+    let split = |s: f64| tw_split(s, fps);
+    let method = ctx.params.e("method");
+    let one = method > 0 && ctx.params.b("tuning/buildFromOneImage");
     let Some(fr) = fetch(ctx, &times) else { return b };
     let grid = fr.grid.clone();
     let frame = |t: f64| -> &Image {
