@@ -23,6 +23,7 @@
 //! assert_eq!(voip.mode(), Mode::Silk);
 //! ```
 
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 // The bit-allocation code mirrors the normative integer arithmetic; keep C-like shift expressions.
 #![allow(clippy::precedence, clippy::int_plus_one)]
 
@@ -317,23 +318,26 @@ impl OpusEncoder {
             }
             Mode::Silk => {
                 let x = self.silk_input(pcm);
-                let sp = self.silk.as_mut().expect("SILK state");
-                let target = sp.target_bits + 0.25 * sp.reservoir;
-                let mut enc = RangeEncoder::new();
-                sp.enc.encode(&x, target.max(24.0), (MAX_FRAME_BYTES * 8) as i32, &mut enc);
-                let bytes = (enc.tell() as usize).div_ceil(8).max(2);
-                let lim = 4.0 * sp.target_bits;
-                sp.reservoir = (sp.reservoir + sp.target_bits - (bytes * 8) as f64).clamp(-lim, lim);
-                packet.extend_from_slice(&enc.done(bytes));
+                // The SILK state exists whenever the mode uses SILK (set with the mode).
+                if let Some(sp) = self.silk.as_mut() {
+                    let target = sp.target_bits + 0.25 * sp.reservoir;
+                    let mut enc = RangeEncoder::new();
+                    sp.enc.encode(&x, target.max(24.0), (MAX_FRAME_BYTES * 8) as i32, &mut enc);
+                    let bytes = (enc.tell() as usize).div_ceil(8).max(2);
+                    let lim = 4.0 * sp.target_bits;
+                    sp.reservoir = (sp.reservoir + sp.target_bits - (bytes * 8) as f64).clamp(-lim, lim);
+                    packet.extend_from_slice(&enc.done(bytes));
+                }
             }
             Mode::Hybrid => {
                 let x = self.silk_input(pcm);
                 let len = self.frame_bytes;
                 let total = (len * 8) as i32;
-                let sp = self.silk.as_mut().expect("SILK state");
                 let celt_min = (total / 5).max(80);
                 let mut enc = RangeEncoder::new();
-                sp.enc.encode(&x, sp.target_bits, total - celt_min, &mut enc);
+                if let Some(sp) = self.silk.as_mut() {
+                    sp.enc.encode(&x, sp.target_bits, total - celt_min, &mut enc);
+                }
                 // No redundancy (RFC 6716 §4.5.1); the flag is present when there is room.
                 if enc.tell() + 17 + 20 <= total {
                     enc.bit_logp(false, 12);
@@ -349,7 +353,7 @@ impl OpusEncoder {
     /// Decimates the input to the SILK internal rate (16-bit scale), one vector per channel.
     fn silk_input(&mut self, pcm: &[f32]) -> Vec<Vec<f32>> {
         let c = self.channels;
-        let sp = self.silk.as_mut().expect("SILK state");
+        let Some(sp) = self.silk.as_mut() else { return vec![vec![]; c] };
         let mut out = Vec::with_capacity(c);
         let mut tmp = vec![0f32; N];
         for ch in 0..c {

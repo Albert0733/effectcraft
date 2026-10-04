@@ -599,7 +599,8 @@ impl<'a> Tile<'a> {
             }
             return s;
         }
-        let refs = self.f.refs.as_ref().expect("reference");
+        // Inter search only runs on frames with a reference.
+        let Some(refs) = self.f.refs.as_ref() else { return u32::MAX / 4 };
         let mut pred = [0u8; 256];
         predict(&refs[0], x16, y16, n, n, &mut pred);
         for i in 0..n {
@@ -739,7 +740,7 @@ impl<'a> Tile<'a> {
         }
         let mode = mode.0;
         // Prediction of every plane (written straight into the reconstruction).
-        let refs = self.f.refs.as_ref().expect("reference");
+        let Some(refs) = self.f.refs.as_ref() else { return };
         for plane in 0..3 {
             let ch = plane > 0;
             let (row16, col16) = clamp_for_plane(mv, r, c, n8, mi_rows, mi_cols, ch);
