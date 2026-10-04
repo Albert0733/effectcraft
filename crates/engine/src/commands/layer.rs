@@ -1197,7 +1197,7 @@ fn layer_settings(s: &mut Session, p: &Value) -> Result<Value> {
 /// Layer Settings applies to solids (and adjustment layers), nulls, cameras and lights.
 fn has_layer_settings(s: &Session) -> std::result::Result<(), String> {
     has_layers(s)?;
-    let l = s.active_comp().and_then(|c| c.layer(s.state.selected_layers[0])).ok_or("select a layer first")?;
+    let l = s.active_comp().zip(s.state.selected_layers.first()).and_then(|(c, l)| c.layer(*l)).ok_or("select a layer first")?;
     match l.source {
         LayerSource::Solid { .. } | LayerSource::Null | LayerSource::Camera | LayerSource::Light { .. } => Ok(()),
         _ => Err("this kind of layer has no settings".into()),

@@ -832,3 +832,34 @@ fn comp_settings_preserve_frame_rate_and_resolution() {
     s.execute("edit.undo", json!({})).unwrap();
     assert!(!s.active_comp().unwrap().preserve_frame_rate && !s.active_comp().unwrap().preserve_resolution);
 }
+
+#[test]
+fn new_comp_from_selection_survives_hostile_sequence_numbers() {
+    let mut s = Session::default();
+    let still = |s: &mut Session, name: &str| {
+        let f = effectcraft_project::Footage {
+            kind: effectcraft_project::FootageKind::Still,
+            width: 64,
+            height: 64,
+            pixel_aspect: 1.0,
+            has_video: true,
+            ..Default::default()
+        };
+        std::sync::Arc::make_mut(&mut s.project).add_item(name, effectcraft_color::Label::None, None, ItemKind::Footage(f))
+    };
+    let a = still(&mut s, "a.png");
+    let b = still(&mut s, "b.png");
+    let c = still(&mut s, "c.png");
+    for overlap in [json!(1e30), json!(-5), json!(f64::MAX)] {
+        s.state.project_selection = vec![a, b, c];
+        // A huge overlap overflowed the duration arithmetic (a panic with overflow checks, a
+        // wrapped, too long comp without them).
+        let r = s
+            .execute("file.newCompFromSelection", json!({"single": true, "sequence": true, "overlap": true, "overlapDuration": overlap, "duration": 2}))
+            .unwrap();
+        let c = s.project.comp(effectcraft_project::ItemId(r["comps"][0].as_u64().unwrap())).unwrap();
+        assert!(c.duration.seconds() <= 6.0 && c.duration > effectcraft_time::Tick::ZERO, "{overlap}: {}", c.duration.seconds());
+    }
+    s.state.project_selection = vec![a, b];
+    assert!(s.execute("file.newCompFromSelection", json!({"single": true, "dimensionsFrom": 99})).is_err());
+}

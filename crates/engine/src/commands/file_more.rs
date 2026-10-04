@@ -176,7 +176,7 @@ fn new_comp_from_selection(s: &mut Session, p: &Value) -> Result<Value> {
     let sequence = b_p(p, "sequence").unwrap_or(false).then(|| {
         json!({
             "overlap": b_p(p, "overlap").unwrap_or(false),
-            "duration": f_p(p, "overlapDuration").unwrap_or(1.0),
+            "duration": f_p(p, "overlapDuration").filter(|d| d.is_finite() && *d >= 0.0).unwrap_or(1.0),
             "transition": str_p(p, "transition").unwrap_or("off"),
         })
     });
@@ -187,7 +187,7 @@ fn new_comp_from_selection(s: &mut Session, p: &Value) -> Result<Value> {
     super::app_more::grouped(s, "New Comp from Selection", |s| {
         let mut made = vec![];
         for g in groups {
-            let lead = proj.item(if single { g[from] } else { g[0] }).ok_or(EngineError::NoComp)?;
+            let lead = g.get(if single { from } else { 0 }).and_then(|i| proj.item(*i)).ok_or(EngineError::NoComp)?;
             let (w, h) = lead.dimensions().unwrap_or((1920, 1080));
             let rate = lead.frame_rate().unwrap_or(FrameRate::FPS_29_97);
             let pixel_aspect = match &lead.kind {
@@ -199,7 +199,7 @@ fn new_comp_from_selection(s: &mut Session, p: &Value) -> Result<Value> {
             let overlap =
                 sequence.as_ref().filter(|q| q["overlap"] == true).map_or(Tick::ZERO, |q| Tick::from_seconds_f64(q["duration"].as_f64().unwrap_or(1.0)));
             let dur = match &sequence {
-                Some(_) if g.len() > 1 => g.iter().map(|i| duration(*i)).fold(Tick::ZERO, |a, d| a + d) - Tick(overlap.0 * (g.len() as i64 - 1)),
+                Some(_) if g.len() > 1 => g.iter().map(|i| duration(*i)).fold(Tick::ZERO, |a, d| a + d) - Tick(overlap.0.saturating_mul(g.len() as i64 - 1)),
                 _ => g.iter().map(|i| duration(*i)).max().unwrap_or(Tick::from_seconds_f64(still)),
             }
             .max(rate.frame_duration());

@@ -942,8 +942,12 @@ impl EffectcraftApp {
             ctx.request_repaint_after(std::time::Duration::from_secs_f64(1.0 - quiet));
             return;
         }
-        let cur = comp.frame_rate.frame_at(self.session.time()).clamp(wa, wb);
+        // An empty work area has nothing to cache.
         let n = wb - wa + 1;
+        if n < 1 {
+            return;
+        }
+        let cur = comp.frame_rate.frame_at(self.session.time()).clamp(wa, wb);
         let fit = self.frames_that_fit(comp, series.scale as f64 / 1000.0).min(n);
         let slots = (self.frames_parallelism() / 2).max(1);
         let mut queued = self.frames.inflight();
