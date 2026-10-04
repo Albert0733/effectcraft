@@ -73,7 +73,9 @@ pub(crate) fn decode(path: &str, bytes: &[u8], footage: &Footage, op: AlphaOp) -
     if effectcraft_psd::is_psd(bytes) {
         let psd = effectcraft_psd::Psd::parse(bytes.to_vec()).map_err(|e| MediaError::Decode(format!("{path}: {e}")))?;
         // A smart object's embedded file: an embedded document's merged image, or an image.
-        if let Some(uuid) = footage.layer.as_ref().and_then(|l| l.embedded.as_deref()) {
+        if let Some(l) = footage.layer.as_ref()
+            && let Some(uuid) = l.embedded.as_deref()
+        {
             let data = psd.linked_data(uuid).ok_or_else(|| MediaError::Decode(format!("{path}: no embedded file {uuid}")))?;
             let px = if effectcraft_psd::is_psd(data) {
                 let inner = effectcraft_psd::Psd::parse(data.to_vec()).map_err(|e| MediaError::Decode(format!("{path} (smart object): {e}")))?;
@@ -84,7 +86,6 @@ pub(crate) fn decode(path: &str, bytes: &[u8], footage: &Footage, op: AlphaOp) -
                 effectcraft_psd::Pixels { width: rgba.width(), height: rgba.height(), data: rgba.pixels().map(|p| p.0).collect() }
             };
             // A perspective quad or a warp: baked as placed.
-            let l = footage.layer.as_ref().expect("embedded implies a layer");
             if l.placed
                 && let Some(so) = psd.layers.get(l.index as usize).and_then(|pl| pl.smart_object.as_ref())
             {
