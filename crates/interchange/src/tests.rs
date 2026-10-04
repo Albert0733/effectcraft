@@ -498,3 +498,42 @@ fn formats_parse() {
     assert_eq!(par_fraction(0.9), (9, 10));
     assert_eq!(par_fraction(1.0), (1, 1));
 }
+
+#[test]
+fn export_survives_a_precomp_layer_pointing_at_a_non_comp() {
+    // A damaged project: the precomp layer's source is a footage item (or a deleted item).
+    let (mut p, cid) = ae_project();
+    let footage = p.items.iter().find(|(_, i)| matches!(i.kind, ItemKind::Footage(_))).map(|(id, _)| *id).unwrap();
+    for bad in [footage, ItemId(9_999)] {
+        let mut c = (*p.comp_arc(cid).unwrap()).clone();
+        for l in &mut c.layers {
+            if matches!(l.source, LayerSource::Comp { .. }) {
+                l.source = LayerSource::Comp { item: bad };
+            }
+        }
+        p.item_mut(cid).unwrap().kind = ItemKind::Comp(Arc::new(c));
+        for format in [TimelineFormat::Fcp7Xml, TimelineFormat::Fcpxml, TimelineFormat::Otio] {
+            let out = export(&p, cid, &ExportOptions { format, prerender: PrerenderMode::None, ..Default::default() }, &HashMap::new()).unwrap();
+            assert_eq!(out.sequences, 1);
+        }
+    }
+    assert!(matches!(export(&p, footage, &ExportOptions::default(), &HashMap::new()), Err(Error::NoComp(_))));
+}
+
+#[test]
+fn deeply_nested_documents_error_instead_of_overflowing_the_stack() {
+    // A few hundred kilobytes nested 100 000 levels deep overflowed the parsers' stack.
+    let n = 100_000;
+    let docs = [
+        (TimelineFormat::Fcp7Xml, format!("<?xml version=\"1.0\"?><xmeml version=\"5\">{}{}</xmeml>", "<a>".repeat(n), "</a>".repeat(n))),
+        (TimelineFormat::Fcpxml, format!("<?xml version=\"1.0\"?><fcpxml version=\"1.9\">{}{}</fcpxml>", "<a>".repeat(n), "</a>".repeat(n))),
+        (TimelineFormat::Otio, format!("{{\"OTIO_SCHEMA\":\"Timeline.1\",\"tracks\":{}{}}}", "[".repeat(n), "]".repeat(n))),
+    ];
+    for (format, doc) in docs {
+        let mut p = Project::default();
+        let r = import(&mut p, doc.as_bytes(), Some(format), &ImportOptions::default(), &mut |_| None);
+        assert!(matches!(r, Err(Error::TooDeep(_))), "{format:?}");
+    }
+    assert_eq!(super::import::xml_depth(b"<a><!-- <b><b> --><c x='>'/><![CDATA[<d>]]><e></e></a>"), 2);
+    assert_eq!(super::import::json_depth(br#"{"a": "[[[{{", "b": [[1], {"c": "\\\"["}]}"#), 3);
+}

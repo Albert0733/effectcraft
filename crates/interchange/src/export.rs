@@ -254,7 +254,7 @@ pub fn export(project: &Project, comp: ItemId, opts: &ExportOptions, prerendered
         bins: HashMap::new(),
         stack: vec![],
     };
-    let seq = ex.sequence(comp);
+    let seq = ex.sequence(comp).ok_or(Error::NoComp(comp.0))?;
     let fc_opts = filmcraft_interchange::ExportOptions { relative_to: opts.relative_to.clone(), name: Some(name), ..Default::default() };
     let (bytes, report) = filmcraft_interchange::export(&ex.fp, seq, opts.format.fc(), &fc_opts)?;
     for e in report.entries {
@@ -390,12 +390,12 @@ impl Exporter<'_> {
         id
     }
 
-    /// The sequence for a comp (created once).
-    fn sequence(&mut self, cid: ItemId) -> fp::ItemId {
+    /// The sequence for a comp (created once); None if `cid` is not a composition.
+    fn sequence(&mut self, cid: ItemId) -> Option<fp::ItemId> {
         if let Some(s) = self.seqs.get(&cid) {
-            return *s;
+            return Some(*s);
         }
-        let comp = self.p.comp_arc(cid).expect("comp");
+        let comp = self.p.comp_arc(cid)?;
         let it = self.p.item(cid);
         let name = it.map(|i| i.name.clone()).unwrap_or_default();
         let settings = fp::SequenceSettings {
@@ -430,12 +430,13 @@ impl Exporter<'_> {
                 Plan::Render(why) => match self.pre.get(&(cid, l.id)).cloned() {
                     Some(r) => {
                         let item = self.prerendered_item(&format!("{} (pre-rendered)", l.name), &r);
-                        let mut ti = self.track_item(item, &l.name, fp::TrackKind::Video, &tm, rate);
-                        ti.source_in = filmcraft_time::Tick::ZERO;
-                        ti.speed = 1.0;
-                        ti.reverse = false;
-                        self.out.prerendered += 1;
-                        Some(ti)
+                        self.track_item(item, &l.name, fp::TrackKind::Video, &tm, rate).map(|mut ti| {
+                            ti.source_in = filmcraft_time::Tick::ZERO;
+                            ti.speed = 1.0;
+                            ti.reverse = false;
+                            self.out.prerendered += 1;
+                            ti
+                        })
                     }
                     None => {
                         self.warn(format!("layer \"{}\" was left out ({why}; pre-rendering is off or unavailable)", l.name));
@@ -457,16 +458,16 @@ impl Exporter<'_> {
                             Some(ItemKind::Solid(s)) => Some(self.solid_item(*item, s.color, &comp)),
                             _ => None,
                         },
-                        LayerSource::Comp { item } if !self.stack.contains(item) => Some(self.sequence(*item)),
+                        LayerSource::Comp { item } if !self.stack.contains(item) => self.sequence(*item),
                         _ => None,
                     };
-                    item.map(|item| {
-                        let mut ti = self.track_item(item, &l.name, fp::TrackKind::Video, &tm, rate);
+                    item.and_then(|item| {
+                        let mut ti = self.track_item(item, &l.name, fp::TrackKind::Video, &tm, rate)?;
                         self.motion(&mut ti, l, &comp, &tm);
                         if let Some(h) = l.props.get("timeRemap").filter(|p| !p.is_animated()) {
                             ti.frame_hold = Some(tick_out(Tick::from_seconds_f64(h.value.as_f64())));
                         }
-                        ti
+                        Some(ti)
                     })
                 }
             };
@@ -486,14 +487,14 @@ impl Exporter<'_> {
                     _ => None,
                 },
                 LayerSource::Comp { item } if self.p.comp(*item).is_some_and(|c| comp_has_audio(self.p, c)) && !self.stack.contains(item) => {
-                    Some(self.sequence(*item))
+                    self.sequence(*item)
                 }
                 _ => None,
             };
             if let Some(item) = sound
                 && !matches!(pl, Plan::Skip(_))
+                && let Some(mut ti) = self.track_item(item, &l.name, fp::TrackKind::Audio, &tm, rate)
             {
-                let mut ti = self.track_item(item, &l.name, fp::TrackKind::Audio, &tm, rate);
                 ti.enabled = l.switches.audio;
                 ti.link = has_video_clip.then_some(link);
                 self.levels(&mut ti, l, &tm);
@@ -529,18 +530,18 @@ impl Exporter<'_> {
             seq.work_area = None;
         }
         self.stack.pop();
-        sid
+        Some(sid)
     }
 
-    fn track_item(&mut self, item: fp::ItemId, name: &str, kind: fp::TrackKind, tm: &Timing, rate: FrameRate) -> fp::TrackItem {
+    fn track_item(&mut self, item: fp::ItemId, name: &str, kind: fp::TrackKind, tm: &Timing, rate: FrameRate) -> Option<fp::TrackItem> {
         let range = filmcraft_time::TimeRange::new(tick_out(tm.source_in), tick_out(Tick((tm.duration.0 as f64 * tm.speed).round() as i64)));
-        let mut ti = self.fp.make_track_item(item, kind, tick_out(tm.start), range, rate_out(rate)).expect("item exists");
+        let mut ti = self.fp.make_track_item(item, kind, tick_out(tm.start), range, rate_out(rate))?;
         ti.name = name.to_string();
         ti.duration = tick_out(tm.duration);
         ti.source_in = tick_out(tm.source_in);
         ti.speed = tm.speed;
         ti.reverse = tm.reverse;
-        ti
+        Some(ti)
     }
 
     /// Transform → Motion + Opacity (clip-time keyframes).
@@ -554,7 +555,7 @@ impl Exporter<'_> {
             _ => (comp.width, comp.height),
         };
         let center = |x: f64, y: f64| -> fp::ParamValue { fp::ParamValue::Vec2(Vec2 { x, y }) };
-        let mut m = ti.effect("motion").cloned().unwrap_or_else(|| fp::find_effect("motion").expect("motion").instance());
+        let Some(mut m) = effect_or_new(ti, "motion") else { return };
         if let Some(p) = tr.get("position") {
             let def = [comp.width as f64 / 2.0, comp.height as f64 / 2.0];
             if p.is_animated() || differs(&p.value, def) {
@@ -594,8 +595,9 @@ impl Exporter<'_> {
             m.params.insert("rotation".into(), param_out(p, &to_clip, |v| fp::ParamValue::Float(v.as_f64())));
         }
         set_effect(ti, m);
-        if let Some(p) = tr.get("opacity") {
-            let mut o = ti.effect("opacity").cloned().unwrap_or_else(|| fp::find_effect("opacity").expect("opacity").instance());
+        if let Some(p) = tr.get("opacity")
+            && let Some(mut o) = effect_or_new(ti, "opacity")
+        {
             o.params.insert("opacity".into(), param_out(p, &to_clip, |v| fp::ParamValue::Float(v.as_f64())));
             if l.blend_mode != effectcraft_color::BlendMode::Normal
                 && let Some(i) = fp::effect::BLEND_MODES.iter().position(|m| m.eq_ignore_ascii_case(l.blend_mode.label()))
@@ -615,7 +617,7 @@ impl Exporter<'_> {
         if (p.value.as_vec2()[0] - p.value.as_vec2()[1]).abs() > 1e-9 {
             self.warn("separate left/right audio levels were exported as the left level");
         }
-        let mut v = ti.effect("volume").cloned().unwrap_or_else(|| fp::find_effect("volume").expect("volume").instance());
+        let Some(mut v) = effect_or_new(ti, "volume") else { return };
         v.params.insert("level".into(), param_out(p, &to_clip, |v| fp::ParamValue::Float(v.as_vec2()[0])));
         set_effect(ti, v);
     }
@@ -632,6 +634,11 @@ fn comp_has_audio(p: &Project, c: &Comp) -> bool {
 fn differs(v: &Value, def: [f64; 2]) -> bool {
     let a = v.as_vec3();
     (a[0] - def[0]).abs() > 1e-6 || (a[1] - def[1]).abs() > 1e-6
+}
+
+/// The clip's `id` effect, or a new instance of it (None if the registry has no such effect).
+fn effect_or_new(ti: &fp::TrackItem, id: &str) -> Option<fp::EffectInstance> {
+    ti.effect(id).cloned().or_else(|| fp::find_effect(id).map(|e| e.instance()))
 }
 
 fn set_effect(ti: &mut fp::TrackItem, e: fp::EffectInstance) {
