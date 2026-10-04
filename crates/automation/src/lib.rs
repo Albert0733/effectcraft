@@ -13,6 +13,8 @@
 //! Layering: depends on `effectcraft-engine` only (never egui); the CLI injects a fully wired
 //! session (`effectcraft_host::session()`).
 
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
+
 pub mod backend;
 pub mod base64;
 pub mod bridge;

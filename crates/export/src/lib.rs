@@ -28,6 +28,8 @@
 //! H.264 requires even dimensions: odd output sizes are cropped by one pixel (padded when the
 //! output is a single pixel wide/high).
 
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
+
 mod encode;
 mod hevc_av1;
 mod out;

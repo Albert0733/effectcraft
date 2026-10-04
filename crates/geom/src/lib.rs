@@ -5,6 +5,8 @@
 //! clockwise on screen, 3D uses a left-handed system with +z pointing into the screen, and a 3D
 //! layer's rotation is Orientation (X, Y, Z) followed by X Rotation, Y Rotation, Z Rotation.
 
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
+
 use std::ops::{Add, AddAssign, Div, Mul, MulAssign, Neg, Sub, SubAssign};
 
 use serde::{Deserialize, Serialize};

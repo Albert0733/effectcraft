@@ -22,6 +22,8 @@
 //! differently on another machine. The runtime is the `wasm` feature (on for the desktop app and
 //! the CLI); without it [`load_wasm`] says plug-ins are unavailable.
 
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
+
 use effectcraft_effects::EffectSpec;
 pub use effectcraft_effects::plugin::{EffectPlugin, PLUGIN_API_VERSION, PluginFrame, PluginManifest, PluginParams, register_plugin};
 
@@ -62,5 +64,7 @@ pub fn loader(bytes: &[u8], source: &str) -> Result<serde_json::Value, String> {
     }))
 }
 
-#[cfg(all(test, feature = "wasm"))]
+// Two attributes, so clippy sees `cfg(test)` and treats the module as test code.
+#[cfg(test)]
+#[cfg(feature = "wasm")]
 mod tests;

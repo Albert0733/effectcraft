@@ -20,6 +20,8 @@
 //!
 //! [`store`] is portable (unit-tested natively); everything else is `wasm32`-only.
 
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
+
 pub mod store;
 
 #[cfg(target_arch = "wasm32")]
