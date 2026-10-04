@@ -130,6 +130,12 @@ pub(crate) fn read_unicode(r: &mut Reader) -> Result<String> {
 
 /// Read a descriptor (after its version field).
 pub fn read_descriptor(r: &mut Reader) -> Result<Descriptor> {
+    read_descriptor_at(r, 0)
+}
+
+/// [`read_descriptor`] nested `depth` values deep: the limit in [`read_value`] counts nested
+/// descriptors too, so a file can't recurse until the stack overflows.
+fn read_descriptor_at(r: &mut Reader, depth: usize) -> Result<Descriptor> {
     let class_name = read_unicode(r)?;
     let class_id = read_id(r)?;
     let n = r.u32()? as usize;
@@ -140,7 +146,7 @@ pub fn read_descriptor(r: &mut Reader) -> Result<Descriptor> {
     for _ in 0..n {
         let key = read_id(r)?;
         let ty = r.tag()?;
-        let v = read_value(r, &ty, 0)?;
+        let v = read_value(r, &ty, depth)?;
         items.push((key, v));
     }
     Ok(Descriptor { class_name, class_id, items })
@@ -151,7 +157,7 @@ fn read_value(r: &mut Reader, ty: &[u8; 4], depth: usize) -> Result<DValue> {
         return Err(Error::Invalid("descriptor nesting".into()));
     }
     Ok(match ty {
-        b"Objc" | b"GlbO" => DValue::Descriptor(read_descriptor(r)?),
+        b"Objc" | b"GlbO" => DValue::Descriptor(read_descriptor_at(r, depth + 1)?),
         b"VlLs" => {
             let n = r.u32()? as usize;
             if n > 1_000_000 {
@@ -166,7 +172,7 @@ fn read_value(r: &mut Reader, ty: &[u8; 4], depth: usize) -> Result<DValue> {
         }
         b"ObAr" => {
             let n = r.u32()?;
-            DValue::ObjectArray(n, read_descriptor(r)?)
+            DValue::ObjectArray(n, read_descriptor_at(r, depth + 1)?)
         }
         b"doub" => DValue::Double(r.f64()?),
         b"UntF" => {
@@ -415,6 +421,16 @@ impl Descriptor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deeply_nested_descriptors_error_instead_of_overflowing_the_stack() {
+        // Each level: empty class name, a 4-byte class id, one item `key` of type `Objc`. The
+        // depth limit restarted at every nested descriptor, so 100 000 levels (2.4 MB) recursed
+        // until the stack overflowed.
+        let level: Vec<u8> = [&0u32.to_be_bytes()[..], &0u32.to_be_bytes(), b"null", &1u32.to_be_bytes(), &0u32.to_be_bytes(), b"key ", b"Objc"].concat();
+        let bytes = level.repeat(100_000);
+        assert!(matches!(read_descriptor(&mut Reader::new(&bytes)), Err(Error::Invalid(_))));
+    }
 
     #[test]
     fn round_trip() {
