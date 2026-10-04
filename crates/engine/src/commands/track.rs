@@ -214,7 +214,7 @@ fn create(s: &mut Session, p: &V, cmd: &str) -> Result<V> {
         let mut ids = Ids(&mut next);
         let g = tracking::tracker(&mut ids, &name, st, &pts);
         let uid = g.uid;
-        l.motion_trackers_mut(&mut ids).children.push(g.into());
+        l.motion_trackers_mut(&mut ids).ok_or_else(|| bad(cmd, "the layer has no Motion Trackers group"))?.children.push(g.into());
         proj.next_id = next;
         state.current_track = Some((lid, uid));
         state.selected_layers = vec![lid];
