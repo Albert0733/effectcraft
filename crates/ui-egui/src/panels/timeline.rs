@@ -1288,7 +1288,9 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     let lpn = lp.with_clip_rect(name_rect.intersect(lp.clip_rect()));
                     lpn.text(pos2(name_rect.min.x, cy), Align2::LEFT_CENTER, display_name(app, layer), Tokens::ui(12.0), name_col);
                 }
-                if row_resp.drag_started() {
+                // Locked layers can't be selected or moved (unlock them with the lock switch).
+                let locked = layer.switches.locked;
+                if row_resp.drag_started() && !locked {
                     // The selected layers move together; an unselected row moves alone.
                     let moving: Vec<u64> =
                         if is_sel { comp.layers.iter().filter(|l| selected.contains(&l.id)).map(|l| l.id.0).collect() } else { vec![layer.id.0] };
@@ -1298,7 +1300,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     ctx.data_mut(|d| d.insert_temp(layer_drop_id(), true));
                 }
                 app.auto.add(&format!("timeline.layer.{}.row", layer.id.0), left, &layer.name);
-                if row_resp.clicked() {
+                if row_resp.clicked() && !locked {
                     let m = ui.input(|i| i.modifiers);
                     actions.push(("layer.select".into(), json!({"layers": [layer.id.0], "toggle": m.command, "add": m.shift})));
                 }

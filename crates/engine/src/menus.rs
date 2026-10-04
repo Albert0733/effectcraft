@@ -344,6 +344,15 @@ pub fn checked(s: &Session, command: &str, params: &Value) -> Option<bool> {
     }
 }
 
+/// Labels that name the platform's own tools: "Reveal in Finder" is "Reveal in Explorer" on
+/// Windows (as in After Effects) and "Reveal in File Manager" elsewhere.
+fn platform_label(label: &str, mac: bool) -> String {
+    match label.strip_prefix("Reveal in Finder") {
+        Some(rest) if !mac => format!("Reveal in {}{rest}", if cfg!(target_os = "windows") { "Explorer" } else { "File Manager" }),
+        _ => label.to_string(),
+    }
+}
+
 /// Parse the tree text. `mac` selects `[mac]` / `[!mac]` lines.
 pub fn parse(text: &str, mac: bool) -> Result<Vec<MenuNode>, String> {
     struct Line<'a> {
@@ -378,7 +387,7 @@ pub fn parse(text: &str, mac: bool) -> Result<Vec<MenuNode>, String> {
         }
         lines.push(Line { depth, body });
     }
-    fn build(lines: &[Line], i: &mut usize, depth: usize) -> Result<Vec<MenuNode>, String> {
+    fn build(lines: &[Line], i: &mut usize, depth: usize, mac: bool) -> Result<Vec<MenuNode>, String> {
         let mut out = vec![];
         while *i < lines.len() {
             let l = &lines[*i];
@@ -402,7 +411,7 @@ pub fn parse(text: &str, mac: bool) -> Result<Vec<MenuNode>, String> {
                 continue;
             }
             let mut parts = l.body.split(" | ");
-            let label = parts.next().unwrap_or_default().trim().to_string();
+            let label = platform_label(parts.next().unwrap_or_default().trim(), mac);
             match parts.next() {
                 Some(cmd) => {
                     let cmd = cmd.trim();
@@ -416,7 +425,7 @@ pub fn parse(text: &str, mac: bool) -> Result<Vec<MenuNode>, String> {
                     out.push(MenuNode::Item(MenuEntry { label, command, params, shortcut }));
                 }
                 None => {
-                    let children = build(lines, i, depth + 1)?;
+                    let children = build(lines, i, depth + 1, mac)?;
                     if children.is_empty() {
                         return Err(format!("`{label}` has neither a command nor children"));
                     }
@@ -427,7 +436,7 @@ pub fn parse(text: &str, mac: bool) -> Result<Vec<MenuNode>, String> {
         Ok(out)
     }
     let mut i = 0;
-    build(&lines, &mut i, 0)
+    build(&lines, &mut i, 0, mac)
 }
 
 /// Effect ▸ category submenus from the effect registry.
@@ -744,8 +753,6 @@ Layer
     RotoBezier | path.rotoBezier
     Closed | mask.setClosed
     Convert To Bezier Path | path.convertToBezier
-    Group Shapes | path.groupShapes
-    Ungroup Shapes | path.ungroupShapes
     Set First Vertex | path.setFirstVertex
     Free Transform Points | path.freeTransform
   Quality
@@ -782,7 +789,7 @@ Layer
     ---
     Flip Horizontal | layer.transform {"op":"flipH"}
     Flip Vertical | layer.transform {"op":"flipV"}
-    Center In View | layer.transform {"op":"center"}
+    Center In View | layer.transform {"op":"center"} | Cmd+Home
     Center Anchor Point in Layer Content | layer.centerAnchor
     Fit to Comp | layer.transform {"op":"fit"} | Cmd+Alt+F
     Fit to Comp Width | layer.transform {"op":"fitWidth"} | Cmd+Alt+Shift+H
@@ -883,6 +890,8 @@ Layer
     Color Overlay | layer.style.colorOverlay
     Gradient Overlay | layer.style.gradientOverlay
     Stroke | layer.style.stroke
+  Group Shapes | path.groupShapes
+  Ungroup Shapes | path.ungroupShapes
   ---
   Arrange
     Bring Layer to Front | layer.arrange {"to":"front"} | Cmd+Shift+]
@@ -1151,6 +1160,7 @@ Window
   Effects & Presets | window.panel {"panel":"effectsPresets"} | Cmd+5
   Essential Graphics | window.panel {"panel":"essentialGraphics"}
   Info | window.panel {"panel":"info"} | Cmd+2
+  Learn | help.inAppTutorials
   Lumetri Scopes | window.panel {"panel":"lumetriScopes"}
   Mask Interpolation | window.panel {"panel":"maskInterpolation"}
   Media Browser | window.panel {"panel":"mediaBrowser"}
@@ -1169,7 +1179,7 @@ Window
   ---
   Composition | window.panel {"panel":"composition"}
   Effect Controls | window.panel {"panel":"effectControls"} | F3
-  Flowchart | window.panel {"panel":"flowchart"}
+  Flowchart | window.panel {"panel":"flowchart"} | Cmd+F11
   Footage | window.panel {"panel":"footage"}
   Layer | window.panel {"panel":"layer"}
   Project | window.panel {"panel":"project"} | Cmd+0

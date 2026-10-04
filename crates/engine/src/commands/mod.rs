@@ -497,6 +497,26 @@ pub(crate) fn layers_p(s: &Session, p: &Value) -> Result<(ItemId, Vec<LayerId>)>
     Ok((cid, s.state.selected_layers.iter().copied().filter(|l| comp.layer(*l).is_some()).collect()))
 }
 
+/// Whether a layer can be picked by the user (Select All, Ctrl+Up/Down, a Timeline click): not
+/// locked, and not hidden by the composition's Hide Shy Layers.
+pub(crate) fn selectable(comp: &Comp, l: &Layer) -> bool {
+    !(l.switches.locked || (comp.hide_shy && l.switches.shy))
+}
+
+/// The layers of `ids` a command may edit: locked layers are left alone, as in After Effects.
+/// An error when every one of them is locked.
+pub(crate) fn unlocked(s: &Session, cid: ItemId, ids: Vec<LayerId>, cmd: &str) -> Result<Vec<LayerId>> {
+    let comp = s.project.comp(cid).ok_or(EngineError::NoComp)?;
+    let locked = |id: &LayerId| comp.layer(*id).is_some_and(|l| l.switches.locked);
+    match ids.iter().find(|id| locked(id)) {
+        Some(first) if ids.iter().all(locked) => {
+            let name = comp.layer(*first).map(|l| l.name.clone()).unwrap_or_default();
+            Err(bad(cmd, format!("“{name}” is locked (Layer ▸ Switches ▸ Unlock All Layers)")))
+        }
+        _ => Ok(ids.into_iter().filter(|id| !locked(id)).collect()),
+    }
+}
+
 /// `time` (seconds) or `frame` param, else the CTI.
 pub(crate) fn time_p(s: &Session, p: &Value, comp: Option<&Comp>) -> Tick {
     if let Some(t) = f_p(p, "time") {

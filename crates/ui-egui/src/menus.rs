@@ -200,6 +200,10 @@ pub fn invoke(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, params: V
     if crate::panels::dialogs_3d::route(app, id, &params)? {
         return Ok(Value::Null);
     }
+    // Layer Settings on a solid, adjustment layer or null opens its settings dialog.
+    if crate::panels::dialogs::route_layer_settings(app, id, &params)? {
+        return Ok(Value::Null);
+    }
     // Layer ▸ Layer Styles ▸ <style> from the menu adds the style and opens the dialog on it.
     if crate::panels::layer_styles_dialog::route(app, id, &params)? {
         return Ok(Value::Null);

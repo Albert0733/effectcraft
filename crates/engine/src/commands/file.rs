@@ -42,21 +42,35 @@ pub(crate) fn open(s: &mut Session, p: &Value) -> Result<Value> {
     let text = String::from_utf8(bytes).map_err(|_| EngineError::Other("not a text project file".into()))?;
     // XML copies (File ▸ Save a Copy As XML…) open like the JSON project.
     let text = if crate::xml_project::is_xml(&text) { crate::xml_project::from_xml(&text).map_err(EngineError::Other)? } else { text };
-    let proj = Project::from_json(&text)?;
+    let proj = Project::from_json(&text).map_err(|e| EngineError::Other(format!("{path} is not a project EffectCraft can open: {e}")))?;
     s.replace_project(proj, Some(path.to_string()));
     s.note_project_path(path);
+    // Written by a newer EffectCraft: what this version doesn't know would be lost on saving.
+    let saved_by = effectcraft_project::saved_by(&text);
+    if let Some(v) = saved_by.as_deref().filter(|v| effectcraft_project::is_newer_version(v, effectcraft_project::APP_VERSION)) {
+        s.toast(format!(
+            "This project was saved by EffectCraft {v}, newer than this version ({}). Settings this version doesn't know are lost if you save it.",
+            effectcraft_project::APP_VERSION
+        ));
+    }
     // Lazy open: footage is checked in the background (Progress panel), not before the
     // project shows.
     if s.check_footage_on_open {
         crate::footage_check::start(s, None, false)?;
     }
-    Ok(json!({"path": path}))
+    Ok(json!({"path": path, "savedBy": saved_by}))
+}
+
+/// The project file's text for `path`: `.ecproj` JSON, or XML for `.ecprojx` / `.xml` (a
+/// project opened from an XML copy saves as XML again). Fails, writing nothing, when the project
+/// wouldn't read back.
+pub(crate) fn file_text(s: &Session, path: &str) -> Result<String> {
+    let json = s.project.to_file_json()?;
+    if crate::xml_project::is_xml_path(path) { crate::xml_project::to_xml(&json).map_err(EngineError::Other) } else { Ok(json) }
 }
 
 fn save_to(s: &mut Session, path: &str) -> Result<Value> {
-    let json = s.project.to_json();
-    // A project opened from an XML copy saves as XML again.
-    let json = if crate::xml_project::is_xml_path(path) { crate::xml_project::to_xml(&json).map_err(EngineError::Other)? } else { json };
+    let json = file_text(s, path)?;
     s.services.write_file(path, json.as_bytes()).map_err(|e| EngineError::Other(format!("cannot write {path}: {e}")))?;
     s.path = Some(path.to_string());
     s.mark_saved();

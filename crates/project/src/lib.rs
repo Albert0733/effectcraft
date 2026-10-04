@@ -26,6 +26,28 @@ pub use effectcraft_keyframe::{Keyframe, Value};
 
 pub const SCHEMA_VERSION: u32 = 1;
 
+/// The EffectCraft version, written into project files as `savedBy`.
+pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// The EffectCraft version that wrote a project file (its `savedBy`), when it says.
+pub fn saved_by(text: &str) -> Option<String> {
+    #[derive(Deserialize)]
+    struct Meta {
+        #[serde(rename = "savedBy", default)]
+        saved_by: Option<String>,
+    }
+    serde_json::from_str::<Meta>(text).ok()?.saved_by
+}
+
+/// Whether version `a` (`major.minor.patch`, pre-release suffixes ignored) is newer than `b`.
+pub fn is_newer_version(a: &str, b: &str) -> bool {
+    let parts = |v: &str| -> [u64; 3] {
+        let mut n = v.split(['-', '+']).next().unwrap_or("").split('.').map(|x| x.parse().unwrap_or(0));
+        [n.next().unwrap_or(0), n.next().unwrap_or(0), n.next().unwrap_or(0)]
+    };
+    parts(a) > parts(b)
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct ItemId(pub u64);
 
@@ -340,6 +362,22 @@ impl Comp {
             guides: vec![],
             global_light: styles::GlobalLight::default(),
             essential: None,
+        }
+    }
+    /// A new, empty composition with this one's settings (frame rate, pixel aspect, background,
+    /// motion blur, frame blending and the 3D renderer), as Pre-compose makes.
+    pub fn nested_like(&self, width: u32, height: u32, duration: Tick) -> Comp {
+        Comp {
+            pixel_aspect: self.pixel_aspect,
+            background: self.background,
+            shutter_angle: self.shutter_angle,
+            shutter_phase: self.shutter_phase,
+            motion_blur_samples: self.motion_blur_samples,
+            motion_blur_adaptive_limit: self.motion_blur_adaptive_limit,
+            renderer: self.renderer,
+            enable_motion_blur: self.enable_motion_blur,
+            enable_frame_blending: self.enable_frame_blending,
+            ..Comp::new(width, height, self.frame_rate, duration)
         }
     }
     pub fn layer(&self, id: LayerId) -> Option<&Layer> {
@@ -1065,6 +1103,23 @@ impl Project {
             && self.render_queue == other.render_queue
             && self.render_templates == other.render_templates
             && self.render_prefs == other.render_prefs
+    }
+    /// The project file's text: the project with the version that wrote it (`savedBy`), checked
+    /// to read back, so a save never writes a file that can't be opened (JSON has no NaN or
+    /// infinity: such a value would be written as `null`).
+    pub fn to_file_json(&self) -> Result<String, ProjectError> {
+        #[derive(Serialize)]
+        struct File<'a> {
+            #[serde(rename = "savedBy")]
+            saved_by: &'a str,
+            #[serde(flatten)]
+            project: &'a Project,
+        }
+        let text = serde_json::to_string_pretty(&File { saved_by: APP_VERSION, project: self })
+            .map_err(|e| ProjectError::Invalid(format!("the project can't be saved: {e}")))?;
+        Project::from_json(&text)
+            .map_err(|e| ProjectError::Invalid(format!("the project can't be saved: it holds a value a project file can't store ({e})")))?;
+        Ok(text)
     }
     pub fn to_json(&self) -> String {
         serde_json::to_string_pretty(self).unwrap_or_default()

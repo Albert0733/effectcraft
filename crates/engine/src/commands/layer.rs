@@ -9,7 +9,7 @@ use effectcraft_project::{
 use effectcraft_time::Tick;
 use serde_json::{Value, json};
 
-use super::{CommandSpec, b_p, bad, comp_id, f_p, has_comp, has_layers, layer_mut, layer_p, layers_p, merge_p, resolve_layer, str_p};
+use super::{CommandSpec, b_p, bad, comp_id, f_p, has_comp, has_layers, layer_mut, layer_p, layers_p, merge_p, resolve_layer, str_p, unlocked};
 use crate::{EngineError, Result, Session, cmd};
 
 pub(crate) fn color_p(p: &Value, k: &str) -> Option<[f32; 3]> {
@@ -49,11 +49,12 @@ fn new_solid_like(s: &mut Session, p: &Value, adjustment: bool) -> Result<Value>
     let color = color_p(p, "color").unwrap_or(if adjustment { [1.0, 1.0, 1.0] } else { [0.85, 0.2, 0.2] });
     let w = p.get("width").and_then(Value::as_u64).map(|v| v as u32).unwrap_or(comp.width);
     let h = p.get("height").and_then(Value::as_u64).map(|v| v as u32).unwrap_or(comp.height);
+    let pixel_aspect = pixel_aspect_p(p)?.unwrap_or(comp.pixel_aspect);
     let default_name = if adjustment { "Adjustment Layer 1".to_string() } else { "Solid 1".to_string() };
     let name = str_p(p, "name").map(str::to_string).unwrap_or(default_name);
     let id = s.edit(if adjustment { "New Adjustment Layer" } else { "New Solid" }, None, |proj, st| {
         let folder = solids_folder(proj);
-        let sid = proj.add_item(&name, Label::Red, Some(folder), ItemKind::Solid(Solid { color, width: w, height: h, pixel_aspect: comp.pixel_aspect }));
+        let sid = proj.add_item(&name, Label::Red, Some(folder), ItemKind::Solid(Solid { color, width: w, height: h, pixel_aspect }));
         let mut l = build::layer(proj, &comp, &name, LayerSource::Solid { item: sid }, (w, h), None);
         if adjustment {
             l.switches.adjustment = true;
@@ -62,6 +63,14 @@ fn new_solid_like(s: &mut Session, p: &Value, adjustment: bool) -> Result<Value>
         insert_layer(proj, st, cid, l)
     })?;
     Ok(json!({"layer": id.0}))
+}
+
+/// `pixelAspect` (a positive number), when given.
+fn pixel_aspect_p(p: &Value) -> Result<Option<f64>> {
+    match p.get("pixelAspect").and_then(Value::as_f64) {
+        Some(v) if !(v.is_finite() && v > 0.0) => Err(bad("layer.settings", "`pixelAspect` must be a positive number")),
+        v => Ok(v),
+    }
 }
 
 fn new_solid(s: &mut Session, p: &Value) -> Result<Value> {
@@ -237,8 +246,12 @@ fn add_item(s: &mut Session, p: &Value) -> Result<Value> {
     let (src, size, dur) = match &it.kind {
         ItemKind::Comp(c) => (LayerSource::Comp { item }, (c.width, c.height), Some(c.duration)),
         ItemKind::Footage(f) if f.kind == effectcraft_project::FootageKind::Still => {
-            // Settings ▸ Import ▸ Still Footage: length of the composition or a duration.
-            let d = (s.prefs.import.still_footage == "seconds").then(|| Tick::from_seconds_f64(s.prefs.import.still_seconds));
+            // `duration`, else Settings ▸ Import ▸ Still Footage: length of the composition or a
+            // duration.
+            let d = f_p(p, "duration")
+                .filter(|d| d.is_finite() && *d > 0.0)
+                .or((s.prefs.import.still_footage == "seconds").then_some(s.prefs.import.still_seconds))
+                .map(Tick::from_seconds_f64);
             (LayerSource::Footage { item }, (f.width, f.height), d)
         }
         ItemKind::Footage(f) if f.kind == effectcraft_project::FootageKind::Data => {
@@ -306,17 +319,17 @@ fn select_step(s: &mut Session, p: &Value, dir: i64) -> Result<Value> {
     }
     let cur = s.state.selected_layers.first().and_then(|id| comp.layers.iter().position(|l| l.id == *id));
     let n = comp.layers.len() as i64;
-    let i = match cur {
-        Some(i) => (i as i64 + dir).clamp(0, n - 1),
-        None => {
-            if dir > 0 {
-                0
-            } else {
-                n - 1
-            }
-        }
-    } as usize;
-    let id = comp.layers[i].id;
+    // The next layer that can be selected (locked and hidden shy layers are stepped over); at
+    // the end of the stack the selection stays.
+    let start = match cur {
+        Some(i) => i as i64 + dir,
+        None if dir > 0 => 0,
+        None => n - 1,
+    };
+    let next =
+        std::iter::successors(Some(start), |i| Some(i + dir)).take_while(|i| (0..n).contains(i)).find(|i| super::selectable(comp, &comp.layers[*i as usize]));
+    let Some(i) = next.or(cur.map(|i| i as i64)) else { return Ok(Value::Null) };
+    let id = comp.layers[i as usize].id;
     let add = b_p(p, "add").unwrap_or(false);
     if add {
         if !s.state.selected_layers.contains(&id) {
@@ -504,6 +517,101 @@ fn track_matte(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(Value::Null)
 }
 
+/// How a 2D layer's transform changes so it stays where it is when its parent changes.
+pub(crate) struct ParentFix {
+    pub layer: LayerId,
+    /// Maps Position from the old parent's space into the new one's.
+    m: effectcraft_geom::Mat3,
+    /// Added to Rotation.
+    rotation: f64,
+    /// Multiply Scale.
+    scale: [f64; 2],
+}
+
+impl ParentFix {
+    /// Re-express the layer's Position, Rotation and Scale (every key) in the new parent's space.
+    pub fn apply(&self, l: &mut Layer) {
+        let Some(tr) = l.props.sub_mut("transform") else { return };
+        let map = |pr: &mut effectcraft_project::Property, f: &dyn Fn(&KV) -> KV| {
+            pr.value = f(&pr.value);
+            for key in &mut pr.keys {
+                key.value = f(&key.value);
+            }
+        };
+        let m = self.m;
+        if tr.get("positionX").is_some() {
+            // Separated dimensions: X and Y move together, key by key at the same times.
+            // Everything is read before anything is written.
+            let [x, y] = [tr.get("positionX"), tr.get("positionY")].map(|p| p.map(|p| p.value.as_f64()).unwrap_or(0.0));
+            let q = m.apply(effectcraft_geom::vec2(x, y));
+            let keys_x: Vec<(Tick, f64)> = tr.get("positionX").map(|p| p.keys.iter().map(|k| (k.time, k.value.as_f64())).collect()).unwrap_or_default();
+            let keys_y: Vec<(Tick, f64)> = tr.get("positionY").map(|p| p.keys.iter().map(|k| (k.time, k.value.as_f64())).collect()).unwrap_or_default();
+            let at = |keys: &[(Tick, f64)], name: &str, t: Tick, tr: &PropGroup| {
+                keys.iter().find(|k| k.0 == t).map(|k| k.1).unwrap_or_else(|| tr.get(name).map(|p| p.value_at(t).as_f64()).unwrap_or(0.0))
+            };
+            let (xs, ys): (Vec<f64>, Vec<f64>) = (
+                keys_x.iter().map(|&(t, x)| m.apply(effectcraft_geom::vec2(x, at(&keys_y, "positionY", t, tr))).x).collect(),
+                keys_y.iter().map(|&(t, y)| m.apply(effectcraft_geom::vec2(at(&keys_x, "positionX", t, tr), y)).y).collect(),
+            );
+            for (name, value, vals) in [("positionX", q.x, xs), ("positionY", q.y, ys)] {
+                if let Some(pr) = tr.get_mut(name) {
+                    pr.value = KV::Scalar(value);
+                    for (k, v) in pr.keys.iter_mut().zip(vals) {
+                        k.value = KV::Scalar(v);
+                    }
+                }
+            }
+        } else if let Some(pr) = tr.get_mut("position") {
+            map(pr, &|v| {
+                let c = v.as_vec3();
+                let q = m.apply(effectcraft_geom::vec2(c[0], c[1]));
+                KV::Vec3([q.x, q.y, c[2]])
+            });
+        }
+        let (dr, k) = (self.rotation, self.scale);
+        if let Some(pr) = tr.get_mut("rotation") {
+            map(pr, &|v| KV::Scalar(v.as_f64() + dr));
+        }
+        if let Some(pr) = tr.get_mut("scale") {
+            map(pr, &|v| {
+                let c = v.as_vec3();
+                KV::Vec3([c[0] * k[0], c[1] * k[1], c[2]])
+            });
+        }
+    }
+}
+
+/// Like the pick-whip, a parent change keeps 2D layers where they are: their transform is
+/// re-expressed in the new parent's space (`None`: the composition), evaluated at the current
+/// time.
+pub(crate) fn parent_fixes(s: &Session, cid: ItemId, ids: &[LayerId], parent: Option<LayerId>) -> Vec<ParentFix> {
+    let Some(comp) = s.project.comp(cid) else { return vec![] };
+    let ectx =
+        effectcraft_render::EvalCtx { project: &s.project, comp_id: cid, comp, time: s.time(), expr: s.expr.as_deref(), footage: Some(s.footage.as_ref()) };
+    let space = |id: Option<LayerId>| -> effectcraft_geom::Mat3 {
+        id.and_then(|i| comp.layer(i)).filter(|l| !l.is_3d()).map(|l| ectx.layer_to_comp(l).0).unwrap_or(effectcraft_geom::Mat3::IDENTITY)
+    };
+    let decompose = |m: &effectcraft_geom::Mat3| {
+        let a = m.0;
+        let sx = (a[0][0] * a[0][0] + a[1][0] * a[1][0]).sqrt();
+        let det = a[0][0] * a[1][1] - a[0][1] * a[1][0];
+        (a[1][0].atan2(a[0][0]).to_degrees(), sx, if sx > 1e-12 { det / sx } else { 0.0 })
+    };
+    let new_m = space(parent);
+    let Some(inv) = new_m.inverse() else { return vec![] };
+    let (rn, sxn, syn) = decompose(&new_m);
+    comp.layers
+        .iter()
+        .filter(|l| ids.contains(&l.id) && !l.is_3d() && l.parent != parent)
+        .map(|l| {
+            let old_m = space(l.parent);
+            let (ro, sxo, syo) = decompose(&old_m);
+            let scale = [if sxn.abs() > 1e-12 { sxo / sxn } else { 1.0 }, if syn.abs() > 1e-12 { syo / syn } else { 1.0 }];
+            ParentFix { layer: l.id, m: inv * old_m, rotation: ro - rn, scale }
+        })
+        .collect()
+}
+
 fn set_parent(s: &mut Session, p: &Value) -> Result<Value> {
     let (cid, ids) = layers_p(s, p)?;
     let comp = s.project.comp(cid).ok_or(EngineError::NoComp)?;
@@ -524,59 +632,13 @@ fn set_parent(s: &mut Session, p: &Value) -> Result<Value> {
     // Like AE's pick-whip, parenting keeps the layer where it is: its transform is re-expressed
     // in the new parent's space (Position, Rotation, Scale), unless `compensate: false`.
     let compensate = b_p(p, "compensate").unwrap_or(true);
-    let ectx =
-        effectcraft_render::EvalCtx { project: &s.project, comp_id: cid, comp, time: s.time(), expr: s.expr.as_deref(), footage: Some(s.footage.as_ref()) };
-    let space = |id: Option<LayerId>| -> effectcraft_geom::Mat3 {
-        id.and_then(|i| comp.layer(i)).filter(|l| !l.is_3d()).map(|l| ectx.layer_to_comp(l).0).unwrap_or(effectcraft_geom::Mat3::IDENTITY)
-    };
-    let decompose = |m: &effectcraft_geom::Mat3| {
-        let a = m.0;
-        let sx = (a[0][0] * a[0][0] + a[1][0] * a[1][0]).sqrt();
-        let det = a[0][0] * a[1][1] - a[0][1] * a[1][0];
-        (a[1][0].atan2(a[0][0]).to_degrees(), sx, if sx > 1e-12 { det / sx } else { 0.0 })
-    };
-    // Per layer: (id, position transform, rotation delta, scale factors).
-    let mut fixes: Vec<(LayerId, effectcraft_geom::Mat3, f64, [f64; 2])> = vec![];
-    if compensate {
-        let new_m = space(parent);
-        for l in comp.layers.iter().filter(|l| ids.contains(&l.id) && !l.is_3d() && l.parent != parent) {
-            let old_m = space(l.parent);
-            let Some(inv) = new_m.inverse() else { continue };
-            let (ro, sxo, syo) = decompose(&old_m);
-            let (rn, sxn, syn) = decompose(&new_m);
-            let k = [if sxn.abs() > 1e-12 { sxo / sxn } else { 1.0 }, if syn.abs() > 1e-12 { syo / syn } else { 1.0 }];
-            fixes.push((l.id, inv * old_m, ro - rn, k));
-        }
-    }
+    let fixes = if compensate { parent_fixes(s, cid, &ids, parent) } else { vec![] };
     s.edit("Parent", None, |proj, _| {
         let comp = proj.comp_mut(cid).ok_or(EngineError::NoComp)?;
         for l in comp.layers.iter_mut().filter(|l| ids.contains(&l.id)) {
             l.parent = parent;
-            let Some((_, m, dr, k)) = fixes.iter().find(|f| f.0 == l.id) else { continue };
-            let Some(tr) = l.props.sub_mut("transform") else { continue };
-            let map = |pr: &mut effectcraft_project::Property, f: &dyn Fn(&KV) -> KV| {
-                pr.value = f(&pr.value);
-                for key in &mut pr.keys {
-                    key.value = f(&key.value);
-                }
-            };
-            if tr.get("positionX").is_none()
-                && let Some(pr) = tr.get_mut("position")
-            {
-                map(pr, &|v| {
-                    let c = v.as_vec3();
-                    let q = m.apply(effectcraft_geom::vec2(c[0], c[1]));
-                    KV::Vec3([q.x, q.y, c[2]])
-                });
-            }
-            if let Some(pr) = tr.get_mut("rotation") {
-                map(pr, &|v| KV::Scalar(v.as_f64() + dr));
-            }
-            if let Some(pr) = tr.get_mut("scale") {
-                map(pr, &|v| {
-                    let c = v.as_vec3();
-                    KV::Vec3([c[0] * k[0], c[1] * k[1], c[2]])
-                });
+            if let Some(f) = fixes.iter().find(|f| f.layer == l.id) {
+                f.apply(l);
             }
         }
         Ok(())
@@ -687,6 +749,7 @@ fn slip(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn arrange(s: &mut Session, p: &Value) -> Result<Value> {
     let (cid, ids) = layers_p(s, p)?;
+    let ids = unlocked(s, cid, ids, "layer.arrange")?;
     let how = str_p(p, "to").unwrap_or("front").to_string();
     let index = p.get("index").and_then(Value::as_u64).map(|i| i as usize);
     // `above`: put the layers right above that one (the timeline's drag to reorder).
@@ -703,10 +766,29 @@ fn arrange(s: &mut Session, p: &Value) -> Result<Value> {
     };
     s.edit("Arrange Layers", None, |proj, _| {
         let comp = proj.comp_mut(cid).ok_or(EngineError::NoComp)?;
-        let n = comp.layers.len();
+        // Bring Forward / Send Backward move each layer one step past the next layer that isn't
+        // moving (a run of selected layers moves as one; one already at the end stays).
+        if above.is_none() && index.is_none() && matches!(how.as_str(), "forward" | "backward") {
+            let picked = |l: &Layer| ids.contains(&l.id);
+            let n = comp.layers.len();
+            if how == "forward" {
+                for i in 1..n {
+                    if picked(&comp.layers[i]) && !picked(&comp.layers[i - 1]) {
+                        let run_end = (i..n).find(|j| !picked(&comp.layers[*j])).unwrap_or(n);
+                        comp.layers[i - 1..run_end].rotate_left(1);
+                    }
+                }
+            } else {
+                for i in (0..n.saturating_sub(1)).rev() {
+                    if picked(&comp.layers[i]) && !picked(&comp.layers[i + 1]) {
+                        let run_start = (0..=i).rev().find(|j| !picked(&comp.layers[*j])).map_or(0, |j| j + 1);
+                        comp.layers[run_start..=i + 1].rotate_right(1);
+                    }
+                }
+            }
+            return Ok(());
+        }
         let mut picked: Vec<Layer> = Vec::new();
-        let first_idx = comp.layers.iter().position(|l| ids.contains(&l.id)).unwrap_or(0);
-        let last_idx = comp.layers.iter().rposition(|l| ids.contains(&l.id)).unwrap_or(0);
         comp.layers.retain(|l| {
             if ids.contains(&l.id) {
                 picked.push(l.clone());
@@ -718,13 +800,9 @@ fn arrange(s: &mut Session, p: &Value) -> Result<Value> {
         let at = match (how.as_str(), index) {
             _ if above.is_some() => comp.layers.iter().position(|l| Some(l.id) == above).unwrap_or(comp.layers.len()),
             (_, Some(i)) => i.saturating_sub(1).min(comp.layers.len()),
-            ("front", _) => 0,
             ("back", _) => comp.layers.len(),
-            ("forward", _) => first_idx.saturating_sub(1),
-            ("backward", _) => (last_idx + 2 - picked.len()).min(comp.layers.len()),
             _ => 0,
         };
-        let _ = n;
         for (k, l) in picked.into_iter().enumerate() {
             comp.layers.insert((at + k).min(comp.layers.len()), l);
         }
@@ -766,8 +844,7 @@ fn precompose(s: &mut Session, p: &Value) -> Result<Value> {
             _ => comp.duration,
         };
         let new = s.edit("Pre-compose", None, |proj, st| {
-            let mut inner = Comp::new(w, h, comp.frame_rate, dur);
-            inner.background = comp.background;
+            let mut inner = comp.nested_like(w, h, dur);
             let mut il = build::layer(proj, &inner, &layer.name, layer.source.clone(), (w, h), Some(dur));
             il.name = layer.name.clone();
             inner.layers.push(il);
@@ -791,8 +868,7 @@ fn precompose(s: &mut Session, p: &Value) -> Result<Value> {
     };
     let (offset, dur) = if adjust && span.1 > span.0 { (span.0, span.1 - span.0) } else { (Tick(0), comp.duration) };
     let new = s.edit("Pre-compose", None, |proj, st| {
-        let mut inner = Comp::new(comp.width, comp.height, comp.frame_rate, dur);
-        inner.background = comp.background;
+        let mut inner = comp.nested_like(comp.width, comp.height, dur);
         inner.layers = comp.layers.iter().filter(|l| ids.contains(&l.id)).cloned().collect();
         for l in &mut inner.layers {
             if l.parent.is_some_and(|p| !ids.contains(&p)) {
@@ -990,8 +1066,26 @@ fn set_text(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(Value::Null)
 }
 
+/// Set a layer's Position at layer time `lt` to `f(current)`: X/Y/Z Position when its dimensions
+/// are separated.
+pub(crate) fn update_position(tr: &mut PropGroup, lt: Tick, f: impl Fn([f64; 3]) -> [f64; 3]) {
+    const SEPARATE: [&str; 3] = ["positionX", "positionY", "positionZ"];
+    if tr.get("positionX").is_some() {
+        let v = f(SEPARATE.map(|m| tr.get(m).map(|p| p.value_at(lt).as_f64()).unwrap_or(0.0)));
+        for (m, x) in SEPARATE.iter().zip(v) {
+            if let Some(pr) = tr.get_mut(m) {
+                pr.set_value_at(lt, KV::Scalar(x));
+            }
+        }
+    } else if let Some(pr) = tr.get_mut("position") {
+        let v = f(pr.value_at(lt).as_vec3());
+        pr.set_value_at(lt, KV::Vec3(v));
+    }
+}
+
 fn transform_op(s: &mut Session, p: &Value) -> Result<Value> {
     let (cid, ids) = layers_p(s, p)?;
+    let ids = unlocked(s, cid, ids, "layer.transform")?;
     let op = str_p(p, "op").unwrap_or("reset").to_string();
     let comp = s.project.comp(cid).ok_or(EngineError::NoComp)?.clone();
     let t = s.time();
@@ -1012,7 +1106,7 @@ fn transform_op(s: &mut Session, p: &Value) -> Result<Value> {
             match op.as_str() {
                 "reset" => {
                     set(tr, "anchor", KV::Vec3([w / 2.0, h / 2.0, 0.0]));
-                    set(tr, "position", KV::Vec3([cw / 2.0, ch / 2.0, 0.0]));
+                    update_position(tr, lt, |_| [cw / 2.0, ch / 2.0, 0.0]);
                     set(tr, "scale", KV::Vec3([100.0; 3]));
                     set(tr, "rotation", KV::Scalar(0.0));
                     set(tr, "rotationX", KV::Scalar(0.0));
@@ -1020,16 +1114,19 @@ fn transform_op(s: &mut Session, p: &Value) -> Result<Value> {
                     set(tr, "orientation", KV::Vec3([0.0; 3]));
                     set(tr, "opacity", KV::Scalar(100.0));
                 }
-                "center" => set(tr, "position", KV::Vec3([cw / 2.0, ch / 2.0, 0.0])),
+                // Centred in the frame; a 3D layer keeps its depth.
+                "center" => update_position(tr, lt, |p| [cw / 2.0, ch / 2.0, p[2]]),
                 "fit" | "fitWidth" | "fitHeight" if w > 0.0 && h > 0.0 => {
                     let (sx, sy) = match op.as_str() {
                         "fitWidth" => (cw / w, cw / w),
                         "fitHeight" => (ch / h, ch / h),
                         _ => (cw / w, ch / h),
                     };
-                    set(tr, "scale", KV::Vec3([sx * 100.0, sy * 100.0, 100.0]));
-                    set(tr, "position", KV::Vec3([cw / 2.0, ch / 2.0, 0.0]));
-                    set(tr, "anchor", KV::Vec3([w / 2.0, h / 2.0, 0.0]));
+                    let z = |m: &str, d: f64| tr.get(m).map(|p| p.value_at(lt).as_vec3()[2]).unwrap_or(d);
+                    let (sz, az) = (z("scale", 100.0), z("anchor", 0.0));
+                    set(tr, "scale", KV::Vec3([sx * 100.0, sy * 100.0, sz]));
+                    update_position(tr, lt, |p| [cw / 2.0, ch / 2.0, p[2]]);
+                    set(tr, "anchor", KV::Vec3([w / 2.0, h / 2.0, az]));
                 }
                 "flipH" | "flipV" => {
                     let cur = tr.get("scale").map(|p| p.value_at(lt).as_vec3()).unwrap_or([100.0; 3]);
@@ -1044,6 +1141,11 @@ fn transform_op(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(Value::Null)
 }
 
+/// Layer ▸ Layer Settings: cameras and lights open their own settings; solids (and adjustment
+/// layers, which are solids) edit their Solid Settings. With `affectAll: false`, a solid other
+/// layers also use is copied into a new solid for this layer instead of being changed for all of
+/// them (After Effects' "Affect all layers that use this solid"). `name` renames the layer and
+/// its solid.
 fn layer_settings(s: &mut Session, p: &Value) -> Result<Value> {
     let (cid, lid) = layer_p(s, p, "layer.settings")?;
     // Cameras and lights open their own settings (Camera Settings / Light Settings).
@@ -1053,32 +1155,53 @@ fn layer_settings(s: &mut Session, p: &Value) -> Result<Value> {
         _ => {}
     }
     let color = color_p(p, "color");
-    let w = p.get("width").and_then(Value::as_u64).map(|v| v as u32);
-    let h = p.get("height").and_then(Value::as_u64).map(|v| v as u32);
-    let name = str_p(p, "name").map(str::to_string);
-    s.edit("Layer Settings", None, |proj, _| {
-        let l = layer_mut(proj, cid, lid)?;
+    let w = p.get("width").and_then(Value::as_u64).map(|v| v.max(1) as u32);
+    let h = p.get("height").and_then(Value::as_u64).map(|v| v.max(1) as u32);
+    let pixel_aspect = pixel_aspect_p(p)?;
+    let name = str_p(p, "name").map(str::trim).filter(|n| !n.is_empty()).map(str::to_string);
+    let affect_all = p.get("affectAll").and_then(Value::as_bool).unwrap_or(true);
+    let solid = s.edit("Layer Settings", None, |proj, _| {
+        let src = layer_mut(proj, cid, lid)?.source.clone();
         if let Some(n) = &name {
-            l.name = n.clone();
+            layer_mut(proj, cid, lid)?.name = n.clone();
         }
-        let src = l.source.clone();
-        if let LayerSource::Solid { item } = src
-            && let Some(it) = proj.item_mut(item)
-            && let ItemKind::Solid(so) = &mut it.kind
-        {
-            if let Some(c) = color {
-                so.color = c;
-            }
-            if let Some(w) = w {
-                so.width = w.max(1);
-            }
-            if let Some(h) = h {
-                so.height = h.max(1);
-            }
+        let LayerSource::Solid { item } = src else { return Ok(None) };
+        let shared = proj.comps().flat_map(|(_, c)| &c.layers).filter(|l| l.source == src).count() > 1;
+        let target = if shared && !affect_all {
+            // This layer gets its own copy of the solid.
+            let it = proj.item(item).ok_or_else(|| bad("layer.settings", "the layer's solid is missing"))?.clone();
+            let copy = proj.add_item(name.as_deref().unwrap_or(&it.name), it.label, it.parent, it.kind);
+            layer_mut(proj, cid, lid)?.source = LayerSource::Solid { item: copy };
+            copy
+        } else {
+            item
+        };
+        let it = proj.item_mut(target).ok_or_else(|| bad("layer.settings", "the layer's solid is missing"))?;
+        if let Some(n) = &name {
+            it.name = n.clone();
         }
-        Ok(())
+        if let ItemKind::Solid(so) = &mut it.kind {
+            so.color = color.unwrap_or(so.color);
+            so.width = w.unwrap_or(so.width);
+            so.height = h.unwrap_or(so.height);
+            so.pixel_aspect = pixel_aspect.unwrap_or(so.pixel_aspect);
+        }
+        Ok(Some(target))
     })?;
-    Ok(Value::Null)
+    Ok(match solid {
+        Some(item) => json!({"layer": lid.0, "solid": item.0}),
+        None => json!({"layer": lid.0}),
+    })
+}
+
+/// Layer Settings applies to solids (and adjustment layers), nulls, cameras and lights.
+fn has_layer_settings(s: &Session) -> std::result::Result<(), String> {
+    has_layers(s)?;
+    let l = s.active_comp().and_then(|c| c.layer(s.state.selected_layers[0])).ok_or("select a layer first")?;
+    match l.source {
+        LayerSource::Solid { .. } | LayerSource::Null | LayerSource::Camera | LayerSource::Light { .. } => Ok(()),
+        _ => Err("this kind of layer has no settings".into()),
+    }
 }
 
 fn with_layer(p: &Value, lid: LayerId) -> Value {
@@ -1098,7 +1221,7 @@ pub fn specs() -> Vec<CommandSpec> {
             has_comp,
             new_text
         ),
-        cmd!("layer.newSolid", "Solid...", ["Layer", "New"], Some("Cmd+Y"), "{name?, color? #hex|[r,g,b], width?, height?}", has_comp, new_solid),
+        cmd!("layer.newSolid", "Solid...", ["Layer", "New"], Some("Cmd+Y"), "{name?, color? #hex|[r,g,b], width?, height?, pixelAspect?}", has_comp, new_solid),
         cmd!("layer.newNull", "Null Object", ["Layer", "New"], Some("Cmd+Alt+Shift+Y"), "{name?}", has_comp, new_null),
         cmd!(
             "layer.newShape",
@@ -1110,8 +1233,16 @@ pub fn specs() -> Vec<CommandSpec> {
             new_shape
         ),
         cmd!("layer.newAdjustment", "Adjustment Layer", ["Layer", "New"], Some("Cmd+Alt+Y"), "{name?}", has_comp, new_adjustment),
-        cmd!("layer.settings", "Layer Settings...", ["Layer"], Some("Cmd+Shift+Y"), "{layer?, name?, color?, width?, height?}", has_layers, layer_settings),
-        cmd!("layer.addItem", "Add Footage to Comp", ["File"], Some("Cmd+/"), "{item: id|name, time?}", has_comp, add_item),
+        cmd!(
+            "layer.settings",
+            "Layer Settings...",
+            ["Layer"],
+            Some("Cmd+Shift+Y"),
+            "{layer?, name?, color?, width?, height?, pixelAspect?, affectAll?: bool (default true; false gives this layer its own copy of a solid other layers use)} → {layer, solid?}",
+            has_layer_settings,
+            layer_settings
+        ),
+        cmd!("layer.addItem", "Add Footage to Comp", ["File"], Some("Cmd+/"), "{item: id|name, time?, duration? (s, for a still)}", has_comp, add_item),
         cmd!("layer.select", "Select Layers", [], None, "{layers: [id|name|#n], add?, toggle?}", has_comp, select),
         cmd!("layer.selectNext", "Select Next Layer", [], Some("Cmd+ArrowDown"), "{add?}", has_comp, select_next),
         cmd!("layer.selectPrevious", "Select Previous Layer", [], Some("Cmd+ArrowUp"), "{add?}", has_comp, select_prev),

@@ -73,6 +73,14 @@ Everything animatable is a `Property` in the layer's `PropGroup` tree, addressed
 `transform/position`, `effects/#1/blurriness`, `masks/#1/feather`, or by `@uid`. Effects, masks,
 text animators and shape contents are groups in the same tree.
 
+A project file (`.ecproj`) is the project as readable JSON, headed by `savedBy` (the EffectCraft
+version that wrote it) and `schema`; `.ecprojx` is the same data as XML (File ▸ Save a Copy As
+XML). Saving goes through `Project::to_file_json`, which checks that the text reads back before
+anything is written (JSON can't hold NaN or infinity), and files are written atomically. Opening
+a file that a newer EffectCraft saved shows a warning: fields this version doesn't know are
+dropped if it saves the project. Save, Save As, Save a Copy and Increment and Save keep the
+file's format (`.ecprojx` stays XML).
+
 ## 4. Rendering
 
 `Renderer::comp_frame(comp, t)` walks the layers bottom to top. For each visible layer it renders

@@ -383,6 +383,67 @@ Browser in the web app (landed in M13.10: browser storage and File System Access
   wrong signatures and versions, fuel exhaustion, traps and bit-identical output; script
   `Socket` validates ports, and ScriptUI resource strings accept trailing array commas.
 
+## Update: M3.14 project files
+
+Project files name the version that wrote them (`savedBy`); opening one that a newer EffectCraft
+saved warns that what this version doesn't know is lost on saving (`file.open` reports
+`savedBy`). Saving checks that the file reads back first, so a value JSON can't hold (NaN)
+fails the save with a message instead of writing a project that can never be opened (the file
+on disk is left as it was). Increment and Save and Save a Copy keep an XML project (`.ecprojx`)
+XML; a file that isn't a project says so by name.
+
+## Update: M3.13 menu bar
+
+Group Shapes (Ctrl+G) and Ungroup Shapes (Ctrl+Shift+G) moved to the Layer menu itself, where
+After Effects has them; Window ▸ Learn opens the Home screen's Learn tab; Composition ▸
+Composition Flowchart is Ctrl+Shift+F11 and Window ▸ Flowchart Ctrl+F11 (the flowchart had
+Window's shortcut); Layer ▸ Transform ▸ Center In View shows Ctrl+Home; "Reveal in Finder" reads
+"Reveal in Explorer" on Windows (and "Reveal in File Manager" on Linux). Not yet: View ▸ New
+Viewer (several unlocked Composition viewers at once; View ▸ Split with New Locked Viewer adds
+the one locked viewer the interface has).
+
+## Update: M3.12 Pre-compose and New Comp from Selection
+
+- **Pre-compose** makes the new composition with the original's settings (pixel aspect,
+  background, motion blur shutter / samples / switch, frame blending switch, 3D renderer); it
+  only kept the size, frame rate and background.
+- **File ▸ New Comp from Selection** is one undo step (it was two per item) and takes each
+  item's pixel aspect. With several items selected it opens After Effects' dialog: Single or
+  Multiple Compositions, Use Dimensions From, Still Duration (default: Settings ▸ Import ▸ Still
+  Footage), Add to Render Queue and Sequence Layers with Overlap, Duration and Transition
+  (`file.newCompFromSelection {single, dimensionsFrom, duration, addToRenderQueue, sequence,
+  overlap, overlapDuration, transition}`). `layer.addItem {duration}` sets a still's length.
+
+## Update: M3.11 layer commands
+
+- **Lock**: locked layers can't be selected (a Timeline click, Select All, Ctrl+Up / Down step
+  over them, as do shy layers while hidden) and are left alone by Clear / Delete, Arrange, the
+  Layer ▸ Transform commands and Center Anchor Point (an error when every target is locked).
+- **Deleting a parent** unparents its children where they are (their Position, Rotation and
+  Scale are re-expressed in the composition, like the pick-whip), in the same undo step; they
+  used to jump.
+- **Bring Forward / Send Backward** move each selected layer one step past the next unselected
+  layer, so a non-contiguous selection keeps its gaps (it was squeezed into one block).
+- **Layer ▸ Transform**: Center In View and Fit to Comp keep a 3D layer's depth (Z was reset to
+  0) and Fit keeps Scale / Anchor Z; Reset, Center and Fit set X / Y Position when the dimensions
+  are separated (they changed the hidden combined Position, so nothing moved); Center Anchor
+  Point keeps layers with separated dimensions in place.
+- **Duplicate and paste** keep parents and track mattes: a copy follows the copy of its parent /
+  matte when both were copied, else the original in the same composition (paste dropped them
+  always).
+
+## Update: M3.10 Layer Settings and settings dialogs
+
+Layer ▸ Layer Settings on a solid or adjustment layer opens Solid Settings on the layer's solid
+(it did nothing before): name, size, Pixel Aspect Ratio, colour and **Affect all layers that use
+this solid**, which starts off as in After Effects, so a change to a solid other layers share
+gives this layer a new solid of its own; nulls ask for their name, and text and shape layers
+have no settings (the entry is disabled). New solids take a Pixel Aspect Ratio too. The
+Composition Settings / New Composition and Solid Settings dialogs register an automation id
+for every control (`dialog.comp.*`, `dialog.solid.*`), Composition Settings takes any typed
+frame rate besides the list, New Composition starts from the settings of the last composition
+made with it, and their colour buttons show the stored sRGB colour (they showed it lighter).
+
 ## Update: M3.9 unsaved changes
 
 Closing a modified project asks first, as After Effects does: Quit and the window's close

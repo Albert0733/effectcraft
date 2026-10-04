@@ -492,3 +492,296 @@ fn frontend_commands_emit_events_and_stubs_are_disabled() {
         assert!(matches!(s.execute(id, json!({})), Err(EngineError::Disabled(..))), "{id}");
     }
 }
+
+fn solid_of(s: &Session, l: u64) -> (u64, effectcraft_project::Solid, String) {
+    let effectcraft_project::LayerSource::Solid { item } = layer(s, l).source else { panic!("not a solid") };
+    let it = s.project.item(item).unwrap();
+    let ItemKind::Solid(so) = &it.kind else { panic!("not a solid item") };
+    (item.0, so.clone(), it.name.clone())
+}
+
+#[test]
+fn layer_settings_edit_the_solid_or_give_the_layer_its_own() {
+    let mut s = comp();
+    let a = solid(&mut s, "#ff0000");
+    s.execute("layer.select", json!({"layers": [a]})).unwrap();
+    let b = s.execute("edit.duplicate", json!({})).unwrap()[0].as_u64().unwrap();
+    assert_eq!(solid_of(&s, a).0, solid_of(&s, b).0, "the duplicate shares the solid");
+    // Nothing given: nothing recorded.
+    let steps = s.history.undo.len();
+    s.execute("layer.settings", json!({"layer": b})).unwrap();
+    assert_eq!(s.history.undo.len(), steps);
+    // Affect all off: the duplicate gets its own solid; the original keeps its colour.
+    let r = s.execute("layer.settings", json!({"layer": b, "color": "#0000ff", "name": "Blue", "affectAll": false})).unwrap();
+    let (bi, bs, bn) = solid_of(&s, b);
+    assert_eq!(r, json!({"layer": b, "solid": bi}));
+    assert_ne!(bi, solid_of(&s, a).0);
+    assert_eq!((bs.color, bn.as_str(), layer(&s, b).name.as_str()), ([0.0, 0.0, 1.0], "Blue", "Blue"));
+    assert_eq!(solid_of(&s, a).1.color, [1.0, 0.0, 0.0]);
+    assert_eq!(
+        s.project.item(effectcraft_project::ItemId(bi)).unwrap().parent,
+        s.project.item(effectcraft_project::ItemId(solid_of(&s, a).0)).unwrap().parent,
+        "same folder"
+    );
+    // Affect all (the default) changes the shared solid in place; size and pixel aspect too.
+    s.execute("layer.select", json!({"layers": [a]})).unwrap();
+    let c = s.execute("edit.duplicate", json!({})).unwrap()[0].as_u64().unwrap();
+    s.execute("layer.settings", json!({"layer": a, "width": 320, "height": 90, "pixelAspect": 2.0})).unwrap();
+    assert_eq!(solid_of(&s, a).0, solid_of(&s, c).0);
+    let so = solid_of(&s, c).1;
+    assert_eq!((so.width, so.height, so.pixel_aspect), (320, 90, 2.0));
+    assert!(s.execute("layer.settings", json!({"layer": a, "pixelAspect": 0})).is_err());
+    // One undo step each.
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(solid_of(&s, a).1.width, 200);
+    // A new solid takes a pixel aspect too.
+    let d = s.execute("layer.newSolid", json!({"color": "#00ff00", "pixelAspect": 0.9091})).unwrap()["layer"].as_u64().unwrap();
+    assert_eq!(solid_of(&s, d).1.pixel_aspect, 0.9091);
+    // Text and shape layers have no settings.
+    assert!(s.is_enabled("layer.settings"));
+    s.execute("layer.newText", json!({"text": "T"})).unwrap();
+    assert!(!s.is_enabled("layer.settings"));
+}
+
+fn order(s: &Session) -> Vec<u64> {
+    s.active_comp().unwrap().layers.iter().map(|l| l.id.0).collect()
+}
+
+fn pos(s: &Session, l: u64) -> [f64; 3] {
+    let ly = layer(s, l);
+    let tr = ly.transform().unwrap();
+    match tr.get("positionX") {
+        Some(x) => [x.value.as_f64(), tr.get("positionY").unwrap().value.as_f64(), tr.get("positionZ").map(|z| z.value.as_f64()).unwrap_or(0.0)],
+        None => tr.get("position").unwrap().value.as_vec3(),
+    }
+}
+
+#[test]
+fn locked_layers_are_not_selected_deleted_or_moved() {
+    let mut s = comp();
+    let a = solid(&mut s, "#ff0000");
+    let b = solid(&mut s, "#00ff00");
+    s.execute("layer.setSwitch", json!({"layers": [b], "switch": "lock", "value": true})).unwrap();
+    assert!(layer(&s, b).switches.locked);
+    s.execute("edit.selectAll", json!({})).unwrap();
+    assert_eq!(s.state.selected_layers.iter().map(|l| l.0).collect::<Vec<_>>(), vec![a]);
+    // Ctrl+Up / Down step over it.
+    s.execute("layer.select", json!({"layers": [a]})).unwrap();
+    s.execute("layer.selectPrevious", json!({})).unwrap();
+    assert_eq!(s.state.selected_layers[0].0, a, "nothing above the locked layer to step to");
+    // Deleting, arranging or transforming only the locked layer is refused; with others, it stays.
+    let e = s.execute("edit.clear", json!({"layers": [b]})).unwrap_err().to_string();
+    assert!(e.contains("locked"), "{e}");
+    assert!(s.execute("layer.arrange", json!({"layers": [b], "to": "back"})).is_err());
+    assert!(s.execute("layer.transform", json!({"layers": [b], "op": "center"})).is_err());
+    s.execute("edit.clear", json!({"layers": [a, b]})).unwrap();
+    assert_eq!(order(&s), vec![b]);
+}
+
+#[test]
+fn deleting_a_parent_keeps_its_children_in_place() {
+    let mut s = comp();
+    let parent = solid(&mut s, "#ff0000");
+    s.execute("prop.set", json!({"layer": parent, "path": "transform/position", "value": [300, 200]})).unwrap();
+    s.execute("prop.set", json!({"layer": parent, "path": "transform/rotation", "value": 90})).unwrap();
+    let child = solid(&mut s, "#00ff00");
+    s.execute("prop.set", json!({"layer": child, "path": "transform/position", "value": [210, 160]})).unwrap();
+    s.execute("layer.setParent", json!({"layers": [child], "parent": parent})).unwrap();
+    assert_ne!(pos(&s, child)[..2], [210.0, 160.0], "expressed in the parent's space");
+    s.execute("edit.clear", json!({"layers": [parent]})).unwrap();
+    let p = pos(&s, child);
+    assert!((p[0] - 210.0).abs() < 1e-6 && (p[1] - 160.0).abs() < 1e-6, "{p:?}");
+    assert_eq!(layer(&s, child).parent, None);
+    let r = layer(&s, child).transform().unwrap().get("rotation").unwrap().value.as_f64();
+    assert!(r.abs() < 1e-6, "{r}");
+    // One undo step restores both.
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(layer(&s, child).parent.map(|l| l.0), Some(parent));
+}
+
+#[test]
+fn bring_forward_and_send_backward_move_each_layer_one_step() {
+    let mut s = comp();
+    let ids: Vec<u64> = (0..4).map(|_| solid(&mut s, "#ffffff")).collect();
+    let top = order(&s);
+    assert_eq!(top, ids.iter().rev().copied().collect::<Vec<_>>());
+    let (l0, l1, l2, l3) = (top[0], top[1], top[2], top[3]);
+    // A non-contiguous selection: each moves down one step.
+    s.execute("layer.arrange", json!({"layers": [l0, l2], "to": "backward"})).unwrap();
+    assert_eq!(order(&s), vec![l1, l0, l3, l2]);
+    // Forward again; a layer already at the top stays there.
+    s.execute("layer.arrange", json!({"layers": [l0, l2], "to": "forward"})).unwrap();
+    assert_eq!(order(&s), vec![l0, l1, l2, l3]);
+    s.execute("layer.arrange", json!({"layers": [l0, l2], "to": "forward"})).unwrap();
+    assert_eq!(order(&s), vec![l0, l2, l1, l3]);
+    // Front / Back keep the layers' order.
+    s.execute("layer.arrange", json!({"layers": [l0, l1], "to": "back"})).unwrap();
+    assert_eq!(order(&s), vec![l2, l3, l0, l1]);
+}
+
+#[test]
+fn transform_commands_keep_depth_and_follow_separated_dimensions() {
+    let mut s = comp();
+    let a = solid(&mut s, "#ff0000");
+    s.execute("layer.setSwitch", json!({"layers": [a], "switch": "threeD", "value": true})).unwrap();
+    s.execute("prop.set", json!({"layer": a, "path": "transform/position", "value": [10, 20, -300]})).unwrap();
+    s.execute("layer.transform", json!({"layers": [a], "op": "center"})).unwrap();
+    assert_eq!(pos(&s, a), [320.0, 180.0, -300.0]);
+    s.execute("layer.transform", json!({"layers": [a], "op": "fit"})).unwrap();
+    assert_eq!(pos(&s, a), [320.0, 180.0, -300.0]);
+    let b = solid(&mut s, "#00ff00");
+    s.execute("prop.set", json!({"layer": b, "path": "transform/position", "value": [10, 20]})).unwrap();
+    s.execute("prop.separateDimensions", json!({"layer": b, "value": true})).unwrap();
+    s.execute("layer.transform", json!({"layers": [b], "op": "center"})).unwrap();
+    assert_eq!(pos(&s, b)[..2], [320.0, 180.0]);
+    s.execute("layer.transform", json!({"layers": [b], "op": "reset"})).unwrap();
+    assert_eq!(pos(&s, b)[..2], [320.0, 180.0]);
+    // Center Anchor Point moves separated X / Y Position too, so the layer stays put.
+    s.execute("prop.set", json!({"layer": b, "path": "transform/anchor", "value": [0, 0]})).unwrap();
+    s.execute("prop.set", json!({"layer": b, "path": "transform/positionX", "value": 100})).unwrap();
+    s.execute("prop.set", json!({"layer": b, "path": "transform/positionY", "value": 50})).unwrap();
+    s.execute("layer.centerAnchor", json!({"layers": [b]})).unwrap();
+    assert_eq!(pos(&s, b)[..2], [200.0, 100.0], "the 200×100 solid's centre");
+}
+
+#[test]
+fn duplicated_and_pasted_layers_keep_their_links() {
+    let mut s = comp();
+    let parent = solid(&mut s, "#ff0000");
+    let matte = solid(&mut s, "#ffffff");
+    let child = solid(&mut s, "#00ff00");
+    s.execute("layer.setParent", json!({"layers": [child], "parent": parent})).unwrap();
+    s.execute("layer.setTrackMatte", json!({"layer": child, "matte": matte, "kind": "alpha"})).unwrap();
+    let m = layer(&s, child).track_matte.unwrap().layer;
+    assert_eq!(m.0, matte);
+    // Duplicating the child alone keeps the original parent and matte.
+    let d = s.execute("edit.duplicate", json!({"layers": [child]})).unwrap()[0].as_u64().unwrap();
+    assert_eq!((layer(&s, d).parent.map(|l| l.0), layer(&s, d).track_matte.map(|t| t.layer)), (Some(parent), Some(m)));
+    // Duplicating parent and child together: the copy follows the copied parent.
+    let r = s.execute("edit.duplicate", json!({"layers": [parent, child]})).unwrap();
+    let (p2, c2) = (r[0].as_u64().unwrap(), r[1].as_u64().unwrap());
+    assert_eq!(layer(&s, c2).parent.map(|l| l.0), Some(p2));
+    // Copy / paste in the same composition keeps the links; in another one they are dropped.
+    s.execute("layer.select", json!({"layers": [child]})).unwrap();
+    s.execute("edit.copy", json!({})).unwrap();
+    let pasted = s.execute("edit.paste", json!({})).unwrap()[0].as_u64().unwrap();
+    assert_eq!(layer(&s, pasted).parent.map(|l| l.0), Some(parent));
+    assert_eq!(layer(&s, pasted).track_matte.map(|t| t.layer), Some(m));
+    s.execute("comp.new", json!({"name": "Other", "width": 64, "height": 64})).unwrap();
+    let other = s.execute("edit.paste", json!({})).unwrap()[0].as_u64().unwrap();
+    assert_eq!((layer(&s, other).parent, layer(&s, other).track_matte), (None, None));
+}
+
+#[test]
+fn precompose_takes_the_compositions_settings() {
+    let mut s = Session::default();
+    s.execute(
+        "comp.new",
+        json!({"name": "Main", "width": 640, "height": 360, "pixelAspect": 2.0, "shutterAngle": 90, "motionBlurSamples": 8, "renderer": "advanced3D", "background": [0.2, 0.3, 0.4]}),
+    )
+    .unwrap();
+    let a = solid(&mut s, "#ff0000");
+    let r = s.execute("layer.precompose", json!({"layers": [a], "name": "Inner"})).unwrap();
+    let inner = s.project.comp(effectcraft_project::ItemId(r["comp"].as_u64().unwrap())).unwrap();
+    assert_eq!((inner.pixel_aspect, inner.shutter_angle, inner.motion_blur_samples), (2.0, 90.0, 8));
+    assert_eq!((inner.renderer, inner.background), (effectcraft_project::Renderer::Advanced3D, [0.2, 0.3, 0.4]));
+}
+
+#[test]
+fn new_comp_from_selection_is_one_undo_step_with_the_dialog_options() {
+    let mut s = Session::default();
+    let still = |s: &mut Session, name: &str, w: u32, par: f64| {
+        let f = effectcraft_project::Footage {
+            kind: effectcraft_project::FootageKind::Still,
+            width: w,
+            height: 100,
+            pixel_aspect: par,
+            has_video: true,
+            ..Default::default()
+        };
+        std::sync::Arc::make_mut(&mut s.project).add_item(name, effectcraft_color::Label::None, None, ItemKind::Footage(f))
+    };
+    let a = still(&mut s, "a.png", 200, 1.0);
+    let b = still(&mut s, "b.png", 300, 2.0);
+    s.state.project_selection = vec![a, b];
+    // Multiple compositions (the default): one per item, its size and pixel aspect; one undo step.
+    let steps = s.history.undo.len();
+    let r = s.execute("file.newCompFromSelection", json!({"duration": 4})).unwrap();
+    let comps: Vec<u64> = r["comps"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap()).collect();
+    assert_eq!(comps.len(), 2);
+    let cb = s.project.comp(effectcraft_project::ItemId(comps[1])).unwrap();
+    assert_eq!((cb.width, cb.pixel_aspect, cb.duration.seconds()), (300, 2.0, 4.0));
+    assert_eq!(s.history.undo.len(), steps + 1);
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(s.project.comps().count(), 0);
+    // One composition holding both, sized like the second, sequenced with a 1 s overlap, queued.
+    s.state.project_selection = vec![a, b];
+    let r = s
+        .execute(
+            "file.newCompFromSelection",
+            json!({"single": true, "dimensionsFrom": 1, "duration": 3, "sequence": true, "overlap": true, "overlapDuration": 1, "addToRenderQueue": true}),
+        )
+        .unwrap();
+    let c = s.project.comp(effectcraft_project::ItemId(r["comps"][0].as_u64().unwrap())).unwrap();
+    assert_eq!((c.width, c.pixel_aspect, c.duration.seconds()), (300, 2.0, 5.0));
+    let names: Vec<&str> = c.layers.iter().map(|l| l.name.as_str()).collect();
+    assert_eq!(names, ["a.png", "b.png"], "first selected on top");
+    // Stills have no rate: the comp is 29.97 fps and the second layer starts on the frame nearest 2 s.
+    assert_eq!(c.layers[0].in_point.seconds(), 0.0);
+    assert!((c.layers[1].in_point.seconds() - 2.0).abs() < 1.0 / 29.97, "{}", c.layers[1].in_point.seconds());
+    assert_eq!(s.project.render_queue.len(), 1);
+    assert_eq!(s.history.undo.len(), steps + 1);
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(s.project.render_queue.is_empty() && s.project.comps().count() == 0);
+    s.state.project_selection = vec![a, b];
+    assert!(s.execute("file.newCompFromSelection", json!({"single": true, "dimensionsFrom": 2})).is_err());
+}
+
+#[test]
+fn project_files_keep_their_format_warn_about_newer_versions_and_never_save_unreadable() {
+    let mut s = comp();
+    let a = solid(&mut s, "#ff0000");
+    let path = tmp("Safe.ecproj");
+    s.execute("file.saveAs", json!({"path": path})).unwrap();
+    let saved = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(effectcraft_project::saved_by(&saved).as_deref(), Some(effectcraft_project::APP_VERSION));
+    // Save a Copy and Increment and Save keep an XML project XML.
+    let copy = tmp("Copy.ecprojx");
+    s.execute("file.saveCopy", json!({"path": copy})).unwrap();
+    assert!(std::fs::read_to_string(&copy).unwrap().starts_with("<?xml"));
+    s.execute("file.saveAs", json!({"path": tmp("Xml.ecprojx")})).unwrap();
+    let r = s.execute("file.incrementAndSave", json!({})).unwrap();
+    let inc = r["path"].as_str().unwrap().to_string();
+    assert!(inc.ends_with("Xml 2.ecprojx"), "{inc}");
+    assert!(std::fs::read_to_string(&inc).unwrap().starts_with("<?xml"));
+    let r = s.execute("file.open", json!({"path": inc})).unwrap();
+    assert_eq!(r["savedBy"], json!(effectcraft_project::APP_VERSION));
+    // A project from a newer version opens with a warning.
+    let newer = tmp("Newer.ecproj");
+    std::fs::write(&newer, saved.replacen(effectcraft_project::APP_VERSION, "999.0.0", 1)).unwrap();
+    s.drain_events();
+    let r = s.execute("file.open", json!({"path": newer})).unwrap();
+    assert_eq!(r["savedBy"], json!("999.0.0"));
+    let warned = s.drain_events().into_iter().any(|e| matches!(e, Event::Toast { message, .. } if message.contains("newer than this version")));
+    assert!(warned);
+    // A value a project file can't hold: Save fails and the file on disk is left as it was.
+    s.execute("file.open", json!({"path": path})).unwrap();
+    let cid = s.state.active_comp.unwrap();
+    std::sync::Arc::make_mut(&mut s.project)
+        .comp_mut(cid)
+        .unwrap()
+        .layer_mut(effectcraft_project::LayerId(a))
+        .unwrap()
+        .props
+        .prop_mut("transform/opacity")
+        .unwrap()
+        .value = KV::Scalar(f64::NAN);
+    let e = s.execute("file.save", json!({})).unwrap_err().to_string();
+    assert!(e.contains("can't be saved"), "{e}");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), saved);
+    // Not a project: a clear message.
+    let junk = tmp("Junk.ecproj");
+    std::fs::write(&junk, "{ not json").unwrap();
+    let e = s.execute("file.open", json!({"path": junk})).unwrap_err().to_string();
+    assert!(e.contains("is not a project EffectCraft can open"), "{e}");
+}
