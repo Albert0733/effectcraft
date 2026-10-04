@@ -5,6 +5,8 @@
 //! pucker & bloat, zig zag, twist, wiggle, offset, merge) live in [`ops`]; curve-preserving booleans
 //! (for Merge Paths) in [`boolean`] and curve offsetting in [`offset`].
 
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
+
 pub mod boolean;
 pub mod feather;
 mod fit;
