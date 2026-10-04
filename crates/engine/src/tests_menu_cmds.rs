@@ -263,8 +263,34 @@ fn label_group_purge_and_edit_original() {
     s.execute("layer.select", json!({"layers": [a]})).unwrap();
     s.execute("edit.selectLabelGroup", json!({})).unwrap();
     assert_eq!(s.state.selected_layers.len(), 2);
+    // A footage source that counts purges (the media pool drops its decoded frames).
+    struct Counting(std::sync::atomic::AtomicUsize);
+    impl crate::render::FootageSource for Counting {
+        fn frame(
+            &self,
+            _: effectcraft_project::ItemId,
+            _: &effectcraft_project::Footage,
+            _: effectcraft_time::Tick,
+        ) -> Option<std::sync::Arc<crate::render::Image>> {
+            None
+        }
+        fn purge(&self) {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    let src = std::sync::Arc::new(Counting(Default::default()));
+    s.footage = src.clone();
     s.drain_events();
     s.execute("edit.purge", json!({"what": "memory"})).unwrap();
+    assert!(s.drain_events().contains(&Event::PurgeCaches));
+    assert_eq!(src.0.load(std::sync::atomic::Ordering::SeqCst), 1, "decoded footage frames are dropped");
+    // The disk cache and the snapshot purge alone: the RAM preview stays.
+    for what in ["disk", "snapshot"] {
+        s.execute("edit.purge", json!({"what": what})).unwrap();
+        assert!(!s.drain_events().contains(&Event::PurgeCaches), "{what}");
+    }
+    assert_eq!(src.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+    s.execute("edit.purge", json!({"what": "3d"})).unwrap();
     assert!(s.drain_events().contains(&Event::PurgeCaches));
     assert!(!s.is_enabled("edit.editOriginal"));
 }

@@ -233,12 +233,16 @@ impl MediaPool {
         }
     }
 
-    /// Drop every cached frame and decoder.
-    pub fn clear(&self) {
+    /// Drop every cached frame (decoders stay open).
+    pub fn clear_frames(&self) {
         let mut c = lock(&self.inner.cache);
         c.lru = Lru::default();
         c.last.clear();
-        drop(c);
+    }
+
+    /// Drop every cached frame and decoder.
+    pub fn clear(&self) {
+        self.clear_frames();
         lock(&self.inner.sources).clear();
     }
 
@@ -601,6 +605,9 @@ impl FootageSource for MediaPool {
     }
     fn set_cache_budget(&self, bytes: usize) {
         self.set_budget(bytes);
+    }
+    fn purge(&self) {
+        self.clear_frames();
     }
     fn cache_budget(&self) -> Option<usize> {
         Some(self.budget())
