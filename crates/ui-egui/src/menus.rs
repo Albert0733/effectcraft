@@ -1182,6 +1182,11 @@ pub type Binding = (egui::Modifiers, egui::Key, String, Value);
 pub fn bindings(session: &effectcraft_engine::Session) -> Vec<Binding> {
     let mut v: Vec<Binding> = Vec::new();
     for (sc, b) in session.shortcuts().bindings() {
+        // Off macOS `Cmd` is Ctrl, so a Ctrl+Cmd shortcut (Enter Full Screen's Ctrl+Cmd+F) would
+        // steal the plain Cmd one (Find's Cmd+F): such macOS-only shortcuts aren't bound there.
+        if !cfg!(target_os = "macos") && sc.split('+').any(|p| p == "Ctrl") && sc.split('+').any(|p| p == "Cmd") {
+            continue;
+        }
         if let Some((m, k)) = parse_shortcut(sc) {
             if m.shift
                 && let Some(alias) = shifted_alias(k)
