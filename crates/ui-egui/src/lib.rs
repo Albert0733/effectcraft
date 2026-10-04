@@ -179,6 +179,9 @@ pub struct EffectcraftApp {
     pending_screenshots: Vec<(u64, Option<String>, Option<[f32; 4]>, Sender<serde_json::Value>, f64)>,
     next_token: u64,
     pub(crate) last_ui_time: f64,
+    /// When the user last did something (input or an edit): Cache Frames When Idle waits for
+    /// a second of quiet. (time, project revision then)
+    last_activity: (f64, u64),
     pub(crate) toast: Option<(String, f64)>,
     /// Texture of the last CPU frame shown in the viewer and the key it came from.
     pub(crate) viewer_tex: Option<(egui::TextureHandle, FrameKey)>,
@@ -253,6 +256,7 @@ impl EffectcraftApp {
             pending_screenshots: vec![],
             next_token: 1,
             last_ui_time: 0.0,
+            last_activity: (0.0, 0),
             toast: None,
             viewer_tex: None,
             viewer_native: None,
@@ -842,6 +846,7 @@ impl EffectcraftApp {
             ctx.request_repaint();
         }
         if !self.playback.playing {
+            self.cache_when_idle(ctx, &c, &series, now, (wa, wb));
             return;
         }
         let snap = |f: i64| wa + (f - wa).div_euclid(step) * step;
@@ -917,6 +922,46 @@ impl EffectcraftApp {
             self.playback.start_frame = fr.frame_at(self.session.time());
         }
         ctx.request_repaint();
+    }
+
+    /// Composition ▸ Preview ▸ Cache Frames When Idle: after a second without input or edits,
+    /// render the work area's frames (from the current time on, then from its start) in the
+    /// background, a few at a time, until it is cached or the RAM preview budget is full.
+    fn cache_when_idle(&mut self, ctx: &egui::Context, comp: &effectcraft_engine::project::Comp, series: &FrameKey, now: f64, (wa, wb): (i64, i64)) {
+        let active = ctx.input(|i| !i.events.is_empty() || i.pointer.any_down() || i.pointer.is_moving());
+        if active || self.last_activity.1 != self.session.revision {
+            self.last_activity = (now, self.session.revision);
+        }
+        if !self.ui.cache_when_idle || self.frames.urgent_pending() {
+            return;
+        }
+        let quiet = now - self.last_activity.0;
+        if quiet < 1.0 {
+            ctx.request_repaint_after(std::time::Duration::from_secs_f64(1.0 - quiet));
+            return;
+        }
+        let cur = comp.frame_rate.frame_at(self.session.time()).clamp(wa, wb);
+        let n = wb - wa + 1;
+        let fit = self.frames_that_fit(comp, series.scale as f64 / 1000.0).min(n);
+        let slots = (self.frames_parallelism() / 2).max(1);
+        let mut queued = self.frames.inflight();
+        let scale = series.scale as f64 / 1000.0;
+        let mut pending = false;
+        for k in 0..fit {
+            let f = wa + (cur - wa + k).rem_euclid(n);
+            if self.frames.is_cached(&FrameKey { frame: f, ..*series }) {
+                continue;
+            }
+            pending = true;
+            if queued >= slots {
+                break;
+            }
+            self.request_frame(ItemId(series.comp), f, scale);
+            queued += 1;
+        }
+        if pending {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
     }
 
     /// How many viewer frames of `comp` at `scale` the RAM preview budget holds (90 % of it,

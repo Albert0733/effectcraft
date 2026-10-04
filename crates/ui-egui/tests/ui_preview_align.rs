@@ -231,3 +231,29 @@ fn achieved_frame_rate_and_real_time() {
     assert_eq!(slow.real_time(), Some(false));
     assert_eq!(slow.shown_at.len(), 13, "only the last second counts");
 }
+
+#[test]
+fn cache_frames_when_idle_fills_the_work_area() {
+    let mut h = harness();
+    let cid = h.state().session.active_comp_id().unwrap();
+    let cached = |h: &Harness<'_, EffectcraftApp>| h.state().frames.cached_frames(&h.state().shown_series(cid)).len();
+    // Off: only a few frames ahead of the current time are prefetched (the work area is the
+    // whole 240 frames).
+    for _ in 0..120 {
+        h.step();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    let before = cached(&h);
+    assert!(before < 240, "{before}");
+    invoke(&mut h, "playback.cacheWhenIdle", json!({"value": true}));
+    let mut n = 0;
+    for _ in 0..4000 {
+        h.step();
+        n = cached(&h);
+        if n >= 240 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert_eq!(n, 240, "the work area is cached while idle");
+}
