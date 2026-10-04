@@ -14,6 +14,7 @@
 //! let _hvcc = enc.hvcc();
 //! ```
 
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 // Index loops over fixed-size blocks read more clearly than iterator chains in codec code.
 #![allow(clippy::needless_range_loop, clippy::too_many_arguments)]
 
@@ -287,7 +288,7 @@ impl Encoder {
             for y in 0..ch {
                 let row = &src[y.min(h - 1) * stride..][..w];
                 plane.extend(row.iter().map(|&v| (v as u32).min(max) as u16));
-                let last = *plane.last().unwrap();
+                let last = plane.last().copied().unwrap_or(0);
                 plane.extend(std::iter::repeat_n(last, cw - w));
             }
         }
