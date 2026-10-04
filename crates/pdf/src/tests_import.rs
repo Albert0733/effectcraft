@@ -304,3 +304,12 @@ fn closing_an_empty_path_is_a_no_op() {
         let _ = render(&doc);
     }
 }
+
+#[test]
+fn postscript_radix_numbers_outside_2_to_36_are_not_numbers() {
+    // `0#7` asked `i64::from_str_radix` for radix 0, which panics (found by fuzzing).
+    for n in ["0#7", "1#1", "37#1", "99999999999#1", "16#FF"] {
+        let src = format!("%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 100 100\n{n} pop 0 0 moveto 10 10 lineto stroke\n");
+        let _ = parse(src.as_bytes());
+    }
+}
