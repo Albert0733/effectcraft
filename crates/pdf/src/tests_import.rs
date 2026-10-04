@@ -295,3 +295,12 @@ fn truncated_and_corrupt_eps_never_panic() {
         assert!(r.is_ok(), "{}", String::from_utf8_lossy(prog));
     }
 }
+
+#[test]
+fn closing_an_empty_path_is_a_no_op() {
+    // "s", "b" and "b*" closed the path without a current point (kurbo asserts on that).
+    for ops in ["s", "b", "b*", "0 0 m 50 0 l 50 50 l b s b*", "f s 10 10 m 20 20 l s"] {
+        let doc = parse(&page_pdf(ops, "", vec![])).unwrap();
+        let _ = render(&doc);
+    }
+}

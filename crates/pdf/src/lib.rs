@@ -7,6 +7,8 @@
 //! children are the document's **layers**: one group per top-level optional-content group
 //! (Illustrator layers), with content outside them gathered into groups of its own.
 
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
+
 mod build;
 mod ccitt;
 mod cff;
