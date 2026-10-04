@@ -378,7 +378,13 @@ impl<'a> Decider<'a> {
                 }
             }
         }
-        let (_, y_mode, tx_type_y, ty, recon) = best.expect("an intra mode");
+        // Every ranked mode tries DCT_DCT, so `best` is always set; without a candidate the block
+        // can't be coded intra (an infinite cost keeps it from being chosen).
+        let Some((_, y_mode, tx_type_y, ty, recon)) = best else {
+            let leaf =
+                Leaf { bsize, is_inter: false, y_mode: DC_PRED, uv_mode: DC_PRED, tx_type_y: DCT_DCT, mv: [0, 0], skip: true, coefs: Default::default() };
+            return (leaf, f64::INFINITY);
+        };
         self.put(0, c * 4, r * 4, n, recon.as_deref().unwrap_or(&best_pred[..n * n]));
         let tx_type_y = if ty.nonzero { tx_type_y } else { DCT_DCT };
         self.mark_decoded(0, r, c, n4);
@@ -414,16 +420,17 @@ impl<'a> Decider<'a> {
         let uv_mode = best_uv.1;
         let uv_tx = tx_size_for(clog2);
         let uv_type = intra_uv_tx_type(uv_mode, uv_tx);
-        let mut tuv = Vec::with_capacity(2);
-        for i in 0..2 {
+        let mut code_uv = |i: usize| {
             predict_intra(&ced[i], &ce[i], uv_mode, &mut pred);
-            tuv.push(self.code_tx(1 + i, c * 2, r * 2, clog2, uv_type, &pred[..cn * cn], true));
+            let t = self.code_tx(1 + i, c * 2, r * 2, clog2, uv_type, &pred[..cn * cn], true);
             self.mark_decoded(1 + i, r, c, n4);
-        }
-        let skip = !ty.nonzero && !tuv[0].nonzero && !tuv[1].nonzero;
-        let dist = ty.dist + tuv[0].dist + tuv[1].dist;
-        let bits = if skip { 1.0 } else { ty.bits + tuv[0].bits + tuv[1].bits + 1.0 } + MODE_BITS_INTRA + 2.0;
-        let [u, v]: [TxResult; 2] = tuv.try_into().ok().expect("two chroma planes");
+            t
+        };
+        let u = code_uv(0);
+        let v = code_uv(1);
+        let skip = !ty.nonzero && !u.nonzero && !v.nonzero;
+        let dist = ty.dist + u.dist + v.dist;
+        let bits = if skip { 1.0 } else { ty.bits + u.bits + v.bits + 1.0 } + MODE_BITS_INTRA + 2.0;
         let leaf = Leaf { bsize, is_inter: false, y_mode, uv_mode, tx_type_y, mv: [0, 0], skip, coefs: [ty.levels, u.levels, v.levels] };
         (leaf, dist + self.lambda * bits)
     }
@@ -432,8 +439,9 @@ impl<'a> Decider<'a> {
         let n4 = NUM_4X4_BLOCKS_WIDE[bsize] as usize;
         let n = n4 * 4;
         let log2 = n.trailing_zeros();
+        // Inter blocks are only decided with a reference frame; without one, code intra.
+        let Some(refr) = self.refr else { return self.intra_leaf(r, c, bsize) };
         let (mv, mv_bits) = self.motion_search(r, c, n, parent_mv);
-        let refr = self.refr.expect("reference frame");
         let mut pred = vec![0u16; n * n];
         let mut tx = Vec::with_capacity(3);
         let mut dist = 0.0;
@@ -461,7 +469,16 @@ impl<'a> Decider<'a> {
         }
         let skip = tx.iter().all(|t| !t.nonzero);
         let bits = mode_bits + if skip { 1.0 } else { 1.0 + tx.iter().map(|t| t.bits).sum::<f64>() };
-        let [y, u, v]: [TxResult; 3] = tx.try_into().ok().expect("three planes");
+        let [y, u, v]: [TxResult; 3] = match tx.try_into() {
+            Ok(planes) => planes,
+            // One transform block per plane was coded above.
+            Err(_) => {
+                return (
+                    Leaf { bsize, is_inter: true, y_mode: NEWMV, uv_mode: DC_PRED, tx_type_y: DCT_DCT, mv, skip: true, coefs: Default::default() },
+                    f64::INFINITY,
+                );
+            }
+        };
         let leaf = Leaf { bsize, is_inter: true, y_mode: NEWMV, uv_mode: DC_PRED, tx_type_y: DCT_DCT, mv, skip, coefs: [y.levels, u.levels, v.levels] };
         (leaf, dist + self.lambda * bits)
     }
@@ -470,7 +487,7 @@ impl<'a> Decider<'a> {
     /// Returns the vector and an estimate of its coding cost in bits.
     fn motion_search(&self, r: usize, c: usize, n: usize, parent_mv: Option<[i32; 2]>) -> ([i32; 2], f64) {
         let g = self.g;
-        let refr = self.refr.expect("reference frame");
+        let Some(refr) = self.refr else { return ([0, 0], 0.0) };
         let mi = |rr: usize, cc: usize| self.mvs[rr * g.mi_cols + cc];
         let mut pred_mv = [0, 0];
         let mut cands: Vec<[i32; 2]> = vec![[0, 0]];
@@ -579,7 +596,7 @@ impl<'a> Decider<'a> {
     /// Approximate luma prediction for motion search: exact at whole and half-sample
     /// positions (precomputed planes), averaged neighbours at quarter-sample positions.
     fn search_block(&self, mv: [i32; 2], x: usize, y: usize, n: usize, out: &mut [u16]) {
-        let refr = self.refr.expect("reference frame");
+        let Some(refr) = self.refr else { return };
         let (w, h) = (self.g.width as i32, self.g.height as i32);
         // per axis: up to two (integer offset, half) taps
         let axis = |v: i32| -> ([(i32, bool); 2], usize) {
