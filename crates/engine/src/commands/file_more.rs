@@ -77,7 +77,7 @@ fn close_project(s: &mut Session, _: &Value) -> Result<Value> {
 
 fn save_copy(s: &mut Session, p: &Value) -> Result<Value> {
     let path = str_p(p, "path").ok_or_else(|| bad("file.saveCopy", "missing `path`"))?;
-    let json = s.project.to_json();
+    let json = super::file::file_text(s, path)?;
     s.services.write_file(path, json.as_bytes()).map_err(|e| EngineError::Other(format!("cannot write {path}: {e}")))?;
     Ok(json!({"path": path, "bytes": json.len()}))
 }

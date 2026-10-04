@@ -104,3 +104,19 @@ fn same_content_ignores_unused_ids_and_sees_comp_edits() {
     r.settings.bit_depth = crate::BitDepth::Bpc16;
     assert!(!r.same_content(&p));
 }
+
+#[test]
+fn project_files_name_their_version_and_always_read_back() {
+    let (mut p, cid) = project_with_layer();
+    let text = p.to_file_json().unwrap();
+    assert_eq!(crate::saved_by(&text).as_deref(), Some(crate::APP_VERSION));
+    assert!(text.trim_start().starts_with("{\n  \"savedBy\""), "the version comes first");
+    assert_eq!(Project::from_json(&text).unwrap(), p);
+    assert_eq!(crate::saved_by(&p.to_json()), None, "plain JSON (worker hand-offs) has none");
+    // JSON can't hold NaN: saving refuses instead of writing a file that can't be opened.
+    p.comp_mut(cid).unwrap().layers[0].props.prop_mut("transform/opacity").unwrap().value = Value::Scalar(f64::NAN);
+    let e = p.to_file_json().unwrap_err().to_string();
+    assert!(e.contains("can't be saved"), "{e}");
+    assert!(crate::is_newer_version("0.2.0", "0.1.9") && crate::is_newer_version("1.0.0-rc.1", "0.9.9"));
+    assert!(!crate::is_newer_version("0.1.1", "0.1.1") && !crate::is_newer_version("0.1.0", "0.1.1"));
+}

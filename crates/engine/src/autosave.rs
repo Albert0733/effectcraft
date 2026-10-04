@@ -245,16 +245,17 @@ pub fn end(store: &dyn ConfigStore) {
 }
 
 /// After Effects' Increment and Save name: `Intro.ecproj` → `Intro 2.ecproj`, `Intro 2.ecproj`
-/// → `Intro 3.ecproj` (skipping names that exist).
+/// → `Intro 3.ecproj` (skipping names that exist; the extension, `.ecprojx` too, is kept).
 pub fn increment_path(path: &str, exists: impl Fn(&str) -> bool) -> String {
     let p = Path::new(path);
     let stem = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+    let ext = p.extension().map(|e| e.to_string_lossy().to_string()).unwrap_or_else(|| EXT.to_string());
     let (base, mut n) = match stem.rsplit_once(' ') {
         Some((b, n)) if !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()) => (b.to_string(), n.parse::<u32>().unwrap_or(1) + 1),
         _ => (stem.clone(), 2),
     };
     loop {
-        let cand = p.with_file_name(format!("{base} {n}.{EXT}")).to_string_lossy().to_string();
+        let cand = p.with_file_name(format!("{base} {n}.{ext}")).to_string_lossy().to_string();
         if !exists(&cand) {
             return cand;
         }

@@ -736,3 +736,52 @@ fn new_comp_from_selection_is_one_undo_step_with_the_dialog_options() {
     s.state.project_selection = vec![a, b];
     assert!(s.execute("file.newCompFromSelection", json!({"single": true, "dimensionsFrom": 2})).is_err());
 }
+
+#[test]
+fn project_files_keep_their_format_warn_about_newer_versions_and_never_save_unreadable() {
+    let mut s = comp();
+    let a = solid(&mut s, "#ff0000");
+    let path = tmp("Safe.ecproj");
+    s.execute("file.saveAs", json!({"path": path})).unwrap();
+    let saved = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(effectcraft_project::saved_by(&saved).as_deref(), Some(effectcraft_project::APP_VERSION));
+    // Save a Copy and Increment and Save keep an XML project XML.
+    let copy = tmp("Copy.ecprojx");
+    s.execute("file.saveCopy", json!({"path": copy})).unwrap();
+    assert!(std::fs::read_to_string(&copy).unwrap().starts_with("<?xml"));
+    s.execute("file.saveAs", json!({"path": tmp("Xml.ecprojx")})).unwrap();
+    let r = s.execute("file.incrementAndSave", json!({})).unwrap();
+    let inc = r["path"].as_str().unwrap().to_string();
+    assert!(inc.ends_with("Xml 2.ecprojx"), "{inc}");
+    assert!(std::fs::read_to_string(&inc).unwrap().starts_with("<?xml"));
+    let r = s.execute("file.open", json!({"path": inc})).unwrap();
+    assert_eq!(r["savedBy"], json!(effectcraft_project::APP_VERSION));
+    // A project from a newer version opens with a warning.
+    let newer = tmp("Newer.ecproj");
+    std::fs::write(&newer, saved.replacen(effectcraft_project::APP_VERSION, "999.0.0", 1)).unwrap();
+    s.drain_events();
+    let r = s.execute("file.open", json!({"path": newer})).unwrap();
+    assert_eq!(r["savedBy"], json!("999.0.0"));
+    let warned = s.drain_events().into_iter().any(|e| matches!(e, Event::Toast { message, .. } if message.contains("newer than this version")));
+    assert!(warned);
+    // A value a project file can't hold: Save fails and the file on disk is left as it was.
+    s.execute("file.open", json!({"path": path})).unwrap();
+    let cid = s.state.active_comp.unwrap();
+    std::sync::Arc::make_mut(&mut s.project)
+        .comp_mut(cid)
+        .unwrap()
+        .layer_mut(effectcraft_project::LayerId(a))
+        .unwrap()
+        .props
+        .prop_mut("transform/opacity")
+        .unwrap()
+        .value = KV::Scalar(f64::NAN);
+    let e = s.execute("file.save", json!({})).unwrap_err().to_string();
+    assert!(e.contains("can't be saved"), "{e}");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), saved);
+    // Not a project: a clear message.
+    let junk = tmp("Junk.ecproj");
+    std::fs::write(&junk, "{ not json").unwrap();
+    let e = s.execute("file.open", json!({"path": junk})).unwrap_err().to_string();
+    assert!(e.contains("is not a project EffectCraft can open"), "{e}");
+}
