@@ -528,6 +528,8 @@ pub fn open_form(app: &mut EffectcraftApp, id: &str, p: &Value) -> bool {
                             ("FCPXML (.fcpxml)", json!("fcpxml")),
                             ("OpenTimelineIO (.otio)", json!("otio")),
                             ("CMX 3600 EDL (.edl, V1 only)", json!("edl")),
+                            ("AAF (.aaf)", json!("aaf")),
+                            ("OMF (.omf, audio)", json!("omf")),
                         ],
                         0,
                     ),

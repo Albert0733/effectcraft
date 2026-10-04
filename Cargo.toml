@@ -70,26 +70,26 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg"]
 
 # media codecs + containers: FilmCraft's pure-Rust crates, pinned to a revision (plan/adr/0001).
 # Only `crates/media`, `crates/export` and `crates/interchange` may depend on these.
-filmcraft-codecs = { git = "https://github.com/storytold/filmcraft", rev = "89cfbf24f698b0f0e538eb7795929f19bbfb1dbb" }
-filmcraft-media = { git = "https://github.com/storytold/filmcraft", rev = "89cfbf24f698b0f0e538eb7795929f19bbfb1dbb" }
-filmcraft-frame = { git = "https://github.com/storytold/filmcraft", rev = "89cfbf24f698b0f0e538eb7795929f19bbfb1dbb" }
-filmcraft-color = { git = "https://github.com/storytold/filmcraft", rev = "89cfbf24f698b0f0e538eb7795929f19bbfb1dbb" }
-filmcraft-time = { git = "https://github.com/storytold/filmcraft", rev = "89cfbf24f698b0f0e538eb7795929f19bbfb1dbb" }
+filmcraft-codecs = { git = "https://github.com/storytold/filmcraft", rev = "2c5ba7a72619935f0481f99d59409e0d1844b234" }
+filmcraft-media = { git = "https://github.com/storytold/filmcraft", rev = "2c5ba7a72619935f0481f99d59409e0d1844b234" }
+filmcraft-frame = { git = "https://github.com/storytold/filmcraft", rev = "2c5ba7a72619935f0481f99d59409e0d1844b234" }
+filmcraft-color = { git = "https://github.com/storytold/filmcraft", rev = "2c5ba7a72619935f0481f99d59409e0d1844b234" }
+filmcraft-time = { git = "https://github.com/storytold/filmcraft", rev = "2c5ba7a72619935f0481f99d59409e0d1844b234" }
 # encoders + muxer (crates/export)
-filmcraft-h264enc = { git = "https://github.com/storytold/filmcraft", rev = "89cfbf24f698b0f0e538eb7795929f19bbfb1dbb" }
-filmcraft-prores = { git = "https://github.com/storytold/filmcraft", rev = "89cfbf24f698b0f0e538eb7795929f19bbfb1dbb" }
-filmcraft-aac = { git = "https://github.com/storytold/filmcraft", rev = "89cfbf24f698b0f0e538eb7795929f19bbfb1dbb" }
-filmcraft-isobmff = { git = "https://github.com/storytold/filmcraft", rev = "89cfbf24f698b0f0e538eb7795929f19bbfb1dbb" }
+filmcraft-h264enc = { git = "https://github.com/storytold/filmcraft", rev = "2c5ba7a72619935f0481f99d59409e0d1844b234" }
+filmcraft-prores = { git = "https://github.com/storytold/filmcraft", rev = "2c5ba7a72619935f0481f99d59409e0d1844b234" }
+filmcraft-aac = { git = "https://github.com/storytold/filmcraft", rev = "2c5ba7a72619935f0481f99d59409e0d1844b234" }
+filmcraft-isobmff = { git = "https://github.com/storytold/filmcraft", rev = "2c5ba7a72619935f0481f99d59409e0d1844b234" }
 # decoder used as the round-trip oracle of effectcraft-opusenc (crates/export dev-dependency)
-filmcraft-opus = { git = "https://github.com/storytold/filmcraft", rev = "89cfbf24f698b0f0e538eb7795929f19bbfb1dbb" }
-filmcraft-vp9 = { git = "https://github.com/storytold/filmcraft", rev = "89cfbf24f698b0f0e538eb7795929f19bbfb1dbb" }
+filmcraft-opus = { git = "https://github.com/storytold/filmcraft", rev = "2c5ba7a72619935f0481f99d59409e0d1844b234" }
+filmcraft-vp9 = { git = "https://github.com/storytold/filmcraft", rev = "2c5ba7a72619935f0481f99d59409e0d1844b234" }
 # decoders used as the round-trip oracles of effectcraft-hevcenc / effectcraft-av1enc (dev-dependencies only)
-filmcraft-hevc = { git = "https://github.com/storytold/filmcraft", rev = "89cfbf24f698b0f0e538eb7795929f19bbfb1dbb" }
-filmcraft-av1 = { git = "https://github.com/storytold/filmcraft", rev = "89cfbf24f698b0f0e538eb7795929f19bbfb1dbb" }
+filmcraft-hevc = { git = "https://github.com/storytold/filmcraft", rev = "2c5ba7a72619935f0481f99d59409e0d1844b234" }
+filmcraft-av1 = { git = "https://github.com/storytold/filmcraft", rev = "2c5ba7a72619935f0481f99d59409e0d1844b234" }
 # timeline interchange (EDL, FCP7 XML, FCPXML, OTIO) for Premiere Pro interop (crates/interchange only)
-filmcraft-interchange = { git = "https://github.com/storytold/filmcraft", rev = "89cfbf24f698b0f0e538eb7795929f19bbfb1dbb" }
-filmcraft-project = { git = "https://github.com/storytold/filmcraft", rev = "89cfbf24f698b0f0e538eb7795929f19bbfb1dbb" }
-filmcraft-geom = { git = "https://github.com/storytold/filmcraft", rev = "89cfbf24f698b0f0e538eb7795929f19bbfb1dbb" }
+filmcraft-interchange = { git = "https://github.com/storytold/filmcraft", rev = "2c5ba7a72619935f0481f99d59409e0d1844b234" }
+filmcraft-project = { git = "https://github.com/storytold/filmcraft", rev = "2c5ba7a72619935f0481f99d59409e0d1844b234" }
+filmcraft-geom = { git = "https://github.com/storytold/filmcraft", rev = "2c5ba7a72619935f0481f99d59409e0d1844b234" }
 
 # gpu (the same wgpu eframe / egui-wgpu use)
 wgpu = { version = "30.0.1", features = ["fragile-send-sync-non-atomic-wasm"] }

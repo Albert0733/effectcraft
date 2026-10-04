@@ -310,6 +310,43 @@ fn fxc_d3(i: u32) -> vec3<f32> {
 // green, blue × shadows / midtones / highlights), 32..41 wheels (shadows, midtones, highlights),
 // 41 vignette amount, 42 vignette start, 43 roundness, 44 feather, 45 cx, 46 cy, 47 lw, 48 lh,
 // 49 aspect.
+// color3::builtin_look.
+fn fxc_builtin_look(look: u32, c: vec3<f32>) -> vec3<f32> {
+    let l = luminance(c);
+    switch (look) {
+        case 2u: {
+            return vec3<f32>(c.x * 1.06 + 0.015, c.y * 1.01 + 0.01, c.z * 0.88);
+        }
+        case 3u: {
+            return vec3<f32>(c.x * 0.82, c.y * 0.92, c.z * 1.08 + 0.02) * 0.92;
+        }
+        case 4u: {
+            let d = l + (c - l) * 0.45;
+            var o: vec3<f32>;
+            if (l < 0.5) {
+                o = 2.0 * d * l;
+            } else {
+                o = 1.0 - 2.0 * (1.0 - d) * (1.0 - l);
+            }
+            return d * 0.5 + o * 0.5;
+        }
+        case 5u: {
+            let t = clamp(l - 0.5, -0.5, 0.5);
+            return vec3<f32>(c.x + 0.18 * t, c.y + 0.03 * t, c.z - 0.16 * t);
+        }
+        case 6u: {
+            let v = 0.08 + c * 0.84;
+            return l + (v - l) * 0.8;
+        }
+        case 7u: {
+            return vec3<f32>(l);
+        }
+        default: {
+            return c;
+        }
+    }
+}
+
 @compute @workgroup_size(16, 16)
 fn fxc_lumetri(@builtin(global_invocation_id) gid: vec3<u32>) {
     let p = fxc_pixel(gid);
@@ -323,6 +360,9 @@ fn fxc_lumetri(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
     var c = fxc_unpremul(px);
+    if (data[51] >= 0.0) {
+        c = fxl_lut_apply(u32(data[51]), c, 2u);
+    }
     let temp = data[0];
     let tint = data[1];
     if (temp != 0.0 || tint != 0.0) {
@@ -359,8 +399,15 @@ fn fxc_lumetri(@builtin(global_invocation_id) gid: vec3<u32>) {
     let st = fxc_d3(14u);
     let ht = fxc_d3(17u);
     let zero = vec3<f32>(0.0);
-    if (intensity != 0.0 && (faded != 0.0 || vib != 0.0 || csat != 1.0 || any(st != zero) || any(ht != zero))) {
+    let look = u32(data[50]);
+    let has_look = look >= 2u || data[52] >= 0.0;
+    if (intensity != 0.0 && (has_look || faded != 0.0 || vib != 0.0 || csat != 1.0 || any(st != zero) || any(ht != zero))) {
         var d = c;
+        if (data[52] >= 0.0) {
+            d = fxl_lut_apply(u32(data[52]), c, 2u);
+        } else {
+            d = fxc_builtin_look(look, c);
+        }
         if (faded != 0.0) {
             d = d * (1.0 - 0.25 * faded) + 0.12 * faded;
         }

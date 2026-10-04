@@ -129,7 +129,7 @@ build real projects through these interfaces; they are worked examples of everyt
 * **Renders**: `renderQueue.add {comp, format: h264|prores|webm|png…, channels: rgba,
   proresProfile: 4444, output}` then `renderQueue.render {"wait": true}`. Check a render by
   importing it (`file.import`, `file.newCompFromSelection`) and `render_frame {transparent: true}`
-  for its alpha. (WebM VP9 alpha is written, but read back opaque for now.)
+  for its alpha (ProRes 4444 and WebM VP9 alpha both read back as straight alpha).
 * **Essential Graphics**: controls can be addressed by name (`essential.set {"layer":"#1",
   "control":"Title","value":"John Smith"}`); a command that targets an explicit `comp` runs even
   when the active comp would disable it (`essential.exportTemplate {"comp":"Lower Third", …}`).
@@ -401,7 +401,7 @@ Premiere Pro interop goes through timeline interchange (MCP: the `execute_comman
 with the same ids):
 
 ```sh
-effectcraft-cli exec file.importTimeline '{"path":"edit.xml"}' main.ecproj --save      # FCP7 XML / .fcpxml / .otio / .edl
+effectcraft-cli exec file.importTimeline '{"path":"edit.xml"}' main.ecproj --save      # FCP7 XML / .fcpxml / .otio / .edl / .aaf / .omf
 effectcraft-cli exec file.exportTimeline '{"comp":"Main","path":"Main.xml"}' main.ecproj --json
 effectcraft-cli exec file.exportTimeline '{"comp":"Main","path":"Main.otio","prerender":"none"}' main.ecproj
 ```
@@ -409,7 +409,7 @@ effectcraft-cli exec file.exportTimeline '{"comp":"Main","path":"Main.otio","pre
 `file.importTimeline` returns `{format, folder, comps, allComps, items, missing, warnings}`
 (`missing` lists media imported as placeholders). `file.exportTimeline` writes Final Cut Pro XML
 (`.xml`, which Premiere Pro opens with File ▸ Import) unless `format` or the extension says
-`fcpxml`, `otio` or `edl`; `prerender` (`unsupported` by default, `all`, `none`) controls which
+`fcpxml`, `otio`, `edl`, `aaf` or `omf`; `prerender` (`unsupported` by default, `all`, `none`) controls which
 layers are rendered to ProRes 4444 movies next to the document. It returns `{path, format,
 sequences, videoTracks, audioTracks, clips, prerendered, warnings}`. Native `.prproj` files are
 not read or written.

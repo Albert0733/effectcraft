@@ -326,7 +326,7 @@ impl Lut {
 type LutCache = Mutex<HashMap<String, Option<Arc<Lut>>>>;
 
 /// Load (and cache) a LUT from inline `.cube` text or a file path.
-pub(crate) fn load_lut(src: &str) -> Option<Arc<Lut>> {
+pub fn load_lut(src: &str) -> Option<Arc<Lut>> {
     if src.trim().is_empty() {
         return None;
     }

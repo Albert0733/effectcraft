@@ -9,7 +9,7 @@ use effectcraft_project::ParamUi;
 use effectcraft_raster::Px;
 use rayon::prelude::*;
 
-use crate::sim2::{Piece, draw_pieces, rot_axis, sort_far_first};
+use crate::sim2::{Piece, PiecePlan, PieceTex, rot_axis, sort_far_first};
 use crate::util::{Plane, gauss_plane, hash1, layer_rect, remap, unpremul};
 use crate::{Buf, EffectCtx, EffectSpec, ParamSpec, col, num, p, popup, slider};
 
@@ -175,7 +175,15 @@ fn iris_wipe(ctx: &EffectCtx, mut b: Buf) -> Buf {
 /// through a 180° turn about Flip Axis, as textured planes in 3D seen through the Camera
 /// System and lit by Lighting / Material. The flipped side shows Back Layer (none: the cards
 /// vanish as they turn away). Position / Rotation Jitter wobble the cards over time.
-fn card_wipe(ctx: &EffectCtx, mut b: Buf) -> Buf {
+fn card_wipe(ctx: &EffectCtx, b: Buf) -> Buf {
+    match card_wipe_plan(ctx, &b) {
+        Some(plan) => plan.finish(b),
+        None => b,
+    }
+}
+
+/// Card Wipe's cards (`None` = nothing has moved: the layer as is).
+pub(crate) fn card_wipe_plan(ctx: &EffectCtx, b: &Buf) -> Option<PiecePlan> {
     let done = completion(ctx);
     let pr = ctx.params;
     let f = |id: &str| pr.get(id).map(Value::as_f64).unwrap_or(0.0);
@@ -199,7 +207,7 @@ fn card_wipe(ctx: &EffectCtx, mut b: Buf) -> Buf {
         // Nothing has moved: the layer as is (exactly).
         let xy = pr.get("cameraPosition/xyPosition").map(|v| v.as_vec2());
         if xy.is_none_or(|p| (p[0] - ctx.layer_size[0] * 0.5).abs() < 1e-9 && (p[1] - ctx.layer_size[1] * 0.5).abs() < 1e-9) {
-            return b;
+            return None;
         }
     }
     let tw = (pr.f("transitionWidth") / 100.0).clamp(0.01, 1.0);
@@ -212,25 +220,25 @@ fn card_wipe(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let order = pr.e("flipOrder");
     let jitter = pr.f("timingRandomness").clamp(0.0, 1.0);
     let seed = pr.f("randomSeed") as u32 ^ 0xca7d;
-    let (x0, y0, w, h) = layer_rect(ctx, &b);
+    let (x0, y0, w, h) = layer_rect(ctx, b);
     let (cw, ch) = (w / cols as f64, h / rows as f64);
     let nx = |i: i64| if cols > 1 { i as f64 / (cols - 1) as f64 } else { 0.0 };
     let ny = |j: i64| if rows > 1 { j as f64 / (rows - 1) as f64 } else { 0.0 };
     // Flip Order "Gradient": cards flip first where the gradient layer (default: this layer) is dark.
     let grad = (order == 8).then(|| match ctx.layer_param("gradientLayer", false) {
-        Some(o) => place_layer(ctx, &b, &o, 2),
+        Some(o) => place_layer(ctx, b, &o, 2),
         None => b.img.clone(),
     });
     // Back Layer: a chosen layer (stretched to fit), or this layer for projects saved with the
     // old "Self" choice; none hides the cards' backs.
     let back = match ctx.layer_param("backLayer", true) {
-        Some(o) => Some(crate::util::fit_layer(ctx, &b, &o, true)),
-        None if pr.b("backSelf") => Some(b.img.clone()),
+        Some(o) => Some(PieceTex::Image(crate::util::fit_layer(ctx, b, &o, true))),
+        None if pr.b("backSelf") => Some(PieceTex::Layer),
         None => None,
     };
-    let cam = crate::card3d::projection(ctx, &b);
+    let cam = crate::card3d::projection(ctx, b);
     let eye = cam.eye();
-    let light = crate::card3d::Lighting::from(ctx, &b);
+    let light = crate::card3d::Lighting::from(ctx, b);
     let t = ctx.time;
     let jit = |i: i64, j: i64, k: u32, speed: f64| -> f64 {
         let ph = hash1(i as u32, j as u32, seed ^ k) as f64 * std::f64::consts::TAU;
@@ -303,10 +311,7 @@ fn card_wipe(ctx: &EffectCtx, mut b: Buf) -> Buf {
         })
         .collect();
     sort_far_first(&mut pieces);
-    let mut out = effectcraft_raster::Image::new(b.img.width, b.img.height);
-    draw_pieces(&mut out, &pieces, &b.img, back.as_ref());
-    b.img = out;
-    b
+    Some(PiecePlan { pieces, front: PieceTex::Layer, back })
 }
 
 fn grid_wipe(ctx: &EffectCtx, mut b: Buf) -> Buf {

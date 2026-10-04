@@ -316,6 +316,10 @@ impl GpuContext {
             include_str!("shaders/fx_tone.wgsl"),
             include_str!("shaders/fx_warp.wgsl"),
             include_str!("shaders/fx_extra.wgsl"),
+            include_str!("shaders/fx_depth.wgsl"),
+            include_str!("shaders/fx_lut.wgsl"),
+            include_str!("shaders/fx_sim.wgsl"),
+            include_str!("shaders/fx_vr.wgsl"),
             include_str!("shaders/fx_light.wgsl"),
             include_str!("shaders/fx_transition.wgsl"),
             include_str!("shaders/fx_text.wgsl"),
@@ -380,6 +384,10 @@ impl GpuContext {
             .chain(crate::fx_tone::KERNELS)
             .chain(crate::fx_warp::KERNELS)
             .chain(crate::fx_extra::KERNELS)
+            .chain(crate::fx_depth::KERNELS)
+            .chain(crate::fx_lut::KERNELS)
+            .chain(crate::fx_sim::KERNELS)
+            .chain(crate::fx_vr::KERNELS)
             .chain(crate::fx_light::KERNELS)
             .chain(crate::fx_transition::KERNELS)
             .chain(crate::fx_text::KERNELS)

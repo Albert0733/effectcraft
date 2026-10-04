@@ -154,7 +154,7 @@ pub(crate) fn fractal(e: &mut Enc, ctx: &EffectCtx, b: GBuf, turbulent: bool) ->
 // ---------------------------------------------------------------- Median family (noise.rs, noise2.rs)
 
 /// noise::median_image (of the straight colour with alpha 1 when `straight`).
-fn median_image(e: &mut Enc, img: &GpuImage, r: usize, straight: bool) -> GpuImage {
+pub(crate) fn median_image(e: &mut Enc, img: &GpuImage, r: usize, straight: bool) -> GpuImage {
     let q = run(e, "fxn_quant", &with_u0([straight as u32, 0, 0, 0]), img, None, None);
     if r <= MEDIAN_BISECT_R {
         return run(e, "fxn_median", &with_u0([r as u32, 0, 0, 0]), &q, None, None);

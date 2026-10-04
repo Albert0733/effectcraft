@@ -54,7 +54,7 @@ fn export_and_reimport_timeline_commands() {
     assert!(s.execute_checked("file.exportTimeline", json!({"path": tmp("x.xml"), "prerender": "sometimes"})).is_err());
     assert!(s.execute_checked("file.importTimeline", json!({"path": "/nope/a.prproj"})).is_err());
     let formats = s.execute("file.timelineFormats", json!({})).unwrap();
-    assert_eq!(formats.as_array().unwrap().len(), 4);
+    assert_eq!(formats.as_array().unwrap().len(), 6);
 }
 
 #[test]

@@ -48,7 +48,7 @@ const BAND: usize = 16;
 
 /// How rasterised items combine with what is already in the target.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum Acc {
+pub enum Acc {
     /// Premultiplied "over" (later items on top).
     Over,
     /// Additive (glows, light).
@@ -128,7 +128,7 @@ pub(crate) fn raster<T: Sync>(
 // ------------------------------------------------------------------ sprites
 
 #[derive(Clone, Copy, PartialEq, Debug)]
-pub(crate) enum Shape {
+pub enum Shape {
     /// Soft round dot (Gaussian-like falloff).
     Soft,
     /// Hard anti-aliased disc.
@@ -151,7 +151,7 @@ pub(crate) enum Shape {
 
 /// A particle sprite in buffer pixels; `c` is straight colour + opacity.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct Sprite {
+pub struct Sprite {
     pub x: f32,
     pub y: f32,
     pub r: f32,
@@ -163,6 +163,112 @@ pub(crate) struct Sprite {
 impl Sprite {
     pub(crate) fn new(x: f32, y: f32, r: f32, c: [f32; 4], shape: Shape) -> Sprite {
         Sprite { x, y, r, c, shape, rot: 0.0 }
+    }
+}
+
+/// Where a sprite's colour comes from when it depends on the layer's pixels (resolved by
+/// [`SpritePlan::resolve`] on the CPU, per pixel by the GPU compositor). Positions are buffer
+/// pixels.
+#[derive(Clone, Copy, Debug)]
+pub enum Tint {
+    /// The sprite's own colour.
+    Fixed,
+    /// CC Rainfall's refracting drops: where the layer shows (alpha > 0), colour × (layer
+    /// colour × 0.6 + 0.5) sampled at (x, y).
+    Refract { x: f64, y: f64 },
+    /// CC Star Burst: the layer's colour at (x, y), opacity × its alpha (none where clear).
+    Source { x: f64, y: f64 },
+    /// CC Hair: the root's colour at (x, y) mixed with the hair colour (`inherit` = 1 keeps the
+    /// root's), × `shade`, + `spec`; no strand where the root's alpha is below ½.
+    Root { x: f64, y: f64, hair: [f32; 3], inherit: f32, shade: f32, spec: f32 },
+}
+
+/// How a sprite layer meets the original layer.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Post {
+    /// [`combine`] with this mode (0 Composite … 5 sprites only).
+    Combine(u32),
+    /// The sprites alone.
+    Replace,
+    /// The sprites, mixed toward the original by this fraction.
+    Lerp(f32),
+    /// The sprites over opaque black.
+    OverBlack,
+}
+
+/// What a sprite-drawing effect draws this frame: built on the CPU (closed-form or from the
+/// simulation state), rasterised by [`SpritePlan::finish`] or the GPU compositor.
+#[derive(Clone, Debug)]
+pub struct SpritePlan {
+    pub sprites: Vec<Sprite>,
+    /// Per sprite (empty = all [`Tint::Fixed`]).
+    pub tints: Vec<Tint>,
+    pub acc: Acc,
+    pub post: Post,
+}
+
+impl SpritePlan {
+    /// Resolve layer-dependent colours against the layer `src`.
+    pub fn resolve(&mut self, src: &Image) {
+        let tints = std::mem::take(&mut self.tints);
+        self.sprites.par_iter_mut().zip(tints.par_iter()).for_each(|(sp, t)| match *t {
+            Tint::Fixed => {}
+            Tint::Refract { x, y } => {
+                let (sc, sa) = unpremul(src.sample_bilinear(x, y));
+                if sa > 0.0 {
+                    let c = sp.c;
+                    sp.c = [(sc[0] * 0.6 + 0.5) * c[0], (sc[1] * 0.6 + 0.5) * c[1], (sc[2] * 0.6 + 0.5) * c[2], c[3]];
+                }
+            }
+            Tint::Source { x, y } => {
+                let (c, a) = unpremul(src.sample_bilinear(x, y));
+                sp.c = if a <= 0.0 { [0.0; 4] } else { [c[0], c[1], c[2], a * sp.c[3]] };
+            }
+            Tint::Root { x, y, hair, inherit, shade, spec } => {
+                let root = src.sample_bilinear(x, y);
+                if root[3] < 0.5 {
+                    sp.c = [0.0; 4];
+                    return;
+                }
+                let (rc, _) = unpremul(root);
+                let base: [f32; 3] = std::array::from_fn(|k| rc[k] + (hair[k] - rc[k]) * (1.0 - inherit));
+                sp.c = [base[0] * shade + spec, base[1] * shade + spec, base[2] * shade + spec, sp.c[3]];
+            }
+        });
+    }
+
+    /// Rasterise (after [`SpritePlan::resolve`]) and meet the original layer `b`.
+    pub fn finish(&self, mut b: Buf) -> Buf {
+        let fx = splat(b.img.width, b.img.height, &self.sprites, self.acc);
+        b.img = match self.post {
+            Post::Combine(m) => combine(&b.img, &fx, m),
+            Post::Replace => fx,
+            Post::Lerp(t) => {
+                let mut o = fx;
+                o.data.par_iter_mut().zip(b.img.data.par_iter()).for_each(|(o, s0)| *o = crate::util::lerp4(*o, *s0, t));
+                o
+            }
+            Post::OverBlack => combine(&Image::filled(b.img.width, b.img.height, [0.0, 0.0, 0.0, 1.0]), &fx, 0),
+        };
+        b
+    }
+}
+
+/// The sprite plan of a sprite-drawing simulation effect for buffer geometry `b` (its pixels
+/// are not read), `None` for other effects or settings drawn otherwise (the GPU compositor's
+/// render pass).
+pub fn sprite_plan(id: &str, ctx: &EffectCtx, b: &Buf) -> Option<SpritePlan> {
+    match id {
+        "ec.sim.ccrainfall" => Some(rainfall_plan(ctx, b)),
+        "ec.sim.ccsnowfall" => Some(snowfall_plan(ctx, b)),
+        "ec.sim.ccstarburst" => Some(star_burst_plan(ctx, b)),
+        "ec.sim.cchair" => crate::sim3::hair_plan(ctx, b),
+        "ec.sim.waveworld" => crate::sim2::wave_world_plan(ctx, b).and_then(|p| match p {
+            crate::sim2::WavePlan::Wire(sp) => Some(sp),
+            crate::sim2::WavePlan::Height { .. } => None,
+        }),
+        "ec.sim.foam" => crate::sim2::foam_plan(ctx, b),
+        _ => None,
     }
 }
 
@@ -316,6 +422,12 @@ fn wrap(v: f32, lo: f32, span: f32) -> f32 {
 }
 
 fn rainfall(ctx: &EffectCtx, b: Buf) -> Buf {
+    let mut plan = rainfall_plan(ctx, &b);
+    plan.resolve(&b.img);
+    plan.finish(b)
+}
+
+fn rainfall_plan(ctx: &EffectCtx, b: &Buf) -> SpritePlan {
     let pr = ctx.params;
     let n = pr.f("drops").clamp(0.0, 100_000.0) as u32;
     let size = pr.f("size").max(0.0) as f32;
@@ -334,11 +446,10 @@ fn rainfall(ctx: &EffectCtx, b: Buf) -> Buf {
     let (lw, lh) = (ctx.layer_size[0] as f32, ctx.layer_size[1] as f32);
     let s = b.scale as f32;
     let t = ctx.time as f32;
-    let src = &b.img;
     let (ox, oy) = (off[0] as f32 - lw * 0.5, off[1] as f32 - lh * 0.5);
-    let sprites: Vec<Sprite> = (0..n)
+    let (sprites, tints): (Vec<Sprite>, Vec<Tint>) = (0..n)
         .into_par_iter()
-        .filter_map(|i| {
+        .map(|i| {
             let z = h(i, 1, seed);
             let k = depth_k(z, depth);
             let vy = speed / 4000.0 * lh * 2.2 * k;
@@ -349,29 +460,25 @@ fn rainfall(ctx: &EffectCtx, b: Buf) -> Buf {
             let y = wrap(h(i, 3, seed) * (lh + 2.0 * margin) + vy * t + oy, -margin, lh + 2.0 * margin);
             let x = wrap(h(i, 4, seed) * (lw + 2.0 * margin) + w * t + ox, -margin, lw + 2.0 * margin);
             let (bx, by) = b.to_px([x as f64, y as f64]);
-            let mut c = [color[0], color[1], color[2], opacity * (0.35 + 0.65 * k)];
-            if refract {
-                // Refracting drops show the scene behind them, brightened and offset.
-                let (sc, sa) = unpremul(src.sample_bilinear(bx + 2.0 * s as f64, by));
-                let m = |a: f32, cc: f32| (a * 0.6 + 0.5) * cc;
-                if sa > 0.0 {
-                    c = [m(sc[0], color[0]), m(sc[1], color[1]), m(sc[2], color[2]), c[3]];
-                }
-            }
+            let c = [color[0], color[1], color[2], opacity * (0.35 + 0.65 * k)];
+            // Refracting drops show the scene behind them, brightened and offset.
+            let tint = if refract { Tint::Refract { x: bx + 2.0 * s as f64, y: by } } else { Tint::Fixed };
             let r = (size * 0.6 * k * s).max(0.25);
-            Some(Sprite::new(bx as f32, by as f32, r, c, Shape::Line { dx: -lenx * s, dy: -len * s }))
+            (Sprite::new(bx as f32, by as f32, r, c, Shape::Line { dx: -lenx * s, dy: -len * s }), tint)
         })
-        .collect();
-    weather_out(b, &sprites, mode, with_orig)
+        .unzip();
+    SpritePlan { sprites, tints, acc: Acc::Over, post: weather_post(mode, with_orig) }
 }
 
-fn weather_out(mut b: Buf, sprites: &[Sprite], mode: u32, with_orig: bool) -> Buf {
-    let fx = splat(b.img.width, b.img.height, sprites, Acc::Over);
-    b.img = if with_orig { combine(&b.img, &fx, if mode == 1 { 3 } else { 0 }) } else { fx };
-    b
+fn weather_post(mode: u32, with_orig: bool) -> Post {
+    if with_orig { Post::Combine(if mode == 1 { 3 } else { 0 }) } else { Post::Replace }
 }
 
 fn snowfall(ctx: &EffectCtx, b: Buf) -> Buf {
+    snowfall_plan(ctx, &b).finish(b)
+}
+
+fn snowfall_plan(ctx: &EffectCtx, b: &Buf) -> SpritePlan {
     let pr = ctx.params;
     let n = pr.f("flakes").clamp(0.0, 200_000.0) as u32;
     let size = pr.f("size").max(0.0) as f32;
@@ -414,35 +521,36 @@ fn snowfall(ctx: &EffectCtx, b: Buf) -> Buf {
             Sprite::new(bx as f32, by as f32, r * s, [color[0], color[1], color[2], opacity * (0.4 + 0.6 * k)], Shape::Soft)
         })
         .collect();
-    weather_out(b, &sprites, mode, with_orig)
+    SpritePlan { sprites, tints: vec![], acc: Acc::Over, post: weather_post(mode, with_orig) }
 }
 
 // ------------------------------------------------------------------ CC Bubbles
 
-struct Bubble {
-    x: f32,
-    y: f32,
-    r: f32,
+/// A CC Bubbles bubble in buffer pixels.
+#[derive(Clone, Copy, Debug)]
+pub struct Bubble {
+    pub x: f32,
+    pub y: f32,
+    pub r: f32,
     /// Source sample centre (buffer px).
-    sx: f32,
-    sy: f32,
+    pub sx: f32,
+    pub sy: f32,
 }
 
-fn bubbles(ctx: &EffectCtx, mut b: Buf) -> Buf {
+/// CC Bubbles' bubbles this frame (closed-form in time) for buffer geometry `b`.
+pub fn bubble_list(ctx: &EffectCtx, b: &Buf) -> Vec<Bubble> {
     let pr = ctx.params;
     let n = pr.f("bubbleAmount").clamp(0.0, 10_000.0) as u32;
     let speed = pr.f("bubbleSpeed") as f32;
     let wamp = pr.f("wobbleAmplitude") as f32;
     let wfreq = pr.f("wobbleFrequency") as f32;
     let bsize = pr.f("bubbleSize").max(0.0) as f32;
-    let metal = pr.e("reflectionType") == 1;
-    let shading = pr.e("shadingType");
     let seed = ctx.seed.wrapping_mul(0x27d4);
     let (lw, lh) = (ctx.layer_size[0] as f32, ctx.layer_size[1] as f32);
     let s = b.scale as f32;
     let t = ctx.time as f32;
     let base = lw.min(lh) * 0.035 * bsize;
-    let list: Vec<Bubble> = (0..n)
+    (0..n)
         .map(|i| {
             let r = base * (0.5 + h(i, 1, seed));
             let travel = lh + 2.0 * r;
@@ -454,7 +562,14 @@ fn bubbles(ctx: &EffectCtx, mut b: Buf) -> Buf {
             let (sx, sy) = b.to_px([x0 as f64, y as f64]);
             Bubble { x: bx as f32, y: by as f32, r: r * s, sx: sx as f32, sy: sy as f32 }
         })
-        .collect();
+        .collect()
+}
+
+fn bubbles(ctx: &EffectCtx, mut b: Buf) -> Buf {
+    let pr = ctx.params;
+    let metal = pr.e("reflectionType") == 1;
+    let shading = pr.e("shadingType");
+    let list = bubble_list(ctx, &b);
     let src = b.img.clone();
     let mut out = Image::new(src.width, src.height);
     raster(
@@ -495,28 +610,20 @@ fn bubbles(ctx: &EffectCtx, mut b: Buf) -> Buf {
 
 // ------------------------------------------------------------------ CC Drizzle
 
-fn drizzle(ctx: &EffectCtx, mut b: Buf) -> Buf {
+/// CC Drizzle's live drops this frame (buffer px: centre x, y, ring radius, amplitude);
+/// `None` = no drops yet (the layer passes through).
+pub fn drizzle_drops(ctx: &EffectCtx, b: &Buf) -> Option<Vec<[f32; 4]>> {
     let pr = ctx.params;
     let rate = pr.f("dripRate").max(0.0);
     let life = pr.f("longevity").max(0.01);
-    let rippling = (pr.f("rippling") / 360.0).max(0.05) as f32;
-    let disp = pr.f("displacement") as f32;
-    let height = pr.f("rippleHeight") as f32 / 100.0;
     let spreading = pr.f("spreading") as f32;
-    let li = pr.f("light/lightIntensity") as f32 / 100.0;
-    let lc = pr.color("light/lightColor");
-    let lheight = pr.f("light/lightHeight") as f32 / 100.0;
-    let ldir = (pr.f("light/lightDirection") as f32).to_radians();
-    let ambient = pr.f("shading/ambient") as f32 / 100.0;
-    let diffuse = pr.f("shading/diffuse") as f32 / 100.0;
-    let specular = pr.f("shading/specular") as f32 / 100.0;
-    let rough = pr.f("shading/roughness").max(0.001) as f32;
+    let height = pr.f("rippleHeight") as f32 / 100.0;
     let seed = ctx.seed.wrapping_mul(0x165667b1);
     let t = ctx.time;
     let (lw, lh) = (ctx.layer_size[0] as f32, ctx.layer_size[1] as f32);
     let s = b.scale as f32;
     if rate <= 0.0 || t < 0.0 {
-        return b;
+        return None;
     }
     // Drops born at k / rate with hashed positions; alive while younger than the longevity.
     let k0 = ((t - life) * rate).floor().max(0.0) as u32;
@@ -531,13 +638,31 @@ fn drizzle(ctx: &EffectCtx, mut b: Buf) -> Buf {
         let (x, y) = b.to_px([(h(k, 1, seed) * lw) as f64, (h(k, 2, seed) * lh) as f64]);
         let radius = spreading * age * lh / 400.0 * s;
         let amp = height * (1.0 - age / life as f32) * (0.6 + 0.4 * h(k, 3, seed));
-        drops.push((x as f32, y as f32, radius, amp));
+        drops.push([x as f32, y as f32, radius, amp]);
     }
+    Some(drops)
+}
+
+fn drizzle(ctx: &EffectCtx, mut b: Buf) -> Buf {
+    let pr = ctx.params;
+    let Some(drops) = drizzle_drops(ctx, &b) else { return b };
+    let rippling = (pr.f("rippling") / 360.0).max(0.05) as f32;
+    let disp = pr.f("displacement") as f32;
+    let li = pr.f("light/lightIntensity") as f32 / 100.0;
+    let lc = pr.color("light/lightColor");
+    let lheight = pr.f("light/lightHeight") as f32 / 100.0;
+    let ldir = (pr.f("light/lightDirection") as f32).to_radians();
+    let ambient = pr.f("shading/ambient") as f32 / 100.0;
+    let diffuse = pr.f("shading/diffuse") as f32 / 100.0;
+    let specular = pr.f("shading/specular") as f32 / 100.0;
+    let rough = pr.f("shading/roughness").max(0.001) as f32;
+    let lh = ctx.layer_size[1] as f32;
+    let s = b.scale as f32;
     let wavelen = (lh * 0.04 * s).max(2.0) / rippling.clamp(0.25, 4.0);
     let width = wavelen * (1.0 + rippling * 2.0);
     let field = |x: f32, y: f32| -> f32 {
         let mut v = 0.0;
-        for &(dx, dy, r, a) in &drops {
+        for &[dx, dy, r, a] in &drops {
             let d = ((x - dx).powi(2) + (y - dy).powi(2)).sqrt();
             let u = (d - r) / width;
             if u.abs() < 1.0 {
@@ -586,7 +711,13 @@ fn drizzle(ctx: &EffectCtx, mut b: Buf) -> Buf {
 
 // ------------------------------------------------------------------ CC Star Burst
 
-fn star_burst(ctx: &EffectCtx, mut b: Buf) -> Buf {
+fn star_burst(ctx: &EffectCtx, b: Buf) -> Buf {
+    let mut plan = star_burst_plan(ctx, &b);
+    plan.resolve(&b.img);
+    plan.finish(b)
+}
+
+fn star_burst_plan(ctx: &EffectCtx, b: &Buf) -> SpritePlan {
     let pr = ctx.params;
     let scatter = pr.f("scatter") as f32;
     let speed = pr.f("speed") as f32;
@@ -600,17 +731,12 @@ fn star_burst(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let t = ctx.time as f32;
     let nx = (lw / spacing).ceil().max(1.0) as u32;
     let ny = (lh / spacing).ceil().max(1.0) as u32;
-    let src = b.img.clone();
     let (cx, cy) = (lw * 0.5, lh * 0.5);
-    let mut list: Vec<(f32, Sprite)> = (0..nx * ny)
+    let mut list: Vec<(f32, Sprite, Tint)> = (0..nx * ny)
         .into_par_iter()
-        .filter_map(|i| {
+        .map(|i| {
             let (gx, gy) = ((i % nx) as f32 * spacing + spacing * 0.5, (i / nx) as f32 * spacing + spacing * 0.5);
             let (sx, sy) = b.to_px([gx as f64, gy as f64]);
-            let (c, a) = unpremul(src.sample_bilinear(sx, sy));
-            if a <= 0.0 {
-                return None;
-            }
             // Depth cycles towards the viewer: z in [0, 1), perspective 1 / (1 - 0.9 z).
             let z = (h(i, 1, seed) + t * speed * 0.25 + phase).rem_euclid(1.0);
             let persp = 1.0 / (1.0 - 0.9 * z);
@@ -621,19 +747,13 @@ fn star_burst(ctx: &EffectCtx, mut b: Buf) -> Buf {
             let (bx, by) = b.to_px([x as f64, y as f64]);
             let r = spacing * 0.5 * size * persp * s;
             let fade = (z * 8.0).min(1.0) * ((1.0 - z) * 6.0).min(1.0);
-            Some((z, Sprite::new(bx as f32, by as f32, r, [c[0], c[1], c[2], a * fade], Shape::Disc)))
+            // The layer's colour at the grid point (none where it is clear).
+            (z, Sprite::new(bx as f32, by as f32, r, [0.0, 0.0, 0.0, fade], Shape::Disc), Tint::Source { x: sx, y: sy })
         })
         .collect();
     list.sort_by(|a, b| a.0.total_cmp(&b.0));
-    let sprites: Vec<Sprite> = list.into_iter().map(|(_, s)| s).collect();
-    let fx = splat(src.width, src.height, &sprites, Acc::Over);
-    b.img = fx;
-    if blend > 0.0 {
-        b.img.data.par_iter_mut().zip(src.data.par_iter()).for_each(|(o, s0)| {
-            *o = crate::util::lerp4(*o, *s0, blend);
-        });
-    }
-    b
+    let (sprites, tints) = list.into_iter().map(|(_, s, t)| (s, t)).unzip();
+    SpritePlan { sprites, tints, acc: Acc::Over, post: if blend > 0.0 { Post::Lerp(blend) } else { Post::Replace } }
 }
 
 // ------------------------------------------------------------------ particle engine
@@ -1067,13 +1187,16 @@ fn particle_systems2(ctx: &EffectCtx, mut b: Buf) -> Buf {
 
 static MERCURY_CACHE: SimCache<PState> = SimCache::new(6);
 
-struct Blob {
-    x: f32,
-    y: f32,
-    r: f32,
+/// A CC Mr. Mercury blob (buffer px).
+#[derive(Clone, Copy, Debug)]
+pub struct Blob {
+    pub x: f32,
+    pub y: f32,
+    pub r: f32,
 }
 
-fn mr_mercury(ctx: &EffectCtx, mut b: Buf) -> Buf {
+/// CC Mr. Mercury's blobs this frame, from its particle simulation (for buffer geometry `b`).
+pub fn mercury_blobs(ctx: &EffectCtx, b: &Buf) -> Vec<Blob> {
     let pr = ctx.params;
     let lh = ctx.layer_size[1] as f32;
     let unit = lh.max(1.0);
@@ -1097,10 +1220,8 @@ fn mr_mercury(ctx: &EffectCtx, mut b: Buf) -> Buf {
     };
     let st = simulate(&MERCURY_CACHE, params_key(ctx, &Buf { img: Image::new(0, 0), offset: [0.0; 2], scale: 1.0 }, 3), ctx.time, &phys);
     let (bs, ds) = (pr.f("blobBirthSize") as f32, pr.f("blobDeathSize") as f32);
-    let influence = pr.f("blobInfluence") as f32 / 100.0;
     let s = b.scale as f32;
-    let blobs: Vec<Blob> = st
-        .parts
+    st.parts
         .iter()
         .map(|q| {
             let u = (q.age / q.life.max(1e-4)).clamp(0.0, 1.0);
@@ -1109,7 +1230,14 @@ fn mr_mercury(ctx: &EffectCtx, mut b: Buf) -> Buf {
             Blob { x: bx as f32, y: by as f32, r: (size * unit * 0.08 * s).max(0.0) }
         })
         .filter(|q| q.r > 0.1)
-        .collect();
+        .collect()
+}
+
+fn mr_mercury(ctx: &EffectCtx, mut b: Buf) -> Buf {
+    let pr = ctx.params;
+    let blobs = mercury_blobs(ctx, &b);
+    let influence = pr.f("blobInfluence") as f32 / 100.0;
+    let s = b.scale as f32;
     let (w, hh) = (b.img.width, b.img.height);
     // Field and gradient accumulate additively: [f, gx, gy, _].
     let mut field = Image::new(w, hh);

@@ -5,7 +5,7 @@
 
 EffectCraft ships 306 effects with 3009 parameters in total, grouped into the same categories as the Effects & Presets panel. Every effect is our own implementation, written from public behaviour descriptions and standard image-processing literature. Parameter names, order, popup options, units, defaults and ranges follow the reference application so that projects, expressions and muscle memory carry over.
 
-- **GPU**: 196 effects also run on the GPU compositor with identical results.
+- **GPU**: 236 effects also run on the GPU compositor with identical results.
 - **32**: 306 effects process 32-bit float (HDR, overbright) pixels without clamping.
 - **Status**: 306 implemented in full, 0 partial (what is missing is listed).
 
@@ -15,14 +15,14 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 
 | Effect | Id | Params | GPU | 32 | Status |
 |---|---|---:|:-:|:-:|---|
-| 3D Channel Extract | `ec.3d.channelextract` | 6 |  | 32 | Implemented |
-| Cryptomatte | `ec.3d.cryptomatte` | 4 |  | 32 | Implemented |
-| Depth Matte | `ec.3d.depthmatte` | 3 |  | 32 | Implemented |
-| Depth of Field | `ec.3d.depthoffield` | 4 |  | 32 | Implemented |
-| EXtractoR | `ec.3d.extractor` | 8 |  | 32 | Implemented |
-| Fog 3D | `ec.3d.fog3d` | 8 |  | 32 | Implemented |
-| ID Matte | `ec.3d.idmatte` | 5 |  | 32 | Implemented |
-| IDentifier | `ec.3d.identifier` | 3 |  | 32 | Implemented |
+| 3D Channel Extract | `ec.3d.channelextract` | 6 | GPU | 32 | Implemented |
+| Cryptomatte | `ec.3d.cryptomatte` | 4 | GPU | 32 | Implemented |
+| Depth Matte | `ec.3d.depthmatte` | 3 | GPU | 32 | Implemented |
+| Depth of Field | `ec.3d.depthoffield` | 4 | GPU | 32 | Implemented |
+| EXtractoR | `ec.3d.extractor` | 8 | GPU | 32 | Implemented |
+| Fog 3D | `ec.3d.fog3d` | 8 | GPU | 32 | Implemented |
+| ID Matte | `ec.3d.idmatte` | 5 | GPU | 32 | Implemented |
+| IDentifier | `ec.3d.identifier` | 3 | GPU | 32 | Implemented |
 
 ## Audio
 
@@ -112,11 +112,11 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 | Levels | `ec.color.levels` | 36 | GPU | 32 | Implemented |
 | Levels (Individual Controls) | `ec.color.levelsic` | 27 | GPU | 32 | Implemented |
 | Lumetri Color | `ec.color.lumetri` | 66 | GPU | 32 | Implemented |
-| OCIO CDL Transform | `ec.color.ociocdl` | 12 |  | 32 | Implemented |
-| OCIO Color Space Transform | `ec.color.ociocolorspace` | 7 |  | 32 | Implemented |
-| OCIO Display Transform | `ec.color.ociodisplay` | 9 |  | 32 | Implemented |
-| OCIO File Transform | `ec.color.ociofile` | 4 |  | 32 | Implemented |
-| OCIO Look Transform | `ec.color.ociolook` | 6 |  | 32 | Implemented |
+| OCIO CDL Transform | `ec.color.ociocdl` | 12 | GPU | 32 | Implemented |
+| OCIO Color Space Transform | `ec.color.ociocolorspace` | 7 | GPU | 32 | Implemented |
+| OCIO Display Transform | `ec.color.ociodisplay` | 9 | GPU | 32 | Implemented |
+| OCIO File Transform | `ec.color.ociofile` | 4 | GPU | 32 | Implemented |
+| OCIO Look Transform | `ec.color.ociolook` | 6 | GPU | 32 | Implemented |
 | PS Arbitrary Map | `ec.color.psarbitrarymap` | 2 | GPU | 32 | Implemented |
 | Photo Filter | `ec.color.photofilter` | 4 | GPU | 32 | Implemented |
 | Selective Color | `ec.color.selectivecolor` | 38 | GPU | 32 | Implemented |
@@ -219,18 +219,18 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 
 | Effect | Id | Params | GPU | 32 | Status |
 |---|---|---:|:-:|:-:|---|
-| VR Blur | `ec.vr.blur` | 2 |  | 32 | Implemented |
-| VR Chromatic Aberrations | `ec.vr.chromaticaberrations` | 8 |  | 32 | Implemented |
-| VR Color Gradients | `ec.vr.colorgradients` | 19 |  | 32 | Implemented |
-| VR Converter | `ec.vr.converter` | 8 |  | 32 | Implemented |
-| VR De-Noise | `ec.vr.denoise` | 4 |  | 32 | Implemented |
-| VR Digital Glitch | `ec.vr.digitalglitch` | 21 |  | 32 | Implemented |
-| VR Fractal Noise | `ec.vr.fractalnoise` | 16 |  | 32 | Implemented |
-| VR Glow | `ec.vr.glow` | 7 |  | 32 | Implemented |
-| VR Plane to Sphere | `ec.vr.planetosphere` | 6 |  | 32 | Implemented |
-| VR Rotate Sphere | `ec.vr.rotatesphere` | 5 |  | 32 | Implemented |
-| VR Sharpen | `ec.vr.sharpen` | 2 |  | 32 | Implemented |
-| VR Sphere to Plane | `ec.vr.spheretoplane` | 5 |  | 32 | Implemented |
+| VR Blur | `ec.vr.blur` | 2 | GPU | 32 | Implemented |
+| VR Chromatic Aberrations | `ec.vr.chromaticaberrations` | 8 | GPU | 32 | Implemented |
+| VR Color Gradients | `ec.vr.colorgradients` | 19 | GPU | 32 | Implemented |
+| VR Converter | `ec.vr.converter` | 8 | GPU | 32 | Implemented |
+| VR De-Noise | `ec.vr.denoise` | 4 | GPU | 32 | Implemented |
+| VR Digital Glitch | `ec.vr.digitalglitch` | 21 | GPU | 32 | Implemented |
+| VR Fractal Noise | `ec.vr.fractalnoise` | 16 | GPU | 32 | Implemented |
+| VR Glow | `ec.vr.glow` | 7 | GPU | 32 | Implemented |
+| VR Plane to Sphere | `ec.vr.planetosphere` | 6 | GPU | 32 | Implemented |
+| VR Rotate Sphere | `ec.vr.rotatesphere` | 5 | GPU | 32 | Implemented |
+| VR Sharpen | `ec.vr.sharpen` | 2 | GPU | 32 | Implemented |
+| VR Sphere to Plane | `ec.vr.spheretoplane` | 5 | GPU | 32 | Implemented |
 
 ## Keying
 
@@ -318,23 +318,23 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 | Effect | Id | Params | GPU | 32 | Status |
 |---|---|---:|:-:|:-:|---|
 | CC Ball Action | `ec.sim.ccballaction` | 8 |  | 32 | Implemented |
-| CC Bubbles | `ec.sim.ccbubbles` | 7 |  | 32 | Implemented |
-| CC Drizzle | `ec.sim.ccdrizzle` | 14 |  | 32 | Implemented |
-| CC Hair | `ec.sim.cchair` | 20 |  | 32 | Implemented |
-| CC Mr. Mercury | `ec.sim.ccmrmercury` | 23 |  | 32 | Implemented |
+| CC Bubbles | `ec.sim.ccbubbles` | 7 | GPU | 32 | Implemented |
+| CC Drizzle | `ec.sim.ccdrizzle` | 14 | GPU | 32 | Implemented |
+| CC Hair | `ec.sim.cchair` | 20 | GPU | 32 | Implemented |
+| CC Mr. Mercury | `ec.sim.ccmrmercury` | 23 | GPU | 32 | Implemented |
 | CC Particle Systems II | `ec.sim.ccparticlesystems2` | 21 |  | 32 | Implemented |
 | CC Particle World | `ec.sim.ccparticleworld` | 30 |  | 32 | Implemented |
 | CC Pixel Polly | `ec.sim.ccpixelpolly` | 10 |  | 32 | Implemented |
-| CC Rainfall | `ec.sim.ccrainfall` | 14 |  | 32 | Implemented |
+| CC Rainfall | `ec.sim.ccrainfall` | 14 | GPU | 32 | Implemented |
 | CC Scatterize | `ec.sim.ccscatterize` | 4 |  | 32 | Implemented |
-| CC Snowfall | `ec.sim.ccsnowfall` | 19 |  | 32 | Implemented |
-| CC Star Burst | `ec.sim.ccstarburst` | 6 |  | 32 | Implemented |
-| Card Dance | `ec.sim.carddance` | 53 |  | 32 | Implemented |
-| Caustics | `ec.sim.caustics` | 28 |  | 32 | Implemented |
-| Foam | `ec.sim.foam` | 36 |  | 32 | Implemented |
+| CC Snowfall | `ec.sim.ccsnowfall` | 19 | GPU | 32 | Implemented |
+| CC Star Burst | `ec.sim.ccstarburst` | 6 | GPU | 32 | Implemented |
+| Card Dance | `ec.sim.carddance` | 53 | GPU | 32 | Implemented |
+| Caustics | `ec.sim.caustics` | 28 | GPU | 32 | Implemented |
+| Foam | `ec.sim.foam` | 36 | GPU | 32 | Implemented |
 | Particle Playground | `ec.sim.particleplayground` | 92 |  | 32 | Implemented |
-| Shatter | `ec.sim.shatter` | 60 |  | 32 | Implemented |
-| Wave World | `ec.sim.waveworld` | 35 |  | 32 | Implemented |
+| Shatter | `ec.sim.shatter` | 60 | GPU | 32 | Implemented |
+| Wave World | `ec.sim.waveworld` | 35 | GPU | 32 | Implemented |
 
 ## Stylize
 
@@ -401,7 +401,7 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 | CC Scale Wipe | `ec.transition.ccscalewipe` | 3 | GPU | 32 | Implemented |
 | CC Twister | `ec.transition.cctwister` | 5 | GPU | 32 | Implemented |
 | CC WarpoMatic | `ec.transition.ccwarpomatic` | 8 | GPU | 32 | Implemented |
-| Card Wipe | `ec.transition.cardwipe` | 44 |  | 32 | Implemented |
+| Card Wipe | `ec.transition.cardwipe` | 44 | GPU | 32 | Implemented |
 | Gradient Wipe | `ec.transition.gradientwipe` | 5 | GPU | 32 | Implemented |
 | Iris Wipe | `ec.transition.iriswipe` | 7 | GPU | 32 | Implemented |
 | Linear Wipe | `ec.transition.linearwipe` | 3 | GPU | 32 | Implemented |
@@ -412,10 +412,10 @@ Effects are addressed by id (`ec.<category>.<name>`) or display name in commands
 
 | Effect | Id | Params | GPU | 32 | Status |
 |---|---|---:|:-:|:-:|---|
-| Apply Color LUT | `ec.utility.applylut` | 0 |  | 32 | Implemented |
+| Apply Color LUT | `ec.utility.applylut` | 0 | GPU | 32 | Implemented |
 | CC Overbrights | `ec.utility.ccoverbrights` | 2 |  | 32 | Implemented |
 | Cineon Converter | `ec.utility.cineon` | 7 |  | 32 | Implemented |
-| Color Profile Converter | `ec.utility.colorprofileconverter` | 7 |  | 32 | Implemented |
+| Color Profile Converter | `ec.utility.colorprofileconverter` | 7 | GPU | 32 | Implemented |
 | Face Measurements | `ec.utility.facemeasurements` | 14 |  | 32 | Implemented |
 | Face Track Points | `ec.utility.facetrackpoints` | 26 |  | 32 | Implemented |
 | Grow Bounds | `ec.utility.growbounds` | 1 |  | 32 | Implemented |

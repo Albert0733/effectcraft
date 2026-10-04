@@ -36,7 +36,7 @@ cpal or muda. Everything in L0 to L4, the egui UI and the web app also build for
 | L3 | `expr` | The expression engine (JavaScript via boa) with the After Effects object model |
 | L3 | `export` | Render queue encoding: H.264, HEVC and AV1 MP4, ProRes, WebM (VP9 + alpha or AV1, Opus), PNG/JPEG/TIFF/EXR sequences, GIF, WAV/AIFF |
 | L3 | `gpu` | The GPU compositor and GPU effects on wgpu compute shaders (Metal, Vulkan, Direct3D 12, WebGPU), checked against the CPU renderer |
-| L3 | `interchange` | Premiere Pro interop through timeline interchange (FCP7 XML, FCPXML, OTIO, EDL via FilmCraft's `filmcraft-interchange`): sequences ↔ compositions (§6a) |
+| L3 | `interchange` | Premiere Pro interop through timeline interchange (FCP7 XML, FCPXML, OTIO, EDL, AAF, OMF via FilmCraft's `filmcraft-interchange`): sequences ↔ compositions (§6a) |
 | L3 | `lottie` | Lottie JSON / dotLottie import and export (layers, precomps, eased and spatial keyframes, shapes, masks, mattes) with a warnings list for what Lottie cannot express |
 | L3 | `plugin` | Effect plug-ins: loads sandboxed WebAssembly effect modules (plug-in API v1; the wasmi interpreter behind the `wasm` feature, on for native hosts) into the effect registry ([plugins.md](plugins.md)) |
 | L4 | `engine` | `Session`: project, branching undo history, editor state, the command registry and menus, the ScriptUI window model (`scriptui`) |
@@ -209,11 +209,15 @@ Preserve Transparency / blend kernels (a 3D track matte renders solo through the
 Environment Light Background layers draw their sky in a kernel (`adv_sky`, from
 `Renderer::sky_draw`) before the rest of the run, in Classic and Advanced 3D comps. Wireframe
 outlines draw on the GPU from the CPU's pixel list (`Renderer::wireframe_pixels`). GPU effects
-(`effects::GPU_EFFECTS`, 196 of them: blurs, colour correction, keying incl. Key Light, mattes,
+(`effects::GPU_EFFECTS`, 236 of them: blurs, colour correction, keying incl. Key Light, mattes,
 channel, stylize, distortion and warps (Warp, Bezier Warp, Smear, Reshape, CC Bend It, CC Page
 Turn, CC Bender, CC Blobbylize), Cartoon, bevels, shapes, the transitions (CC light family, CC
 transitions, Block Dissolve), perspective (Radial Shadow, CC Cylinder / Sphere / Spotlight /
-Environment, 3D Glasses), generators, noise, grain, text (Numbers, Timecode) and time; see
+Environment, 3D Glasses), generators, noise, grain, text (Numbers, Timecode), time, 3D Channel (aux channels as an
+extra texture), Immersive Video, colour management (colour programs from
+`effects::color_program`, LUTs in a storage buffer) and the simulations' render passes (the
+simulation stays on the CPU and hands its plan — sprites, pieces, blobs, grids — to a tiled
+rasteriser); see
 [effects.md](effects.md)) repeat the CPU effect's steps (padding, box radii, parameters, hashes)
 as kernels, in one module per family (`gpu::fx_*` with `shaders/fx_*.wgsl`); consecutive GPU
 effects run as one chain with one upload and one readback. Statistics that need the whole frame
@@ -462,7 +466,7 @@ pinned at the same git revision as the other `filmcraft-*` crates; pure Rust, bu
 to compositions and back:
 
 - **Import** (`file.importTimeline {path, format?, edlFrameRate?}`): Final Cut Pro 7 XML (`xmeml`,
-  Premiere's File ▸ Export ▸ Final Cut Pro XML), FCPXML 1.9–1.11, OpenTimelineIO and CMX 3600 EDL.
+  Premiere's File ▸ Export ▸ Final Cut Pro XML), FCPXML 1.9–1.11, OpenTimelineIO, CMX 3600 EDL, AAF and OMF.
   Sequences become comps (size, rate, duration, pixel aspect, start timecode, markers); video
   tracks become layers stacked by track (top track = top layer, later clips of a track above
   earlier ones); clips become footage layers with their in/out/start, speed and reverse (time
@@ -484,10 +488,10 @@ to compositions and back:
   document (`prerender: unsupported`, the default; `all` renders every visual layer; `none` leaves
   them out with a warning) and referenced as media. The menu keeps After Effects' label "Adobe
   Premiere Pro Project…", but the file written is Final Cut Pro XML (`.xml`), which Premiere Pro
-  imports with File ▸ Import; the dialog says so. FCPXML, OTIO and EDL are the other formats.
+  imports with File ▸ Import; the dialog says so. FCPXML, OTIO, EDL, AAF and OMF are the other formats.
 
-AAF and OMF import arrive with the FilmCraft revision that adds them to `filmcraft-interchange`
-(the pinned revision predates them).
+AAF and OMF (FilmCraft's structured-storage and Bento readers/writers) import and export too;
+media embedded in them is not extracted, and the AAF writer keeps neither speed nor nesting.
 
 ## 7. Performance of everyday operations
 

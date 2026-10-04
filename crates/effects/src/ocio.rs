@@ -865,6 +865,177 @@ fn profile_converter(ctx: &EffectCtx, mut b: Buf) -> Buf {
     b
 }
 
+// ---- Colour programs (the GPU compositor's colour-management kernels)
+
+/// One per-pixel step of a colour transform, in the order the CPU effect applies them (see
+/// [`color_program`]).
+#[derive(Clone, Debug)]
+pub enum ColorOp {
+    /// Transfer function, encoded → linear.
+    Decode(Tf),
+    /// Transfer function, linear → encoded.
+    Encode(Tf),
+    /// Linear-RGB matrix.
+    Matrix([[f32; 3]; 3]),
+    /// ASC CDL (forward or exact inverse; `clamp` = the v1.2 style).
+    Cdl { cdl: Cdl, clamp: bool, inverse: bool },
+    /// The Tone Mapped view's roll-off (or its inverse).
+    Tonemap { inverse: bool },
+    /// Color Profile Converter's perceptual gamut compression toward luminance `luma`.
+    Gamut([f64; 3]),
+    /// Negative channels to 0 (the saturation intent).
+    Max0,
+    /// A LUT (0 nearest, 1 trilinear, 2 tetrahedral) with an optional per-channel shaper, forward
+    /// or inverse (as [`FileXform::apply`]).
+    Lut { lut: Arc<Lut>, shaper: Option<Arc<[Vec<(f32, f32)>; 3]>>, interp: u32, inverse: bool },
+}
+
+/// How a colour program meets premultiplied pixels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Straight {
+    /// `unpremul` (colour 0 below alpha 1e-6); fully transparent pixels untouched (OCIO effects).
+    Unpremul,
+    /// Colour ÷ alpha; fully transparent pixels untouched (`Image::map_straight`, Apply Color LUT).
+    Divide,
+}
+
+fn xform_ops(x: &Xform, ops: &mut Vec<ColorOp>) {
+    if x.dec != Tf::Linear {
+        ops.push(ColorOp::Decode(x.dec));
+    }
+    if !x.ident {
+        ops.push(ColorOp::Matrix(x.m));
+    }
+    if x.enc != Tf::Linear {
+        ops.push(ColorOp::Encode(x.enc));
+    }
+}
+
+/// Effect `id`'s per-pixel transform as a list of [`ColorOp`]s that reproduces the CPU effect
+/// (empty = the layer passes through). `None` when it has no such form (a custom OCIO config,
+/// another effect).
+pub fn color_program(id: &str, ctx: &EffectCtx) -> Option<(Vec<ColorOp>, Straight)> {
+    let pr = ctx.params;
+    let mut ops = vec![];
+    match id {
+        "ec.utility.applylut" => {
+            if let Some(lut) = crate::utility::load_lut(pr.s("lut")) {
+                ops.push(ColorOp::Lut { lut, shaper: None, interp: 2, inverse: false });
+            }
+            return Some((ops, Straight::Divide));
+        }
+        "ec.color.ociocolorspace" => {
+            if pr.e("config") == 1 {
+                return custom_config(ctx).is_none().then_some((ops, Straight::Unpremul));
+            }
+            let (a, z) = (space_at(pr.e("source")), space_at(pr.e("destination")));
+            let (a, z) = if pr.e("direction") == 1 { (z, a) } else { (a, z) };
+            if a.name != z.name {
+                xform_ops(&Xform::new(a, z), &mut ops);
+            }
+        }
+        "ec.color.ociocdl" => {
+            let cdl = cdl_from_params(pr);
+            if cdl != Cdl::default() {
+                ops.push(ColorOp::Cdl { cdl, clamp: pr.e("style") == 0, inverse: pr.e("direction") == 1 });
+            }
+        }
+        "ec.color.ociodisplay" => {
+            if pr.e("config") == 1 {
+                return custom_config(ctx).is_none().then_some((ops, Straight::Unpremul));
+            }
+            let input = space_at(pr.e("source"));
+            let (display, view, inverse) = (pr.e("display") as usize, pr.e("view") as usize, pr.e("direction") == 1);
+            let (_, prims, tf) = DISPLAYS[display.min(DISPLAYS.len() - 1)];
+            if view != 2 && !input.raw {
+                let disp = Space { name: "display", prims: Some((prims, D65)), tf: Tf::Linear, raw: false };
+                let lin = Space { tf: Tf::Linear, ..*input };
+                if !inverse {
+                    ops.push(ColorOp::Decode(input.tf));
+                    xform_ops(&Xform::new(&lin, &disp), &mut ops);
+                    if view == 1 {
+                        ops.push(ColorOp::Tonemap { inverse: false });
+                    }
+                    ops.push(ColorOp::Encode(tf));
+                } else {
+                    ops.push(ColorOp::Decode(tf));
+                    if view == 1 {
+                        ops.push(ColorOp::Tonemap { inverse: true });
+                    }
+                    xform_ops(&Xform::new(&disp, &lin), &mut ops);
+                    ops.push(ColorOp::Encode(input.tf));
+                }
+            }
+        }
+        "ec.color.ociofile" => {
+            if let Some(x) = load_file(pr.s("file")) {
+                let interp = match pr.e("interpolation") {
+                    0 => 0,
+                    1 => 1,
+                    _ => 2,
+                };
+                let inverse = pr.e("direction") == 1;
+                match &*x {
+                    FileXform::Cdl(list) => {
+                        let id = pr.s("cccId");
+                        let cdl = list.iter().find(|(i, _)| !id.is_empty() && i == id).or(list.first()).map(|(_, c)| *c).unwrap_or_default();
+                        ops.push(ColorOp::Cdl { cdl, clamp: true, inverse });
+                    }
+                    FileXform::Lut { lut, shaper } => {
+                        ops.push(ColorOp::Lut { lut: Arc::new(lut.clone()), shaper: shaper.clone().map(Arc::new), interp, inverse });
+                    }
+                }
+            }
+        }
+        "ec.color.ociolook" => {
+            let mut list = parse_looks(pr.s("looks"));
+            let pick = pr.e("look");
+            if pick > 0
+                && let Some((_, c)) = looks().get(pick as usize - 1)
+            {
+                list.insert(0, (*c, false));
+            }
+            if !list.is_empty() {
+                let (src, dst) = (space_at(pr.e("source")), space_at(pr.e("destination")));
+                let inv = pr.e("direction") == 1;
+                let cct = space_by_name("ACEScct").expect("built-in");
+                let (a, z) = if inv { (dst, src) } else { (src, dst) };
+                if inv {
+                    list.reverse();
+                }
+                xform_ops(&Xform::new(a, cct), &mut ops);
+                for (cdl, li) in &list {
+                    ops.push(ColorOp::Cdl { cdl: *cdl, clamp: false, inverse: *li != inv });
+                }
+                xform_ops(&Xform::new(cct, z), &mut ops);
+            }
+        }
+        "ec.utility.colorprofileconverter" => {
+            let (inp, in_lin_default) = profile(ctx, pr.e("inputProfile"));
+            let (out, out_lin_default) = profile(ctx, pr.e("outputProfile"));
+            let in_lin = pr.b("linearizeInputProfile") || in_lin_default && pr.e("inputProfile") == 0;
+            let out_lin = pr.b("linearizeOutputProfile") || out_lin_default && pr.e("outputProfile") == 0;
+            let intent = pr.e("intent");
+            let dec = if in_lin { Tf::Linear } else { inp.tf };
+            let enc = if out_lin { Tf::Linear } else { out.tf };
+            let m = if intent == 3 { mul(&invert(&out.to_ref(false)), &inp.to_ref(false)) } else { matrix(&inp, &out) };
+            let identity = dec == enc && (0..3).all(|i| (0..3).all(|j| (m[i][j] - IDENTITY[i][j]).abs() < 1e-9));
+            if !identity {
+                ops.push(ColorOp::Decode(dec));
+                ops.push(ColorOp::Matrix(m.map(|r| r.map(|v| v as f32))));
+                match intent {
+                    0 => ops.push(ColorOp::Gamut(out.to_ref(true)[1])),
+                    2 => ops.push(ColorOp::Max0),
+                    _ => {}
+                }
+                ops.push(ColorOp::Encode(enc));
+            }
+        }
+        _ => return None,
+    }
+    Some((ops, Straight::Unpremul))
+}
+
 // ---- Color Stabilizer
 
 /// Mean straight colour of a square (half-size `r` layer pixels) around layer point `pt`.

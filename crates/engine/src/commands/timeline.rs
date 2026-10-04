@@ -17,7 +17,7 @@ use crate::{EngineError, Result, Session, cmd};
 fn format_p(p: &Value, cmd: &str) -> Result<Option<TimelineFormat>> {
     match str_p(p, "format") {
         None | Some("") | Some("auto") => Ok(None),
-        Some(f) => TimelineFormat::parse(f).map(Some).ok_or_else(|| bad(cmd, format!("unknown format `{f}` (xml, fcpxml, otio, edl)"))),
+        Some(f) => TimelineFormat::parse(f).map(Some).ok_or_else(|| bad(cmd, format!("unknown format `{f}` (xml, fcpxml, otio, edl, aaf, omf)"))),
     }
 }
 
@@ -210,7 +210,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Adobe Premiere Pro Project...",
             ["File", "Import"],
             None,
-            "{path (.xml Final Cut Pro XML from Premiere Pro or .fcpxml .otio .edl), format?: auto|xml|fcpxml|otio|edl, edlFrameRate?: number}",
+            "{path (.xml Final Cut Pro XML from Premiere Pro or .fcpxml .otio .edl .aaf .omf), format?: auto|xml|fcpxml|otio|edl|aaf|omf, edlFrameRate?: number}",
             always,
             import_timeline
         ),
@@ -219,7 +219,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Adobe Premiere Pro Project...",
             ["File", "Export"],
             None,
-            "{comp?, path (Final Cut Pro XML .xml for Premiere Pro or .fcpxml .otio .edl), format?: xml|fcpxml|otio|edl, prerender?: none|unsupported|all, precomps?: nest|prerender}",
+            "{comp?, path (Final Cut Pro XML .xml for Premiere Pro or .fcpxml .otio .edl .aaf .omf), format?: xml|fcpxml|otio|edl|aaf|omf, prerender?: none|unsupported|all, precomps?: nest|prerender}",
             has_comp,
             export_timeline
         ),

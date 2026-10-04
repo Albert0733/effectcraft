@@ -167,7 +167,9 @@ fn compositing_matte_blend_adjustment_3d_and_alpha_renders() {
     assert_eq!(reference["width"], 160);
     let refa = alpha_frame(&mut qa, stage.clone());
     assert!(px(&refa, 2, 2)[3] < 40 && px(&refa, 50, 45)[3] == 255, "render_frame transparent keeps alpha: {:?} {:?}", px(&refa, 2, 2), px(&refa, 50, 45));
-    for (path, decodes_alpha) in [(mov, true), (webm, false)] {
+    // ProRes 4444 carries alpha in the frame; WebM VP9 as a second VP9 stream in BlockAdditions
+    // (AlphaMode 1), which FilmCraft's Matroska reader decodes into the frame's alpha plane.
+    for path in [mov, webm] {
         let r = qa.exec("file.import", json!({"paths": [path]}));
         assert_eq!(r["errors"], json!([]));
         assert_eq!(r["unlabeledAlpha"], r["items"], "{path}: the importer sees an alpha channel");
@@ -176,12 +178,8 @@ fn compositing_matte_blend_adjustment_3d_and_alpha_renders() {
         // The opaque card decodes to the stage's colours (lossy codecs, so loosely).
         let (got, want) = (px(&f, 50, 45), px(&refa, 50, 45));
         assert!((0..3).all(|c| got[c].abs_diff(want[c]) < 12), "{path} decodes to the stage: {got:?} vs {want:?}");
-        if decodes_alpha {
-            assert!(mean_diff(&qa.frame(Some(c.clone()), 0.0), &qa.frame(Some(stage.clone()), 0.0)) < 8.0, "{path} composites like the stage");
-            assert!(px(&f, 2, 2)[3] < 40 && px(&f, 50, 45)[3] > 250, "{path}: transparent corners, opaque card");
-        }
-        // (WebM: FilmCraft's Matroska reader flags VP9 alpha but does not decode its
-        // BlockAdditional alpha stream yet, so the frames come back opaque.)
+        assert!(mean_diff(&qa.frame(Some(c.clone()), 0.0), &qa.frame(Some(stage.clone()), 0.0)) < 8.0, "{path} composites like the stage");
+        assert!(px(&f, 2, 2)[3] < 40 && px(&f, 50, 45)[3] > 250, "{path}: transparent corners, opaque card: {:?} {:?}", px(&f, 2, 2), px(&f, 50, 45));
     }
     let _ = main;
 }

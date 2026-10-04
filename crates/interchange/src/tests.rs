@@ -311,6 +311,32 @@ fn imports_fcp7_xml_fcpxml_and_otio() {
 }
 
 #[test]
+fn imports_aaf_and_omf() {
+    let (doc, main) = edit();
+    for fmt in [fc::Format::Aaf, fc::Format::Omf] {
+        let (bytes, _) = fc::export(&doc, main, fmt, &Default::default()).unwrap();
+        let name = format!("Main.{}", fmt.extension());
+        assert_eq!(TimelineFormat::detect(&bytes, Some(&name)).map(|f| f.fc()), Some(fmt));
+        let (p, r) = import_doc(&bytes, &name, &mut probe);
+        let c = p.comp(r.comps[0]).unwrap();
+        if fmt == fc::Format::Aaf {
+            assert_eq!((c.width, c.height), (W, H));
+        }
+        // Audio: an audio-only layer for the A1 clip (OMF carries the audio tracks only).
+        let au = c.layers.iter().find(|l| !l.switches.video && l.switches.audio).expect("audio layer");
+        assert!(near(au.in_point, Tick::ZERO) && near(au.out_point, t(3.0)));
+        if fmt == fc::Format::Aaf {
+            // The dissolve's clips overlap over the transition, the incoming one on top.
+            let a = layer(c, "a.png");
+            assert!(near(a.out_point, t(2.4)), "{}", a.out_point.seconds());
+            let b = c.layers.iter().find(|l| near(l.in_point, t(1.6))).expect("incoming clip");
+            assert!(c.index_of(b.id) < c.index_of(a.id));
+            assert_eq!(b.transform().unwrap().get("opacity").unwrap().keys.len(), 2);
+        }
+    }
+}
+
+#[test]
 fn missing_media_become_placeholders() {
     let (doc, main) = edit();
     let (bytes, _) = fc::export(&doc, main, fc::Format::Fcp7Xml, &Default::default()).unwrap();

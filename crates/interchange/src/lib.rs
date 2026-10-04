@@ -5,7 +5,8 @@
 //!   File ▸ Import; the default for export;
 //! - **FCPXML** 1.9–1.11 (`.fcpxml`);
 //! - **OpenTimelineIO** (`.otio`);
-//! - **CMX 3600 EDL** (`.edl`).
+//! - **CMX 3600 EDL** (`.edl`);
+//! - **AAF** (`.aaf`) and **OMF** (`.omf`) (embedded audio is not extracted).
 //!
 //! Parsing and writing is FilmCraft's `filmcraft-interchange` (our first-party sibling project);
 //! this crate maps its timeline model to compositions and back:
@@ -58,10 +59,15 @@ pub enum TimelineFormat {
     Otio,
     /// CMX 3600 edit decision list.
     Edl,
+    /// Advanced Authoring Format (AAF Edit Protocol), as Premiere Pro exports for audio post.
+    Aaf,
+    /// OMF Interchange 2.0.
+    Omf,
 }
 
 impl TimelineFormat {
-    pub const ALL: [TimelineFormat; 4] = [TimelineFormat::Fcp7Xml, TimelineFormat::Fcpxml, TimelineFormat::Otio, TimelineFormat::Edl];
+    pub const ALL: [TimelineFormat; 6] =
+        [TimelineFormat::Fcp7Xml, TimelineFormat::Fcpxml, TimelineFormat::Otio, TimelineFormat::Edl, TimelineFormat::Aaf, TimelineFormat::Omf];
 
     /// Id used by commands (`xml`, `fcpxml`, `otio`, `edl`).
     pub fn id(self) -> &'static str {
@@ -70,6 +76,8 @@ impl TimelineFormat {
             TimelineFormat::Fcpxml => "fcpxml",
             TimelineFormat::Otio => "otio",
             TimelineFormat::Edl => "edl",
+            TimelineFormat::Aaf => "aaf",
+            TimelineFormat::Omf => "omf",
         }
     }
 
@@ -79,6 +87,8 @@ impl TimelineFormat {
             TimelineFormat::Fcpxml => "FCPXML",
             TimelineFormat::Otio => "OpenTimelineIO",
             TimelineFormat::Edl => "CMX 3600 EDL",
+            TimelineFormat::Aaf => "AAF",
+            TimelineFormat::Omf => "OMF",
         }
     }
 
@@ -94,6 +104,8 @@ impl TimelineFormat {
             "fcpxml" | "fcpxmld" | "fcpx" => Some(TimelineFormat::Fcpxml),
             "otio" | "opentimelineio" => Some(TimelineFormat::Otio),
             "edl" | "cmx3600" | "cmx" => Some(TimelineFormat::Edl),
+            "aaf" => Some(TimelineFormat::Aaf),
+            "omf" | "omfi" => Some(TimelineFormat::Omf),
             _ => None,
         }
     }
@@ -119,6 +131,8 @@ impl TimelineFormat {
             TimelineFormat::Fcpxml => filmcraft_interchange::Format::Fcpxml,
             TimelineFormat::Otio => filmcraft_interchange::Format::Otio,
             TimelineFormat::Edl => filmcraft_interchange::Format::Edl,
+            TimelineFormat::Aaf => filmcraft_interchange::Format::Aaf,
+            TimelineFormat::Omf => filmcraft_interchange::Format::Omf,
         }
     }
 
@@ -128,6 +142,8 @@ impl TimelineFormat {
             filmcraft_interchange::Format::Fcpxml => TimelineFormat::Fcpxml,
             filmcraft_interchange::Format::Otio => TimelineFormat::Otio,
             filmcraft_interchange::Format::Edl => TimelineFormat::Edl,
+            filmcraft_interchange::Format::Aaf => TimelineFormat::Aaf,
+            filmcraft_interchange::Format::Omf => TimelineFormat::Omf,
         }
     }
 }

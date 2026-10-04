@@ -98,6 +98,13 @@ pub use textfx::{TextLayer, text_layer};
 pub use time_fx::{PixelMotion, TimewarpPlan, TwStep, posterized_time, time_frames, timewarp_crop, timewarp_plan};
 // effectcraft-gpu fx_tone.
 pub use ocio::color_stabilizer_maps;
+// GPU effects, part B (3D Channel, Immersive Video, colour management, simulation render passes).
+pub use channel3d::{CRYPTO_LAYERS, id_color, selection_hashes};
+pub use ocio::{ColorOp, Straight, Tf, color_program};
+pub use sim::{Acc, Blob, Bubble, Post, Shape, Sprite, SpritePlan, Tint, bubble_list, drizzle_drops, mercury_blobs, sprite_plan};
+pub use sim2::{CausticsSetup, Piece, PiecePlan, PieceTex, WavePlan, Waves, caustics_setup, piece_plan, wave_world_plan};
+pub use utility::{Lut, load_lut};
+pub use vr::{equi_dir as vr_equi_dir, rotation as vr_rotation};
 
 /// Effect categories in Effects & Presets order.
 pub const CATEGORIES: &[&str] = &[
@@ -932,6 +939,50 @@ pub const GPU_EFFECTS: &[&str] = &[
     "ec.perspective.bevelalpha",
     "ec.perspective.beveledges",
     "ec.obsolete.gaussianlegacy",
+    // GPU effects, part B: 3D Channel.
+    "ec.3d.channelextract",
+    "ec.3d.cryptomatte",
+    "ec.3d.depthmatte",
+    "ec.3d.depthoffield",
+    "ec.3d.extractor",
+    "ec.3d.fog3d",
+    "ec.3d.idmatte",
+    "ec.3d.identifier",
+    // Colour management.
+    "ec.utility.applylut",
+    "ec.color.ociocdl",
+    "ec.color.ociocolorspace",
+    "ec.color.ociodisplay",
+    "ec.color.ociofile",
+    "ec.color.ociolook",
+    "ec.utility.colorprofileconverter",
+    // Immersive Video.
+    "ec.vr.blur",
+    "ec.vr.chromaticaberrations",
+    "ec.vr.colorgradients",
+    "ec.vr.converter",
+    "ec.vr.denoise",
+    "ec.vr.digitalglitch",
+    "ec.vr.fractalnoise",
+    "ec.vr.glow",
+    "ec.vr.planetosphere",
+    "ec.vr.rotatesphere",
+    "ec.vr.sharpen",
+    "ec.vr.spheretoplane",
+    // Simulation render passes.
+    "ec.sim.ccrainfall",
+    "ec.sim.ccsnowfall",
+    "ec.sim.ccstarburst",
+    "ec.sim.ccbubbles",
+    "ec.sim.ccdrizzle",
+    "ec.sim.cchair",
+    "ec.sim.ccmrmercury",
+    "ec.sim.caustics",
+    "ec.sim.waveworld",
+    "ec.sim.foam",
+    "ec.sim.shatter",
+    "ec.sim.carddance",
+    "ec.transition.cardwipe",
     // effectcraft-gpu fx_light (the CC light family)
     "ec.generate.cclightrays",
     "ec.generate.cclightburst",

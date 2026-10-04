@@ -53,7 +53,7 @@ fn plane_of(b: &Buf, idx: &[Option<usize>], ch: &[f32], fill: f32) -> Plane {
 }
 
 /// Distinct colour for an ID (hash → hue).
-fn id_color(id: f32) -> [f32; 3] {
+pub fn id_color(id: f32) -> [f32; 3] {
     let h = hash1(id.to_bits(), 0x1d, 0x5eed);
     let (r, g, b) = effectcraft_color::hsl_to_rgb(h, 0.75, 0.5);
     if id == 0.0 { [0.0; 3] } else { [r, g, b] }
