@@ -9,7 +9,7 @@ use effectcraft_project::{AlphaMode, Comp, Footage, FootageKind, ItemId, ItemKin
 use effectcraft_time::{FrameRate, Tick};
 use serde_json::{Value, json};
 
-use super::{CommandSpec, always, bad, f_p, has_comp, has_project_selection, str_p};
+use super::{CommandSpec, always, b_p, bad, f_p, has_comp, has_project_selection, str_p};
 use crate::{EngineError, Result, Session, cmd};
 
 fn has_footage_selection(s: &Session) -> std::result::Result<(), String> {
@@ -150,29 +150,88 @@ fn import_solid(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"item": id.0}))
 }
 
+/// File ▸ New Comp from Selection. Each selected item becomes a composition of its size, pixel
+/// aspect, frame rate and duration holding it as a layer; with `single`, one composition holds
+/// them all (first selected on top), with the settings of item `dimensionsFrom` (an index into
+/// the selection, default 0), as long as the longest item, or with `sequence` the layers one
+/// after another (Sequence Layers: `overlap`, `overlapDuration` seconds, `transition`).
+/// `duration`: seconds for stills (default: Settings ▸ Import ▸ Still Footage when it is a
+/// duration, else 10 s).
+/// `addToRenderQueue` queues the new compositions. One undo step.
 fn new_comp_from_selection(s: &mut Session, p: &Value) -> Result<Value> {
     let items: Vec<ItemId> = s.state.project_selection.iter().copied().filter(|i| s.project.item(*i).is_some_and(|x| !x.is_folder())).collect();
     if items.is_empty() {
         return Err(bad("file.newCompFromSelection", "select footage in the Project panel"));
     }
-    let mut made = vec![];
-    for item in items {
-        let it = s.project.item(item).ok_or(EngineError::NoComp)?.clone();
-        let (w, h) = it.dimensions().unwrap_or((1920, 1080));
-        let rate = it.frame_rate().unwrap_or(FrameRate::FPS_29_97);
-        let dur = it.duration().filter(|d| *d > Tick::ZERO).unwrap_or(Tick::from_seconds_f64(f_p(p, "duration").unwrap_or(10.0)));
-        let name = it.name.rsplit_once('.').map(|(a, _)| a.to_string()).unwrap_or(it.name.clone());
-        let c = Comp::new(w.max(1), h.max(1), rate, dur);
-        let cid = s.edit("New Comp from Selection", None, |proj, st| {
-            let cid = proj.add_item(&name, Label::Sandstone, None, ItemKind::Comp(c.into()));
-            st.project_selection = vec![cid];
-            Ok(cid)
-        })?;
-        s.open_comp(cid);
-        s.execute("layer.addItem", json!({"comp": cid.0, "item": item.0}))?;
-        made.push(cid.0);
+    let single = b_p(p, "single").unwrap_or(false) && items.len() > 1;
+    let from = p.get("dimensionsFrom").and_then(Value::as_u64).unwrap_or(0) as usize;
+    if single && from >= items.len() {
+        return Err(bad("file.newCompFromSelection", format!("`dimensionsFrom` must be below {}", items.len())));
     }
-    Ok(json!({"comps": made}))
+    let still = f_p(p, "duration")
+        .or((s.prefs.import.still_footage == "seconds").then_some(s.prefs.import.still_seconds))
+        .filter(|d| d.is_finite() && *d > 0.0)
+        .unwrap_or(10.0);
+    // Layer ▸ Keyframe Assistant ▸ Sequence Layers' parameters.
+    let sequence = b_p(p, "sequence").unwrap_or(false).then(|| {
+        json!({
+            "overlap": b_p(p, "overlap").unwrap_or(false),
+            "duration": f_p(p, "overlapDuration").unwrap_or(1.0),
+            "transition": str_p(p, "transition").unwrap_or("off"),
+        })
+    });
+    let queue = b_p(p, "addToRenderQueue").unwrap_or(false);
+    let proj = s.project.clone();
+    let duration = |i: ItemId| proj.item(i).and_then(|it| it.duration()).filter(|d| *d > Tick::ZERO).unwrap_or(Tick::from_seconds_f64(still));
+    let groups: Vec<Vec<ItemId>> = if single { vec![items.clone()] } else { items.iter().map(|i| vec![*i]).collect() };
+    super::app_more::grouped(s, "New Comp from Selection", |s| {
+        let mut made = vec![];
+        for g in groups {
+            let lead = proj.item(if single { g[from] } else { g[0] }).ok_or(EngineError::NoComp)?;
+            let (w, h) = lead.dimensions().unwrap_or((1920, 1080));
+            let rate = lead.frame_rate().unwrap_or(FrameRate::FPS_29_97);
+            let pixel_aspect = match &lead.kind {
+                ItemKind::Footage(f) => f.pixel_aspect,
+                ItemKind::Solid(so) => so.pixel_aspect,
+                ItemKind::Comp(c) => c.pixel_aspect,
+                ItemKind::Folder => 1.0,
+            };
+            let overlap =
+                sequence.as_ref().filter(|q| q["overlap"] == true).map_or(Tick::ZERO, |q| Tick::from_seconds_f64(q["duration"].as_f64().unwrap_or(1.0)));
+            let dur = match &sequence {
+                Some(_) if g.len() > 1 => g.iter().map(|i| duration(*i)).fold(Tick::ZERO, |a, d| a + d) - Tick(overlap.0 * (g.len() as i64 - 1)),
+                _ => g.iter().map(|i| duration(*i)).max().unwrap_or(Tick::from_seconds_f64(still)),
+            }
+            .max(rate.frame_duration());
+            let name = lead.name.rsplit_once('.').map(|(a, _)| a.to_string()).unwrap_or(lead.name.clone());
+            let c = Comp { pixel_aspect, ..Comp::new(w.max(1), h.max(1), rate, dur) };
+            let cid = s.edit("New Comp from Selection", None, |proj, st| {
+                let cid = proj.add_item(&name, Label::Sandstone, None, ItemKind::Comp(c.into()));
+                st.project_selection = vec![cid];
+                Ok(cid)
+            })?;
+            s.open_comp(cid);
+            // Added bottom first, so the first selected ends up on top.
+            let mut layers = vec![];
+            for item in g.iter().rev() {
+                layers.push(s.execute("layer.addItem", json!({"comp": cid.0, "item": item.0, "duration": still}))?["layer"].clone());
+            }
+            layers.reverse();
+            if let Some(q) = &sequence
+                && layers.len() > 1
+            {
+                let mut q = q.clone();
+                q["comp"] = json!(cid.0);
+                q["layers"] = json!(layers);
+                s.execute("layer.sequence", q)?;
+            }
+            if queue {
+                s.execute("renderQueue.add", json!({"comp": cid.0}))?;
+            }
+            made.push(cid.0);
+        }
+        Ok(json!({"comps": made}))
+    })
 }
 
 // ---------------------------------------------------------------- dependencies
@@ -834,7 +893,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "New Comp from Selection...",
             ["File"],
             Some("Cmd+Alt+\\"),
-            "{duration? (s, for stills)}",
+            "{duration? (s, for stills), single?: bool (one comp for all), dimensionsFrom?: index, sequence?: bool, overlap?: bool, overlapDuration? (s), transition?: off|dissolveFront|crossDissolve, addToRenderQueue?: bool} → {comps}",
             has_project_selection,
             new_comp_from_selection
         ),

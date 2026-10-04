@@ -246,8 +246,12 @@ fn add_item(s: &mut Session, p: &Value) -> Result<Value> {
     let (src, size, dur) = match &it.kind {
         ItemKind::Comp(c) => (LayerSource::Comp { item }, (c.width, c.height), Some(c.duration)),
         ItemKind::Footage(f) if f.kind == effectcraft_project::FootageKind::Still => {
-            // Settings ▸ Import ▸ Still Footage: length of the composition or a duration.
-            let d = (s.prefs.import.still_footage == "seconds").then(|| Tick::from_seconds_f64(s.prefs.import.still_seconds));
+            // `duration`, else Settings ▸ Import ▸ Still Footage: length of the composition or a
+            // duration.
+            let d = f_p(p, "duration")
+                .filter(|d| d.is_finite() && *d > 0.0)
+                .or((s.prefs.import.still_footage == "seconds").then_some(s.prefs.import.still_seconds))
+                .map(Tick::from_seconds_f64);
             (LayerSource::Footage { item }, (f.width, f.height), d)
         }
         ItemKind::Footage(f) if f.kind == effectcraft_project::FootageKind::Data => {
@@ -840,8 +844,7 @@ fn precompose(s: &mut Session, p: &Value) -> Result<Value> {
             _ => comp.duration,
         };
         let new = s.edit("Pre-compose", None, |proj, st| {
-            let mut inner = Comp::new(w, h, comp.frame_rate, dur);
-            inner.background = comp.background;
+            let mut inner = comp.nested_like(w, h, dur);
             let mut il = build::layer(proj, &inner, &layer.name, layer.source.clone(), (w, h), Some(dur));
             il.name = layer.name.clone();
             inner.layers.push(il);
@@ -865,8 +868,7 @@ fn precompose(s: &mut Session, p: &Value) -> Result<Value> {
     };
     let (offset, dur) = if adjust && span.1 > span.0 { (span.0, span.1 - span.0) } else { (Tick(0), comp.duration) };
     let new = s.edit("Pre-compose", None, |proj, st| {
-        let mut inner = Comp::new(comp.width, comp.height, comp.frame_rate, dur);
-        inner.background = comp.background;
+        let mut inner = comp.nested_like(comp.width, comp.height, dur);
         inner.layers = comp.layers.iter().filter(|l| ids.contains(&l.id)).cloned().collect();
         for l in &mut inner.layers {
             if l.parent.is_some_and(|p| !ids.contains(&p)) {
@@ -1240,7 +1242,7 @@ pub fn specs() -> Vec<CommandSpec> {
             has_layer_settings,
             layer_settings
         ),
-        cmd!("layer.addItem", "Add Footage to Comp", ["File"], Some("Cmd+/"), "{item: id|name, time?}", has_comp, add_item),
+        cmd!("layer.addItem", "Add Footage to Comp", ["File"], Some("Cmd+/"), "{item: id|name, time?, duration? (s, for a still)}", has_comp, add_item),
         cmd!("layer.select", "Select Layers", [], None, "{layers: [id|name|#n], add?, toggle?}", has_comp, select),
         cmd!("layer.selectNext", "Select Next Layer", [], Some("Cmd+ArrowDown"), "{add?}", has_comp, select_next),
         cmd!("layer.selectPrevious", "Select Previous Layer", [], Some("Cmd+ArrowUp"), "{add?}", has_comp, select_prev),

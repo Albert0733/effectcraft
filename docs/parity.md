@@ -383,6 +383,18 @@ Browser in the web app (landed in M13.10: browser storage and File System Access
   wrong signatures and versions, fuel exhaustion, traps and bit-identical output; script
   `Socket` validates ports, and ScriptUI resource strings accept trailing array commas.
 
+## Update: M3.12 Pre-compose and New Comp from Selection
+
+- **Pre-compose** makes the new composition with the original's settings (pixel aspect,
+  background, motion blur shutter / samples / switch, frame blending switch, 3D renderer); it
+  only kept the size, frame rate and background.
+- **File ▸ New Comp from Selection** is one undo step (it was two per item) and takes each
+  item's pixel aspect. With several items selected it opens After Effects' dialog: Single or
+  Multiple Compositions, Use Dimensions From, Still Duration (default: Settings ▸ Import ▸ Still
+  Footage), Add to Render Queue and Sequence Layers with Overlap, Duration and Transition
+  (`file.newCompFromSelection {single, dimensionsFrom, duration, addToRenderQueue, sequence,
+  overlap, overlapDuration, transition}`). `layer.addItem {duration}` sets a still's length.
+
 ## Update: M3.11 layer commands
 
 - **Lock**: locked layers can't be selected (a Timeline click, Select All, Ctrl+Up / Down step

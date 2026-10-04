@@ -342,6 +342,22 @@ impl Comp {
             essential: None,
         }
     }
+    /// A new, empty composition with this one's settings (frame rate, pixel aspect, background,
+    /// motion blur, frame blending and the 3D renderer), as Pre-compose makes.
+    pub fn nested_like(&self, width: u32, height: u32, duration: Tick) -> Comp {
+        Comp {
+            pixel_aspect: self.pixel_aspect,
+            background: self.background,
+            shutter_angle: self.shutter_angle,
+            shutter_phase: self.shutter_phase,
+            motion_blur_samples: self.motion_blur_samples,
+            motion_blur_adaptive_limit: self.motion_blur_adaptive_limit,
+            renderer: self.renderer,
+            enable_motion_blur: self.enable_motion_blur,
+            enable_frame_blending: self.enable_frame_blending,
+            ..Comp::new(width, height, self.frame_rate, duration)
+        }
+    }
     pub fn layer(&self, id: LayerId) -> Option<&Layer> {
         self.layers.iter().find(|l| l.id == id)
     }

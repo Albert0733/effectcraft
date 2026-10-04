@@ -560,6 +560,29 @@ mod tests {
     }
 
     #[test]
+    fn new_comp_from_selection_asks_when_several_items_are_selected() {
+        let (mut app, ctx) = app();
+        let a = app.session.execute("file.importSolid", json!({"name": "A", "width": 100, "height": 50})).unwrap();
+        let b = app.session.execute("file.importSolid", json!({"name": "B", "width": 300, "height": 50})).unwrap();
+        let ids: Vec<ItemId> = [a, b].iter().map(|r| ItemId(r["item"].as_u64().unwrap())).collect();
+        app.session.state.project_selection = vec![ids[0]];
+        // One item: made at once.
+        crate::menus::invoke(&mut app, &ctx, "file.newCompFromSelection", json!({})).unwrap();
+        assert!(app.dialog.is_none());
+        app.session.state.project_selection = ids.clone();
+        crate::menus::invoke(&mut app, &ctx, "file.newCompFromSelection", json!({})).unwrap();
+        assert_eq!((app.dialog, app.dialog_state.form.command.as_str()), (Some(Dialog::Form), "file.newCompFromSelection"));
+        frame(&mut app, &ctx);
+        for k in ["single", "dimensionsFrom", "duration", "addToRenderQueue", "sequence", "overlap", "overlapDuration", "transition"] {
+            assert!(app.auto.find(&format!("form.field.{k}")).is_some(), "{k}");
+        }
+        // Its parameters are ones the command accepts (checked as agents' calls are).
+        let comps = app.session.project.comps().count();
+        app.session.execute_checked("file.newCompFromSelection", app.dialog_state.form.params()).unwrap();
+        assert_eq!(app.session.project.comps().count(), comps + 1, "Single Composition is the default");
+    }
+
+    #[test]
     fn composition_settings_register_every_control_and_new_comp_remembers() {
         let (mut app, ctx) = app();
         open_new_comp(&mut app);

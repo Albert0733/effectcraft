@@ -671,3 +671,68 @@ fn duplicated_and_pasted_layers_keep_their_links() {
     let other = s.execute("edit.paste", json!({})).unwrap()[0].as_u64().unwrap();
     assert_eq!((layer(&s, other).parent, layer(&s, other).track_matte), (None, None));
 }
+
+#[test]
+fn precompose_takes_the_compositions_settings() {
+    let mut s = Session::default();
+    s.execute(
+        "comp.new",
+        json!({"name": "Main", "width": 640, "height": 360, "pixelAspect": 2.0, "shutterAngle": 90, "motionBlurSamples": 8, "renderer": "advanced3D", "background": [0.2, 0.3, 0.4]}),
+    )
+    .unwrap();
+    let a = solid(&mut s, "#ff0000");
+    let r = s.execute("layer.precompose", json!({"layers": [a], "name": "Inner"})).unwrap();
+    let inner = s.project.comp(effectcraft_project::ItemId(r["comp"].as_u64().unwrap())).unwrap();
+    assert_eq!((inner.pixel_aspect, inner.shutter_angle, inner.motion_blur_samples), (2.0, 90.0, 8));
+    assert_eq!((inner.renderer, inner.background), (effectcraft_project::Renderer::Advanced3D, [0.2, 0.3, 0.4]));
+}
+
+#[test]
+fn new_comp_from_selection_is_one_undo_step_with_the_dialog_options() {
+    let mut s = Session::default();
+    let still = |s: &mut Session, name: &str, w: u32, par: f64| {
+        let f = effectcraft_project::Footage {
+            kind: effectcraft_project::FootageKind::Still,
+            width: w,
+            height: 100,
+            pixel_aspect: par,
+            has_video: true,
+            ..Default::default()
+        };
+        std::sync::Arc::make_mut(&mut s.project).add_item(name, effectcraft_color::Label::None, None, ItemKind::Footage(f))
+    };
+    let a = still(&mut s, "a.png", 200, 1.0);
+    let b = still(&mut s, "b.png", 300, 2.0);
+    s.state.project_selection = vec![a, b];
+    // Multiple compositions (the default): one per item, its size and pixel aspect; one undo step.
+    let steps = s.history.undo.len();
+    let r = s.execute("file.newCompFromSelection", json!({"duration": 4})).unwrap();
+    let comps: Vec<u64> = r["comps"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap()).collect();
+    assert_eq!(comps.len(), 2);
+    let cb = s.project.comp(effectcraft_project::ItemId(comps[1])).unwrap();
+    assert_eq!((cb.width, cb.pixel_aspect, cb.duration.seconds()), (300, 2.0, 4.0));
+    assert_eq!(s.history.undo.len(), steps + 1);
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(s.project.comps().count(), 0);
+    // One composition holding both, sized like the second, sequenced with a 1 s overlap, queued.
+    s.state.project_selection = vec![a, b];
+    let r = s
+        .execute(
+            "file.newCompFromSelection",
+            json!({"single": true, "dimensionsFrom": 1, "duration": 3, "sequence": true, "overlap": true, "overlapDuration": 1, "addToRenderQueue": true}),
+        )
+        .unwrap();
+    let c = s.project.comp(effectcraft_project::ItemId(r["comps"][0].as_u64().unwrap())).unwrap();
+    assert_eq!((c.width, c.pixel_aspect, c.duration.seconds()), (300, 2.0, 5.0));
+    let names: Vec<&str> = c.layers.iter().map(|l| l.name.as_str()).collect();
+    assert_eq!(names, ["a.png", "b.png"], "first selected on top");
+    // Stills have no rate: the comp is 29.97 fps and the second layer starts on the frame nearest 2 s.
+    assert_eq!(c.layers[0].in_point.seconds(), 0.0);
+    assert!((c.layers[1].in_point.seconds() - 2.0).abs() < 1.0 / 29.97, "{}", c.layers[1].in_point.seconds());
+    assert_eq!(s.project.render_queue.len(), 1);
+    assert_eq!(s.history.undo.len(), steps + 1);
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(s.project.render_queue.is_empty() && s.project.comps().count() == 0);
+    s.state.project_selection = vec![a, b];
+    assert!(s.execute("file.newCompFromSelection", json!({"single": true, "dimensionsFrom": 2})).is_err());
+}

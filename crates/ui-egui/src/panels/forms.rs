@@ -280,6 +280,37 @@ pub fn open_form(app: &mut EffectcraftApp, id: &str, p: &Value) -> bool {
                 ],
             )
         }
+        // Several items selected: After Effects' New Composition from Selection dialog.
+        "file.newCompFromSelection"
+            if s.state.project_selection.len() > 1 && !has(p, &["single", "dimensionsFrom", "duration", "sequence", "addToRenderQueue"]) =>
+        {
+            let names: Vec<(String, Value)> =
+                s.state.project_selection.iter().enumerate().filter_map(|(i, id)| s.project.item(*id).map(|it| (it.name.clone(), json!(i)))).collect();
+            let names: Vec<(&str, Value)> = names.iter().map(|(n, v)| (n.as_str(), v.clone())).collect();
+            let still = if s.prefs.import.still_footage == "seconds" { s.prefs.import.still_seconds } else { 10.0 };
+            (
+                "New Composition from Selection".into(),
+                vec![
+                    Field::choice("single", "Create", &[("Single Composition", json!(true)), ("Multiple Compositions", json!(false))], 0),
+                    Field::choice("dimensionsFrom", "Use Dimensions From", &names, 0),
+                    Field::num("duration", "Still Duration (seconds)", still),
+                    Field::bool("addToRenderQueue", "Add to Render Queue", false),
+                    Field::bool("sequence", "Sequence Layers", false),
+                    Field::bool("overlap", "Overlap", false),
+                    Field::num("overlapDuration", "Duration (seconds)", 1.0),
+                    Field::choice(
+                        "transition",
+                        "Transition",
+                        &[
+                            ("Off", json!("off")),
+                            ("Dissolve Front Layer", json!("dissolveFront")),
+                            ("Cross Dissolve Front and Back Layers", json!("crossDissolve")),
+                        ],
+                        0,
+                    ),
+                ],
+            )
+        }
         "layer.sequence" if !has(p, &["overlap"]) => (
             "Sequence Layers".into(),
             vec![
