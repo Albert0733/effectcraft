@@ -207,7 +207,7 @@ pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(
             "file.importTimeline",
-            "Adobe Premiere Pro Project / Timeline Interchange...",
+            "Adobe Premiere Pro Project...",
             ["File", "Import"],
             None,
             "{path (.xml Final Cut Pro XML from Premiere Pro or .fcpxml .otio .edl), format?: auto|xml|fcpxml|otio|edl, edlFrameRate?: number}",
