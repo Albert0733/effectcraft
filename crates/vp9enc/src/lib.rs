@@ -18,6 +18,8 @@
 //! transforms, loop filter), so prediction never drifts; [`Vp9Encoder::reconstruction`] returns
 //! it.
 
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
+
 mod bool;
 mod lf;
 mod mc;
