@@ -131,7 +131,8 @@ impl Pipe {
                 (p[3] - a).abs() > 1e-5 || (0..3).any(|c| (p[c] - q(p[c], a)).abs() > 1e-5)
             });
             if let Some(i) = bad {
-                panic!(
+                debug_assert!(
+                    false,
                     "pixel ({}, {}) outside the quantised region {region:?} is not quantised: {:?}",
                     i as u32 % img.width,
                     i as u32 / img.width,

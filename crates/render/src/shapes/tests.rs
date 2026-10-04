@@ -314,7 +314,7 @@ fn shape_perf_repeater_60_copies_1080p() {
     }
     let ms = t0.elapsed().as_secs_f64() * 1000.0 / n as f64;
     println!("shape_perf: 60-copy repeater at 1920x1080: {ms:.2} ms/frame");
-    let ItemKind::Comp(comp) = &p.item(cid).unwrap().kind else { unreachable!() };
+    let ItemKind::Comp(comp) = &p.item(cid).unwrap().kind else { panic!("not a composition") };
     let layer = &comp.layers[0];
     let ctx = crate::eval::EvalCtx::new(&p, cid, comp, Tick::ZERO);
     let contents = layer.props.sub("contents").unwrap();

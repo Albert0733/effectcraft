@@ -507,9 +507,12 @@ impl GpuContext {
             .map_err(|e| format!("no device: {e}"))?;
         device.on_uncaptured_error(Arc::new(|e| {
             // Under test a validation error (a WGSL typo invalidates every kernel) fails loudly.
-            if cfg!(test) {
-                panic!("wgpu: {e}");
+            #[cfg(test)]
+            #[allow(clippy::panic)] // test builds only
+            {
+                panic!("wgpu: {e}")
             }
+            #[cfg(not(test))]
             log::error!("wgpu: {e}")
         }));
         GpuContext::new(&adapter, device, queue)

@@ -309,7 +309,7 @@ fn edits_invalidate_cached_layers() {
         (
             "solid colour",
             Box::new(|p, cid| {
-                let LayerSource::Solid { item } = p.comp(cid).unwrap().layers[2].source else { unreachable!() };
+                let LayerSource::Solid { item } = p.comp(cid).unwrap().layers[2].source else { panic!("not a solid layer") };
                 if let ItemKind::Solid(s) = &mut p.item_mut(item).unwrap().kind {
                     s.color = [0.9, 0.1, 0.1];
                 }

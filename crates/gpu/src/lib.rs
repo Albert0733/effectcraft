@@ -51,6 +51,8 @@
 //! skip readback entirely with [`Gpu::render_display`], which leaves an RGBA8 texture for
 //! egui-wgpu to draw.
 
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
+
 mod adv3d;
 mod bokeh;
 mod classic3d;
