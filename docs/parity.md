@@ -383,6 +383,17 @@ Browser in the web app (landed in M13.10: browser storage and File System Access
   wrong signatures and versions, fuel exhaustion, traps and bit-identical output; script
   `Socket` validates ports, and ScriptUI resource strings accept trailing array commas.
 
+## Update: M3.9 unsaved changes
+
+Closing a modified project asks first, as After Effects does: Quit and the window's close
+button, File ▸ New Project, Open Project, Open Recent, Close Project, the demo project and a Home
+template show Save / Don't Save / Cancel (Save asks for a path when the project is untitled, and
+cancelling that keeps the project open); File ▸ Revert asks to discard. The window title shows
+the project's path and `*` while it has unsaved changes. The modified mark now follows undo
+(undoing, jumping in the History panel or rolling back a batch to the saved state clears it),
+and edits that change nothing record no undo step. Agents' `engine.execute` / MCP calls are never
+asked; the control channel's `app.quit {force: true}` skips the prompt.
+
 ## Update: M13.25 Home template gallery, Simulate Output ▸ My Custom RGB
 
 **Home ▸ Templates** (UI-7; File ▸ New ▸ New Project from Template…): a gallery of eight

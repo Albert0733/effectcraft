@@ -17,7 +17,7 @@
 //! - `ui.playback {action: play|stop|toggle}`
 //! - `ui.screenshot {path?, panel?, id?}`: PNG of the window (or one panel / element)
 //! - `render.frame {comp?, time?, max_side?, path?, base64?}`: PNG of a comp frame rendered by the session
-//! - `ui.resize {width, height}` / `ui.focus` / `app.quit`
+//! - `ui.resize {width, height}` / `ui.focus` / `app.quit {force?}` (a modified project asks to save first unless `force`)
 //!
 //! The full reference with examples is `docs/control-protocol.md`.
 
@@ -436,6 +436,10 @@ pub fn handle(app: &mut EffectcraftApp, ctx: &egui::Context, req: &ControlReques
             ok(Value::Null)
         }
         "app.quit" => {
+            // A modified project asks to save first unless `force: true`.
+            if p.get("force").and_then(Value::as_bool).unwrap_or(false) {
+                app.dialog_state.unsaved.quitting = true;
+            }
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             ok(Value::Null)
         }

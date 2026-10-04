@@ -1047,6 +1047,25 @@ impl Project {
         }
         self.next_id = m;
     }
+    /// Whether `other` holds the same content (ids allocated but not used don't count). Shared
+    /// compositions compare by pointer first, so after a copy-on-write edit only the comps it
+    /// touched are compared field by field.
+    pub fn same_content(&self, other: &Project) -> bool {
+        let item_eq = |a: &Item, b: &Item| {
+            let kind = match (&a.kind, &b.kind) {
+                (ItemKind::Comp(x), ItemKind::Comp(y)) => Arc::ptr_eq(x, y) || x == y,
+                (x, y) => x == y,
+            };
+            kind && a.id == b.id && a.name == b.name && a.label == b.label && a.comment == b.comment && a.parent == b.parent && a.proxy == b.proxy
+        };
+        self.schema == other.schema
+            && self.settings == other.settings
+            && self.items.len() == other.items.len()
+            && self.items.iter().zip(&other.items).all(|((ka, a), (kb, b))| ka == kb && item_eq(a, b))
+            && self.render_queue == other.render_queue
+            && self.render_templates == other.render_templates
+            && self.render_prefs == other.render_prefs
+    }
     pub fn to_json(&self) -> String {
         serde_json::to_string_pretty(self).unwrap_or_default()
     }

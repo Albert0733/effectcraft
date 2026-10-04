@@ -59,7 +59,7 @@ fn save_to(s: &mut Session, path: &str) -> Result<Value> {
     let json = if crate::xml_project::is_xml_path(path) { crate::xml_project::to_xml(&json).map_err(EngineError::Other)? } else { json };
     s.services.write_file(path, json.as_bytes()).map_err(|e| EngineError::Other(format!("cannot write {path}: {e}")))?;
     s.path = Some(path.to_string());
-    s.saved_revision = s.revision;
+    s.mark_saved();
     s.note_project_path(path);
     s.toast(format!("Saved {path}"));
     Ok(json!({"path": path, "bytes": json.len()}))

@@ -112,7 +112,7 @@ fn apply(s: &mut Session, found: Vec<(ItemId, Found)>) -> Value {
         s.bump();
         if !dirty {
             // Only the disk changed: the project isn't modified.
-            s.saved_revision = s.revision;
+            s.mark_saved();
         }
         s.events.push(crate::Event::PurgeCaches);
     }
@@ -148,7 +148,7 @@ mod tests {
         let there = dir.join("there.png");
         std::fs::write(&there, b"x").unwrap();
         let mut s = session_with(&[there.to_str().unwrap(), "/nonexistent/ec/gone.png"]);
-        s.saved_revision = s.revision;
+        s.mark_saved();
         let r = s.execute("footage.check", json!({"wait": true})).unwrap();
         assert_eq!(r, json!({"checked": 2, "missing": 1, "probed": 0}));
         let missing: Vec<bool> = s

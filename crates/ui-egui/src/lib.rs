@@ -77,6 +77,8 @@ pub enum Dialog {
     LayerStyles,
     /// Edit ▸ Templates ▸ Render Settings… / Output Module….
     RenderTemplates,
+    /// Save changes before closing the project? (`panels::unsaved`).
+    UnsavedChanges,
 }
 
 /// Host hooks provided by the native app (file pickers etc.).
@@ -192,6 +194,8 @@ pub struct EffectcraftApp {
     pub(crate) home_thumbs: std::collections::HashMap<String, Option<egui::TextureHandle>>,
     /// The (project path, saved revision) whose thumbnail was stored last.
     pub(crate) home_thumb_saved: Option<(String, u64)>,
+    /// The window title last sent (project name, `*` while modified).
+    window_title: String,
     /// Home ▸ Templates: thumbnail textures by template id (None = not renderable).
     pub(crate) template_thumbs: std::collections::HashMap<String, Option<egui::TextureHandle>>,
     /// Home ▸ Templates: the gallery, and the user template files it was listed from.
@@ -244,6 +248,7 @@ impl EffectcraftApp {
             dock_rects: vec![],
             home_thumbs: Default::default(),
             home_thumb_saved: None,
+            window_title: String::new(),
             template_thumbs: Default::default(),
             template_list: None,
         }
@@ -1056,6 +1061,12 @@ impl EffectcraftApp {
         }
         self.apply_prefs(&ctx);
         self.handle_events(&ctx);
+        panels::unsaved::on_close_requested(self, &ctx);
+        let title = panels::unsaved::window_title(self);
+        if title != self.window_title {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            self.window_title = title;
+        }
         self.tick_autosave(&ctx);
         prefs_live::frame(self, &ctx);
         if let Some(rx) = self.command_inbox.take() {

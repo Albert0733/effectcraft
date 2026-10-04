@@ -46,6 +46,7 @@ pub mod templates;
 pub mod text_panels;
 pub mod timeline;
 pub mod tracker;
+pub mod unsaved;
 pub mod viewer;
 pub mod viewer_overlays;
 pub mod viewer_text;

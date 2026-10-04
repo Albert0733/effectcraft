@@ -531,7 +531,16 @@ What keeps it fast:
   app; inline on wasm32).
 - **Undo is a pointer swap.** History stores `Arc<Project>` snapshots and comps are `Arc`s, so
   undo and redo of any edit are constant time. An edit copies the comps it changes (a one-layer
-  edit in a 5,000-layer comp copies that comp: ~8 ms).
+  edit in a 5,000-layer comp copies that comp: ~8 ms). An edit that changes nothing (a value
+  set to what it already was) records no step: `Project::same_content` compares the comps the
+  edit left shared by pointer, so the check costs about as much as the copy.
+- **Modified follows undo.** The session keeps the snapshot it last opened or saved
+  (`Session::saved_project`); the project is unmodified whenever the current snapshot is that
+  one, so undoing (or jumping in the History panel, or rolling back a batch) to the saved state
+  clears the modified mark. The window title shows the project and `*` while it is modified, and
+  closing a modified project (Quit, the window's close button, New Project, Open, Open Recent,
+  Close Project, Revert, the demo project, a Home template) asks Save / Don't Save / Cancel first
+  (`ui-egui/src/panels/unsaved.rs`). Agents' `engine.execute` calls are never asked.
 
 Numbers (Apple Silicon, 14 cores, release build, best of 3–20 runs; the machine was shared with
 other builds, load average 150–220, so treat them as orders of magnitude). "Before" is the

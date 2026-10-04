@@ -134,7 +134,14 @@ build real projects through these interfaces; they are worked examples of everyt
   "control":"Title","value":"John Smith"}`); a command that targets an explicit `comp` runs even
   when the active comp would disable it (`essential.exportTemplate {"comp":"Lower Third", …}`).
 * **History**: Levels of Undo defaults to 32 (`prefs.set {"key":"general.undoLevels","value":99}`);
-  `history` lists branches and `history {"goto": id}` jumps between them.
+  `history` lists branches and `history {"goto": id}` jumps between them. A command that changes
+  nothing (a value set to what it already is) records no undo step. `get_state` reports `dirty`
+  (unsaved changes); it follows undo, so undoing back to the saved state clears it.
+* **Unsaved changes**: commands run through MCP / `engine.execute` never ask to save. In the
+  desktop app, `ui.menu.invoke` of a command that closes a modified project (`file.open`,
+  `file.newProject`, `file.closeProject`, `file.revert`…) and the window's close button show the
+  Save / Don't Save / Cancel prompt (`ui_click` on `dialog.unsaved.save` / `dontSave` / `cancel`;
+  `dialog.unsaved.revert` for Revert); the control channel's `app.quit {"force": true}` skips it.
 
 ### Motion tracking
 
