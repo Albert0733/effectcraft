@@ -725,3 +725,31 @@ fn text_style_runs_export_as_range_animators() {
     // Played back as an animator, it looks the same.
     compare_renders(&p, cid, &q, nc, 2.0 / 255.0);
 }
+
+#[test]
+fn extreme_enum_numbers_do_not_overflow() {
+    // Line cap / join / merge mode / text-selector enums are 1-based; a huge negative number
+    // (-1e308 rounds to i64::MIN) overflowed the `- 1`.
+    let path = format!("{}/tests/fixtures/shapes-gradient.json", env!("CARGO_MANIFEST_DIR"));
+    let mut doc: Json = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    let mut hits = 0;
+    fn patch(j: &mut Json, hits: &mut usize) {
+        match j {
+            Json::Object(o) => {
+                for k in ["lc", "lj", "mm"] {
+                    if o.contains_key(k) {
+                        o.insert(k.into(), json!(-1e308));
+                        *hits += 1;
+                    }
+                }
+                o.values_mut().for_each(|v| patch(v, hits));
+            }
+            Json::Array(a) => a.iter_mut().for_each(|v| patch(v, hits)),
+            _ => {}
+        }
+    }
+    patch(&mut doc, &mut hits);
+    assert!(hits > 0);
+    let mut q = Project::default();
+    import(&mut q, doc.to_string().as_bytes(), "x", "", &mut |_| None).unwrap();
+}

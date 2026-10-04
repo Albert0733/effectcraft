@@ -359,10 +359,10 @@ fn import_blend(j: &Json, g: &mut PropGroup) {
 fn import_stroke(im: &Im, j: &Json, g: &mut PropGroup) {
     set(im, g, "width", j.get("w"), &anim::to_scalar);
     if let Some(lc) = int(j, "lc") {
-        set_enum(g, "cap", (lc - 1).clamp(0, 2) as u32);
+        set_enum(g, "cap", lc.saturating_sub(1).clamp(0, 2) as u32);
     }
     if let Some(lj) = int(j, "lj") {
-        set_enum(g, "join", (lj - 1).clamp(0, 2) as u32);
+        set_enum(g, "join", lj.saturating_sub(1).clamp(0, 2) as u32);
     }
     if let Some(p) = g.get_mut("miter") {
         if let Some(ml) = j.get("ml").and_then(Json::as_f64) {
@@ -541,7 +541,7 @@ pub(crate) fn import_items(im: &mut Im, ids: &mut Ids, items: &[Json]) -> Vec<Pr
                     "op" => {
                         set(im, &mut g, "amount", j.get("a"), &anim::to_scalar);
                         if let Some(lj) = int(j, "lj") {
-                            set_enum(&mut g, "join", (lj - 1).clamp(0, 2) as u32);
+                            set_enum(&mut g, "join", lj.saturating_sub(1).clamp(0, 2) as u32);
                         }
                         if let (Some(ml), Some(p)) = (j.get("ml").and_then(Json::as_f64), g.get_mut("miter")) {
                             p.value = Value::Scalar(ml);
@@ -561,7 +561,7 @@ pub(crate) fn import_items(im: &mut Im, ids: &mut Ids, items: &[Json]) -> Vec<Pr
                     }
                     _ => {
                         if let Some(m) = int(j, "mm") {
-                            set_enum(&mut g, "mode", (m - 1).clamp(0, 4) as u32);
+                            set_enum(&mut g, "mode", m.saturating_sub(1).clamp(0, 4) as u32);
                         }
                     }
                 }

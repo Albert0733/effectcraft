@@ -363,7 +363,7 @@ pub(crate) fn import_text(im: &mut Im, ids: &mut Ids, t: &Json, tg: &mut PropGro
                 let mut en = |m: &str, key: &str, max: u32| {
                     let v = s.get(key).and_then(|v| if v.is_object() { v.get("k") } else { Some(v) }).and_then(anim::nums).and_then(|n| n.first().copied());
                     if let (Some(v), Some(p)) = (v, adv.get_mut(m)) {
-                        p.value = Value::Enum(((v.round() as i64 - 1).max(0) as u32).min(max));
+                        p.value = Value::Enum((((v.round() as i64).saturating_sub(1)).max(0) as u32).min(max));
                     }
                 };
                 en("units", "r", 1);
