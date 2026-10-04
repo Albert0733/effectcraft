@@ -13,6 +13,8 @@
 //! (PNG, JPEG, GIF, WebP, TIFF, BMP, OpenEXR); Photoshop documents (merged image or one layer) come
 //! from `effectcraft-psd` and SVG from `effectcraft-svg` (rasterised at any scale).
 
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
+
 mod convert;
 pub mod exr_channels;
 mod layered;
