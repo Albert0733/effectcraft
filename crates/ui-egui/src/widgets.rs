@@ -83,6 +83,18 @@ pub fn swatch(ui: &mut Ui, rect: Rect, c: [f32; 4], id: egui::Id, t: &Tokens) ->
     resp
 }
 
+/// A colour button with egui's picker for a colour stored as sRGB components (0–1), as the
+/// project stores colours (`color_edit_button_rgb` reads linear values and shows them lighter).
+/// The value is only rewritten when the user picks a colour.
+pub fn srgb_color_button(ui: &mut Ui, c: &mut [f32; 3]) -> Response {
+    let mut u = c.map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8);
+    let r = ui.color_edit_button_srgb(&mut u);
+    if r.changed() {
+        *c = u.map(|v| v as f32 / 255.0);
+    }
+    r
+}
+
 /// A twirl-down triangle; returns clicked.
 pub fn twirl(ui: &mut Ui, rect: Rect, open: bool, id: egui::Id, t: &Tokens) -> Response {
     let resp = ui.interact(rect, id, Sense::click());

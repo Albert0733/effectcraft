@@ -492,3 +492,53 @@ fn frontend_commands_emit_events_and_stubs_are_disabled() {
         assert!(matches!(s.execute(id, json!({})), Err(EngineError::Disabled(..))), "{id}");
     }
 }
+
+fn solid_of(s: &Session, l: u64) -> (u64, effectcraft_project::Solid, String) {
+    let effectcraft_project::LayerSource::Solid { item } = layer(s, l).source else { panic!("not a solid") };
+    let it = s.project.item(item).unwrap();
+    let ItemKind::Solid(so) = &it.kind else { panic!("not a solid item") };
+    (item.0, so.clone(), it.name.clone())
+}
+
+#[test]
+fn layer_settings_edit_the_solid_or_give_the_layer_its_own() {
+    let mut s = comp();
+    let a = solid(&mut s, "#ff0000");
+    s.execute("layer.select", json!({"layers": [a]})).unwrap();
+    let b = s.execute("edit.duplicate", json!({})).unwrap()[0].as_u64().unwrap();
+    assert_eq!(solid_of(&s, a).0, solid_of(&s, b).0, "the duplicate shares the solid");
+    // Nothing given: nothing recorded.
+    let steps = s.history.undo.len();
+    s.execute("layer.settings", json!({"layer": b})).unwrap();
+    assert_eq!(s.history.undo.len(), steps);
+    // Affect all off: the duplicate gets its own solid; the original keeps its colour.
+    let r = s.execute("layer.settings", json!({"layer": b, "color": "#0000ff", "name": "Blue", "affectAll": false})).unwrap();
+    let (bi, bs, bn) = solid_of(&s, b);
+    assert_eq!(r, json!({"layer": b, "solid": bi}));
+    assert_ne!(bi, solid_of(&s, a).0);
+    assert_eq!((bs.color, bn.as_str(), layer(&s, b).name.as_str()), ([0.0, 0.0, 1.0], "Blue", "Blue"));
+    assert_eq!(solid_of(&s, a).1.color, [1.0, 0.0, 0.0]);
+    assert_eq!(
+        s.project.item(effectcraft_project::ItemId(bi)).unwrap().parent,
+        s.project.item(effectcraft_project::ItemId(solid_of(&s, a).0)).unwrap().parent,
+        "same folder"
+    );
+    // Affect all (the default) changes the shared solid in place; size and pixel aspect too.
+    s.execute("layer.select", json!({"layers": [a]})).unwrap();
+    let c = s.execute("edit.duplicate", json!({})).unwrap()[0].as_u64().unwrap();
+    s.execute("layer.settings", json!({"layer": a, "width": 320, "height": 90, "pixelAspect": 2.0})).unwrap();
+    assert_eq!(solid_of(&s, a).0, solid_of(&s, c).0);
+    let so = solid_of(&s, c).1;
+    assert_eq!((so.width, so.height, so.pixel_aspect), (320, 90, 2.0));
+    assert!(s.execute("layer.settings", json!({"layer": a, "pixelAspect": 0})).is_err());
+    // One undo step each.
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(solid_of(&s, a).1.width, 200);
+    // A new solid takes a pixel aspect too.
+    let d = s.execute("layer.newSolid", json!({"color": "#00ff00", "pixelAspect": 0.9091})).unwrap()["layer"].as_u64().unwrap();
+    assert_eq!(solid_of(&s, d).1.pixel_aspect, 0.9091);
+    // Text and shape layers have no settings.
+    assert!(s.is_enabled("layer.settings"));
+    s.execute("layer.newText", json!({"text": "T"})).unwrap();
+    assert!(!s.is_enabled("layer.settings"));
+}

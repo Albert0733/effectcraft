@@ -1,10 +1,12 @@
 //! Composition Settings dialog (also New Composition), laid out like After Effects': name, then
-//! Basic / Advanced / 3D Renderer tabs, Preview checkbox, Cancel / OK.
+//! Basic / Advanced / 3D Renderer tabs, Cancel / OK. Every control registers an automation id
+//! (`dialog.comp.<field>`).
 
 use effectcraft_engine::time::{FrameRate, format_timecode_frames, parse_timecode};
 use egui::{Color32, vec2};
 use serde_json::json;
 
+use crate::automation::Registry;
 use crate::theme::Tokens;
 
 /// AE's composition presets: (name, width, height, pixel aspect, fps). "Custom" is implicit.
@@ -144,7 +146,7 @@ fn ae_timecode(smpte: &str) -> String {
     format!("{}{rest}", if neg { "-" } else { "" })
 }
 
-fn timecode_field(ui: &mut egui::Ui, buf: &mut Option<String>, secs: &mut f64, rate: FrameRate, min_frames: i64) {
+fn timecode_field(ui: &mut egui::Ui, buf: &mut Option<String>, secs: &mut f64, rate: FrameRate, min_frames: i64) -> egui::Response {
     let df = rate.supports_drop_frame();
     // Durations are whole frames in AE: 10 s at 29.97 fps is 0;00;10;00, not 9;29.
     let shown = ae_timecode(&format_timecode_frames((*secs * rate.as_f64()).round() as i64, rate, df));
@@ -161,19 +163,23 @@ fn timecode_field(ui: &mut egui::Ui, buf: &mut Option<String>, secs: &mut f64, r
     }
     let base = format!("Base {}{}", rate.timecode_base(), if df { "drop" } else { "" });
     ui.label(egui::RichText::new(format!("is {shown}  {base}")).color(Color32::GRAY));
+    r
 }
 
 /// Draw the dialog. Returns `Some(params)` when OK is pressed, `Some(Null)` on Cancel.
-pub fn show(ui: &mut egui::Ui, d: &mut CompDraft, t: &Tokens) -> Option<serde_json::Value> {
+pub fn show(ui: &mut egui::Ui, d: &mut CompDraft, t: &Tokens, auto: &mut Registry) -> Option<serde_json::Value> {
     let mut out = None;
     ui.horizontal(|ui| {
         ui.label("Composition Name:");
-        ui.add(egui::TextEdit::singleline(&mut d.name).desired_width(300.0));
+        let r = ui.add(egui::TextEdit::singleline(&mut d.name).desired_width(300.0));
+        auto.add("dialog.comp.name", r.rect, "Composition Name");
     });
     ui.add_space(8.0);
     ui.horizontal(|ui| {
-        for (tab, label) in [(Tab::Basic, "Basic"), (Tab::Advanced, "Advanced"), (Tab::Renderer, "3D Renderer")] {
-            if ui.selectable_label(d.tab == tab, label).clicked() {
+        for (tab, label, key) in [(Tab::Basic, "Basic", "basic"), (Tab::Advanced, "Advanced", "advanced"), (Tab::Renderer, "3D Renderer", "renderer")] {
+            let r = ui.selectable_label(d.tab == tab, label);
+            auto.add(&format!("dialog.comp.tab.{key}"), r.rect, label);
+            if r.clicked() {
                 d.tab = tab;
             }
         }
@@ -189,20 +195,23 @@ pub fn show(ui: &mut egui::Ui, d: &mut CompDraft, t: &Tokens) -> Option<serde_js
                     .find(|(_, w, h, par, f)| *w == d.width && *h == d.height && (par - d.pixel_aspect).abs() < 1e-3 && (f - d.fps).abs() < 1e-3)
                     .map(|p| p.0)
                     .unwrap_or("Custom");
-                egui::ComboBox::from_id_salt("comp-preset").width(300.0).selected_text(current).show_ui(ui, |ui| {
+                let r = egui::ComboBox::from_id_salt("comp-preset").width(300.0).selected_text(current).show_ui(ui, |ui| {
                     for (name, w, h, par, f) in PRESETS {
                         if ui.selectable_label(*name == current, *name).clicked() {
                             (d.width, d.height, d.pixel_aspect, d.fps) = (*w, *h, *par, *f);
                         }
                     }
                 });
+                auto.add("dialog.comp.preset", r.response.rect, "Preset");
                 ui.end_row();
                 ui.label("Width:");
                 ui.horizontal(|ui| {
                     let (ow, oh) = (d.width, d.height);
-                    ui.add(egui::DragValue::new(&mut d.width).range(4..=30000).suffix(" px"));
+                    let r = ui.add(egui::DragValue::new(&mut d.width).range(4..=30000).suffix(" px"));
+                    auto.add("dialog.comp.width", r.rect, "Width");
                     let lbl = format!("Lock Aspect Ratio to {}", aspect_label(ow as f64, oh as f64));
-                    ui.checkbox(&mut d.lock_aspect, lbl);
+                    let r = ui.checkbox(&mut d.lock_aspect, lbl);
+                    auto.add("dialog.comp.lockAspect", r.rect, "Lock Aspect Ratio");
                     if d.lock_aspect && ow != d.width && ow > 0 {
                         d.height = ((d.width as f64) * oh as f64 / ow as f64).round().max(4.0) as u32;
                     }
@@ -210,7 +219,8 @@ pub fn show(ui: &mut egui::Ui, d: &mut CompDraft, t: &Tokens) -> Option<serde_js
                 ui.end_row();
                 ui.label("Height:");
                 let (ow, oh) = (d.width, d.height);
-                ui.add(egui::DragValue::new(&mut d.height).range(4..=30000).suffix(" px"));
+                let r = ui.add(egui::DragValue::new(&mut d.height).range(4..=30000).suffix(" px"));
+                auto.add("dialog.comp.height", r.rect, "Height");
                 if d.lock_aspect && oh != d.height && oh > 0 {
                     d.width = ((d.height as f64) * ow as f64 / oh as f64).round().max(4.0) as u32;
                 }
@@ -222,13 +232,14 @@ pub fn show(ui: &mut egui::Ui, d: &mut CompDraft, t: &Tokens) -> Option<serde_js
                         .find(|(_, v)| (v - d.pixel_aspect).abs() < 1e-3)
                         .map(|p| p.0.to_string())
                         .unwrap_or_else(|| format!("{:.2}", d.pixel_aspect));
-                    egui::ComboBox::from_id_salt("comp-par").width(220.0).selected_text(cur).show_ui(ui, |ui| {
+                    let r = egui::ComboBox::from_id_salt("comp-par").width(220.0).selected_text(cur).show_ui(ui, |ui| {
                         for (name, v) in PIXEL_ASPECTS {
                             if ui.selectable_label((v - d.pixel_aspect).abs() < 1e-3, *name).clicked() {
                                 d.pixel_aspect = *v;
                             }
                         }
                     });
+                    auto.add("dialog.comp.pixelAspect", r.response.rect, "Pixel Aspect Ratio");
                     ui.label(
                         egui::RichText::new(format!("Frame Aspect Ratio: {}", aspect_label(d.width as f64 * d.pixel_aspect, d.height as f64)))
                             .color(Color32::GRAY),
@@ -237,14 +248,17 @@ pub fn show(ui: &mut egui::Ui, d: &mut CompDraft, t: &Tokens) -> Option<serde_js
                 ui.end_row();
                 ui.label("Frame Rate:");
                 ui.horizontal(|ui| {
-                    let txt = format!("{:.3}", d.fps).trim_end_matches('0').trim_end_matches('.').to_string();
-                    egui::ComboBox::from_id_salt("comp-fps").width(80.0).selected_text(txt).show_ui(ui, |ui| {
+                    // Any rate can be typed; the list holds the common ones.
+                    let r = ui.add(egui::DragValue::new(&mut d.fps).range(1.0..=999.0).speed(0.01).max_decimals(3));
+                    auto.add("dialog.comp.frameRate", r.rect, "Frame Rate");
+                    let r = egui::ComboBox::from_id_salt("comp-fps").width(18.0).selected_text("").show_ui(ui, |ui| {
                         for f in FRAME_RATES {
                             if ui.selectable_label((d.fps - f).abs() < 1e-3, format!("{f}")).clicked() {
                                 d.fps = *f;
                             }
                         }
                     });
+                    auto.add("dialog.comp.frameRates", r.response.rect, "Frame Rate presets");
                     ui.label("frames per second");
                     if rate.supports_drop_frame() {
                         ui.label(egui::RichText::new("Drop Frame").color(Color32::GRAY));
@@ -256,14 +270,17 @@ pub fn show(ui: &mut egui::Ui, d: &mut CompDraft, t: &Tokens) -> Option<serde_js
                 ui.label(egui::RichText::new(format!("{} x {}, {mb:.1}MB per 8bpc frame", d.width, d.height)).color(Color32::GRAY));
                 ui.end_row();
                 ui.label("Start Timecode:");
-                ui.horizontal(|ui| timecode_field(ui, &mut d.start_tc, &mut d.start, rate, i64::MIN / 4));
+                let r = ui.horizontal(|ui| timecode_field(ui, &mut d.start_tc, &mut d.start, rate, i64::MIN / 4)).inner;
+                auto.add("dialog.comp.startTimecode", r.rect, "Start Timecode");
                 ui.end_row();
                 ui.label("Duration:");
-                ui.horizontal(|ui| timecode_field(ui, &mut d.dur_tc, &mut d.duration, rate, 1));
+                let r = ui.horizontal(|ui| timecode_field(ui, &mut d.dur_tc, &mut d.duration, rate, 1)).inner;
+                auto.add("dialog.comp.duration", r.rect, "Duration");
                 ui.end_row();
                 ui.label("Background Color:");
                 ui.horizontal(|ui| {
-                    ui.color_edit_button_rgb(&mut d.bg);
+                    let r = crate::widgets::srgb_color_button(ui, &mut d.bg);
+                    auto.add("dialog.comp.background", r.rect, "Background Color");
                     ui.label(color_name(d.bg));
                 });
                 ui.end_row();
@@ -276,7 +293,9 @@ pub fn show(ui: &mut egui::Ui, d: &mut CompDraft, t: &Tokens) -> Option<serde_js
                     for i in 0..9u8 {
                         let on = d.anchor == i;
                         let b = egui::Button::new(if on { "●" } else { "" }).min_size(vec2(22.0, 22.0)).fill(if on { t.accent } else { t.field_bg });
-                        if ui.add(b).clicked() {
+                        let r = ui.add(b);
+                        auto.add(&format!("dialog.comp.anchor.{i}"), r.rect, "Anchor");
+                        if r.clicked() {
                             d.anchor = i;
                         }
                         if i % 3 == 2 {
@@ -288,36 +307,46 @@ pub fn show(ui: &mut egui::Ui, d: &mut CompDraft, t: &Tokens) -> Option<serde_js
                 ui.label(egui::RichText::new("Motion Blur").strong());
                 ui.end_row();
                 ui.label("Shutter Angle:");
-                ui.add(egui::DragValue::new(&mut d.shutter_angle).range(0.0..=720.0).suffix("°"));
+                let r = ui.add(egui::DragValue::new(&mut d.shutter_angle).range(0.0..=720.0).suffix("°"));
+                auto.add("dialog.comp.shutterAngle", r.rect, "Shutter Angle");
                 ui.end_row();
                 ui.label("Shutter Phase:");
-                ui.add(egui::DragValue::new(&mut d.shutter_phase).range(-360.0..=360.0).suffix("°"));
+                let r = ui.add(egui::DragValue::new(&mut d.shutter_phase).range(-360.0..=360.0).suffix("°"));
+                auto.add("dialog.comp.shutterPhase", r.rect, "Shutter Phase");
                 ui.end_row();
                 ui.label("Samples Per Frame:");
-                ui.add(egui::DragValue::new(&mut d.samples).range(2..=64));
+                let r = ui.add(egui::DragValue::new(&mut d.samples).range(2..=64));
+                auto.add("dialog.comp.samples", r.rect, "Samples Per Frame");
                 ui.end_row();
                 ui.label("Adaptive Sample Limit:");
-                ui.add(egui::DragValue::new(&mut d.adaptive_limit).range(16..=256));
+                let r = ui.add(egui::DragValue::new(&mut d.adaptive_limit).range(16..=256));
+                auto.add("dialog.comp.adaptiveLimit", r.rect, "Adaptive Sample Limit");
                 ui.end_row();
             });
         }
         Tab::Renderer => {
             ui.horizontal(|ui| {
                 ui.label("Renderer:");
-                egui::ComboBox::from_id_salt("comp-renderer").selected_text(if d.advanced_3d { "Advanced 3D" } else { "Classic 3D" }).show_ui(ui, |ui| {
-                    ui.selectable_value(&mut d.advanced_3d, false, "Classic 3D");
-                    ui.selectable_value(&mut d.advanced_3d, true, "Advanced 3D");
-                });
+                let r =
+                    egui::ComboBox::from_id_salt("comp-renderer").selected_text(if d.advanced_3d { "Advanced 3D" } else { "Classic 3D" }).show_ui(ui, |ui| {
+                        ui.selectable_value(&mut d.advanced_3d, false, "Classic 3D");
+                        ui.selectable_value(&mut d.advanced_3d, true, "Advanced 3D");
+                    });
+                auto.add("dialog.comp.renderer", r.response.rect, "Renderer");
             });
         }
     }
     ui.add_space(14.0);
     ui.horizontal(|ui| {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.add(egui::Button::new(egui::RichText::new("   OK   ").color(Color32::WHITE)).fill(t.accent)).clicked() {
+            let r = ui.add(egui::Button::new(egui::RichText::new("   OK   ").color(Color32::WHITE)).fill(t.accent));
+            auto.add("dialog.comp.ok", r.rect, "OK");
+            if r.clicked() {
                 out = Some(params(d));
             }
-            if ui.button("Cancel").clicked() {
+            let r = ui.button("Cancel");
+            auto.add("dialog.comp.cancel", r.rect, "Cancel");
+            if r.clicked() {
                 out = Some(serde_json::Value::Null);
             }
         });

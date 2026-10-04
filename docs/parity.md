@@ -383,6 +383,18 @@ Browser in the web app (landed in M13.10: browser storage and File System Access
   wrong signatures and versions, fuel exhaustion, traps and bit-identical output; script
   `Socket` validates ports, and ScriptUI resource strings accept trailing array commas.
 
+## Update: M3.10 Layer Settings and settings dialogs
+
+Layer ▸ Layer Settings on a solid or adjustment layer opens Solid Settings on the layer's solid
+(it did nothing before): name, size, Pixel Aspect Ratio, colour and **Affect all layers that use
+this solid**, which starts off as in After Effects, so a change to a solid other layers share
+gives this layer a new solid of its own; nulls ask for their name, and text and shape layers
+have no settings (the entry is disabled). New solids take a Pixel Aspect Ratio too. The
+Composition Settings / New Composition and Solid Settings dialogs register an automation id
+for every control (`dialog.comp.*`, `dialog.solid.*`), Composition Settings takes any typed
+frame rate besides the list, New Composition starts from the settings of the last composition
+made with it, and their colour buttons show the stored sRGB colour (they showed it lighter).
+
 ## Update: M3.9 unsaved changes
 
 Closing a modified project asks first, as After Effects does: Quit and the window's close

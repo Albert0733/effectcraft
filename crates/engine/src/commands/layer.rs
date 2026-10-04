@@ -49,11 +49,12 @@ fn new_solid_like(s: &mut Session, p: &Value, adjustment: bool) -> Result<Value>
     let color = color_p(p, "color").unwrap_or(if adjustment { [1.0, 1.0, 1.0] } else { [0.85, 0.2, 0.2] });
     let w = p.get("width").and_then(Value::as_u64).map(|v| v as u32).unwrap_or(comp.width);
     let h = p.get("height").and_then(Value::as_u64).map(|v| v as u32).unwrap_or(comp.height);
+    let pixel_aspect = pixel_aspect_p(p)?.unwrap_or(comp.pixel_aspect);
     let default_name = if adjustment { "Adjustment Layer 1".to_string() } else { "Solid 1".to_string() };
     let name = str_p(p, "name").map(str::to_string).unwrap_or(default_name);
     let id = s.edit(if adjustment { "New Adjustment Layer" } else { "New Solid" }, None, |proj, st| {
         let folder = solids_folder(proj);
-        let sid = proj.add_item(&name, Label::Red, Some(folder), ItemKind::Solid(Solid { color, width: w, height: h, pixel_aspect: comp.pixel_aspect }));
+        let sid = proj.add_item(&name, Label::Red, Some(folder), ItemKind::Solid(Solid { color, width: w, height: h, pixel_aspect }));
         let mut l = build::layer(proj, &comp, &name, LayerSource::Solid { item: sid }, (w, h), None);
         if adjustment {
             l.switches.adjustment = true;
@@ -62,6 +63,14 @@ fn new_solid_like(s: &mut Session, p: &Value, adjustment: bool) -> Result<Value>
         insert_layer(proj, st, cid, l)
     })?;
     Ok(json!({"layer": id.0}))
+}
+
+/// `pixelAspect` (a positive number), when given.
+fn pixel_aspect_p(p: &Value) -> Result<Option<f64>> {
+    match p.get("pixelAspect").and_then(Value::as_f64) {
+        Some(v) if !(v.is_finite() && v > 0.0) => Err(bad("layer.settings", "`pixelAspect` must be a positive number")),
+        v => Ok(v),
+    }
 }
 
 fn new_solid(s: &mut Session, p: &Value) -> Result<Value> {
@@ -1044,6 +1053,11 @@ fn transform_op(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(Value::Null)
 }
 
+/// Layer ▸ Layer Settings: cameras and lights open their own settings; solids (and adjustment
+/// layers, which are solids) edit their Solid Settings. With `affectAll: false`, a solid other
+/// layers also use is copied into a new solid for this layer instead of being changed for all of
+/// them (After Effects' "Affect all layers that use this solid"). `name` renames the layer and
+/// its solid.
 fn layer_settings(s: &mut Session, p: &Value) -> Result<Value> {
     let (cid, lid) = layer_p(s, p, "layer.settings")?;
     // Cameras and lights open their own settings (Camera Settings / Light Settings).
@@ -1053,32 +1067,53 @@ fn layer_settings(s: &mut Session, p: &Value) -> Result<Value> {
         _ => {}
     }
     let color = color_p(p, "color");
-    let w = p.get("width").and_then(Value::as_u64).map(|v| v as u32);
-    let h = p.get("height").and_then(Value::as_u64).map(|v| v as u32);
-    let name = str_p(p, "name").map(str::to_string);
-    s.edit("Layer Settings", None, |proj, _| {
-        let l = layer_mut(proj, cid, lid)?;
+    let w = p.get("width").and_then(Value::as_u64).map(|v| v.max(1) as u32);
+    let h = p.get("height").and_then(Value::as_u64).map(|v| v.max(1) as u32);
+    let pixel_aspect = pixel_aspect_p(p)?;
+    let name = str_p(p, "name").map(str::trim).filter(|n| !n.is_empty()).map(str::to_string);
+    let affect_all = p.get("affectAll").and_then(Value::as_bool).unwrap_or(true);
+    let solid = s.edit("Layer Settings", None, |proj, _| {
+        let src = layer_mut(proj, cid, lid)?.source.clone();
         if let Some(n) = &name {
-            l.name = n.clone();
+            layer_mut(proj, cid, lid)?.name = n.clone();
         }
-        let src = l.source.clone();
-        if let LayerSource::Solid { item } = src
-            && let Some(it) = proj.item_mut(item)
-            && let ItemKind::Solid(so) = &mut it.kind
-        {
-            if let Some(c) = color {
-                so.color = c;
-            }
-            if let Some(w) = w {
-                so.width = w.max(1);
-            }
-            if let Some(h) = h {
-                so.height = h.max(1);
-            }
+        let LayerSource::Solid { item } = src else { return Ok(None) };
+        let shared = proj.comps().flat_map(|(_, c)| &c.layers).filter(|l| l.source == src).count() > 1;
+        let target = if shared && !affect_all {
+            // This layer gets its own copy of the solid.
+            let it = proj.item(item).ok_or_else(|| bad("layer.settings", "the layer's solid is missing"))?.clone();
+            let copy = proj.add_item(name.as_deref().unwrap_or(&it.name), it.label, it.parent, it.kind);
+            layer_mut(proj, cid, lid)?.source = LayerSource::Solid { item: copy };
+            copy
+        } else {
+            item
+        };
+        let it = proj.item_mut(target).ok_or_else(|| bad("layer.settings", "the layer's solid is missing"))?;
+        if let Some(n) = &name {
+            it.name = n.clone();
         }
-        Ok(())
+        if let ItemKind::Solid(so) = &mut it.kind {
+            so.color = color.unwrap_or(so.color);
+            so.width = w.unwrap_or(so.width);
+            so.height = h.unwrap_or(so.height);
+            so.pixel_aspect = pixel_aspect.unwrap_or(so.pixel_aspect);
+        }
+        Ok(Some(target))
     })?;
-    Ok(Value::Null)
+    Ok(match solid {
+        Some(item) => json!({"layer": lid.0, "solid": item.0}),
+        None => json!({"layer": lid.0}),
+    })
+}
+
+/// Layer Settings applies to solids (and adjustment layers), nulls, cameras and lights.
+fn has_layer_settings(s: &Session) -> std::result::Result<(), String> {
+    has_layers(s)?;
+    let l = s.active_comp().and_then(|c| c.layer(s.state.selected_layers[0])).ok_or("select a layer first")?;
+    match l.source {
+        LayerSource::Solid { .. } | LayerSource::Null | LayerSource::Camera | LayerSource::Light { .. } => Ok(()),
+        _ => Err("this kind of layer has no settings".into()),
+    }
 }
 
 fn with_layer(p: &Value, lid: LayerId) -> Value {
@@ -1098,7 +1133,7 @@ pub fn specs() -> Vec<CommandSpec> {
             has_comp,
             new_text
         ),
-        cmd!("layer.newSolid", "Solid...", ["Layer", "New"], Some("Cmd+Y"), "{name?, color? #hex|[r,g,b], width?, height?}", has_comp, new_solid),
+        cmd!("layer.newSolid", "Solid...", ["Layer", "New"], Some("Cmd+Y"), "{name?, color? #hex|[r,g,b], width?, height?, pixelAspect?}", has_comp, new_solid),
         cmd!("layer.newNull", "Null Object", ["Layer", "New"], Some("Cmd+Alt+Shift+Y"), "{name?}", has_comp, new_null),
         cmd!(
             "layer.newShape",
@@ -1110,7 +1145,15 @@ pub fn specs() -> Vec<CommandSpec> {
             new_shape
         ),
         cmd!("layer.newAdjustment", "Adjustment Layer", ["Layer", "New"], Some("Cmd+Alt+Y"), "{name?}", has_comp, new_adjustment),
-        cmd!("layer.settings", "Layer Settings...", ["Layer"], Some("Cmd+Shift+Y"), "{layer?, name?, color?, width?, height?}", has_layers, layer_settings),
+        cmd!(
+            "layer.settings",
+            "Layer Settings...",
+            ["Layer"],
+            Some("Cmd+Shift+Y"),
+            "{layer?, name?, color?, width?, height?, pixelAspect?, affectAll?: bool (default true; false gives this layer its own copy of a solid other layers use)} → {layer, solid?}",
+            has_layer_settings,
+            layer_settings
+        ),
         cmd!("layer.addItem", "Add Footage to Comp", ["File"], Some("Cmd+/"), "{item: id|name, time?}", has_comp, add_item),
         cmd!("layer.select", "Select Layers", [], None, "{layers: [id|name|#n], add?, toggle?}", has_comp, select),
         cmd!("layer.selectNext", "Select Next Layer", [], Some("Cmd+ArrowDown"), "{add?}", has_comp, select_next),
