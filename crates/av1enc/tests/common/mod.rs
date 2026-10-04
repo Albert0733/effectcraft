@@ -91,7 +91,8 @@ pub struct Run {
 pub fn encode_and_check(cfg: EncoderConfig, pics: &[Pic]) -> Run {
     let bd = cfg.bit_depth as u32;
     let mut enc = Encoder::new(cfg).expect("config");
-    let mut dec = filmcraft_av1::Decoder::new();
+    // single-threaded: each packet's picture comes out of its own decode call
+    let mut dec = filmcraft_av1::Decoder::with_threads(1);
     let mut run = Run { packets: Vec::new(), recons: Vec::new(), psnr_y: Vec::new(), lf_levels: Vec::new() };
     for (i, p) in pics.iter().enumerate() {
         let pkt = enc.encode(&p.frame());

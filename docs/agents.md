@@ -129,7 +129,7 @@ build real projects through these interfaces; they are worked examples of everyt
 * **Renders**: `renderQueue.add {comp, format: h264|prores|webm|png…, channels: rgba,
   proresProfile: 4444, output}` then `renderQueue.render {"wait": true}`. Check a render by
   importing it (`file.import`, `file.newCompFromSelection`) and `render_frame {transparent: true}`
-  for its alpha. (WebM VP9 alpha is written, but read back opaque for now.)
+  for its alpha (ProRes 4444 and WebM VP9 alpha both read back as straight alpha).
 * **Essential Graphics**: controls can be addressed by name (`essential.set {"layer":"#1",
   "control":"Title","value":"John Smith"}`); a command that targets an explicit `comp` runs even
   when the active comp would disable it (`essential.exportTemplate {"comp":"Lower Third", …}`).
