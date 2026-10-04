@@ -90,8 +90,10 @@ fn cc_environment(ctx: &EffectCtx, mut b: Buf) -> Buf {
             let ex = u.rem_euclid(1.0) * esz[0] * es + eo[0];
             let ey = v.clamp(0.0, 1.0) * esz[1] * es + eo[1];
             let e = env_img.sample_bilinear_clamped(ex, ey);
-            let (ec, _) = unpremul(e);
-            *px = premul(ec, a);
+            // Straight colour, with nearly transparent texels fading to black continuously
+            // (a hard 1e-6 cut-off would turn the float noise of the filtered map into colour).
+            let k = 1.0 / e[3].max(1e-3);
+            *px = premul([e[0] * k, e[1] * k, e[2] * k], a);
         }
     });
     b

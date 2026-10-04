@@ -255,3 +255,24 @@ fn wire(@builtin(global_invocation_id) id: vec3<u32>) {
     let p = table[id.x];
     textureStore(out, vec2<i32>(i32(p.x), i32(p.y)), vec4<f32>(1.0));
 }
+
+// A layer rendered on its own (color_in, finished) hidden where the run's main scene is nearer
+// (`adv::draw_run`): depth = its depth, src = the main scene's colour, radius = the main
+// scene's depth. Pixels it didn't draw (BIG) are never hidden, as ∞ compares on the CPU.
+// P.u0 = (width, height)
+@compute @workgroup_size(16, 16)
+fn occlude(@builtin(global_invocation_id) id: vec3<u32>) {
+    let w = P.u0.x;
+    if (id.x >= w || id.y >= P.u0.y) {
+        return;
+    }
+    let i = id.y * w + id.x;
+    let q = vec2<i32>(i32(id.x), i32(id.y));
+    var p = textureLoad(color_in, q, 0);
+    let z = depth[i];
+    let mz = radius[i];
+    if (z < BIG * 0.5 && mz < z - 0.01 * max(abs(z), 1.0)) {
+        p *= 1.0 - clamp(src[i].w, 0.0, 1.0);
+    }
+    textureStore(out, q, p);
+}

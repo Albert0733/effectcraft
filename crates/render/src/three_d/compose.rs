@@ -971,30 +971,71 @@ pub(crate) fn environment_rotation(ctx: &EvalCtx) -> f32 {
         .to_radians() as f32
 }
 
-/// Draw an Environment Light Background layer: its (equirectangular) image looked up by each
-/// pixel's view direction through the camera, as an infinitely distant backdrop.
-pub(crate) fn draw_sky(r: &Renderer, ctx: &EvalCtx, layer: &Layer, canvas: &mut Image) {
-    let Some(buf) = r.blend_layer_buf(ctx, layer) else { return };
-    let img = &buf.img;
-    if img.width == 0 || img.height == 0 {
-        return;
+/// An Environment Light Background layer ready to draw (see [`draw_sky`]): the layer's
+/// buffer in the blending space, its opacity and the camera's view rays. Also handed to an
+/// accelerator's compositor (`Renderer::sky_draw`).
+#[derive(Clone)]
+pub struct SkyDraw {
+    pub buf: Arc<Buf>,
+    pub opacity: f32,
+    /// Camera basis: forward, right, down.
+    pub fwd: [f64; 3],
+    pub right: [f64; 3],
+    pub down: [f64; 3],
+    pub zoom: f64,
+    pub ortho: bool,
+    /// View size (comp pixels), region-of-interest offset (output pixels), output scale.
+    pub view: (f64, f64),
+    pub roi: (f64, f64),
+    pub scale: f64,
+    /// The Environment light's rotation (radians).
+    pub rotation: f32,
+}
+
+pub(crate) fn sky_draw(r: &Renderer, ctx: &EvalCtx, layer: &Layer) -> Option<SkyDraw> {
+    let buf = r.blend_layer_buf(ctx, layer)?;
+    if buf.img.width == 0 || buf.img.height == 0 {
+        return None;
     }
     let op = (ctx.opacity(layer) as f32 * r.opacity_mul()).clamp(0.0, 1.0);
     if op <= 0.0 {
-        return;
+        return None;
     }
     let cam = camera_for(r, ctx);
-    let (fwd, right, down) = (cam.forward(), cam.right(), cam.down());
-    let s = r.opts.scale.max(1e-9);
-    let (cw, ch) = view_size(r, ctx);
-    let (ox, oy) = r.roi_offset().map_or((0.0, 0.0), |(x, y, _, _)| (x, y));
-    let rot = environment_rotation(ctx);
+    let v3 = |v: Vec3| [v.x, v.y, v.z];
+    Some(SkyDraw {
+        buf,
+        opacity: op,
+        fwd: v3(cam.forward()),
+        right: v3(cam.right()),
+        down: v3(cam.down()),
+        zoom: cam.zoom,
+        ortho: cam.ortho,
+        view: view_size(r, ctx),
+        roi: r.roi_offset().map_or((0.0, 0.0), |(x, y, _, _)| (x, y)),
+        scale: r.opts.scale.max(1e-9),
+        rotation: environment_rotation(ctx),
+    })
+}
+
+/// Draw an Environment Light Background layer: its (equirectangular) image looked up by each
+/// pixel's view direction through the camera, as an infinitely distant backdrop.
+pub(crate) fn draw_sky(r: &Renderer, ctx: &EvalCtx, layer: &Layer, canvas: &mut Image) {
+    let Some(sky) = sky_draw(r, ctx, layer) else { return };
+    let img = &sky.buf.img;
+    let op = sky.opacity;
+    let v3 = |v: [f64; 3]| vec3(v[0], v[1], v[2]);
+    let (fwd, right, down) = (v3(sky.fwd), v3(sky.right), v3(sky.down));
+    let s = sky.scale;
+    let (cw, ch) = sky.view;
+    let (ox, oy) = sky.roi;
+    let rot = sky.rotation;
     let (iw, ih) = (img.width as f64, img.height as f64);
     canvas.rows_mut().for_each(|(y, row)| {
         let cy = (y as f64 + 0.5 + oy) / s;
         for (x, d) in row.iter_mut().enumerate() {
             let cx = (x as f64 + 0.5 + ox) / s;
-            let dir = if cam.ortho { fwd } else { (fwd * cam.zoom + right * (cx - cw / 2.0) + down * (cy - ch / 2.0)).normalize() };
+            let dir = if sky.ortho { fwd } else { (fwd * sky.zoom + right * (cx - cw / 2.0) + down * (cy - ch / 2.0)).normalize() };
             let (u, v) = super::adv::shade::equirect_uv([dir.x as f32, dir.y as f32, dir.z as f32], rot);
             // Wrap horizontally across the seam.
             let sx = (u as f64 * iw).clamp(0.5, iw - 0.5);
