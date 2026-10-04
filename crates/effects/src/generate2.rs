@@ -208,15 +208,18 @@ fn ellipse(ctx: &EffectCtx, mut b: Buf) -> Buf {
 
 // ---------------------------------------------------------------- Lens Flare
 
-struct Ghost {
-    t: f64,
-    r: f64,
-    c: [f32; 3],
-    k: f32,
-    ring: bool,
+/// A Lens Flare ghost: position along the flare axis, radius (fraction of the diagonal), colour,
+/// strength, ring or disc.
+pub struct Ghost {
+    pub t: f64,
+    pub r: f64,
+    pub c: [f32; 3],
+    pub k: f32,
+    pub ring: bool,
 }
 
-fn ghosts(lens: u32) -> Vec<Ghost> {
+/// The ghosts of Lens Type `lens`.
+pub fn flare_ghosts(lens: u32) -> Vec<Ghost> {
     let g = |t, r, c: [f32; 3], k, ring| Ghost { t, r, c, k, ring };
     match lens {
         1 => vec![
@@ -246,7 +249,7 @@ fn lens_flare(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let (x0, y0, w, h) = layer_rect(ctx, &b);
     let c = (x0 + w * 0.5, y0 + h * 0.5);
     let diag = (w * w + h * h).sqrt().max(1.0);
-    let gs = ghosts(lens);
+    let gs = flare_ghosts(lens);
     let (core_k, rays, halo_r) = match lens {
         1 => (0.035, 6.0, 0.18),
         2 => (0.02, 12.0, 0.3),
@@ -392,9 +395,9 @@ fn reflect(v: f64, lo: f64, hi: f64) -> f64 {
 
 /// The source shape of a contour wave: signed distance (buffer px, negative inside) on the
 /// buffer grid, and the point of the shape that sits on the Producer Point.
-struct Contour {
-    sdf: Plane,
-    anchor: (f64, f64),
+pub struct Contour {
+    pub sdf: Plane,
+    pub anchor: (f64, f64),
 }
 
 /// Image Contours: the region of the source layer whose Value Channel passes Value Threshold.
@@ -494,16 +497,27 @@ fn mask_contour(ctx: &EffectCtx, b: &Buf) -> Option<Contour> {
 }
 
 /// One live wave.
-struct Wave {
-    centre: (f64, f64),
-    radius: f64,
-    half_width: f64,
-    rotation: f64,
-    fade: f32,
-    color: [f32; 4],
-    opacity: f32,
+pub struct Wave {
+    pub centre: (f64, f64),
+    pub radius: f64,
+    pub half_width: f64,
+    pub rotation: f64,
+    pub fade: f32,
+    pub color: [f32; 4],
+    pub opacity: f32,
     /// Polygon outline (unit shape rotated and scaled), or None for a circle / contour.
-    outline: Option<Vec<(f64, f64)>>,
+    pub outline: Option<Vec<(f64, f64)>>,
+}
+
+/// Radio Waves, shared with the GPU compositor (effectcraft-gpu `fx_gen2`): the live waves,
+/// oldest first, and the contour they ripple from (Image Contours / Mask).
+pub struct RadioPlan {
+    pub waves: Vec<Wave>,
+    pub contour: Option<Contour>,
+    /// Anti-aliasing width (px) from Render Quality.
+    pub aa: f64,
+    /// Stroke Profile.
+    pub profile: u32,
 }
 
 /// Radio Waves: waves are born at Frequency per second at the Producer Point and grow at
@@ -513,7 +527,9 @@ struct Wave {
 /// channel, Mask waves from a mask. With Parameters Are Set At Birth each wave keeps the values
 /// it was born with; Each Frame applies the current values to every wave. Stroke draws each wave
 /// with its Profile across the width.
-fn radio_waves(ctx: &EffectCtx, mut b: Buf) -> Buf {
+/// [`RadioPlan`] of Radio Waves on `b`'s geometry (`None` = no contour: the layer passes
+/// through).
+pub fn radio_plan(ctx: &EffectCtx, b: &Buf) -> Option<RadioPlan> {
     let cur = ctx.params;
     let t = ctx.time.max(0.0);
     let freq = cur.f("waveMotion/frequency").max(0.01);
@@ -524,14 +540,14 @@ fn radio_waves(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let aa = 0.5 + 1.5 / quality;
     let profile = cur.e("waveStroke/profile");
     let reflection = cur.b("waveMotion/reflection");
-    let (lx, ly, lw, lh) = layer_rect(ctx, &b);
+    let (lx, ly, lw, lh) = layer_rect(ctx, b);
     let contour = match wave_type {
-        1 => image_contour(ctx, &b),
-        2 => mask_contour(ctx, &b),
+        1 => image_contour(ctx, b),
+        2 => mask_contour(ctx, b),
         _ => None,
     };
     if wave_type != 0 && contour.is_none() {
-        return b;
+        return None;
     }
     let k_hi = (t * freq).floor() as i64;
     let k_lo = (((t - life_now) * freq).floor() as i64 - 1).max(0).max(k_hi - 256);
@@ -598,6 +614,11 @@ fn radio_waves(ctx: &EffectCtx, mut b: Buf) -> Buf {
             })
         })
         .collect();
+    Some(RadioPlan { waves, contour, aa, profile })
+}
+
+fn radio_waves(ctx: &EffectCtx, mut b: Buf) -> Buf {
+    let Some(RadioPlan { waves, contour, aa, profile }) = radio_plan(ctx, &b) else { return b };
     map_xy(&mut b.img, |x, y, px| {
         let mut out = px;
         // Older waves first, so newer ones sit on top.
@@ -634,7 +655,9 @@ fn radio_waves(ctx: &EffectCtx, mut b: Buf) -> Buf {
 
 // ---------------------------------------------------------------- Advanced Lightning
 
-type Seg = ((f64, f64), (f64, f64), f32);
+/// A bolt segment of Advanced Lightning: start, end (buffer px) and intensity.
+pub type BoltSeg = ((f64, f64), (f64, f64), f32);
+type Seg = BoltSeg;
 
 /// Advanced Lightning's Lightning Type options.
 const LIGHTNING_TYPES: [&str; 8] = ["Direction", "Strike", "Breaking", "Bouncy", "Omni", "Anywhere", "Vertical", "Two-Way Strike"];
@@ -715,7 +738,9 @@ fn bolt(cfg: &BoltCfg, a: (f64, f64), z: (f64, f64), depth: u32, inten: f32, mai
     }
 }
 
-fn lightning_segments(ctx: &EffectCtx, b: &Buf) -> Vec<Seg> {
+/// Advanced Lightning's bolt on `b` (shared with the GPU compositor; `b.img` is read only for
+/// Alpha Obstacle).
+pub fn lightning_segments(ctx: &EffectCtx, b: &Buf) -> Vec<Seg> {
     let kind = ctx.params.e("lightningType");
     let decay_main = ctx.params.b("decayMainCore");
     let o = b.to_px(ctx.params.v2("origin"));

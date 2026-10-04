@@ -26,7 +26,7 @@ pub(crate) fn deferred_gpu() -> Option<(&'static Gpu, std::sync::MutexGuard<'sta
 /// Footage with GPU effects around a CPU-only one, a solid with Glow, and a precomp whose
 /// layer is blurred inside and outside (a chain whose input is another chain's result).
 pub(crate) fn scene() -> Scene {
-    let cpu_only = "ec.blur.ccradial";
+    let cpu_only = "ec.generate.fractal";
     assert!(!effectcraft_effects::GPU_EFFECTS.contains(&cpu_only));
     let mut s = Scene::new(BitDepth::Bpc32);
     let mut bg = s.footage(97, 61);

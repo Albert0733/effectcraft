@@ -173,13 +173,35 @@ fn layout_line(text: &str, origin: [f64; 2], size: f64, tracking: f64, proportio
 }
 
 /// How text paints: fill/stroke display option, colours, and compositing.
-struct TextLook {
-    display: u32,
-    fill: [f32; 4],
-    stroke: [f32; 4],
-    stroke_w: f64,
-    on_original: bool,
-    opacity: f32,
+/// How text is drawn: Display Options (0 fill only, 1 stroke only, 2 fill over stroke, 3 stroke
+/// over fill), colours, stroke width (buffer px), on the layer or on transparency, opacity.
+#[derive(Clone, Copy, Debug)]
+pub struct TextLook {
+    pub display: u32,
+    pub fill: [f32; 4],
+    pub stroke: [f32; 4],
+    pub stroke_w: f64,
+    pub on_original: bool,
+    pub opacity: f32,
+}
+
+/// One drawing pass of Basic Text / Path Text, shared with the GPU compositor (effectcraft-gpu
+/// `fx_gen2`): glyph stroke polylines (buffer px) of radius `r`, drawn with `look` over the
+/// result of the previous pass.
+#[derive(Clone, Debug)]
+pub struct TextPass {
+    pub polys: Vec<Vec<[f64; 2]>>,
+    pub r: f64,
+    pub look: TextLook,
+}
+
+/// The [`TextPass`]es of Basic Text or Path Text on `b`'s geometry.
+pub fn text_passes(id: &str, ctx: &EffectCtx, b: &Buf) -> Option<Vec<TextPass>> {
+    match id {
+        "ec.obsolete.basictext" => Some(vec![basic_text_pass(ctx, b)]),
+        "ec.obsolete.pathtext" => Some(path_text_passes(ctx, b)),
+        _ => None,
+    }
 }
 
 fn over(dst: Px, src: Px) -> Px {
@@ -508,6 +530,12 @@ fn timecode_fx(ctx: &EffectCtx, b: Buf) -> Buf {
 // ---------------------------------------------------------------- Basic Text
 
 fn basic_text(ctx: &EffectCtx, mut b: Buf) -> Buf {
+    let pass = basic_text_pass(ctx, &b);
+    draw_text(&mut b, &pass.polys, pass.r, &pass.look);
+    b
+}
+
+fn basic_text_pass(ctx: &EffectCtx, b: &Buf) -> TextPass {
     let pr = ctx.params;
     let size = (pr.f("size") * b.scale).max(0.5);
     let tracking = pr.f("tracking") * b.scale;
@@ -527,21 +555,27 @@ fn basic_text(ctx: &EffectCtx, mut b: Buf) -> Buf {
         let y = pos.1 + unit(size) * 3.0 + (i as f64 - (n - 1.0) * 0.5) * lead;
         layout_line(l, [x, y], size, tracking, true, &mut polys);
     }
-    let look = look_from(ctx, &b, "compositeOnOriginal");
-    draw_text(&mut b, &polys, weight(size), &look);
-    b
+    let look = look_from(ctx, b, "compositeOnOriginal");
+    TextPass { polys, r: weight(size), look }
 }
 
 // ---------------------------------------------------------------- Path Text
 
 fn path_text(ctx: &EffectCtx, mut b: Buf) -> Buf {
+    for pass in path_text_passes(ctx, &b) {
+        draw_text(&mut b, &pass.polys, pass.r, &pass.look);
+    }
+    b
+}
+
+fn path_text_passes(ctx: &EffectCtx, b: &Buf) -> Vec<TextPass> {
     let pr = ctx.params;
     let g = |group: &str, id: &str| grouped(pr, group, id).cloned().unwrap_or(Value::Scalar(0.0));
     let px = |id: &str| {
         let q = b.to_px(g("pathOptions/controlPoints", id).as_vec2());
         [q.0, q.1]
     };
-    let (mut path, mut closed) = match mask_px(ctx, &b, g("pathOptions", "customPath").as_f64().round() as usize) {
+    let (mut path, mut closed) = match mask_px(ctx, b, g("pathOptions", "customPath").as_f64().round() as usize) {
         Some((p, c, _)) => (p, c),
         None => match g("pathOptions", "shapeType").as_enum() {
             1 | 2 => {
@@ -675,12 +709,13 @@ fn path_text(ctx: &EffectCtx, mut b: Buf) -> Buf {
             }
         }
     }
-    let mut look = look_from(ctx, &b, "compositeOnOriginal");
+    let mut look = look_from(ctx, b, "compositeOnOriginal");
     let base_op = look.opacity;
     let mut first = true;
-    for (alpha, polys) in &polys_by_alpha {
-        look.opacity = base_op * alpha;
-        draw_text(&mut b, polys, weight(size), &look);
+    let mut passes = Vec::new();
+    for (alpha, polys) in polys_by_alpha.iter_mut() {
+        look.opacity = base_op * *alpha;
+        passes.push(TextPass { polys: std::mem::take(polys), r: weight(size), look });
         if first {
             // Later passes go over the first one.
             look.on_original = true;
@@ -688,9 +723,9 @@ fn path_text(ctx: &EffectCtx, mut b: Buf) -> Buf {
         }
     }
     if polys_by_alpha.is_empty() {
-        draw_text(&mut b, &[], weight(size), &look);
+        passes.push(TextPass { polys: vec![], r: weight(size), look });
     }
-    b
+    passes
 }
 
 // ---------------------------------------------------------------- Lightning (obsolete)
@@ -750,7 +785,53 @@ impl Bolt<'_> {
     }
 }
 
+/// Lightning, shared with the GPU compositor (effectcraft-gpu `fx_gen2`): the bolt segments
+/// (outer radius per segment) and how they are drawn.
+#[derive(Clone, Debug)]
+pub struct BoltPlan {
+    pub segs: Vec<Seg>,
+    /// Width (buffer px): the glow's blur.
+    pub width: f64,
+    /// Core Width (fraction of each segment's radius).
+    pub core: f64,
+    pub outside: [f32; 4],
+    pub inside: [f32; 4],
+    /// Blending Mode: 0 normal, 1 add, 2 screen.
+    pub mode: u32,
+}
+
 fn lightning(ctx: &EffectCtx, mut b: Buf) -> Buf {
+    let plan = bolt_plan(ctx, &b);
+    let (segs, width, core) = (&plan.segs, plan.width, plan.core);
+    let (wd, ht) = (b.img.width as usize, b.img.height as usize);
+    let outer = raster_segs(wd, ht, segs, 0.0);
+    let core_segs: Vec<Seg> = segs.iter().map(|g| Seg { r: (g.r * core).max(0.3), ..*g }).collect();
+    let inner = raster_segs(wd, ht, &core_segs, 0.6);
+    let glow = gauss_plane(&outer, width * 0.5, width * 0.5);
+    let (oc, ic, mode) = (plan.outside, plan.inside, plan.mode);
+    b.img.data.par_iter_mut().enumerate().for_each(|(i, px)| {
+        let o = outer.data[i].max(glow.data[i] * 0.8);
+        let c = inner.data[i];
+        let a = o.max(c).min(1.0);
+        if a <= 0.0 {
+            return;
+        }
+        let t = if a > 0.0 { c / a } else { 0.0 };
+        let colr = [oc[0] + (ic[0] - oc[0]) * t, oc[1] + (ic[1] - oc[1]) * t, oc[2] + (ic[2] - oc[2]) * t];
+        *px = match mode {
+            1 => [px[0] + colr[0] * a, px[1] + colr[1] * a, px[2] + colr[2] * a, (px[3] + a * (1.0 - px[3])).min(1.0)],
+            2 => {
+                let sc = |d: f32, s: f32| d + s - d * s;
+                [sc(px[0], colr[0] * a), sc(px[1], colr[1] * a), sc(px[2], colr[2] * a), sc(px[3], a)]
+            }
+            _ => over(*px, [colr[0] * a, colr[1] * a, colr[2] * a, a]),
+        };
+    });
+    b
+}
+
+/// [`BoltPlan`] of Lightning on `b`'s geometry.
+pub fn bolt_plan(ctx: &EffectCtx, b: &Buf) -> BoltPlan {
     let pr = ctx.params;
     let s = b.to_px(pr.v2("startPoint"));
     let e = b.to_px(pr.v2("endPoint"));
@@ -816,33 +897,7 @@ fn lightning(ctx: &EffectCtx, mut b: Buf) -> Buf {
             bolt.out.push(Seg { a: wpair[0], b: wpair[1], r: width * 0.5 * w * v, v: 1.0 });
         }
     }
-    let (wd, ht) = (b.img.width as usize, b.img.height as usize);
-    let outer = raster_segs(wd, ht, &segs, 0.0);
-    let core_segs: Vec<Seg> = segs.iter().map(|g| Seg { r: (g.r * core).max(0.3), ..*g }).collect();
-    let inner = raster_segs(wd, ht, &core_segs, 0.6);
-    let glow = gauss_plane(&outer, width * 0.5, width * 0.5);
-    let oc = pr.color("outsideColor");
-    let ic = pr.color("insideColor");
-    let mode = pr.e("blendingMode");
-    b.img.data.par_iter_mut().enumerate().for_each(|(i, px)| {
-        let o = outer.data[i].max(glow.data[i] * 0.8);
-        let c = inner.data[i];
-        let a = o.max(c).min(1.0);
-        if a <= 0.0 {
-            return;
-        }
-        let t = if a > 0.0 { c / a } else { 0.0 };
-        let colr = [oc[0] + (ic[0] - oc[0]) * t, oc[1] + (ic[1] - oc[1]) * t, oc[2] + (ic[2] - oc[2]) * t];
-        *px = match mode {
-            1 => [px[0] + colr[0] * a, px[1] + colr[1] * a, px[2] + colr[2] * a, (px[3] + a * (1.0 - px[3])).min(1.0)],
-            2 => {
-                let sc = |d: f32, s: f32| d + s - d * s;
-                [sc(px[0], colr[0] * a), sc(px[1], colr[1] * a), sc(px[2], colr[2] * a), sc(px[3], a)]
-            }
-            _ => over(*px, [colr[0] * a, colr[1] * a, colr[2] * a, a]),
-        };
-    });
-    b
+    BoltPlan { segs, width, core, outside: pr.color("outsideColor"), inside: pr.color("insideColor"), mode: pr.e("blendingMode") }
 }
 
 // ---------------------------------------------------------------- registry
