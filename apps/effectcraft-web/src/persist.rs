@@ -167,7 +167,7 @@ pub fn restore(s: &mut Session) -> bool {
     }
     if meta.dirty {
         // Unsaved changes stay unsaved.
-        s.bump();
+        s.mark_unsaved();
     }
     SNAP.with(|c| c.set((s.revision, 0.0)));
     log::info!("restored the last session ({})", meta.path.as_deref().unwrap_or("untitled"));

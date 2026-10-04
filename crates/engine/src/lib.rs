@@ -635,6 +635,13 @@ impl Session {
         self.saved_revision = self.revision;
     }
 
+    /// The project has changes its file doesn't (a session restored with unsaved changes): it
+    /// stays modified until it is saved, whatever is undone.
+    pub fn mark_unsaved(&mut self) {
+        self.saved_project = Arc::new(Project::default());
+        self.bump();
+    }
+
     pub fn active_comp(&self) -> Option<&Comp> {
         self.project.comp(self.state.active_comp?)
     }
