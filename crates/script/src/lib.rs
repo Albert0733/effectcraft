@@ -49,6 +49,7 @@
 //! the `script.run` command, File ▸ Scripts ▸ Run Script File… (`.jsx`/`.js`), the Script Console
 //! panel, `effectcraft-cli script` and the MCP `run_script` tool use.
 
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![recursion_limit = "256"]
 
 pub mod matchnames;

@@ -553,6 +553,9 @@ pub(crate) fn outcome(output: Vec<String>, result: Result<J, ScriptError>) -> Ou
 /// alive for their handlers. The Script Console (and the web build) run inline, where dialogs
 /// don't block.
 pub fn run(session: &mut Session, req: &ScriptRequest) -> Outcome {
+    if let Err(message) = check_nesting(req.code) {
+        return Outcome { error: Some(ScriptError { message, file: req.name.into(), ..Default::default() }), ..Default::default() };
+    }
     let running = ACTIVE.with(|a| a.try_borrow().map(|g| g.is_some()).unwrap_or(true));
     if running {
         return Outcome {
@@ -565,6 +568,57 @@ pub fn run(session: &mut Session, req: &ScriptRequest) -> Outcome {
         return crate::ui::run_threaded(session, req);
     }
     run_inline(session, req)
+}
+
+/// The deepest bracket nesting a script may have. The JavaScript parser recurses per level and
+/// overflows the stack (aborting the app, which can't be caught) at about 200 levels on an
+/// 8 MiB thread such as the Script Console's, so deeper scripts are rejected up front.
+pub const MAX_NESTING: usize = 96;
+
+/// An error when `code` nests brackets deeper than [`MAX_NESTING`] (strings, template literals
+/// and comments are skipped).
+pub fn check_nesting(code: &str) -> Result<(), String> {
+    let b = code.as_bytes();
+    let (mut i, mut depth, mut max) = (0usize, 0usize, 0usize);
+    while let Some(&c) = b.get(i) {
+        match c {
+            b'(' | b'[' | b'{' => {
+                depth += 1;
+                max = max.max(depth);
+            }
+            b')' | b']' | b'}' => depth = depth.saturating_sub(1),
+            b'"' | b'\'' | b'`' => {
+                // Skip to the closing quote (escapes skip a byte).
+                i += 1;
+                while let Some(&d) = b.get(i) {
+                    if d == b'\\' {
+                        i += 1;
+                    } else if d == c || (d == b'\n' && c != b'`') {
+                        break;
+                    }
+                    i += 1;
+                }
+            }
+            b'/' if b.get(i + 1) == Some(&b'/') => {
+                while b.get(i).is_some_and(|d| *d != b'\n') {
+                    i += 1;
+                }
+            }
+            b'/' if b.get(i + 1) == Some(&b'*') => {
+                i += 2;
+                while i < b.len() && !(b.get(i) == Some(&b'*') && b.get(i + 1) == Some(&b'/')) {
+                    i += 1;
+                }
+                i += 1;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    if max > MAX_NESTING {
+        return Err(format!("Error: the script is nested too deeply ({max} levels of brackets; at most {MAX_NESTING})"));
+    }
+    Ok(())
 }
 
 /// Run on this thread (the Script Console's persistent context, or a fresh one).
@@ -583,7 +637,9 @@ pub(crate) fn run_inline(session: &mut Session, req: &ScriptRequest) -> Outcome 
                     Err(e) => return (Err(ScriptError { message: e, file: file.into(), ..Default::default() }), vec![]),
                 }
             }
-            let ctx = c.as_mut().map(|m| &mut **m).expect("console context");
+            let Some(ctx) = c.as_mut().map(|m| &mut **m) else {
+                return (Err(ScriptError { message: "the console context is unavailable".into(), file: file.into(), ..Default::default() }), vec![]);
+            };
             let r = eval_in(ctx, req.code, file);
             (r, crate::ui::snapshot(ctx))
         })
@@ -605,4 +661,26 @@ pub(crate) fn run_inline(session: &mut Session, req: &ScriptRequest) -> Outcome 
     drop(guard);
     crate::ui::publish(session, host, req.name, windows);
     outcome(output, result)
+}
+
+#[cfg(test)]
+mod nesting_tests {
+    use super::*;
+
+    #[test]
+    fn deep_nesting_is_an_error_not_a_stack_overflow() {
+        // 100 000 nested brackets overflowed the parser's stack and aborted the process.
+        let mut s = Session::default();
+        for code in ["(".repeat(100_000) + "1" + &")".repeat(100_000), "[".repeat(100_000), "{".repeat(MAX_NESTING + 1)] {
+            let out = run(&mut s, &ScriptRequest { code: &code, name: "deep", console: true });
+            assert!(out.error.is_some_and(|e| e.message.contains("nested too deeply")));
+        }
+        // Brackets in strings and comments don't count; ordinary nesting runs.
+        let quoted = format!("var s = '{}'; // {}\n/* {} */ 1 + 1", "(".repeat(500), "[".repeat(500), "{".repeat(500));
+        assert!(check_nesting(&quoted).is_ok());
+        let out = run(&mut s, &ScriptRequest { code: &quoted, name: "ok", console: true });
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert_eq!(out.result, serde_json::json!(2));
+        assert!(check_nesting(&("(".repeat(MAX_NESTING) + &")".repeat(MAX_NESTING))).is_ok());
+    }
 }
