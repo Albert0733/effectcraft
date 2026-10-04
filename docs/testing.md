@@ -16,7 +16,10 @@ cargo xtask ci             # fmt, clippy -D warnings, tests, layers, assets, was
 - **Effects** (`crates/effects`): each effect has a determinism test and at least one behaviour
   test (identity at neutral settings, known pixel results, or simulations giving the same frame
   whether you seek straight to it or play up to it). A registry-wide test checks that effects
-  which read the clock are declared time-dependent.
+  which read the clock are declared time-dependent. `crates/effects/tests/sim_golden.rs` pins
+  exact pixel hashes of the simulation effects the GPU shares plans with (CC Rainfall … Card
+  Wipe) at several settings, times, bit depths and resolutions, so any change to their CPU output
+  fails (re-pin with `SIM_GOLDEN_PRINT=1` after an intended change; pinned for aarch64 macOS).
 - **Export** (`crates/export/tests`): every format is encoded and decoded back, checking frame
   count, size and pixels. When `ffmpeg`/`ffprobe` are installed they are used as an outside
   check; they are never linked or shipped.
