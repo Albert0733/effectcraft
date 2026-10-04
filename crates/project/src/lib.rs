@@ -308,6 +308,14 @@ pub struct Comp {
     pub enable_frame_blending: bool,
     #[serde(default)]
     pub draft_3d: bool,
+    /// Composition Settings ▸ Advanced ▸ Preserve frame rate when nested or in render queue:
+    /// nested in another comp, or rendered at another rate, it shows only its own frames.
+    #[serde(default)]
+    pub preserve_frame_rate: bool,
+    /// Composition Settings ▸ Advanced ▸ Preserve resolution when nested: nested in a comp
+    /// previewed at a lower resolution, it still renders at full size.
+    #[serde(default)]
+    pub preserve_resolution: bool,
     #[serde(default)]
     pub poster_time: Tick,
     /// Global Light for layer styles (Layer ▸ Layer Styles ▸ Blending Options).
@@ -358,11 +366,18 @@ impl Comp {
             enable_motion_blur: true,
             enable_frame_blending: true,
             draft_3d: false,
+            preserve_frame_rate: false,
+            preserve_resolution: false,
             poster_time: Tick::ZERO,
             guides: vec![],
             global_light: styles::GlobalLight::default(),
             essential: None,
         }
+    }
+    /// Whether the composition has a frame at its time `t`: nested, it shows nothing before it
+    /// starts or after it ends (a precomp layer trimmed or remapped past it).
+    pub fn covers(&self, t: Tick) -> bool {
+        t >= Tick::ZERO && t < self.duration
     }
     /// A new, empty composition with this one's settings (frame rate, pixel aspect, background,
     /// motion blur, frame blending and the 3D renderer), as Pre-compose makes.
@@ -377,6 +392,8 @@ impl Comp {
             renderer: self.renderer,
             enable_motion_blur: self.enable_motion_blur,
             enable_frame_blending: self.enable_frame_blending,
+            preserve_frame_rate: self.preserve_frame_rate,
+            preserve_resolution: self.preserve_resolution,
             ..Comp::new(width, height, self.frame_rate, duration)
         }
     }

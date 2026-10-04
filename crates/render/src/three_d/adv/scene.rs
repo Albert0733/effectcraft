@@ -882,9 +882,10 @@ pub(crate) fn build(r: &Renderer, ctx: &EvalCtx, run: &[&Layer], out: (u32, u32)
     build_at(r, ctx, None, run, out)
 }
 
-/// Whether a layer's motion is blurred (Motion Blur switch, comp setting and render option).
+/// Whether a layer's motion is blurred (the renderer's gate: Motion Blur switch, comp setting,
+/// render option and the precomp layers above).
 pub(crate) fn motion_blurred(r: &Renderer, ctx: &EvalCtx, layer: &Layer) -> bool {
-    r.opts.motion_blur && ctx.comp.enable_motion_blur && layer.switches.motion_blur
+    r.mb_on(ctx, layer)
 }
 
 /// [`build`] at a motion-blur sub-sample: layers with Motion Blur on, the camera and the lights

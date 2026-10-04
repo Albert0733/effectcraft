@@ -90,6 +90,12 @@ fn apply_settings(c: &mut Comp, p: &Value) {
     if let Some(n) = p.get("adaptiveSampleLimit").and_then(Value::as_u64) {
         c.motion_blur_adaptive_limit = (n as u32).clamp(16, 256);
     }
+    if let Some(b) = p.get("preserveFrameRate").and_then(Value::as_bool) {
+        c.preserve_frame_rate = b;
+    }
+    if let Some(b) = p.get("preserveResolution").and_then(Value::as_bool) {
+        c.preserve_resolution = b;
+    }
 }
 
 fn new_comp(s: &mut Session, p: &Value) -> Result<Value> {
@@ -252,7 +258,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "New Composition...",
             ["Composition"],
             Some("Cmd+N"),
-            "{name?, width?, height?, frameRate?, duration? (s), startTime? (s) | startTimecode?, background? [r,g,b]|#hex, pixelAspect?, shutterAngle?, shutterPhase?, motionBlurSamples?, adaptiveSampleLimit? (16–256), renderer? classic3D|advanced3D, anchor?, open?}",
+            "{name?, width?, height?, frameRate?, duration? (s), startTime? (s) | startTimecode?, background? [r,g,b]|#hex, pixelAspect?, shutterAngle?, shutterPhase?, motionBlurSamples?, adaptiveSampleLimit? (16–256), preserveFrameRate?: bool, preserveResolution?: bool, renderer? classic3D|advanced3D, anchor?, open?}",
             always,
             new_comp
         ),
@@ -261,7 +267,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Composition Settings...",
             ["Composition"],
             Some("Cmd+K"),
-            "{comp?, name?, width?, height?, anchor? 0-8 (resize anchor, 4 = center), frameRate?, duration?, startTime? (s) | startTimecode?, background?, shutterAngle?, shutterPhase?, motionBlurSamples?, adaptiveSampleLimit? (16–256), pixelAspect?, renderer? classic3D|advanced3D}",
+            "{comp?, name?, width?, height?, anchor? 0-8 (resize anchor, 4 = center), frameRate?, duration?, startTime? (s) | startTimecode?, background?, shutterAngle?, shutterPhase?, motionBlurSamples?, adaptiveSampleLimit? (16–256), preserveFrameRate?: bool (nested or in the render queue it shows only its own frames), preserveResolution?: bool (nested, it renders at full size), pixelAspect?, renderer? classic3D|advanced3D}",
             has_comp,
             settings
         ),

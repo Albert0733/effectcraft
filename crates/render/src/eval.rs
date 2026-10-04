@@ -114,6 +114,19 @@ impl<'a> EvalCtx<'a> {
         }
         layer.layer_time(self.time)
     }
+    /// The time a precomp layer's nested comp is shown at: [`Self::source_time`], floored to
+    /// the nested comp's own frames when it preserves its frame rate (Composition Settings ▸
+    /// Preserve frame rate when nested or in render queue).
+    pub fn nested_time(&self, layer: &Layer) -> Tick {
+        let t = self.source_time(layer);
+        match layer.source {
+            LayerSource::Comp { item } => match self.project.comp(item) {
+                Some(nc) if nc.preserve_frame_rate => nc.frame_rate.tick_of(crate::frame_position(t, nc.frame_rate).0),
+                _ => t,
+            },
+            _ => t,
+        }
+    }
     pub fn layer(&self, id: LayerId) -> Option<&'a Layer> {
         self.comp.layer(id)
     }

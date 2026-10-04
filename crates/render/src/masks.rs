@@ -10,29 +10,40 @@ use rayon::prelude::*;
 
 use crate::eval::EvalCtx;
 
-/// Sub-frame samples for mask motion blur (animated mask paths only).
-const MASK_BLUR_SAMPLES: usize = 8;
+/// What mask motion blur may do in a render (from the renderer's motion blur gate).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct MaskBlur {
+    /// Motion blur is on in this render: the render options, the comp's switch and the Motion
+    /// Blur switches of the precomp layers above (when switches affect nested comps).
+    pub allowed: bool,
+    /// The layer's own Motion Blur switch, as those precomp layers limit it (Same As Layer).
+    pub layer: bool,
+    /// Sub-frame samples (the comp's Samples Per Frame; fewer in Draft).
+    pub samples: usize,
+}
 
 /// Coverage of one mask in buffer pixels (before mode/opacity/invert). With mask motion blur
 /// (Layer ▸ Mask ▸ Motion Blur: On, or Same As Layer with the layer's switch on) an animated
 /// path is averaged over the comp's shutter.
-fn coverage(ctx: &EvalCtx, layer: &Layer, g: &effectcraft_project::PropGroup, buf: &Buf) -> Option<Mask> {
-    let mb = match g.kind {
-        GroupKind::Mask { motion_blur, .. } => match motion_blur {
-            MaskMotionBlur::On => true,
-            MaskMotionBlur::Off => false,
-            MaskMotionBlur::SameAsLayer => layer.switches.motion_blur,
-        },
-        _ => false,
-    };
+fn coverage(ctx: &EvalCtx, layer: &Layer, g: &effectcraft_project::PropGroup, buf: &Buf, blur: MaskBlur) -> Option<Mask> {
+    let mb = blur.allowed
+        && match g.kind {
+            GroupKind::Mask { motion_blur, .. } => match motion_blur {
+                MaskMotionBlur::On => true,
+                MaskMotionBlur::Off => false,
+                MaskMotionBlur::SameAsLayer => blur.layer,
+            },
+            _ => false,
+        };
     let animated = g.get("path").is_some_and(|p| p.keys.len() > 1 || p.has_expression());
-    if mb && animated && ctx.comp.enable_motion_blur {
+    if mb && animated {
         let fd = ctx.comp.frame_duration().seconds();
         let (angle, phase) = (ctx.comp.shutter_angle / 360.0, ctx.comp.shutter_phase / 360.0);
         let mut acc: Option<Mask> = None;
-        let k = 1.0 / MASK_BLUR_SAMPLES as f32;
-        for i in 0..MASK_BLUR_SAMPLES {
-            let f = phase + angle * i as f64 / (MASK_BLUR_SAMPLES - 1) as f64;
+        let n = blur.samples.max(2);
+        let k = 1.0 / n as f32;
+        for i in 0..n {
+            let f = phase + angle * i as f64 / (n - 1) as f64;
             let sub = ctx.at(ctx.time + effectcraft_time::Tick::from_seconds_f64(f * fd));
             let Some(c) = coverage_at(&sub, layer, g, buf) else { continue };
             match &mut acc {
@@ -121,7 +132,7 @@ pub fn shapes(ctx: &EvalCtx, layer: &Layer) -> Vec<effectcraft_effects::MaskShap
 
 /// Apply the layer's masks to its buffer.
 /// Returns whether any mask was applied.
-pub fn apply(ctx: &EvalCtx, layer: &Layer, buf: &mut Buf) -> bool {
+pub fn apply(ctx: &EvalCtx, layer: &Layer, buf: &mut Buf, blur: MaskBlur) -> bool {
     let Some(masks) = layer.masks() else { return false };
     let list: Vec<_> = masks.groups().filter(|g| g.enabled && matches!(g.kind, GroupKind::Mask { mode, .. } if mode != MaskMode::None)).collect();
     if list.is_empty() {
@@ -133,7 +144,7 @@ pub fn apply(ctx: &EvalCtx, layer: &Layer, buf: &mut Buf) -> bool {
     let mut acc = vec![if first_sub { 1.0f32 } else { 0.0 }; n];
     for g in list {
         let GroupKind::Mask { mode, inverted, .. } = g.kind else { continue };
-        let Some(mut cov) = coverage(ctx, layer, g, buf) else { continue };
+        let Some(mut cov) = coverage(ctx, layer, g, buf, blur) else { continue };
         let op = (ctx.f(layer, g, "opacity", 100.0) / 100.0) as f32;
         cov.data.par_iter_mut().for_each(|c| {
             if inverted {

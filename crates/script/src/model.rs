@@ -131,6 +131,7 @@ fn item(s: &Session, a: &J) -> R {
                         "draft3d": c.draft_3d, "shutterAngle": c.shutter_angle, "shutterPhase": c.shutter_phase,
                         "motionBlurSamplesPerFrame": c.motion_blur_samples,
                         "motionBlurAdaptiveSampleLimit": c.motion_blur_adaptive_limit,
+                        "preserveNestedFrameRate": c.preserve_frame_rate, "preserveNestedResolution": c.preserve_resolution,
                         "renderer": match c.renderer { effectcraft_project::Renderer::Classic3D => "ADBE Classic 3D", effectcraft_project::Renderer::Advanced3D => "ADBE Advanced 3d" },
                         "open": s.state.open_comps.contains(&cid), "active": s.active_comp_id() == Some(cid),
                         "hasVideo": true, "hasAudio": c.layers.iter().any(|l| l.switches.audio && matches!(l.source, LayerSource::Footage { .. } | LayerSource::Comp { .. })),

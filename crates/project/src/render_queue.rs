@@ -418,8 +418,10 @@ impl RenderSettings {
         let b = b.clamp(a, comp.duration);
         (a, b)
     }
+    /// The output frame rate: the Frame Rate override, unless the comp preserves its frame rate
+    /// (Composition Settings ▸ Preserve frame rate when nested or in render queue).
     pub fn rate(&self, comp: &Comp) -> FrameRate {
-        self.frame_rate.unwrap_or(comp.frame_rate)
+        if comp.preserve_frame_rate { comp.frame_rate } else { self.frame_rate.unwrap_or(comp.frame_rate) }
     }
     /// First output-rate frame starting at or after `t`.
     fn ceil_frame(r: FrameRate, t: Tick) -> i64 {

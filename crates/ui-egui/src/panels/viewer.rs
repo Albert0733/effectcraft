@@ -674,7 +674,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 && let Some(nc) = app.session.project.comp(*item)
             {
                 let (outer, _) = l2c(&ectx, l);
-                let nctx = EvalCtx::new(&app.session.project, *item, nc, ectx.source_time(l));
+                let nctx = EvalCtx::new(&app.session.project, *item, nc, ectx.nested_time(l));
                 for nl in nc.layers.iter().filter(|nl| nl.is_active_at(nctx.time) && !nl.is_3d()) {
                     if let Some((_, q, _)) = layer_quad(&nctx, nl) {
                         let sq: Vec<Pos2> = q

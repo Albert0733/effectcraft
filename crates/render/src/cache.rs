@@ -478,21 +478,21 @@ fn hash_values(h: &mut KeyHasher, ctx: &EvalCtx, layer: &Layer, g: &PropGroup) {
 /// Cache key for the processed (source → masks → effects) buffer of `layer` at the context
 /// time, or `None` when the layer must not be cached (footage, precomps, cameras, adjustment
 /// layers…).
-pub fn layer_key(ctx: &EvalCtx, layer: &Layer, scale: f64, draft: bool) -> Option<u64> {
+pub fn layer_key(ctx: &EvalCtx, layer: &Layer, scale: f64, draft: bool, blur: bool) -> Option<u64> {
     // Time effects see property values at other times. Keyframes are part of the hashed
     // structure (and the layer time is folded in), but expressions may read other layers at
     // those times, which the key cannot see: such layers are not cached.
     if reads_other_times(layer) && layer.props.children.iter().any(|c| matches!(c, Node::Group(g) if g.match_id != "transform" && has_expression(g))) {
         return None;
     }
-    key_with(ctx, layer, scale, draft, false)
+    key_with(ctx, layer, scale, draft, blur, false)
 }
 
 /// Cache key for a layer's *input* at the context time: source → masks → its first `effects`
 /// effects (see `Renderer::layer_input`). Unlike [`layer_key`], footage layers are cached here
 /// (keyed by item and source time), since Time effects read many neighbouring frames.
-pub fn input_key(ctx: &EvalCtx, layer: &Layer, scale: f64, draft: bool, effects: usize) -> Option<u64> {
-    let base = key_with(ctx, layer, scale, draft, true)?;
+pub fn input_key(ctx: &EvalCtx, layer: &Layer, scale: f64, draft: bool, blur: bool, effects: usize) -> Option<u64> {
+    let base = key_with(ctx, layer, scale, draft, blur, true)?;
     let mut h = KeyHasher(base ^ 0x5bd1_e995_7a3c_11d3);
     effects.hash(&mut h);
     Some(h.finish())
@@ -515,18 +515,19 @@ fn has_expression(g: &PropGroup) -> bool {
 
 /// Cache key for an adjustment layer's footprint (its source through its masks, see
 /// `Renderer::adjustment_footprint`): the GPU compositor then uploads it once, not every frame.
-pub fn footprint_key(ctx: &EvalCtx, layer: &Layer, scale: f64, draft: bool) -> Option<u64> {
-    Some(derive(key_any(ctx, layer, scale, draft, false)?, 0xf007_9417))
+pub fn footprint_key(ctx: &EvalCtx, layer: &Layer, scale: f64, draft: bool, blur: bool) -> Option<u64> {
+    Some(derive(key_any(ctx, layer, scale, draft, blur, false)?, 0xf007_9417))
 }
 
-fn key_with(ctx: &EvalCtx, layer: &Layer, scale: f64, draft: bool, footage: bool) -> Option<u64> {
+fn key_with(ctx: &EvalCtx, layer: &Layer, scale: f64, draft: bool, blur: bool, footage: bool) -> Option<u64> {
     if layer.switches.adjustment {
         return None;
     }
-    key_any(ctx, layer, scale, draft, footage)
+    key_any(ctx, layer, scale, draft, blur, footage)
 }
 
-fn key_any(ctx: &EvalCtx, layer: &Layer, scale: f64, draft: bool, footage: bool) -> Option<u64> {
+/// `blur`: the layer is motion blurred in this render (`Renderer::mb_on`).
+fn key_any(ctx: &EvalCtx, layer: &Layer, scale: f64, draft: bool, blur: bool, footage: bool) -> Option<u64> {
     let mut h = KeyHasher(0xcbf2_9ce4_8422_2325);
     match &layer.source {
         LayerSource::Solid { item } => {
@@ -558,11 +559,14 @@ fn key_any(ctx: &EvalCtx, layer: &Layer, scale: f64, draft: bool, footage: bool)
     layer.id.hash(&mut h);
     hash_debug(&mut h, &layer.source);
     hash_debug(&mut h, &layer.switches);
-    // Mask motion blur samples the comp's shutter.
-    if layer.masks().is_some_and(|m| !m.children.is_empty()) {
+    // Mask motion blur and effects that read the shutter depend on whether the layer is motion
+    // blurred in this render and on the comp's shutter.
+    if layer.masks().is_some_and(|m| !m.children.is_empty()) || layer.effects().is_some_and(|fx| !fx.children.is_empty()) {
+        blur.hash(&mut h);
         ctx.comp.enable_motion_blur.hash(&mut h);
         ctx.comp.shutter_angle.to_bits().hash(&mut h);
         ctx.comp.shutter_phase.to_bits().hash(&mut h);
+        ctx.comp.motion_blur_samples.hash(&mut h);
     }
     for c in &layer.props.children {
         // Transform is applied later; Layer Styles are keyed separately (see [`styles_key`]).

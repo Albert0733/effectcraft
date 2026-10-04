@@ -157,8 +157,8 @@ fn wiggly_selector_is_deterministic_and_time_dependent() {
     assert!(ys(&a).iter().all(|y| y.abs() <= 50.0 + 1e-9));
     assert!(ys(&a).windows(2).any(|w| (w[0] - w[1]).abs() > 1e-6));
     // The layer cache keys a wiggly text layer by time.
-    let k1 = crate::cache::layer_key(&ctx(&p, cid, 0.5), l, 1.0, false);
-    let k2 = crate::cache::layer_key(&ctx(&p, cid, 1.3), l, 1.0, false);
+    let k1 = crate::cache::layer_key(&ctx(&p, cid, 0.5), l, 1.0, false, false);
+    let k2 = crate::cache::layer_key(&ctx(&p, cid, 1.3), l, 1.0, false, false);
     assert_ne!(k1, k2);
     // Renders identically twice.
     let r1 = crate::render_frame(&p, cid, Tick::from_seconds_f64(0.5), 0.5);
