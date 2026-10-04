@@ -484,3 +484,21 @@ fn motion_graphics_template_hooks_add_mirrors_and_controllers() {
     let eg = c.essential.as_ref().unwrap();
     assert!(matches!(eg.controls[1].kind, effectcraft_engine::project::essential::EgKind::Mirror { of } if of == eg.controls[0].id));
 }
+
+#[test]
+fn comp_preserves_nested_frame_rate_and_resolution() {
+    let mut s = session();
+    let o = ok(
+        &mut s,
+        r#"
+        var comp = app.project.items.addComp("Nested", 320, 180, 1, 2, 12);
+        var before = [comp.preserveNestedFrameRate, comp.preserveNestedResolution];
+        comp.preserveNestedFrameRate = true;
+        comp.preserveNestedResolution = true;
+        before.concat([comp.preserveNestedFrameRate, comp.preserveNestedResolution]).join(",");
+        "#,
+    );
+    assert_eq!(o.result, json!("false,false,true,true"));
+    let (_, c) = comp_named(&s, "Nested");
+    assert!(c.preserve_frame_rate && c.preserve_resolution);
+}

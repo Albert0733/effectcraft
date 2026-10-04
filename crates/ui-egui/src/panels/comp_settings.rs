@@ -88,6 +88,8 @@ pub struct CompDraft {
     pub shutter_phase: f64,
     pub samples: u32,
     pub adaptive_limit: u32,
+    pub preserve_frame_rate: bool,
+    pub preserve_resolution: bool,
     pub advanced_3d: bool,
     pub tab: Tab,
     /// Timecode text being edited (start, duration).
@@ -112,6 +114,8 @@ impl Default for CompDraft {
             shutter_phase: -90.0,
             samples: 16,
             adaptive_limit: 128,
+            preserve_frame_rate: false,
+            preserve_resolution: false,
             advanced_3d: false,
             tab: Tab::Basic,
             start_tc: None,
@@ -304,6 +308,14 @@ pub fn show(ui: &mut egui::Ui, d: &mut CompDraft, t: &Tokens, auto: &mut Registr
                     }
                 });
                 ui.end_row();
+                ui.label("");
+                let r = ui.checkbox(&mut d.preserve_frame_rate, "Preserve frame rate when nested or in render queue");
+                auto.add("dialog.comp.preserveFrameRate", r.rect, "Preserve frame rate when nested or in render queue");
+                ui.end_row();
+                ui.label("");
+                let r = ui.checkbox(&mut d.preserve_resolution, "Preserve resolution when nested");
+                auto.add("dialog.comp.preserveResolution", r.rect, "Preserve resolution when nested");
+                ui.end_row();
                 ui.label(egui::RichText::new("Motion Blur").strong());
                 ui.end_row();
                 ui.label("Shutter Angle:");
@@ -360,6 +372,7 @@ pub fn params(d: &CompDraft) -> serde_json::Value {
         "name": d.name, "width": d.width, "height": d.height, "pixelAspect": d.pixel_aspect, "frameRate": d.fps,
         "duration": d.duration, "startTime": d.start, "background": [d.bg[0], d.bg[1], d.bg[2]], "anchor": d.anchor,
         "shutterAngle": d.shutter_angle, "shutterPhase": d.shutter_phase, "motionBlurSamples": d.samples, "adaptiveSampleLimit": d.adaptive_limit,
+        "preserveFrameRate": d.preserve_frame_rate, "preserveResolution": d.preserve_resolution,
         "renderer": if d.advanced_3d { "advanced3D" } else { "classic3D" },
     })
 }

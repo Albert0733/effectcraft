@@ -811,3 +811,24 @@ fn project_files_keep_their_format_warn_about_newer_versions_and_never_save_unre
     let e = s.execute("file.open", json!({"path": junk})).unwrap_err().to_string();
     assert!(e.contains("is not a project EffectCraft can open"), "{e}");
 }
+
+#[test]
+fn comp_settings_preserve_frame_rate_and_resolution() {
+    let mut s = comp();
+    let info = s.execute("comp.info", json!({})).unwrap();
+    assert_eq!((info["preserveFrameRate"].clone(), info["preserveResolution"].clone()), (json!(false), json!(false)));
+    s.execute_checked("comp.settings", json!({"preserveFrameRate": true, "preserveResolution": true})).unwrap();
+    let info = s.execute("comp.info", json!({})).unwrap();
+    assert_eq!((info["preserveFrameRate"].clone(), info["preserveResolution"].clone()), (json!(true), json!(true)));
+    // Pre-compose keeps them; one undo step clears them.
+    let a = solid(&mut s, "#ff0000");
+    let r = s.execute("layer.precompose", json!({"layers": [a], "name": "Inner"})).unwrap();
+    let inner = s.project.comp(effectcraft_project::ItemId(r["comp"].as_u64().unwrap())).unwrap();
+    assert!(inner.preserve_frame_rate && inner.preserve_resolution);
+    // Undo Pre-compose and the solid; then one more step undoes the settings.
+    s.execute("edit.undo", json!({})).unwrap();
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(s.active_comp().unwrap().preserve_frame_rate);
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(!s.active_comp().unwrap().preserve_frame_rate && !s.active_comp().unwrap().preserve_resolution);
+}

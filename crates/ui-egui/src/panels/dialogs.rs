@@ -83,6 +83,8 @@ pub fn open_comp_settings(app: &mut EffectcraftApp) -> Result<(), String> {
         shutter_phase: c.shutter_phase,
         samples: c.motion_blur_samples,
         adaptive_limit: c.motion_blur_adaptive_limit,
+        preserve_frame_rate: c.preserve_frame_rate,
+        preserve_resolution: c.preserve_resolution,
         advanced_3d: c.renderer == effectcraft_engine::project::Renderer::Advanced3D,
         ..Default::default()
     };
@@ -604,7 +606,7 @@ mod tests {
         }
         app.dialog_state.comp.tab = super::super::comp_settings::Tab::Advanced;
         frame(&mut app, &ctx);
-        for id in ["anchor.4", "shutterAngle", "shutterPhase", "samples", "adaptiveLimit"] {
+        for id in ["anchor.4", "preserveFrameRate", "preserveResolution", "shutterAngle", "shutterPhase", "samples", "adaptiveLimit"] {
             assert!(app.auto.find(&format!("dialog.comp.{id}")).is_some(), "dialog.comp.{id}");
         }
         app.dialog_state.comp.tab = super::super::comp_settings::Tab::Basic;

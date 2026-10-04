@@ -157,7 +157,7 @@ impl EffectHost for FxHost<'_, '_, '_> {
                 if self.r.depth > MAX_FX_DEPTH || self.r.project.comp_contains(*item, self.ctx.comp_id) {
                     return None;
                 }
-                self.r.nested().comp_aux(*item, self.ctx.source_time(self.layer)).map(Arc::new)
+                self.r.nested().comp_aux(*item, self.ctx.nested_time(self.layer)).map(Arc::new)
             }
             _ => None,
         }
@@ -558,7 +558,7 @@ impl<'a> Renderer<'a> {
     /// 3D layers use this comp's camera and lights.
     pub fn collapse_into(&self, ctx: &EvalCtx<'a>, layer: &Layer, item: ItemId, opacity: f32) -> Option<(Renderer<'a>, EvalCtx<'a>)> {
         let nc = self.project.comp(item)?;
-        let nctx = EvalCtx { comp_id: item, comp: nc, time: ctx.source_time(layer), ..*ctx };
+        let nctx = EvalCtx { comp_id: item, comp: nc, time: ctx.nested_time(layer), ..*ctx };
         let (l2c, _) = ctx.layer_to_comp(layer);
         let outer = Some(self.outer.map_or(l2c, |o| o * l2c));
         let world = ctx.world_matrix(layer);
@@ -928,19 +928,24 @@ impl<'a> Renderer<'a> {
                 if let Some(pf) = self.proxy_for(*item)
                     && let Some(nc) = self.project.comp(*item)
                 {
-                    let img = self.footage.frame(*item, pf, ctx.source_time(layer))?;
+                    let img = self.footage.frame(*item, pf, ctx.nested_time(layer))?;
                     return Some(self.footage_buf(&img, pf, nc.width, nc.height));
                 }
                 // Essential Properties overrides render the nested comp with this instance's
                 // values.
                 let ov = essential_overrides(ctx, layer);
                 let tmp = if ov.is_empty() { None } else { effectcraft_project::essential::with_overrides(self.project, *item, &ov) };
+                // Preserve resolution when nested: drawn at full size even when this comp renders
+                // smaller (the buffer's scale places it).
+                let full = s < 1.0 && self.project.comp(*item).is_some_and(|nc| nc.preserve_resolution);
+                let bs = if full { 1.0 } else { s };
                 let base = self.nested_through(layer);
+                let base = Renderer { opts: RenderOpts { scale: bs, ..base.opts }, ..base };
                 let sub = match &tmp {
                     Some(p) => Renderer { project: p, ..base },
                     None => base,
                 };
-                let lt = ctx.source_time(layer);
+                let lt = ctx.nested_time(layer);
                 // Frame blending between the nested comp's frames (time-stretched/remapped).
                 let mode = frame_blend_mode(ctx, layer);
                 if mode != FrameBlend::Off
@@ -950,10 +955,10 @@ impl<'a> Renderer<'a> {
                     if w > 1e-6 {
                         let a = sub.comp_frame(*item, nc.frame_rate.tick_of(i));
                         let b = sub.comp_frame(*item, nc.frame_rate.tick_of(i + 1));
-                        return Some(Buf { img: blend_frames(mode, &a, &b, w as f32), offset: [0.0; 2], scale: s });
+                        return Some(Buf { img: blend_frames(mode, &a, &b, w as f32), offset: [0.0; 2], scale: bs });
                     }
                 }
-                Some(Buf { img: sub.comp_frame(*item, lt), offset: [0.0; 2], scale: s })
+                Some(Buf { img: sub.comp_frame(*item, lt), offset: [0.0; 2], scale: bs })
             }
             LayerSource::Footage { item } => {
                 let it = self.project.item(*item)?;
@@ -1900,6 +1905,8 @@ mod tests_collapse;
 mod tests_color;
 #[cfg(test)]
 mod tests_frame_blend;
+#[cfg(test)]
+mod tests_nested;
 #[cfg(test)]
 mod tests_paint;
 #[cfg(test)]

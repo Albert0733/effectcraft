@@ -1409,6 +1409,8 @@ CompItem.prototype.constructor = CompItem;
   def("shutterAngle", function () { return this.__info().shutterAngle; }, function (v) { this.__settings({ shutterAngle: __num(v) }); });
   def("shutterPhase", function () { return this.__info().shutterPhase; }, function (v) { this.__settings({ shutterPhase: __num(v) }); });
   def("motionBlurSamplesPerFrame", function () { return this.__info().motionBlurSamplesPerFrame; }, function (v) { this.__settings({ motionBlurSamples: __num(v) }); });
+  def("preserveNestedFrameRate", function () { return this.__info().preserveNestedFrameRate; }, function (v) { this.__settings({ preserveFrameRate: !!v }); });
+  def("preserveNestedResolution", function () { return this.__info().preserveNestedResolution; }, function (v) { this.__settings({ preserveResolution: !!v }); });
   def("renderer", function () { return this.__info().renderer; }, function (v) {
     this.__settings({ renderer: String(v).toLowerCase().indexOf("advanced") >= 0 ? "advanced3D" : "classic3D" });
   });
