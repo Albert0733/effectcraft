@@ -88,6 +88,12 @@ impl Offload for WorkerOffload {
                         crate::files::add_output(&p, b.to_vec().into());
                     }
                 }
+                "store" => {
+                    // A file the job keeps (Content-Aware Fill's sequence): browser storage.
+                    if let (Some(p), Ok(b)) = (path.as_string(), bytes.dyn_into::<js_sys::Uint8Array>()) {
+                        crate::files::put(&p, b.to_vec().into());
+                    }
+                }
                 _ => {
                     inbox.push(WorkerReply::Failed { error: json.as_string().unwrap_or_else(|| "worker failed".into()) });
                     inbox.push(WorkerReply::Done);
@@ -133,6 +139,13 @@ fn obj(pairs: &[(&str, JsValue)]) -> JsValue {
         let _ = js_sys::Reflect::set(&o, &JsValue::from_str(k), v);
     }
     o.into()
+}
+
+/// Send a file the job keeps to the page's storage (`Services::store_file` in a job worker).
+pub(crate) fn post_store(path: &str, data: &[u8]) {
+    let bytes = js_sys::Uint8Array::from(data);
+    let buf = bytes.buffer();
+    post(&obj(&[("type", "store".into()), ("path", path.into()), ("bytes", buf.clone().into())]), Some(&js_sys::Array::of1(&buf)));
 }
 
 /// Set up the worker's engine session (called once by `web/worker.js`).

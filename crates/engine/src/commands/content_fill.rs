@@ -3,7 +3,10 @@
 //! whole layer, render the result as a PNG sequence and add it as a "Fill" layer above the
 //! source, like After Effects. The algorithms are `effectcraft_raster::inpaint` (Object:
 //! flow-guided propagation + PatchMatch; Surface: propagation + one synthesised fill carried by
-//! the flow; Edge Blend: membrane fill). It runs as a background job (Window ▸ Progress).
+//! the flow; Edge Blend: membrane fill). It runs as a background job (Window ▸ Progress); in
+//! the browser the job goes to a job worker ([`FillPlan`], `offload::WorkerJob::ContentFill`),
+//! whose own WebGPU device renders the layer's frames in passes, and the files come back to
+//! browser storage.
 
 use std::sync::Arc;
 
@@ -11,7 +14,7 @@ use effectcraft_color::Label;
 use effectcraft_project::{Footage, FootageKind, ItemId, ItemKind, LayerId, LayerSource, build};
 use effectcraft_raster::Image;
 use effectcraft_raster::inpaint::{FillInput, FillMethod, FillOpts, dilate, fill_sequence};
-use effectcraft_render::{EvalCtx, RenderOpts, Renderer};
+use effectcraft_render::{Accelerator, EvalCtx, ExprHost, FootageSource, LayerCache, Renderer};
 use effectcraft_time::Tick;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -127,20 +130,116 @@ fn png(img: &Image) -> std::result::Result<Vec<u8>, String> {
 }
 
 fn default_dir(s: &Session, name: &str) -> String {
-    let base = s
-        .path
-        .as_deref()
-        .and_then(|p| std::path::Path::new(p).parent().map(|d| d.join("Fill")))
-        .unwrap_or_else(|| std::env::temp_dir().join("effectcraft-fill"));
+    let base = s.path.as_deref().and_then(|p| std::path::Path::new(p).parent().map(|d| d.join("Fill"))).unwrap_or_else(|| {
+        // (the browser has no temporary folder: its storage)
+        if cfg!(target_arch = "wasm32") { std::path::PathBuf::from("/Fill") } else { std::env::temp_dir().join("effectcraft-fill") }
+    });
     let safe: String = name.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
     let mut k = 1;
     loop {
         let d = base.join(format!("{safe}_Fill_{k}"));
-        if !d.exists() {
-            return d.to_string_lossy().to_string();
+        let ds = d.to_string_lossy().to_string();
+        if !s.services.exists(&ds) && !s.services.exists(&format!("{ds}/fill_00000.png")) {
+            return ds;
         }
         k += 1;
     }
+}
+
+/// A fill job, detached from the session (it also travels to a browser job worker).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FillPlan {
+    pub comp: ItemId,
+    pub layer: LayerId,
+    /// The source layer's name.
+    pub name: String,
+    /// The layer's size (the frames' size).
+    pub width: u32,
+    pub height: u32,
+    /// Comp times of the filled frames.
+    pub times: Vec<Tick>,
+    /// `object`, `surface` or `edgeBlend`.
+    pub method: String,
+    pub lighting: f32,
+    /// Alpha expansion (px).
+    pub expand: usize,
+    /// Reference frame: (layer, comp time).
+    pub reference: Option<(LayerId, Tick)>,
+    /// Folder of the PNG sequence.
+    pub dir: String,
+}
+
+/// Run a fill: the layer's frames (rendered in passes with a job worker's GPU), the fill, the
+/// PNG sequence written into `plan.dir` (`Services::store_file`). Returns the files.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn run_plan(
+    plan: &FillPlan,
+    project: &effectcraft_project::Project,
+    footage: &dyn FootageSource,
+    expr: Option<&dyn ExprHost>,
+    cache: &LayerCache,
+    services: &dyn crate::Services,
+    accel: Option<&dyn Accelerator>,
+    progress: &mut dyn FnMut(u64, u64) -> bool,
+    message: &mut dyn FnMut(&str),
+) -> std::result::Result<Vec<String>, String> {
+    message("Reading frames");
+    let (cid, w, h) = (plan.comp, plan.width, plan.height);
+    let comp = project.comp(cid).ok_or("composition missing")?;
+    let layer = comp.layer(plan.layer).ok_or("layer missing")?;
+    let mut r = Renderer::new(project, footage, crate::offload::analysis_opts(accel));
+    r.expr = expr;
+    r.cache = Some(cache);
+    let r = &r;
+    let ctx0 = EvalCtx { expr, ..EvalCtx::new(project, cid, comp, Tick::ZERO) };
+    let times = &plan.times;
+    let n = times.len() as u64;
+    let mut frames = Vec::with_capacity(times.len());
+    let mut holes = Vec::with_capacity(times.len());
+    for (k, t) in times.iter().enumerate() {
+        let (img, hole) = crate::offload::in_passes(accel, |a| masked_frame(&r.with_accel(a), &ctx0.at(*t), layer, w, h)).await;
+        holes.push(dilate(&hole, w as usize, h as usize, plan.expand));
+        frames.push(img);
+        if !progress(k as u64 + 1, n * 3) {
+            return Err(crate::render_queue::CANCELLED.into());
+        }
+    }
+    if !holes.iter().any(|h| h.iter().any(|b| *b)) {
+        return Err("the layer has no transparent area to fill: draw a mask (Subtract) around what to remove".into());
+    }
+    let mut references = vec![];
+    if let Some((rl, rt)) = plan.reference
+        && let Some(l) = comp.layer(rl)
+    {
+        let (img, hole) = crate::offload::in_passes(accel, |a| masked_frame(&r.with_accel(a), &ctx0.at(rt), l, w, h)).await;
+        if hole.iter().all(|b| !*b) {
+            let k = times.iter().enumerate().min_by_key(|(_, t)| (t.0 - rt.0).abs()).map(|(k, _)| k).unwrap_or(0);
+            references.push((k, img));
+        }
+    }
+    message("Filling");
+    let opts = FillOpts { method: FillMethod::from_name(&plan.method).unwrap_or_default(), lighting: plan.lighting, ..Default::default() };
+    let input = FillInput { frames, holes, references };
+    let out = fill_sequence(&input, &opts, &mut |d, t| progress(n + (d as u64 * n / t.max(1) as u64), n * 3)).ok_or(crate::render_queue::CANCELLED)?;
+    message("Writing the fill layer");
+    let dir = &plan.dir;
+    let mut paths = vec![];
+    for (k, img) in out.iter().enumerate() {
+        let path = std::path::Path::new(dir).join(format!("fill_{k:05}.png")).to_string_lossy().to_string();
+        services.store_file(&path, &png(img)?).map_err(|e| format!("{path}: {e}"))?;
+        paths.push(path);
+        if !progress(2 * n + k as u64 + 1, n * 3) {
+            return Err(crate::render_queue::CANCELLED.into());
+        }
+    }
+    Ok(paths)
+}
+
+/// Add the fill layer of a finished plan (one undo step).
+pub(crate) fn apply_plan(s: &mut Session, plan: &FillPlan, paths: Vec<String>) -> Result<Value> {
+    let importer = s.importer.clone();
+    add_fill_layer(s, plan.comp, plan.layer, &plan.name, paths, (plan.width, plan.height), plan.times[0], plan.times.len(), importer)
 }
 
 fn generate(s: &mut Session, p: &Value) -> Result<Value> {
@@ -184,61 +283,42 @@ fn generate(s: &mut Session, p: &Value) -> Result<Value> {
     let expand = st.alpha_expansion.round().max(0.0) as usize;
     let reference = st.reference_layer.filter(|r| comp.layer(*r).is_some()).map(|r| (r, Tick::from_seconds_f64(st.reference_time.unwrap_or(0.0))));
     let dir = str_p(p, "outputDir").map(str::to_string).unwrap_or_else(|| default_dir(s, &layer.name));
+    let plan = FillPlan {
+        comp: cid,
+        layer: lid,
+        name: layer.name.clone(),
+        width: w,
+        height: h,
+        times,
+        method: opts.method.name().to_string(),
+        lighting: opts.lighting,
+        expand,
+        reference,
+        dir,
+    };
+    let wait = b_p(p, "wait").unwrap_or(false);
+    // The browser: a job worker (its own GPU), the page keeps running.
+    if !wait && s.offloads() {
+        s.offload_analysis(crate::offload::WorkerJob::ContentFill { plan: Box::new(plan) }).map_err(EngineError::Other)?;
+        return Ok(json!({"job": "contentFill", "started": true, "worker": true}));
+    }
     let lf = LayerFrames::new(s, cid, lid);
     let services = s.services.clone();
     let importer = s.importer.clone();
-    let wait = b_p(p, "wait").unwrap_or(false);
     let name = layer.name.clone();
     s.spawn_task("contentFill", format!("Content-Aware Fill: {name}"), wait, move |ctl| {
-        ctl.message("Reading frames");
-        let project = lf.project.clone();
-        let comp = project.comp(cid).ok_or("composition missing")?;
-        let layer = comp.layer(lid).ok_or("layer missing")?;
-        let mut r = Renderer::new(&project, lf.footage.as_ref(), RenderOpts::default());
-        r.expr = lf.expr.as_deref();
-        r.cache = Some(&lf.cache);
-        let ctx0 = EvalCtx { expr: lf.expr.as_deref(), ..EvalCtx::new(&project, cid, comp, Tick::ZERO) };
-        let n = times.len() as u64;
-        let mut frames = Vec::with_capacity(times.len());
-        let mut holes = Vec::with_capacity(times.len());
-        for (k, t) in times.iter().enumerate() {
-            let (img, hole) = masked_frame(&r, &ctx0.at(*t), layer, w, h);
-            holes.push(dilate(&hole, w as usize, h as usize, expand));
-            frames.push(img);
-            if !ctl.progress(k as u64 + 1, n * 3) {
-                return Err(crate::render_queue::CANCELLED.into());
-            }
-        }
-        if !holes.iter().any(|h| h.iter().any(|b| *b)) {
-            return Err("the layer has no transparent area to fill: draw a mask (Subtract) around what to remove".into());
-        }
-        let mut references = vec![];
-        if let Some((rl, rt)) = reference
-            && let Some(l) = comp.layer(rl)
-        {
-            let (img, hole) = masked_frame(&r, &ctx0.at(rt), l, w, h);
-            if hole.iter().all(|b| !*b) {
-                let k = times.iter().enumerate().min_by_key(|(_, t)| (t.0 - rt.0).abs()).map(|(k, _)| k).unwrap_or(0);
-                references.push((k, img));
-            }
-        }
-        ctl.message("Filling");
-        let input = FillInput { frames, holes, references };
-        let out = fill_sequence(&input, &opts, &mut |d, t| ctl.progress(n + (d as u64 * n / t.max(1) as u64), n * 3)).ok_or(crate::render_queue::CANCELLED)?;
-        ctl.message("Writing the fill layer");
-        std::fs::create_dir_all(&dir).map_err(|e| format!("{dir}: {e}"))?;
-        let mut paths = vec![];
-        for (k, img) in out.iter().enumerate() {
-            let path = std::path::Path::new(&dir).join(format!("fill_{k:05}.png")).to_string_lossy().to_string();
-            services.write_file(&path, &png(img)?).map_err(|e| format!("{path}: {e}"))?;
-            paths.push(path);
-            if !ctl.progress(2 * n + k as u64 + 1, n * 3) {
-                return Err(crate::render_queue::CANCELLED.into());
-            }
-        }
-        let start = times[0];
-        let count = times.len();
-        let apply: Apply = Box::new(move |s: &mut Session| add_fill_layer(s, cid, lid, &name, paths, (w, h), start, count, importer));
+        let paths = effectcraft_render::passes::block_on(run_plan(
+            &plan,
+            &lf.project,
+            lf.footage.as_ref(),
+            lf.expr.as_deref(),
+            &lf.cache,
+            services.as_ref(),
+            None,
+            &mut |d, t| ctl.progress(d, t),
+            &mut |m| ctl.message(m),
+        ))?;
+        let apply: Apply = Box::new(move |s: &mut Session| add_fill_layer(s, cid, lid, &name, paths, (w, h), plan.times[0], plan.times.len(), importer));
         Ok(apply)
     })
 }

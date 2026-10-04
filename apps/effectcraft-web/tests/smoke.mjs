@@ -321,6 +321,8 @@ try {
     report.steps.gpuJobs = await js(`(async () => {
       let maxGapMs = 0, last = performance.now();
       const timer = setInterval(() => { const now = performance.now(); maxGapMs = Math.max(maxGapMs, now - last); last = now; }, 10);
+      const gaps = {};
+      const phase = (n) => { gaps[n] = maxGapMs; maxGapMs = 0; };
       await effectcraft.execute("layer.newSolid", {name: "GPU Job Solid", color: "#3366cc", width: 320, height: 180});
       await effectcraft.execute("effect.apply", {effect: "Fractal Noise"});
       await effectcraft.execute("prop.addKey", {path: "effects/#1/transform/offset", time: 0, value: [0.5, 0.5]});
@@ -333,6 +335,7 @@ try {
       const t0 = performance.now();
       const r = await effectcraft.execute("renderQueue.render", {});
       const renderMs = performance.now() - t0;
+      phase("render");
       // Applying Warp Stabilizer starts its analysis in a job worker (as in After Effects).
       await effectcraft.execute("effect.apply", {effect: "Warp Stabilizer"});
       const t1 = performance.now();
@@ -342,10 +345,30 @@ try {
         warp = await effectcraft.execute("warp.status", {});
       } while (!warp.analyzed && performance.now() - t1 < 180000);
       const warpMs = performance.now() - t1;
+      phase("warp");
+      // Content-Aware Fill (a job worker too): its input is the layer's source, so the noise and
+      // blur go into a precomp (rendered on the worker's GPU); cut a hole, fill half a second.
+      // (Editing on the page — pre-composing, the mask — is not part of the measured jobs.)
+      await effectcraft.execute("effect.remove", {effect: "Warp Stabilizer"});
+      await effectcraft.execute("layer.precompose", {name: "GPU Fill Source", mode: "move", open: false});
+      await effectcraft.execute("layer.addMask", {rect: [140, 70, 40, 40], mode: "subtract"});
+      const wa = await effectcraft.execute("comp.info", {}).then((c) => c.workArea).catch(() => null);
+      await effectcraft.execute("comp.workArea", {start: 0, end: 0.5});
+      phase("prepareFill");
+      const t2 = performance.now();
+      const fill = await effectcraft.execute("contentFill.generate", {method: "edgeBlend", wait: true}).catch((e) => ({error: String(e)}));
+      const fillMs = performance.now() - t2;
+      const fillLayers = await effectcraft.execute("comp.info", {}).then((c) => c.layers.map((l) => l.name).filter((n) => n.startsWith("Fill ")));
+      phase("fill");
       clearInterval(timer);
+      maxGapMs = Math.max(gaps.render, gaps.warp, gaps.fill);
+      // Back to the project as it was.
+      const c = await effectcraft.execute("comp.info", {});
+      const ids = c.layers.filter((l) => l.name === "GPU Fill Source" || l.name.startsWith("Fill ")).map((l) => l.id);
+      await effectcraft.execute("edit.clear", {layers: ids});
+      if (wa) await effectcraft.execute("comp.workArea", {start: wa[0], end: wa[1]});
       const workers = effectcraft.info().workers;
-      for (let k = 0; k < 7; k++) await effectcraft.execute("edit.undo", {});
-      return {status: r.items.map((i) => i.status), renderMs, warp, warpMs, workers, maxGapMs};
+      return {status: r.items.map((i) => i.status), renderMs, warp, warpMs, fill, fillMs, fillLayers, workArea: wa, workers, maxGapMs, gaps};
     })()`);
     const gj = report.steps.gpuJobs;
     gj.download = await waitDownload((n) => n.startsWith("gpujob"));
@@ -357,7 +380,10 @@ try {
     check(rj && rj.gpu && rj.readbacks >= 3 && rj.passes >= 6, `Render Queue frames on the job worker's GPU, in passes: ${JSON.stringify(rj)}`);
     check(gj.warp.analyzed, `Warp Stabilizer analysed in a job worker: ${JSON.stringify(gj.warp)}`);
     check(wj && wj.gpu && wj.readbacks > 0, `Warp Stabilizer input frames on the job worker's GPU: ${JSON.stringify(wj)}`);
-    check(gj.maxGapMs < 400, `event loop blocked ${gj.maxGapMs} ms during the GPU jobs`);
+    const fj = jobs.filter((j) => j.kind === "ContentFill").pop();
+    check(!gj.fill.error && gj.fillLayers.length > 0, `Content-Aware Fill in a job worker: ${JSON.stringify(gj.fill)} ${JSON.stringify(gj.fillLayers)}`);
+    check(fj && fj.gpu && fj.readbacks > 0, `Content-Aware Fill frames on the job worker's GPU: ${JSON.stringify(fj)}`);
+    check(gj.maxGapMs < 400, `event loop blocked ${gj.maxGapMs} ms during the GPU jobs: ${JSON.stringify(gj.gaps)}`);
   } else {
     report.steps.gpuJobs = { note: "no WebGPU in workers here: job workers render on their CPU" };
   }

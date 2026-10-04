@@ -20,6 +20,7 @@
 //! | Roto Brush Freeze | the freeze | the effect group |
 //! | Roto Brush propagation | the propagation | segmentations ([`WorkerReply::Segs`], streamed while it runs) go into the page's segmentation cache |
 //! | 3D Camera Tracker analysis | [`Session::start_camera`] | the effect's property group |
+//! | Content-Aware Fill | the fill ([`crate::commands::content_fill::FillPlan`]) | its PNG files (to the host's storage), then the fill layer (one undo step) |
 //!
 //! Viewer frames go to a separate, long-lived frame worker fed with project diffs
 //! ([`crate::remote`]).
@@ -107,6 +108,11 @@ pub enum WorkerJob {
         method: MaskMethod,
         times: Vec<Tick>,
     },
+    /// Content-Aware Fill: the files go to the host's storage, the plan and their paths come
+    /// back as [`WorkerReply::Fill`].
+    ContentFill {
+        plan: Box<crate::commands::content_fill::FillPlan>,
+    },
 }
 
 impl WorkerJob {
@@ -119,6 +125,7 @@ impl WorkerJob {
             WorkerJob::RotoPropagate { .. } => JobKind::RotoPropagate,
             WorkerJob::Track { .. } => JobKind::Track,
             WorkerJob::MaskTrack { .. } => JobKind::MaskTrack,
+            WorkerJob::ContentFill { .. } => JobKind::ContentFill,
         }
     }
 
@@ -132,6 +139,7 @@ impl WorkerJob {
             | WorkerJob::RotoPropagate { comp, layer, effect, .. } => Some((comp, layer, effect)),
             WorkerJob::Track { comp, layer, tracker, .. } => Some((comp, layer, tracker)),
             WorkerJob::MaskTrack { comp, layer, mask, .. } => Some((comp, layer, mask)),
+            WorkerJob::ContentFill { ref plan } => Some((plan.comp, plan.layer, 0)),
         }
     }
 }
@@ -146,6 +154,7 @@ pub enum JobKind {
     RotoPropagate,
     Track,
     MaskTrack,
+    ContentFill,
 }
 
 impl JobKind {
@@ -159,6 +168,7 @@ impl JobKind {
             JobKind::RotoPropagate => "Roto Brush Propagation",
             JobKind::Track => "Analyze Track",
             JobKind::MaskTrack => "Track Mask",
+            JobKind::ContentFill => "Content-Aware Fill",
         }
     }
 }
@@ -190,6 +200,12 @@ pub enum WorkerReply {
     /// Roto Brush segmentations computed so far (propagation), not sent before.
     Segs {
         segs: Vec<SegData>,
+    },
+    /// A Content-Aware Fill finished: its plan and the PNG files written (already in the
+    /// host's storage).
+    Fill {
+        plan: Box<crate::commands::content_fill::FillPlan>,
+        files: Vec<String>,
     },
     Failed {
         error: String,
@@ -448,6 +464,7 @@ async fn run_job(s: &mut Session, job: WorkerJob, post: Post) -> Result<(), Stri
             .await
         }
         WorkerJob::RotoPropagate { comp, layer, effect, direction } => propagate(s, comp, layer, effect, direction, post).await,
+        WorkerJob::ContentFill { plan } => fill(s, *plan, post).await,
         WorkerJob::Track { comp, layer, tracker, direction, settings, points, times } => {
             analysis(s, kind, target, post, |s| {
                 let work = crate::tracking::Work {
@@ -483,6 +500,36 @@ async fn run_job(s: &mut Session, job: WorkerJob, post: Post) -> Result<(), Stri
             .await
         }
     }
+}
+
+/// Content-Aware Fill in a worker: the layer's frames render on the worker's GPU (in passes),
+/// the files are written through the session's services (the browser: back to the page's
+/// storage) and the plan comes back for the page to add the fill layer.
+async fn fill(s: &mut Session, plan: crate::commands::content_fill::FillPlan, post: Post) -> Result<(), String> {
+    let p = post.clone();
+    let mut last = None::<web_time::Instant>;
+    let mut progress = move |done: u64, total: u64| {
+        if last.is_none_or(|t: web_time::Instant| t.elapsed().as_millis() >= 100) {
+            last = Some(web_time::Instant::now());
+            p(WorkerReply::Progress { done, total });
+        }
+        true
+    };
+    let accel = job_accel();
+    let files = crate::commands::content_fill::run_plan(
+        &plan,
+        &s.project,
+        s.footage.as_ref(),
+        s.expr.as_deref(),
+        &s.layer_cache,
+        s.services.as_ref(),
+        accel.as_deref(),
+        &mut progress,
+        &mut |_| {},
+    )
+    .await?;
+    post(WorkerReply::Fill { plan: Box::new(plan), files });
+    Ok(())
 }
 
 /// Roto Brush propagation in a worker: the segmentations stream back (at most every 250 ms)
@@ -674,6 +721,7 @@ impl Session {
         }
         let mut changed = false;
         let mut results = vec![];
+        let mut fills = vec![];
         for j in &mut self.offloaded {
             if j.progress.cancelled {
                 continue;
@@ -686,6 +734,7 @@ impl Session {
                         j.progress.total = total;
                     }
                     WorkerReply::Group { comp, layer, group, message } => results.push((j.kind, comp, layer, group, message)),
+                    WorkerReply::Fill { plan, files } => fills.push((plan, files)),
                     WorkerReply::Segs { segs } => {
                         for sd in &segs {
                             sd.store();
@@ -698,6 +747,13 @@ impl Session {
                 }
             }
             j.progress.elapsed = j.started.elapsed().as_secs_f64();
+        }
+        for (plan, files) in fills {
+            let n = files.len();
+            match crate::commands::content_fill::apply_plan(self, &plan, files) {
+                Ok(_) => self.events.push(Event::Toast { message: format!("Content-Aware Fill: {n} frame(s) filled"), error: false }),
+                Err(e) => self.events.push(Event::Toast { message: format!("Content-Aware Fill: {e}"), error: true }),
+            }
         }
         for (kind, comp, layer, group, message) in results {
             let uid = group.uid;
@@ -821,6 +877,21 @@ mod tests {
                 method: MaskMethod::Perspective,
                 times: vec![Tick::from_seconds_f64(1.0)],
             },
+            WorkerJob::ContentFill {
+                plan: Box::new(crate::commands::content_fill::FillPlan {
+                    comp,
+                    layer: LayerId(2),
+                    name: "Clip".into(),
+                    width: 4,
+                    height: 3,
+                    times: vec![Tick::ZERO],
+                    method: "object".into(),
+                    lighting: 0.5,
+                    expand: 1,
+                    reference: Some((LayerId(1), Tick::ZERO)),
+                    dir: "/Fill/Clip_Fill_1".into(),
+                }),
+            },
         ];
         for job in reqs {
             let kind = job.kind();
@@ -839,6 +910,22 @@ mod tests {
             WorkerReply::Progress { done: 1, total: 2 },
             WorkerReply::Group { comp, layer: LayerId(1), group: Box::new(g), message: "ok".into() },
             WorkerReply::Segs { segs: vec![SegData::new(5, &effectcraft_track::roto::FrameSeg::empty(4, 3))] },
+            WorkerReply::Fill {
+                plan: Box::new(crate::commands::content_fill::FillPlan {
+                    comp,
+                    layer: LayerId(2),
+                    name: "Clip".into(),
+                    width: 4,
+                    height: 3,
+                    times: vec![Tick::ZERO],
+                    method: "object".into(),
+                    lighting: 0.5,
+                    expand: 1,
+                    reference: Some((LayerId(1), Tick::ZERO)),
+                    dir: "/Fill/Clip_Fill_1".into(),
+                }),
+                files: vec!["/Fill/Clip_Fill_1/fill_00000.png".into()],
+            },
             WorkerReply::Failed { error: "boom".into() },
             WorkerReply::Done,
         ] {

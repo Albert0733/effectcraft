@@ -52,7 +52,7 @@ device of their own), `?nosw` (don't register the service worker).
 |---|---|
 | frame render thread pool (`ui-egui/src/frames.rs`) | frame workers (below), each with its own WebGPU device: `Frames::pump` hands queued frames to them, most important first (the viewer's frame, then prefetch); frames without effects that the page's GPU compositor can keep on the GPU render on the page. Without workers, queued frames render on the UI thread after each egui frame within 40 ms (24 ms while playing) |
 | Render Queue on a background thread | a Web Worker running a second engine instance with its own WebGPU device (below); progress streams back, the page never waits |
-| tracker / mask tracker / Warp Stabilizer / 3D Camera Tracker / Roto Brush Freeze threads | the same workers; the analysed property group comes back as one undo step |
+| tracker / mask tracker / Warp Stabilizer / 3D Camera Tracker / Roto Brush Freeze threads, Content-Aware Fill tasks | the same workers; the analysed property group (or the fill layer) comes back as one undo step |
 | `rayon` parallel loops (raster, effects, export batches) | rayon's global pool falls back to the calling thread when threads are unavailable: same code, serial |
 | `std::time::Instant` / `SystemTime` (panic on wasm32) | `web-time` (re-exports `std::time` on native) |
 | `std::fs` project reads/writes (`FsServices`) | `files::WebServices`: the virtual file table, persisted (below); saving also downloads the `.ecproj` |
@@ -103,7 +103,8 @@ compiled twice) and its own memory (`crates/engine/src/offload.rs`, `src/worker.
 
 1. The session's `Offload` serializes a `WorkerRequest`: the project JSON, the footage paths it
    reads, and the job (`render` with the resolved queue items and output paths; `warp`, `camera`,
-   `track`, `maskTrack`, `rotoFreeze` with the target and analysis parameters).
+   `track`, `maskTrack`, `rotoFreeze`, `rotoPropagate` with the target and analysis parameters;
+   `contentFill` with its plan).
 2. `js/host.js` takes an idle worker from its pool (or starts one), sends it the footage bytes it
    doesn't have yet, then the request.
 3. The worker runs the job on a plain engine session and posts `WorkerReply`s: render progress
@@ -185,8 +186,16 @@ the same futures with `passes::block_on`; they never wait there).
   render on the device in frame workers and job workers alike.
 
 `effectcraft.info().workers` reports `{running, idle, gpu: {adapter} | {cpu: why}, jobs:
-[{kind, gpu, passes, readbacks, ms}]}` (the last jobs). Content-Aware Fill runs on the page
-(it is not a worker job).
+[{kind, gpu, passes, readbacks, ms}]}` (the last jobs).
+
+**Content-Aware Fill in a job worker (M13.30).** `contentFill.generate` (the panel's Generate
+Fill Layer) sends its plan (`content_fill::FillPlan`: layer, frames, method, folder) to a job
+worker (`WorkerJob::ContentFill`, `jobs.list` id `contentFill`): the worker renders the
+layer's frames in passes on its device, fills them and writes the PNG sequence through its
+services, which send each file to the page's browser storage (`{type: "store"}` messages, under
+`/Fill/<layer>_Fill_<n>/`); then the plan comes back (`WorkerReply::Fill`) and the page adds
+the fill layer as one undo step. (Before, the fill ran on the page's thread and could not
+write its folder.)
 
 **Threading design: one engine instance per worker (decided, M13.24).** Shared-memory threads
 inside one instance (SharedArrayBuffer + atomics, a `wasm-bindgen-rayon`-style pool) need the
@@ -434,7 +443,6 @@ layer buffers through the disk store and the prefetch plan (`remote.rs`
   project replica and the footage it reads); see the threading design above.
 - Browsers without WebGPU in workers render frames, Render Queue jobs and analyses on the
   workers' CPU. A frame renders at most 24 passes on the GPU, then on the CPU.
-- Content-Aware Fill runs on the page's thread (it is not offloaded to a job worker).
 - A layer buffer is fetched from disk only after some worker missed it in a recent frame (the
   first frame after a reload renders its layers).
 - Cancelling an analysis drops its partial result (the worker is terminated).

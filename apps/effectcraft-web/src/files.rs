@@ -126,6 +126,10 @@ impl Services for WebServices {
     }
     fn store_file(&self, path: &str, data: &[u8]) -> std::io::Result<()> {
         put(path, data.into());
+        // A job worker's files (Content-Aware Fill) go to the page's storage.
+        if crate::is_worker() {
+            crate::worker::post_store(path, data);
+        }
         Ok(())
     }
 }

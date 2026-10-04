@@ -335,6 +335,58 @@ fn content_aware_fill_runs_in_the_background() {
     std::fs::remove_dir_all(&out).unwrap();
 }
 
+/// The browser: Content-Aware Fill goes to a job worker (its files written through the
+/// worker's services), and the page adds the fill layer when the plan comes back.
+#[test]
+fn content_aware_fill_runs_in_a_job_worker() {
+    #[derive(Default)]
+    struct Manual(std::sync::Mutex<Vec<(crate::offload::WorkerRequest, Arc<crate::offload::Inbox>)>>);
+    impl crate::offload::Offload for Manual {
+        fn start(&self, req: crate::offload::WorkerRequest, inbox: Arc<crate::offload::Inbox>) -> std::result::Result<(), String> {
+            self.0.lock().unwrap().push((req, inbox));
+            Ok(())
+        }
+        fn cancel(&self, _: u64) {}
+    }
+    let (mut s, cid, clip, _) = setup(48, 32, 0.2, |f| {
+        let mut img = Image::new(48, 32);
+        for y in 0..32 {
+            for x in 0..48 {
+                img.set(x, y, bg(x as f32 + f as f32, y as f32));
+            }
+        }
+        img
+    });
+    let off = Arc::new(Manual::default());
+    s.offload = Some(off.clone());
+    s.execute("layer.addMask", json!({"rect": [20.0, 10.0, 8.0, 8.0], "mode": "subtract"})).unwrap();
+    let out = tmp("cafworker");
+    let r = s.execute("contentFill.generate", json!({"method": "edgeBlend", "outputDir": out.to_string_lossy()})).unwrap();
+    assert_eq!((r["job"].as_str(), r["worker"].as_bool()), (Some("contentFill"), Some(true)), "{r}");
+    assert!(s.jobs().iter().any(|j| j.id == "contentFill"));
+    let (req, inbox) = off.0.lock().unwrap().pop().unwrap();
+    let back: crate::offload::WorkerRequest = serde_json::from_str(&serde_json::to_string(&req).unwrap()).unwrap();
+    // The worker: the same footage, the default (file system) services.
+    let mut w = Session { footage: s.footage.clone(), ..Default::default() };
+    let post: crate::offload::Post = std::rc::Rc::new(move |r| inbox.push(r));
+    crate::offload::run_request(&mut w, back, &post);
+    s.poll_offload();
+    let comp = s.project.comp(cid).unwrap().clone();
+    let i = comp.layers.iter().position(|l| l.id == clip).unwrap();
+    assert!(i > 0, "a fill layer above the source");
+    let fill = &comp.layers[i - 1];
+    assert!(fill.name.starts_with("Fill 1"), "{}", fill.name);
+    let LayerSource::Footage { item } = fill.source else { panic!("footage") };
+    let Some(ItemKind::Footage(f)) = s.project.item(item).map(|i| &i.kind) else { panic!() };
+    assert_eq!(f.sequence.len(), 5);
+    assert!(f.sequence.iter().all(|p| std::path::Path::new(p).exists()));
+    assert!(s.jobs().is_empty());
+    // One undo step.
+    assert!(s.undo());
+    assert_eq!(s.project.comp(cid).unwrap().layers.len(), comp.layers.len() - 1);
+    std::fs::remove_dir_all(&out).unwrap();
+}
+
 // ---------------------------------------------------------------- Scene Edit Detection
 
 fn shot_frame(f: u32) -> Image {
