@@ -776,7 +776,7 @@ fn paragraph(text: &str, base: usize, runs: &[(Range<usize>, TextStyle)], primar
                             last_ok = Some(p);
                             break;
                         }
-                        let b = last_ok.take().expect("checked");
+                        let Some(b) = last_ok.take() else { break };
                         ranges.push(start..b);
                         start = b;
                     }
@@ -1015,9 +1015,9 @@ pub fn layout_rich_uncached(text: &str, runs: &[(Range<usize>, TextStyle)], para
         x0 = x0.min(0.0);
         x1 = x1.max(w);
     }
-    let first = &lay.lines[0];
-    let last = lay.lines.last().expect("at least one line");
-    lay.bounds = [x0, first.baseline - first.ascent, x1.max(x0), last.baseline + last.descent];
+    if let (Some(first), Some(last)) = (lay.lines.first(), lay.lines.last()) {
+        lay.bounds = [x0, first.baseline - first.ascent, x1.max(x0), last.baseline + last.descent];
+    }
     lay
 }
 
