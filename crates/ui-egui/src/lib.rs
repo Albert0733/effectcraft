@@ -477,8 +477,32 @@ impl EffectcraftApp {
         full
     }
 
+    /// The cache key of viewer frame `frame` of `comp` at `scale` (see [`Self::frame_series`]).
     pub fn frame_key(&self, comp: ItemId, frame: i64, scale: f64) -> FrameKey {
-        FrameKey { revision: self.session.revision, comp: comp.0, frame, scale: (scale * 1000.0).round() as u32, view: self.view_hash(comp) }
+        FrameKey { frame, ..self.frame_series(comp, scale) }
+    }
+
+    /// The key of frame 0 of `comp`'s viewer frames at `scale` (the revision, view and render
+    /// options are the same for every frame: loops compute this once).
+    pub fn frame_series(&self, comp: ItemId, scale: f64) -> FrameKey {
+        FrameKey {
+            revision: self.session.revision,
+            comp: comp.0,
+            frame: 0,
+            scale: (scale * 1000.0).round() as u32,
+            view: self.view_hash(comp),
+            opts: frames::opts_hash(&self.frame_opts(comp, scale)),
+        }
+    }
+
+    /// The frame series the viewer of `comp` shows now (its scale, view and options, at the
+    /// current revision): what the cache bars count.
+    pub fn shown_series(&self, comp: ItemId) -> FrameKey {
+        match self.viewer_shown.as_ref().map(|(_, k)| *k) {
+            Some(k) if k.comp == comp.0 && k.revision == self.session.revision => FrameKey { frame: 0, ..k },
+            Some(k) => self.frame_series(comp, k.scale as f64 / 1000.0),
+            None => self.frame_series(comp, 1.0),
+        }
     }
 
     /// Hash of the comp viewer's 3D view camera (0 for the active camera view).
@@ -666,9 +690,10 @@ impl EffectcraftApp {
     fn play_cached(&mut self, now: f64) -> bool {
         let (Some(mut pl), Some(cid)) = (self.playback.plan, self.session.active_comp_id()) else { return false };
         let scale = self.viewer_shown.as_ref().map(|(_, k)| k.scale as f64 / 1000.0).unwrap_or(1.0);
+        let series = self.frame_series(cid, scale);
         let mut last = None;
         let mut f = pl.first;
-        while f <= pl.end && self.frames.is_cached(&self.frame_key(cid, f, scale)) {
+        while f <= pl.end && self.frames.is_cached(&FrameKey { frame: f, ..series }) {
             last = Some(f);
             f += pl.step;
         }
@@ -722,6 +747,7 @@ impl EffectcraftApp {
             (self.frames_parallelism() / 2).max(2) as i64
         };
         let mut queued = self.frames.inflight();
+        let series = self.frame_series(cid, scale);
         if self.playback.caching
             && let Some(p) = plan
         {
@@ -730,8 +756,7 @@ impl EffectcraftApp {
             let n = (p.end - p.start) / p.step + 1;
             let order: Vec<i64> = (0..n).filter_map(|k| p.frame_after(p.first, k)).collect();
             for f in order {
-                let key = self.frame_key(cid, f, scale);
-                if self.frames.is_cached(&key) {
+                if self.frames.is_cached(&FrameKey { frame: f, ..series }) {
                     continue;
                 }
                 all = false;
@@ -769,8 +794,7 @@ impl EffectcraftApp {
                     f
                 }
             };
-            let key = self.frame_key(cid, f, scale);
-            if !self.frames.is_cached(&key) {
+            if !self.frames.is_cached(&FrameKey { frame: f, ..series }) {
                 self.request_frame(cid, f, scale);
                 queued += 1;
             }
@@ -802,7 +826,7 @@ impl EffectcraftApp {
             if !video {
                 self.playback.audio_frame = Some(target);
             } else {
-                self.playback.waiting = !self.frames.is_cached(&self.frame_key(cid, target, scale));
+                self.playback.waiting = !self.frames.is_cached(&FrameKey { frame: target, ..series });
                 if target != cur {
                     self.session.set_time(fr.tick_of(target));
                     self.playback.shown += 1;
@@ -841,8 +865,7 @@ impl EffectcraftApp {
             ctx.request_repaint();
             return;
         }
-        let key = self.frame_key(cid, target, scale);
-        if self.frames.is_cached(&key) {
+        if self.frames.is_cached(&FrameKey { frame: target, ..series }) {
             self.playback.waiting = false;
             if target != cur {
                 self.session.set_time(fr.tick_of(target));
@@ -852,7 +875,7 @@ impl EffectcraftApp {
             // Not cached yet: hold the clock at the current frame (cache first, then play).
             self.playback.waiting = true;
             let next = plan.and_then(|p| p.frame_after(cur, 1)).unwrap_or(if cur + 1 > wb { wa } else { cur + 1 });
-            if self.frames.is_cached(&self.frame_key(cid, next, scale)) {
+            if self.frames.is_cached(&FrameKey { frame: next, ..series }) {
                 self.session.set_time(fr.tick_of(next));
             }
             self.playback.start_wall = now;
@@ -1011,7 +1034,8 @@ impl EffectcraftApp {
                 }
                 effectcraft_engine::Event::Toast { message, .. } => self.toast = Some((message, ctx.input(|i| i.time))),
                 effectcraft_engine::Event::OpenUrl(url) => ctx.open_url(egui::OpenUrl::new_tab(url)),
-                effectcraft_engine::Event::ProjectChanged { .. } => {}
+                // Frames of earlier revisions can't be shown again.
+                effectcraft_engine::Event::ProjectChanged { revision } => self.frames.drop_stale(revision),
                 effectcraft_engine::Event::Frontend { command, params } => {
                     if let Err(e) = crate::menus::frontend(self, ctx, &command, params) {
                         self.ui.status = e;

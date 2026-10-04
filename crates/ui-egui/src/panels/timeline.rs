@@ -932,9 +932,9 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
             let _ = app.session.execute("comp.workArea", json!({key: secs, "merge": "wa-drag"}));
         }
     }
-    // Cache bar (green: cached frames at the viewer's resolution).
-    let scale_key = app.viewer_shown.as_ref().map(|(_, k)| k.scale).unwrap_or(1000);
-    let cached = app.frames.cached_frames(app.session.revision, cid.0, scale_key);
+    // Cache bar (green: cached frames of what the viewer shows: its resolution, view and options).
+    let series = app.shown_series(cid);
+    let cached = app.frames.cached_frames(&series);
     let fd = comp.frame_duration().seconds();
     let cy0 = wa_row.max.y - 4.0;
     let mut run: Option<(i64, i64)> = None;
@@ -959,8 +959,8 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     // Disk-cached frames not in RAM (blue), like After Effects.
     if app.session.disk_cache.is_some() || app.frames.remote_disk() {
         let frames = comp.frame_rate.frame_at(comp.duration);
-        let opts = app.frame_opts(cid, scale_key as f64 / 1000.0);
-        let disk = app.frames.disk_frames(&app.render_source(), app.session.revision, cid.0, scale_key, app.view_hash(cid), frames, &opts);
+        let opts = app.frame_opts(cid, series.scale as f64 / 1000.0);
+        let disk = app.frames.disk_frames(&app.render_source(), &series, frames, &opts);
         let draw_blue = |a: i64, b: i64| {
             let x0 = tm.x(a as f64 * fd);
             let x1 = tm.x((b + 1) as f64 * fd);
