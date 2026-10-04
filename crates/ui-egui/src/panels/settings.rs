@@ -176,7 +176,8 @@ fn page_ui(app: &mut EffectcraftApp, ui: &mut egui::Ui, page: &Page, cur: &Value
                                     }
                                     r
                                 }
-                                Kind::Bool => unreachable!(),
+                                // Checkboxes are drawn above; nothing to edit here.
+                                Kind::Bool => ui.label(""),
                             };
                             resp = Some(r);
                         });
