@@ -434,7 +434,7 @@ impl Importer<'_> {
         }
         let fit = if ti.scale_to_frame && size.0 > 0 && size.1 > 0 { (comp.width as f64 / size.0 as f64).min(comp.height as f64 / size.1 as f64) } else { 1.0 };
         let lc = l.clone();
-        let tr = l.transform_mut().expect("transform");
+        let Some(tr) = l.transform_mut() else { return };
         // Position / anchor (NaN = centred).
         for (src, dst) in [("position", "position"), ("anchor", "anchor")] {
             let Some(p) = m.param(src) else { continue };

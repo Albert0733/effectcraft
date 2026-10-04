@@ -498,3 +498,24 @@ fn formats_parse() {
     assert_eq!(par_fraction(0.9), (9, 10));
     assert_eq!(par_fraction(1.0), (1, 1));
 }
+
+#[test]
+fn export_survives_a_precomp_layer_pointing_at_a_non_comp() {
+    // A damaged project: the precomp layer's source is a footage item (or a deleted item).
+    let (mut p, cid) = ae_project();
+    let footage = p.items.iter().find(|(_, i)| matches!(i.kind, ItemKind::Footage(_))).map(|(id, _)| *id).unwrap();
+    for bad in [footage, ItemId(9_999)] {
+        let mut c = (*p.comp_arc(cid).unwrap()).clone();
+        for l in &mut c.layers {
+            if matches!(l.source, LayerSource::Comp { .. }) {
+                l.source = LayerSource::Comp { item: bad };
+            }
+        }
+        p.item_mut(cid).unwrap().kind = ItemKind::Comp(Arc::new(c));
+        for format in [TimelineFormat::Fcp7Xml, TimelineFormat::Fcpxml, TimelineFormat::Otio] {
+            let out = export(&p, cid, &ExportOptions { format, prerender: PrerenderMode::None, ..Default::default() }, &HashMap::new()).unwrap();
+            assert_eq!(out.sequences, 1);
+        }
+    }
+    assert!(matches!(export(&p, footage, &ExportOptions::default(), &HashMap::new()), Err(Error::NoComp(_))));
+}
