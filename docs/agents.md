@@ -397,6 +397,23 @@ cannot express (most effects, cameras and lights, layer styles, audio, video foo
 agent can check what a player will not show. A `.lottie` path writes a dotLottie archive.
 `file.importLottie` returns `{comp, items, warnings}` and opens the new composition.
 
+Premiere Pro interop goes through timeline interchange (MCP: the `execute_command` tool; control channel: `engine.execute`
+with the same ids):
+
+```sh
+effectcraft-cli exec file.importTimeline '{"path":"edit.xml"}' main.ecproj --save      # FCP7 XML / .fcpxml / .otio / .edl
+effectcraft-cli exec file.exportTimeline '{"comp":"Main","path":"Main.xml"}' main.ecproj --json
+effectcraft-cli exec file.exportTimeline '{"comp":"Main","path":"Main.otio","prerender":"none"}' main.ecproj
+```
+
+`file.importTimeline` returns `{format, folder, comps, allComps, items, missing, warnings}`
+(`missing` lists media imported as placeholders). `file.exportTimeline` writes Final Cut Pro XML
+(`.xml`, which Premiere Pro opens with File ▸ Import) unless `format` or the extension says
+`fcpxml`, `otio` or `edl`; `prerender` (`unsupported` by default, `all`, `none`) controls which
+layers are rendered to ProRes 4444 movies next to the document. It returns `{path, format,
+sequences, videoTracks, audioTracks, clips, prerendered, warnings}`. Native `.prproj` files are
+not read or written.
+
 `<comp>` is an id or name, or `-` for the active comp. `<value>` is JSON (`50`, `[960,540]`,
 `"#ff0000"`) or a bare string.
 

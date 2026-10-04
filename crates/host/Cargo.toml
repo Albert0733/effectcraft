@@ -29,4 +29,6 @@ effectcraft-svg = { workspace = true }
 effectcraft-pdf = { workspace = true }
 effectcraft-raster = { workspace = true }
 effectcraft-time = { workspace = true }
+effectcraft-interchange = { workspace = true }
+image = { workspace = true }
 rayon = { workspace = true }

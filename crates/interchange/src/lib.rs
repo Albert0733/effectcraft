@@ -36,10 +36,13 @@ mod tests;
 pub use export::{ExportOptions, ExportOutput, PrecompMode, PrerenderMode, Prerendered, export, plan_prerender, prerender_reason};
 pub use import::{ImportOptions, ImportResult, import};
 
+pub use filmcraft_geom as fc_geom;
 /// FilmCraft's interchange crate (format readers/writers) and timeline model, re-exported so
 /// tests and tools can build documents in code.
 pub use filmcraft_interchange as fc;
+pub use filmcraft_media as fc_media;
 pub use filmcraft_project as fc_project;
+pub use filmcraft_time as fc_time;
 
 use serde::{Deserialize, Serialize};
 

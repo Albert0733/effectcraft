@@ -108,13 +108,14 @@ enum Plan {
 }
 
 /// Why a layer can't be a plain clip (None = it can), regardless of the mode.
-fn unsupported(project: &Project, comp: &Comp, l: &Layer) -> Option<String> {
+fn unsupported(project: &Project, comp: &Comp, l: &Layer, format: TimelineFormat) -> Option<String> {
     let kind = match &l.source {
         LayerSource::Text => Some("text layer"),
         LayerSource::Shape => Some("shape layer"),
         LayerSource::Model { .. } | LayerSource::Primitive { .. } => Some("3D model layer"),
         LayerSource::Solid { item } => match project.item(*item).map(|i| &i.kind) {
             Some(ItemKind::Solid(s)) if s.width != comp.width || s.height != comp.height => Some("solid smaller or larger than the frame"),
+            Some(ItemKind::Solid(_)) if format != TimelineFormat::Fcp7Xml => Some("solid (the format has no colour mattes)"),
             _ => None,
         },
         _ => None,
@@ -184,7 +185,7 @@ fn plan(project: &Project, comp: &Comp, l: &Layer, opts: &ExportOptions) -> Plan
     if l.switches.adjustment {
         return Plan::Skip("adjustment layer (its effects apply to the layers below)".into());
     }
-    let why = unsupported(project, comp, l);
+    let why = unsupported(project, comp, l, opts.format);
     match opts.prerender {
         PrerenderMode::All => Plan::Render("pre-render all layers".into()),
         PrerenderMode::Unsupported => match (&l.source, why) {
@@ -443,7 +444,7 @@ impl Exporter<'_> {
                 },
                 Plan::Native | Plan::Nest => {
                     if self.opts.prerender == PrerenderMode::None
-                        && let Some(w) = unsupported(self.p, &comp, l)
+                        && let Some(w) = unsupported(self.p, &comp, l, self.opts.format)
                     {
                         self.warn(format!("layer \"{}\": {w} not exported", l.name));
                     }

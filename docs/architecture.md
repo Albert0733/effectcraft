@@ -36,6 +36,7 @@ cpal or muda. Everything in L0 to L4, the egui UI and the web app also build for
 | L3 | `expr` | The expression engine (JavaScript via boa) with the After Effects object model |
 | L3 | `export` | Render queue encoding: H.264, HEVC and AV1 MP4, ProRes, WebM (VP9 + alpha or AV1, Opus), PNG/JPEG/TIFF/EXR sequences, GIF, WAV/AIFF |
 | L3 | `gpu` | The GPU compositor and GPU effects on wgpu compute shaders (Metal, Vulkan, Direct3D 12, WebGPU), checked against the CPU renderer |
+| L3 | `interchange` | Premiere Pro interop through timeline interchange (FCP7 XML, FCPXML, OTIO, EDL via FilmCraft's `filmcraft-interchange`): sequences ↔ compositions (§6a) |
 | L3 | `lottie` | Lottie JSON / dotLottie import and export (layers, precomps, eased and spatial keyframes, shapes, masks, mattes) with a warnings list for what Lottie cannot express |
 | L3 | `plugin` | Effect plug-ins: loads sandboxed WebAssembly effect modules (plug-in API v1; the wasmi interpreter behind the `wasm` feature, on for native hosts) into the effect registry ([plugins.md](plugins.md)) |
 | L4 | `engine` | `Session`: project, branching undo history, editor state, the command registry and menus, the ScriptUI window model (`scriptui`) |
@@ -426,6 +427,43 @@ Web Worker, and the worker's replies (progress, item status, the analysed proper
 applied on the UI thread.
 The shortcut dispatcher and the menus read the active preset. See
 [preferences.md](preferences.md).
+
+## 6a. Premiere Pro interop (timeline interchange)
+
+After Effects' File ▸ Import / Export ▸ Adobe Premiere Pro Project… go through the public
+interchange formats Premiere Pro itself reads and writes, not the native `.prproj` file (it has no
+public specification; supporting it awaits a decision). `crates/interchange` (L3, no file I/O)
+maps FilmCraft's timeline model (`filmcraft-project`, parsed and written by `filmcraft-interchange`,
+pinned at the same git revision as the other `filmcraft-*` crates; pure Rust, builds for wasm32)
+to compositions and back:
+
+- **Import** (`file.importTimeline {path, format?, edlFrameRate?}`): Final Cut Pro 7 XML (`xmeml`,
+  Premiere's File ▸ Export ▸ Final Cut Pro XML), FCPXML 1.9–1.11, OpenTimelineIO and CMX 3600 EDL.
+  Sequences become comps (size, rate, duration, pixel aspect, start timecode, markers); video
+  tracks become layers stacked by track (top track = top layer, later clips of a track above
+  earlier ones); clips become footage layers with their in/out/start, speed and reverse (time
+  stretch) and frame holds (Time Remap); Motion (position, scale / scale width, rotation, anchor
+  point, Scale to Frame Size) and Opacity (blend mode) with keyframes, keyframe times converted
+  from clip time to layer time; cross dissolves and dips become overlapping layers with opacity
+  keyframes; nested sequences become precomps; audio tracks become audio-only layers with Audio
+  Levels (clip volume + gain + track volume, crossfades as level keyframes); colour mattes and
+  adjustment layers become solids; bins become Project panel folders under a folder named after
+  the document; media that cannot be found become placeholders with the document's metadata
+  (`missing` in the result). Effects, effect masks, titles/graphics and speed ramps are reported
+  in `warnings`.
+- **Export** (`file.exportTimeline {comp?, path, format?, prerender?, precomps?}`): one sequence
+  per comp, one track per layer (bottom layer = V1), footage clips with their timing, Motion,
+  Opacity and audio levels (linked audio clips for layers with sound), precomps as nested
+  sequences, full-frame solids as colour mattes. Layers a timeline cannot represent (text, shapes,
+  3D, effects, masks, track mattes, parenting, expressions, animated time remapping, non-uniform
+  scale, blend modes Premiere lacks) are pre-rendered to ProRes 4444 with alpha next to the
+  document (`prerender: unsupported`, the default; `all` renders every visual layer; `none` leaves
+  them out with a warning) and referenced as media. The menu keeps After Effects' label "Adobe
+  Premiere Pro Project…", but the file written is Final Cut Pro XML (`.xml`), which Premiere Pro
+  imports with File ▸ Import; the dialog says so. FCPXML, OTIO and EDL are the other formats.
+
+AAF and OMF import arrive with the FilmCraft revision that adds them to `filmcraft-interchange`
+(the pinned revision predates them).
 
 ## 7. Performance of everyday operations
 
