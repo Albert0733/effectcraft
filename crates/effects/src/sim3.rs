@@ -716,7 +716,12 @@ pub fn playground_state(ctx: &EffectCtx) -> Option<Vec<crate::psim::SimParticle>
     )
 }
 
-fn particle_playground(ctx: &EffectCtx, mut b: Buf) -> Buf {
+fn particle_playground(ctx: &EffectCtx, b: Buf) -> Buf {
+    playground_plan(ctx, &b).finish(b)
+}
+
+/// Particle Playground's [`PgPlan`] for buffer geometry `b` (its pixels are not read).
+pub fn playground_plan(ctx: &EffectCtx, b: &Buf) -> PgPlan {
     let pr = ctx.params;
     let (lw, lh) = (ctx.layer_size[0] as f32, ctx.layer_size[1] as f32);
     let pg = pg_of(ctx);
@@ -825,7 +830,6 @@ fn particle_playground(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let offset_type = pr.e("layerMap/timeOffsetType");
     let offset = pr.f("layerMap/timeOffset");
     let fps = ctx.fps();
-    let mut frames: std::collections::HashMap<i64, Option<crate::LayerPixels>> = std::collections::HashMap::new();
     let mut sprites: Vec<Sprite> = vec![];
     let mut blits: Vec<(PgParticle, i64)> = vec![];
     for q in &parts {
@@ -869,30 +873,64 @@ fn particle_playground(ctx: &EffectCtx, mut b: Buf) -> Buf {
             None => sprites.push(Sprite::new(x as f32, y as f32, q.r * sc * s, q.c, Shape::Disc)),
         }
     }
-    let mut fx = splat(b.img.width, b.img.height, &sprites, Acc::Over);
+    let mut plan = PgPlan { sprites: SpritePlan { sprites, tints: vec![], acc: Acc::Over, post: Post::Combine(5) }, blits: vec![], frames: vec![] };
     if let (Some(id), Some(host)) = (map_id, ctx.env.host) {
         let me = pr.get(&crate::layer_source_id("layerMap/layerMapLayer")).is_none_or(|v| v.as_enum() != 0);
+        // Fetched frames by frame number: their index in `plan.frames` (`None` = unavailable).
+        let mut frames: std::collections::HashMap<i64, Option<usize>> = std::collections::HashMap::new();
         for (q, frame) in &blits {
-            if !frames.contains_key(frame) && frames.len() >= 32 {
+            let at = if !frames.contains_key(frame) && frames.len() >= 32 {
                 // Too many distinct times: reuse the nearest fetched frame.
-                if let Some(k) = frames.keys().min_by_key(|k| (*k - frame).abs()).copied()
-                    && let Some(Some(lp)) = frames.get(&k)
-                {
-                    let (x, y) = b.to_px([q.p[0] as f64, q.p[1] as f64]);
-                    blit_layer(&mut fx, lp, x, y, q.angle as f64, [q.scale[0] as f64, q.scale[1] as f64], b.scale, q.c[3]);
+                match frames.keys().min_by_key(|k| (*k - frame).abs()).copied() {
+                    Some(k) => frames.get(&k).copied().flatten(),
+                    None => None,
                 }
-                continue;
-            }
-            let lp = frames.entry(*frame).or_insert_with(|| host.layer_at(id, *frame as f64 / fps, me));
-            if let Some(lp) = lp {
+            } else {
+                *frames.entry(*frame).or_insert_with(|| {
+                    let lp = host.layer_at(id, *frame as f64 / fps, me)?;
+                    plan.frames.push(lp);
+                    Some(plan.frames.len() - 1)
+                })
+            };
+            if let Some(i) = at {
                 let (x, y) = b.to_px([q.p[0] as f64, q.p[1] as f64]);
-                blit_layer(&mut fx, lp, x, y, q.angle as f64, [q.scale[0] as f64, q.scale[1] as f64], b.scale, q.c[3]);
+                plan.blits.push(PgBlit { frame: i, x, y, angle: q.angle as f64, scale: [q.scale[0] as f64, q.scale[1] as f64], alpha: q.c[3] });
             }
         }
     }
-    // Particles replace the layer's own pixels.
-    b.img = combine(&b.img, &fx, 5);
-    b
+    plan
+}
+
+/// A Layer Map particle: frame `frame` of [`PgPlan::frames`] centred on (`x`, `y`) buffer px,
+/// rotated `angle` degrees, scaled and faded to `alpha`.
+#[derive(Clone, Copy, Debug)]
+pub struct PgBlit {
+    pub frame: usize,
+    pub x: f64,
+    pub y: f64,
+    pub angle: f64,
+    pub scale: [f64; 2],
+    pub alpha: f32,
+}
+
+/// What Particle Playground draws this frame: the dot and text particles as sprites, then the
+/// Layer Map particles over them in order; the result replaces the layer's own pixels.
+pub struct PgPlan {
+    pub sprites: SpritePlan,
+    pub blits: Vec<PgBlit>,
+    pub frames: Vec<crate::LayerPixels>,
+}
+
+impl PgPlan {
+    pub fn finish(&self, mut b: Buf) -> Buf {
+        let mut fx = splat(b.img.width, b.img.height, &self.sprites.sprites, self.sprites.acc);
+        for q in &self.blits {
+            blit_layer(&mut fx, &self.frames[q.frame], q.x, q.y, q.angle, q.scale, b.scale, q.alpha);
+        }
+        // Particles replace the layer's own pixels.
+        b.img = combine(&b.img, &fx, 5);
+        b
+    }
 }
 
 // ---------------------------------------------------------------- CC Hair

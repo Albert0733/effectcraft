@@ -10,7 +10,8 @@
 //! iterative 3D inverse): hardware 3D-texture filtering would round the interpolation weights
 //! and cannot do tetrahedral interpolation. The CPU evaluates transfer functions, CDLs and
 //! Color Profile Converter's matrix in f64; the kernel in f32 (within the 1e-3 tolerance).
-//! Custom `.ocio` configurations render on the CPU.
+//! Custom `.ocio` configurations compile their colour spaces' transforms (matrix and offset,
+//! exponent, log / log-affine, range, CDL, file LUTs, groups, inverses) to the same program.
 
 use effectcraft_effects::{ColorOp, EffectCtx, Lut, Straight, Tf};
 
@@ -105,6 +106,23 @@ fn encode(ops: &[ColorOp]) -> Option<Vec<f32>> {
             ColorOp::Tonemap { inverse } => prog.extend([5.0, *inverse as u32 as f32]),
             ColorOp::Gamut(l) => prog.extend([6.0, l[0] as f32, l[1] as f32, l[2] as f32]),
             ColorOp::Max0 => prog.push(7.0),
+            ColorOp::Affine { m, pre, post } => {
+                prog.push(9.0);
+                for r in m {
+                    prog.extend(r);
+                }
+                prog.extend(pre);
+                prog.extend(post);
+            }
+            ColorOp::Pow(e) => {
+                prog.push(10.0);
+                prog.extend(e);
+            }
+            ColorOp::LogAffine { base, log_slope, log_offset, lin_slope, lin_offset, inverse } => {
+                prog.extend([11.0, *base]);
+                prog.extend(log_slope.iter().chain(log_offset).chain(lin_slope).chain(lin_offset));
+                prog.extend([*inverse as u32 as f32, f64::MIN_POSITIVE.ln() as f32]);
+            }
             ColorOp::Lut { lut, shaper, interp, inverse } => {
                 prog.extend([8.0, 0.0, *interp as f32, *inverse as u32 as f32, -1.0]);
                 let mut t = vec![];

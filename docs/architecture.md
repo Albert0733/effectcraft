@@ -209,7 +209,7 @@ Preserve Transparency / blend kernels (a 3D track matte renders solo through the
 Environment Light Background layers draw their sky in a kernel (`adv_sky`, from
 `Renderer::sky_draw`) before the rest of the run, in Classic and Advanced 3D comps. Wireframe
 outlines draw on the GPU from the CPU's pixel list (`Renderer::wireframe_pixels`). GPU effects
-(`effects::GPU_EFFECTS`, 236 of them: blurs, colour correction, keying incl. Key Light, mattes,
+(`effects::GPU_EFFECTS`, 243 of them: blurs, colour correction, keying incl. Key Light, mattes,
 channel, stylize, distortion and warps (Warp, Bezier Warp, Smear, Reshape, CC Bend It, CC Page
 Turn, CC Bender, CC Blobbylize), Cartoon, bevels, shapes, the transitions (CC light family, CC
 transitions, Block Dissolve), perspective (Radial Shadow, CC Cylinder / Sphere / Spotlight /
@@ -217,7 +217,10 @@ Environment, 3D Glasses), generators, noise, grain, text (Numbers, Timecode), ti
 extra texture), Immersive Video, colour management (colour programs from
 `effects::color_program`, LUTs in a storage buffer) and the simulations' render passes (the
 simulation stays on the CPU and hands its plan — sprites, pieces, blobs, grids — to a tiled
-rasteriser); see
+rasteriser; the particle effects too, `gpu::fx_particles`: CC Particle World / Systems II,
+Particle Playground with its Layer Map frames in one atlas, CC Ball Action, CC Pixel Polly, CC
+Scatterize; plans too large for one item table draw in several passes over the previous one);
+see
 [effects.md](effects.md)) repeat the CPU effect's steps (padding, box radii, parameters, hashes)
 as kernels, in one module per family (`gpu::fx_*` with `shaders/fx_*.wgsl`); consecutive GPU
 effects run as one chain with one upload and one readback. Statistics that need the whole frame
@@ -229,10 +232,12 @@ combine them on the GPU; Time Displacement's per-pixel times and Timewarp's moti
 (`time_fx::timewarp_plan`) are computed on the CPU. Numbers and Timecode rasterise their glyph
 coverage on the CPU (`textfx::text_layer`) and composite it on the GPU. Other layers an effect
 reads (gradients, reveals, environments) are fitted on the CPU (`util::fit_layer`) and uploaded.
-Settings a kernel cannot match render on the CPU (`effects::catalog::gpu_supported`; e.g. Warp's
-Fisheye and Twist past 50 % or with a distortion, whose Newton inverse wanders chaotically near
-the crease, and Timewarp with a Matte Layer); Card Wipe (the 3D card renderer of Card Dance and
-Shatter) stays on the CPU. Tests render
+Where f32 cannot follow the CPU's f64, the CPU solves the part that needs it and the GPU uses
+the result: Warp's Fisheye and Twist past 50 % or with a distortion (a Newton inverse that
+wanders chaotically near the crease) sample the CPU's inverse map (`warp_inverse_map`). Settings
+a kernel cannot match still render on the CPU (`effects::catalog::gpu_supported`: Cell
+Pattern's HQ variants, Turbulent Displace's locked pinning and the controls in
+`CPU_ONLY_CONTROLS`). Tests render
 scenes on both paths and compare them (≤ 1/255 at 8 bpc, ≤ 1e-3 at 32 bpc); they skip without an
 adapter. Working textures (premultiplied RGBA f32) come from a pool: a released texture is reused
 once every encoder that could still read it has been submitted, transparent inputs share one

@@ -680,18 +680,22 @@ fn fetch_layer(ctx: &EffectCtx, id: &str, times: &[f64], grid: &Buf) -> Option<V
     )
 }
 
-/// One output instant of a Timewarp without a Matte Layer: a fetched frame, a cross-fade of two,
-/// or the in-between frame built along a motion field ([`TimewarpPlan::flows`]).
+/// One output instant of a Timewarp: a frame, a cross-fade of two, or the in-between frame
+/// built along a motion field ([`TimewarpPlan::flows`]); with a Matte Layer's Pixel Motion, the
+/// foreground and background pairs (`[frame a, frame b, flow]`) each built on their own vectors
+/// and shown as Show asks.
 #[derive(Clone, Copy, Debug)]
 pub enum TwStep {
     Whole(usize),
     Mix(usize, usize, f32),
     Motion { a: usize, b: usize, w: f32, flow: usize },
+    Layered { fg: [usize; 3], bg: [usize; 3], w: f32, show: u32 },
 }
 
-/// Timewarp without a Matte Layer, prepared for the GPU compositor (effectcraft-gpu `fx_time`):
-/// the fetched frames on one grid, the instants across the shutter (with their weights) and the
-/// motion fields (block matching on the CPU). [`TimewarpPlan::render_cpu`] is the CPU effect.
+/// Timewarp prepared for the GPU compositor (effectcraft-gpu `fx_time`): the fetched frames on
+/// one grid (plus the matte-masked ones a Matte Layer needs), the instants across the shutter
+/// (with their weights) and the motion fields (block matching on the CPU).
+/// [`TimewarpPlan::render_cpu`] is the CPU effect.
 pub struct TimewarpPlan {
     pub grid: Buf,
     pub frames: Vec<Image>,
@@ -710,6 +714,11 @@ impl TimewarpPlan {
                 TwStep::Whole(i) => f[i].clone(),
                 TwStep::Mix(i, j, w) => effectcraft_raster::flow::mix(&f[i], &f[j], w),
                 TwStep::Motion { a, b, w, flow } => timewarp_interpolate(&f[a], &f[b], w, &self.flows[flow], &self.pm),
+                TwStep::Layered { fg, bg, w, show } => {
+                    let fgi = timewarp_interpolate(&f[fg[0]], &f[fg[1]], w, &self.flows[fg[2]], &self.pm);
+                    let bgi = timewarp_interpolate(&f[bg[0]], &f[bg[1]], w, &self.flows[bg[2]], &self.pm);
+                    layered(fgi, bgi, show)
+                }
             })
             .collect();
         let weights: Vec<f32> = self.steps.iter().map(|(_, w)| *w).collect();
@@ -758,48 +767,102 @@ fn tw_split(s: f64, fps: f64) -> (f64, f32) {
     (f0, ((f - f0) as f32).max(0.0))
 }
 
-/// [`TimewarpPlan`] of a Timewarp instance without a Matte Layer. `None` without the effect host
-/// (the layer passes through) or with a Matte Layer.
+/// [`TimewarpPlan`] of a Timewarp instance. `None` without the effect host or source frames (the
+/// layer passes through). With a Matte Layer the frames the instants need (masked by the matte,
+/// or the matte itself for Show Matte) are prepared here and join [`TimewarpPlan::frames`].
 pub fn timewarp_plan(ctx: &EffectCtx) -> Option<TimewarpPlan> {
     ctx.env.host?;
-    if ctx.params.get("matteLayer").and_then(Value::as_layer).is_some() {
-        return None;
-    }
+    // Instants of source time (with weights) across the shutter; each needs the frame at or
+    // before it and the next one.
     let (instants, times, fps) = timewarp_instants(ctx);
     let method = ctx.params.e("method");
     let one = method > 0 && ctx.params.b("tuning/buildFromOneImage");
     let fr = fetch(ctx, &times)?;
     let pm = PixelMotion::from(ctx, fr.grid.scale);
+    let mattes = fetch_layer(ctx, "matteLayer", &times, &fr.grid);
     let warps = fetch_layer(ctx, "warpLayer", &times, &fr.grid);
+    let matte_ch = ctx.params.e("matteChannel");
+    let show = ctx.params.e("show");
     let idx = |t: f64| times.iter().position(|q| (q - t).abs() < 1e-9).unwrap_or(0);
-    let mut flows: Vec<(i64, Flow)> = vec![];
+    let mut frames = fr.imgs;
+    let add = |frames: &mut Vec<Image>, img: Image| {
+        frames.push(img);
+        frames.len() - 1
+    };
+    // Motion fields: per source frame pair (keyed), or per masked pair (unkeyed).
+    let mut flows: Vec<(Option<i64>, Flow)> = vec![];
     let mut steps = vec![];
     for &(s, wgt) in &instants {
         let (f0, frac) = tw_split(s, fps);
         let (i0, i1) = (idx(f0 / fps), idx((f0 + 1.0) / fps));
+        let ma = mattes.as_ref().map(|m| matte_of(&m[i0], matte_ch));
+        let mb = mattes.as_ref().map(|m| matte_of(&m[i1], matte_ch));
         let step = if method == 0 || frac < 1e-4 || (one && method == 1) {
+            // Whole frames (Build From One Image with Frame Mix: the nearest frame).
             let pick = if method == 0 || frac < 1e-4 { 0.0 } else { frac.round() };
-            TwStep::Whole(if pick < 0.5 { i0 } else { i1 })
+            let i = if pick < 0.5 { i0 } else { i1 };
+            let base = &frames[i];
+            let derived = match (show, &ma, &mb) {
+                (1, Some(m), _) if pick < 0.5 => Some(times_mask(base, m, false)),
+                (2, Some(m), _) if pick < 0.5 => Some(times_mask(base, m, true)),
+                (1, _, Some(m)) => Some(times_mask(base, m, false)),
+                (2, _, Some(m)) => Some(times_mask(base, m, true)),
+                (3, Some(m), _) => Some(matte_image(if pick < 0.5 { m } else { mb.as_ref().unwrap_or(m) }, base)),
+                _ => None,
+            };
+            TwStep::Whole(match derived {
+                Some(img) => add(&mut frames, img),
+                None => i,
+            })
         } else if method == 1 {
-            TwStep::Mix(i0, i1, frac)
+            match (&ma, &mb, show) {
+                (Some(m0), Some(m1), 3) => {
+                    let (a, b) = (matte_image(m0, &frames[i0]), matte_image(m1, &frames[i1]));
+                    TwStep::Mix(add(&mut frames, a), add(&mut frames, b), frac)
+                }
+                (Some(m0), Some(m1), 1 | 2) => {
+                    let (a, b) = (times_mask(&frames[i0], m0, show == 2), times_mask(&frames[i1], m1, show == 2));
+                    TwStep::Mix(add(&mut frames, a), add(&mut frames, b), frac)
+                }
+                _ => TwStep::Mix(i0, i1, frac),
+            }
         } else {
+            // Pixel Motion: vectors from the warp layer if any, else from the layer.
             let key = f0 as i64;
-            let flow = match flows.iter().position(|(k, _)| *k == key) {
+            let flow = match flows.iter().position(|(k, _)| *k == Some(key)) {
                 Some(k) => k,
                 None => {
                     let f = match &warps {
                         Some(w) => timewarp_flow(&w[i0], &w[i1], &pm),
-                        None => timewarp_flow(&fr.imgs[i0], &fr.imgs[i1], &pm),
+                        None => timewarp_flow(&frames[i0], &frames[i1], &pm),
                     };
-                    flows.push((key, f));
+                    flows.push((Some(key), f));
                     flows.len() - 1
                 }
             };
-            TwStep::Motion { a: i0, b: i1, w: frac, flow }
+            match (&ma, &mb) {
+                (Some(m0), Some(m1)) => {
+                    // Foreground and background each move on their own vectors.
+                    let (fa, fb) = (times_mask(&frames[i0], m0, false), times_mask(&frames[i1], m1, false));
+                    let (ga, gb) = (times_mask(&frames[i0], m0, true), times_mask(&frames[i1], m1, true));
+                    let mut own = |a: &Image, b: &Image| {
+                        if warps.is_some() {
+                            return flow;
+                        }
+                        flows.push((None, timewarp_flow(a, b, &pm)));
+                        flows.len() - 1
+                    };
+                    let (fg_flow, bg_flow) = (own(&fa, &fb), own(&ga, &gb));
+                    let fg = [add(&mut frames, fa), add(&mut frames, fb), fg_flow];
+                    let bg = [add(&mut frames, ga), add(&mut frames, gb), bg_flow];
+                    TwStep::Layered { fg, bg, w: frac, show }
+                }
+                _ => TwStep::Motion { a: i0, b: i1, w: frac, flow },
+            }
         };
         steps.push((step, wgt));
     }
-    Some(TimewarpPlan { grid: fr.grid, frames: fr.imgs, steps, flows: flows.into_iter().map(|(_, f)| f).collect(), pm })
+    Some(TimewarpPlan { grid: fr.grid, frames, steps, flows: flows.into_iter().map(|(_, f)| f).collect(), pm })
 }
 
 /// Timewarp. Whole Frames shows the nearest source frame, Frame Mix cross-fades the two
@@ -809,108 +872,30 @@ pub fn timewarp_plan(ctx: &EffectCtx) -> Option<TimewarpPlan> {
 /// Warp Layer supplies the motion instead of the layer itself. Motion Blur averages Shutter
 /// Samples instants across the shutter.
 fn timewarp(ctx: &EffectCtx, b: Buf) -> Buf {
-    if ctx.env.host.is_none() {
-        return b;
+    match timewarp_plan(ctx) {
+        Some(plan) => plan.render_cpu(),
+        None => b,
     }
-    if ctx.params.get("matteLayer").and_then(Value::as_layer).is_none() {
-        return match timewarp_plan(ctx) {
-            Some(plan) => plan.render_cpu(),
-            None => b,
-        };
-    }
-    // Instants of source time (with weights) across the shutter; each needs the frame at or
-    // before it and the next one.
-    let (instants, times, fps) = timewarp_instants(ctx);
-    let split = |s: f64| tw_split(s, fps);
-    let method = ctx.params.e("method");
-    let one = method > 0 && ctx.params.b("tuning/buildFromOneImage");
-    let Some(fr) = fetch(ctx, &times) else { return b };
-    let grid = fr.grid.clone();
-    let frame = |t: f64| -> &Image {
-        let k = times.iter().position(|q| (q - t).abs() < 1e-9).unwrap_or(0);
-        &fr.imgs[k]
-    };
-    let pm = PixelMotion::from(ctx, grid.scale);
-    let mattes = fetch_layer(ctx, "matteLayer", &times, &grid);
-    let warps = fetch_layer(ctx, "warpLayer", &times, &grid);
-    let matte_ch = ctx.params.e("matteChannel");
-    let show = ctx.params.e("show");
-    let mut flows: Vec<((i64, bool), Flow)> = vec![];
-    let mut out_frames = vec![];
-    for &(s, wgt) in &instants {
-        let (f0, frac) = split(s);
-        let (t0, t1) = (f0 / fps, (f0 + 1.0) / fps);
-        let (a, bb) = (frame(t0), frame(t1));
-        let idx = |t: f64| times.iter().position(|q| (q - t).abs() < 1e-9).unwrap_or(0);
-        let ma = mattes.as_ref().map(|m| matte_of(&m[idx(t0)], matte_ch));
-        let mb = mattes.as_ref().map(|m| matte_of(&m[idx(t1)], matte_ch));
-        let img = if method == 0 || frac < 1e-4 || (one && method == 1) {
-            // Whole frames (Build From One Image with Frame Mix: the nearest frame).
-            let pick = if method == 0 || frac < 1e-4 { 0.0 } else { frac.round() };
-            let base = if pick < 0.5 { a } else { bb };
-            match (show, &ma, &mb) {
-                (1, Some(m), _) if pick < 0.5 => times_mask(base, m, false),
-                (2, Some(m), _) if pick < 0.5 => times_mask(base, m, true),
-                (1, _, Some(m)) => times_mask(base, m, false),
-                (2, _, Some(m)) => times_mask(base, m, true),
-                (3, Some(m), _) => matte_image(if pick < 0.5 { m } else { mb.as_ref().unwrap_or(m) }, base),
-                _ => base.clone(),
-            }
-        } else if method == 1 {
-            match (&ma, &mb, show) {
-                (Some(m0), Some(m1), 3) => effectcraft_raster::flow::mix(&matte_image(m0, a), &matte_image(m1, bb), frac),
-                (Some(m0), Some(m1), 1 | 2) => effectcraft_raster::flow::mix(&times_mask(a, m0, show == 2), &times_mask(bb, m1, show == 2), frac),
-                _ => effectcraft_raster::flow::mix(a, bb, frac),
-            }
-        } else {
-            // Pixel Motion: vectors from the warp layer if any, else from the layer.
-            let key = ((f0 as i64), false);
-            let flow_ab = |fa: &Image, fb: &Image| -> Flow { timewarp_flow(fa, fb, &pm) };
-            let flow = match flows.iter().find(|(k, _)| *k == key) {
-                Some((_, f)) => f.clone(),
-                None => {
-                    let f = match &warps {
-                        Some(w) => flow_ab(&w[idx(t0)], &w[idx(t1)]),
-                        None => flow_ab(a, bb),
-                    };
-                    flows.push((key, f.clone()));
-                    f
+}
+
+/// Pixel Motion with a Matte Layer: the foreground and background frames built on their own
+/// vectors, shown as Show asks (0 Normal: foreground over background).
+fn layered(fg: Image, bg: Image, show: u32) -> Image {
+    match show {
+        1 => fg,
+        2 => bg,
+        3 => matte_image(&fg.data.iter().map(|p| p[3]).collect::<Vec<_>>(), &fg),
+        _ => {
+            let mut o = bg;
+            o.data.par_iter_mut().zip(fg.data.par_iter()).for_each(|(p, q)| {
+                let k = 1.0 - q[3];
+                for c in 0..4 {
+                    p[c] = q[c] + p[c] * k;
                 }
-            };
-            match (&ma, &mb) {
-                (Some(m0), Some(m1)) => {
-                    // Foreground and background each move on their own vectors.
-                    let (fa, fb) = (times_mask(a, m0, false), times_mask(bb, m1, false));
-                    let (ga, gb) = (times_mask(a, m0, true), times_mask(bb, m1, true));
-                    let fg_flow = if warps.is_some() { flow.clone() } else { flow_ab(&fa, &fb) };
-                    let bg_flow = if warps.is_some() { flow.clone() } else { flow_ab(&ga, &gb) };
-                    let fg = timewarp_interpolate(&fa, &fb, frac, &fg_flow, &pm);
-                    let bg = timewarp_interpolate(&ga, &gb, frac, &bg_flow, &pm);
-                    match show {
-                        1 => fg,
-                        2 => bg,
-                        3 => matte_image(&fg.data.iter().map(|p| p[3]).collect::<Vec<_>>(), &fg),
-                        _ => {
-                            let mut o = bg;
-                            o.data.par_iter_mut().zip(fg.data.par_iter()).for_each(|(p, q)| {
-                                let k = 1.0 - q[3];
-                                for c in 0..4 {
-                                    p[c] = q[c] + p[c] * k;
-                                }
-                            });
-                            o
-                        }
-                    }
-                }
-                _ => timewarp_interpolate(a, bb, frac, &flow, &pm),
-            }
-        };
-        out_frames.push((img, wgt));
+            });
+            o
+        }
     }
-    let imgs: Vec<Image> = out_frames.iter().map(|(i, _)| i.clone()).collect();
-    let weights: Vec<f32> = out_frames.iter().map(|(_, w)| *w).collect();
-    let img = if imgs.len() == 1 { imgs.into_iter().next().unwrap_or_default() } else { average(&imgs, &weights) };
-    with_img(grid, img)
 }
 
 /// A matte shown as opaque grey.

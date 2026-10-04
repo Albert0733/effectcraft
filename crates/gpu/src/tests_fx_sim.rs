@@ -10,20 +10,20 @@ use effectcraft_time::Tick;
 
 use crate::tests::{Scene, c, check, compare_at, diff, gpu, n, opts, pattern, set};
 
-fn e(v: u32) -> Value {
+pub(crate) fn e(v: u32) -> Value {
     Value::Enum(v)
 }
 
-fn on() -> Value {
+pub(crate) fn on() -> Value {
     Value::Bool(true)
 }
 
-fn off() -> Value {
+pub(crate) fn off() -> Value {
     Value::Bool(false)
 }
 
 /// The effect alone on a buffer at layer time `t` (`allow` = fraction of pixels over 1e-3).
-fn direct(id: &str, vals: &[(&str, Value)], t: f64, allow: f64) {
+pub(crate) fn direct(id: &str, vals: &[(&str, Value)], t: f64, allow: f64) {
     let Some(g) = gpu() else { return };
     let spec = effectcraft_effects::find(id).unwrap();
     let size = [70.0, 44.0];
@@ -53,7 +53,7 @@ fn direct(id: &str, vals: &[(&str, Value)], t: f64, allow: f64) {
 
 /// A footage layer with the effect over a background and a second footage layer (the target of
 /// `Value::Layer(Some(0))` parameters), composited at 8 and 32 bpc at comp time `t`.
-fn composited(id: &str, vals: &[(&str, Value)], t: f64, allow: f64) {
+pub(crate) fn composited(id: &str, vals: &[(&str, Value)], t: f64, allow: f64) {
     for depth in [BitDepth::Bpc8, BitDepth::Bpc32] {
         let mut s = Scene::new(depth);
         let bg = s.solid([0.15, 0.1, 0.2], 97, 61);
@@ -72,7 +72,7 @@ fn composited(id: &str, vals: &[(&str, Value)], t: f64, allow: f64) {
     }
 }
 
-fn case(id: &str, vals: &[(&str, Value)], t: f64, allow: f64) {
+pub(crate) fn case(id: &str, vals: &[(&str, Value)], t: f64, allow: f64) {
     direct(id, vals, t, allow);
     composited(id, vals, t, allow);
 }
@@ -154,9 +154,31 @@ fn caustics() {
 }
 
 #[test]
-fn cpu_only_views_fall_back() {
-    // Shatter's wireframe views and Foam's User Defined texture render on the CPU; composited
-    // frames still match.
-    composited("ec.sim.shatter", &[], 1.0, 0.0);
+fn shatter_wireframes_and_foam_extras() {
+    // Shatter's wireframe views (Wireframe Front View is the default) draw lines as sprites.
+    for view in 1..5 {
+        case("ec.sim.shatter", &[("view", e(view))], 1.0, 0.0);
+    }
+    case("ec.sim.shatter", &[("view", e(4)), ("force2/force2Radius", n(0.3)), ("shape/pattern", e(3))], 1.5, 0.0);
+    // Foam's User Defined texture, Environment Map and flow-map preview.
     composited("ec.sim.foam", &[("view", e(2)), ("rendering/bubbleTexture", e(5)), ("rendering/bubbleTextureLayer", Value::Layer(Some(0)))], 1.0, 0.0);
+    composited(
+        "ec.sim.foam",
+        &[("view", e(2)), ("rendering/bubbleTexture", e(5)), ("rendering/bubbleTextureLayer", Value::Layer(Some(0))), ("rendering/bubbleOrientation", e(2))],
+        1.4,
+        0.0,
+    );
+    composited("ec.sim.foam", &[("view", e(2)), ("rendering/environmentMap", Value::Layer(Some(0))), ("rendering/reflectionStrength", n(0.5))], 1.2, 0.0);
+    composited(
+        "ec.sim.foam",
+        &[
+            ("view", e(2)),
+            ("rendering/environmentMap", Value::Layer(Some(0))),
+            ("rendering/reflectionStrength", n(0.8)),
+            ("rendering/reflectionConvergence", n(1.0)),
+        ],
+        1.2,
+        0.0,
+    );
+    composited("ec.sim.foam", &[("view", e(1)), ("flowMap/flowMap", Value::Layer(Some(0))), ("flowMap/flowMapSteepness", n(0.5))], 1.0, 0.0);
 }

@@ -111,6 +111,13 @@ fn timewarp() {
     );
     moving("ec.time.timewarp", &[("speed", n(55.0)), ("tuning/buildFromOneImage", on())], None);
     moving("ec.time.timewarp", &[("speed", n(47.0))], Some("warpLayer"));
-    // A Matte Layer renders on the CPU (catalog::gpu_supported).
-    moving("ec.time.timewarp", &[("speed", n(47.0)), ("show", e(0))], Some("matteLayer"));
+    // A Matte Layer: every method and Show, the luminance channels, motion blur.
+    for method in 0..3 {
+        for show in 0..4 {
+            moving("ec.time.timewarp", &[("method", e(method)), ("speed", n(47.0)), ("show", e(show))], Some("matteLayer"));
+        }
+    }
+    moving("ec.time.timewarp", &[("speed", n(39.0)), ("matteChannel", e(2))], Some("matteLayer"));
+    moving("ec.time.timewarp", &[("speed", n(43.0)), ("matteChannel", e(1)), ("motionBlur/enableMotionBlur", on())], Some("matteLayer"));
+    moving("ec.time.timewarp", &[("method", e(1)), ("speed", n(52.0)), ("tuning/buildFromOneImage", on()), ("show", e(1))], Some("matteLayer"));
 }

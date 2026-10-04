@@ -173,3 +173,71 @@ fn lumetri_luts_and_looks() {
         &[("basicCorrection/inputLut", e(1)), ("basicCorrection/inputLutFile", s(&cube_1d())), ("creative/look", e(1)), ("creative/lookFile", s(&cube_3d()))],
     );
 }
+
+/// A custom config: exponent, matrix + offset, group (matrix, log), log-affine (inverse),
+/// range, CDL and data spaces, and a display.
+const CONFIG: &str = r#"ocio_profile_version: 2
+roles:
+  scene_linear: lin
+displays:
+  Monitor:
+    - !<View> {name: Video, colorspace: gamma22}
+    - !<View> {name: Log, colorspace: log2}
+colorspaces:
+  - !<ColorSpace>
+    name: lin
+  - !<ColorSpace>
+    name: gamma22
+    to_scene_reference: !<ExponentTransform> {value: [2.2, 2.2, 2.2, 1]}
+  - !<ColorSpace>
+    name: half
+    from_reference: !<MatrixTransform> {matrix: [0.5, 0.1, 0, 0, 0, 0.5, 0, 0, 0.05, 0, 0.5, 0, 0, 0, 0, 1], offset: [0.1, 0.1, 0.1, 0]}
+  - !<ColorSpace>
+    name: log2
+    from_reference: !<GroupTransform>
+      children:
+        - !<MatrixTransform> {matrix: [2, 0, 0, 0, 0, 2, 0, 0, 0, 0, 2, 0, 0, 0, 0, 1]}
+        - !<LogTransform> {base: 2}
+  - !<ColorSpace>
+    name: affine
+    to_reference: !<LogAffineTransform> {base: 10, logSideSlope: 0.5, logSideOffset: 0.2, linSideSlope: 2, linSideOffset: 0.01, direction: inverse}
+  - !<ColorSpace>
+    name: range
+    from_reference: !<RangeTransform> {min_in_value: 0.1, max_in_value: 0.9, min_out_value: 0, max_out_value: 1}
+  - !<ColorSpace>
+    name: graded
+    to_reference: !<CDLTransform> {slope: [1.2, 1, 0.9], offset: [0.02, 0, -0.01], power: [1.1, 0.9, 1], sat: 1.2}
+  - !<ColorSpace>
+    name: raw
+    isdata: true
+"#;
+
+#[test]
+fn ocio_custom_config() {
+    let cfg = [("config", e(1)), ("configFile", s(CONFIG))];
+    for (a, z) in [
+        ("gamma22", "lin"),
+        ("lin", "gamma22"),
+        ("gamma22", "half"),
+        ("half", "lin"),
+        ("lin", "log2"),
+        ("log2", "graded"),
+        ("affine", "lin"),
+        ("lin", "affine"),
+        ("range", "gamma22"),
+        ("lin", "range"),
+        ("graded", "lin"),
+        ("raw", "half"),
+        ("lin", "missing"),
+    ] {
+        for dir in 0..2 {
+            let vals = [cfg.as_slice(), &[("sourceName", s(a)), ("destinationName", s(z)), ("direction", e(dir))]].concat();
+            effect_case("ec.color.ociocolorspace", &vals);
+        }
+    }
+    for (view, dir) in [("Video", 0), ("Log", 0), ("Log", 1)] {
+        let vals = [cfg.as_slice(), &[("sourceName", s("half")), ("displayName", s("Monitor")), ("viewName", s(view)), ("direction", e(dir))]].concat();
+        effect_case("ec.color.ociodisplay", &vals);
+    }
+    effect_case("ec.color.ociocolorspace", &[("config", e(1)), ("configFile", s("/missing.ocio"))]);
+}
