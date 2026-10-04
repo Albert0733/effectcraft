@@ -1104,9 +1104,9 @@ impl Project {
         }
         self.next_id = m;
     }
-    /// Whether `other` holds the same content (ids allocated but not used don't count). Shared
-    /// compositions compare by pointer first, so after a copy-on-write edit only the comps it
-    /// touched are compared field by field.
+    /// Whether `other` holds the same content. An allocated id counts (an edit may hand it out
+    /// beyond the project, so it must stay taken). Shared compositions compare by pointer first,
+    /// so after a copy-on-write edit only the comps it touched are compared field by field.
     pub fn same_content(&self, other: &Project) -> bool {
         let item_eq = |a: &Item, b: &Item| {
             let kind = match (&a.kind, &b.kind) {
@@ -1116,6 +1116,7 @@ impl Project {
             kind && a.id == b.id && a.name == b.name && a.label == b.label && a.comment == b.comment && a.parent == b.parent && a.proxy == b.proxy
         };
         self.schema == other.schema
+            && self.next_id == other.next_id
             && self.settings == other.settings
             && self.items.len() == other.items.len()
             && self.items.iter().zip(&other.items).all(|((ka, a), (kb, b))| ka == kb && item_eq(a, b))

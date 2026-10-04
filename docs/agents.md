@@ -111,6 +111,12 @@ build real projects through these interfaces; they are worked examples of everyt
 * **Name things when you create them**: `layer.newText`, `layer.newShape`, `layer.newSolid`,
   `layer.newNull`, `layer.newCamera` and `layer.newLight` take `name`, so later calls can say
   `"layer": "Title"`. A reference that matches no layer is an error, never a silent no-op.
+* **Nested comps**: `comp.settings {preserveFrameRate, preserveResolution}` (Composition Settings ▸
+  Advanced); `comp.info` / `get_comp` report both. A precomp layer shows nothing outside its
+  nested comp's span.
+* **Several footage items at once**: `file.newCompFromSelection {single, dimensionsFrom, duration,
+  sequence, overlap, overlapDuration, transition, addToRenderQueue}` is one undo step (select the
+  items first: `project.select`).
 * **Locked layers** are left alone: `edit.clear`, `layer.arrange`, `layer.transform` and
   `layer.centerAnchor` skip them and fail when every target is locked ("… is locked"); Select
   All and `layer.selectNext` / `selectPrevious` step over them. Unlock with

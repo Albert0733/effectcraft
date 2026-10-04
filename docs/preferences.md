@@ -46,7 +46,8 @@ Commands (CLI, MCP, control channel):
 - `autoSave.folder`: Custom Location
 - `autoSave.saveOnRenderStart`: Save When Starting Render Queue
 - `composition.showRenderingProgress`: Show Rendering Progress in Info Panel and Flowchart
-- `previews.adaptiveResolutionLimit`: Adaptive Resolution Limit
+- `previews.adaptiveResolutionLimit`: Adaptive Resolution Limit (the lowest resolution Fast Previews ▸
+  Adaptive Resolution drops to while you drag; a playing preview keeps the viewer's resolution)
 - `previews.cacheFramesWhenIdle`: Cache Frames When Idle (Composition ▸ Preview): after a second
   without input or edits, the viewer renders the work area into the RAM preview in the
   background, from the current time on, until it is cached or the budget is full

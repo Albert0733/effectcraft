@@ -33,6 +33,7 @@ Measured feature by feature in [docs/parity.md](docs/parity.md) (4 October 2026)
 - **≈ 8.5 agent-hours of work remain**: about **2–3 hours of wall-clock time** with five Claude
   Opus 5.5 agents in parallel, ≈ 1 hour without learned models for Roto Brush and face tracking.
 - What is left: GPU kernels for the remaining visual effects, and learned-model quality for Roto
-  Brush and face tracking.
+  Brush and face tracking; in previews, motion blur of collapsed precomps and of animated layer
+  content, and content-keyed RAM preview frames ([parity.md](docs/parity.md#highest-value-gaps-in-order)).
 
 Come tell us what matters most to you on [Discord](https://discord.gg/artcraft).

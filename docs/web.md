@@ -90,7 +90,8 @@ writes are atomic: a swap file replaced on close). Keys:
 | `files/<path>` | the file table: imported media, projects saved with File ▸ Save / Save As or `saveToBrowser`, auto-saves |
 
 On the next visit the app reopens the snapshot (unsaved changes stay unsaved: the project is
-dirty), registers every stored media file with the media pool so its footage decodes, and File ▸
+modified until saved, `Session::mark_unsaved`, so File ▸ New, Open, Close Project and Revert still
+ask to save it first), registers every stored media file with the media pool so its footage decodes, and File ▸
 Open Recent reopens saved projects from storage. Without a snapshot (first visit) it opens the
 demo project. Render outputs are not stored: they download.
 

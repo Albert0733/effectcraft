@@ -257,3 +257,17 @@ fn cache_frames_when_idle_fills_the_work_area() {
     }
     assert_eq!(n, 240, "the work area is cached while idle");
 }
+
+#[test]
+fn cache_frames_when_idle_survives_an_inverted_work_area() {
+    let mut h = harness();
+    // Start set past the end: an empty work area (it panicked in `clamp` / `rem_euclid`).
+    invoke(&mut h, "comp.workArea", json!({"end": 2.0}));
+    invoke(&mut h, "comp.workArea", json!({"start": 5.0}));
+    invoke(&mut h, "playback.cacheWhenIdle", json!({"value": true}));
+    for _ in 0..150 {
+        h.step();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert!(!h.state().playback.playing);
+}
