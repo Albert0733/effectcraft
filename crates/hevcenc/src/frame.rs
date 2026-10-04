@@ -380,7 +380,9 @@ impl<'a> FrameCoder<'a> {
                 return cost;
             }
         }
-        let (cost, e, snap, mode) = best.expect("a coding unit decision");
+        // A coding unit always has at least one candidate mode (intra, or skip/merge in P
+        // slices); without one, report an infinite cost.
+        let Some((cost, e, snap, mode)) = best else { return f64::INFINITY };
         self.restore(&snap);
         *est = e;
         decs.push(CuDec { x: x as u32, y: y as u32, log2, mode });
@@ -452,7 +454,8 @@ impl<'a> FrameCoder<'a> {
                 let mv = match mode {
                     CuMode::Skip { idx } | CuMode::Merge { idx } => self.merge_list(x, y, n)[idx as usize],
                     CuMode::Amvp { mv, .. } => mv,
-                    CuMode::Intra { .. } => unreachable!(),
+                    // Handled by the arm above.
+                    CuMode::Intra { .. } => [0, 0],
                 };
                 let amvp = if let CuMode::Amvp { .. } = mode { self.amvp(x, y, n) } else { [[0; 2]; 2] };
                 let skip = matches!(mode, CuMode::Skip { .. });
@@ -503,7 +506,8 @@ impl<'a> FrameCoder<'a> {
                             self.write_tt(s, x, y, x, y, log2, 0, 0, [true, true], false, false, &mut ti);
                         }
                     }
-                    CuMode::Intra { .. } => unreachable!(),
+                    // Handled by the arm above.
+                    CuMode::Intra { .. } => {}
                 }
                 (eff, self.cu_dist(x, y, n))
             }
@@ -864,7 +868,8 @@ impl<'a> FrameCoder<'a> {
     }
 
     fn predict_inter(&mut self, x: usize, y: usize, n: usize, mv: [i16; 2]) {
-        let refp = self.refp.expect("reference picture");
+        // Inter modes are only tried in P slices, which have a reference picture.
+        let Some(refp) = self.refp else { return };
         for c in 0..3 {
             let (px, py, pn, pw, ph) = if c == 0 { (x, y, n, self.w, self.h) } else { (x / 2, y / 2, n / 2, self.cw, self.ch) };
             let pr = PlaneRef { data: &refp[c], w: pw, h: ph };
@@ -882,7 +887,7 @@ impl<'a> FrameCoder<'a> {
 
     /// Best merge index by SATD of the (approximate) luma prediction.
     fn best_merge(&self, x: usize, y: usize, n: usize, list: &[[i16; 2]; MAX_MERGE_CAND]) -> (usize, u64) {
-        let me = self.me.expect("motion search reference");
+        let Some(me) = self.me else { return (0, u64::MAX / 4) };
         let mut buf = vec![0u16; n * n];
         let mut best = (0, u64::MAX);
         for (i, &mv) in list.iter().enumerate() {
@@ -901,7 +906,7 @@ impl<'a> FrameCoder<'a> {
 
     /// Integer then fractional motion search. Returns (mv, mvp index, SATD cost).
     fn motion_search(&self, x: usize, y: usize, n: usize, amvp: &[[i16; 2]; 2], merge: &[[i16; 2]; MAX_MERGE_CAND]) -> ([i16; 2], u8, u64) {
-        let me = self.me.expect("motion search reference");
+        let Some(me) = self.me else { return (amvp[0], 0, u64::MAX / 4) };
         let (xi, yi) = (x as i32, y as i32);
         let src = &self.src[0][y * self.w + x..];
         let ls = self.lambda_sad;
@@ -1168,7 +1173,8 @@ fn residual_coding<S: Sink>(s: &mut S, lv: &[i32], log2: u32, c: usize, scan_idx
             }
         }
     }
-    let (last_sb, last_pos) = last.expect("residual_coding of an all-zero block");
+    // Callers only code blocks with a nonzero level (coded_block_flag = 1).
+    let Some((last_sb, last_pos)) = last else { return };
     let lx = sb_scan[last_sb].0 as u32 * 4 + pos_scan[last_pos].0 as u32;
     let ly = sb_scan[last_sb].1 as u32 * 4 + pos_scan[last_pos].1 as u32;
     let (cx, cy) = if scan_idx == 2 { (ly, lx) } else { (lx, ly) };
