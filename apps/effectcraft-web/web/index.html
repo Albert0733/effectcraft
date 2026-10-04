@@ -62,6 +62,8 @@
       listStored: () => ec.listStored(),
       removeStored: (path) => ec.removeStored(path),
       flush: () => ec.flush(),
+      // A frame rendered in a frame worker (its GPU by default) vs the page's CPU: {maxDiff, meanDiff, over4, …}.
+      workerFrameCheck: (params) => ec.workerFrameCheck(params ?? {}).then(JSON.parse),
     };
     // Offline start and install (PWA): the service worker caches the app's files.
     if ("serviceWorker" in navigator && !new URLSearchParams(location.search).has("nosw")) {

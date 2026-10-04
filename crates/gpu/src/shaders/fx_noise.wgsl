@@ -2,7 +2,8 @@
 // effectcraft-effects operation for operation. Every name here is prefixed `fxn_` (the
 // family files share one module).
 
-const FXN_MAX: f32 = 3.40282347e38;
+// f32::MAX exactly (a decimal that rounds above it is rejected by browsers' WGSL compilers).
+const FXN_MAX: f32 = 3.4028234663852886e38;
 
 fn fxn_pixel(gid: vec3<u32>) -> vec2<i32> {
     let dims = out_dims();

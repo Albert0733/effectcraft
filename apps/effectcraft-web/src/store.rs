@@ -182,6 +182,74 @@ impl Store {
     pub fn files(&self) -> Vec<(String, usize, f64, bool)> {
         self.lock().list(FILES).into_iter().filter_map(|(k, n, m, p)| Some((key_path(&k)?.to_string(), n, m, p))).collect()
     }
+
+    /// Stored (persisted) files by kind: `{projects, media, autoSaves}`, each `{count, bytes}`
+    /// (the storage manager, `storage.info`).
+    pub fn usage(&self) -> serde_json::Value {
+        let mut out = serde_json::Map::new();
+        for k in [FileKind::Project, FileKind::Media, FileKind::AutoSave] {
+            let (mut count, mut bytes) = (0u64, 0u64);
+            for (path, n, _, persisted) in self.files() {
+                if persisted && FileKind::of(&path) == k {
+                    count += 1;
+                    bytes += n as u64;
+                }
+            }
+            out.insert(k.name().into(), serde_json::json!({"count": count, "bytes": bytes}));
+        }
+        out.into()
+    }
+
+    /// Delete every stored file of a kind; returns (files, bytes) removed.
+    pub fn clear_kind(&self, kind: FileKind) -> (u64, u64) {
+        let (mut count, mut bytes) = (0u64, 0u64);
+        for (path, n, _, persisted) in self.files() {
+            if persisted && FileKind::of(&path) == kind {
+                self.lock().remove(&file_key(&path));
+                count += 1;
+                bytes += n as u64;
+            }
+        }
+        if count > 0 {
+            self.changed();
+        }
+        (count, bytes)
+    }
+}
+
+/// What a stored file is (Settings ▸ Disk ▸ Browser Storage).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FileKind {
+    /// A saved project (`.ecproj` outside the auto-save folder).
+    Project,
+    /// Imported footage and everything else.
+    Media,
+    /// Auto-saves (`/EffectCraft Auto-Save/…`, or `… auto-save N.ecproj`).
+    AutoSave,
+}
+
+impl FileKind {
+    pub fn of(path: &str) -> FileKind {
+        let lower = path.to_ascii_lowercase();
+        if !lower.ends_with(".ecproj") {
+            return FileKind::Media;
+        }
+        let name = lower.rsplit('/').next().unwrap_or(&lower);
+        if lower.contains("/effectcraft auto-save/") || name.contains(" auto-save ") { FileKind::AutoSave } else { FileKind::Project }
+    }
+
+    /// `storage.clear` / `storage.info` name.
+    pub fn name(self) -> &'static str {
+        match self {
+            FileKind::Project => "projects",
+            FileKind::Media => "media",
+            FileKind::AutoSave => "autoSaves",
+        }
+    }
+
+    pub fn from_name(n: &str) -> Option<FileKind> {
+        [FileKind::Project, FileKind::Media, FileKind::AutoSave].into_iter().find(|k| k.name() == n)
+    }
 }
 
 /// Settings and friends ([`ConfigStore`]) in the store; auto-saves ([`FileOps`]) in its file
@@ -287,6 +355,28 @@ mod tests {
         let s = Arc::new(Store::default());
         let _ = s.clock.set(|| 1_000.0);
         s
+    }
+
+    #[test]
+    fn usage_by_kind_and_clearing() {
+        let s = store();
+        s.put_file("/a.ecproj", Arc::from(&b"proj"[..]), true);
+        s.put_file("/clip.mp4", Arc::from(&b"0123456789"[..]), true);
+        s.put_file("/still.png", Arc::from(&b"px"[..]), true);
+        s.put_file("/EffectCraft Auto-Save/a auto-save 1.ecproj", Arc::from(&b"auto"[..]), true);
+        s.put_file("/render.gif", Arc::from(&b"out"[..]), false);
+        let u = s.usage();
+        assert_eq!(u["projects"], serde_json::json!({"count": 1, "bytes": 4}));
+        assert_eq!(u["media"], serde_json::json!({"count": 2, "bytes": 12}), "render outputs are not stored");
+        assert_eq!(u["autoSaves"], serde_json::json!({"count": 1, "bytes": 4}));
+        assert_eq!(FileKind::from_name("autoSaves"), Some(FileKind::AutoSave));
+        assert_eq!(FileKind::of("/x/My auto-save 3.ecproj"), FileKind::AutoSave);
+        s.lock().take_pending();
+        assert_eq!(s.clear_kind(FileKind::Media), (2, 12));
+        assert!(s.file("/clip.mp4").is_none() && s.file("/a.ecproj").is_some() && s.file("/render.gif").is_some());
+        let deleted: Vec<String> = s.lock().take_pending().into_iter().filter(|p| p.data.is_none()).map(|p| p.key).collect();
+        assert_eq!(deleted.len(), 2, "the deletions are flushed to browser storage");
+        assert_eq!(s.usage()["media"]["count"], 0);
     }
 
     #[test]
