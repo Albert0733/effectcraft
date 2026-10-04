@@ -1344,6 +1344,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "effectcraft-interchange"
+version = "0.1.1"
+dependencies = [
+ "effectcraft-color",
+ "effectcraft-keyframe",
+ "effectcraft-project",
+ "effectcraft-time",
+ "filmcraft-color",
+ "filmcraft-geom",
+ "filmcraft-interchange",
+ "filmcraft-media",
+ "filmcraft-project",
+ "filmcraft-time",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "effectcraft-keyframe"
 version = "0.1.1"
 dependencies = [
@@ -2038,6 +2057,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "filmcraft-geom"
+version = "0.1.0"
+source = "git+https://github.com/storytold/filmcraft?rev=89cfbf24f698b0f0e538eb7795929f19bbfb1dbb#89cfbf24f698b0f0e538eb7795929f19bbfb1dbb"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "filmcraft-h264"
 version = "0.1.0"
 source = "git+https://github.com/storytold/filmcraft?rev=89cfbf24f698b0f0e538eb7795929f19bbfb1dbb#89cfbf24f698b0f0e538eb7795929f19bbfb1dbb"
@@ -2064,6 +2091,22 @@ source = "git+https://github.com/storytold/filmcraft?rev=89cfbf24f698b0f0e538eb7
 dependencies = [
  "filmcraft-bitstream",
  "rayon",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "filmcraft-interchange"
+version = "0.1.0"
+source = "git+https://github.com/storytold/filmcraft?rev=89cfbf24f698b0f0e538eb7795929f19bbfb1dbb#89cfbf24f698b0f0e538eb7795929f19bbfb1dbb"
+dependencies = [
+ "filmcraft-color",
+ "filmcraft-geom",
+ "filmcraft-media",
+ "filmcraft-project",
+ "filmcraft-time",
+ "roxmltree",
+ "serde",
+ "serde_json",
  "thiserror 2.0.21",
 ]
 
@@ -2099,6 +2142,20 @@ dependencies = [
 name = "filmcraft-opus"
 version = "0.1.0"
 source = "git+https://github.com/storytold/filmcraft?rev=89cfbf24f698b0f0e538eb7795929f19bbfb1dbb#89cfbf24f698b0f0e538eb7795929f19bbfb1dbb"
+
+[[package]]
+name = "filmcraft-project"
+version = "0.1.0"
+source = "git+https://github.com/storytold/filmcraft?rev=89cfbf24f698b0f0e538eb7795929f19bbfb1dbb#89cfbf24f698b0f0e538eb7795929f19bbfb1dbb"
+dependencies = [
+ "filmcraft-color",
+ "filmcraft-geom",
+ "filmcraft-media",
+ "filmcraft-time",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
 
 [[package]]
 name = "filmcraft-prores"

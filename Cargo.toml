@@ -29,6 +29,7 @@ effectcraft-media = { path = "crates/media" }
 effectcraft-export = { path = "crates/export" }
 effectcraft-expr = { path = "crates/expr" }
 effectcraft-lottie = { path = "crates/lottie" }
+effectcraft-interchange = { path = "crates/interchange" }
 effectcraft-pdf = { path = "crates/pdf" }
 effectcraft-psd = { path = "crates/psd" }
 effectcraft-vp9enc = { path = "crates/vp9enc" }
@@ -68,7 +69,7 @@ exr = "1.74"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 
 # media codecs + containers: FilmCraft's pure-Rust crates, pinned to a revision (plan/adr/0001).
-# Only `crates/media` and `crates/export` may depend on these.
+# Only `crates/media`, `crates/export` and `crates/interchange` may depend on these.
 filmcraft-codecs = { git = "https://github.com/storytold/filmcraft", rev = "89cfbf24f698b0f0e538eb7795929f19bbfb1dbb" }
 filmcraft-media = { git = "https://github.com/storytold/filmcraft", rev = "89cfbf24f698b0f0e538eb7795929f19bbfb1dbb" }
 filmcraft-frame = { git = "https://github.com/storytold/filmcraft", rev = "89cfbf24f698b0f0e538eb7795929f19bbfb1dbb" }
@@ -85,6 +86,10 @@ filmcraft-vp9 = { git = "https://github.com/storytold/filmcraft", rev = "89cfbf2
 # decoders used as the round-trip oracles of effectcraft-hevcenc / effectcraft-av1enc (dev-dependencies only)
 filmcraft-hevc = { git = "https://github.com/storytold/filmcraft", rev = "89cfbf24f698b0f0e538eb7795929f19bbfb1dbb" }
 filmcraft-av1 = { git = "https://github.com/storytold/filmcraft", rev = "89cfbf24f698b0f0e538eb7795929f19bbfb1dbb" }
+# timeline interchange (EDL, FCP7 XML, FCPXML, OTIO) for Premiere Pro interop (crates/interchange only)
+filmcraft-interchange = { git = "https://github.com/storytold/filmcraft", rev = "89cfbf24f698b0f0e538eb7795929f19bbfb1dbb" }
+filmcraft-project = { git = "https://github.com/storytold/filmcraft", rev = "89cfbf24f698b0f0e538eb7795929f19bbfb1dbb" }
+filmcraft-geom = { git = "https://github.com/storytold/filmcraft", rev = "89cfbf24f698b0f0e538eb7795929f19bbfb1dbb" }
 
 # gpu (the same wgpu eframe / egui-wgpu use)
 wgpu = { version = "30.0.1", features = ["fragile-send-sync-non-atomic-wasm"] }
