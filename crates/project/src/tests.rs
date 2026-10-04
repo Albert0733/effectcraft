@@ -86,12 +86,13 @@ fn camera_and_light_layers_build() {
 }
 
 #[test]
-fn same_content_ignores_unused_ids_and_sees_comp_edits() {
+fn same_content_sees_allocated_ids_and_comp_edits() {
     let (p, cid) = project_with_layer();
     let mut q = p.clone();
     assert!(q.same_content(&p));
     q.alloc();
-    assert!(q.same_content(&p), "an allocated but unused id is not a change");
+    assert!(!q.same_content(&p), "an allocated id stays taken");
+    let mut q = p.clone();
     // A comp copied on write but left equal is the same; a changed one is not.
     let _ = q.comp_mut(cid).unwrap();
     assert!(q.same_content(&p));
