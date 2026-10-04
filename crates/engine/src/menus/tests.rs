@@ -155,3 +155,27 @@ fn parse_rejects_bad_trees() {
     assert!(parse("File\n   Odd | file.save\n", true).is_err());
     assert!(parse("File\n  Bad | file.save {nope}\n", true).is_err());
 }
+
+#[test]
+fn m3_13_entries_follow_after_effects() {
+    let find = |mac: bool, path: &[&str], label: &str| platform_entries(mac).into_iter().find(|(p, e)| p == path && e.label == label).map(|(_, e)| e);
+    // Group / Ungroup Shapes sit in the Layer menu itself.
+    for mac in [true, false] {
+        assert_eq!(find(mac, &["Layer"], "Group Shapes").unwrap().shortcut.as_deref(), Some("Cmd+G"));
+        assert_eq!(find(mac, &["Layer"], "Ungroup Shapes").unwrap().shortcut.as_deref(), Some("Cmd+Shift+G"));
+        assert!(find(mac, &["Layer", "Mask and Shape Path"], "Group Shapes").is_none());
+        // Composition Flowchart Ctrl+Shift+F11, Window ▸ Flowchart Ctrl+F11; Window ▸ Learn.
+        assert_eq!(find(mac, &["Composition"], "Composition Flowchart").unwrap().shortcut.as_deref(), Some("Cmd+Shift+F11"));
+        assert_eq!(find(mac, &["Window"], "Flowchart").unwrap().shortcut.as_deref(), Some("Cmd+F11"));
+        assert_eq!(find(mac, &["Window"], "Learn").unwrap().command, "help.inAppTutorials");
+        assert_eq!(find(mac, &["Layer", "Transform"], "Center In View").unwrap().shortcut.as_deref(), Some("Cmd+Home"));
+    }
+    // "Reveal in Finder" names the platform's file browser.
+    assert!(find(true, &["File"], "Reveal in Finder").is_some());
+    let other = if cfg!(target_os = "windows") { "Reveal in Explorer" } else { "Reveal in File Manager" };
+    for path in [&["File"][..], &["Layer"], &["Layer", "Reveal"]] {
+        assert!(find(false, path, other).is_some(), "{path:?}");
+        assert!(find(false, path, "Reveal in Finder").is_none(), "{path:?}");
+    }
+    assert_eq!(platform_label("Reveal Layer Source in Project", false), "Reveal Layer Source in Project");
+}

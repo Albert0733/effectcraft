@@ -85,7 +85,7 @@ pub fn specs() -> Vec<CommandSpec> {
         fe!("window.saveWorkspaceAs", "Save as New Workspace...", ["Window", "Workspace"], None, "{name}", always),
         fe!("window.editWorkspaces", "Edit Workspaces...", ["Window", "Workspace"], None, "{name, rename?: new name, delete?: bool}", always),
         fe!("window.resetWorkspace", "Reset to Saved Layout", ["Window", "Workspace"], None, "{}", always),
-        fe!("comp.flowchart", "Composition Flowchart", ["Composition"], Some("Cmd+F11"), "{}", always),
+        fe!("comp.flowchart", "Composition Flowchart", ["Composition"], Some("Cmd+Shift+F11"), "{}", always),
         fe!("comp.miniFlowchart", "Composition Mini-Flowchart", ["Composition"], Some("Tab"), "{}", has_comp),
         fe!("layer.openLayer", "Open Layer", ["Layer"], None, "{layer?}", has_layers),
         fe!("effect.manage", "Manage Effects...", ["Effect"], None, "{}", always),

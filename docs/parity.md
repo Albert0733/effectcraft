@@ -383,6 +383,16 @@ Browser in the web app (landed in M13.10: browser storage and File System Access
   wrong signatures and versions, fuel exhaustion, traps and bit-identical output; script
   `Socket` validates ports, and ScriptUI resource strings accept trailing array commas.
 
+## Update: M3.13 menu bar
+
+Group Shapes (Ctrl+G) and Ungroup Shapes (Ctrl+Shift+G) moved to the Layer menu itself, where
+After Effects has them; Window ▸ Learn opens the Home screen's Learn tab; Composition ▸
+Composition Flowchart is Ctrl+Shift+F11 and Window ▸ Flowchart Ctrl+F11 (the flowchart had
+Window's shortcut); Layer ▸ Transform ▸ Center In View shows Ctrl+Home; "Reveal in Finder" reads
+"Reveal in Explorer" on Windows (and "Reveal in File Manager" on Linux). Not yet: View ▸ New
+Viewer (several unlocked Composition viewers at once; View ▸ Split with New Locked Viewer adds
+the one locked viewer the interface has).
+
 ## Update: M3.12 Pre-compose and New Comp from Selection
 
 - **Pre-compose** makes the new composition with the original's settings (pixel aspect,
