@@ -325,7 +325,7 @@ fn raster_into(e: &mut Enc, s: &Scene) -> Option<(wgpu::Texture, wgpu::Texture)>
 /// Rasterise a scene and read it back ([`effectcraft_render::Accelerator::raster_3d`]). `None`
 /// when the device can't (no readback, size or buffer limits).
 pub(crate) fn render(g: &GpuContext, s: &Scene) -> Option<Target> {
-    if !g.can_readback() {
+    if !g.can_wait() {
         return None;
     }
     let mut e = Enc::new(g);
@@ -520,7 +520,7 @@ fn storage_buf(g: &GpuContext, size: u64, label: &str) -> wgpu::Buffer {
 
 /// Read a storage buffer back (submits and waits).
 fn read_buffer(e: &mut Enc, buf: &wgpu::Buffer, size: u64) -> Option<Vec<u8>> {
-    if !e.g.can_readback() {
+    if !e.g.can_wait() {
         return None;
     }
     let rb = e.g.device.create_buffer(&wgpu::BufferDescriptor {
@@ -560,7 +560,7 @@ const BIG: f32 = 3.0e38;
 fn resolve_run(e: &mut Enc, prep: &Prepared) -> Option<Option<Resolved>> {
     let (w, h) = prep.out;
     let g = e.g;
-    if !g.fits(w, h) || (prep.dof.is_some() && !g.can_readback()) {
+    if !g.fits(w, h) || (prep.dof.is_some() && !g.can_wait()) {
         return None;
     }
     let px = w as u64 * h as u64;
@@ -673,7 +673,7 @@ fn finish(e: &mut Enc, r: &Resolved, encode: bool, canvas: Option<&GpuImage>) ->
 /// [`effectcraft_render::Accelerator::render_3d`]: the whole prepared run on the GPU, read
 /// back.
 pub(crate) fn render_prepared(g: &GpuContext, prep: &Prepared) -> Option<Rendered> {
-    if !g.can_readback() {
+    if !g.can_wait() {
         return None;
     }
     let mut e = Enc::new(g);

@@ -51,6 +51,20 @@ pub(crate) fn run_chain(e: &mut Enc, chain: &[FxStep], buf: &Buf, levels: Option
     if !e.g.can_readback() || buf.img.is_empty() {
         return None;
     }
+    // Deferred readbacks (a browser worker): served by key once the bytes arrived.
+    let deferred = e.g.deferred.clone();
+    let key = deferred.as_ref().map(|_| crate::deferred::chain_key(chain, buf, levels));
+    if let (Some(d), Some(k)) = (&deferred, key) {
+        match d.lookup(k) {
+            crate::deferred::Lookup::Ready(r) => return r.and_then(readback_buf),
+            crate::deferred::Lookup::InFlight => {
+                d.miss();
+                return Some(buf.clone());
+            }
+            crate::deferred::Lookup::Absent => {}
+        }
+    }
+    let misses = deferred.as_ref().map(|d| d.misses());
     let mut b = GBuf { img: e.g.upload_image(&buf.img)?, offset: buf.offset, scale: buf.scale };
     for step in chain {
         b = apply(e, step.spec.id, &step.ctx, b)?;
@@ -58,8 +72,28 @@ pub(crate) fn run_chain(e: &mut Enc, chain: &[FxStep], buf: &Buf, levels: Option
             b.img = ops::quantize(e, &b.img, l);
         }
     }
+    if let (Some(d), Some(k)) = (&deferred, key) {
+        // Data the kernels fetched through the effect host missed meanwhile: not genuine.
+        if Some(d.misses()) != misses {
+            d.miss();
+            return Some(buf.clone());
+        }
+        // The placeholder (the input) keeps this pass cheap; the next pass gets the result.
+        return match e.read_keyed(&b.img, k, b.offset, b.scale) {
+            Some(r) => r.and_then(readback_buf),
+            None => Some(buf.clone()),
+        };
+    }
     let img = e.download(&b.img)?;
     Some(Buf { img, offset: b.offset, scale: b.scale })
+}
+
+/// A layer buffer from deferred readback bytes (RGBA f32).
+fn readback_buf(r: crate::deferred::Readback) -> Option<Buf> {
+    let mut img = effectcraft_raster::Image::new(r.width, r.height);
+    let dst: &mut [u8] = bytemuck::cast_slice_mut(&mut img.data);
+    (dst.len() == r.bytes.len()).then(|| dst.copy_from_slice(&r.bytes))?;
+    Some(Buf { img, offset: r.offset, scale: r.scale })
 }
 
 /// An effect stack running on a GPU-resident image (adjustment layers): GPU chains stay on

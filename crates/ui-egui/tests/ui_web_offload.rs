@@ -69,7 +69,7 @@ impl RemoteFrames for FakeWorker {
             assert!(server.handle(rt(&m)).is_empty());
         }
         *next += 1;
-        let out = server.handle(rt(&FrameMsg::Render { id: *next, revision: job.revision, comp: job.comp, time: job.t, opts: Box::new(job.opts) }));
+        let out = server.handle(rt(&FrameMsg::Render { id: *next, revision: job.revision, comp: job.comp, time: job.t, opts: Box::new(job.opts), disk: None }));
         match out.into_iter().next() {
             Some((FrameReply::Frame { width, height, ms, .. }, Some(rgba))) => pending.push((done, RemoteFrame { width, height, rgba, ms })),
             other => done(Err(format!("{:?}", other.map(|o| o.0)))),

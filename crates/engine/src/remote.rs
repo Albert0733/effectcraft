@@ -13,13 +13,23 @@
 //! - [`FrameServer`] (worker side): applies syncs, relayed Roto Brush segmentations and render
 //!   requests, and renders frames as premultiplied RGBA8 ([`rgba8_premultiplied`]).
 //!
+//! - GPU frames: a worker with its own WebGPU device ([`FrameServer::accel`]) renders through
+//!   the GPU compositor and GPU effects. Its readbacks can't be waited for, so a frame renders
+//!   in passes ([`effectcraft_render::Accelerator::frame_begin`]): [`FrameServer::handle`]
+//!   runs the first, and while [`FrameServer::waiting`] the transport awaits the device and
+//!   calls [`FrameServer::resume`] for the next. Backend Auto picks CPU or GPU per comp from
+//!   the frames' total times ([`effectcraft_render::AutoPick`]).
+//! - Disk cache: a render request may carry the frame's disk-cache key ([`FrameMsg::Render`]
+//!   `disk`); the transport stores the finished frame under it (the browser: in the Origin
+//!   Private File System) and reports [`FrameReply::Stored`].
+//!
 //! The transport (structured-clone messages, transferable pixel buffers) is the web crate's;
 //! everything here is portable and tested natively.
 
 use std::sync::Arc;
 
 use effectcraft_project::{ItemId, Project};
-use effectcraft_render::{ExprHost, FootageSource, Image, LayerCache, RenderOpts, Renderer};
+use effectcraft_render::{Accelerator, AutoKey, Backend, ExprHost, FootageSource, Image, LayerCache, RenderOpts, Renderer};
 use effectcraft_time::Tick;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -120,8 +130,17 @@ pub enum FrameMsg {
     Project { revision: u64, project: String },
     /// Changes from the worker's revision `from` to `revision`.
     Patch { from: u64, revision: u64, ops: Vec<Op> },
-    /// Render a frame of the current project.
-    Render { id: u64, revision: u64, comp: ItemId, time: Tick, opts: Box<RenderOpts> },
+    /// Render a frame of the current project. `disk`: the frame's disk-cache key (32 hex
+    /// digits) when the transport should store it.
+    Render {
+        id: u64,
+        revision: u64,
+        comp: ItemId,
+        time: Tick,
+        opts: Box<RenderOpts>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        disk: Option<String>,
+    },
     /// Roto Brush segmentations computed elsewhere (a propagation worker).
     Segs { segs: Vec<SegData> },
     /// Drop cached layer buffers (Edit ▸ Purge).
@@ -133,8 +152,27 @@ pub enum FrameMsg {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum FrameReply {
-    /// Premultiplied RGBA8 pixels of request `id`, rendered in `ms` milliseconds.
-    Frame { id: u64, width: u32, height: u32, ms: f64 },
+    /// Premultiplied RGBA8 pixels of request `id`, rendered in `ms` milliseconds (`passes`
+    /// render passes, `gpu`: through the GPU accelerator).
+    Frame {
+        id: u64,
+        width: u32,
+        height: u32,
+        ms: f64,
+        #[serde(default)]
+        passes: u32,
+        #[serde(default)]
+        gpu: bool,
+    },
+    /// The frame was stored in the disk cache under `key` (`bytes` on disk).
+    Stored { key: String, bytes: u64 },
+    /// The worker's renderer: its GPU adapter, or why it has none.
+    Info {
+        #[serde(default)]
+        gpu: Option<String>,
+        #[serde(default)]
+        error: Option<String>,
+    },
     /// Request `id` was not rendered (`stale`: the worker holds another revision).
     Failed { id: u64, error: String, stale: bool },
     /// A sync could not be applied: the page must send the whole project again.
@@ -189,14 +227,45 @@ pub struct FrameServer {
     pub footage: Arc<dyn FootageSource>,
     pub expr: Option<Arc<dyn ExprHost>>,
     pub cache: Arc<LayerCache>,
+    /// The worker's own accelerator (a GPU device; see [`FrameServer::set_accel`]).
+    accel: Option<Arc<dyn Accelerator>>,
     doc: Value,
     project: Option<Arc<Project>>,
     revision: Option<u64>,
+    /// The frame being rendered in passes.
+    pending: Option<Pending>,
 }
+
+/// A frame whose readbacks are in flight.
+struct Pending {
+    id: u64,
+    project: Arc<Project>,
+    comp: ItemId,
+    time: Tick,
+    opts: RenderOpts,
+    t0: web_time::Instant,
+    passes: u32,
+    /// Backend Auto's choice: (timing key, GPU).
+    auto: Option<(AutoKey, bool)>,
+}
+
+/// Passes before a frame gives up on deferred readbacks and renders on the CPU.
+pub const MAX_PASSES: u32 = 24;
 
 impl FrameServer {
     pub fn new(footage: Arc<dyn FootageSource>, expr: Option<Arc<dyn ExprHost>>) -> FrameServer {
-        FrameServer { footage, expr, cache: Arc::new(LayerCache::default()), doc: Value::Null, project: None, revision: None }
+        FrameServer { footage, expr, cache: Arc::new(LayerCache::default()), accel: None, doc: Value::Null, project: None, revision: None, pending: None }
+    }
+
+    /// Render with `accel` when the request's backend asks for it (the worker's GPU). Its miss
+    /// gate keeps placeholder buffers of unfinished passes out of the layer cache.
+    pub fn set_accel(&mut self, accel: Option<Arc<dyn Accelerator>>) {
+        self.cache.set_gate(accel.as_ref().and_then(|a| a.miss_gate()));
+        self.accel = accel;
+    }
+
+    pub fn accel(&self) -> Option<&Arc<dyn Accelerator>> {
+        self.accel.as_ref()
     }
 
     pub fn revision(&self) -> Option<u64> {
@@ -207,6 +276,11 @@ impl FrameServer {
         self.project.as_ref()
     }
 
+    /// A frame is waiting for readbacks: await the device, then [`FrameServer::resume`].
+    pub fn waiting(&self) -> bool {
+        self.pending.is_some()
+    }
+
     fn load(&mut self, revision: u64) -> Result<(), String> {
         let p = Project::from_json(&self.doc.to_string()).map_err(|e| e.to_string())?;
         self.project = Some(Arc::new(p));
@@ -214,7 +288,8 @@ impl FrameServer {
         Ok(())
     }
 
-    /// Handle one message; returns the replies with their pixels.
+    /// Handle one message; returns the replies with their pixels. A render that needs more
+    /// passes returns nothing yet ([`FrameServer::waiting`]).
     pub fn handle(&mut self, msg: FrameMsg) -> Vec<(FrameReply, Option<Vec<u8>>)> {
         match msg {
             FrameMsg::Project { revision, project } => {
@@ -246,7 +321,7 @@ impl FrameServer {
                 self.cache.clear();
                 vec![]
             }
-            FrameMsg::Render { id, revision, comp, time, opts } => {
+            FrameMsg::Render { id, revision, comp, time, opts, .. } => {
                 let fail = |error: String, stale: bool| vec![(FrameReply::Failed { id, error, stale }, None)];
                 if self.revision != Some(revision) {
                     return fail(format!("the replica is at {:?}, not {revision}", self.revision), true);
@@ -255,15 +330,58 @@ impl FrameServer {
                 if p.comp(comp).is_none() {
                     return fail(format!("no composition {}", comp.0), false);
                 }
-                let t0 = web_time::Instant::now();
-                let mut r = Renderer::new(&p, self.footage.as_ref(), *opts);
-                r.expr = self.expr.as_deref();
-                r.cache = Some(&self.cache);
-                let img = r.comp_frame(comp, time);
-                let ms = t0.elapsed().as_secs_f64() * 1000.0;
-                vec![(FrameReply::Frame { id, width: img.width, height: img.height, ms }, Some(rgba8_premultiplied(&img)))]
+                let mut opts = *opts;
+                let mut auto = None;
+                if let Some(a) = &self.accel {
+                    // Auto: CPU or GPU for the whole frame (all its passes), timed as a whole.
+                    if opts.backend == Backend::Auto {
+                        if !p.settings.gpu_acceleration {
+                            opts.backend = Backend::Cpu;
+                        } else if opts.roi.is_none()
+                            && let Some(pick) = a.auto_pick()
+                        {
+                            let key = AutoKey::new(comp, opts.scale, false);
+                            let gpu = pick.choose(key);
+                            opts.backend = if gpu { Backend::Gpu } else { Backend::Cpu };
+                            auto = Some((key, gpu));
+                        }
+                    }
+                    a.frame_begin();
+                }
+                self.pending = Some(Pending { id, project: p, comp, time, opts, t0: web_time::Instant::now(), passes: 0, auto });
+                self.resume()
             }
         }
+    }
+
+    /// Run the next pass of the frame in progress; its reply once it is done.
+    pub fn resume(&mut self) -> Vec<(FrameReply, Option<Vec<u8>>)> {
+        let Some(mut pr) = self.pending.take() else { return vec![] };
+        pr.passes += 1;
+        let accel = self.accel.clone().filter(|_| pr.opts.backend != Backend::Cpu);
+        let give_up = pr.passes > MAX_PASSES;
+        let mut r = Renderer::new(&pr.project, self.footage.as_ref(), pr.opts);
+        r.expr = self.expr.as_deref();
+        r.cache = Some(&self.cache);
+        if !give_up {
+            r.accel = accel.as_deref();
+        }
+        if let Some(a) = r.accel {
+            a.pass_begin();
+        }
+        let img = r.comp_frame(pr.comp, pr.time);
+        if r.accel.is_some_and(|a| a.pass_missed()) {
+            self.pending = Some(pr);
+            return vec![];
+        }
+        let ms = pr.t0.elapsed().as_secs_f64() * 1000.0;
+        let gpu = r.accel.is_some() && r.active_accel().is_some();
+        if let (Some((key, chose)), Some(a)) = (pr.auto, &self.accel)
+            && let Some(pick) = a.auto_pick()
+        {
+            pick.record(key, chose, ms);
+        }
+        vec![(FrameReply::Frame { id: pr.id, width: img.width, height: img.height, ms, passes: pr.passes, gpu }, Some(rgba8_premultiplied(&img)))]
     }
 
     fn lost(&mut self, error: String) -> Vec<(FrameReply, Option<Vec<u8>>)> {
@@ -332,7 +450,8 @@ mod tests {
         assert!(send(first, &mut w).is_empty());
         assert!(m.sync(s.revision, &s.project).is_none(), "nothing new");
         let t = Tick::from_seconds_f64(1.0);
-        let render = |w: &mut FrameServer, rev: u64, id: u64| w.handle(round(&FrameMsg::Render { id, revision: rev, comp, time: t, opts: Box::new(opts) }));
+        let render =
+            |w: &mut FrameServer, rev: u64, id: u64| w.handle(round(&FrameMsg::Render { id, revision: rev, comp, time: t, opts: Box::new(opts), disk: None }));
         let out = render(&mut w, s.revision, 1);
         let (FrameReply::Frame { id, width, height, .. }, Some(px)) = &out[0] else { panic!("{:?}", out[0].0) };
         assert_eq!((*id, *width as usize * *height as usize * 4), (1, px.len()));
@@ -367,6 +486,7 @@ mod tests {
                 comp: ItemId(2),
                 time: Tick::from_seconds_f64(0.5),
                 opts: Box::new(RenderOpts { scale: 0.5, draft: true, roi: Some([1.0, 2.0, 3.0, 4.0]), ..Default::default() }),
+                disk: Some(format!("{:032x}", 0xabcdu128)),
             },
         ] {
             let a = serde_json::to_string(&m).unwrap();
@@ -374,11 +494,145 @@ mod tests {
             assert!(a.starts_with("{\"type\":"), "{a}");
         }
         for r in [
-            FrameReply::Frame { id: 1, width: 2, height: 3, ms: 4.5 },
+            FrameReply::Frame { id: 1, width: 2, height: 3, ms: 4.5, passes: 2, gpu: true },
+            FrameReply::Stored { key: "00ff".into(), bytes: 9 },
+            FrameReply::Info { gpu: Some("Adapter (BrowserWebGpu)".into()), error: None },
             FrameReply::Failed { id: 1, error: "x".into(), stale: true },
             FrameReply::Resync { error: "y".into() },
         ] {
             assert_eq!(round(&r), r);
         }
+    }
+
+    /// An accelerator with deferred readbacks: a GPU effect chain is "read back" one
+    /// [`Deferred::settle`] after it was first asked for (computed with the CPU effects, so the
+    /// finished frame equals the CPU render); until then it misses and returns its input.
+    #[derive(Default)]
+    struct Deferred {
+        ready: std::sync::Mutex<std::collections::HashSet<u64>>,
+        asked: std::sync::Mutex<std::collections::HashSet<u64>>,
+        gate: Arc<std::sync::atomic::AtomicBool>,
+        chains: std::sync::atomic::AtomicUsize,
+        auto: effectcraft_render::AutoPick,
+    }
+
+    impl Deferred {
+        fn settle(&self) {
+            let asked: Vec<u64> = self.asked.lock().unwrap().drain().collect();
+            self.ready.lock().unwrap().extend(asked);
+        }
+    }
+
+    impl Accelerator for Deferred {
+        fn name(&self) -> String {
+            "deferred".into()
+        }
+        fn comp_frame(&self, _: &Renderer, _: ItemId, _: Tick) -> Option<Image> {
+            None
+        }
+        fn supports_effect(&self, id: &str) -> bool {
+            effectcraft_effects::GPU_EFFECTS.contains(&id)
+        }
+        fn effects(&self, chain: &[effectcraft_render::FxStep], buf: &effectcraft_effects::Buf, levels: Option<f32>) -> Option<effectcraft_effects::Buf> {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            for s in chain {
+                s.spec.id.hash(&mut h);
+                s.ctx.time.to_bits().hash(&mut h);
+            }
+            (buf.img.width, buf.img.height).hash(&mut h);
+            for p in &buf.img.data {
+                for c in p {
+                    c.to_bits().hash(&mut h);
+                }
+            }
+            let key = h.finish();
+            if !self.ready.lock().unwrap().contains(&key) {
+                self.asked.lock().unwrap().insert(key);
+                self.gate.store(true, std::sync::atomic::Ordering::Relaxed);
+                return Some(buf.clone());
+            }
+            self.chains.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let mut b = buf.clone();
+            for s in chain {
+                b = effectcraft_effects::apply(s.spec, &s.ctx, b);
+                if let Some(l) = levels {
+                    effectcraft_render::color::quantize(&mut b.img, l);
+                }
+            }
+            Some(b)
+        }
+        fn auto_pick(&self) -> Option<&effectcraft_render::AutoPick> {
+            Some(&self.auto)
+        }
+        fn frame_begin(&self) {
+            self.ready.lock().unwrap().clear();
+        }
+        fn pass_begin(&self) {
+            self.gate.store(false, std::sync::atomic::Ordering::Relaxed);
+        }
+        fn pass_missed(&self) -> bool {
+            self.gate.load(std::sync::atomic::Ordering::Relaxed)
+        }
+        fn miss_gate(&self) -> Option<Arc<std::sync::atomic::AtomicBool>> {
+            Some(self.gate.clone())
+        }
+    }
+
+    #[test]
+    fn deferred_readbacks_render_in_passes() {
+        let mut s = Session::default();
+        s.execute("file.openDemoProject", json!({})).unwrap();
+        let comp = s.active_comp_id().unwrap();
+        s.execute("layer.newSolid", json!({"color": "#3388ff", "name": "Blue", "width": 200, "height": 120})).unwrap();
+        s.execute("effect.apply", json!({"effect": "ec.blur.gaussian"})).unwrap();
+        s.execute("effect.apply", json!({"effect": "ec.stylize.glow"})).unwrap();
+        s.execute("layer.newSolid", json!({"color": "#ffcc00", "name": "Yellow", "width": 80, "height": 80})).unwrap();
+        s.execute("effect.apply", json!({"effect": "ec.color.levels"})).unwrap();
+        let opts = RenderOpts { scale: 0.25, backend: Backend::Gpu, ..Default::default() };
+        let t = Tick::from_seconds_f64(1.0);
+        let mut w = server(&s);
+        let acc = Arc::new(Deferred::default());
+        w.set_accel(Some(acc.clone()));
+        let mut m = Mirror::default();
+        w.handle(round(&m.sync(s.revision, &s.project).unwrap()));
+        let req = |id| round(&FrameMsg::Render { id, revision: s.revision, comp, time: t, opts: Box::new(opts), disk: None });
+        assert!(w.handle(req(1)).is_empty() && w.waiting(), "the first pass misses");
+        let mut out = vec![];
+        for _ in 0..10 {
+            acc.settle();
+            out = w.resume();
+            if !w.waiting() {
+                break;
+            }
+        }
+        let (FrameReply::Frame { id: 1, passes, gpu: true, .. }, Some(px)) = &out[0] else { panic!("{:?}", out.first().map(|o| &o.0)) };
+        assert!(*passes >= 2, "{passes}");
+        assert!(acc.chains.load(std::sync::atomic::Ordering::Relaxed) >= 2);
+        // The same pixels as the CPU: no placeholder survived, in the frame or the layer cache.
+        assert_eq!(*px, local(&s, comp, t, RenderOpts { backend: Backend::Cpu, ..opts }));
+        let out = w.handle(req(2));
+        let out = if out.is_empty() {
+            acc.settle();
+            w.resume()
+        } else {
+            out
+        };
+        assert_eq!(out[0].1.as_deref(), Some(&px[..]));
+        // CPU requests never touch the accelerator; Auto times whole frames.
+        let cpu = RenderOpts { backend: Backend::Cpu, ..opts };
+        let out = w.handle(round(&FrameMsg::Render { id: 3, revision: s.revision, comp, time: t, opts: Box::new(cpu), disk: None }));
+        assert!(matches!(out[0].0, FrameReply::Frame { id: 3, passes: 1, gpu: false, .. }));
+        for id in 4..12 {
+            let auto = RenderOpts { backend: Backend::Auto, ..opts };
+            let mut out = w.handle(round(&FrameMsg::Render { id, revision: s.revision, comp, time: t, opts: Box::new(auto), disk: None }));
+            while w.waiting() {
+                acc.settle();
+                out = w.resume();
+            }
+            assert_eq!(out[0].1.as_deref(), Some(&px[..]), "frame {id}");
+        }
+        let st = acc.auto.stats(effectcraft_render::AutoKey::new(comp, opts.scale, false)).unwrap();
+        assert!(st.cpu_frames > 0 && st.gpu_frames > 0, "{st:?}");
     }
 }

@@ -296,6 +296,23 @@ pub trait Accelerator: Send + Sync {
     fn auto_pick(&self) -> Option<&AutoPick> {
         None
     }
+    /// Deferred readbacks: where a GPU readback cannot be waited for (WebGPU in a browser
+    /// worker), a frame renders in *passes*. A readback the accelerator does not have yet is
+    /// started, the step returns a cheap placeholder and the pass is marked missed
+    /// ([`Self::pass_missed`]); the caller waits for the readbacks in flight (asynchronously)
+    /// and renders the frame again, and the steps whose results arrived are served from them.
+    /// The frame is done after a pass with no miss. `frame_begin` forgets the previous frame's
+    /// results, `pass_begin` clears the miss. Synchronous accelerators never miss.
+    fn frame_begin(&self) {}
+    fn pass_begin(&self) {}
+    fn pass_missed(&self) -> bool {
+        false
+    }
+    /// Raised from a pass's first miss to its end (results computed meanwhile may hold
+    /// placeholders): give it to [`LayerCache::set_gate`] so they are not cached.
+    fn miss_gate(&self) -> Option<Arc<std::sync::atomic::AtomicBool>> {
+        None
+    }
 }
 
 /// Where an effect stack runs (see [`Renderer::run_effects_on`]): a CPU buffer, or an image

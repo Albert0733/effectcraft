@@ -262,6 +262,8 @@ pub struct GpuContext {
     /// GPU particle pipeline (built on first use) and simulation checkpoints.
     pub(crate) particles: crate::particles::PipesCell,
     pub(crate) particle_states: crate::particles::StatesCell,
+    /// Deferred readbacks (a browser worker's WebGPU device), see [`crate::deferred`].
+    pub(crate) deferred: Option<Arc<crate::deferred::Deferred>>,
 }
 
 fn tex_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
@@ -450,27 +452,43 @@ impl GpuContext {
             adv3d: std::sync::OnceLock::new(),
             particles: Default::default(),
             particle_states: Default::default(),
+            deferred: None,
         })
     }
 
-    /// A device of its own on the best adapter (CLI, tests, benchmarks). `None` when no
-    /// adapter qualifies.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn headless() -> Option<GpuContext> {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-        let adapter = pollster::block_on(
-            instance.request_adapter(&wgpu::RequestAdapterOptions { power_preference: wgpu::PowerPreference::HighPerformance, ..Default::default() }),
-        )
-        .ok()?;
+    /// Switch to deferred readbacks (see [`crate::deferred`]): readbacks are never waited for.
+    pub fn set_deferred(&mut self, on: bool) {
+        self.deferred = on.then(Default::default);
+    }
+
+    pub fn deferred(&self) -> Option<&Arc<crate::deferred::Deferred>> {
+        self.deferred.as_ref()
+    }
+
+    /// A device of its own on the best adapter, without blocking (a browser worker: WebGPU
+    /// only; natively any backend). `Err` says why there is none.
+    pub async fn request() -> Result<GpuContext, String> {
+        #[allow(unused_mut)]
+        let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
+        #[cfg(target_arch = "wasm32")]
+        {
+            desc.backends = wgpu::Backends::BROWSER_WEBGPU;
+        }
+        let instance = wgpu::Instance::new(desc);
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions { power_preference: wgpu::PowerPreference::HighPerformance, ..Default::default() })
+            .await
+            .map_err(|e| format!("no adapter: {e}"))?;
         let limits = adapter.limits();
         let required_limits = wgpu::Limits {
             max_texture_dimension_2d: limits.max_texture_dimension_2d.min(16384),
             max_buffer_size: limits.max_buffer_size,
             ..wgpu::Limits::default()
         };
-        let (device, queue) =
-            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor { label: Some("effectcraft gpu"), required_limits, ..Default::default() }))
-                .ok()?;
+        let (device, queue) = adapter
+            .request_device(&wgpu::DeviceDescriptor { label: Some("effectcraft gpu"), required_limits, ..Default::default() })
+            .await
+            .map_err(|e| format!("no device: {e}"))?;
         device.on_uncaptured_error(Arc::new(|e| {
             // Under test a validation error (a WGSL typo invalidates every kernel) fails loudly.
             if cfg!(test) {
@@ -478,12 +496,26 @@ impl GpuContext {
             }
             log::error!("wgpu: {e}")
         }));
-        GpuContext::new(&adapter, device, queue).map_err(|e| log::info!("gpu: {e}")).ok()
+        GpuContext::new(&adapter, device, queue)
     }
 
-    /// Readback (GPU → CPU) waits for the device; impossible on the browser's main thread.
+    /// A device of its own on the best adapter (CLI, tests, benchmarks). `None` when no
+    /// adapter qualifies.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn headless() -> Option<GpuContext> {
+        pollster::block_on(GpuContext::request()).map_err(|e| log::info!("gpu: {e}")).ok()
+    }
+
+    /// Readbacks (GPU → CPU) are possible: waited for natively, or deferred (a browser
+    /// worker, [`crate::deferred`]). Impossible on the browser's main thread.
     pub fn can_readback(&self) -> bool {
-        cfg!(not(target_arch = "wasm32"))
+        self.can_wait() || self.deferred.is_some()
+    }
+
+    /// Readbacks can be waited for (natively, unless deferred). Steps that read back without a
+    /// key ([`crate::deferred`]) need this.
+    pub fn can_wait(&self) -> bool {
+        cfg!(not(target_arch = "wasm32")) && self.deferred.is_none()
     }
 
     pub(crate) fn fits(&self, w: u32, h: u32) -> bool {
@@ -800,7 +832,7 @@ impl<'g> Enc<'g> {
 
     /// [`Enc::read_texture`] into `out` (`w × bpp × h` bytes), through a reused staging buffer.
     fn read_texture_into(&mut self, texture: &wgpu::Texture, w: u32, h: u32, bpp: u32, out: &mut [u8]) -> Option<()> {
-        if !self.g.can_readback() {
+        if !self.g.can_wait() {
             return None;
         }
         self.g.transfers.count(false, out.len());
@@ -885,6 +917,25 @@ impl<'g> Enc<'g> {
         });
         #[cfg(not(target_arch = "wasm32"))]
         let _ = self.g.device.poll(wgpu::PollType::Poll);
+    }
+
+    /// A deferred readback of `img` (RGBA f32) under `key` (see [`crate::deferred`]): the bytes
+    /// once they arrived (`Some(None)`: the readback failed), else `None` after starting the
+    /// copy if needed and marking the pass missed.
+    pub(crate) fn read_keyed(&mut self, img: &GpuImage, key: u128, offset: [f64; 2], scale: f64) -> Option<Option<crate::deferred::Readback>> {
+        use crate::deferred::Lookup;
+        let d = self.g.deferred.clone()?;
+        match d.lookup(key) {
+            Lookup::Ready(r) => return Some(r),
+            Lookup::InFlight => {}
+            Lookup::Absent => {
+                self.g.transfers.count(false, img.width as usize * img.height as usize * 16);
+                let done = d.start(key, img.width, img.height, offset, scale);
+                self.read_texture_async(&img.texture, img.width, img.height, 16, done);
+            }
+        }
+        d.miss();
+        None
     }
 
     /// A data buffer for kernels that read tables (curves).

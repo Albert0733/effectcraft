@@ -957,7 +957,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         draw_run(a, b);
     }
     // Disk-cached frames not in RAM (blue), like After Effects.
-    if app.session.disk_cache.is_some() {
+    if app.session.disk_cache.is_some() || app.frames.remote_disk() {
         let frames = comp.frame_rate.frame_at(comp.duration);
         let opts = app.frame_opts(cid, scale_key as f64 / 1000.0);
         let disk = app.frames.disk_frames(&app.render_source(), app.session.revision, cid.0, scale_key, app.view_hash(cid), frames, &opts);
