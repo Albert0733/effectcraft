@@ -116,7 +116,7 @@ cpal = "0.16"
 # filmcraft-isobmff = { path = "../filmcraft/crates/isobmff" }
 
 [workspace.lints.rust]
-unsafe_code = "deny"
+unsafe_code = "forbid"
 
 [workspace.lints.clippy]
 dbg_macro = "warn"
