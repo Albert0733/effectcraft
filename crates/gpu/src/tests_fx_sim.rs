@@ -152,3 +152,11 @@ fn caustics() {
     );
     let _ = (c(0.0, 0.0, 0.0), on());
 }
+
+#[test]
+fn cpu_only_views_fall_back() {
+    // Shatter's wireframe views and Foam's User Defined texture render on the CPU; composited
+    // frames still match.
+    composited("ec.sim.shatter", &[], 1.0, 0.0);
+    composited("ec.sim.foam", &[("view", e(2)), ("rendering/bubbleTexture", e(5)), ("rendering/bubbleTextureLayer", Value::Layer(Some(0)))], 1.0, 0.0);
+}

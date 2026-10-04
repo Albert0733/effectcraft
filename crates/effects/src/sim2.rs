@@ -1525,13 +1525,7 @@ fn foam(ctx: &EffectCtx, b: Buf) -> Buf {
 /// Foam's bubbles as sprites, `None` when it draws more than sprites (a User Defined bubble
 /// texture, an Environment Map reflection or the Draft + Flow Map view's flow map).
 pub(crate) fn foam_plan(ctx: &EffectCtx, b: &Buf) -> Option<crate::sim::SpritePlan> {
-    let pr = ctx.params;
-    let set = |id: &str| matches!(pr.get(id), Some(Value::Layer(Some(_))));
-    let view = pr.e("view");
-    if (view == 2 && pr.e("rendering/bubbleTexture") == 5)
-        || (view == 2 && pr.f("rendering/reflectionStrength") > 0.0 && set("rendering/environmentMap"))
-        || (view == 1 && set("flowMap/flowMap"))
-    {
+    if !crate::catalog::gpu_supported("ec.sim.foam", ctx) {
         return None;
     }
     foam_impl(ctx, b, true).err()

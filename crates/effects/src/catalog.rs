@@ -97,6 +97,19 @@ pub fn gpu_supported(id: &str, ctx: &crate::EffectCtx) -> bool {
     match id {
         "ec.generate.cellpattern" if (6..=10).contains(&ctx.params.e("cellPattern")) => return false,
         "ec.distort.turbulentdisplace" if ctx.params.e("pinning") >= 8 => return false,
+        // Shatter's wireframe views; Foam's User Defined texture, Environment Map and flow-map
+        // preview (the GPU draws the rendered pieces and the sprite bubbles only).
+        "ec.sim.shatter" if ctx.params.e("view") != 0 => return false,
+        "ec.sim.foam" => {
+            let set = |id: &str| matches!(ctx.params.get(id), Some(effectcraft_keyframe::Value::Layer(Some(_))));
+            let view = ctx.params.e("view");
+            if (view == 2 && ctx.params.e("rendering/bubbleTexture") == 5)
+                || (view == 2 && ctx.params.f("rendering/reflectionStrength") > 0.0 && set("rendering/environmentMap"))
+                || (view == 1 && set("flowMap/flowMap"))
+            {
+                return false;
+            }
+        }
         // Fisheye / Twist (a crease at the unit circle) bent past 50 % or with Horizontal /
         // Vertical Distortion: Newton's inverse wanders chaotically before converging near the
         // fold, so f32 lands on other pixels than the CPU's f64.
