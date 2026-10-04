@@ -686,13 +686,10 @@ fn path_text_passes(ctx: &EffectCtx, b: &Buf) -> Vec<TextPass> {
             let js = if j_scale != 0.0 { (1.0 + rnd(i, 4) * j_scale).max(0.05) } else { 1.0 };
             let jb = if j_base != 0.0 { rnd(i, 1) * j_base } else { 0.0 };
             let left = ink_left(c, true);
-            let set = match polys_by_alpha.iter_mut().find(|(a, _)| (*a - alpha).abs() < 1e-4) {
-                Some((_, v)) => v,
-                None => {
-                    polys_by_alpha.push((alpha, Vec::new()));
-                    &mut polys_by_alpha.last_mut().expect("pushed").1
-                }
-            };
+            if !polys_by_alpha.iter().any(|(a, _)| (*a - alpha).abs() < 1e-4) {
+                polys_by_alpha.push((alpha, Vec::new()));
+            }
+            let Some((_, set)) = polys_by_alpha.iter_mut().find(|(a, _)| (*a - alpha).abs() < 1e-4) else { continue };
             for st in parse_glyph(c) {
                 set.push(
                     st.iter()

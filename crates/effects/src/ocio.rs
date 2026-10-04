@@ -128,10 +128,14 @@ const fn sp(name: &'static str, prims: [[f64; 2]; 3], white: [f64; 2], tf: Tf) -
 }
 
 /// The built-in configuration's colour spaces, in popup order.
+const ACES2065_1: Space = sp("ACES2065-1", AP0, ACES_WHITE, Tf::Linear);
+const ACES_CG: Space = sp("ACEScg", AP1, ACES_WHITE, Tf::Linear);
+const ACES_CCT: Space = sp("ACEScct", AP1, ACES_WHITE, Tf::AcesCct);
+
 pub const SPACES: &[Space] = &[
-    sp("ACES2065-1", AP0, ACES_WHITE, Tf::Linear),
-    sp("ACEScg", AP1, ACES_WHITE, Tf::Linear),
-    sp("ACEScct", AP1, ACES_WHITE, Tf::AcesCct),
+    ACES2065_1,
+    ACES_CG,
+    ACES_CCT,
     sp("Linear Rec.709 (sRGB)", REC709, D65, Tf::Linear),
     sp("sRGB", REC709, D65, Tf::Srgb),
     sp("Gamma 2.4 Rec.709", REC709, D65, Tf::Gamma(2.4)),
@@ -147,6 +151,7 @@ pub fn space_names() -> Vec<&'static str> {
     SPACES.iter().map(|s| s.name).collect()
 }
 
+#[cfg(test)]
 pub fn space_by_name(n: &str) -> Option<&'static Space> {
     SPACES.iter().find(|s| s.name.eq_ignore_ascii_case(n))
 }
@@ -778,7 +783,7 @@ fn ocio_look(ctx: &EffectCtx, mut b: Buf) -> Buf {
     }
     let (src, dst) = (space_at(ctx.params.e("source")), space_at(ctx.params.e("destination")));
     let inv = ctx.params.e("direction") == 1;
-    let cct = space_by_name("ACEScct").expect("built-in");
+    let cct = &ACES_CCT;
     let (a, z) = if inv { (dst, src) } else { (src, dst) };
     let to_p = Xform::new(a, cct);
     let from_p = Xform::new(cct, z);
@@ -805,8 +810,8 @@ fn profile(ctx: &EffectCtx, i: u32) -> (Space, bool) {
         ColorSpace::Rec709 => sp("Rec.709", REC709, D65, Tf::Gamma(2.4)),
         ColorSpace::Rec2020 => sp("Rec.2020", REC2020, D65, Tf::Gamma(2.4)),
         ColorSpace::DisplayP3 => sp("Display P3", P3, D65, Tf::Srgb),
-        ColorSpace::AcesCg => *space_by_name("ACEScg").expect("built-in"),
-        ColorSpace::Aces2065 => *space_by_name("ACES2065-1").expect("built-in"),
+        ColorSpace::AcesCg => ACES_CG,
+        ColorSpace::Aces2065 => ACES2065_1,
         // HDR encodings are output spaces, never a working space.
         ColorSpace::Rec2100Pq | ColorSpace::Rec2100Hlg => sp("Rec.2020", REC2020, D65, Tf::Gamma(2.4)),
     };
@@ -816,8 +821,8 @@ fn profile(ctx: &EffectCtx, i: u32) -> (Space, bool) {
         2 => (ws(ColorSpace::Rec709), false),
         3 => (ws(ColorSpace::Rec2020), false),
         4 => (ws(ColorSpace::DisplayP3), false),
-        5 => (*space_by_name("ACEScg").expect("built-in"), true),
-        _ => (*space_by_name("ACES2065-1").expect("built-in"), true),
+        5 => (ACES_CG, true),
+        _ => (ACES2065_1, true),
     }
 }
 
@@ -1089,7 +1094,7 @@ pub fn color_program(id: &str, ctx: &EffectCtx) -> Option<(Vec<ColorOp>, Straigh
             if !list.is_empty() {
                 let (src, dst) = (space_at(pr.e("source")), space_at(pr.e("destination")));
                 let inv = pr.e("direction") == 1;
-                let cct = space_by_name("ACEScct").expect("built-in");
+                let cct = &ACES_CCT;
                 let (a, z) = if inv { (dst, src) } else { (src, dst) };
                 if inv {
                     list.reverse();
@@ -1157,7 +1162,7 @@ fn curve3(xs: [f64; 3], ys: [f64; 3], v: f64) -> f64 {
     let mut pairs: Vec<(f64, f64)> = xs.iter().cloned().zip(ys.iter().cloned()).collect();
     pairs.sort_by(|a, b| a.0.total_cmp(&b.0));
     for (x, y) in pairs {
-        if x > pts.last().expect("non-empty").0 + 1e-4 && x < 1.0 - 1e-4 {
+        if pts.last().is_some_and(|l| x > l.0 + 1e-4) && x < 1.0 - 1e-4 {
             pts.push((x, y));
         }
     }
@@ -1196,7 +1201,7 @@ pub fn color_stabilizer_maps(ctx: &EffectCtx, b: &Buf) -> Option<[Vec<(f64, f64)
                 let mut pairs: Vec<(f64, f64)> = (0..3).map(|i| (cur[i][k], refv[i][k])).collect();
                 pairs.sort_by(|a, b| a.0.total_cmp(&b.0));
                 for (x, y) in pairs {
-                    if x > v.last().expect("non-empty").0 + 1e-4 && x < 1.0 - 1e-4 {
+                    if v.last().is_some_and(|l| x > l.0 + 1e-4) && x < 1.0 - 1e-4 {
                         v.push((x, y));
                     }
                 }

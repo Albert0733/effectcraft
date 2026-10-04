@@ -192,7 +192,7 @@ fn prop_at<'a>(g: &'a mut PropGroup, id: &str) -> Option<&'a mut Property> {
     }
 }
 
-fn group_at<'a>(g: &'a mut PropGroup, ids: &mut Ids, path: &str) -> &'a mut PropGroup {
+fn group_at<'a>(g: &'a mut PropGroup, ids: &mut Ids, path: &str) -> Option<&'a mut PropGroup> {
     let (first, rest) = match path.split_once('/') {
         Some((a, b)) => (a, Some(b)),
         None => (path, None),
@@ -200,10 +200,10 @@ fn group_at<'a>(g: &'a mut PropGroup, ids: &mut Ids, path: &str) -> &'a mut Prop
     if g.sub(first).is_none() {
         g.children.push(ids.group(first, group_name(first)).into());
     }
-    let sub = g.sub_mut(first).expect("just added");
+    let sub = g.sub_mut(first)?;
     match rest {
         Some(r) => group_at(sub, ids, r),
-        None => sub,
+        None => Some(sub),
     }
 }
 
@@ -288,8 +288,8 @@ pub fn upgrade_instance(spec: &EffectSpec, g: &mut PropGroup, ids: &mut Ids, lay
                     pr
                 }
             };
-            match path {
-                Some(path) => group_at(g, ids, path).children.push(pr.into()),
+            match path.and_then(|path| group_at(g, ids, path)) {
+                Some(sub) => sub.children.push(pr.into()),
                 None => g.children.push(pr.into()),
             }
         }
@@ -310,8 +310,8 @@ pub fn upgrade_instance(spec: &EffectSpec, g: &mut PropGroup, ids: &mut Ids, lay
                 src.hold_only = true;
                 src
             });
-            match path {
-                Some(path) => group_at(g, ids, path).children.push(src.into()),
+            match path.and_then(|path| group_at(g, ids, path)) {
+                Some(sub) => sub.children.push(src.into()),
                 None => g.children.push(src.into()),
             }
         }
@@ -363,7 +363,7 @@ mod tests {
         let removed = spec.params.last().unwrap().id;
         g.children.retain(|c| c.match_id() != removed);
         let popup = spec.params.iter().find(|p| matches!(p.ui, ParamUi::Popup { .. })).expect("Gaussian Blur has a popup");
-        let ParamUi::Popup { options } = &popup.ui else { unreachable!() };
+        let ParamUi::Popup { options } = &popup.ui else { panic!("not a popup") };
         {
             let pr = g.get_mut(popup.id).unwrap();
             pr.name = "Old Name".into();
