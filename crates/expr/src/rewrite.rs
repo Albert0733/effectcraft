@@ -304,8 +304,11 @@ fn build(toks: Vec<Tok>) -> Vec<Item> {
     for t in toks {
         if t.kind == Kind::Punct && matches!(t.text.as_str(), "(" | "[" | "{") {
             stack.push((t, std::mem::take(&mut cur)));
-        } else if t.kind == Kind::Punct && matches!(t.text.as_str(), ")" | "]" | "}") && stack.last().is_some_and(|(o, _)| closer(&o.text) == t.text) {
-            let (open, parent) = stack.pop().unwrap_or_else(|| unreachable!());
+        } else if t.kind == Kind::Punct
+            && matches!(t.text.as_str(), ")" | "]" | "}")
+            && stack.last().is_some_and(|(o, _)| closer(&o.text) == t.text)
+            && let Some((open, parent)) = stack.pop()
+        {
             let inner = std::mem::replace(&mut cur, parent);
             cur.push(Item::Group { open, inner, close: Some(t) });
         } else {
@@ -545,17 +548,67 @@ fn push_piece(out: &mut String, p: Piece) {
     out.push_str(&p.body);
 }
 
-/// Rewrite an expression's source for array-aware arithmetic. Line breaks are preserved.
-pub fn rewrite(src: &str) -> String {
+/// The deepest nesting (brackets, plus chains of prefix operators) an expression may have,
+/// before and after the rewrite (which nests a call per arithmetic operator). The JavaScript
+/// parser recurses per level and a 2 MiB thread overflows its stack (aborting the app) at
+/// about 60 levels, so deeper expressions are rejected with an error instead.
+pub const MAX_NESTING: usize = 32;
+
+fn nesting(toks: &[Tok]) -> usize {
+    let (mut depth, mut prefix, mut max) = (0usize, 0usize, 0usize);
+    for t in toks {
+        if t.kind == Kind::Punct && matches!(t.text.as_str(), "(" | "[" | "{") {
+            depth += 1;
+        } else if t.kind == Kind::Punct && matches!(t.text.as_str(), ")" | "]" | "}") {
+            depth = depth.saturating_sub(1);
+        }
+        let is_prefix = (t.kind == Kind::Punct && matches!(t.text.as_str(), "!" | "~" | "-" | "+")) || t.is_kw(&["typeof", "void", "delete"]);
+        prefix = if is_prefix { prefix + 1 } else { 0 };
+        max = max.max(depth + prefix);
+    }
+    max
+}
+
+/// An error when `src` nests deeper than [`MAX_NESTING`] levels (before or after the rewrite).
+pub fn check_nesting(src: &str) -> Result<(), String> {
     let (toks, tail) = tokenize(src);
+    if nesting(&toks) > MAX_NESTING {
+        return Err(too_deep());
+    }
     let mut out = rewrite_seq(&build(toks));
     out.push_str(&tail);
+    if nesting(&tokenize(&out).0) > MAX_NESTING {
+        return Err(too_deep());
+    }
+    Ok(())
+}
+
+fn too_deep() -> String {
+    format!("Error: expression is nested too deeply (more than {MAX_NESTING} levels of brackets or chained operators)")
+}
+
+/// Rewrite an expression's source for array-aware arithmetic. Line breaks are preserved.
+/// An expression nested deeper than [`MAX_NESTING`] becomes a `throw` of that error.
+pub fn rewrite(src: &str) -> String {
+    let (toks, tail) = tokenize(src);
+    if nesting(&toks) > MAX_NESTING {
+        return throw_too_deep();
+    }
+    let mut out = rewrite_seq(&build(toks));
+    out.push_str(&tail);
+    if nesting(&tokenize(&out).0) > MAX_NESTING {
+        return throw_too_deep();
+    }
     out
+}
+
+fn throw_too_deep() -> String {
+    format!("throw new RangeError({:?})", too_deep().trim_start_matches("Error: "))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::rewrite;
+    use super::{MAX_NESTING, check_nesting, rewrite};
 
     /// Compare ignoring spaces (newlines are significant).
     fn n(s: &str) -> String {
@@ -598,5 +651,26 @@ mod tests {
         assert_eq!(n(&rewrite("typeof a + 'x'")), n("__add(typeof a,  'x')"));
         assert_eq!(n(&rewrite("i++ + 1")), n("__add(i++,  1)"));
         assert_eq!(n(&rewrite("2 ** 3 * 2")), n("__mul(2 ** 3,  2)"));
+    }
+
+    #[test]
+    fn deep_nesting_is_an_error_not_a_stack_overflow() {
+        // Each level costs the JavaScript parser stack: ~60 nested brackets overflowed a 2 MiB
+        // thread and aborted the app; 100 000 overflowed the rewriter itself.
+        for n in [MAX_NESTING + 1, 100, 100_000] {
+            let parens = "(".repeat(n) + "1" + &")".repeat(n);
+            let unclosed = "[".repeat(n);
+            let sum = vec!["x"; n + 1].join(" + ");
+            let nots = "!".repeat(n) + "x";
+            for src in [parens, unclosed, sum, nots] {
+                assert!(rewrite(&src).starts_with("throw new RangeError("), "{n}");
+                assert!(check_nesting(&src).is_err());
+                assert!(crate::check_syntax(&src).unwrap_err().contains("nested too deeply"));
+            }
+        }
+        let ok = "(".repeat(MAX_NESTING - 2) + "a + b" + &")".repeat(MAX_NESTING - 2);
+        assert!(check_nesting(&ok).is_ok());
+        assert!(crate::check_syntax(&ok).is_ok());
+        assert!(check_nesting(&vec!["x"; 20].join(" + ")).is_ok());
     }
 }

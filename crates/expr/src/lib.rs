@@ -24,6 +24,8 @@
 //!   the project through memoized host requests (see [`host`]), so nothing borrowed ever enters
 //!   the JS heap. Expressions reading each other nest up to [`MAX_DEPTH`] levels.
 
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
+
 pub mod host;
 mod noise;
 pub mod rewrite;
@@ -182,6 +184,7 @@ pub fn eval_property(project: &Project, comp: ItemId, layer: LayerId, path: &str
 
 /// Syntax-check an expression (after the array-maths rewrite) without evaluating it.
 pub fn check_syntax(text: &str) -> Result<(), String> {
+    rewrite::check_nesting(text)?;
     runtime::check(text)
 }
 
