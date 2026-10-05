@@ -51,3 +51,47 @@ fn an_edit_in_another_comp_keeps_the_cached_frames_and_undo_finds_them_again() {
     // B's frame is still there too.
     assert!(h.state().frames.is_cached(&effectcraft_ui_egui::frames::FrameKey { frame: 0, ..b_frame }));
 }
+
+/// Issue #65: while edits keep coming (a layer dragged in the viewer), only the viewer's frame
+/// renders; prefetching the frames around it waits until the edits pause (they would be stale at
+/// the next step, and would hold the CPU and GPU the next viewer frame needs), then resumes.
+#[test]
+fn prefetch_waits_while_edits_keep_coming() {
+    let mut s = Session::default();
+    let c = s.execute("comp.new", json!({"name": "Drag", "width": 64, "height": 36, "duration": 2})).unwrap()["comp"].as_u64().unwrap();
+    let solid = s.execute("layer.newSolid", json!({"color": "#3080ff", "width": 16, "height": 16})).unwrap()["layer"].as_u64().unwrap();
+    // Short steps: input time advances 50 ms per frame.
+    let mut h = Harness::builder().with_size(egui::vec2(1400.0, 900.0)).with_step_dt(0.05).build_eframe(|_| EffectcraftApp::new(s));
+    settle(&mut h);
+    let frame = |h: &Harness<'_, EffectcraftApp>| {
+        let app = h.state();
+        let comp = app.session.project.comp(ItemId(c)).unwrap();
+        comp.frame_rate.frame_at(app.session.time())
+    };
+    for i in 1..=8 {
+        let v = json!([20.0 + 2.0 * i as f64, 18.0, 0.0]);
+        h.state_mut().session.execute("prop.set", json!({"layer": solid, "path": "transform/position", "value": v, "merge": "drag"})).unwrap();
+        h.step();
+        // The viewer's frame renders...
+        for _ in 0..500 {
+            if !h.state().frames.urgent_pending() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        h.step();
+        // ...and nothing else is queued or cached for this state of the comp.
+        let series = h.state().shown_series(ItemId(c));
+        assert_eq!(h.state().frames.cached_frames(&series), vec![frame(&h)], "edit {i}");
+        assert_eq!(h.state().frames.inflight(), 0, "edit {i}");
+    }
+    // The edits pause: the frames around the current one fill in.
+    settle(&mut h);
+    for _ in 0..20 {
+        h.step();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    settle(&mut h);
+    let series = h.state().shown_series(ItemId(c));
+    assert!(h.state().frames.cached_frames(&series).len() > 1, "prefetch resumed");
+}
