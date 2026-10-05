@@ -441,7 +441,9 @@ pub fn segment_value(keys: &[Keyframe], i: usize, t: Tick, spatial: bool) -> Val
     let dur = (t1 - t0).max(1e-12);
     let x = ((secs(t) - t0) / dur).clamp(0.0, 1.0);
     let lin_out = a.out_interp == Interp::Linear;
-    let lin_in = b.in_interp == Interp::Linear;
+    // A Hold in-side only matters for the segment it ends, which the out side above decides:
+    // it shapes the incoming segment like a linear side, as in the Graph Editor and Lottie export.
+    let lin_in = b.in_interp != Interp::Bezier;
     let is_spatial = spatial && matches!(a.value, Value::Vec2(_) | Value::Vec3(_));
     if is_spatial {
         let p0 = v3(&a.value);
@@ -582,6 +584,17 @@ mod tests {
         assert_eq!(evaluate(&keys, s(3.0), false), Some(Value::Scalar(100.0)));
         let held = vec![Keyframe::new(s(0.0), Value::Scalar(0.0)).hold(), Keyframe::new(s(2.0), Value::Scalar(100.0))];
         assert_eq!(evaluate(&held, s(1.999), false), Some(Value::Scalar(0.0)));
+    }
+
+    #[test]
+    fn hold_key_keeps_its_incoming_segment_linear() {
+        // Hold on the second key (in and out, as KeyframeInterpolationType.HOLD sets it) holds
+        // what comes after it, not the linear motion into it.
+        let keys = vec![Keyframe::new(s(0.0), Value::Scalar(0.0)), Keyframe::new(s(2.0), Value::Scalar(100.0)).hold()];
+        assert_eq!(evaluate(&keys, s(0.5), false), Some(Value::Scalar(25.0)));
+        let keys = vec![Keyframe::new(s(0.0), Value::Vec2([0.0, 0.0])), Keyframe::new(s(2.0), Value::Vec2([100.0, 0.0])).hold()];
+        let p = evaluate(&keys, s(0.5), true).unwrap().as_vec2();
+        assert!((p[0] - 25.0).abs() < 0.01, "{p:?}");
     }
 
     #[test]
