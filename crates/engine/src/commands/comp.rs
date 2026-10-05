@@ -12,6 +12,14 @@ pub(crate) fn rate_p(p: &Value) -> Option<FrameRate> {
     f_p(p, "frameRate").or(f_p(p, "fps")).map(FrameRate::from_f64)
 }
 
+/// A zero, negative or tiny rate would make a zero-length frame (and divide by zero later).
+fn check_rate(p: &Value, cmd: &str) -> Result<()> {
+    match f_p(p, "frameRate").or(f_p(p, "fps")) {
+        Some(f) if !(0.001..=1000.0).contains(&f) => Err(bad(cmd, "frameRate: fps from 0.001 to 1000")),
+        _ => Ok(()),
+    }
+}
+
 fn apply_settings(c: &mut Comp, p: &Value) {
     let (ow, oh) = (c.width, c.height);
     if let Some(w) = p.get("width").and_then(Value::as_u64) {
@@ -99,6 +107,7 @@ fn apply_settings(c: &mut Comp, p: &Value) {
 }
 
 fn new_comp(s: &mut Session, p: &Value) -> Result<Value> {
+    check_rate(p, "comp.new")?;
     let name = str_p(p, "name").unwrap_or("Comp 1").to_string();
     let rate = rate_p(p).unwrap_or(FrameRate::FPS_29_97);
     let mut c = Comp::new(1920, 1080, rate, rate.snap_nearest(Tick::from_seconds_f64(10.0)));
@@ -125,6 +134,7 @@ fn new_comp(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 fn settings(s: &mut Session, p: &Value) -> Result<Value> {
+    check_rate(p, "comp.settings")?;
     let cid = comp_id(s, p)?;
     s.edit("Composition Settings", None, |proj, _| {
         if let Some(n) = str_p(p, "name")
