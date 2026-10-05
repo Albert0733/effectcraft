@@ -1046,6 +1046,7 @@ Animation
   Reveal Properties with Animation | anim.reveal {"kind":"animation"}
   Reveal All Modified Properties | anim.reveal {"kind":"modified"}
 View
+  New Viewer | view.newViewer
   Split with New Locked Viewer | view.splitLockedViewer
   ---
   Zoom In | view.zoomIn

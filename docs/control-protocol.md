@@ -86,7 +86,8 @@ Points are logical window coordinates. A target is `{id}` (the element's centre;
 
 Element ids are stable, for example `tools.Selection`, `panel.Timeline`, `panel.tab.EffectControls`,
 `panel.tab.Timeline.<comp>` (one Timeline tab per open comp; `panel.tab.Timeline` is the shown
-one), `header.workspace.Animation`, `project.item.<id>` (a double-click opens the item, Enter
+one), `panel.tab.Viewer(<n>)` and `viewers.<n>` (View ▸ New Viewer's other Composition viewers;
+`viewers.0` is the Composition panel while another viewer is active), `header.workspace.Animation`, `project.item.<id>` (a double-click opens the item, Enter
 renames it), `viewer.comp`, `viewer.handle.<layer>.<i>`,
 `timeline.layer.<id>.bar`, `timeline.layer.<id>.twirl`, `timeline.layer.<id>.row` (click selects,
 Enter or a double-click renames, drag reorders), `timeline.prop.<uid>.stopwatch`,

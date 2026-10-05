@@ -187,6 +187,8 @@ pub struct EffectcraftApp {
     pub(crate) toast: Option<(String, f64)>,
     /// Texture of the last CPU frame shown in the viewer and the key it came from.
     pub(crate) viewer_tex: Option<(egui::TextureHandle, FrameKey)>,
+    /// The frames the other (passive) Composition viewers show, by viewer id.
+    pub(crate) passive_tex: std::collections::HashMap<u32, (FrameKey, panels::viewers::PassiveTexture)>,
     /// The last GPU frame shown: its egui texture id (registered with egui-wgpu), key and texture.
     pub(crate) viewer_native: Option<(egui::TextureId, FrameKey, Arc<effectcraft_gpu::DisplayFrame>)>,
     /// The texture the viewer draws and its frame key (CPU or GPU frame).
@@ -261,6 +263,7 @@ impl EffectcraftApp {
             last_activity: (0.0, 0),
             toast: None,
             viewer_tex: None,
+            passive_tex: std::collections::HashMap::new(),
             viewer_native: None,
             viewer_shown: None,
             viewer_image: None,
@@ -377,7 +380,7 @@ impl EffectcraftApp {
         }
         if !self.ui.dock.contains(p) {
             let near = match p {
-                PanelKind::Layer | PanelKind::Flowchart => PanelKind::Composition,
+                PanelKind::Layer | PanelKind::Flowchart | PanelKind::Viewer(_) => PanelKind::Composition,
                 PanelKind::RenderQueue => PanelKind::Timeline,
                 PanelKind::EffectControls | PanelKind::History => PanelKind::Project,
                 _ => PanelKind::EffectsPresets,
@@ -619,8 +622,9 @@ impl EffectcraftApp {
             self.session.set_time(fr.tick_of(plan.first));
         }
         let restore_max = preset.full_screen.then_some(self.ui.maximized);
-        if preset.full_screen && self.ui.dock.contains(PanelKind::Composition) {
-            self.ui.maximized = Some(PanelKind::Composition);
+        let viewer = panels::viewers::active_panel(self);
+        if preset.full_screen && self.ui.dock.contains(viewer) {
+            self.ui.maximized = Some(viewer);
         }
         self.playback = Playback {
             playing: true,
@@ -1118,18 +1122,12 @@ impl EffectcraftApp {
     fn handle_events(&mut self, ctx: &egui::Context) {
         for ev in self.session.drain_events() {
             match ev {
-                effectcraft_engine::Event::OpenComp(_) => {
-                    // The comp's viewer and its Timeline tab come to the front.
-                    for p in [PanelKind::Composition, PanelKind::Timeline] {
-                        if !self.ui.locked_tabs.contains(&p.id()) {
-                            self.ui.dock.activate(p);
-                        }
-                    }
+                effectcraft_engine::Event::OpenComp(c) => {
+                    panels::viewers::on_open_comp(self, c);
                     self.ui.timeline.pps = None;
                 }
                 effectcraft_engine::Event::Toast { message, .. } => self.toast = Some((message, ctx.input(|i| i.time))),
                 effectcraft_engine::Event::OpenUrl(url) => ctx.open_url(egui::OpenUrl::new_tab(url)),
-                // Frames of earlier revisions can't be shown again.
                 // Frames are keyed by content: an edit keeps those of comps it doesn't touch.
                 effectcraft_engine::Event::ProjectChanged { .. } => {}
                 effectcraft_engine::Event::Frontend { command, params } => {
