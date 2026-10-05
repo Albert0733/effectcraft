@@ -166,3 +166,36 @@ fn nested_comp_markers_show_on_the_precomp_bar() {
     // (29.97 fps: the marker's frame is at 1.001 s)
     assert!((h.state().session.time().seconds() - 1.0).abs() < 0.034, "{}", h.state().session.time().seconds());
 }
+
+/// Issue #46: a panel dragged by its panel-menu (hamburger) button onto the left edge of another
+/// group docks there as its own group; dragging the gap between panels resizes them.
+#[test]
+fn panels_dock_beside_others_and_gutters_resize_them() {
+    let (mut h, _, _) = harness();
+    let dock = |h: &Harness<'_, EffectcraftApp>| h.state().ui.dock.clone();
+    // Show Effect Controls in its group so its menu button is on screen, then drag by it.
+    let tab = rect(&h, "panel.tab.EffectControls");
+    click_n(&mut h, tab.center(), 1);
+    let grip = rect(&h, "panel.menu.EffectControls").center();
+    let tl = rect(&h, "panel.Timeline");
+    drag(&mut h, grip, pos2(tl.min.x + tl.width() * 0.08, tl.center().y));
+    assert_eq!(group_of(&dock(&h), PanelKind::EffectControls), Some(vec![PanelKind::EffectControls]));
+    assert!(!group_of(&dock(&h), PanelKind::Timeline).unwrap().contains(&PanelKind::EffectControls));
+    let (fx, tl) = (rect(&h, "panel.EffectControls"), rect(&h, "panel.Timeline"));
+    assert!(fx.max.x <= tl.min.x + 1.0 && (fx.center().y - tl.center().y).abs() < tl.height(), "{fx:?} {tl:?}");
+    // The gutter on the Project panel's right edge: dragging it 60 px widens the panel by 60.
+    let project = rect(&h, "panel.Project");
+    let gutter = h
+        .state()
+        .auto
+        .previous
+        .iter()
+        .filter(|e| e.id.starts_with("dock.gutter.") && e.rect[3] > e.rect[2])
+        .map(|e| egui::Rect::from_min_size(pos2(e.rect[0], e.rect[1]), egui::vec2(e.rect[2], e.rect[3])))
+        .filter(|g| g.y_range().contains(project.center().y))
+        .min_by(|a, b| (a.center().x - project.max.x).abs().total_cmp(&(b.center().x - project.max.x).abs()))
+        .expect("a gutter beside the Project panel");
+    drag(&mut h, gutter.center(), gutter.center() + egui::vec2(60.0, 0.0));
+    let wider = rect(&h, "panel.Project");
+    assert!((wider.width() - project.width() - 60.0).abs() < 2.0, "{} → {}", project.width(), wider.width());
+}
