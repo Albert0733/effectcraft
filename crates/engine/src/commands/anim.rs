@@ -6,7 +6,7 @@ use effectcraft_project::{LayerId, Property, Uid};
 use effectcraft_time::Tick;
 use serde_json::{Value, json};
 
-use super::prop::{edit_keys, prop_ref};
+use super::prop::prop_ref;
 use super::{CommandSpec, bad, comp_id, f_p, has_comp, has_keys, layers_p, merge_p, str_p, time_p};
 use crate::{EngineError, KeyClip, KeyRef, Result, Session, cmd, query};
 
@@ -145,6 +145,8 @@ fn select_all(s: &mut Session, p: &Value) -> Result<Value> {
             l.props.walk("", &mut |_, pr| sel.extend(pr.keys.iter().map(|k| KeyRef { layer: l.id, prop: pr.uid, time: k.time })));
         }
     }
+    // Keys of locked layers can't be selected.
+    sel.retain(|k| comp.layer(k.layer).is_some_and(|l| !l.switches.locked));
     s.state.selected_keys = sel;
     Ok(json!(s.state.selected_keys.len()))
 }
@@ -153,11 +155,8 @@ fn select_all(s: &mut Session, p: &Value) -> Result<Value> {
 fn nudge(s: &mut Session, p: &Value) -> Result<Value> {
     let frames = p.get("frames").and_then(Value::as_i64).ok_or_else(|| bad("keys.nudge", "missing `frames`"))?;
     let comp = s.active_comp().ok_or(EngineError::NoComp)?;
-    let d = Tick(comp.frame_duration().0 * frames);
-    edit_keys(s, "Nudge Keyframes", merge_p(p), move |_, _, t| {
-        *t += d;
-        true
-    })
+    let d = Tick(comp.frame_duration().0.saturating_mul(frames));
+    super::prop::shift_keys(s, "Nudge Keyframes", merge_p(p), d)
 }
 
 /// Edit one key directly: move it in time and/or set its value (Graph Editor drags).

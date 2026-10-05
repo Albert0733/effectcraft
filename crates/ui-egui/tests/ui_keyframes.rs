@@ -54,6 +54,7 @@ fn drag(h: &mut Harness<'_, EffectcraftApp>, from: Pos2, to: Pos2, modifiers: eg
         h.step();
     }
     h.input_mut().events.push(Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers });
+    h.step();
     h.input_mut().events.push(Event::ModifiersChanged(Default::default()));
     h.run_steps(2);
 }
@@ -111,4 +112,38 @@ fn ctrl_c_and_ctrl_v_copy_and_paste_keys_at_the_current_time() {
     h.input_mut().events.push(Event::Paste("EffectCraft: 1 keyframe".into()));
     h.run_steps(2);
     assert_eq!(key_times(&h, id), vec![0.0, 1.0, 3.0]);
+}
+
+fn click_with(h: &mut Harness<'_, EffectcraftApp>, p: Pos2, modifiers: egui::Modifiers) {
+    h.input_mut().events.push(Event::PointerMoved(p));
+    h.step();
+    h.input_mut().events.push(Event::ModifiersChanged(modifiers));
+    h.input_mut().events.push(Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: true, modifiers });
+    h.step();
+    h.input_mut().events.push(Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: false, modifiers });
+    h.step();
+    h.input_mut().events.push(Event::ModifiersChanged(Default::default()));
+    h.run_steps(2);
+}
+
+#[test]
+fn shift_click_toggles_and_ctrl_click_switches_interpolation() {
+    let (mut h, id, uid) = harness();
+    let ks = keys(&h, uid);
+    let shift = egui::Modifiers { shift: true, ..Default::default() };
+    click_with(&mut h, ks[0], Default::default());
+    click_with(&mut h, ks[1], shift);
+    assert_eq!(h.state().session.state.selected_keys.len(), 2, "Shift+click adds");
+    click_with(&mut h, ks[1], shift);
+    assert_eq!(h.state().session.state.selected_keys.len(), 1, "and takes out again");
+    let key =
+        |h: &Harness<'_, EffectcraftApp>| h.state().session.active_comp().unwrap().layer(id).unwrap().props.prop("transform/opacity").unwrap().keys[0].clone();
+    // Ctrl+click: Linear → Auto Bezier → Linear.
+    click_with(&mut h, ks[0], egui::Modifiers::COMMAND);
+    assert!(key(&h).auto_bezier, "Auto Bezier");
+    click_with(&mut h, ks[0], egui::Modifiers::COMMAND);
+    assert_eq!(key(&h).out_interp, effectcraft_engine::keyframe::Interp::Linear);
+    // Ctrl+Alt+click: Hold.
+    click_with(&mut h, ks[0], egui::Modifiers { alt: true, ..egui::Modifiers::COMMAND });
+    assert_eq!(key(&h).out_interp, effectcraft_engine::keyframe::Interp::Hold);
 }

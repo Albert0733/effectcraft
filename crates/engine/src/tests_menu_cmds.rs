@@ -863,3 +863,78 @@ fn new_comp_from_selection_survives_hostile_sequence_numbers() {
     s.state.project_selection = vec![a, b];
     assert!(s.execute("file.newCompFromSelection", json!({"single": true, "dimensionsFrom": 99})).is_err());
 }
+
+fn key_times(s: &Session, l: u64) -> Vec<f64> {
+    layer(s, l).props.prop("transform/opacity").unwrap().keys.iter().map(|k| (k.time.seconds() * 30.0).round() / 30.0).collect()
+}
+
+fn opacity_keys(s: &mut Session, l: u64, times: &[f64]) {
+    for (i, t) in times.iter().enumerate() {
+        s.execute("prop.addKey", json!({"layer": l, "path": "transform/opacity", "time": t, "value": i as f64 * 10.0})).unwrap();
+    }
+}
+
+#[test]
+fn dragging_a_key_past_another_keeps_it() {
+    let mut s = comp();
+    let a = solid(&mut s, "#ff0000");
+    opacity_keys(&mut s, a, &[1.0, 2.0]);
+    s.execute("keys.select", json!({"keys": [{"layer": a, "path": "transform/opacity", "time": 1.0}]})).unwrap();
+    // One drag, frame by frame, from 1 s over the 2 s key to 3 s.
+    for _ in 0..60 {
+        s.execute("keys.move", json!({"delta": 1.0 / 30.0, "merge": "key-drag"})).unwrap();
+    }
+    assert_eq!(key_times(&s, a), vec![2.0, 3.0], "the 2 s key passed over is still there");
+    // Dropped exactly on a key: it replaces it, as in After Effects.
+    s.history.merge_key = None;
+    s.execute("keys.move", json!({"delta": -1.0, "merge": "key-drag-2"})).unwrap();
+    assert_eq!(key_times(&s, a), vec![2.0]);
+    // The whole drag was one undo step.
+    s.execute("edit.undo", json!({})).unwrap();
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(key_times(&s, a), vec![1.0, 2.0]);
+}
+
+#[test]
+fn keys_of_a_stretched_layer_move_with_the_pointer() {
+    let mut s = comp();
+    let a = solid(&mut s, "#ff0000");
+    opacity_keys(&mut s, a, &[0.0, 1.0]);
+    s.execute_checked("layer.timeStretch", json!({"layers": [a], "percent": 200})).unwrap();
+    assert_eq!(layer(&s, a).stretch, 200.0);
+    let comp_time = |s: &Session, i: usize| {
+        let l = layer(s, a);
+        l.comp_time(l.props.prop("transform/opacity").unwrap().keys[i].time).seconds()
+    };
+    let before = comp_time(&s, 1);
+    s.execute("keys.select", json!({"keys": [{"layer": a, "path": "transform/opacity", "time": 1.0}]})).unwrap();
+    s.execute("keys.move", json!({"delta": 0.5})).unwrap();
+    assert!((comp_time(&s, 1) - (before + 0.5)).abs() < 1.0 / 30.0, "{} → {}", before, comp_time(&s, 1));
+    s.execute("keys.nudge", json!({"frames": 3})).unwrap();
+    assert!((comp_time(&s, 1) - (before + 0.6)).abs() < 1.0 / 60.0, "three comp frames");
+}
+
+#[test]
+fn key_selection_toggles_and_skips_locked_layers_and_hold_restores_bezier() {
+    let mut s = comp();
+    let a = solid(&mut s, "#ff0000");
+    opacity_keys(&mut s, a, &[0.0, 1.0]);
+    let k = |t: f64| json!({"layer": a, "path": "transform/opacity", "time": t});
+    s.execute("keys.select", json!({"keys": [k(0.0)]})).unwrap();
+    s.execute("keys.select", json!({"keys": [k(1.0)], "toggle": true})).unwrap();
+    assert_eq!(s.state.selected_keys.len(), 2);
+    s.execute("keys.select", json!({"keys": [k(0.0)], "toggle": true})).unwrap();
+    assert_eq!(s.state.selected_keys.len(), 1, "toggled out");
+    // Hold off returns an eased key to Bezier.
+    s.execute("keys.easyEase", json!({})).unwrap();
+    s.execute("keys.toggleHold", json!({})).unwrap();
+    s.execute("keys.toggleHold", json!({})).unwrap();
+    let kf = layer(&s, a).props.prop("transform/opacity").unwrap().keys[1].clone();
+    assert_eq!(kf.out_interp, effectcraft_keyframe::Interp::Bezier);
+    // Locked: its keys can't be selected.
+    s.execute("layer.setSwitch", json!({"layers": [a], "switch": "lock", "value": true})).unwrap();
+    s.execute("keys.select", json!({"keys": [k(0.0)]})).unwrap();
+    assert!(s.state.selected_keys.is_empty());
+    s.execute("keys.selectAll", json!({"layers": [a]})).unwrap();
+    assert!(s.state.selected_keys.is_empty());
+}

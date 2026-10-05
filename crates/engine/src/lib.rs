@@ -134,6 +134,17 @@ pub struct KeyRef {
     pub time: Tick,
 }
 
+/// A keyframe drag in progress (`keys.move` steps sharing a merge key): the selection it
+/// started from and the total offset so far, so every step is applied to the keys as they were
+/// before the drag. A key passed over on the way is never overwritten; only the drop position
+/// counts, as in After Effects.
+#[derive(Clone, Debug)]
+pub struct KeyMove {
+    pub merge: String,
+    pub from: Vec<KeyRef>,
+    pub total: Tick,
+}
+
 /// Keyframes of one property on the keyframe clipboard.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct KeyClip {
@@ -373,6 +384,8 @@ pub struct Session {
     /// The last physical-memory reading (Settings ▸ Memory & CPU budgets); `None` = unknown
     /// (headless sessions don't query it, see [`Session::memory_tick`]).
     pub sys_memory: Option<sysinfo::SysMemory>,
+    /// The keyframe drag in progress (`keys.move` with a merge key).
+    pub key_move: Option<KeyMove>,
     /// Reads the system's memory in the background for [`Session::memory_tick`].
     pub memory_watch: sysinfo::MemoryWatch,
     /// Switches Affect Nested Comps as last applied (a change empties the layer cache).
@@ -467,6 +480,7 @@ impl Default for Session {
             plugin_loader: None,
             script_ui: scriptui::ScriptUi::default(),
             sys_memory: None,
+            key_move: None,
             memory_watch: Default::default(),
             applied_nested_switches: None,
             offload: None,
