@@ -1098,7 +1098,13 @@ pub fn viewer_hook(
             app.ui.fx_pick = None;
             return;
         };
-        if pick.kind == "color" {
+        // Keyers pick from their input (the shown frame is already keyed): `effect.pickColor`.
+        let keyer = (pick.kind == "color")
+            .then(|| layer.effects()?.groups().find(|g| g.find(pick.prop).is_some()))
+            .flatten()
+            .filter(|g| effectcraft_engine::effects::find(&g.match_id).is_some_and(|s| s.category == "Keying"))
+            .map(|g| g.uid);
+        if pick.kind == "color" && keyer.is_none() {
             // GPU frames: read the shown frame back for sampling.
             app.viewer_pixels();
         }
@@ -1113,6 +1119,7 @@ pub fn viewer_hook(
             let c = map.to_comp(hp);
             app.pointer_comp = Some([c[0] as f32, c[1] as f32]);
             if pick.kind == "color"
+                && keyer.is_none()
                 && let Some(img) = &app.viewer_image
                 && let Some(s) = fw::sample_frame(img, map.comp, c)
             {
@@ -1128,6 +1135,15 @@ pub fn viewer_hook(
             if pick.kind == "point" {
                 if let Some(lp) = fw::comp_to_layer(&l2c(ectx, &layer), c) {
                     actions.push(("prop.set".into(), json!({"layer": pick.layer, "prop": pick.prop, "value": [lp[0], lp[1]]})));
+                }
+            } else if let Some(fx) = keyer {
+                // Ctrl/Cmd+click averages the 5 × 5 pixels around the point.
+                if let Some(lp) = fw::comp_to_layer(&l2c(ectx, &layer), c) {
+                    let average = ui.input(|i| i.modifiers.command);
+                    actions.push((
+                        "effect.pickColor".into(),
+                        json!({"layer": pick.layer, "effect": fx, "prop": pick.prop, "x": lp[0], "y": lp[1], "average": average}),
+                    ));
                 }
             } else if let Some(img) = &app.viewer_image
                 && let Some(s) = fw::sample_frame(img, map.comp, c)

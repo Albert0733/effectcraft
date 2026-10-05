@@ -504,14 +504,25 @@ pub fn categories() -> Vec<&'static str> {
     v
 }
 
+/// After Effects' third-party display names of effects we register under a generic name.
+const ALIASES: &[(&str, &[&str])] = &[("ec.keying.keylight", keylight::KEYLIGHT_ALIASES)];
+
+/// Other names effect `id` answers to (in [`lookup`] and searches).
+pub fn aliases(id: &str) -> &'static [&'static str] {
+    ALIASES.iter().find(|(i, _)| *i == id).map_or(&[], |(_, a)| a)
+}
+
+/// Search (Effects & Presets, `effect.list`): the display name or one of its [`aliases`]
+/// contains `query` (lowercase).
+pub fn name_matches(spec: &EffectSpec, query: &str) -> bool {
+    std::iter::once(spec.name).chain(aliases(spec.id).iter().copied()).any(|n| n.to_lowercase().contains(query))
+}
+
 /// Find by id or (case-insensitive) display name.
 pub fn lookup(name_or_id: &str) -> Option<&'static EffectSpec> {
     find(name_or_id)
         .or_else(|| all().into_iter().find(|s| s.name.eq_ignore_ascii_case(name_or_id)))
-        .or_else(|| {
-            // After Effects' third-party display names we register under a generic name.
-            keylight::KEYLIGHT_ALIASES.iter().any(|a| a.eq_ignore_ascii_case(name_or_id)).then(|| find("ec.keying.keylight")).flatten()
-        })
+        .or_else(|| ALIASES.iter().find(|(_, names)| names.iter().any(|a| a.eq_ignore_ascii_case(name_or_id))).and_then(|(id, _)| find(id)))
         .or_else(|| {
             // Display names of earlier versions.
             migrate::EFFECT_NAME_ALIASES.iter().find(|(old, _)| old.eq_ignore_ascii_case(name_or_id)).and_then(|(_, id)| find(id))

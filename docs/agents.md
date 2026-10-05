@@ -94,6 +94,7 @@ Short recipes; every step is one tool call.
 | Title card | `execute_command comp.new {...}` → `execute_command layer.newText {"text":"Hi","size":120}` → `render_frame {"time":0}` |
 | Animate | `add_keyframe {"layer":2,"path":"transform/scale","keys":[{"time":0,"value":[0,0]},{"time":0.5,"value":[100,100]}],"interpolation":"easyEase"}` |
 | Effect with settings | `list_effects {"filter":"glow"}` → `add_effect {"layer":2,"effect":"Glow","values":{"threshold":40,"radius":30}}` → `set_property {"layer":2,"path":"effects/#1/intensity","value":2}` |
+| Key a green screen | `add_effect {"layer":2,"effect":"Keylight (1.2)"}` → `execute_command effect.pickColor {"layer":2,"effect":1,"param":"screenColour","x":20,"y":20,"average":true}` (a screen pixel, layer space; samples the effect's input) → `set_property {"layer":2,"path":"effects/#1/screenMatte/clipBlack","value":10}` → `render_frame {"transparent":true}` |
 | Drive with an expression | `set_property {"layer":2,"path":"transform/rotation","expression":"time*90"}` |
 | Inspect a layer | `get_layer {"layer":2,"flat":true}` (every property with its `path`, value, key count) |
 | Check the result | `render_frame {"time":1.5,"max_side":640}`; in bridge mode `screenshot {"panel":"Timeline"}` |
@@ -139,6 +140,8 @@ build real projects through these interfaces; they are worked examples of everyt
   `keys.transform {…, merge, fromStart: true}` (values are the whole transform since the drag
   started). Keys of locked layers can't be selected. Copy / paste: `keys.copy`, then `keys.paste`
   at the current time (keys copied from several layers go to as many selected layers in order).
+  `time.nextKey` / `time.previousKey` / `keys.selectAll` take `visible: [{layer, prop}]` to act
+  only on those properties (the Timeline passes its revealed ones, as J / K and Ctrl+Alt+A do).
 * **Easing with Keyframe Velocity**: select keys by path, `keys.select {"keys":[{"layer":"Ring","path":"contents/trim/end","time":0}]}`,
   then `keys.velocity {"outSpeed":0,"outInfluence":33.33}`.
 * **Gradients**: `set_property {"path":"contents/gfill/colors","value":["#0080ff","#ffff00"]}` or

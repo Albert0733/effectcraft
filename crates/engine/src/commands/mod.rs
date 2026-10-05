@@ -517,6 +517,13 @@ pub(crate) fn unlocked(s: &Session, cid: ItemId, ids: Vec<LayerId>, cmd: &str) -
     }
 }
 
+/// `visible: [{layer, prop}]`: the properties the Timeline shows (J / K and Select All
+/// Keyframes use only those, as in After Effects). `None` when not given.
+pub(crate) fn visible_p(p: &Value) -> Option<Vec<(LayerId, effectcraft_project::Uid)>> {
+    let a = p.get("visible")?.as_array()?;
+    Some(a.iter().filter_map(|v| Some((LayerId(v.get("layer")?.as_u64()?), v.get("prop")?.as_u64()?))).collect())
+}
+
 /// `time` (seconds) or `frame` param, else the CTI.
 pub(crate) fn time_p(s: &Session, p: &Value, comp: Option<&Comp>) -> Tick {
     if let Some(t) = f_p(p, "time") {

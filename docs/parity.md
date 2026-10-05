@@ -189,7 +189,7 @@ Mocha and Cineware are third-party and not counted.
 | Blur & Sharpen | Camera-Shake Deblur, CC Radial Blur | Deblur substitutes aligned patches from sharper neighbouring frames. |
 | Audio | Compressor, Distortion, Gate | Applied in the mixdown like the other audio effects. |
 | Simulation | CC Hair, Particle Playground | Particle Playground: cannon, grid, layer exploder, layer map, gravity, repel, wall, persistent property mapper (no Particle Exploder, text particles or ephemeral mapper yet). |
-| Keying | Key Light | The full Keylight 1.2 control set under a generic name ("Keylight" is a vendor trademark); `lookup("Keylight (1.2)")` finds it. |
+| Keying | Key Light | The full Keylight 1.2 control set under a generic name ("Keylight" is a vendor trademark); `lookup("Keylight (1.2)")` and the Effects & Presets search ("keylight") find it. Keyers' colour eyedroppers sample the effect's input (`effect.pickColor`), so a screen that is already keyed can still be picked. |
 | Utility | Color Profile Converter | Our colour spaces and ACES; rendering intents (perceptual gamut compression, relative / absolute colorimetric, saturation). |
 | Matte | Mocha shape | Mocha's export format is not public: reads a documented JSON shape format instead. |
 
@@ -415,8 +415,19 @@ Browser in the web app (landed in M13.10: browser storage and File System Access
 - **J / K and Info** (M5.14): J / K also stop at the work area; the Info panel shows a selected
   key's property, time and value.
 
-Not yet: J / K and Select All Keyframes use every property of the layers, not only the revealed
-ones; Graph Editor keys are drawn as squares whatever their interpolation; Auto-Select Graph Type.
+Since (M5.15): J / K and Select All Keyframes use what the Timeline shows — the revealed
+properties' keys, layer and comp markers and the work area (`visible: [{layer, prop}]` on
+`time.nextKey` / `previousKey` / `keys.selectAll`; without it, agents get every property of the
+layers); the Graph Editor has Auto-Select Graph Type (the default: the speed graph when only
+spatial properties are shown, else the value graph; choosing Value or Speed turns it off). Graph
+Editor keys are small squares whatever their interpolation, as in After Effects.
+
+Since (M5.16): Key Light (After Effects' Keylight 1.2) is checked end to end on a green-screen
+plate with an uneven screen, spill and soft edges (`effect.apply "Keylight (1.2)"`, pick, Clip
+Black / White, render). The colour eyedroppers of Keying effects sample the effect's input
+rather than the keyed frame (Ctrl/Cmd+click averages 5 × 5 pixels); agents do the same with
+`effect.pickColor {effect, param, x, y, average?}` (layer pixels). Searching "keylight" in
+Effects & Presets, or `list_effects`, finds it.
 
 ## Update: M4.9–M4.11 nested comps and motion blur
 

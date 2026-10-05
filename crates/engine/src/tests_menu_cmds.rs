@@ -1030,3 +1030,27 @@ fn j_and_k_stop_at_keys_markers_and_the_work_area() {
     let last = (3.0 * 30.0 - 1.0) / 30.0;
     assert_eq!(stops, vec![1.0, 2.0, (last * 30.0f64).round() / 30.0, (last * 30.0f64).round() / 30.0]);
 }
+
+#[test]
+fn j_k_and_select_all_use_only_the_properties_the_timeline_shows() {
+    let mut s = comp();
+    let a = solid(&mut s, "#ff0000");
+    opacity_keys(&mut s, a, &[1.0]);
+    s.execute("prop.addKey", json!({"layer": a, "path": "transform/rotation", "time": 2.0, "value": 45})).unwrap();
+    let op = layer(&s, a).props.prop("transform/opacity").unwrap().uid;
+    // Only Opacity is revealed: K skips the hidden Rotation key at 2 s, stopping at 1 s and then
+    // at the work area's end.
+    let visible = json!([{"layer": a, "prop": op}]);
+    s.execute_checked("time.nextKey", json!({"visible": visible})).unwrap();
+    assert_eq!(s.time().seconds(), 1.0);
+    s.execute_checked("time.nextKey", json!({"visible": visible})).unwrap();
+    assert!(s.time().seconds() > 3.9, "work area end, not the hidden key: {}", s.time().seconds());
+    // Without `visible` (agents), every key of the layers counts, as before.
+    s.execute("time.set", json!({"time": 1.0})).unwrap();
+    s.execute("time.nextKey", json!({})).unwrap();
+    assert_eq!(s.time().seconds(), 2.0);
+    // Select All Keyframes: the shown properties' keys only.
+    s.execute_checked("keys.selectAll", json!({"visible": visible})).unwrap();
+    assert_eq!(s.state.selected_keys.len(), 1);
+    assert_eq!(s.state.selected_keys[0].prop, op);
+}

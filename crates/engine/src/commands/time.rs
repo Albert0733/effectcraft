@@ -71,6 +71,7 @@ fn go(s: &mut Session, p: &Value) -> Result<Value> {
     let t = s.time();
     let to = str_p(p, "to").unwrap_or("start");
     let sel_layer = s.state.selected_layers.first().and_then(|id| comp.layer(*id));
+    let visible = super::visible_p(p);
     let target = match to {
         "start" => Tick::ZERO,
         "end" => comp.duration - comp.frame_duration(),
@@ -78,6 +79,23 @@ fn go(s: &mut Session, p: &Value) -> Result<Value> {
         "workEnd" => comp.work_area.1 - comp.frame_duration(),
         "layerIn" => sel_layer.map(|l| l.in_point).unwrap_or(t),
         "layerOut" => sel_layer.map(|l| l.out_point - comp.frame_duration()).unwrap_or(t),
+        "nextKey" | "prevKey" if visible.is_some() => {
+            // What the Timeline shows: keys of its revealed properties, layer and comp markers
+            // and the work area (After Effects' "visible items").
+            let mut times: Vec<Tick> = comp.markers.iter().map(|m| m.time).collect();
+            times.extend([comp.work_area.0, comp.work_area.1 - comp.frame_duration()]);
+            for l in comp.layers.iter().filter(|l| !(comp.hide_shy && l.switches.shy)) {
+                times.extend(l.markers.iter().map(|m| l.comp_time(m.time)));
+            }
+            for (lid, uid) in visible.iter().flatten() {
+                if let Some(l) = comp.layer(*lid)
+                    && let Some(pr) = l.props.find(*uid)
+                {
+                    times.extend(pr.keys.iter().map(|k| l.comp_time(k.time)));
+                }
+            }
+            step_to(times, t, comp.frame_duration(), to == "nextKey")
+        }
         "nextKey" | "prevKey" => {
             // Keyframes (of visible/selected layers), markers and the work area, in comp time.
             let mut times: Vec<Tick> = comp.markers.iter().map(|m| m.time).collect();
@@ -107,19 +125,28 @@ fn go(s: &mut Session, p: &Value) -> Result<Value> {
                     times.extend(l.markers.iter().map(|m| l.comp_time(m.time)));
                 }
             }
-            times.sort();
-            times.dedup();
-            let half = comp.frame_duration().0 / 2;
-            if to == "nextKey" {
-                times.into_iter().find(|x| x.0 > t.0 + half).unwrap_or(t)
-            } else {
-                times.into_iter().rev().find(|x| x.0 < t.0 - half).unwrap_or(t)
-            }
+            step_to(times, t, comp.frame_duration(), to == "nextKey")
         }
         _ => return Err(super::bad("time.go", "to: start|end|workStart|workEnd|layerIn|layerOut|nextKey|prevKey")),
     };
     s.set_time(target);
     Ok(report(s))
+}
+
+/// The nearest time in `times` after (or before) `t`, more than half a frame away; `t` itself
+/// when there is none.
+fn step_to(mut times: Vec<Tick>, t: Tick, frame: Tick, next: bool) -> Tick {
+    times.sort();
+    times.dedup();
+    let half = frame.0 / 2;
+    if next { times.into_iter().find(|x| x.0 > t.0 + half).unwrap_or(t) } else { times.into_iter().rev().find(|x| x.0 < t.0 - half).unwrap_or(t) }
+}
+
+/// `p` with `to` set (J / K pass their other parameters on).
+fn with_to(p: &Value, to: &str) -> Value {
+    let mut p = if p.is_object() { p.clone() } else { json!({}) };
+    p["to"] = json!(to);
+    p
 }
 
 pub fn specs() -> Vec<CommandSpec> {
@@ -134,8 +161,27 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!("time.end", "Go to End", [], Some("End"), "{}", has_comp, |s, _| go(s, &json!({"to": "end"}))),
         cmd!("time.layerIn", "Go to Layer In Point", [], Some("I"), "{}", has_comp, |s, _| go(s, &json!({"to": "layerIn"}))),
         cmd!("time.layerOut", "Go to Layer Out Point", [], Some("O"), "{}", has_comp, |s, _| go(s, &json!({"to": "layerOut"}))),
-        cmd!("time.nextKey", "Go to Next Keyframe or Marker", [], Some("K"), "{}", has_comp, |s, _| go(s, &json!({"to": "nextKey"}))),
-        cmd!("time.previousKey", "Go to Previous Keyframe or Marker", [], Some("J"), "{}", has_comp, |s, _| go(s, &json!({"to": "prevKey"}))),
-        cmd!("time.go", "Go To", [], None, "{to: start|end|workStart|workEnd|layerIn|layerOut|nextKey|prevKey, prop?: uid}", has_comp, go),
+        cmd!(
+            "time.nextKey",
+            "Go to Next Keyframe or Marker",
+            [],
+            Some("K"),
+            "{visible?: [{layer, prop}] (only these properties' keys, as the Timeline shows them)}",
+            has_comp,
+            |s, p| go(s, &with_to(p, "nextKey"))
+        ),
+        cmd!("time.previousKey", "Go to Previous Keyframe or Marker", [], Some("J"), "{visible?: [{layer, prop}]}", has_comp, |s, p| go(
+            s,
+            &with_to(p, "prevKey")
+        )),
+        cmd!(
+            "time.go",
+            "Go To",
+            [],
+            None,
+            "{to: start|end|workStart|workEnd|layerIn|layerOut|nextKey|prevKey, prop?: uid, visible?: [{layer, prop}]}",
+            has_comp,
+            go
+        ),
     ]
 }

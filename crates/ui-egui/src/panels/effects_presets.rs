@@ -323,7 +323,8 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let mut y = list.min.y - scroll;
     let mut apply: Option<Apply> = None;
     let reg = effectcraft_engine::effects::all();
-    let keep = |e: &effectcraft_engine::effects::EffectSpec| depth_keeps(&view.depth, e) && (query.is_empty() || e.name.to_lowercase().contains(&query));
+    let keep =
+        |e: &effectcraft_engine::effects::EffectSpec| depth_keeps(&view.depth, e) && (query.is_empty() || effectcraft_engine::effects::name_matches(e, &query));
     let lookup = |id: &str| reg.iter().find(|e| e.id == id);
 
     // Favorites and Recently Used.

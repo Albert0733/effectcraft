@@ -515,6 +515,18 @@ fn reveal_targets(kind: &str) -> Option<(&'static str, &'static [&'static str])>
     })
 }
 
+/// The properties the Timeline shows (revealed rows), as `{layer, prop}`: J / K and Select All
+/// Keyframes act on these, as in After Effects.
+pub(crate) fn visible_props(app: &EffectcraftApp, comp: &Comp) -> Vec<serde_json::Value> {
+    build_rows(app, comp)
+        .iter()
+        .filter_map(|r| match r.kind {
+            RowKind::Prop { uid } => Some(json!({"layer": r.layer.0, "prop": uid})),
+            _ => None,
+        })
+        .collect()
+}
+
 fn build_rows(app: &EffectcraftApp, comp: &Comp) -> Vec<Row> {
     let tl = &app.ui.timeline;
     let search = tl.search.trim().to_lowercase();
