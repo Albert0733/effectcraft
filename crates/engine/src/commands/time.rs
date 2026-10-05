@@ -79,7 +79,7 @@ fn go(s: &mut Session, p: &Value) -> Result<Value> {
         "layerIn" => sel_layer.map(|l| l.in_point).unwrap_or(t),
         "layerOut" => sel_layer.map(|l| l.out_point - comp.frame_duration()).unwrap_or(t),
         "nextKey" | "prevKey" => {
-            // Keyframes (of visible/selected layers) and markers, in comp time.
+            // Keyframes (of visible/selected layers), markers and the work area, in comp time.
             let mut times: Vec<Tick> = comp.markers.iter().map(|m| m.time).collect();
             let layers: Vec<_> = if s.state.selected_layers.is_empty() {
                 comp.layers.iter().collect()
@@ -90,6 +90,9 @@ fn go(s: &mut Session, p: &Value) -> Result<Value> {
             let only = p.get("prop").and_then(Value::as_u64);
             if only.is_some() {
                 times.clear();
+            } else {
+                // The work area's start and end too, as in After Effects.
+                times.extend([comp.work_area.0, comp.work_area.1 - comp.frame_duration()]);
             }
             for l in layers {
                 l.props.walk("", &mut |_, pr| {

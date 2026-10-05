@@ -1014,3 +1014,19 @@ fn keys_from_several_layers_paste_in_order_and_paste_reversed_respects_stretch()
     assert!(ct.len() == 2 && (ct[1] - ct[0] - 1.0).abs() < 1e-6, "keys 1 s apart in comp time: {ct:?}");
     assert_eq!(vals, vec![10.0, 0.0], "reversed");
 }
+
+#[test]
+fn j_and_k_stop_at_keys_markers_and_the_work_area() {
+    let mut s = comp();
+    let a = solid(&mut s, "#ff0000");
+    opacity_keys(&mut s, a, &[2.0]);
+    s.execute("comp.workArea", json!({"start": 1.0, "end": 3.0})).unwrap();
+    s.execute("layer.select", json!({"layers": [a]})).unwrap();
+    let mut stops = vec![];
+    for _ in 0..4 {
+        s.execute("time.nextKey", json!({})).unwrap();
+        stops.push((s.time().seconds() * 30.0).round() / 30.0);
+    }
+    let last = (3.0 * 30.0 - 1.0) / 30.0;
+    assert_eq!(stops, vec![1.0, 2.0, (last * 30.0f64).round() / 30.0, (last * 30.0f64).round() / 30.0]);
+}
