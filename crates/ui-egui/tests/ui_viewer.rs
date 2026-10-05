@@ -743,3 +743,79 @@ fn double_press_shortcuts_reveal_their_second_set() {
         h.run_steps(40);
     }
 }
+
+/// Drag through `path` with `modifiers` held (press at the first point, release at the last).
+fn drag_path(h: &mut Harness<'_, EffectcraftApp>, path: &[Pos2], modifiers: egui::Modifiers) {
+    h.input_mut().events.push(Event::ModifiersChanged(modifiers));
+    h.input_mut().events.push(Event::PointerMoved(path[0]));
+    h.input_mut().events.push(Event::PointerButton { pos: path[0], button: egui::PointerButton::Primary, pressed: true, modifiers });
+    h.step();
+    for w in path.windows(2) {
+        for i in 1..=6 {
+            h.input_mut().events.push(Event::PointerMoved(w[0] + (w[1] - w[0]) * (i as f32 / 6.0)));
+            h.step();
+        }
+    }
+    let end = *path.last().unwrap();
+    h.input_mut().events.push(Event::PointerButton { pos: end, button: egui::PointerButton::Primary, pressed: false, modifiers });
+    h.run_steps(2);
+    // The keys come up after the button, as a hand does.
+    h.input_mut().events.push(Event::ModifiersChanged(Default::default()));
+    h.step();
+}
+
+/// Issue #63: a bounding-box handle scales about the anchor point so the grabbed corner follows
+/// the pointer, relative to the scale the drag began with: dragging through the anchor and back
+/// out recovers (it used to stick at 0), edges scale one axis, Shift keeps the proportions.
+#[test]
+fn handle_drags_scale_about_the_anchor_and_follow_the_pointer() {
+    let mut h = harness();
+    let box_id = h.state().session.active_comp().unwrap().layers[0].id;
+    let set = |h: &mut Harness<'_, EffectcraftApp>, path: &str, v: serde_json::Value| {
+        h.state_mut().session.execute("prop.set", json!({"layer": box_id.0, "path": path, "value": v})).unwrap();
+    };
+    let scale = |h: &Harness<'_, EffectcraftApp>| {
+        let l = h.state().session.active_comp().unwrap().layer(box_id).unwrap().clone();
+        l.props.prop("transform/scale").unwrap().value.as_vec3()
+    };
+    let close = |a: [f64; 3], b: [f64; 2]| (a[0] - b[0]).abs() < 1.0 && (a[1] - b[1]).abs() < 1.0;
+    h.state_mut().session.execute("layer.select", json!({"layers": [box_id.0]})).unwrap();
+    // The 80×80 box is centred at (320, 180) with its anchor in the middle.
+    h.state_mut().session.execute("view.snapping", json!({"value": false})).unwrap();
+    h.run_steps(2);
+    let undo0 = h.state().session.history.undo.len();
+    // Bottom-right corner (360, 220) to (400, 260): twice as far from the anchor.
+    let corner = rect(&h, &format!("viewer.handle.{}.2", box_id.0)).center();
+    let path = [corner, screen(&h, [400.0, 260.0])];
+    drag_path(&mut h, &path, Default::default());
+    assert!(close(scale(&h), [200.0, 200.0]), "{:?}", scale(&h));
+    assert_eq!(h.state().session.history.undo.len(), undo0 + 1, "one undo step per drag");
+    // Through the anchor (scale ≈ 0) and back out to 1.5×: the layer follows, nothing sticks.
+    set(&mut h, "transform/scale", json!([100, 100, 100]));
+    h.run_steps(2);
+    let corner = rect(&h, &format!("viewer.handle.{}.2", box_id.0)).center();
+    let path = [corner, screen(&h, [320.0, 180.0]), screen(&h, [300.0, 170.0]), screen(&h, [380.0, 240.0])];
+    drag_path(&mut h, &path, Default::default());
+    assert!(close(scale(&h), [150.0, 150.0]), "{:?}", scale(&h));
+    // Past the anchor the layer flips, as in After Effects.
+    set(&mut h, "transform/scale", json!([100, 100, 100]));
+    h.run_steps(2);
+    let corner = rect(&h, &format!("viewer.handle.{}.2", box_id.0)).center();
+    let path = [corner, screen(&h, [280.0, 140.0])];
+    drag_path(&mut h, &path, Default::default());
+    assert!(close(scale(&h), [-100.0, -100.0]), "{:?}", scale(&h));
+    // The right edge (handle 5) scales x only.
+    set(&mut h, "transform/scale", json!([100, 100, 100]));
+    h.run_steps(2);
+    let edge = rect(&h, &format!("viewer.handle.{}.5", box_id.0)).center();
+    let path = [edge, screen(&h, [380.0, 200.0])];
+    drag_path(&mut h, &path, Default::default());
+    assert!(close(scale(&h), [150.0, 100.0]), "{:?}", scale(&h));
+    // Shift on a corner keeps the proportions: the pointer's place along the diagonal.
+    set(&mut h, "transform/scale", json!([100, 100, 100]));
+    h.run_steps(2);
+    let corner = rect(&h, &format!("viewer.handle.{}.2", box_id.0)).center();
+    let path = [corner, screen(&h, [400.0, 230.0])];
+    drag_path(&mut h, &path, egui::Modifiers::SHIFT);
+    assert!(close(scale(&h), [162.5, 162.5]), "{:?}", scale(&h));
+}
