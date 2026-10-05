@@ -938,3 +938,22 @@ fn key_selection_toggles_and_skips_locked_layers_and_hold_restores_bezier() {
     s.execute("keys.selectAll", json!({"layers": [a]})).unwrap();
     assert!(s.state.selected_keys.is_empty());
 }
+
+#[test]
+fn transform_drags_apply_their_whole_offset_to_the_keys_they_started_with() {
+    let mut s = comp();
+    let a = solid(&mut s, "#ff0000");
+    opacity_keys(&mut s, a, &[0.0, 1.0, 2.0]);
+    s.execute("keys.selectAll", json!({"layers": [a]})).unwrap();
+    // Squeezed onto one frame on the way, then back: the three keys survive.
+    for k in [0.5, 0.01, 0.0001, 1.0] {
+        s.execute("keys.transform", json!({"timeScale": k, "timeAnchor": 0.0, "merge": "box", "fromStart": true})).unwrap();
+    }
+    assert_eq!(key_times(&s, a), vec![0.0, 1.0, 2.0]);
+    // A slow move in tiny steps still arrives (each step is the whole offset).
+    s.history.merge_key = None;
+    for i in 1..=30 {
+        s.execute("keys.transform", json!({"timeOffset": i as f64 * 0.1 / 30.0, "merge": "move", "fromStart": true})).unwrap();
+    }
+    assert_eq!(key_times(&s, a), vec![0.1, 1.1, 2.1]);
+}

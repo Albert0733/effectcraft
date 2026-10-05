@@ -272,7 +272,6 @@ pub(crate) fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: &egui::Painte
     super::graph_tools::transform_box(app, ui, &pc, &sel_keys, tm, &ymap, &vmap, speed, false, actions);
     // Keys and handles.
     let mut key_screens: Vec<(serde_json::Value, Pos2)> = vec![];
-    let fr = comp.frame_rate;
     for c in &cs {
         let (lid, uid, d) = (c.layer.id, c.prop.uid, c.dim);
         for k in &c.keys {
@@ -323,28 +322,46 @@ pub(crate) fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: &egui::Painte
             let kr = Rect::from_center_size(kp, vec2(11.0, 11.0));
             let kresp = ui.interact(kr, egui::Id::new(("gkey", uid, d, k.idx)), Sense::click_and_drag());
             app.auto.add(&format!("timeline.graph.key.{uid}.{d}.{}", k.idx), kr, &c.prop.name);
-            let shift = ui.input(|i| i.modifiers.shift);
-            if (kresp.clicked() || kresp.drag_started()) && (!k.sel || shift) {
-                actions.push(("keys.select".into(), json!({"keys": [kjson.clone()], "add": shift})));
+            let mods = ui.input(|i| i.modifiers);
+            let key = &c.prop.keys[k.idx];
+            if kresp.clicked() && mods.command {
+                // Ctrl+click: Linear ↔ Auto Bezier; Ctrl+Alt+click: Hold on / off (as in the Timeline).
+                actions.push(("keys.select".into(), json!({"keys": [kjson.clone()]})));
+                if mods.alt {
+                    actions.push(("keys.toggleHold".into(), json!({})));
+                } else {
+                    let linear = key.in_interp == Interp::Linear && key.out_interp == Interp::Linear;
+                    actions.push(("keys.interpolation".into(), json!({"interpolation": if linear { "autoBezier" } else { "linear" }})));
+                }
+            } else if kresp.clicked() && mods.shift {
+                actions.push(("keys.select".into(), json!({"keys": [kjson.clone()], "toggle": true})));
+            } else if (kresp.clicked() || kresp.drag_started()) && !k.sel {
+                actions.push(("keys.select".into(), json!({"keys": [kjson.clone()], "add": mods.shift})));
+            }
+            // A drag moves every selected key, by how far the pointer went from where the button
+            // went down (the key doesn't jump under the pointer); Shift keeps it to the time or
+            // the value axis, whichever moved more.
+            if kresp.drag_started()
+                && let Some(o) = ui.input(|i| i.pointer.press_origin())
+            {
+                ctx.data_mut(|dd| dd.insert_temp(key_grab_id(), KeyGrab { press: o, t: k.t }));
             }
             if kresp.dragged()
                 && let Some(pt) = kresp.interact_pointer_pos()
+                && let Some(g) = ctx.data(|dd| dd.get_temp::<KeyGrab>(key_grab_id()))
             {
                 ctx.data_mut(|dd| dd.insert_temp(drag_id, true));
-                let merge = format!("gkey-{uid}-{}", k.idx);
+                let (dx, dy) = (pt.x - g.press.x, pt.y - g.press.y);
+                let (time_ok, value_ok) = if mods.shift { (dx.abs() >= dy.abs(), dy.abs() > dx.abs()) } else { (true, true) };
                 // Graph Editor ▸ Snap: to the current time and other keys.
                 let others: Vec<f64> = all_key_times.iter().filter(|(u, i, _)| !(*u == uid && *i == k.idx)).map(|x| x.2).collect();
-                let ct = super::graph_tools::snap_time(app, tm, tm.t(pt.x).max(0.0), &others);
-                let nt = c.layer.layer_time(fr.snap_nearest(Tick::from_seconds_f64(ct)));
-                let mut params = json!({"layer": lid.0, "prop": uid, "time": k.time.seconds(), "newTime": nt.seconds(), "merge": merge});
-                if !speed && c.editable {
-                    let mut comps = c.prop.keys[k.idx].value.components();
-                    if d < comps.len() {
-                        comps[d] = vmap(pt.y);
-                    }
-                    params["value"] = if comps.len() == 1 { json!(comps[0]) } else { json!(comps) };
+                let t = if time_ok { super::graph_tools::snap_time(app, tm, (g.t + (tm.t(pt.x) - tm.t(g.press.x))).max(0.0), &others) } else { g.t };
+                let mut params = json!({"timeOffset": t - g.t, "merge": "graph-key", "fromStart": true});
+                if value_ok && !speed && c.editable {
+                    params["valueOffset"] = json!(vmap(pt.y) - vmap(g.press.y));
+                    params["dim"] = json!(d);
                 }
-                actions.push(("keys.set".into(), params));
+                actions.push(("keys.transform".into(), params));
             }
             if kresp.drag_stopped() {
                 ctx.data_mut(|dd| dd.insert_temp(drag_id, false));
@@ -499,4 +516,15 @@ fn fmt(v: f64, step: f64) -> String {
     let dec = if step >= 1.0 { 0 } else { (-step.log10()).ceil() as usize };
     let s = format!("{v:.dec$}");
     if s.trim_start_matches('-').chars().all(|c| c == '0' || c == '.') { s.trim_start_matches('-').to_string() } else { s }
+}
+
+/// A Graph Editor key drag: where the button went down and the grabbed key's comp time then.
+#[derive(Clone, Copy, Debug)]
+struct KeyGrab {
+    press: Pos2,
+    t: f64,
+}
+
+fn key_grab_id() -> egui::Id {
+    egui::Id::new("graph-key-grab")
 }

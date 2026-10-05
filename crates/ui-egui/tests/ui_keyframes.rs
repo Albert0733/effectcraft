@@ -147,3 +147,34 @@ fn shift_click_toggles_and_ctrl_click_switches_interpolation() {
     click_with(&mut h, ks[0], egui::Modifiers { alt: true, ..egui::Modifiers::COMMAND });
     assert_eq!(key(&h).out_interp, effectcraft_engine::keyframe::Interp::Hold);
 }
+
+#[test]
+fn graph_editor_drags_move_every_selected_key_and_shift_keeps_an_axis() {
+    let (mut h, id, uid) = harness();
+    let s = &mut h.state_mut().session;
+    s.execute("prop.select", json!({"layer": id.0, "prop": uid})).unwrap();
+    s.execute("keys.selectAll", json!({})).unwrap();
+    h.state_mut().ui.timeline.graph_editor = true;
+    h.run_steps(4);
+    let at = |h: &Harness<'_, EffectcraftApp>, i: usize| {
+        let e = h.state().auto.find(&format!("timeline.graph.key.{uid}.0.{i}")).unwrap_or_else(|| panic!("no graph key {i}")).clone();
+        pos2(e.rect[0] + e.rect[2] / 2.0, e.rect[1] + e.rect[3] / 2.0)
+    };
+    let (k0, k1) = (at(&h, 0), at(&h, 1));
+    let px_per_s = k1.x - k0.x;
+    let values = |h: &Harness<'_, EffectcraftApp>| -> Vec<f64> {
+        h.state().session.active_comp().unwrap().layer(id).unwrap().props.prop("transform/opacity").unwrap().keys.iter().map(|k| k.value.as_f64()).collect()
+    };
+    // Shift: only along time, both keys, by 0.5 s.
+    drag(&mut h, k1, pos2(k1.x + px_per_s * 0.5, k1.y - 6.0), egui::Modifiers { shift: true, ..Default::default() });
+    assert_eq!(key_times(&h, id), vec![0.5, 1.5], "both selected keys moved");
+    assert_eq!(values(&h), vec![0.0, 100.0], "Shift kept the values");
+    let undo = h.state().session.history.undo.iter().filter(|(l, _)| l == "Transform Keyframes").count();
+    assert_eq!(undo, 1, "one undo step per drag");
+    // Without Shift the values move too (both keys, by the same amount).
+    h.run_steps(2);
+    let k1 = at(&h, 1);
+    drag(&mut h, k1, pos2(k1.x, k1.y + 20.0), Default::default());
+    let v = values(&h);
+    assert!(v[0] < 0.0 && (v[1] - 100.0 - v[0]).abs() < 1e-6, "{v:?}");
+}
