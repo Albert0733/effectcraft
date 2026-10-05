@@ -778,8 +778,9 @@ pub fn footage_salt(project: &effectcraft_project::Project) -> u64 {
 }
 
 /// Content key of a composition's pixels: project render settings, the comp and everything it
-/// uses (nested comps, footage, solids, footage files' size and time). With expressions in play
-/// (which can read any comp) the whole project counts.
+/// uses (nested comps, footage, solids, their proxies and Use Proxy switches, footage and proxy
+/// files' size and time). With expressions in play (which can read any comp) the whole project
+/// counts.
 pub fn comp_content_key(project: &effectcraft_project::Project, comp: effectcraft_project::ItemId) -> u128 {
     use effectcraft_project::{ItemKind, LayerSource};
     let mut h = Hash128::default();
@@ -812,6 +813,10 @@ pub fn comp_content_key(project: &effectcraft_project::Project, comp: effectcraf
         hash_debug(&mut h, &it.kind);
         if let ItemKind::Footage(f) = &it.kind {
             footage_stamp(&mut h, f);
+        }
+        hash_debug(&mut h, &it.proxy);
+        if let Some(px) = &it.proxy {
+            footage_stamp(&mut h, &px.footage);
         }
     }
     h.write_u64(comp.0);

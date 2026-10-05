@@ -137,7 +137,15 @@ fn gpu_worker_renders_effect_frames_and_the_disk_cache_survives_a_reload() {
     s.execute("prop.set", json!({"layer": "#1", "path": "effects/#1/blurriness", "value": 12})).unwrap();
     let opts = RenderOpts { backend: effectcraft_engine::render::Backend::Gpu, ..Default::default() };
     let t = effectcraft_engine::time::Tick::ZERO;
-    let key = |comp: effectcraft_engine::project::ItemId| FrameKey { revision: s.revision, comp: comp.0, frame: 0, scale: 1000, view: 0, opts: 0 };
+    let key = |comp: effectcraft_engine::project::ItemId| FrameKey {
+        revision: s.revision,
+        content: effectcraft_ui_egui::frames::comp_content(&s.project, comp),
+        comp: comp.0,
+        frame: 0,
+        scale: 1000,
+        view: 0,
+        opts: 0,
+    };
     let disk = Arc::new(Mutex::new(HashMap::new()));
     let worker = Arc::new(GpuWorker::new(&s, worker_gpu.clone(), disk.clone()));
     let mut frames = Frames::default();

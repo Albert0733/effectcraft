@@ -1,11 +1,11 @@
 //! Background frame rendering and the RAM preview cache.
 //!
 //! Frames render on a dedicated thread pool from immutable `Arc<Project>` snapshots, so the UI
-//! never waits for the compositor. Results land in a memory-budgeted cache keyed by (project
-//! revision, comp, frame, scale, view, render options); the timeline draws the cached range as
-//! the green cache bar. When the budget is full the least recently shown frames go first, and
-//! frames of an older revision are dropped as soon as the project changes (they can never be
-//! shown again).
+//! never waits for the compositor. Results land in a memory-budgeted cache keyed by the comp's
+//! *content* ([`comp_content`]: the comp and everything it uses), frame, scale, view and render
+//! options; the timeline draws the cached range as the green cache bar. An edit keeps the frames
+//! of every comp it doesn't touch, and undo finds the frames of the state it returns to, as in
+//! After Effects. When the budget is full the least recently shown frames go first.
 //!
 //! wasm32 has no threads: jobs wait in the same priority queue and [`Frames::pump`] hands them
 //! to a [`RemoteFrames`] (the browser's frame worker, a second engine instance fed with project
@@ -22,15 +22,18 @@
 //! registers with egui-wgpu and draws directly; pixels are read back only when something needs
 //! them (Info panel, eyedroppers, histograms).
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 
-use effectcraft_engine::project::{ItemId, Project};
+use effectcraft_engine::project::{ItemId, ItemKind, LayerSource, Node, Project, PropGroup};
 use effectcraft_engine::render::disk_cache::{self, DiskCache};
 use effectcraft_engine::render::{ExprHost, FootageSource, LayerCache, RenderOpts, Renderer};
 use effectcraft_engine::time::Tick;
 use effectcraft_gpu::{DisplayFrame, Gpu};
 use rayon::prelude::*;
+
+/// Comp identities (and the project snapshots behind them) the RAM preview keeps frames of.
+const MAX_KEEPERS: usize = 64;
 
 /// GPU frames kept for RAM preview (bytes of video memory).
 const GPU_BUDGET: usize = 1 << 30;
@@ -57,9 +60,14 @@ impl FrameImage {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+/// A viewer frame: its comp's content, the frame, scale, view and render options. `revision` is
+/// the project revision it was asked for at (job bookkeeping); it is not part of the identity, so
+/// a later revision with the same content finds the frame.
+#[derive(Clone, Copy, Debug)]
 pub struct FrameKey {
     pub revision: u64,
+    /// The comp's content key ([`Frames::content_of`]).
+    pub content: u64,
     pub comp: u64,
     pub frame: i64,
     /// Render scale × 1000.
@@ -71,9 +79,28 @@ pub struct FrameKey {
 }
 
 impl FrameKey {
-    /// Whether `self` is a frame of the same comp, revision, scale, view and options as `base`.
+    /// Everything but the revision.
+    fn id(&self) -> (u64, u64, i64, u32, u64, u64) {
+        (self.content, self.comp, self.frame, self.scale, self.view, self.opts)
+    }
+
+    /// Whether `self` is a frame of the same comp content, scale, view and options as `base`.
     pub fn same_series(&self, base: &FrameKey) -> bool {
         FrameKey { frame: base.frame, ..*self } == *base
+    }
+}
+
+impl PartialEq for FrameKey {
+    fn eq(&self, o: &FrameKey) -> bool {
+        self.id() == o.id()
+    }
+}
+
+impl Eq for FrameKey {}
+
+impl std::hash::Hash for FrameKey {
+    fn hash<H: std::hash::Hasher>(&self, h: &mut H) {
+        self.id().hash(h);
     }
 }
 
@@ -129,6 +156,14 @@ impl Cache {
             self.order.push_back(k);
         }
     }
+    /// Drop every frame of the identities in `gone`.
+    fn drop_contents(&mut self, gone: &HashSet<u64>) {
+        let keys: Vec<FrameKey> = self.map.keys().filter(|k| gone.contains(&k.content)).copied().collect();
+        for k in &keys {
+            self.remove(k);
+        }
+        self.order.retain(|k| !gone.contains(&k.content));
+    }
     fn evict_to_budget(&mut self) {
         while self.bytes > self.budget {
             let Some(old) = self.order.pop_front() else { break };
@@ -171,6 +206,54 @@ fn content_key(keys: &ContentKeys, project: &Project, revision: u64, comp: u64) 
         m.insert((revision, comp), k);
     }
     k
+}
+
+/// The identity of a comp's pixels in `project`, cheap enough to take at every revision: the
+/// addresses of the comps it draws (an edit replaces a comp's `Arc`: `Arc::make_mut` copies it
+/// while another snapshot holds it, and [`Frames::content_of`] keeps one for every identity it
+/// hands out), and by value the project settings and the footage, solids and proxies it uses.
+/// With expressions in its comps (which can read anything) every item counts.
+pub fn comp_content(project: &Project, comp: ItemId) -> u64 {
+    use std::hash::{Hash, Hasher};
+    fn has_expression(g: &PropGroup) -> bool {
+        g.children.iter().any(|c| match c {
+            Node::Prop(p) => p.expr.is_some(),
+            Node::Group(sub) => has_expression(sub),
+        })
+    }
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    format!("{:?}", project.settings).hash(&mut h);
+    let mut seen = BTreeSet::new();
+    let mut stack = vec![comp];
+    let mut expressions = false;
+    while let Some(id) = stack.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        let Some(ItemKind::Comp(c)) = project.item(id).map(|i| &i.kind) else { continue };
+        for l in &c.layers {
+            if let LayerSource::Comp { item } | LayerSource::Footage { item } | LayerSource::Solid { item } = l.source {
+                stack.push(item);
+            }
+            expressions = expressions || has_expression(&l.props);
+        }
+    }
+    let ids: Vec<ItemId> = if expressions { project.items.keys().copied().collect() } else { seen.into_iter().collect() };
+    for id in ids {
+        let Some(it) = project.item(id) else { continue };
+        id.0.hash(&mut h);
+        if expressions {
+            // (`comp("Name")`, `footage("Name")`)
+            it.name.hash(&mut h);
+        }
+        match &it.kind {
+            ItemKind::Comp(c) => (Arc::as_ptr(c) as usize).hash(&mut h),
+            k => format!("{k:?}").hash(&mut h),
+        }
+        format!("{:?}", it.proxy).hash(&mut h);
+    }
+    comp.0.hash(&mut h);
+    h.finish()
 }
 
 /// Hash of render options (part of [`FrameKey`] and of the disk key).
@@ -259,6 +342,11 @@ pub struct Frames {
     /// Render time of the last viewer (urgent) frame in ms, for the Info panel / perf readout.
     pub last_ms: Arc<Mutex<f64>>,
     content_keys: ContentKeys,
+    /// [`comp_content`] identities by (revision, comp).
+    identities: Mutex<HashMap<(u64, u64), u64>>,
+    /// A project snapshot for each identity handed out, with when it was last asked for (see
+    /// [`Frames::content_of`]); the counter.
+    keepers: Mutex<(u64, HashMap<u64, (u64, Arc<Project>)>)>,
     /// Where frames render instead of the UI thread (wasm32), and how many it is rendering.
     remote: Option<Arc<dyn RemoteFrames>>,
     remote_busy: Arc<Mutex<usize>>,
@@ -284,6 +372,8 @@ impl Default for Frames {
             ctx: None,
             last_ms: Arc::new(Mutex::new(0.0)),
             content_keys: Arc::default(),
+            identities: Mutex::default(),
+            keepers: Mutex::default(),
             remote: None,
             remote_busy: Arc::default(),
         }
@@ -325,16 +415,44 @@ impl Frames {
         Some(img)
     }
 
-    /// Drop frames of project revisions before `revision` (and their queued jobs): an edit
-    /// makes them unreachable, so they only take memory from frames that can still be shown.
-    pub fn drop_stale(&self, revision: u64) {
-        if let Ok(mut c) = self.cache.lock() {
-            let stale: Vec<FrameKey> = c.map.keys().filter(|k| k.revision < revision).copied().collect();
-            for k in &stale {
-                c.remove(k);
+    /// The [`comp_content`] identity of `comp` in `project` at `revision` (taken once per
+    /// revision). The project is kept while frames of that identity are cached or rendering, so
+    /// the comp addresses it hashes can't be reused by other comps meanwhile.
+    pub fn content_of(&self, project: &Arc<Project>, revision: u64, comp: ItemId) -> u64 {
+        let known = self.identities.lock().ok().and_then(|m| m.get(&(revision, comp.0)).copied());
+        let id = known.unwrap_or_else(|| {
+            let id = comp_content(project, comp);
+            if let Ok(mut m) = self.identities.lock() {
+                if m.len() > 256 {
+                    m.clear();
+                }
+                m.insert((revision, comp.0), id);
             }
-            c.order.retain(|k| k.revision >= revision);
+            id
+        });
+        if let Ok(mut guard) = self.keepers.lock() {
+            let (clock, k) = &mut *guard;
+            *clock += 1;
+            let now = *clock;
+            k.entry(id).or_insert_with(|| (now, project.clone())).0 = now;
+            if k.len() > MAX_KEEPERS {
+                let inflight: HashSet<u64> = self.inflight.lock().map(|s| s.iter().map(|f| f.content).collect()).unwrap_or_default();
+                if let Ok(mut c) = self.cache.lock() {
+                    // Snapshots of identities without frames go; past the limit the least
+                    // recently asked for go too, with their frames (a long drag leaves many).
+                    let cached: HashSet<u64> = c.map.keys().map(|f| f.content).collect();
+                    k.retain(|i, _| *i == id || cached.contains(i) || inflight.contains(i));
+                    if k.len() > MAX_KEEPERS {
+                        let mut ages: Vec<(u64, u64)> = k.iter().filter(|(i, _)| **i != id && !inflight.contains(i)).map(|(i, (t, _))| (*t, *i)).collect();
+                        ages.sort_unstable();
+                        let gone: HashSet<u64> = ages.into_iter().take(k.len().saturating_sub(MAX_KEEPERS / 2)).map(|(_, i)| i).collect();
+                        k.retain(|i, _| !gone.contains(i));
+                        c.drop_contents(&gone);
+                    }
+                }
+            }
         }
+        id
     }
 
     pub fn is_cached(&self, k: &FrameKey) -> bool {
@@ -345,7 +463,7 @@ impl Frames {
         self.inflight.lock().map(|s| s.len()).unwrap_or(0)
     }
 
-    /// Cached frame numbers of the series of `base` (its comp, revision, scale, view and render
+    /// Cached frame numbers of the series of `base` (its comp content, scale, view and render
     /// options) — for the cache bar.
     pub fn cached_frames(&self, base: &FrameKey) -> Vec<i64> {
         let Ok(c) = self.cache.lock() else { return vec![] };
@@ -744,8 +862,8 @@ impl Queue {
 mod tests {
     use super::*;
 
-    fn key(revision: u64, frame: i64, opts: u64) -> FrameKey {
-        FrameKey { revision, comp: 1, frame, scale: 1000, view: 0, opts }
+    fn key(content: u64, frame: i64, opts: u64) -> FrameKey {
+        FrameKey { revision: content, content, comp: 1, frame, scale: 1000, view: 0, opts }
     }
 
     fn img() -> FrameImage {
@@ -771,17 +889,73 @@ mod tests {
     }
 
     #[test]
-    fn stale_revisions_are_dropped_and_series_are_kept_apart() {
+    fn frames_are_keyed_by_content_and_series_are_kept_apart() {
         let f = Frames::default();
         insert(&f, key(1, 0, 0));
         insert(&f, key(2, 0, 0));
         insert(&f, key(2, 1, 7));
-        // Other render options (Draft, shadows…) are another series.
+        // Other content or render options (Draft, shadows…) are another series.
         assert_eq!(f.cached_frames(&key(2, 0, 0)), vec![0]);
         assert_eq!(f.cached_frames(&key(2, 0, 7)), vec![1]);
-        f.drop_stale(2);
-        assert!(!f.is_cached(&key(1, 0, 0)) && f.is_cached(&key(2, 0, 0)));
-        let c = f.cache.lock().unwrap();
-        assert_eq!((c.order.len(), c.bytes), (2, 2 * 16), "the memory is given back");
+        // A later revision with the same content finds the frame (an edit elsewhere, an undo).
+        assert!(f.is_cached(&FrameKey { revision: 99, ..key(1, 0, 0) }));
+        assert!(!f.is_cached(&key(3, 0, 0)));
+    }
+
+    #[test]
+    fn an_edit_keeps_the_frames_of_comps_it_does_not_touch() {
+        use effectcraft_engine::Session;
+        use serde_json::json;
+        let mut s = Session::default();
+        let a = ItemId(s.execute("comp.new", json!({"name": "A", "width": 8, "height": 8, "duration": 1})).unwrap()["comp"].as_u64().unwrap());
+        let b = ItemId(s.execute("comp.new", json!({"name": "B", "width": 8, "height": 8, "duration": 1})).unwrap()["comp"].as_u64().unwrap());
+        let f = Frames::default();
+        let at = |s: &Session, c: ItemId| f.content_of(&s.project, s.revision, c);
+        let (a0, b0) = (at(&s, a), at(&s, b));
+        // Edit B: A's content (and frames) stay, B's change.
+        s.execute("layer.newSolid", json!({"comp": b.0, "color": "#ff0000"})).unwrap();
+        assert_eq!(at(&s, a), a0);
+        assert_ne!(at(&s, b), b0);
+        // Undo: B is back to the content its old frames were rendered for.
+        s.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(at(&s, b), b0);
+    }
+
+    #[test]
+    fn a_long_drag_keeps_a_bounded_number_of_states() {
+        use effectcraft_engine::Session;
+        use serde_json::json;
+        let mut s = Session::default();
+        let a = ItemId(s.execute("comp.new", json!({"name": "A", "width": 8, "height": 8, "duration": 1})).unwrap()["comp"].as_u64().unwrap());
+        let f = Frames::default();
+        let mut first = None;
+        let mut last = None;
+        for i in 0..200 {
+            s.execute("comp.settings", json!({"width": 8 + i, "merge": "drag"})).unwrap();
+            let k = FrameKey { content: f.content_of(&s.project, s.revision, a), ..key(0, 0, 0) };
+            insert(&f, k);
+            first.get_or_insert(k);
+            last = Some(k);
+        }
+        assert!(f.keepers.lock().unwrap().1.len() <= MAX_KEEPERS);
+        assert!(f.is_cached(&last.unwrap()), "the current state's frame stays");
+        assert!(!f.is_cached(&first.unwrap()), "the oldest states' frames went with their snapshots");
+    }
+
+    #[test]
+    fn an_identity_keeps_its_comps_so_an_edit_in_place_still_changes_it() {
+        use effectcraft_engine::Session;
+        use serde_json::json;
+        let mut s = Session::default();
+        let a = ItemId(s.execute("comp.new", json!({"name": "A", "width": 8, "height": 8, "duration": 1})).unwrap()["comp"].as_u64().unwrap());
+        // A project nothing else holds (no undo history): make_mut would edit the comp in place,
+        // at the same address, if the identity hadn't kept a snapshot holding it.
+        let mut p = Arc::new((*s.project).clone());
+        drop(s);
+        let f = Frames::default();
+        let before = f.content_of(&p, 1, a);
+        let comp = Arc::make_mut(&mut p).comp_mut(a).unwrap();
+        comp.width = 16;
+        assert_ne!(f.content_of(&p, 2, a), before);
     }
 }

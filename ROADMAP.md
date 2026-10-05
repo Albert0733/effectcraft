@@ -10,7 +10,7 @@ once.
 | M1 | Keyframes: temporal and spatial interpolation, Easy Ease, roving, velocity | Done |
 | M2 | Compositing: 38 blend modes, track mattes, parenting, adjustment layers | Done |
 | M3 | Project operations: settings dialogs, layer commands, `.ecproj`, undo, After Effects menu bar | Done (unsaved-changes prompts, Solid / Layer Settings, lock-aware layer commands, safe project files; View ▸ New Viewer still opens only the one locked viewer) |
-| M4 | Preview: precomps, motion blur, cached playback | Mostly done (Preserve frame rate / resolution when nested, one motion blur gate, RAM preview fixes, Cache Frames When Idle, motion blur of collapsed precomps and of animated shape / text content; left: content-keyed RAM preview frames) |
+| M4 | Preview: precomps, motion blur, cached playback | Done (Preserve frame rate / resolution when nested, one motion blur gate, RAM preview fixes, Cache Frames When Idle, motion blur of collapsed precomps and of animated shape / text content, content-keyed RAM preview frames) |
 | M5 | Timeline depth: graph editor, keyframe clipboard and dialogs, time remapping, pick-whips, expression editor | Done |
 | M6 | Shapes, masks and footage: shape operators, masks and the pen tool, video and image import | Done |
 | M7 | 3D: 3D layers, cameras, lights, shadows, depth of field, 3D views and camera tools | In review |
@@ -33,6 +33,6 @@ Measured feature by feature in [docs/parity.md](docs/parity.md) (4 October 2026)
 - **≈ 8.5 agent-hours of work remain**: about **2–3 hours of wall-clock time** with five Claude
   Opus 5.5 agents in parallel, ≈ 1 hour without learned models for Roto Brush and face tracking.
 - What is left: GPU kernels for the remaining visual effects, and learned-model quality for Roto
-  Brush and face tracking; in previews, content-keyed RAM preview frames ([parity.md](docs/parity.md#highest-value-gaps-in-order)).
+  Brush and face tracking ([parity.md](docs/parity.md#highest-value-gaps-in-order)).
 
 Come tell us what matters most to you on [Discord](https://discord.gg/artcraft).

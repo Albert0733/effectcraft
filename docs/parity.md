@@ -422,6 +422,15 @@ layers); the Graph Editor has Auto-Select Graph Type (the default: the speed gra
 spatial properties are shown, else the value graph; choosing Value or Speed turns it off). Graph
 Editor keys are small squares whatever their interpolation, as in After Effects.
 
+Since (M4.14): RAM preview frames are keyed by their comp's content, not the project revision. An
+edit keeps the cached frames (the green bar) of every comp it doesn't touch, and undo finds the
+frames of the state it returns to, as in After Effects. The identity costs about 0.1 ms on the
+1500-layer test project: it hashes the addresses of the comps a comp draws, and the RAM cache
+keeps a project snapshot for every identity with frames, so those addresses can't be reused
+meanwhile. Footage, solids, proxies and the project settings are hashed by value. At most 64
+states are kept, so a long drag doesn't hold on to every intermediate state. The disk cache's
+content key now also covers proxies and Use Proxy.
+
 Since (M13.30–M13.31): the Tools bar and About dialog carry the ArtCraft mark. The
 Home screen is laid out like After Effects' and covers the whole workspace. A left rail holds New
 Project / Open Project, the Home, Templates and Learn pages and, at its foot, the community
@@ -732,7 +741,8 @@ are pinned bit for bit by golden hashes (`crates/effects/tests/particle_golden.r
 15. ~~Preferences and a shortcut editor that can rebind; real Wiggler, Smoother and Motion Sketch; the marker dialog.~~ (second and third waves)
 16. ~~Motion blur of collapsed precomps and of animated content inside a layer (shape paths, text
     animators).~~ (M4.13)
-17. Content-keyed RAM preview frames, so an edit keeps the frames of comps it doesn't touch.
+17. ~~Content-keyed RAM preview frames, so an edit keeps the frames of comps it doesn't touch.~~
+    (M4.14)
 18. View ▸ New Viewer (several unlocked Composition viewers), nested comp markers on the
     precomp layer bar, audio scrubbing.
 

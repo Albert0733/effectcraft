@@ -520,6 +520,9 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         let stale = app.viewer_shown.as_ref().is_none_or(|(_, k)| *k != key);
         if stale {
             show_frame(app, &ctx, key, img);
+        } else if let Some((_, k)) = app.viewer_shown.as_mut() {
+            // The same frame at a later revision (an edit elsewhere, an undo): it shows that one.
+            k.revision = key.revision;
         }
     }
     if app.ui.viewer.transparency_grid {
