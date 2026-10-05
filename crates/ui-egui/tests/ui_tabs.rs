@@ -199,3 +199,23 @@ fn panels_dock_beside_others_and_gutters_resize_them() {
     let wider = rect(&h, "panel.Project");
     assert!((wider.width() - project.width() - 60.0).abs() < 2.0, "{} → {}", project.width(), wider.width());
 }
+
+/// Issue #45: the Project panel's details (name, size, duration) stay inside the panel with a
+/// margin, cut short with "…" when they don't fit; so does the hint shown with nothing selected.
+#[test]
+fn project_details_stay_inside_the_panel() {
+    let (mut h, pre, _) = harness();
+    let long = "A composition with a very long name that could never fit beside the thumbnail".to_string();
+    h.state_mut().session.execute("project.rename", json!({"item": pre, "name": long})).unwrap();
+    h.state_mut().session.state.project_selection = vec![ItemId(pre)];
+    h.run_steps(3);
+    let panel = rect(&h, "panel.Project");
+    for id in ["project.details.name", "project.details.0", "project.details.1"] {
+        let r = rect(&h, id);
+        assert!(r.max.x <= panel.max.x - 9.0 && r.width() > 10.0, "{id}: {r:?} in {panel:?}");
+    }
+    h.state_mut().session.state.project_selection.clear();
+    h.run_steps(3);
+    let r = rect(&h, "project.details.hint");
+    assert!(r.min.x >= panel.min.x + 9.0 && r.max.x <= panel.max.x - 9.0, "{r:?} in {panel:?}");
+}
