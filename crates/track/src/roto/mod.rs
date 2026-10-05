@@ -19,6 +19,13 @@
 //!   colour models and the warped matte as a shape prior. Correction strokes on a frame re-cut
 //!   the whole frame with the warped matte as a soft prior, and propagation restarts from there.
 //!
+//! - **Trained models** (optional, swappable: `effectcraft_segment::MaskModel`, e.g. MobileSAM):
+//!   [`segment_with`] / [`propagate_with`] prompt the model with points along the strokes, or with
+//!   the warped matte (its box, points deep inside it and the matte itself), and its foreground
+//!   probability becomes a strong prior for the same graph cut, so strokes stay hard constraints
+//!   and edges still snap to colour. A model that fails, or whose mask disagrees with the flow, is
+//!   ignored for that frame.
+//!
 //! Mattes are in layer pixels at a given scale (1 = full resolution). Strokes are stored in
 //! layer pixels ([`RotoData`], serde) and keyed per frame so that each frame's result is a
 //! deterministic function of its *chain*: the base frame's strokes, then every frame's strokes
@@ -33,6 +40,7 @@ pub mod rle;
 use std::collections::BTreeMap;
 
 use effectcraft_raster::Image;
+use effectcraft_segment::{MaskModel, Prompt};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -328,6 +336,8 @@ const HARD_BG: u8 = 2;
 /// Graph-cut energy weights.
 const GAMMA: f64 = 50.0;
 const PRIOR: f64 = 1.0;
+/// A trained model's matte as a prior: it outweighs the colour models.
+const MODEL_PRIOR: f64 = 4.0;
 /// Fixed-point scale of the energies.
 const K: f64 = 16.0;
 const INF: i64 = 1 << 40;
@@ -356,8 +366,9 @@ fn beta(img: &[[f32; 3]], free: &[bool], w: usize, h: usize) -> f64 {
     if s <= 1e-12 { 1.0 } else { n / (2.0 * s) }
 }
 
-/// One min-cut over the `free` pixels; others keep `labels`. `prior`: P(foreground) per pixel.
-fn cut(img: &[[f32; 3]], w: usize, h: usize, labels: &mut [u8], free: &[bool], hard: &[u8], fg: &Gmm, bg: &Gmm, prior: Option<&[f32]>) {
+/// One min-cut over the `free` pixels; others keep `labels`. `prior`: P(foreground) per pixel
+/// and how much it weighs against the colour models.
+fn cut(img: &[[f32; 3]], w: usize, h: usize, labels: &mut [u8], free: &[bool], hard: &[u8], fg: &Gmm, bg: &Gmm, prior: Option<(&[f32], f64)>) {
     let mut idx = vec![u32::MAX; w * h];
     let mut nodes = vec![];
     for i in 0..w * h {
@@ -375,10 +386,10 @@ fn cut(img: &[[f32; 3]], w: usize, h: usize, labels: &mut [u8], free: &[bool], h
         .map(|&i| {
             let c = img[i];
             let (mut cf, mut cb) = (fg.cost(c), bg.cost(c));
-            if let Some(p) = prior {
+            if let Some((p, wt)) = prior {
                 let pf = (p[i] as f64).clamp(0.02, 0.98);
-                cf += PRIOR * -pf.ln();
-                cb += PRIOR * -(1.0 - pf).ln();
+                cf += wt * -pf.ln();
+                cb += wt * -(1.0 - pf).ln();
             }
             (cf, cb)
         })
@@ -568,6 +579,8 @@ pub struct Prior {
     pub bg: Gmm,
     /// Warped Refine Edge band.
     pub refine: Vec<u8>,
+    /// How much the prior weighs against the colour models.
+    pub weight: f64,
 }
 
 /// Segment a frame from its strokes (and a propagated prior): GrabCut iterations on a reduced
@@ -593,7 +606,10 @@ pub fn segment(img: &Image, strokes: &[&Stroke], prior: Option<&Prior>, opts: &S
             }
         })
         .collect();
-    let soft_prior: Option<Vec<f32>> = prior.map(|p| matting::gauss(&p.soft, w, h, (opts.search_radius * opts.scale / 4.0).max(1.0)));
+    // A warped matte is uncertain by about the search radius: blur it. A model's matte is not.
+    let soft_prior: Option<Vec<f32>> =
+        prior.map(|p| if p.weight > PRIOR { p.soft.clone() } else { matting::gauss(&p.soft, w, h, (opts.search_radius * opts.scale / 4.0).max(1.0)) });
+    let pw = prior.map_or(PRIOR, |p| p.weight);
     // Initial colour models: the strokes (and the propagated matte).
     let (fg0, bg0) = match prior {
         Some(p) => {
@@ -666,7 +682,7 @@ pub fn segment(img: &Image, strokes: &[&Stroke], prior: Option<&Prior>, opts: &S
         };
         let free = vec![true; cw * ch];
         for it in 0..iters {
-            cut(&crgb, cw, ch, &mut cl, &free, &chard, &fgm, &bgm, cprior.as_deref());
+            cut(&crgb, cw, ch, &mut cl, &free, &chard, &fgm, &bgm, cprior.as_deref().map(|c| (c, pw)));
             if it + 1 < iters {
                 let (a, b) = fit_models(&crgb, &cl);
                 if !a.is_empty() && !b.is_empty() {
@@ -688,11 +704,11 @@ pub fn segment(img: &Image, strokes: &[&Stroke], prior: Option<&Prior>, opts: &S
         let sd = matting::signed_distance(&labels, w, h);
         let band = f as f32 + 1.5;
         let free: Vec<bool> = sd.iter().map(|d| d.abs() <= band).collect();
-        cut(&rgb, w, h, &mut labels, &free, &hard, &fgm, &bgm, soft_prior.as_deref());
+        cut(&rgb, w, h, &mut labels, &free, &hard, &fgm, &bgm, soft_prior.as_deref().map(|c| (c, pw)));
     } else {
         let free = vec![true; w * h];
         for it in 0..iters {
-            cut(&rgb, w, h, &mut labels, &free, &hard, &fgm, &bgm, soft_prior.as_deref());
+            cut(&rgb, w, h, &mut labels, &free, &hard, &fgm, &bgm, soft_prior.as_deref().map(|c| (c, pw)));
             if it + 1 < iters {
                 let (a, b) = fit_models(&rgb, &labels);
                 if !a.is_empty() && !b.is_empty() {
@@ -768,7 +784,7 @@ pub fn warp_prior(prev_img: &Image, prev: &FrameSeg, next_img: &Image, opts: &Se
             (soft, r)
         })
         .collect();
-    Prior { soft: res.iter().map(|r| r.0).collect(), fg: prev.fg.clone(), bg: prev.bg.clone(), refine: res.iter().map(|r| r.1).collect() }
+    Prior { soft: res.iter().map(|r| r.0).collect(), fg: prev.fg.clone(), bg: prev.bg.clone(), refine: res.iter().map(|r| r.1).collect(), weight: PRIOR }
 }
 
 /// Propagate the previous frame's segmentation to the next frame: warp it, then re-cut in a
@@ -788,10 +804,131 @@ pub fn propagate(prev_img: &Image, prev: &FrameSeg, next_img: &Image, strokes: &
     let hard = vec![0u8; w * h];
     let soft = matting::gauss(&prior.soft, w, h, (r as f64 / 4.0).max(1.0));
     let (fg, bg) = if prev.fg.is_empty() || prev.bg.is_empty() { fit_models(&rgb, &labels) } else { (prev.fg.clone(), prev.bg.clone()) };
-    cut(&rgb, w, h, &mut labels, &free, &hard, &fg, &bg, Some(&soft));
+    cut(&rgb, w, h, &mut labels, &free, &hard, &fg, &bg, Some((&soft, PRIOR)));
     let seeds = core_of(&prior.soft, w, h, r as f64);
     clean(&mut labels, &seeds, &vec![false; w * h], w, h);
     finish(next_img, &rgb, labels, strokes, Some(&prior.refine), opts, refine_radius)
+}
+
+/// Points spread along a stroke (matte pixels), about one per stroke width, at most `max`.
+fn points_along(s: &Stroke, scale: f64, max: usize) -> Vec<[f32; 2]> {
+    let pts: Vec<[f64; 2]> = s.points.iter().map(|p| [p[0] * scale, p[1] * scale]).collect();
+    let len: f64 = pts.windows(2).map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1])).sum();
+    let step = (2.0 * s.radius * scale).max(len / max.max(1) as f64).max(1.0);
+    let mut out = pts.first().map(|p| vec![[p[0] as f32, p[1] as f32]]).unwrap_or_default();
+    let mut carry = 0.0;
+    for w in pts.windows(2) {
+        let d = (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1]);
+        let mut t = step - carry;
+        while t <= d && out.len() < max {
+            let f = t / d.max(1e-9);
+            out.push([(w[0][0] + (w[1][0] - w[0][0]) * f) as f32, (w[0][1] + (w[1][1] - w[0][1]) * f) as f32]);
+            t += step;
+        }
+        carry = (carry + d) % step;
+    }
+    out
+}
+
+/// A model's prompt from the strokes: points along the foreground and background strokes.
+fn stroke_prompt(strokes: &[&Stroke], scale: f64) -> Prompt {
+    let mut points = vec![];
+    for (kind, fg) in [(StrokeKind::Fg, true), (StrokeKind::Bg, false)] {
+        let ss: Vec<&&Stroke> = strokes.iter().filter(|s| s.kind == kind).collect();
+        let per = (16 / ss.len().max(1)).max(1);
+        for s in ss {
+            points.extend(points_along(s, scale, per).into_iter().map(|p| (p, fg)));
+        }
+    }
+    Prompt { points, ..Default::default() }
+}
+
+/// Add a prior matte to a prompt: its box (a little larger), up to four points spread through
+/// its core, and the matte itself.
+fn add_prior_prompt(prompt: &mut Prompt, soft: &[f32], w: usize, h: usize) -> bool {
+    let bin: Vec<u8> = soft.iter().map(|v| (*v >= 0.5) as u8).collect();
+    let (mut x0, mut y0, mut x1, mut y1) = (usize::MAX, usize::MAX, 0usize, 0usize);
+    for (i, v) in bin.iter().enumerate() {
+        if *v != 0 {
+            let (x, y) = (i % w, i / w);
+            (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x), y1.max(y));
+        }
+    }
+    if x0 > x1 {
+        return false;
+    }
+    let (mx, my) = (((x1 - x0) as f32 * 0.05).max(4.0), ((y1 - y0) as f32 * 0.05).max(4.0));
+    prompt.bbox = Some([(x0 as f32 - mx).max(0.0), (y0 as f32 - my).max(0.0), (x1 as f32 + 1.0 + mx).min(w as f32), (y1 as f32 + 1.0 + my).min(h as f32)]);
+    // Farthest-point picks among the core (deep inside), starting from the deepest pixel.
+    let sd = matting::signed_distance(&bin, w, h);
+    let deep = sd.iter().copied().fold(0.0f32, f32::max);
+    let core: Vec<usize> = (0..w * h).filter(|i| sd[*i] >= (deep * 0.5).max(1.0)).step_by(((w * h) / 20_000).max(1)).collect();
+    let mut picks: Vec<usize> = core.iter().copied().max_by(|a, b| sd[*a].total_cmp(&sd[*b])).into_iter().collect();
+    while picks.len() < 4 {
+        let far = core.iter().copied().max_by_key(|c| picks.iter().map(|p| (c % w).abs_diff(p % w).pow(2) + (c / w).abs_diff(p / w).pow(2)).min().unwrap_or(0));
+        match far {
+            Some(f) if !picks.contains(&f) => picks.push(f),
+            _ => break,
+        }
+    }
+    prompt.points.extend(picks.into_iter().map(|i| ([(i % w) as f32 + 0.5, (i / w) as f32 + 0.5], true)));
+    prompt.mask = Some(soft.to_vec());
+    true
+}
+
+/// [`segment`] with a trained model (if any): its matte for the strokes (and the propagated
+/// prior) becomes a strong prior for the cut.
+pub fn segment_with(img: &Image, strokes: &[&Stroke], prior: Option<&Prior>, opts: &SegOpts, refine_radius: f64, model: Option<&dyn MaskModel>) -> FrameSeg {
+    let (w, h) = (img.width as usize, img.height as usize);
+    let Some(m) = model.filter(|_| w > 0 && h > 0) else { return segment(img, strokes, prior, opts, refine_radius) };
+    let mut prompt = stroke_prompt(strokes, opts.scale);
+    if let Some(p) = prior {
+        add_prior_prompt(&mut prompt, &p.soft, w, h);
+    }
+    if !prompt.points.iter().any(|(_, fg)| *fg) {
+        return segment(img, strokes, prior, opts, refine_radius);
+    }
+    match m.segment(&rgb_of(img), w, h, &prompt) {
+        Ok(soft) if soft.len() == w * h => {
+            let (fg, bg) = prior.map_or_else(Default::default, |p| (p.fg.clone(), p.bg.clone()));
+            let refine = prior.map_or_else(|| vec![0; w * h], |p| p.refine.clone());
+            segment(img, strokes, Some(&Prior { soft, fg, bg, refine, weight: MODEL_PRIOR }), opts, refine_radius)
+        }
+        _ => segment(img, strokes, prior, opts, refine_radius),
+    }
+}
+
+/// [`propagate`] with a trained model (if any): the model, prompted with the flow-warped matte,
+/// re-segments the frame; when it disagrees with the flow (IoU under 0.5) the classical result
+/// stands.
+pub fn propagate_with(
+    prev_img: &Image,
+    prev: &FrameSeg,
+    next_img: &Image,
+    strokes: &[&Stroke],
+    opts: &SegOpts,
+    refine_radius: f64,
+    model: Option<&dyn MaskModel>,
+) -> FrameSeg {
+    let (w, h) = (next_img.width as usize, next_img.height as usize);
+    let Some(m) = model.filter(|_| w > 0 && h > 0) else { return propagate(prev_img, prev, next_img, strokes, opts, refine_radius) };
+    let prior = warp_prior(prev_img, prev, next_img, opts);
+    let mut prompt = stroke_prompt(strokes, opts.scale);
+    if !add_prior_prompt(&mut prompt, &prior.soft, w, h) {
+        return propagate(prev_img, prev, next_img, strokes, opts, refine_radius);
+    }
+    match m.segment(&rgb_of(next_img), w, h, &prompt) {
+        Ok(soft) if soft.len() == w * h => {
+            let a: Vec<u8> = soft.iter().map(|v| (*v >= 0.5) as u8).collect();
+            let b: Vec<u8> = prior.soft.iter().map(|v| (*v >= 0.5) as u8).collect();
+            if iou(&a, &b) < 0.5 {
+                return propagate(prev_img, prev, next_img, strokes, opts, refine_radius);
+            }
+            let p = Prior { soft, weight: MODEL_PRIOR, ..prior };
+            segment(next_img, strokes, Some(&p), opts, refine_radius)
+        }
+        _ => propagate(prev_img, prev, next_img, strokes, opts, refine_radius),
+    }
 }
 
 /// Intersection over union of two binary mattes.

@@ -335,3 +335,94 @@ fn roto_perf_1080p() {
     let _ = matte_alpha(&rgb, &seg2, None, None, &MatteParams::default(), 20.0, 1.0);
     eprintln!("refine 1080p: {:?}", t.elapsed());
 }
+
+/// A stand-in trained model: the foreground is a fixed rectangle (or nothing, or an error).
+struct FakeModel(Option<[usize; 4]>, bool);
+
+impl effectcraft_segment::MaskModel for FakeModel {
+    fn info(&self) -> &'static effectcraft_segment::ModelInfo {
+        &effectcraft_segment::MOBILE_SAM
+    }
+    fn segment(&self, _: &[[f32; 3]], w: usize, h: usize, prompt: &Prompt) -> Result<Vec<f32>, String> {
+        if self.1 {
+            return Err("broken".into());
+        }
+        assert!(prompt.points.iter().any(|(_, fg)| *fg), "prompted with foreground points");
+        Ok((0..w * h)
+            .map(|i| match self.0 {
+                Some([x0, y0, x1, y1]) => ((i % w) >= x0 && (i % w) < x1 && (i / w) >= y0 && (i / w) < y1) as u8 as f32 * 0.98 + 0.01,
+                None => 0.01,
+            })
+            .collect())
+    }
+}
+
+/// A grey bar on a two-tone background whose halves match the bar's halves: colour alone can't
+/// find its edge, a model can.
+#[test]
+fn a_model_prior_shapes_the_cut_and_bad_models_are_ignored() {
+    let (w, h) = (160usize, 100usize);
+    let rect = [40, 30, 120, 70];
+    let mut img = Image::new(w as u32, h as u32);
+    let mut gt = vec![0u8; w * h];
+    for y in 0..h {
+        for x in 0..w {
+            let inside = x >= rect[0] && x < rect[2] && y >= rect[1] && y < rect[3];
+            // Left half dark, right half light, inside or out; a faint stripe pattern inside.
+            let base = if x < w / 2 { 0.2 } else { 0.8 };
+            let v = if inside { base + 0.02 * ((x / 3) % 2) as f32 } else { base };
+            img.set(x as u32, y as u32, [v, v, v, 1.0]);
+            gt[y * w + x] = inside as u8;
+        }
+    }
+    let st = [line(StrokeKind::Fg, 0, [50.0, 50.0], [110.0, 50.0], 4.0)];
+    let refs: Vec<&Stroke> = st.iter().collect();
+    let opts = SegOpts::default();
+    let classical = segment(&img, &refs, None, &opts, 0.0);
+    let good = FakeModel(Some(rect), false);
+    let with = segment_with(&img, &refs, None, &opts, 0.0, Some(&good));
+    let (jc, jm) = (iou(&classical.matte, &gt), iou(&with.matte, &gt));
+    assert!(jm > 0.95 && jm > jc + 0.2, "model {jm} vs classical {jc}");
+    // A failing model: the classical result, unchanged.
+    let broken = FakeModel(None, true);
+    assert_eq!(segment_with(&img, &refs, None, &opts, 0.0, Some(&broken)), classical);
+    // Propagation: a model that loses the object (disagrees with the flow) is ignored.
+    let next = img.clone();
+    let lost = FakeModel(None, false);
+    let a = propagate_with(&img, &with, &next, &[], &opts, 0.0, Some(&lost));
+    let b = propagate(&img, &with, &next, &[], &opts, 0.0);
+    assert_eq!(a, b);
+    // A good model keeps the bar through propagation.
+    let kept = propagate_with(&img, &with, &next, &[], &opts, 0.0, Some(&good));
+    assert!(iou(&kept.matte, &gt) > 0.95, "{}", iou(&kept.matte, &gt));
+}
+
+/// With the real MobileSAM weights (`EFFECTCRAFT_MOBILESAM=path/to/mobile_sam.pt`, else
+/// skipped): the base frame and 20 propagated frames of the moving textured disk stay at least
+/// as accurate as the classic engine.
+#[test]
+fn mobilesam_segments_and_propagates_the_disk() {
+    let Ok(path) = std::env::var("EFFECTCRAFT_MOBILESAM") else { return };
+    let model = effectcraft_segment::load("mobilesam", &std::fs::read(path).unwrap()).unwrap();
+    let m = Some(model.as_ref());
+    let (img0, gt0) = frame_at(center(0));
+    let st = base_strokes(0);
+    let refs: Vec<&Stroke> = st.iter().collect();
+    let opts = SegOpts::default();
+    let base = segment_with(&img0, &refs, None, &opts, 0.0, m);
+    let jb = iou(&base.matte, &gt0);
+    let (mut seg, mut cseg) = (base, segment(&img0, &refs, None, &opts, 0.0));
+    let mut prev = img0;
+    let (mut worst, mut cworst): (f64, f64) = (1.0, 1.0);
+    let t = std::time::Instant::now();
+    for f in 1..=20 {
+        let (img, gt) = frame_at(center(f));
+        seg = propagate_with(&prev, &seg, &img, &[], &opts, 0.0, m);
+        cseg = propagate(&prev, &cseg, &img, &[], &opts, 0.0);
+        worst = worst.min(iou(&seg.matte, &gt));
+        cworst = cworst.min(iou(&cseg.matte, &gt));
+        prev = img;
+    }
+    eprintln!("MobileSAM: base IoU {jb:.4}, worst propagated {worst:.4} (classic {cworst:.4}), {:.0} ms/frame", t.elapsed().as_secs_f64() * 1000.0 / 20.0);
+    assert!(jb > 0.95 && worst > 0.93 && worst >= cworst - 0.01, "base {jb}, worst {worst} vs classic {cworst}");
+}

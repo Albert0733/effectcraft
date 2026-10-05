@@ -28,6 +28,8 @@ enum Act {
     Run(String, Value),
     PickFolder(String),
     PickProject(String),
+    /// Install from File (a downloaded weights file).
+    PickModel,
 }
 
 fn hex(c: [u8; 3]) -> String {
@@ -61,6 +63,7 @@ fn page_ui(app: &mut EffectcraftApp, ui: &mut egui::Ui, page: &Page, cur: &Value
             }
             Item::Labels => labels_ui(app, ui, cur, acts),
             Item::BrowserStorage => browser_storage_ui(app, ui, t, acts),
+            Item::RotoModels => roto_models_ui(app, ui, t, acts),
             Item::AudioDevices { key } => {
                 let devices: Vec<String> = app.hooks.audio_devices.as_ref().map(|f| f()).unwrap_or_default();
                 let sel = get(key).as_str().unwrap_or("").to_string();
@@ -209,6 +212,97 @@ pub fn human_bytes(b: u64) -> String {
 
 /// Settings ▸ Disk ▸ Browser Storage (the web app's storage manager, `storage.*`): where the
 /// data lives, the origin's usage and quota, persistent storage, and Clear buttons.
+/// Settings ▸ Roto Brush: the segmentation models (`roto.models`): choose one; download, install
+/// from a file or remove the trained ones; their licence, size and source.
+fn roto_models_ui(app: &mut EffectcraftApp, ui: &mut egui::Ui, t: &Tokens, acts: &mut Vec<Act>) {
+    let Ok(info) = app.session.execute("roto.models", json!({})) else { return };
+    let web = cfg!(target_arch = "wasm32");
+    let busy = info["busy"].as_str().map(str::to_string);
+    for m in info["models"].as_array().into_iter().flatten() {
+        let id = m["id"].as_str().unwrap_or_default().to_string();
+        let name = m["name"].as_str().unwrap_or_default();
+        let (installed, selected, active) =
+            (m["installed"].as_bool().unwrap_or(false), m["selected"].as_bool().unwrap_or(false), m["active"].as_bool().unwrap_or(false));
+        ui.add_space(6.0);
+        egui::Frame::new().fill(t.field_bg).corner_radius(6.0).inner_margin(egui::Margin::same(10)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                let r = ui.radio(selected, RichText::new(name).font(Tokens::semibold(12.5)));
+                reg(app, &format!("settings.roto.model.{id}"), &r, name);
+                if r.clicked() && !selected {
+                    acts.push(Act::Run("roto.model.select".into(), json!({"id": id})));
+                }
+                let classic = id == effectcraft_engine::segment::CLASSICAL;
+                let state = match (active, installed, selected) {
+                    (true, _, _) => "In use",
+                    _ if classic => "Built in",
+                    (false, true, true) if busy.is_some() => "Loading…",
+                    (false, true, _) => "Installed",
+                    (false, false, true) => "Not installed: Roto Brush uses the classic engine",
+                    _ => "Not installed",
+                };
+                ui.label(RichText::new(state).color(if active { t.accent } else { t.text_dim }));
+            });
+            ui.label(RichText::new(m["description"].as_str().unwrap_or_default()).color(t.text_dim));
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new(format!("Licence: {}", m["licence"].as_str().unwrap_or_default())).color(t.text_dim));
+                if let Some(size) = m["size"].as_u64() {
+                    ui.label(RichText::new(format!("·  {}", human_bytes(size))).color(t.text_dim));
+                }
+                for (label, key) in [("Project page", "homepage"), ("Licence text", "licenceUrl")] {
+                    if let Some(url) = m[key].as_str() {
+                        let r = ui.link(label);
+                        if r.clicked() {
+                            ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+                        }
+                    }
+                }
+            });
+            if id == effectcraft_engine::segment::CLASSICAL {
+                return;
+            }
+            ui.horizontal(|ui| {
+                if !installed && !web {
+                    let r = ui.add_enabled(busy.is_none(), egui::Button::new("Download"));
+                    reg(app, &format!("settings.roto.download.{id}"), &r, "Download");
+                    if r.clicked() {
+                        acts.push(Act::Run("roto.model.download".into(), json!({"id": id})));
+                    }
+                }
+                if !web {
+                    let r = ui.add_enabled(busy.is_none(), egui::Button::new("Install from File…"));
+                    reg(app, &format!("settings.roto.install.{id}"), &r, "Install from File");
+                    if r.clicked() {
+                        acts.push(Act::PickModel);
+                    }
+                }
+                if installed {
+                    let r = ui.add_enabled(busy.is_none(), egui::Button::new("Remove"));
+                    reg(app, &format!("settings.roto.remove.{id}"), &r, "Remove");
+                    if r.clicked() {
+                        acts.push(Act::Run("roto.model.remove".into(), json!({"id": id})));
+                    }
+                }
+            });
+        });
+    }
+    if let Some(b) = &busy {
+        ui.horizontal(|ui| {
+            ui.spinner();
+            ui.label(b);
+        });
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
+    }
+    if let Some(e) = info["error"].as_str() {
+        ui.label(RichText::new(e).color(t.danger));
+    }
+    if web {
+        ui.label(RichText::new("Trained models are available in the desktop app; the browser uses the classic engine.").color(t.text_dim));
+    } else if let Some(f) = info["folder"].as_str() {
+        ui.label(RichText::new(format!("Models folder: {f}")).color(t.text_faint));
+    }
+}
+
 fn browser_storage_ui(app: &mut EffectcraftApp, ui: &mut egui::Ui, t: &Tokens, acts: &mut Vec<Act>) {
     let Some(host) = app.session.storage.clone() else { return };
     let info = host.info();
@@ -417,6 +511,14 @@ pub fn show(app: &mut EffectcraftApp, ctx: &egui::Context, t: &Tokens) {
                 if let Some(f) = app.hooks.pick_open_project.as_ref().and_then(|f| f()) {
                     let _ = app.session.prefs.set(&k, json!(f));
                     app.session.prefs_changed();
+                }
+            }
+            Act::PickModel => {
+                let picked = app.hooks.pick_files.as_ref().map(|f| f(&["pt"])).unwrap_or_default();
+                if let Some(path) = picked.into_iter().next()
+                    && let Err(e) = crate::menus::invoke(app, ctx, "roto.model.install", json!({"path": path}))
+                {
+                    app.ui.status = e;
                 }
             }
         }

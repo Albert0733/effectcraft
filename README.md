@@ -196,8 +196,9 @@ tests, layering, asset attribution and the WebAssembly build). See [CONTRIBUTING
 ## Where it stands
 
 EffectCraft is young. The core of After Effects is in place and gets deeper every week: what is
-done and what comes next is in the [ROADMAP](ROADMAP.md). Still to come: learned models for
-Roto Brush and face tracking (both use classical methods today), GPU versions of the remaining
+done and what comes next is in the [ROADMAP](ROADMAP.md). Roto Brush can use a trained model
+(MobileSAM, Apache-2.0, a 40 MB download you opt into in Settings ▸ Roto Brush). Still to come: a
+learned face tracker (face tracking uses classical methods today), GPU versions of the remaining
 CPU-only effects, the Advanced 3D Extended Viewer, and shared-memory threads in the web build. The
 web build ([docs/web.md](docs/web.md)) runs the full app in the browser, with renders, analyses
 and viewer frames in Web Workers. Projects are saved as `.ecproj`, readable versioned JSON; After

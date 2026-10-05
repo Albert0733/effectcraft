@@ -16,15 +16,19 @@
 //! decontamination of the edge colours. Outside the segmentation span the layer is transparent;
 //! without strokes the effect passes its input through.
 //!
-//! *Version* is stored but all versions use the same (classic, graph-cut) engine; *Quality ▸
-//! Best* segments at a higher working resolution with more iterations.
+//! *Version*: 1.0 is the classic graph-cut engine; 2.0 and 3.0 also use the trained model chosen
+//! in Settings ▸ Roto Brush ([`set_model`], an `effectcraft_segment::MaskModel` such as
+//! MobileSAM), falling back to the classic engine when none is installed. The model's id is part
+//! of the chain seed, so choosing another recomputes the mattes. *Quality ▸ Best* segments at a
+//! higher working resolution with more iterations.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use effectcraft_keyframe::Value;
 use effectcraft_project::ParamUi;
 use effectcraft_raster::Image;
+use effectcraft_segment::MaskModel;
 use effectcraft_track::roto::refine::{self, MatteParams};
 use effectcraft_track::roto::{self as rb, FrameSeg, RotoData, SegOpts, rle};
 use rayon::prelude::*;
@@ -173,8 +177,29 @@ pub fn matte_params(params: &Params) -> MatteParams {
     }
 }
 
+fn model_slot() -> &'static RwLock<Option<Arc<dyn MaskModel>>> {
+    static M: OnceLock<RwLock<Option<Arc<dyn MaskModel>>>> = OnceLock::new();
+    M.get_or_init(|| RwLock::new(None))
+}
+
+/// The trained model Roto Brush 2.0 / 3.0 use (Settings ▸ Roto Brush; `None`: the classic
+/// engine for every version).
+pub fn set_model(m: Option<Arc<dyn MaskModel>>) {
+    if let Ok(mut slot) = model_slot().write() {
+        *slot = m;
+    }
+}
+
+/// The model an instance segments with: its version's choice of the installed one.
+pub fn model_for(params: &Params) -> Option<Arc<dyn MaskModel>> {
+    if e(params, "version") == 0 {
+        return None;
+    }
+    model_slot().read().ok().and_then(|m| m.clone())
+}
+
 /// Seed of the chain keys: what the frames are (the engine-maintained Input Key), the layer
-/// size, the frame rate and the segmentation settings.
+/// size, the frame rate, the segmentation settings and the model.
 pub fn seed(params: &Params, layer_size: [f64; 2], fps: f64) -> u64 {
     let mut h = 0xcbf2_9ce4_8422_2325;
     fnv(&mut h, s(params, INPUT_KEY).as_bytes());
@@ -189,6 +214,7 @@ pub fn seed(params: &Params, layer_size: [f64; 2], fps: f64) -> u64 {
         fnv(&mut h, &v.to_bits().to_le_bytes());
     }
     fnv(&mut h, &[e(params, "quality") as u8, e(params, "version") as u8]);
+    fnv(&mut h, model_for(params).map_or(effectcraft_segment::CLASSICAL, |m| m.info().id).as_bytes());
     h
 }
 
@@ -275,13 +301,15 @@ pub struct Chain {
     pub keys: BTreeMap<i64, u64>,
     pub opts: SegOpts,
     pub refine_radius: f64,
+    /// The trained model (Version 2.0 / 3.0 with one installed).
+    pub model: Option<Arc<dyn MaskModel>>,
 }
 
 impl Chain {
     pub fn new(params: &Params, layer_size: [f64; 2], fps: f64, scale: f64) -> Chain {
         let data = data(params);
         let keys = data.chain_keys(seed(params, layer_size, fps));
-        Chain { refine_radius: data.refine_radius(), data, keys, opts: seg_opts(params, scale) }
+        Chain { refine_radius: data.refine_radius(), data, keys, opts: seg_opts(params, scale), model: model_for(params) }
     }
 
     /// Frame `f`'s segmentation at this chain's scale: cached, or computed from the nearest
@@ -331,7 +359,7 @@ impl Chain {
             let img = frame(g)?;
             let strokes = self.data.strokes_at(g);
             let seg = match (&cur, g == base) {
-                (_, true) | (None, _) => rb::segment(&img, &strokes, None, &self.opts, self.refine_radius),
+                (_, true) | (None, _) => rb::segment_with(&img, &strokes, None, &self.opts, self.refine_radius, self.model.as_deref()),
                 (Some(p), false) => {
                     let src = self.data.source_of(g)?;
                     let pimg = match prev_img.take() {
@@ -341,7 +369,7 @@ impl Chain {
                     if pimg.width != img.width || pimg.height != img.height {
                         return None;
                     }
-                    rb::propagate(&pimg, p, &img, &strokes, &self.opts, self.refine_radius)
+                    rb::propagate_with(&pimg, p, &img, &strokes, &self.opts, self.refine_radius, self.model.as_deref())
                 }
             };
             let seg = Arc::new(seg);

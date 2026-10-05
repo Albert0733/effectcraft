@@ -34,6 +34,7 @@ pub mod psd_import;
 pub mod remote;
 pub mod render_queue;
 pub mod roto;
+pub mod roto_models;
 pub mod scriptui;
 mod session_settings;
 pub mod shortcuts;
@@ -63,6 +64,7 @@ pub use effectcraft_keyframe as keyframe;
 pub use effectcraft_project as project;
 pub use effectcraft_raster as raster;
 pub use effectcraft_render as render;
+pub use effectcraft_segment as segment;
 pub use effectcraft_text as text;
 pub use effectcraft_time as time;
 pub use effectcraft_track as track;
@@ -347,6 +349,10 @@ pub struct Session {
     pub camera_pending: Vec<(ItemId, LayerId, Uid)>,
     /// The running (or finished, not yet polled) Roto Brush propagation / Freeze.
     pub roto_job: Option<roto::RotoJob>,
+    /// Roto Brush's trained models (Settings ▸ Roto Brush).
+    pub roto_models: roto_models::Models,
+    /// Where installed models live (hosts set it; else `models` next to the settings).
+    pub models_dir: Option<std::path::PathBuf>,
     /// Roto Brush instances edited since their last propagation: (comp, layer, effect uid).
     pub roto_pending: Vec<(ItemId, LayerId, Uid)>,
     pub events: Vec<Event>,
@@ -463,6 +469,8 @@ impl Default for Session {
             camera_job: None,
             camera_pending: vec![],
             roto_job: None,
+            roto_models: Default::default(),
+            models_dir: None,
             roto_pending: vec![],
             events: vec![],
             journal: vec![],
@@ -1084,3 +1092,5 @@ mod tests_paint;
 mod tests_panels;
 #[cfg(test)]
 mod tests_roto;
+#[cfg(test)]
+mod tests_roto_models;

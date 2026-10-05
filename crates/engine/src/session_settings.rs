@@ -38,6 +38,8 @@ impl Session {
         let levels = self.prefs.general.undo_levels.max(1) as usize;
         let current = self.project.clone();
         self.history.trim(levels, &current);
+        // Settings ▸ Roto Brush: load (or drop) the chosen trained model.
+        self.apply_roto_model();
         self.prefs_revision += 1;
     }
 

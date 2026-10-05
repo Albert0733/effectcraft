@@ -2,17 +2,17 @@
 
 How close EffectCraft is to After Effects 2026, feature by feature, and how much work is left.
 
-## Current status (audit at commit `d39c0e8`, 4 October 2026; updated 5 October for M3.9–M4.12)
+## Current status (audit at commit `d39c0e8`, 4 October 2026; updated 5 October for M3.9–M4.12 and M13.35)
 
 | Measure | Value |
 |---|---|
-| **Feature parity, weighted by tier** (P0 ×3, P1 ×2, P2 ×1) | **≈ 99%** counting every partial feature as half done; ≈ 99.8% using per-feature fractions |
-| Unweighted | ≈ 98.4% (half-credit) / 99.6% (fractions) |
-| P0 / P1 / P2 | 100% / 98% / 90% (half-credit); 100% / 99.7% / 97.5% (fractions) |
-| Features done / partial / missing | 89 / 3 / 0 of 92 |
+| **Feature parity, weighted by tier** (P0 ×3, P1 ×2, P2 ×1) | **≈ 99.4%** counting every partial feature as half done; ≈ 99.9% using per-feature fractions |
+| Unweighted | ≈ 98.9% (half-credit) / 99.9% (fractions) |
+| P0 / P1 / P2 | 100% / 98% / 95% (half-credit); 100% / 99.8% / 99% (fractions) |
+| Features done / partial / missing | 90 / 2 / 0 of 92 (MSK-4 Roto Brush done in M13.35) |
 | **Effects** | **306** effects, every one implemented in full ([effects.md](effects.md)); 280 run on the GPU |
 | Disabled menu entries left | 1, on purpose: Import ▸ Vanishing Point (.vpe), whose format has no public specification |
-| Remaining work | ≈ 8.5 agent-hours at the pace measured so far (≈ 26 on the conservative audit scale); ≈ 3.5 without the learned-model items |
+| Remaining work | ≈ 8.5 agent-hours at the audit (≈ 26 on the conservative audit scale), before M13.35 landed Roto Brush's trained model; the learned face tracker is the one learned-model item left |
 | **Wall-clock estimate** | **≈ 2–3 hours** with five agents in parallel; ≈ 1 hour without the learned-model items |
 
 Partial features:
@@ -20,7 +20,6 @@ Partial features:
 | id | Tier | Done | What is missing |
 |---|---|---|---|
 | EFF-5 GPU effects | P1 | 0.98 | Fractal (its escape iteration needs f64: WGSL has none and Metal's fast math defeats double-f32 emulation) and the analysis / tool effects (Camera-Shake Deblur, Detail-preserving Upscale, Puppet, Rolling Shutter Repair, Warp Stabilizer, Mocha Shape, Roto Brush, Match Grain, Paint, Camera Tracker, Face Tracker) render on the CPU. M13.28 moved the remaining pixel effects (CC blur / glass family, Color Link, Cineon, HDR, Inner/Outer Key, Basic 3D…) and the geometry and audio generators (Lightning, Advanced Lightning, Beam, Lens Flare, Radio Waves, Vegas, Stroke, Scribble, Write-on, Paint Bucket, Eyedropper Fill, CC Glue Gun, CC Threads, Audio Spectrum / Waveform, Basic / Path Text) onto the GPU; M13.29 the particle effects (CC Particle World / Systems II, Particle Playground, CC Ball Action, CC Pixel Polly, CC Scatterize) and Curl Noise, and removed the Shatter wireframe, Foam extras, Timewarp matte, strong Warp Fisheye / Twist and custom `.ocio` fallbacks. The 13 audio filters stay on the CPU by design |
-| MSK-4 Roto Brush | P2 | 0.85 | Segmentation is classical (graph cut + optical flow), not a learned model |
 | TRK-3 Face tracking | P2 | 0.9 | Classical fitter: weak on profile and occluded faces; Rolling Shutter Ripple is approximated |
 
 Since this audit: the project operations (M3.9–M3.14) and preview (M4.5–M4.12) passes fixed
@@ -165,7 +164,7 @@ the disk cache in the formats wave; the 3D Camera Tracker in M12.6.)
 | Effects | ≈ 85% | 3.0 | GPU versions of the remaining effects (280 run on the GPU since M13.29, EFF-5: M13.28 added the remaining pixel effects and the geometry and audio generators (Lightning, Advanced Lightning, Beam, Lens Flare, Radio Waves, Vegas, Stroke, Scribble, Write-on, Paint Bucket, Eyedropper Fill, CC Glue Gun, CC Threads, Audio Spectrum / Waveform, Basic / Path Text); M13.29 added the particle effects (CC Particle World / Systems II, Particle Playground, CC Ball Action, CC Pixel Polly, CC Scatterize, Curl Noise) and removed the fallbacks of Shatter's wireframe views, Foam's extras, Timewarp's Matte Layer, strong Warp Fisheye / Twist bends and custom `.ocio` configs; M13.23 added the 3D Channel and Immersive Video families, Apply Color LUT, the OCIO effects, Color Profile Converter and the simulations' render passes (Card Wipe included); M13.22 added the CC light family, the CC transitions, Block Dissolve, Radial Shadow, CC Bender / Blobbylize / Cylinder / Sphere / Spotlight / Environment, 3D Glasses, Numbers, Timecode and the time effects joined the 166 of M13.13; Fractal and the analysis / tool effects still render on the CPU) and the missing controls listed as partial in [effects.md](effects.md) (every After Effects effect exists since M9.11, M12.5 and M12.6; parameter names, order, twirl-downs, popups, units and defaults were aligned in M9.12) |
 | Interface | 75% | 5.0 | more Learn tutorials and pixel-level fidelity of dialogs (View ▸ New Viewer landed in M13.32; an automation id on every control of Composition and Solid Settings, Group / Ungroup Shapes in the Layer menu, Window ▸ Learn, the flowchart shortcuts and Reveal in Explorer landed in M3.10 and M3.13; the Home ▸ Templates gallery (eight original built-in templates, user templates from File ▸ Save as Template…) and View ▸ Simulate Output ▸ My Custom RGB… landed in M13.25; Timeline layer reordering by drag, a non-snapping viewer pan, a working rename field and twirl arrows, and the full set of property reveal shortcuts — double presses, Alt+Shift keyframes, Ctrl+` — landed in M13.17–M13.20; the Home ▸ Learn tab with interactive tutorials and a UI fidelity pass landed in M13.5 UI completion; visual editors for Lumetri RGB / hue-saturation curves, Colorama's output cycle wheel, Glow's colour map and Reshape's correspondence points (viewer handles), a scrolling Preview panel and AE-style Composition / Timeline tabs (close, label swatch, viewer lock) landed in M13.10; Timeline outline and Project panel columns scroll horizontally, the Layer Style dialog, ROI resize handles, Pan Behind snapping and 3D Reference Axes landed in M13.5; native macOS menu bar, Timeline columns/search/reveal-add, Home screen with recent projects and all AE workspaces landed; viewer rulers/snapping/channels/snapshots landed in M0.13) |
 | Project | ≈ 68% | 5.5 | OCIO displays beyond the built-in tone map; relative footage paths and relinking when a project moves (unsaved-changes prompts, a modified mark that follows undo and project files that name their version and always reopen landed in M3.9 and M3.14; auto-save and crash recovery in M3.7; Color Engine with OCIO/ACES working spaces, HDR compand/tone mapping, Rec. 2100 PQ/HLG output, Feet + Frames, display colour management, Simulate Output and the locked viewer landed in M7.7; proxies and Interpret Footage fields / pixel aspect / alpha guess landed: PRJ-8, PRJ-3) |
-| Masks & roto | 74% | 5.0 | Roto Brush's learned (3.0) segmentation model (variable-width mask feather points with the Mask Feather tool landed in M13.5; mask tracking and Mask Interpolation landed in M6.6; Roto Brush & Refine Edge with graph-cut segmentation, flow propagation, edge matting, decontamination and Freeze in M6.7) |
+| Masks & roto | 74% | 5.0 | (audit estimates; Roto Brush 2.0 / 3.0's trained model, MobileSAM in the swappable `segment` module, has since landed in M13.35; variable-width mask feather points with the Mask Feather tool landed in M13.5; mask tracking and Mask Interpolation landed in M6.6; Roto Brush & Refine Edge with graph-cut segmentation, flow propagation, edge matting, decontamination and Freeze in M6.7) |
 | Preview | 77% | 2.8 | GPU effects for the audio-driven effects and the stepped particle systems; content-keyed RAM preview frames (an edit drops every comp's), audio scrubbing, more snapshot slots (RAM preview keys with the render options, least-recently-shown eviction, Auto resolution while playing, Cache Before Playback that fits, an achieved-fps readout, Cache Frames When Idle and purges that clear what they name landed in M4.5–M4.8; 3D channel, VR, OCIO, Card Wipe and the simulations' render passes run on the GPU since M13.23; Advanced 3D layers with blend modes / track mattes / Preserve Transparency and environment backgrounds composite on the GPU since M13.22; pooled GPU textures and fused quantisation since M13.13: Lower Third GPU warm 21 → 4 ms/frame, and Auto now picks the CPU or the GPU per comp from measured frame times; Advanced 3D runs — raster, motion blur, iris depth of field, compositing — and wireframes run on the GPU since M13.11: CPU warm 3394 → GPU warm 290 ms/frame at 1920×1080 (11.7×; Half 968 → 85 ms), GPU ≠ CPU on 0.005 % of pixels, on an M4 Pro under load; Classic 3D bokeh depth of field — iris shapes, highlights, fringe, progressive blur on tilted planes — runs in WGSL since M13.6: 3D Showcase GPU warm 205 → 54 ms/frame at full size on an M4 Pro; the Preview panel's five shortcuts with their own Include / Loop / Cache Before Playback / Range / Play From / Frame Rate / Skip / Resolution / Full Screen / stop options and `playback.settings.get/set` landed in M13.8; Classic 3D runs and adjustment layers composite on the GPU since M12.7; persistent disk cache with the blue cache bar landed; region of interest, snapshots, exposure and Fast Previews landed in M0.13) |
 | Tracking | ≈ 96% | 0.3 | face tracking is a classical (skin model + feature components + shape model) fitter, not a learned detector: profile views and occluded faces are weak; Rolling Shutter Ripple is approximated by Subspace Warp's mesh density (face tracking (Outline Only / Detailed Features with Face Track Points and Extract & Copy Face Measurements), Subspace Warp's content-preserving mesh warp on subspace-smoothed trajectories, and radial lens distortion (k1, k2) in the camera bundle adjustment with Undistort Footage landed in M13.3; Rolling Shutter Repair in M9.11; point tracker, mask tracking, Warp Stabilizer and the 3D Camera Tracker in M6.x / M12.5 / M12.6) |
 | Paint | 0% | 4.0 | Brush, Clone Stamp, Eraser |
@@ -433,6 +432,29 @@ They are mapped through the layer's timing (start, stretch, time remapping, Resp
 stretch) and shown within its In–Out range. Hovering names them ("beat (marker in Pre)"), and a
 double-click opens the nested comp at the marker. Agents read the same list with
 `markers.nested {layer}`.
+
+Since (M13.35): Roto Brush can use a trained segmentation model; MSK-4 is done.
+- The model sits behind a swappable interface: `effectcraft_segment::MaskModel` plus a registry
+  where every entry must have an open-source licence compatible with ours, a source URL, a size
+  and a SHA-256.
+- The first model is **MobileSAM** (Apache-2.0: a TinyViT-5M encoder with Segment Anything's
+  decoder), running in plain Rust (rayon and ndarray's safe GEMM, no ML framework). It reads the
+  official `mobile_sam.pt` checkpoint directly and checks it against a pinned SHA-256.
+- Roto Brush **Version 2.0 / 3.0** uses the model chosen in **Settings ▸ Roto Brush**; Version
+  1.0 and an uninstalled model use the classic graph cut.
+- On the base frame, points along the strokes prompt it. When propagating, the flow-warped matte
+  prompts it (its box, points deep inside it and the matte itself). The model's probability map
+  becomes a strong prior for the same graph cut, so strokes stay hard constraints and edges still
+  snap to colour. A model whose mask disagrees with the flow (IoU under 0.5) is ignored for that
+  frame.
+- Weights are never bundled. Download (verified; uses the system `curl`) or Install from File
+  puts them in the settings' `models` folder, and they load in the background.
+- On the moving-disc test sequence it scores IoU 0.989 on the base frame and at worst 0.980 over
+  20 propagated frames (classic: 0.973). The encoder takes about 0.7 s a frame on a 32-thread
+  CPU, 1.3 s on 4 threads; its embedding is cached, so new strokes on the same frame only rerun
+  the decoder (about 0.1 s).
+- Agents use `roto.models`, `roto.model.select`, `roto.model.download`, `roto.model.install` and
+  `roto.model.remove`. The browser build uses the classic engine for now.
 
 Since (M13.32): View ▸ New Viewer (Alt+Shift+N, also in the Composition panel menu) opens
 another Composition viewer as its own panel, as in After Effects. The viewer in use is locked,

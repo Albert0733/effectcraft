@@ -19,7 +19,7 @@ once.
 | M10 | Export: render queue, H.264, ProRes, image sequences, GIF, audio | Done |
 | M11 | Animation tools: audio playback, meters and waveforms, Lottie import and export, presets, Motion Sketch, Wiggler, Smoother | Done |
 | M12 | Performance: layer cache, parallel and GPU compositing, disk cache, motion tracking (done); GPU versions of the remaining CPU-only effects | Mostly done |
-| M13 | Puppet tools, paint, Roto Brush, motion tracking, a plug-in API, Timeline depth | Done (Roto Brush and face tracking use classical models; learned models are still to come) |
+| M13 | Puppet tools, paint, Roto Brush, motion tracking, a plug-in API, Timeline depth | Done (Roto Brush 2.0 / 3.0 can use a trained model: MobileSAM, open source, downloaded on demand, in a swappable model module; face tracking uses a classical model, a learned one is still to come) |
 | M15 | The web app (WebAssembly, WebGPU) | Done: browser storage, Web Audio, renders and analyses in Web Workers, viewer frames and GPU effects in frame workers with their own WebGPU devices, the disk cache in the Origin Private File System, a storage manager, offline install ([docs/web.md](docs/web.md)) |
 | M14 | Built for agents: MCP server, command-line tool, control channel; Settings, keyboard shortcut editor, auto-save and crash recovery ([docs/preferences.md](docs/preferences.md)) | Done |
 
@@ -28,11 +28,11 @@ once.
 Measured feature by feature in [docs/parity.md](docs/parity.md) (4 October 2026):
 
 - **≈ 99% of After Effects' features, weighted by importance**, counting partial features as half
-  done (≈ 99.8% with per-feature fractions): 89 of 92 features done, 3 partial, none missing; every
+  done (≈ 99.9% with per-feature fractions): 90 of 92 features done, 2 partial, none missing; every
   essential (P0) feature done; all 306 effects implemented in full, 280 of them on the GPU.
 - **≈ 8.5 agent-hours of work remain**: about **2–3 hours of wall-clock time** with five Claude
-  Opus 5.5 agents in parallel, ≈ 1 hour without learned models for Roto Brush and face tracking.
-- What is left: GPU kernels for the remaining visual effects, and learned-model quality for Roto
-  Brush and face tracking ([parity.md](docs/parity.md#highest-value-gaps-in-order)).
+  Opus 5.5 agents in parallel (estimated before Roto Brush's trained model landed in M13.35).
+- What is left: GPU kernels for the remaining visual effects, and a learned face tracker
+  ([parity.md](docs/parity.md#highest-value-gaps-in-order)).
 
 Come tell us what matters most to you on [Discord](https://discord.gg/artcraft).

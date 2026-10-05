@@ -636,6 +636,7 @@ impl Session {
     /// Frontends call this every frame: finishes jobs and (with `auto`) propagates edited
     /// instances in the background.
     pub fn poll_roto(&mut self, auto: bool) -> bool {
+        self.poll_roto_models();
         let changed = self.poll_roto_job();
         if auto && self.roto_job.is_none() && self.offloaded_roto().is_none() && self.state.roto.auto_propagate {
             while let Some((c, l, e)) = self.roto_pending.first().copied() {

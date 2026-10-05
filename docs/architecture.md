@@ -22,6 +22,7 @@ cpal or muda. Everything in L0 to L4, the egui UI and the web app also build for
 | L0 | `av1enc` | AV1 encoder from the AV1 bitstream specification: Main profile 8/10-bit 4:2:0, key + inter frames (quarter-pel motion), deblocking, for MP4 (`av01`) and WebM export |
 | L1 | `raster` | Premultiplied float images, sampling, affine and projective warps, blurs, compositing (parallel with rayon) |
 | L1 | `keyframe` | Animated values, keyframes with temporal ease and spatial Bezier, roving, hold, velocity |
+| L1 | `segment` | Swappable trained segmentation models for Roto Brush: the `MaskModel` interface, a registry of open-licensed models (licence, URL, size, SHA-256), a PyTorch checkpoint reader, SHA-256, and MobileSAM (TinyViT + Segment Anything decoder) on rayon and ndarray's safe GEMM |
 | L1 | `psd` | Photoshop PSD/PSB reader (layers, groups, masks, blend modes, text, layer effects, adjustment layers; 8/16/32-bit; RGB/CMYK/Gray/Lab) and a minimal writer, from Adobe's published format specification |
 | L1 | `path` | Bezier paths, path operators (trim, offset, round corners, zig zag, twist, merge…), stroking, coverage masks |
 | L2 | `project` | The document: items, compositions, layers, the property tree, render queue model, `.ecproj` serde |
@@ -392,7 +393,10 @@ parameter with the base frame and segmentation span. Each frame is segmented by 
 (Boykov–Jolly hard constraints, GrabCut colour mixtures, our own Boykov–Kolmogorov max-flow,
 coarse to fine) and propagated to the next frame by warping the matte with block optical flow and
 re-cutting in a Search Radius band; frames with correction strokes are re-cut with the warped
-matte as a soft prior. Refine Edge bands get guided-filter + closed-form matting and
+matte as a soft prior. With Version 2.0 / 3.0 and a trained model chosen (`effectcraft_segment`,
+Settings ▸ Roto Brush), the model's foreground probability, prompted by the strokes or by the
+warped matte, becomes a strong prior for the same cut (falling back to the classic result when it
+disagrees with the flow); the model's id is part of the chain seed. Refine Edge bands get guided-filter + closed-form matting and
 foreground-colour decontamination. Segmentations are derived data: each frame's chain key (Input
 Key, settings, strokes from the base frame out) indexes a process-wide cache that renders fill on
 demand (`self_at`) and `roto.propagate` fills in the background; `Session::edit` keeps the Input

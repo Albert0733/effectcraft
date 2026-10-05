@@ -295,6 +295,21 @@ state, job progress and, for a frame, the matte's area, centroid, RLE matte and 
 reference. Matte settings are ordinary properties (`effects/#1/rotoBrushMatte/searchRadius`,
 `effects/#1/refineEdgeMatte/decontaminateEdgeColors`, …).
 
+Trained model (Roto Brush 2.0 / 3.0):
+- `roto.models` lists the built-in engine and every registered model, with its licence, size,
+  URL, SHA-256 and whether it is installed, selected and active.
+- `roto.model.download {id}` fetches and verifies the official weights in the background;
+  `roto.model.install {path, id?}` installs a file you already have.
+- `roto.model.select {id: classical|mobilesam}` chooses which one Roto Brush uses.
+- `roto.model.remove {id}` deletes the installed weights.
+- The `version` property (`effects/#1/version`: 0 = 1.0, 1 = 2.0, 2 = 3.0) picks between the
+  classic engine (1.0) and the chosen model (2.0, 3.0).
+
+```sh
+effectcraft-cli run clip.ecproj roto.model.install '{"path":"mobile_sam.pt"}' roto.model.select '{"id":"mobilesam"}' \
+  roto.stroke '{"layer":"#1","points":[[300,200],[360,230]],"radius":10}' roto.propagate '{"layer":"#1","wait":true}' --save
+```
+
 ```sh
 effectcraft-cli run clip.ecproj roto.stroke '{"layer":"#1","points":[[300,200],[360,230]],"radius":10}' \
   roto.stroke '{"layer":"#1","kind":"bg","points":[[40,40],[600,40]],"radius":12}' \
