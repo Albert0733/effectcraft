@@ -75,11 +75,13 @@ impl Session {
         self.footage.set_cache_budget(b.media);
     }
 
-    /// Re-read the system's memory (desktop frontends call this every few seconds) and re-apply
-    /// the cache budgets when the reading changes them. Returns the effective budgets.
+    /// Take the latest reading of the system's memory and start the next one in the background
+    /// (desktop frontends call this every few seconds; it never waits for the system), then
+    /// re-apply the cache budgets when the reading changes them. Returns the effective budgets.
     pub fn memory_tick(&mut self) -> crate::prefs::CacheBudgets {
         let before = self.prefs.cache_budgets(self.sys_memory);
-        self.sys_memory = crate::sysinfo::memory().or(self.sys_memory);
+        self.sys_memory = self.memory_watch.latest().or(self.sys_memory);
+        self.memory_watch.poll();
         let after = self.prefs.cache_budgets(self.sys_memory);
         if after != before {
             self.apply_cache_budgets();

@@ -464,3 +464,25 @@ fn open_recent_increment_and_revert() {
     assert_eq!(autosave::increment_path("/x/v1.ecproj", |p| p.ends_with("v1 2.ecproj")), "/x/v1 3.ecproj");
     let _ = std::fs::remove_dir_all(d);
 }
+
+#[test]
+fn memory_tick_never_waits_for_the_system() {
+    let mut s = Session::default();
+    let t0 = std::time::Instant::now();
+    s.memory_tick();
+    s.memory_tick();
+    // Reading the system's memory starts PowerShell on Windows (about a second): the UI thread
+    // only takes the last reading.
+    assert!(t0.elapsed() < std::time::Duration::from_millis(200), "{:?}", t0.elapsed());
+    if crate::sysinfo::memory().is_some() {
+        let mut got = None;
+        for _ in 0..200 {
+            got = s.memory_watch.latest();
+            if got.is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(got.is_some_and(|m| m.total > 0), "the reading arrives in the background");
+    }
+}

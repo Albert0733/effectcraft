@@ -373,6 +373,8 @@ pub struct Session {
     /// The last physical-memory reading (Settings ▸ Memory & CPU budgets); `None` = unknown
     /// (headless sessions don't query it, see [`Session::memory_tick`]).
     pub sys_memory: Option<sysinfo::SysMemory>,
+    /// Reads the system's memory in the background for [`Session::memory_tick`].
+    pub memory_watch: sysinfo::MemoryWatch,
     /// Switches Affect Nested Comps as last applied (a change empties the layer cache).
     pub applied_nested_switches: Option<bool>,
     /// Runs renders and analyses off the UI thread where there are no threads (the web app's
@@ -465,6 +467,7 @@ impl Default for Session {
             plugin_loader: None,
             script_ui: scriptui::ScriptUi::default(),
             sys_memory: None,
+            memory_watch: Default::default(),
             applied_nested_switches: None,
             offload: None,
             offloaded: vec![],
