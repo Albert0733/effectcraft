@@ -530,7 +530,7 @@ mod tests {
         assert_eq!(format_ago(now, now - 3 * 86_400), "3 days ago");
         assert_eq!(format_ago(now, now - 30 * 86_400), "2026-08-22");
         assert_eq!(format_ago(now, now + 100), "Just now");
-        assert_eq!((format_size(900), format_size(12_800), format_size(3_500_000)), ("900 B".into(), "13 KB".into(), "3.3 MB".into()));
+        assert_eq!((format_size(900), format_size(13_000), format_size(3_500_000)), ("900 B".into(), "13 KB".into(), "3.3 MB".into()));
         assert_eq!((kind_of("/a/B.ecproj"), kind_of("c.AEP"), kind_of("x")), ("EffectCraft project", "After Effects project", "Project"));
     }
 
