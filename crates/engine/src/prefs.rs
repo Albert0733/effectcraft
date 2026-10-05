@@ -218,6 +218,15 @@ page!(
     }
 );
 
+page!(
+    /// Settings ▸ Face Tracking.
+    FacePrefs {
+        /// The model Track Mask ▸ Face Tracking uses: `classical` (built in) or a model id from
+        /// `effectcraft_segment::MODELS` (once installed).
+        model: String = "classical".into(),
+    }
+);
+
 page!(Scripting {
     allow_scripts_write_files: bool = false,
     warn_executing_files: bool = true,
@@ -282,6 +291,7 @@ pub struct Prefs {
     pub three_d: ThreeD,
     pub scripting: Scripting,
     pub roto: RotoPrefs,
+    pub face: FacePrefs,
     /// File ▸ Open Recent, newest first.
     pub recent_projects: Vec<String>,
     /// File ▸ Import Recent Footage, newest first.
@@ -323,6 +333,7 @@ impl Default for Prefs {
             three_d: ThreeD::default(),
             scripting: Scripting::default(),
             roto: RotoPrefs::default(),
+            face: FacePrefs::default(),
             recent_projects: vec![],
             recent_footage: vec![],
             recent_presets: vec![],
@@ -721,6 +732,7 @@ pub fn section_key(page: &str) -> Option<&'static str> {
         "3d" | "threeD" => "threeD",
         "scripting" => "scripting",
         "roto" => "roto",
+        "face" => "face",
         _ => return None,
     })
 }
@@ -748,6 +760,7 @@ pub fn page_id(name: &str) -> Option<&'static str> {
         "3d" | "threed" => "3d",
         "scripting" | "scriptingexpressions" => "scripting",
         "roto" | "rotobrush" | "models" => "roto",
+        "face" | "facetracking" => "face",
         _ => return None,
     };
     Some(id)
@@ -835,8 +848,9 @@ pub enum Item {
     /// The browser's storage manager (web app only, `storage.*`): usage and quota, persistent
     /// storage, Clear buttons. Not shown where there is no browser storage.
     BrowserStorage,
-    /// Roto Brush's segmentation models (`roto.models`): licence, size, install, choose.
-    RotoModels,
+    /// A task's trained models (`roto.models`, `face.models`): authors, licence, size, install,
+    /// choose.
+    Models(effectcraft_segment::Task),
 }
 
 /// One page of the Settings dialog.
@@ -1119,7 +1133,18 @@ pub fn pages() -> Vec<Page> {
                 Note(
                     "Roto Brush 2.0 and 3.0 use the model chosen here (Version 1.0 always uses the classic engine). Models are open source, downloaded only when you ask, and checked against their published SHA-256.",
                 ),
-                RotoModels,
+                Models(effectcraft_segment::Task::Mask),
+            ],
+        },
+        Page {
+            id: "face",
+            title: "Face Tracking",
+            items: vec![
+                Section("Face Model"),
+                Note(
+                    "Face tracking in the Tracker panel (Outline Only and Detailed Features) uses the model chosen here. Models are open source, downloaded only when you ask, and checked against their published SHA-256.",
+                ),
+                Models(effectcraft_segment::Task::Face),
             ],
         },
     ]
@@ -1174,7 +1199,10 @@ pub fn pages_json() -> Value {
                     Item::AudioDevices { key } => json!({"type": "device", "key": key, "label": "Default Output"}),
                     Item::Note(t) => json!({"note": t}),
                     Item::BrowserStorage => json!({"browserStorage": "storage.info / storage.persist / storage.clear (web app)"}),
-                    Item::RotoModels => json!({"rotoModels": "roto.models / roto.model.select / roto.model.download / roto.model.install / roto.model.remove", "key": "roto.model"}),
+                    Item::Models(task) => {
+                        let p = if *task == effectcraft_segment::Task::Face { "face" } else { "roto" };
+                        json!({"models": format!("{p}.models / {p}.model.select / {p}.model.download / {p}.model.install / {p}.model.remove"), "key": format!("{p}.model")})
+                    }
                 })
                 .collect();
             json!({"id": p.id, "title": p.title, "items": items})

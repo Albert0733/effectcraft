@@ -101,22 +101,28 @@ impl Conv {
 
     pub fn forward(&self, x: &[f32], h: usize, w: usize) -> (Vec<f32>, usize, usize) {
         let (oh, ow) = (self.out_size(h), self.out_size(w));
+        (self.forward_sized(x, h, w, oh, ow, [self.pad; 2]), oh, ow)
+    }
+
+    /// An `oh×ow` output with `pad` (top, left) zero rows and columns before the input; what
+    /// falls past the input's far edges is zero too (so asymmetric "same" padding works).
+    pub fn forward_sized(&self, x: &[f32], h: usize, w: usize, oh: usize, ow: usize, pad: [usize; 2]) -> Vec<f32> {
         let kk = self.ks * self.ks * self.inp;
         let mut y: Vec<f32> = (0..oh * ow).flat_map(|_| self.b.iter().copied()).collect();
-        if x.len() < h * w * self.inp {
-            return (y, oh, ow);
+        if x.len() < h * w * self.inp || self.wt.len() < kk * self.out {
+            return y;
         }
         y.par_chunks_mut(ow * self.out).enumerate().for_each(|(oy, row)| {
             // This output row's patches.
             let mut patch = vec![0.0f32; ow * kk];
             for ox in 0..ow {
                 for ky in 0..self.ks {
-                    let iy = (oy * self.stride + ky) as isize - self.pad as isize;
+                    let iy = (oy * self.stride + ky) as isize - pad[0] as isize;
                     if iy < 0 || iy >= h as isize {
                         continue;
                     }
                     for kx in 0..self.ks {
-                        let ix = (ox * self.stride + kx) as isize - self.pad as isize;
+                        let ix = (ox * self.stride + kx) as isize - pad[1] as isize;
                         if ix < 0 || ix >= w as isize {
                             continue;
                         }
@@ -134,17 +140,18 @@ impl Conv {
                 general_mat_mul(1.0, &av, &bv, 1.0, &mut cv);
             }
         });
-        (y, oh, ow)
+        y
     }
 }
 
-/// A depthwise 3×3 convolution (padding 1, stride 1 or 2) on `h×w×c`.
+/// A depthwise `ks×ks` convolution (one filter per channel) on `h×w×c`.
 #[derive(Clone, Debug, Default)]
 pub struct Depthwise {
     /// `[tap × c]`.
     pub w: Vec<f32>,
     pub b: Vec<f32>,
     pub c: usize,
+    pub ks: usize,
     pub stride: usize,
 }
 
@@ -160,32 +167,38 @@ impl Depthwise {
                 wt[t * c + ch] = w[ch * 9 + t];
             }
         }
-        Some(Depthwise { w: wt, b: b.map_or_else(|| vec![0.0; c], <[f32]>::to_vec), c, stride })
+        Some(Depthwise { w: wt, b: b.map_or_else(|| vec![0.0; c], <[f32]>::to_vec), c, ks: 3, stride })
     }
 
+    /// 3×3 with padding 1.
     pub fn forward(&self, x: &[f32], h: usize, w: usize) -> (Vec<f32>, usize, usize) {
-        let c = self.c;
         let (oh, ow) = ((h + 2 - 3) / self.stride + 1, (w + 2 - 3) / self.stride + 1);
+        (self.forward_sized(x, h, w, oh, ow, [1, 1]), oh, ow)
+    }
+
+    /// An `oh×ow` output with `pad` (top, left) before the input, as [`Conv::forward_sized`].
+    pub fn forward_sized(&self, x: &[f32], h: usize, w: usize, oh: usize, ow: usize, pad: [usize; 2]) -> Vec<f32> {
+        let (c, ks) = (self.c, self.ks);
         let mut y = vec![0.0f32; oh * ow * c];
-        if x.len() < h * w * c {
-            return (y, oh, ow);
+        if x.len() < h * w * c || self.w.len() < ks * ks * c || self.b.len() < c {
+            return y;
         }
         y.par_chunks_mut(ow * c).enumerate().for_each(|(oy, row)| {
             for ox in 0..ow {
                 let out = &mut row[ox * c..(ox + 1) * c];
                 out.copy_from_slice(&self.b);
-                for ky in 0..3 {
-                    let iy = (oy * self.stride + ky) as isize - 1;
+                for ky in 0..ks {
+                    let iy = (oy * self.stride + ky) as isize - pad[0] as isize;
                     if iy < 0 || iy >= h as isize {
                         continue;
                     }
-                    for kx in 0..3 {
-                        let ix = (ox * self.stride + kx) as isize - 1;
+                    for kx in 0..ks {
+                        let ix = (ox * self.stride + kx) as isize - pad[1] as isize;
                         if ix < 0 || ix >= w as isize {
                             continue;
                         }
                         let src = &x[(iy as usize * w + ix as usize) * c..][..c];
-                        let tap = &self.w[(ky * 3 + kx) * c..][..c];
+                        let tap = &self.w[(ky * ks + kx) * c..][..c];
                         for ((o, s), k) in out.iter_mut().zip(src).zip(tap) {
                             *o += s * k;
                         }
@@ -193,7 +206,7 @@ impl Depthwise {
                 }
             }
         });
-        (y, oh, ow)
+        y
     }
 }
 

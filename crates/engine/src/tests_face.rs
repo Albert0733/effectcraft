@@ -104,3 +104,37 @@ fn face_tracking_keys_outline_points_and_measurements() {
     let layer = s.active_comp().unwrap().layer(clip).unwrap();
     assert!(layer.props.find_group(m3).unwrap().get("path").unwrap().keys.is_empty());
 }
+
+/// With MediaPipe Face Landmarker installed (`EFFECTCRAFT_FACE_LANDMARKER` = path to
+/// `face_landmarker.task`, else skipped): Track Mask ▸ Face Tracking uses it, and the pupils and
+/// eye corners it keys sit on the synthetic face's.
+#[test]
+fn face_tracking_uses_the_chosen_model() {
+    let Ok(model) = std::env::var("EFFECTCRAFT_FACE_LANDMARKER") else { return };
+    let (mut s, clip, _) = setup(|f| render_synthetic(W, H, &face(f), 5));
+    let dir = std::env::temp_dir().join(format!("ec-face-model-{}", std::process::id()));
+    s.models_dir = Some(dir.clone());
+    s.execute_checked("face.model.install", json!({"path": model})).unwrap();
+    // `wait`: loaded before the track starts (as scripts need).
+    let r = s.execute_checked("face.model.select", json!({"id": "mediapipe-face", "wait": true})).unwrap();
+    assert_eq!(r["active"], "mediapipe-face");
+    let c = face(0).center;
+    let r = s.execute("mask.new", json!({"layer": clip.0, "vertices": ShapePath::rect(c, 120.0, 160.0).vertices, "closed": true})).unwrap();
+    let mask = r["mask"].as_u64().unwrap();
+    s.execute("time.set", json!({"time": 0})).unwrap();
+    let r = s.execute_checked("track.mask", json!({"layer": clip.0, "mask": mask, "method": "faceDetailed", "direction": "forward", "wait": true})).unwrap();
+    assert_eq!((r["frames"].as_u64(), r["faceModel"].as_str()), (Some(24), Some("mediapipe-face")), "{r}");
+    let layer = s.active_comp().unwrap().layer(clip).unwrap().clone();
+    let pts = layer.effects().unwrap().groups().find(|g| g.match_id == effectcraft_effects::face_track::POINTS_ID).expect("Face Track Points");
+    let mut worst: f64 = 0.0;
+    for f in [0, 8, 16, 24] {
+        let truth = synth_landmarks(&face(f));
+        for id in ["leftPupil", "rightPupil", "leftEyeOuter", "rightEyeOuter"] {
+            let i = effectcraft_track::face::landmark(id).unwrap();
+            let KV::Vec2(v) = pts.get(id).unwrap().value_at(frame_time(f)) else { panic!() };
+            worst = worst.max((v[0] - truth[i][0]).hypot(v[1] - truth[i][1]) / face(f).height);
+        }
+    }
+    assert!(worst < 0.05, "worst eye error {worst} face heights");
+    let _ = std::fs::remove_dir_all(dir);
+}

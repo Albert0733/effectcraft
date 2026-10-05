@@ -206,9 +206,9 @@ what breaks. It isn't yet a replacement for After Effects on client work. In par
   After Effects automatically, so please report differences.
 - **macOS is the most tested platform.** Linux and Windows users have hit basic interaction
   bugs, which we're fixing first.
-- **Face tracking uses classical methods.** Roto Brush can use a trained model (MobileSAM, an
-  optional 40 MB download in Settings ▸ Roto Brush); it is new and not yet compared with After
-  Effects.
+- **The trained models are new.** Roto Brush can use MobileSAM (an optional 40 MB download in
+  Settings ▸ Roto Brush) and face tracking can use Google's MediaPipe Face Landmarker (an optional
+  3.8 MB download in Settings ▸ Face Tracking). Neither is compared with After Effects yet.
 
 The [ROADMAP](ROADMAP.md) has the plan and [docs/gaps.md](docs/gaps.md) the full, honest
 assessment. The web build ([docs/web.md](docs/web.md)) runs the full app in the browser.

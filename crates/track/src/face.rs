@@ -23,12 +23,19 @@
 //!    ([`synth_shape`]: eye and mouth openness, mouth width, brow raise, head yaw and pitch) by
 //!    principal component analysis — no external data or weights.
 //!
+//! With a trained model (Settings ▸ Face Tracking: an `effectcraft_segment::face::FaceModel` such
+//! as MediaPipe Face Landmarker), the model finds the face in the mask and follows it; its
+//! outline and named points replace steps 1–4, and chin and jaw come from its outline the same
+//! way, so measurements mean the same with either engine ([`FaceTracker::new_with`]). When the
+//! model finds no face in the mask, the classical pipeline runs.
+//!
 //! Coordinates are layer pixels; the face frame is centred on the face ellipse, with the
 //! half-height as unit, `u` right and `v` down (image-left is "Left").
 
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use effectcraft_raster::Image;
+use effectcraft_segment::face::{Face, FaceModel, Topology};
 
 use crate::Frame;
 use crate::camtrack::linalg::{cholesky_solve, sym_eigen};
@@ -435,7 +442,7 @@ pub fn fit_shape(detected: &[[f64; 2]; N], w: &[f64; N], init: [f64; 4]) -> ([[f
 // ---------------------------------------------------------------- tracking
 
 /// The skin colour model (luma, r and g chromaticity: median and spread).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Skin {
     med: [f32; 3],
     tol: [f32; 3],
@@ -475,6 +482,69 @@ pub struct FaceTracker {
     prev: FaceFit,
     /// Previous landmarks in the face frame (the expected feature positions).
     expect: [[f64; 2]; N],
+    /// The trained model following the face, if one does.
+    learned: Option<Learned>,
+}
+
+/// A trained model and where it last saw the face.
+#[derive(Clone)]
+struct Learned {
+    model: Arc<dyn FaceModel>,
+    face: Face,
+}
+
+impl std::fmt::Debug for Learned {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Learned").field("model", &self.model.info().id).finish_non_exhaustive()
+    }
+}
+
+/// A frame as trained models see it: straight RGB, size.
+fn model_input(frame: &Frame) -> (Vec<[f32; 3]>, usize, usize) {
+    (crate::roto::rgb_of(frame.img), frame.img.width as usize, frame.img.height as usize)
+}
+
+/// Where the outline meets the direction of canonical face-frame point `q` from `center`.
+fn outline_point(outline: &[[f64; 2]], center: [f64; 2], roll: f64, q: [f64; 2]) -> [f64; 2] {
+    let dir = to_layer([0.0; 2], 1.0, roll, q);
+    let rad = ray_radius(outline, center, dir[1].atan2(dir[0]));
+    let len = dir[0].hypot(dir[1]).max(1e-12);
+    [center[0] + dir[0] / len * rad, center[1] + dir[1] / len * rad]
+}
+
+/// A trained model's face as a fit: its outline and named points (all measured); chin and jaw
+/// where the outline meets their canonical directions, as in the classical fit.
+fn fit_from_face(face: &Face, topo: &Topology, offset: [f64; 2]) -> Option<FaceFit> {
+    let pt = |i: usize| face.points.get(i).map(|p| [p[0] as f64 - offset[0], p[1] as f64 - offset[1]]);
+    let outline: Vec<[f64; 2]> = topo.outline.iter().map(|&i| pt(i)).collect::<Option<_>>()?;
+    let (center, b, _, ellipse_roll) = polygon_ellipse(&outline)?;
+    if !b.is_finite() || b <= 1.0 {
+        return None;
+    }
+    let mut detected = [false; N];
+    let mut named = [None; N];
+    for (id, i) in topo.landmarks {
+        if let (Some(k), Some(p)) = (landmark(id), pt(*i)) {
+            named[k] = Some(p);
+        }
+    }
+    // Roll: the line between the outer eye corners; else the outline's axis.
+    let roll = match (named[EYE[0][1]], named[EYE[1][1]]) {
+        (Some(l), Some(r)) => (r[1] - l[1]).atan2(r[0] - l[0]).to_degrees(),
+        _ => ellipse_roll,
+    };
+    let mut landmarks = LANDMARKS.map(|l| to_layer(center, b, roll, l.2));
+    for k in 0..N {
+        if let Some(p) = named[k] {
+            landmarks[k] = p;
+            detected[k] = true;
+        }
+    }
+    for k in [CHIN, JAW[0], JAW[1]] {
+        landmarks[k] = outline_point(&outline, center, roll, LANDMARKS[k].2);
+        detected[k] = true;
+    }
+    Some(FaceFit { landmarks, detected, outline, center, height: b, roll })
 }
 
 /// A pixel window of a frame in layer coordinates.
@@ -622,7 +692,7 @@ impl FaceTracker {
             height: hh.max(hw / ASPECT),
             roll: 0.0,
         };
-        let mut t = FaceTracker { skin, prev: guess, expect: canon };
+        let mut t = FaceTracker { skin, prev: guess, expect: canon, learned: None };
         let fit = t.fit(frame)?;
         // A face shows at least two of: left eye, right eye, mouth.
         let found = [EYE[0][4], EYE[1][4], MOUTH[0]].iter().filter(|i| fit.detected[**i]).count();
@@ -631,6 +701,29 @@ impl FaceTracker {
         }
         t.accept(&fit);
         Some((t, fit))
+    }
+
+    /// [`FaceTracker::new`] with a trained model, if any: the model finds the face in `region`
+    /// and follows it. Without a model, or when it finds no face there, the classical tracker.
+    pub fn new_with(frame: &Frame, region: [f64; 4], model: Option<Arc<dyn FaceModel>>) -> Option<(FaceTracker, FaceFit)> {
+        if let Some(model) = model {
+            let (rgb, w, h) = model_input(frame);
+            let (ox, oy) = (frame.offset[0], frame.offset[1]);
+            let r = [region[0] + ox, region[1] + oy, region[2] + ox, region[3] + oy].map(|v| v as f32);
+            if let Ok(Some(face)) = model.find(&rgb, w, h, r)
+                && let Some(fit) = fit_from_face(&face, model.topology(), frame.offset)
+            {
+                let mut t = FaceTracker { skin: Skin::default(), prev: fit.clone(), expect: LANDMARKS.map(|l| l.2), learned: Some(Learned { model, face }) };
+                t.accept(&fit);
+                return Some((t, fit));
+            }
+        }
+        Self::new(frame, region)
+    }
+
+    /// The trained model following the face (`None`: the classical tracker).
+    pub fn model(&self) -> Option<&'static effectcraft_segment::ModelInfo> {
+        self.learned.as_ref().map(|l| l.model.info())
     }
 
     /// The fit of the last tracked frame.
@@ -645,7 +738,16 @@ impl FaceTracker {
 
     /// Track into the next frame (either direction). `None` when the face is lost.
     pub fn step(&mut self, frame: &Frame) -> Option<FaceFit> {
-        let fit = self.fit(frame)?;
+        let fit = match &mut self.learned {
+            Some(l) => {
+                let (rgb, w, h) = model_input(frame);
+                let face = l.model.follow(&rgb, w, h, &l.face).ok().flatten()?;
+                let fit = fit_from_face(&face, l.model.topology(), frame.offset)?;
+                l.face = face;
+                fit
+            }
+            None => self.fit(frame)?,
+        };
         self.accept(&fit);
         Some(fit)
     }
@@ -894,13 +996,7 @@ impl FaceTracker {
         }
         // Chin and jaw from the outline, along their canonical directions.
         for i in [CHIN, JAW[0], JAW[1]] {
-            let q = LANDMARKS[i].2;
-            let dir = to_layer([0.0; 2], 1.0, roll, q);
-            let ang = dir[1].atan2(dir[0]);
-            let rad = ray_radius(&outline, center, ang);
-            let len = dir[0].hypot(dir[1]);
-            let p = [center[0] + dir[0] / len * rad, center[1] + dir[1] / len * rad];
-            det[i] = p;
+            det[i] = outline_point(&outline, center, roll, LANDMARKS[i].2);
             wgt[i] = 1.0;
         }
         // Shape model: fill the missing landmarks and replace inconsistent detections.
@@ -1033,6 +1129,19 @@ pub fn measure(l: &[[f64; 2]; N], reference_height: f64) -> [f64; 14] {
 mod tests {
     use super::*;
 
+    /// Pearson correlation.
+    fn corr(a: &[f64], b: &[f64]) -> f64 {
+        let n = a.len() as f64;
+        let (ma, mb) = (a.iter().sum::<f64>() / n, b.iter().sum::<f64>() / n);
+        let (mut sab, mut saa, mut sbb) = (0.0, 0.0, 0.0);
+        for (x, y) in a.iter().zip(b) {
+            sab += (x - ma) * (y - mb);
+            saa += (x - ma).powi(2);
+            sbb += (y - mb).powi(2);
+        }
+        sab / (saa * sbb).sqrt()
+    }
+
     fn frame_params(t: usize) -> FaceParams {
         let tf = t as f64;
         FaceParams {
@@ -1110,17 +1219,6 @@ mod tests {
         assert!(worst < 0.08, "worst landmark error {worst:.3}");
         assert!(outline_err < 0.04, "outline error {outline_err:.3}");
         // Measurements follow the generator: mouth openness and yaw correlate strongly.
-        let corr = |a: &[f64], b: &[f64]| {
-            let n = a.len() as f64;
-            let (ma, mb) = (a.iter().sum::<f64>() / n, b.iter().sum::<f64>() / n);
-            let (mut sab, mut saa, mut sbb) = (0.0, 0.0, 0.0);
-            for (x, y) in a.iter().zip(b) {
-                sab += (x - ma) * (y - mb);
-                saa += (x - ma).powi(2);
-                sbb += (y - mb).powi(2);
-            }
-            sab / (saa * sbb).sqrt()
-        };
         let mo: Vec<f64> = meas.iter().map(|m| m.1[10]).collect();
         let mt: Vec<f64> = meas.iter().map(|m| m.0.mouth_open).collect();
         assert!(corr(&mo, &mt) > 0.95, "mouth openness r = {}", corr(&mo, &mt));
@@ -1143,5 +1241,158 @@ mod tests {
         assert!((m[2] - 100.0).abs() < 1e-6);
         assert!((m[5] - 20.0).abs() < 1e-6);
         assert!((m[4] - 10.0).abs() < 0.5 && (m[3] + 5.0).abs() < 0.5, "{m:?}");
+    }
+
+    /// A stand-in trained model: it "sees" the synthetic clip's true landmarks (points
+    /// `0..23` in `LANDMARKS` order) and its true face ellipse (points `N..N + 36`), frame after
+    /// frame, until `lose_at`; `blind`, it finds no face.
+    struct Fake {
+        frame: std::sync::atomic::AtomicUsize,
+        lose_at: usize,
+        blind: bool,
+    }
+
+    fn fake(lose_at: usize, blind: bool) -> Arc<Fake> {
+        Arc::new(Fake { frame: 0.into(), lose_at, blind })
+    }
+
+    const OUTLINE_POINTS: usize = 36;
+    static FAKE_OUTLINE: [usize; OUTLINE_POINTS] = {
+        let mut a = [0; OUTLINE_POINTS];
+        let mut i = 0;
+        while i < OUTLINE_POINTS {
+            a[i] = N + i;
+            i += 1;
+        }
+        a
+    };
+    static FAKE_LANDMARKS: [(&str, usize); CHIN] = {
+        let mut a = [("", 0); CHIN];
+        let mut i = 0;
+        while i < CHIN {
+            a[i] = (LANDMARKS[i].0, i);
+            i += 1;
+        }
+        a
+    };
+    static FAKE_TOPOLOGY: Topology = Topology { outline: &FAKE_OUTLINE, landmarks: &FAKE_LANDMARKS };
+    static FAKE_INFO: effectcraft_segment::ModelInfo = effectcraft_segment::ModelInfo { id: "fake", name: "Fake", ..effectcraft_segment::FACE_LANDMARKER };
+
+    impl Fake {
+        fn face(t: usize) -> Face {
+            let p = frame_params(t);
+            let mut points: Vec<[f32; 2]> = synth_landmarks(&p).iter().map(|q| [q[0] as f32, q[1] as f32]).collect();
+            for k in 0..OUTLINE_POINTS {
+                let a = k as f64 / OUTLINE_POINTS as f64 * std::f64::consts::TAU;
+                let q = to_layer(p.center, p.height, p.roll, [ASPECT * a.sin(), -a.cos()]);
+                points.push([q[0] as f32, q[1] as f32]);
+            }
+            Face { points, score: 1.0 }
+        }
+    }
+
+    impl FaceModel for Fake {
+        fn info(&self) -> &'static effectcraft_segment::ModelInfo {
+            &FAKE_INFO
+        }
+        fn topology(&self) -> &'static Topology {
+            &FAKE_TOPOLOGY
+        }
+        fn find(&self, _: &[[f32; 3]], _: usize, _: usize, r: [f32; 4]) -> effectcraft_segment::Result<Option<Face>> {
+            let c = frame_params(0).center;
+            let inside = (r[0] as f64) < c[0] && c[0] < r[2] as f64 && (r[1] as f64) < c[1] && c[1] < r[3] as f64;
+            Ok((inside && !self.blind).then(|| Fake::face(0)))
+        }
+        fn follow(&self, _: &[[f32; 3]], _: usize, _: usize, _: &Face) -> effectcraft_segment::Result<Option<Face>> {
+            let t = self.frame.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            Ok((t < self.lose_at).then(|| Fake::face(t)))
+        }
+    }
+
+    #[test]
+    fn a_trained_model_drives_the_fit() {
+        let (w, h) = (320, 240);
+        let p0 = frame_params(0);
+        let img0 = render_synthetic(w, h, &p0, 3);
+        let frame0 = Frame { img: &img0, offset: [0.0; 2] };
+        let region = [p0.center[0] - 60.0, p0.center[1] - 75.0, p0.center[0] + 60.0, p0.center[1] + 75.0];
+        let (mut tr, fit0) = FaceTracker::new_with(&frame0, region, Some(fake(30, false))).expect("face found");
+        assert_eq!(tr.model().map(|m| m.id), Some("fake"));
+        let mut fits = vec![fit0];
+        for t in 1..30 {
+            let img = render_synthetic(w, h, &frame_params(t), 3);
+            fits.push(tr.step(&Frame { img: &img, offset: [0.0; 2] }).unwrap_or_else(|| panic!("lost at {t}")));
+        }
+        let mut meas = vec![];
+        for (t, f) in fits.iter().enumerate() {
+            let p = frame_params(t);
+            let truth = synth_landmarks(&p);
+            // The model's points are the landmarks; chin and jaw come from its outline.
+            for i in 0..N {
+                let e = (f.landmarks[i][0] - truth[i][0]).hypot(f.landmarks[i][1] - truth[i][1]) / p.height;
+                assert!(e < if i < CHIN { 1e-4 } else { 0.06 }, "frame {t} {}: {e}", LANDMARKS[i].0);
+            }
+            assert!(f.detected.iter().all(|d| *d) && f.outline.len() == OUTLINE_POINTS);
+            assert!((f.height - p.height).abs() < 0.03 * p.height, "frame {t}: height {} vs {}", f.height, p.height);
+            assert!((f.roll - p.roll).abs() < 3.0, "frame {t}: roll {} vs {}", f.roll, p.roll);
+            meas.push((p, measure(&f.landmarks, fits[0].height)));
+        }
+        let pick = |k: usize| meas.iter().map(|m| m.1[k]).collect::<Vec<_>>();
+        let mt: Vec<f64> = meas.iter().map(|m| m.0.mouth_open).collect();
+        assert!(corr(&pick(10), &mt) > 0.95);
+        let rt: Vec<f64> = meas.iter().map(|m| m.0.roll).collect();
+        assert!(corr(&pick(5), &rt) > 0.98);
+        // The model loses the face: so does the tracker.
+        let img = render_synthetic(w, h, &frame_params(30), 3);
+        assert!(tr.step(&Frame { img: &img, offset: [0.0; 2] }).is_none());
+        // A model that finds no face in the mask leaves the face to the classical tracker.
+        let (classic, _) = FaceTracker::new_with(&frame0, region, Some(fake(30, true))).expect("the classic tracker finds it");
+        assert!(classic.model().is_none());
+        // Layer offsets: frame pixels = layer + offset; fits stay in layer pixels.
+        let shifted = Frame { img: &img0, offset: [10.0, -4.0] };
+        let moved = [region[0] - 10.0, region[1] + 4.0, region[2] - 10.0, region[3] + 4.0];
+        let (_, f) = FaceTracker::new_with(&shifted, moved, Some(fake(9, false))).expect("found");
+        let truth = synth_landmarks(&p0);
+        assert!((f.landmarks[EYE[0][4]][0] - (truth[EYE[0][4]][0] - 10.0)).abs() < 1e-3);
+    }
+
+    /// With the official MediaPipe Face Landmarker (`EFFECTCRAFT_FACE_LANDMARKER` = path to
+    /// `face_landmarker.task`, else skipped): it recognises the synthetic face and follows it
+    /// through the moving, rolling clip. Brows and lips are drawn differently from where a real
+    /// face's mesh points sit, so only the points both agree on are held to ground truth: eyes and
+    /// chin tightly, the mouth corners (the cartoon mouth's ends, as it turns) more loosely.
+    #[test]
+    fn mediapipe_follows_the_synthetic_face() {
+        let Ok(path) = std::env::var("EFFECTCRAFT_FACE_LANDMARKER") else { return };
+        let Ok(effectcraft_segment::Loaded::Face(model)) = effectcraft_segment::load("mediapipe-face", &std::fs::read(path).unwrap()) else {
+            panic!("not a face model")
+        };
+        let (w, h) = (320, 240);
+        let p0 = frame_params(0);
+        let img0 = render_synthetic(w, h, &p0, 3);
+        let region = [p0.center[0] - 60.0, p0.center[1] - 75.0, p0.center[0] + 60.0, p0.center[1] + 75.0];
+        let (mut tr, fit0) = FaceTracker::new_with(&Frame { img: &img0, offset: [0.0; 2] }, region, Some(model)).expect("face found");
+        assert_eq!(tr.model().map(|m| m.id), Some("mediapipe-face"));
+        let mut fits = vec![fit0];
+        let n = 40;
+        for t in 1..n {
+            let img = render_synthetic(w, h, &frame_params(t), 3);
+            fits.push(tr.step(&Frame { img: &img, offset: [0.0; 2] }).unwrap_or_else(|| panic!("lost at {t}")));
+        }
+        let held = [(EYE[0][1], 0.04), (EYE[0][4], 0.04), (EYE[1][1], 0.04), (EYE[1][4], 0.04), (CHIN, 0.04), (MOUTH[0], 0.08), (MOUTH[1], 0.08)];
+        for (t, f) in fits.iter().enumerate() {
+            let p = frame_params(t);
+            let truth = synth_landmarks(&p);
+            for &(i, bound) in &held {
+                let e = (f.landmarks[i][0] - truth[i][0]).hypot(f.landmarks[i][1] - truth[i][1]) / p.height;
+                assert!(e < bound, "frame {t} {}: {e:.3} face heights", LANDMARKS[i].0);
+            }
+            assert!((f.roll - p.roll).abs() < 3.0, "frame {t}: roll {} vs {}", f.roll, p.roll);
+        }
+        // Head Scale follows the face's size (relative to the first frame).
+        let h0 = frame_params(0).height;
+        let base = measure(&fits[0].landmarks, 1.0)[2];
+        let worst_scale = fits.iter().enumerate().map(|(t, f)| (measure(&f.landmarks, 1.0)[2] / base - frame_params(t).height / h0).abs()).fold(0.0, f64::max);
+        assert!(worst_scale < 0.05, "Head Scale off by {worst_scale:.3}");
     }
 }

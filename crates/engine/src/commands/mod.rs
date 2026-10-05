@@ -133,7 +133,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
     SPECS.get_or_init(|| {
         let mut v = Vec::new();
         v.extend(file::specs());
-        v.extend(crate::roto_models::specs());
+        v.extend(crate::models::specs());
         v.extend(edit::specs());
         v.extend(comp::specs());
         v.extend(layer::specs());

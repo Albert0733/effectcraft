@@ -394,16 +394,18 @@ fn high_level_tools_add_effect_and_report_state() {
     assert!(err && c[0]["text"].as_str().unwrap().contains("unknown effect"), "{c:?}");
 }
 
-/// Roto Brush's trained models over MCP: listed with their licence, chosen, refused when the
-/// file isn't the published one.
+/// Trained models over MCP (Roto Brush and face tracking): listed with their authors and
+/// licence, chosen, refused when unknown.
 #[test]
-fn roto_models_over_mcp() {
+fn trained_models_over_mcp() {
     let mut s = server();
-    let list = call_json(&mut s, "execute_command", json!({"command": "roto.models", "params": {}}));
-    let models = list["models"].as_array().unwrap();
-    assert!(models.iter().any(|m| m["id"] == "mobilesam" && m["licence"] == "Apache-2.0" && m["installed"] == false), "{list}");
-    let r = call_json(&mut s, "execute_command", json!({"command": "roto.model.select", "params": {"id": "mobilesam"}}));
-    assert_eq!(r["model"], "mobilesam");
-    let (c, err) = call(&mut s, "execute_command", json!({"command": "roto.model.select", "params": {"id": "nope"}}));
-    assert!(err && c[0]["text"].as_str().unwrap().contains("unknown model"), "{c:?}");
+    for (prefix, id) in [("roto", "mobilesam"), ("face", "mediapipe-face")] {
+        let list = call_json(&mut s, "execute_command", json!({"command": format!("{prefix}.models"), "params": {}}));
+        let models = list["models"].as_array().unwrap();
+        assert!(models.iter().any(|m| m["id"] == id && m["licence"] == "Apache-2.0" && m["authors"].is_string() && m["installed"] == false), "{list}");
+        let r = call_json(&mut s, "execute_command", json!({"command": format!("{prefix}.model.select"), "params": {"id": id}}));
+        assert_eq!(r["model"], id);
+        let (c, err) = call(&mut s, "execute_command", json!({"command": format!("{prefix}.model.select"), "params": {"id": "nope"}}));
+        assert!(err && c[0]["text"].as_str().unwrap().contains("unknown model"), "{c:?}");
+    }
 }

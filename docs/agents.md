@@ -207,6 +207,20 @@ orientation X/Y/Z, eye openness, eyebrow distance from eye, mouth openness, widt
 those keys on the keyframe clipboard and returns them per frame plus a tab-separated `clipboard`
 text.
 
+Face tracking's trained model works like Roto Brush's (below): `face.models` lists the built-in
+tracker and MediaPipe Face Landmarker with its authors and licence; `face.model.download {id}` /
+`face.model.install {path, id?}` install it (verified); `face.model.select {id:
+classical|mediapipe-face}` chooses it; `face.model.remove {id}` deletes it. Downloads and loading
+run in the background; `"wait": true` on download, install or select returns once the model is in
+use (or with its error), which scripts need before tracking. `track.mask` with a
+face method returns `faceModel`, the engine it tries first (the classical one when the model finds
+no face in the mask).
+
+```sh
+effectcraft-cli run clip.ecproj face.model.download '{"id":"mediapipe-face","wait":true}' face.model.select '{"id":"mediapipe-face","wait":true}' \
+  track.mask '{"layer":"#1","mask":1,"method":"faceDetailed","direction":"forward","wait":true}' --save
+```
+
 `mask.interpolate` (Window ▸ Mask Interpolation ▸ Apply) adds in-between Mask Path keys between
 each pair of selected Mask Path keys (or the existing keys at `times`, in seconds), giving both
 ends the same vertex count with a matched correspondence. Options: `keyframeRate` (number or
@@ -296,17 +310,18 @@ reference. Matte settings are ordinary properties (`effects/#1/rotoBrushMatte/se
 `effects/#1/refineEdgeMatte/decontaminateEdgeColors`, …).
 
 Trained model (Roto Brush 2.0 / 3.0):
-- `roto.models` lists the built-in engine and every registered model, with its licence, size,
-  URL, SHA-256 and whether it is installed, selected and active.
+- `roto.models` lists the built-in engine and every registered model, with its authors,
+  licence, size, URL, SHA-256 and whether it is installed, selected and active.
 - `roto.model.download {id}` fetches and verifies the official weights in the background;
   `roto.model.install {path, id?}` installs a file you already have.
-- `roto.model.select {id: classical|mobilesam}` chooses which one Roto Brush uses.
+- `roto.model.select {id: classical|mobilesam}` chooses which one Roto Brush uses. Loading runs
+  in the background; `"wait": true` (also on download and install) returns once it is in use.
 - `roto.model.remove {id}` deletes the installed weights.
 - The `version` property (`effects/#1/version`: 0 = 1.0, 1 = 2.0, 2 = 3.0) picks between the
   classic engine (1.0) and the chosen model (2.0, 3.0).
 
 ```sh
-effectcraft-cli run clip.ecproj roto.model.install '{"path":"mobile_sam.pt"}' roto.model.select '{"id":"mobilesam"}' \
+effectcraft-cli run clip.ecproj roto.model.install '{"path":"mobile_sam.pt"}' roto.model.select '{"id":"mobilesam","wait":true}' \
   roto.stroke '{"layer":"#1","points":[[300,200],[360,230]],"radius":10}' roto.propagate '{"layer":"#1","wait":true}' --save
 ```
 

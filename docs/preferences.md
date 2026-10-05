@@ -141,8 +141,11 @@ Commands (CLI, MCP, control channel):
   failing expression (click: reveal it)
 - `roto.model` (Settings ▸ Roto Brush): the segmentation model Roto Brush 2.0 / 3.0 use,
   `classical` (built in) or `mobilesam` (once installed). The page lists every registered model
-  with its licence, size, source and status, with Download, Install from File… and Remove
-  (`roto.models` / `roto.model.*`); weights live in the `models` folder next to the settings
+  with its authors, licence, size, source and status, with Download, Install from File… and
+  Remove (`roto.models` / `roto.model.*`); weights live in the `models` folder next to the
+  settings, each with a `.NOTICE.txt` naming its authors and licence
+- `face.model` (Settings ▸ Face Tracking): the model face tracking uses, `classical` (built in) or
+  `mediapipe-face` (once installed); the same page of models (`face.models` / `face.model.*`)
 
 ### Display-only settings
 
