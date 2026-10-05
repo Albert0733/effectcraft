@@ -14,7 +14,8 @@ effectcraft-engine = { workspace = true }
 effectcraft-host = { workspace = true }
 effectcraft-ui-egui = { workspace = true }
 egui = { workspace = true }
-eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit", "wayland", "x11"] }
+# `links`: links (Help menu, Discord, Settings) open in the system browser.
+eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit", "links", "wayland", "x11"] }
 serde_json = { workspace = true }
 rfd = { workspace = true }
 cpal = { workspace = true }
