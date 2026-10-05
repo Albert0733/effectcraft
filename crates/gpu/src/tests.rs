@@ -650,3 +650,17 @@ fn wgsl_float_literals_fit_f32() {
     }
     assert!(checked > 0);
 }
+
+/// A device created with WebGL2's limits (what egui-wgpu asks for on GL, as the desktop app on
+/// FreeBSD gets): the compositor declines it instead of building pipelines that fail validation
+/// (wgpu's default error handler panics here; release builds would only log it).
+#[test]
+fn devices_with_webgl2_limits_are_declined() {
+    hold_gpu_lock();
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else { return };
+    let desc = wgpu::DeviceDescriptor { required_limits: wgpu::Limits::downlevel_webgl2_defaults(), ..Default::default() };
+    let Ok((device, queue)) = pollster::block_on(adapter.request_device(&desc)) else { return };
+    let err = crate::context::GpuContext::new(&adapter, device, queue).err().expect("declined");
+    assert!(err.contains("max_storage_buffers_per_shader_stage"), "{err}");
+}
