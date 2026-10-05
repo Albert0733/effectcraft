@@ -101,6 +101,16 @@ pub fn parse_vm_stat(text: &str, total: u64) -> Option<SysMemory> {
     Some(SysMemory { total, available: (free * page).min(total) })
 }
 
+/// Parse `sysctl -n hw.physmem hw.pagesize vm.stats.vm.v_free_count vm.stats.vm.v_inactive_count`
+/// (FreeBSD: one number per line, in that order).
+pub fn parse_freebsd_sysctl(text: &str) -> Option<SysMemory> {
+    let mut it = text.split_whitespace().map(|v| v.parse::<u64>().ok());
+    let total = it.next()??;
+    let page = it.next()??;
+    let free = it.next()??.saturating_add(it.next()??);
+    Some(SysMemory { total, available: free.saturating_mul(page).min(total) })
+}
+
 /// Total and available physical memory, when the system reports them.
 pub fn memory() -> Option<SysMemory> {
     #[cfg(target_os = "linux")]
@@ -111,6 +121,10 @@ pub fn memory() -> Option<SysMemory> {
     {
         let total: u64 = run("sysctl", &["-n", "hw.memsize"])?.trim().parse().ok()?;
         return parse_vm_stat(&run("vm_stat", &[])?, total).or(Some(SysMemory { total, available: total }));
+    }
+    #[cfg(target_os = "freebsd")]
+    {
+        return parse_freebsd_sysctl(&run("sysctl", &["-n", "hw.physmem", "hw.pagesize", "vm.stats.vm.v_free_count", "vm.stats.vm.v_inactive_count"])?);
     }
     #[cfg(target_os = "windows")]
     {
@@ -136,6 +150,10 @@ pub fn cpu_name() -> Option<String> {
     {
         return run("sysctl", &["-n", "machdep.cpu.brand_string"]).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
     }
+    #[cfg(target_os = "freebsd")]
+    {
+        return run("sysctl", &["-n", "hw.model"]).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    }
     #[cfg(target_os = "windows")]
     {
         return std::env::var("PROCESSOR_IDENTIFIER").ok();
@@ -156,6 +174,10 @@ pub fn os_version() -> String {
     {
         return n.trim_matches('"').to_string();
     }
+    #[cfg(target_os = "freebsd")]
+    if let Some(v) = run("freebsd-version", &[]) {
+        return format!("FreeBSD {}", v.trim());
+    }
     #[cfg(target_os = "windows")]
     if let Some(v) = run("cmd", &["/C", "ver"]) {
         return v.trim().to_string();
@@ -171,6 +193,18 @@ pub fn cpu_cores() -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn freebsd_sysctl_memory_parses() {
+        let m = parse_freebsd_sysctl("17179869184\n4096\n1000000\n500000\n").expect("parses");
+        assert_eq!(m.total, 17_179_869_184);
+        assert_eq!(m.available, 1_500_000 * 4096);
+        assert!(parse_freebsd_sysctl("17179869184\n4096\n").is_none());
+        assert!(parse_freebsd_sysctl("garbage").is_none());
+        // Available never exceeds total, even with nonsense counts.
+        let m = parse_freebsd_sysctl("1000\n4096\n999999999\n999999999").expect("parses");
+        assert_eq!(m.available, 1000);
+    }
 
     #[test]
     fn parses_proc_meminfo_and_vm_stat() {
