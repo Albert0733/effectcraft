@@ -38,6 +38,8 @@ pub enum PanelKind {
     EssentialGraphics,
     /// A dockable ScriptUI panel (a script from the ScriptUI Panels folder), by script window id.
     ScriptPanel(u32),
+    /// Another Composition viewer (View ▸ New Viewer), by viewer id (`panels::viewers`).
+    Viewer(u32),
     LumetriScopes,
     Footage,
     MediaBrowser,
@@ -116,6 +118,7 @@ impl PanelKind {
             PanelKind::ScriptConsole => "Script Console",
             PanelKind::EssentialGraphics => "Essential Graphics",
             PanelKind::ScriptPanel(_) => "ScriptUI Panel",
+            PanelKind::Viewer(_) => "Composition",
             PanelKind::LumetriScopes => "Lumetri Scopes",
             PanelKind::Footage => "Footage",
             PanelKind::MediaBrowser => "Media Browser",

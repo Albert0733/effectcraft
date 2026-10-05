@@ -25,9 +25,13 @@ impl EffectcraftApp {
                 out.push((PanelKind::ScriptPanel(w.id), t));
             }
         }
+        // Each Composition viewer is named after the comp it shows.
+        for id in std::iter::once(0).chain(self.ui.viewers.keys().copied().filter(|v| *v != 0)) {
+            if let Some(t) = panels::viewers::title(self, id) {
+                out.push((panels::viewers::panel(id), t));
+            }
+        }
         let Some(comp) = self.session.active_comp() else { return out };
-        let cname = self.session.active_comp_id().and_then(|id| self.session.project.item(id)).map(|i| i.name.clone()).unwrap_or_default();
-        out.push((PanelKind::Composition, format!("Composition {cname}")));
         if let Some(l) = self.session.state.selected_layers.first().and_then(|id| comp.layer(*id)) {
             out.push((PanelKind::EffectControls, format!("Effect Controls {}", l.name)));
             out.push((PanelKind::Properties, format!("Properties: {}", l.name)));
@@ -64,10 +68,14 @@ impl EffectcraftApp {
     fn tab_decos(&self) -> Vec<(PanelKind, dock::TabDeco)> {
         let Some(cid) = self.session.active_comp_id() else { return vec![] };
         let swatch = self.comp_swatch(cid);
-        let mut v: Vec<(PanelKind, dock::TabDeco)> = [PanelKind::Composition, PanelKind::Timeline]
-            .into_iter()
-            .map(|p| (p, dock::TabDeco { swatch, locked: self.ui.locked_tabs.contains(&p.id()), viewer: true }))
-            .collect();
+        let mut v: Vec<(PanelKind, dock::TabDeco)> =
+            vec![(PanelKind::Timeline, dock::TabDeco { swatch, locked: self.ui.locked_tabs.contains(&PanelKind::Timeline.id()), viewer: true })];
+        // Every Composition viewer: its comp's swatch and its own lock.
+        for id in std::iter::once(0).chain(self.ui.viewers.keys().copied().filter(|v| *v != 0)) {
+            let p = panels::viewers::panel(id);
+            let swatch = panels::viewers::comp_of(self, id).map_or(self.tokens.text_faint, |c| self.comp_swatch(c));
+            v.push((p, dock::TabDeco { swatch, locked: self.ui.locked_tabs.contains(&p.id()), viewer: true }));
+        }
         // Effect Controls carries the selected layer's label colour.
         if let Some(l) = self.session.active_comp().and_then(|c| self.session.state.selected_layers.first().and_then(|id| c.layer(*id)))
             && l.label != effectcraft_engine::color::Label::None
@@ -123,6 +131,7 @@ impl EffectcraftApp {
         }
         self.ui.dock.close(p);
         self.edit_layout(|l| l.unfloat(p));
+        panels::viewers::on_close(self, p);
         if self.ui.maximized == Some(p) {
             self.ui.maximized = None;
         }
@@ -141,7 +150,8 @@ impl EffectcraftApp {
     fn panel_body(&mut self, ui: &mut egui::Ui, p: PanelKind, rect: Rect) {
         self.auto.add(&format!("panel.{}", p.id()), rect, p.title());
         let mut content = rect;
-        if p == PanelKind::Composition && !self.ui.start_screen && panels::precomp::has_flow(self) {
+        let viewer = p == panels::viewers::active_panel(self);
+        if viewer && !self.ui.start_screen && panels::precomp::has_flow(self) {
             // Composition Navigator: the flow of nested comps above the viewer.
             let nav = Rect::from_min_size(content.min, vec2(content.width(), panels::precomp::NAV_H));
             let mut child = ui.new_child(egui::UiBuilder::new().max_rect(nav).id_salt("comp-navigator"));
@@ -152,7 +162,7 @@ impl EffectcraftApp {
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(content).id_salt(("panel", p.id())));
         child.set_clip_rect(content.intersect(ui.clip_rect()));
         panels::show(self, &mut child, p, content);
-        if p == PanelKind::Composition && !self.ui.start_screen {
+        if viewer && !self.ui.start_screen {
             panels::anim_tools::sketch_overlay(self, &mut child);
         }
     }
@@ -220,7 +230,13 @@ impl EffectcraftApp {
                 DockAction::ToggleStacked(p) => {
                     self.ui.dock.toggle_stacked(p);
                 }
-                DockAction::Focus(p) => self.ui.focused = p,
+                DockAction::Focus(p) => {
+                    self.ui.focused = p;
+                    // A click in (or on the tab of) another Composition viewer makes it active.
+                    if let Some(id) = panels::viewers::id_of(p) {
+                        panels::viewers::activate(self, &ctx, id);
+                    }
+                }
                 DockAction::Close(p) => self.close_panel(p),
                 DockAction::PanelMenu(p, pos) => {
                     ctx.data_mut(|d| d.insert_temp(egui::Id::new("panel-menu"), (p, pos)));

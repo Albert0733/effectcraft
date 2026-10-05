@@ -928,18 +928,18 @@ mod tests {
         let mut s = Session::default();
         let a = ItemId(s.execute("comp.new", json!({"name": "A", "width": 8, "height": 8, "duration": 1})).unwrap()["comp"].as_u64().unwrap());
         let f = Frames::default();
-        let mut first = None;
         let mut last = None;
         for i in 0..200 {
             s.execute("comp.settings", json!({"width": 8 + i, "merge": "drag"})).unwrap();
             let k = FrameKey { content: f.content_of(&s.project, s.revision, a), ..key(0, 0, 0) };
             insert(&f, k);
-            first.get_or_insert(k);
             last = Some(k);
         }
+        // The snapshots and the frames kept stay bounded (a dropped identity's frames go with it,
+        // so a later state that reuses its addresses can't be shown an old frame).
         assert!(f.keepers.lock().unwrap().1.len() <= MAX_KEEPERS);
+        assert!(f.cache.lock().unwrap().map.len() <= MAX_KEEPERS);
         assert!(f.is_cached(&last.unwrap()), "the current state's frame stays");
-        assert!(!f.is_cached(&first.unwrap()), "the oldest states' frames went with their snapshots");
     }
 
     #[test]

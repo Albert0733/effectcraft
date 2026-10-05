@@ -542,6 +542,13 @@ pub struct UiState {
     /// bring a locked panel forward (the tab's lock icon, as After Effects' viewer lock).
     #[serde(default)]
     pub locked_tabs: BTreeSet<String>,
+    /// The comp each Composition viewer shows, by viewer id (0 = the Composition panel; see
+    /// `panels::viewers`).
+    #[serde(default)]
+    pub viewers: std::collections::BTreeMap<u32, Option<u64>>,
+    /// The active viewer (the interactive one, showing the active comp).
+    #[serde(default)]
+    pub active_viewer: u32,
     pub focused: PanelKind,
     pub viewer: ViewerState,
     pub timeline: TimelineState,
@@ -650,6 +657,8 @@ impl Default for UiState {
             saved_floating: Default::default(),
             maximized: None,
             locked_tabs: BTreeSet::new(),
+            viewers: Default::default(),
+            active_viewer: 0,
             focused: PanelKind::Composition,
             viewer: ViewerState::default(),
             timeline: TimelineState::default(),

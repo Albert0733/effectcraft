@@ -562,6 +562,8 @@ pub fn frontend(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, p: Valu
             Value::Null
         }
         // Window ▸ <ScriptUI panel>: dock (or bring forward) the panel the script built.
+        // View ▸ New Viewer.
+        "view.newViewer" => json!({"viewer": crate::panels::viewers::new_viewer(app)}),
         "window.scriptPanel" => {
             let id = p.get("window").and_then(Value::as_u64).ok_or("no ScriptUI panel window")? as u32;
             app.show_panel(PanelKind::ScriptPanel(id));

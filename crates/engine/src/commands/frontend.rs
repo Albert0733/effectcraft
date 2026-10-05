@@ -64,6 +64,14 @@ pub fn specs() -> Vec<CommandSpec> {
         fe!("view.options", "View Options...", ["View"], Some("Cmd+Alt+U"), "{}", has_comp),
         fe!("view.layerControls", "Show Layer Controls", ["View"], Some("Cmd+Shift+H"), "{value?}", always),
         fe!("view.fullScreen", "Enter Full Screen", ["View"], Some("Ctrl+Cmd+F"), "{}", always),
+        fe!(
+            "view.newViewer",
+            "New Viewer",
+            ["View"],
+            Some("Alt+Shift+N"),
+            "{} — another Composition viewer of the active comp; the one in use is locked",
+            has_comp
+        ),
         // Panels and workspaces.
         fe!(
             "window.panel",

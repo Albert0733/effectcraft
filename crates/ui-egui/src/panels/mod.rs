@@ -51,6 +51,7 @@ pub mod viewer;
 pub mod viewer_overlays;
 pub mod viewer_text;
 pub mod viewer_tools;
+pub mod viewers;
 pub mod waveform;
 
 use effectcraft_engine::Session;
@@ -82,7 +83,8 @@ pub fn timecode(session: &Session, comp: &Comp, t: Tick) -> String {
 
 pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: PanelKind, rect: Rect) {
     match p {
-        PanelKind::Composition => viewer::show(app, ui, rect),
+        PanelKind::Composition => viewers::show(app, ui, 0, rect),
+        PanelKind::Viewer(n) => viewers::show(app, ui, n, rect),
         PanelKind::Timeline => timeline::show(app, ui, rect),
         PanelKind::Project => project::show(app, ui, rect),
         PanelKind::EffectControls => effect_controls::show(app, ui, rect),
@@ -161,8 +163,9 @@ pub fn panel_menu_popup(app: &mut EffectcraftApp, ui: &mut egui::Ui) {
                         close = true;
                     }
                 }
-                PanelKind::Composition => {
+                PanelKind::Composition | PanelKind::Viewer(_) => {
                     for (label, cmd) in [
+                        ("New Viewer", "view.newViewer"),
                         ("Composition Settings…", "app.compSettings"),
                         ("View Options…", "view.layerControls"),
                         ("Show Grid", "view.grid"),
