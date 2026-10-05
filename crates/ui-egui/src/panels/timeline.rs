@@ -779,6 +779,19 @@ fn layer_icon(l: &Layer, project: &effectcraft_engine::project::Project) -> Icon
 fn layer_drag_id() -> egui::Id {
     egui::Id::new("tl-layer-drag")
 }
+
+/// A keyframe drag in progress: where the pointer started, the grabbed key's comp time
+/// (seconds) and how many frames the selected keys have moved so far.
+#[derive(Clone, Copy, Debug)]
+struct KeyDrag {
+    origin_x: f32,
+    anchor: f64,
+    applied: i64,
+}
+
+fn key_drag_id() -> egui::Id {
+    egui::Id::new("tl-key-drag")
+}
 /// Set on the frame the reorder drag is released.
 fn layer_drop_id() -> egui::Id {
     egui::Id::new("tl-layer-drop")
@@ -1934,21 +1947,15 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                         {
                             super::graph_tools::alt_scale_begin(app, &ctx, &c, ct.seconds());
                         }
-                        let alt_scaling = super::graph_tools::alt_scale_active(&ctx);
-                        if kresp.dragged() && !alt_scaling {
-                            let acc_id = egui::Id::new("key-drag-acc");
-                            let mut acc: f32 = ctx.data(|d| d.get_temp(acc_id).unwrap_or(0.0));
-                            acc += kresp.drag_delta().x;
-                            let frames = ((acc as f64 / pps) / fd).trunc() as i64;
-                            if frames != 0 {
-                                acc -= (frames as f64 * fd * pps) as f32;
-                                actions.push(("keys.move".into(), json!({"delta": frames as f64 * fd, "merge": "key-drag"})));
-                            }
-                            ctx.data_mut(|d| d.insert_temp(acc_id, acc));
-                        }
-                        if kresp.drag_stopped() {
-                            ctx.data_mut(|d| d.remove::<f32>(egui::Id::new("key-drag-acc")));
-                            ui_actions.push(UiAct::EndMerge);
+                        // A plain drag moves the selected keys. The timeline follows it (below): this
+                        // widget's id changes with the key's time, so its own drag would end after
+                        // the first frame of movement.
+                        // (From where the button went down: a drag starts a few pixels later.)
+                        if kresp.drag_started()
+                            && !super::graph_tools::alt_scale_active(&ctx)
+                            && let Some(p) = ctx.input(|i| i.pointer.press_origin())
+                        {
+                            ctx.data_mut(|d| d.insert_temp(key_drag_id(), KeyDrag { origin_x: p.x, anchor: ct.seconds(), applied: 0 }));
                         }
                     }
                 }
@@ -2029,6 +2036,35 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
             }
         } else if dropped {
             ctx.data_mut(|d| d.remove::<Vec<u64>>(layer_drag_id()));
+        }
+    }
+    // Keyframe drag: the selected keys move by whole frames with the pointer until it is
+    // released (one undo step); Shift snaps the grabbed key to the current time, the work area
+    // and composition markers.
+    if let Some(mut kd) = ctx.data(|d| d.get_temp::<KeyDrag>(key_drag_id())) {
+        let (down, ptr, shift) = ctx.input(|i| (i.pointer.primary_down(), i.pointer.latest_pos(), i.modifiers.shift));
+        match ptr.filter(|_| down) {
+            Some(ptr) => {
+                let mut target = kd.anchor + (ptr.x - kd.origin_x) as f64 / pps;
+                if shift {
+                    let snaps = [time, comp.work_area.0, comp.work_area.1].into_iter().chain(comp.markers.iter().map(|m| m.time)).map(Tick::seconds);
+                    let reach = 8.0 / pps;
+                    if let Some(s) = snaps.filter(|s| (s - target).abs() <= reach).min_by(|a, b| (a - target).abs().total_cmp(&(b - target).abs())) {
+                        target = s;
+                    }
+                }
+                let total = ((target - kd.anchor) / fd).round() as i64;
+                if total != kd.applied {
+                    actions.push(("keys.move".into(), json!({"delta": (total - kd.applied) as f64 * fd, "merge": "key-drag"})));
+                    kd.applied = total;
+                    ctx.data_mut(|d| d.insert_temp(key_drag_id(), kd));
+                }
+                ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
+            }
+            None => {
+                ctx.data_mut(|d| d.remove::<KeyDrag>(key_drag_id()));
+                ui_actions.push(UiAct::EndMerge);
+            }
         }
     }
     if empty.drag_stopped()
