@@ -4,7 +4,7 @@ use effectcraft_project::build::Ids;
 use effectcraft_project::{GroupKind, LayerId, PropGroup, Uid};
 use serde_json::{Value, json};
 
-use super::{CommandSpec, b_p, bad, has_layers, layer_mut, layers_p, str_p};
+use super::{CommandSpec, b_p, bad, f_p, has_layers, layer_mut, layers_p, str_p};
 use crate::{EngineError, Result, Session, cmd};
 
 /// `effect.plugins.list`: the registered plug-in effects (WebAssembly or Rust).
@@ -130,6 +130,52 @@ fn find_fx(s: &Session, p: &Value, cmd: &str) -> Result<(effectcraft_project::It
     }
     .ok_or_else(|| bad(cmd, "no such effect"))?;
     Ok((cid, lid, g.uid))
+}
+
+/// A colour parameter's eyedropper on a keyer (Effect Controls): the colour of the effect's input
+/// (the layer's pixels before this effect, so a keyed screen can still be picked) at a
+/// layer-space point, set on the parameter. `average` takes the 5 × 5 pixels around it.
+fn pick_color(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "effect.pickColor";
+    let (cid, lid, fx_uid) = find_fx(s, p, cmd)?;
+    let (Some(x), Some(y)) = (f_p(p, "x"), f_p(p, "y")) else { return Err(bad(cmd, "missing `x` / `y` (layer pixels)")) };
+    let comp = s.project.comp(cid).ok_or(EngineError::NoComp)?;
+    let layer = comp.layer(lid).ok_or(EngineError::NoComp)?;
+    let fx = layer.effects().ok_or_else(|| bad(cmd, "no effects"))?;
+    let index = fx.groups().position(|g| g.uid == fx_uid).ok_or_else(|| bad(cmd, "no such effect"))?;
+    let g = fx.groups().nth(index).ok_or_else(|| bad(cmd, "no such effect"))?;
+    let prop = match (p.get("prop").and_then(Value::as_u64), str_p(p, "param")) {
+        (Some(uid), _) => g.find(uid),
+        (None, Some(path)) => g.prop(path),
+        _ => return Err(bad(cmd, "missing `param` (e.g. `screenColour`) or `prop` (uid)")),
+    }
+    .filter(|pr| pr.ui == effectcraft_project::ParamUi::Color)
+    .ok_or_else(|| bad(cmd, "not a colour parameter of this effect"))?;
+    let t = super::time_p(s, p, Some(comp));
+    let ctx = effectcraft_render::EvalCtx { project: &s.project, comp_id: cid, comp, time: t, expr: s.expr.as_deref(), footage: None };
+    let mut r = effectcraft_render::Renderer::new(&s.project, &*s.footage, effectcraft_render::RenderOpts::default());
+    r.expr = s.expr.as_deref();
+    r.cache = Some(&s.layer_cache);
+    let buf = r.layer_input(&ctx, layer, index).ok_or_else(|| bad(cmd, "this layer has no pixels"))?;
+    let (px, py) = buf.to_px([x, y]);
+    let (cx, cy) = (px.floor() as i64, py.floor() as i64);
+    let rad = if b_p(p, "average") == Some(true) { 2 } else { 0 };
+    let mut sum = [0.0f32; 4];
+    for yy in cy.saturating_sub(rad)..=cy.saturating_add(rad) {
+        for xx in cx.saturating_sub(rad)..=cx.saturating_add(rad) {
+            // Outside the layer reads as transparent.
+            let c = buf.img.get(xx, yy);
+            (0..4).for_each(|i| sum[i] += c[i]);
+        }
+    }
+    if sum[3] <= 1e-6 {
+        return Err(bad(cmd, "nothing to sample there (transparent or outside the layer)"));
+    }
+    // Straight colour of the (averaged) premultiplied pixels.
+    let color: Vec<f64> = (0..3).map(|i| (sum[i] / sum[3]).clamp(0.0, 1.0) as f64).chain([1.0]).collect();
+    let uid = prop.uid;
+    s.execute("prop.set", json!({"comp": cid.0, "layer": lid.0, "prop": uid, "value": color}))?;
+    Ok(json!({"prop": uid, "color": color}))
 }
 
 fn remove(s: &mut Session, p: &Value) -> Result<Value> {
@@ -355,11 +401,11 @@ fn last(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 fn list(_: &mut Session, p: &Value) -> Result<Value> {
-    let filter = str_p(p, "filter").map(str::to_ascii_lowercase);
+    let filter = str_p(p, "filter").map(str::to_lowercase);
     let v: Vec<Value> = effectcraft_effects::all()
         .into_iter()
         .filter(|e| {
-            filter.as_ref().is_none_or(|f| e.name.to_ascii_lowercase().contains(f) || e.id.contains(f.as_str()) || e.category.to_ascii_lowercase().contains(f))
+            filter.as_ref().is_none_or(|f| effectcraft_effects::name_matches(e, f) || e.id.contains(f.as_str()) || e.category.to_ascii_lowercase().contains(f))
         })
         .map(|e| {
             json!({"id": e.id, "name": e.name, "category": e.category, "gpu": e.gpu, "float": e.float, "params": e.params.iter().map(|p| json!({"id": p.id, "name": p.name, "default": p.default.to_json()})).collect::<Vec<_>>()})
@@ -371,6 +417,15 @@ fn list(_: &mut Session, p: &Value) -> Result<Value> {
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!("effect.apply", "Apply Effect", [], None, "{effect: id|name (e.g. Gaussian Blur), layers?}", has_layers, apply),
+        cmd!(
+            "effect.pickColor",
+            "Pick Effect Colour",
+            [],
+            None,
+            "{layer?, effect?: index|uid|name, param: id (e.g. screenColour) | prop: uid, x, y (layer px), average?: bool (5×5), time?} — the colour of the effect's input there",
+            has_layers,
+            pick_color
+        ),
         cmd!("effect.applyLast", "Last Effect", ["Effect"], Some("Cmd+Alt+Shift+E"), "{layers?}", has_layers, last),
         cmd!("effect.removeAll", "Remove All", ["Effect"], Some("Cmd+Shift+E"), "{layers?}", has_layers, remove_all),
         cmd!("effect.remove", "Remove Effect", [], None, "{layer?, effect: index|uid|name}", has_layers, remove),

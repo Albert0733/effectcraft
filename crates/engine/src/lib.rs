@@ -954,6 +954,8 @@ mod tests_fidelity;
 #[cfg(test)]
 mod tests_frame_export;
 #[cfg(test)]
+mod tests_keylight;
+#[cfg(test)]
 mod tests_lottie;
 #[cfg(test)]
 mod tests_m137;

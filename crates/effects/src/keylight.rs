@@ -610,6 +610,9 @@ mod tests {
         let g = run_fx("ec.keying.keylight", &[("screenColour", green()), ("screenGain", num(150.0))], plate(), 0.0, EffectEnv::default());
         assert!(g.img.get(27, 5)[3] < out.img.get(27, 5)[3]);
         assert_eq!(crate::lookup("Keylight (1.2)").map(|s| s.id), Some("ec.keying.keylight"));
+        // Searches find it by After Effects' name as well as its own.
+        let spec = crate::find("ec.keying.keylight").unwrap();
+        assert!(crate::name_matches(spec, "keylight") && crate::name_matches(spec, "key light") && !crate::name_matches(spec, "blur"));
     }
 
     /// Instances saved with the flat layout get their parameters moved into the twirl-downs.

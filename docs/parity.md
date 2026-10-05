@@ -189,7 +189,7 @@ Mocha and Cineware are third-party and not counted.
 | Blur & Sharpen | Camera-Shake Deblur, CC Radial Blur | Deblur substitutes aligned patches from sharper neighbouring frames. |
 | Audio | Compressor, Distortion, Gate | Applied in the mixdown like the other audio effects. |
 | Simulation | CC Hair, Particle Playground | Particle Playground: cannon, grid, layer exploder, layer map, gravity, repel, wall, persistent property mapper (no Particle Exploder, text particles or ephemeral mapper yet). |
-| Keying | Key Light | The full Keylight 1.2 control set under a generic name ("Keylight" is a vendor trademark); `lookup("Keylight (1.2)")` finds it. |
+| Keying | Key Light | The full Keylight 1.2 control set under a generic name ("Keylight" is a vendor trademark); `lookup("Keylight (1.2)")` and the Effects & Presets search ("keylight") find it. Keyers' colour eyedroppers sample the effect's input (`effect.pickColor`), so a screen that is already keyed can still be picked. |
 | Utility | Color Profile Converter | Our colour spaces and ACES; rendering intents (perceptual gamut compression, relative / absolute colorimetric, saturation). |
 | Matte | Mocha shape | Mocha's export format is not public: reads a documented JSON shape format instead. |
 
@@ -421,6 +421,13 @@ properties' keys, layer and comp markers and the work area (`visible: [{layer, p
 layers); the Graph Editor has Auto-Select Graph Type (the default: the speed graph when only
 spatial properties are shown, else the value graph; choosing Value or Speed turns it off). Graph
 Editor keys are small squares whatever their interpolation, as in After Effects.
+
+Since (M5.16): Key Light (After Effects' Keylight 1.2) is checked end to end on a green-screen
+plate with an uneven screen, spill and soft edges (`effect.apply "Keylight (1.2)"`, pick, Clip
+Black / White, render). The colour eyedroppers of Keying effects sample the effect's input
+rather than the keyed frame (Ctrl/Cmd+click averages 5 × 5 pixels); agents do the same with
+`effect.pickColor {effect, param, x, y, average?}` (layer pixels). Searching "keylight" in
+Effects & Presets, or `list_effects`, finds it.
 
 ## Update: M4.9–M4.11 nested comps and motion blur
 

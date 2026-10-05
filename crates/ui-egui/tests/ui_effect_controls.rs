@@ -165,3 +165,34 @@ fn crosshair_and_eyedropper_pick_from_the_viewer() {
     }
     assert_eq!(c[3], 1.0);
 }
+
+/// Key Light's Screen Colour eyedropper picks from the effect's input: the shown frame is
+/// already keyed (the default screen colour takes most of a green), so sampling it would miss.
+#[test]
+fn keyer_eyedropper_picks_the_screen_from_the_effect_input() {
+    let mut s = Session::default();
+    s.execute("comp.new", json!({"name": "Key", "width": 320, "height": 180, "frameRate": 30, "duration": 1})).unwrap();
+    let screen = s.execute("layer.newSolid", json!({"name": "Screen", "color": "#30b050"})).unwrap()["layer"].as_u64().unwrap();
+    let fx = s.execute("effect.apply", json!({"layers": [screen], "effect": "Key Light"})).unwrap()["effects"][0].as_u64().unwrap();
+    let prop = layer(&s, screen).effects().unwrap().groups().find(|g| g.uid == fx).and_then(|g| g.get("screenColour")).map(|p| p.uid).unwrap();
+    s.state.selected_layers = vec![LayerId(screen)];
+    let mut app = EffectcraftApp::new(s);
+    app.show_panel(PanelKind::EffectControls);
+    let mut h = Harness::builder().with_size(egui::vec2(1700.0, 1100.0)).build_eframe(|_| app);
+    settle(&mut h);
+    h.state_mut().ui.fx_pick = Some(FxPick { kind: "color".into(), layer: screen, prop, name: "Screen Colour".into() });
+    h.step();
+    let pos = effectcraft_ui_egui::panels::viewer::comp_to_screen(&h.ctx, [160.0, 90.0]).unwrap();
+    click(&mut h, pos);
+    assert!(h.state().ui.fx_pick.is_none(), "the pick is used up");
+    let v = layer(&h.state().session, screen).effects().unwrap().find(prop).unwrap().value.clone();
+    let KV::Color(c) = v else { panic!("{v:?}") };
+    let want = [0x30 as f64 / 255.0, 0xb0 as f64 / 255.0, 0x50 as f64 / 255.0];
+    for k in 0..3 {
+        assert!((c[k] - want[k]).abs() < 0.01, "{c:?} vs {want:?}");
+    }
+    // The picked screen keys the whole solid out.
+    let s = &h.state().session;
+    let img = s.render(s.active_comp_id().unwrap(), s.time(), Default::default());
+    assert!(img.get(160, 90)[3] < 0.01, "{:?}", img.get(160, 90));
+}
