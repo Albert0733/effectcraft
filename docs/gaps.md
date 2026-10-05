@@ -1,0 +1,129 @@
+# Where EffectCraft falls short
+
+An honest assessment of how far EffectCraft is from being a real replacement for After Effects,
+and the work that closes the gap. This document is meant for contributors and agents choosing
+what to work on. The [ROADMAP](../ROADMAP.md) summarises it; [parity.md](parity.md) is the
+feature-by-feature checklist it builds on.
+
+*Assessed 5 October 2026. Estimates marked "≈" are judgements from the evidence listed, not
+measurements. Update this file when the evidence changes.*
+
+## Two different questions
+
+[parity.md](parity.md) reports **≈ 99%**. That number answers one question: *does each After
+Effects feature exist?* It scores a 92-item catalogue we wrote ourselves, graded by the same agents
+that built the features, with partial features counting half. As a measure of breadth it is fair,
+and the breadth is real: every one of After Effects' effects exists by name, along with the
+menus, panels, 3D, tracking, expressions, scripting and export.
+
+It does not answer the question users care about: *can someone who uses After Effects for a living
+do real work in EffectCraft?* Nobody has measured that yet. Our best estimate is **≈ 30–50%**,
+limited mainly by four things: projects we can't open, behaviour nobody has checked against After
+Effects, reliability on platforms other than macOS, and the third-party plug-ins professional
+projects depend on.
+
+The checklist is also internally inconsistent: parity.md's per-area table still shows Interface
+75%, Project 68%, Animation 70% and Paint 0% next to the 99% headline. Some rows are stale; none
+of them have been reconciled.
+
+## By dimension
+
+| Dimension | Estimate | Evidence |
+|---|---|---|
+| Breadth of features | ≈ 95%+ | All 306 effects, the After Effects menus and panels, Classic and Advanced 3D, tracking, expressions, scripting, render queue (parity.md) |
+| Behaves like After Effects | unmeasured, ≈ 60–80% | One outside contributor found four bugs in features marked done within a day (PRs #6–#10): Hold keyframes eased the motion into them, `keyInSpatialTangent` / `keyOutSpatialTangent` had the wrong names, a zero frame rate crashed, Find and Enter Full Screen shared Ctrl+F off macOS. There are about 10 After Effects reference captures in total. No test compares our renders or property values with After Effects itself; the tests check what the agents believed After Effects does |
+| Opening existing After Effects work | ≈ 0% | `.aep` / `.aepx` projects cannot be opened. Third-party After Effects plug-ins cannot run. Expressions and the scripting object model are strong, so scripts and expressions carry over |
+| Stability | improving | 23 never-crash PRs landed on 4 October; [AGENTS.md](../AGENTS.md) "Never crash" now binds every crate. On 5 October `cargo xtask ci` failed on main under Rust 1.99's clippy (a fix is in progress) |
+| Real-user experience | ≈ 70%, uneven by platform | Issues #41–#47 (all from the Linux AppImage, 5 October): panning the viewer snaps back, panels can't be resized or rearranged, drag-and-drop and double-click import don't work, layer rename gets stuck, the Layer Settings arrow does nothing, the Project panel clips, the Wayland window icon is generic. parity.md counts docking as done. Most checking happens on macOS. No localisation, no accessibility work |
+| Performance | unknown against After Effects | Internal numbers only (e.g. Advanced 3D 290 ms/frame at 1080p on the GPU, an M4 Pro under load). Nothing benchmarked against After Effects; no large real projects (4K footage, hundreds of layers) tested |
+| Media formats | ≈ 80% | H.264, ProRes, HEVC, AV1, image sequences and audio exist. The new HEVC / AV1 encoders have no B-frames, multi-reference or SAO / CDEF, so files are larger than from mature encoders. Camera formats (BRAW, R3D, ProRes RAW, variable-frame-rate phone video) are unverified |
+| AI-assisted tools | ≈ 50% | Roto Brush and face tracking use classical methods (graph cut + optical flow; a shape-model fitter); quality is well below After Effects' learned models |
+| Maturity | early | First commit 1 October 2026. ≈ 285,000 lines of almost entirely agent-written Rust, ≈ 2,050 tests, 8 external issue reports so far. After Effects has around 30 years of edge cases behind it |
+
+## Where we're going: workstreams in priority order
+
+Each workstream lists what "done" means, so progress can be measured rather than self-graded.
+
+### G1. Measure fidelity against After Effects
+
+The most important missing piece: it turns every other estimate here into a measurement.
+
+- Build a corpus of original test projects (our own content, no Adobe assets), one or more per
+  feature id in `plan/aftereffects/feature-catalog.md`: keyframe interpolation of every kind,
+  blend modes, track mattes, each effect at default and at non-default settings, text animators,
+  expressions, 3D, motion blur, time remapping.
+- Drive After Effects through ExtendScript (see CLAUDE.md) to record property values at sampled
+  times and render reference frames; render the same projects in EffectCraft headless.
+- Compare values exactly and frames with a perceptual metric; publish a per-feature fidelity
+  score and a fidelity column in parity.md.
+- Clean room: After Effects output stays local in `plan/aftereffects/ref/` (gitignored). Commit
+  only our projects, the harness and the scores, never After Effects frames.
+- Done when: every P0 and P1 feature has at least one corpus project, scores are reproducible from
+  one command, and parity.md reports breadth and measured fidelity side by side.
+
+### G2. Real-user reliability on every platform
+
+- Fix the open user issues (#41–#47), each with a regression test.
+- Run the headless snapshot and control-channel checks on Linux (X11 and Wayland) and Windows, not
+  only macOS. Interactions that only fail with real input (docking drags, viewer pan, drag-and-drop
+  import, inline rename) need scripted input tests.
+- Done when: no open bug blocks a basic workflow (import, arrange, animate, preview, render) on
+  any of the three desktop platforms, and every bug users report gets triaged within a day.
+
+### G3. Stability and a green main
+
+- Keep `cargo xtask ci` green on the current stable toolchain. A toolchain release that breaks the
+  gate is a P0.
+- Fuzz the inputs we don't control: project files, imported media and documents, expressions,
+  scripts, control-channel and MCP requests. Every crash found becomes a regression test
+  (AGENTS.md "Never crash").
+- Done when: the gate is green on stable and the fuzzers run regularly without new crashes.
+
+### G4. Open After Effects projects
+
+- `.aep` / `.aepx` import is the largest single barrier to switching. It needs an **owner
+  decision** on clean-room scope (whether and how the format may be studied), like the open
+  `.prproj` question in `plan/STATUS.md`.
+- Also in this area: relative footage paths and relinking when a project moves (parity.md, Project).
+- Done when: the decision is recorded and, if approved, a corpus of real-world-shaped projects
+  opens with its comps, layers, keyframes, effects and expressions intact.
+
+### G5. Performance at real-world scale
+
+- Benchmark projects at 1080p and 4K with many layers, heavy effects, long footage and nested
+  comps; record preview frame times, RAM preview fill and render times on reference machines.
+- Compare with After Effects on the same machine where possible.
+- Done when: benchmark numbers are tracked over time and regressions fail a check.
+
+### G6. Media depth
+
+- Encoder efficiency: B-frames and multi-reference for HEVC / AV1, SAO / CDEF / restoration, Opus
+  FEC / DTX.
+- Verify decode of the camera and phone formats people actually bring, including variable frame
+  rate; document what is not supported.
+
+### G7. Learned models for Roto Brush and face tracking
+
+- Already an owner decision in `plan/STATUS.md`: licensed weights with pure-Rust inference, or
+  accept the classical methods as final.
+
+### G8. Plug-in ecosystem
+
+- After Effects SDK plug-ins cannot run in EffectCraft. Our own WebAssembly plug-in API exists
+  ([plugins.md](plugins.md)). Grow it: documentation, examples, and original effects that cover
+  what the most common third-party plug-ins are used for (particles, glows, 3D objects, sabers).
+
+### G9. Reach
+
+- Localisation of the interface, accessibility (keyboard navigation, screen readers, contrast),
+  user documentation and tutorials.
+
+## For agents choosing work
+
+1. Read `plan/STATUS.md` for owner blockers and running work, then this file.
+2. Prefer G1–G3 over new features. A feature that exists but behaves differently from After
+   Effects is not done.
+3. When you fix a behaviour bug in a feature parity.md marks as done, add it to the evidence
+   above. That is how this assessment stays honest.
+4. Don't raise parity.md's numbers without evidence: a G1 score, a user-facing check on more than
+   one platform, or both.

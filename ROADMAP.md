@@ -25,14 +25,38 @@ once.
 
 ## How far from full parity
 
-Measured feature by feature in [docs/parity.md](docs/parity.md) (4 October 2026):
+There are two honest answers, and they are far apart. The full assessment, with the evidence, is
+in [docs/gaps.md](docs/gaps.md).
 
-- **≈ 99% of After Effects' features, weighted by importance**, counting partial features as half
-  done (≈ 99.8% with per-feature fractions): 89 of 92 features done, 3 partial, none missing; every
-  essential (P0) feature done; all 306 effects implemented in full, 280 of them on the GPU.
-- **≈ 8.5 agent-hours of work remain**: about **2–3 hours of wall-clock time** with five Claude
-  Opus 5.5 agents in parallel, ≈ 1 hour without learned models for Roto Brush and face tracking.
-- What is left: GPU kernels for the remaining visual effects, and learned-model quality for Roto
-  Brush and face tracking ([parity.md](docs/parity.md#highest-value-gaps-in-order)).
+- **Breadth: ≈ 99%.** Almost every After Effects feature exists: 89 of 92 catalogued features
+  done and 3 partial, all 306 effects implemented, 280 of them on the GPU
+  ([docs/parity.md](docs/parity.md)). This is our own checklist, graded by the agents that built
+  the features.
+- **Real use: ≈ 30–50% (estimated, not yet measured).** Whether someone who uses After Effects for
+  a living can do client work in EffectCraft. What holds it back:
+  - **Fidelity is unmeasured.** No test compares our output with After Effects itself, and users
+    are still finding behaviour bugs in features marked done.
+  - **After Effects projects can't be opened.** EffectCraft can't read `.aep` / `.aepx` files,
+    and third-party After Effects plug-ins can't run.
+  - **Reliability is uneven across platforms.** Early Linux users hit basic problems: viewer
+    panning, panel docking, drag-and-drop import.
+  - **AI tools are behind.** Roto Brush and face tracking use classical methods, not learned
+    models.
+
+## Where we're going
+
+In priority order (details and "done" criteria in [docs/gaps.md](docs/gaps.md)):
+
+| | Workstream | Why |
+|---|---|---|
+| G1 | Measure fidelity against After Effects: a corpus of test projects rendered and sampled in both apps, scored per feature | Turns every estimate into a measurement; a feature that behaves differently is not done |
+| G2 | Real-user reliability on macOS, Windows and Linux; fix every open user issue | Basic workflows must work everywhere before more features matter |
+| G3 | Stability: a green gate on the current toolchain, fuzzing of every input | A crash loses people's work |
+| G4 | Open After Effects projects (`.aep` / `.aepx`, pending an owner decision on clean-room scope); relinking moved footage | The biggest barrier to switching |
+| G5 | Performance benchmarks at 1080p and 4K on real-world-sized projects | Unknown today |
+| G6 | Media depth: encoder efficiency, camera and phone formats | Files are larger than from mature encoders; camera formats are unverified |
+| G7 | Learned models for Roto Brush and face tracking (owner decision) | Quality is well below After Effects' |
+| G8 | Plug-in ecosystem on our WebAssembly plug-in API | After Effects plug-ins can't run here |
+| G9 | Localisation, accessibility, user documentation | Reach beyond English-speaking power users |
 
 Come tell us what matters most to you on [Discord](https://discord.gg/artcraft).
