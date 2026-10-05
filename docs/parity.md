@@ -422,6 +422,13 @@ layers); the Graph Editor has Auto-Select Graph Type (the default: the speed gra
 spatial properties are shown, else the value graph; choosing Value or Speed turns it off). Graph
 Editor keys are small squares whatever their interpolation, as in After Effects.
 
+Since (M4.13): motion blur follows a collapsed precomp layer's own motion. Its nested layers are
+drawn with the precomp layer's transform at every sub-sample, and with the containing comp's
+shutter, as they are drawn into its frames. Shape and text layers whose content animates within
+the shutter (paths, Trim Paths, shape transforms, text animators) are drawn at Samples Per Frame
+times and averaged, as After Effects does for shape layers; content that holds still is drawn
+once.
+
 Since (M3.15): the Timeline shows one tab per open comp, as in After Effects. Double-clicking a
 comp in the Project panel opens it as a new tab next to the comps already open; it no longer
 renames (Enter or the context menu still do). A tab's × closes that comp's Timeline, not the
@@ -715,8 +722,8 @@ are pinned bit for bit by golden hashes (`crates/effects/tests/particle_golden.r
 13. ~~Lottie, WebM, SVG and PSD import~~ (landed; a disk cache too).
 14. ~~Puppet and paint tools~~ (second wave; puppet rigging and follow-through in M13.14–M13.16).
 15. ~~Preferences and a shortcut editor that can rebind; real Wiggler, Smoother and Motion Sketch; the marker dialog.~~ (second and third waves)
-16. Motion blur of collapsed precomps (their own motion, the parent camera's) and of animated
-    content inside a layer (shape paths, text animators, nested frames).
+16. ~~Motion blur of collapsed precomps and of animated content inside a layer (shape paths, text
+    animators).~~ (M4.13)
 17. Content-keyed RAM preview frames, so an edit keeps the frames of comps it doesn't touch.
 18. View ▸ New Viewer (several unlocked Composition viewers), nested comp markers on the
     precomp layer bar, audio scrubbing.
