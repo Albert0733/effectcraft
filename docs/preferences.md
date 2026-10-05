@@ -124,7 +124,7 @@ Commands (CLI, MCP, control channel):
   sample rate and read back instead of decoding again
 - `memory.ramReservedGb`: the cache budgets together leave this much physical memory free
 - `memory.reduceCacheWhenLow`: cache budgets halve while the system is low on memory (checked
-  every 10 s by the desktop app)
+  every 30 s by the desktop app, on a background thread)
 - `video.enableOutput`, `video.device`, `video.outputDuringPlayback`, `video.mirrorOnMonitor`,
   `video.disableWhenBackground`: Video Preview, a second window (or full screen on the display
   it is on) showing the composition frame, Mercury Transmit-style

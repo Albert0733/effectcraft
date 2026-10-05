@@ -7,7 +7,7 @@
 //! bar, layer duration bars, keyframes, the CTI, and the value graph editor.
 
 use effectcraft_engine::color::BlendMode;
-use effectcraft_engine::keyframe::Value;
+use effectcraft_engine::keyframe::{Interp, Value};
 use effectcraft_engine::project::{Comp, GroupKind, Layer, LayerId, LayerSource, MatteKind, Node, ParamUi, PropGroup, Property};
 use effectcraft_engine::render::EvalCtx;
 use effectcraft_engine::time::Tick;
@@ -778,6 +778,19 @@ fn layer_icon(l: &Layer, project: &effectcraft_engine::project::Project) -> Icon
 /// Layers being dragged to a new place in the stack (timeline rows).
 fn layer_drag_id() -> egui::Id {
     egui::Id::new("tl-layer-drag")
+}
+
+/// A keyframe drag in progress: where the pointer started, the grabbed key's comp time
+/// (seconds) and how many frames the selected keys have moved so far.
+#[derive(Clone, Copy, Debug)]
+struct KeyDrag {
+    origin_x: f32,
+    anchor: f64,
+    applied: i64,
+}
+
+fn key_drag_id() -> egui::Id {
+    egui::Id::new("tl-key-drag")
 }
 /// Set on the frame the reorder drag is released.
 fn layer_drop_id() -> egui::Id {
@@ -1857,26 +1870,54 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                             None if ks => t.keyframe_selected,
                             None => t.keyframe,
                         };
-                        icons::keyframe(&gp, c, 11.0, icon.left, icon.right, kcol, Color32::from_black_alpha(200));
+                        if k.roving {
+                            // Roving keys: a small dot (their time follows their neighbours).
+                            gp.circle_filled(c, 2.5, kcol);
+                        } else {
+                            icons::keyframe(&gp, c, 11.0, icon.left, icon.right, kcol, Color32::from_black_alpha(200));
+                        }
                         let kr = Rect::from_center_size(c, vec2(12.0, 14.0));
                         let kresp = ui.interact(kr, egui::Id::new(("key", uid, k.time.0)), Sense::click_and_drag());
                         app.auto.add(&format!("timeline.key.{uid}.{}", fr.frame_at(ct)), kr, &format!("{} key", prop.name));
-                        if kresp.clicked() || kresp.drag_started() {
-                            let shift = ui.input(|i| i.modifiers.shift);
-                            if !ks || shift {
-                                actions.push((
-                                    "keys.select".into(),
-                                    json!({"keys": [{"layer": layer.id.0, "prop": uid, "time": k.time.seconds()}], "add": shift}),
-                                ));
+                        let mods = ui.input(|i| i.modifiers);
+                        let this_key = json!({"keys": [{"layer": layer.id.0, "prop": uid, "time": k.time.seconds()}]});
+                        if kresp.clicked() && mods.command {
+                            // Ctrl+click: Linear ↔ Auto Bezier; Ctrl+Alt+click: Hold on / off.
+                            actions.push(("keys.select".into(), this_key.clone()));
+                            if mods.alt {
+                                actions.push(("keys.toggleHold".into(), json!({})));
+                            } else {
+                                let linear = k.in_interp == Interp::Linear && k.out_interp == Interp::Linear;
+                                actions.push(("keys.interpolation".into(), json!({"interpolation": if linear { "autoBezier" } else { "linear" }})));
                             }
+                        } else if kresp.clicked() && mods.shift {
+                            // Shift+click: in or out of the selection.
+                            let mut p = this_key.clone();
+                            p["toggle"] = json!(true);
+                            actions.push(("keys.select".into(), p));
+                        } else if (kresp.clicked() || kresp.drag_started()) && !ks {
+                            let mut p = this_key.clone();
+                            p["add"] = json!(mods.shift);
+                            actions.push(("keys.select".into(), p));
                         }
                         if kresp.double_clicked() {
-                            ui_actions.push(UiAct::SetTime(ct));
+                            // Edit the key's value (numeric properties), as After Effects does.
+                            if matches!(k.value, Value::Scalar(_) | Value::Vec2(_) | Value::Vec3(_)) {
+                                actions.push(("keys.set".into(), json!({"layer": layer.id.0, "prop": uid, "time": k.time.seconds()})));
+                            } else {
+                                ui_actions.push(UiAct::SetTime(ct));
+                            }
                         }
                         kresp.context_menu(|ui| {
                             for (lbl, cmd, params) in [
+                                ("Edit Value…", "keys.set", json!({"layer": layer.id.0, "prop": uid, "time": k.time.seconds()})),
+                                ("-", "", json!({})),
                                 ("Copy", "keys.copy", json!({})),
                                 ("Paste", "keys.paste", json!({})),
+                                ("-", "", json!({})),
+                                ("Select Equal Keyframes", "keys.selectEqual", json!({})),
+                                ("Select Previous Keyframes", "keys.selectPrevious", json!({})),
+                                ("Select Following Keyframes", "keys.selectFollowing", json!({})),
                                 ("-", "", json!({})),
                                 ("Keyframe Interpolation…", "keys.interpolation", json!({})),
                                 ("Keyframe Velocity…", "keys.velocity", json!({})),
@@ -1918,6 +1959,9 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                                 if lbl == "Rove Across Time" && !prop.spatial {
                                     continue;
                                 }
+                                if lbl == "Edit Value…" && !matches!(k.value, Value::Scalar(_) | Value::Vec2(_) | Value::Vec3(_)) {
+                                    continue;
+                                }
                                 if ui.button(lbl).clicked() {
                                     if !ks {
                                         actions.push(("keys.select".into(), json!({"keys": [{"layer": layer.id.0, "prop": uid, "time": k.time.seconds()}]})));
@@ -1934,21 +1978,15 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                         {
                             super::graph_tools::alt_scale_begin(app, &ctx, &c, ct.seconds());
                         }
-                        let alt_scaling = super::graph_tools::alt_scale_active(&ctx);
-                        if kresp.dragged() && !alt_scaling {
-                            let acc_id = egui::Id::new("key-drag-acc");
-                            let mut acc: f32 = ctx.data(|d| d.get_temp(acc_id).unwrap_or(0.0));
-                            acc += kresp.drag_delta().x;
-                            let frames = ((acc as f64 / pps) / fd).trunc() as i64;
-                            if frames != 0 {
-                                acc -= (frames as f64 * fd * pps) as f32;
-                                actions.push(("keys.move".into(), json!({"delta": frames as f64 * fd, "merge": "key-drag"})));
-                            }
-                            ctx.data_mut(|d| d.insert_temp(acc_id, acc));
-                        }
-                        if kresp.drag_stopped() {
-                            ctx.data_mut(|d| d.remove::<f32>(egui::Id::new("key-drag-acc")));
-                            ui_actions.push(UiAct::EndMerge);
+                        // A plain drag moves the selected keys. The timeline follows it (below): this
+                        // widget's id changes with the key's time, so its own drag would end after
+                        // the first frame of movement.
+                        // (From where the button went down: a drag starts a few pixels later.)
+                        if kresp.drag_started()
+                            && !super::graph_tools::alt_scale_active(&ctx)
+                            && let Some(p) = ctx.input(|i| i.pointer.press_origin())
+                        {
+                            ctx.data_mut(|d| d.insert_temp(key_drag_id(), KeyDrag { origin_x: p.x, anchor: ct.seconds(), applied: 0 }));
                         }
                     }
                 }
@@ -2029,6 +2067,49 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
             }
         } else if dropped {
             ctx.data_mut(|d| d.remove::<Vec<u64>>(layer_drag_id()));
+        }
+    }
+    // Keyframe drag: the selected keys move by whole frames with the pointer until it is
+    // released (one undo step); Shift snaps the grabbed key to the current time, the work area
+    // and composition markers.
+    if let Some(mut kd) = ctx.data(|d| d.get_temp::<KeyDrag>(key_drag_id())) {
+        let (down, ptr, shift) = ctx.input(|i| (i.pointer.primary_down(), i.pointer.latest_pos(), i.modifiers.shift));
+        match ptr.filter(|_| down) {
+            Some(ptr) => {
+                let mut target = kd.anchor + (ptr.x - kd.origin_x) as f64 / pps;
+                if shift {
+                    // The current time and whatever it snaps to (keys, layer ends, markers), but
+                    // not the moving keys themselves.
+                    let moving: Vec<f64> =
+                        app.session.state.selected_keys.iter().filter_map(|k| comp.layer(k.layer).map(|l| l.comp_time(k.time).seconds())).collect();
+                    let mut cands = snap_candidates(&comp, &rows);
+                    cands.retain(|c| !moving.iter().any(|m| (m - c).abs() < 1e-9));
+                    cands.push(time.seconds());
+                    target = snap_time(&cands, target, 8.0 / pps);
+                }
+                let total = ((target - kd.anchor) / fd).round() as i64;
+                if total != kd.applied {
+                    actions.push(("keys.move".into(), json!({"delta": (total - kd.applied) as f64 * fd, "merge": "key-drag"})));
+                    kd.applied = total;
+                    ctx.data_mut(|d| d.insert_temp(key_drag_id(), kd));
+                }
+                ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
+                // Where the grabbed key is and how far the keys moved (After Effects shows this
+                // in the Info panel).
+                let at = Tick::from_seconds_f64(kd.anchor + kd.applied as f64 * fd);
+                let note = format!("{}   {:+} f", super::timecode(&app.session, &comp, at), kd.applied);
+                let fg = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("tl-key-drag-tip")));
+                let g = fg.layout_no_wrap(note, Tokens::ui(11.5), t.text);
+                let r = Rect::from_min_size(ptr + vec2(14.0, 14.0), g.size() + vec2(10.0, 6.0));
+                fg.rect_filled(r, 3.0, t.panel_bg);
+                fg.rect_stroke(r, 3.0, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
+                fg.galley(r.min + vec2(5.0, 3.0), g, t.text);
+                app.ui.status = format!("Keyframe at {}", super::timecode(&app.session, &comp, at));
+            }
+            None => {
+                ctx.data_mut(|d| d.remove::<KeyDrag>(key_drag_id()));
+                ui_actions.push(UiAct::EndMerge);
+            }
         }
     }
     if empty.drag_stopped()

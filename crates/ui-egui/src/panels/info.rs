@@ -101,13 +101,25 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
             p.text(pos2(x0, ly), Align2::LEFT_CENTER, format!("Render: {ms:.0} ms  •  UI {:.0} fps{rq}", app.fps), Tokens::ui(11.5), t.text_faint);
         }
         if !app.session.state.selected_keys.is_empty() {
-            p.text(
-                pos2(x0, ly + 18.0),
-                Align2::LEFT_CENTER,
-                format!("{} keyframes selected", app.session.state.selected_keys.len()),
-                Tokens::ui(11.5),
-                t.text_dim,
-            );
+            // One key: its property, time and value (as After Effects' Info panel shows them).
+            let sel = &app.session.state.selected_keys;
+            let one = match sel.as_slice() {
+                [k] => c.layer(k.layer).and_then(|l| {
+                    let pr = l.props.find(k.prop)?;
+                    let key = pr.keys.iter().find(|x| x.time == k.time)?;
+                    let tc = crate::panels::timecode(&app.session, &c, l.comp_time(k.time));
+                    let v = match &key.value {
+                        effectcraft_engine::keyframe::Value::Scalar(v) => format!("{v:.2}"),
+                        effectcraft_engine::keyframe::Value::Vec2(v) => format!("{:.1}, {:.1}", v[0], v[1]),
+                        effectcraft_engine::keyframe::Value::Vec3(v) => format!("{:.1}, {:.1}, {:.1}", v[0], v[1], v[2]),
+                        _ => String::new(),
+                    };
+                    Some(format!("{}  {tc}  {v}", pr.name).trim_end().to_string())
+                }),
+                _ => None,
+            };
+            let line = one.unwrap_or_else(|| format!("{} keyframes selected", sel.len()));
+            p.text(pos2(x0, ly + 18.0), Align2::LEFT_CENTER, line, Tokens::ui(11.5), t.text_dim);
         }
     }
 }

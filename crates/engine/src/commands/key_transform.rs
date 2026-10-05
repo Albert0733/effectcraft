@@ -19,11 +19,25 @@ fn v3(v: Option<&Value>) -> Option<[f64; 3]> {
 /// Transform the selected keys: times scale about `timeAnchor` (comp seconds, default the first
 /// selected key) by `timeScale` and move by `timeOffset`; values scale about `valueAnchor` by
 /// `valueScale` and move by `valueOffset` (every dimension, or only `dim`). Times land on frames.
+/// With `fromStart` (drags), each step of one merged gesture gives the whole transform since the
+/// drag started and applies to the keys as they were then: keys squeezed onto one frame on the
+/// way, or rounded steps, are never lost; only the final position counts.
 fn transform(s: &mut Session, p: &Value) -> Result<Value> {
     let cid = s.active_comp_id().ok_or(EngineError::NoComp)?;
-    let comp = s.project.comp(cid).ok_or(EngineError::NoComp)?;
+    let merge = merge_p(p);
+    let from_start = b_p(p, "fromStart").unwrap_or(false) && merge.is_some();
+    let gesture = from_start && merge.is_some_and(|m| s.history.merge_key.as_deref() == Some(m)) && s.key_move.as_ref().map(|g| g.merge.as_str()) == merge;
+    let (sel, base) = match (&s.key_move, s.history.undo.last()) {
+        (Some(g), Some((_, b))) if gesture => (g.from.clone(), Some(b.clone())),
+        _ => (s.state.selected_keys.clone(), None),
+    };
+    if from_start {
+        s.key_move = merge.map(|m| crate::KeyMove { merge: m.to_string(), from: sel.clone(), total: Tick::ZERO });
+    }
+    // The comp as it was when the drag started (its keys are what the transform applies to).
+    let start = base.clone().unwrap_or_else(|| s.project.clone());
+    let comp = start.comp(cid).ok_or(EngineError::NoComp)?;
     let fr = comp.frame_rate;
-    let sel = s.state.selected_keys.clone();
     let ts = f_p(p, "timeScale").unwrap_or(1.0);
     let toff = f_p(p, "timeOffset").unwrap_or(0.0);
     let vs = f_p(p, "valueScale").unwrap_or(1.0);
@@ -46,7 +60,10 @@ fn transform(s: &mut Session, p: &Value) -> Result<Value> {
         fr.snap_nearest(Tick::from_seconds_f64(x.max(0.0)))
     };
     let touch_values = vs != 1.0 || voff != 0.0;
-    s.edit("Transform Keyframes", merge_p(p), |proj, st| {
+    s.edit("Transform Keyframes", merge, |proj, st| {
+        if let Some(b) = base {
+            *proj = (*b).clone();
+        }
         let comp = proj.comp_mut(cid).ok_or(EngineError::NoComp)?;
         let mut groups: std::collections::BTreeMap<(LayerId, Uid), Vec<Tick>> = Default::default();
         for k in &sel {
@@ -136,7 +153,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Transform Keyframes",
             [],
             None,
-            "{timeScale?, timeAnchor? (comp s), timeOffset? (s), valueScale?, valueAnchor?, valueOffset?, dim? | dims?: [d…], merge?}",
+            "{timeScale?, timeAnchor? (comp s), timeOffset? (s), valueScale?, valueAnchor?, valueOffset?, dim? | dims?: [d…], merge?, fromStart?: bool (with merge: values are the whole transform since the drag started)}",
             has_keys,
             transform
         ),

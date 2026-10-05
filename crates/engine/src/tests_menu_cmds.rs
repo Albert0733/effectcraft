@@ -863,3 +863,170 @@ fn new_comp_from_selection_survives_hostile_sequence_numbers() {
     s.state.project_selection = vec![a, b];
     assert!(s.execute("file.newCompFromSelection", json!({"single": true, "dimensionsFrom": 99})).is_err());
 }
+
+fn key_times(s: &Session, l: u64) -> Vec<f64> {
+    layer(s, l).props.prop("transform/opacity").unwrap().keys.iter().map(|k| (k.time.seconds() * 30.0).round() / 30.0).collect()
+}
+
+fn opacity_keys(s: &mut Session, l: u64, times: &[f64]) {
+    for (i, t) in times.iter().enumerate() {
+        s.execute("prop.addKey", json!({"layer": l, "path": "transform/opacity", "time": t, "value": i as f64 * 10.0})).unwrap();
+    }
+}
+
+#[test]
+fn dragging_a_key_past_another_keeps_it() {
+    let mut s = comp();
+    let a = solid(&mut s, "#ff0000");
+    opacity_keys(&mut s, a, &[1.0, 2.0]);
+    s.execute("keys.select", json!({"keys": [{"layer": a, "path": "transform/opacity", "time": 1.0}]})).unwrap();
+    // One drag, frame by frame, from 1 s over the 2 s key to 3 s.
+    for _ in 0..60 {
+        s.execute("keys.move", json!({"delta": 1.0 / 30.0, "merge": "key-drag"})).unwrap();
+    }
+    assert_eq!(key_times(&s, a), vec![2.0, 3.0], "the 2 s key passed over is still there");
+    // Dropped exactly on a key: it replaces it, as in After Effects.
+    s.history.merge_key = None;
+    s.execute("keys.move", json!({"delta": -1.0, "merge": "key-drag-2"})).unwrap();
+    assert_eq!(key_times(&s, a), vec![2.0]);
+    // The whole drag was one undo step.
+    s.execute("edit.undo", json!({})).unwrap();
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(key_times(&s, a), vec![1.0, 2.0]);
+}
+
+#[test]
+fn keys_of_a_stretched_layer_move_with_the_pointer() {
+    let mut s = comp();
+    let a = solid(&mut s, "#ff0000");
+    opacity_keys(&mut s, a, &[0.0, 1.0]);
+    s.execute_checked("layer.timeStretch", json!({"layers": [a], "percent": 200})).unwrap();
+    assert_eq!(layer(&s, a).stretch, 200.0);
+    let comp_time = |s: &Session, i: usize| {
+        let l = layer(s, a);
+        l.comp_time(l.props.prop("transform/opacity").unwrap().keys[i].time).seconds()
+    };
+    let before = comp_time(&s, 1);
+    s.execute("keys.select", json!({"keys": [{"layer": a, "path": "transform/opacity", "time": 1.0}]})).unwrap();
+    s.execute("keys.move", json!({"delta": 0.5})).unwrap();
+    assert!((comp_time(&s, 1) - (before + 0.5)).abs() < 1.0 / 30.0, "{} → {}", before, comp_time(&s, 1));
+    s.execute("keys.nudge", json!({"frames": 3})).unwrap();
+    assert!((comp_time(&s, 1) - (before + 0.6)).abs() < 1.0 / 60.0, "three comp frames");
+}
+
+#[test]
+fn key_selection_toggles_and_skips_locked_layers_and_hold_restores_bezier() {
+    let mut s = comp();
+    let a = solid(&mut s, "#ff0000");
+    opacity_keys(&mut s, a, &[0.0, 1.0]);
+    let k = |t: f64| json!({"layer": a, "path": "transform/opacity", "time": t});
+    s.execute("keys.select", json!({"keys": [k(0.0)]})).unwrap();
+    s.execute("keys.select", json!({"keys": [k(1.0)], "toggle": true})).unwrap();
+    assert_eq!(s.state.selected_keys.len(), 2);
+    s.execute("keys.select", json!({"keys": [k(0.0)], "toggle": true})).unwrap();
+    assert_eq!(s.state.selected_keys.len(), 1, "toggled out");
+    // Hold off returns an eased key to Bezier.
+    s.execute("keys.easyEase", json!({})).unwrap();
+    s.execute("keys.toggleHold", json!({})).unwrap();
+    s.execute("keys.toggleHold", json!({})).unwrap();
+    let kf = layer(&s, a).props.prop("transform/opacity").unwrap().keys[1].clone();
+    assert_eq!(kf.out_interp, effectcraft_keyframe::Interp::Bezier);
+    // Locked: its keys can't be selected.
+    s.execute("layer.setSwitch", json!({"layers": [a], "switch": "lock", "value": true})).unwrap();
+    s.execute("keys.select", json!({"keys": [k(0.0)]})).unwrap();
+    assert!(s.state.selected_keys.is_empty());
+    s.execute("keys.selectAll", json!({"layers": [a]})).unwrap();
+    assert!(s.state.selected_keys.is_empty());
+}
+
+#[test]
+fn transform_drags_apply_their_whole_offset_to_the_keys_they_started_with() {
+    let mut s = comp();
+    let a = solid(&mut s, "#ff0000");
+    opacity_keys(&mut s, a, &[0.0, 1.0, 2.0]);
+    s.execute("keys.selectAll", json!({"layers": [a]})).unwrap();
+    // Squeezed onto one frame on the way, then back: the three keys survive.
+    for k in [0.5, 0.01, 0.0001, 1.0] {
+        s.execute("keys.transform", json!({"timeScale": k, "timeAnchor": 0.0, "merge": "box", "fromStart": true})).unwrap();
+    }
+    assert_eq!(key_times(&s, a), vec![0.0, 1.0, 2.0]);
+    // A slow move in tiny steps still arrives (each step is the whole offset).
+    s.history.merge_key = None;
+    for i in 1..=30 {
+        s.execute("keys.transform", json!({"timeOffset": i as f64 * 0.1 / 30.0, "merge": "move", "fromStart": true})).unwrap();
+    }
+    assert_eq!(key_times(&s, a), vec![0.1, 1.1, 2.1]);
+}
+
+#[test]
+fn select_equal_previous_and_following_keyframes() {
+    let mut s = comp();
+    let a = solid(&mut s, "#ff0000");
+    for (t, v) in [(0.0, 20.0), (1.0, 50.0), (2.0, 20.0), (3.0, 70.0)] {
+        s.execute("prop.addKey", json!({"layer": a, "path": "transform/opacity", "time": t, "value": v})).unwrap();
+    }
+    let pick = |s: &mut Session, t: f64| s.execute("keys.select", json!({"keys": [{"layer": a, "path": "transform/opacity", "time": t}]})).unwrap();
+    let times = |s: &Session| {
+        let mut v: Vec<f64> = s.state.selected_keys.iter().map(|k| k.time.seconds()).collect();
+        v.sort_by(f64::total_cmp);
+        v
+    };
+    pick(&mut s, 0.0);
+    s.execute("keys.selectEqual", json!({})).unwrap();
+    assert_eq!(times(&s), vec![0.0, 2.0]);
+    pick(&mut s, 2.0);
+    s.execute("keys.selectPrevious", json!({})).unwrap();
+    assert_eq!(times(&s), vec![0.0, 1.0, 2.0]);
+    pick(&mut s, 1.0);
+    s.execute("keys.selectFollowing", json!({})).unwrap();
+    assert_eq!(times(&s), vec![1.0, 2.0, 3.0]);
+}
+
+#[test]
+fn keys_from_several_layers_paste_in_order_and_paste_reversed_respects_stretch() {
+    let mut s = comp();
+    let a = solid(&mut s, "#ff0000");
+    let b = solid(&mut s, "#00ff00");
+    opacity_keys(&mut s, a, &[0.0, 1.0]);
+    s.execute("prop.addKey", json!({"layer": b, "path": "transform/opacity", "time": 0.0, "value": 77})).unwrap();
+    let c = solid(&mut s, "#0000ff");
+    let d = solid(&mut s, "#ffffff");
+    // Copy A's and B's Opacity keys, paste onto C and D: A → C, B → D (in order).
+    s.execute("keys.selectAll", json!({"layers": [a, b]})).unwrap();
+    s.execute("keys.copy", json!({})).unwrap();
+    s.execute("time.set", json!({"time": 2.0})).unwrap();
+    s.execute("layer.select", json!({"layers": [c, d]})).unwrap();
+    s.execute("keys.paste", json!({})).unwrap();
+    assert_eq!(key_times(&s, c), vec![2.0, 3.0], "A's two keys");
+    assert_eq!(key_times(&s, d), vec![2.0], "B's one key");
+    // Paste Reversed onto a layer stretched to 200 %: the reversed keys land 2 s apart there too.
+    let e = solid(&mut s, "#808080");
+    s.execute_checked("layer.timeStretch", json!({"layers": [e], "percent": 200})).unwrap();
+    s.execute("keys.selectAll", json!({"layers": [a]})).unwrap();
+    s.execute("keys.copy", json!({})).unwrap();
+    s.execute("time.set", json!({"time": 0.0})).unwrap();
+    s.execute("layer.select", json!({"layers": [e]})).unwrap();
+    s.execute("edit.pasteReversedKeyframes", json!({})).unwrap();
+    let pr = layer(&s, e).props.prop("transform/opacity").unwrap().clone();
+    let l = layer(&s, e);
+    let ct: Vec<f64> = pr.keys.iter().map(|k| l.comp_time(k.time).seconds()).collect();
+    let vals: Vec<f64> = pr.keys.iter().map(|k| k.value.as_f64()).collect();
+    assert!(ct.len() == 2 && (ct[1] - ct[0] - 1.0).abs() < 1e-6, "keys 1 s apart in comp time: {ct:?}");
+    assert_eq!(vals, vec![10.0, 0.0], "reversed");
+}
+
+#[test]
+fn j_and_k_stop_at_keys_markers_and_the_work_area() {
+    let mut s = comp();
+    let a = solid(&mut s, "#ff0000");
+    opacity_keys(&mut s, a, &[2.0]);
+    s.execute("comp.workArea", json!({"start": 1.0, "end": 3.0})).unwrap();
+    s.execute("layer.select", json!({"layers": [a]})).unwrap();
+    let mut stops = vec![];
+    for _ in 0..4 {
+        s.execute("time.nextKey", json!({})).unwrap();
+        stops.push((s.time().seconds() * 30.0).round() / 30.0);
+    }
+    let last = (3.0 * 30.0 - 1.0) / 30.0;
+    assert_eq!(stops, vec![1.0, 2.0, (last * 30.0f64).round() / 30.0, (last * 30.0f64).round() / 30.0]);
+}

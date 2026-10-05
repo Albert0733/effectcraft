@@ -6,7 +6,7 @@ use effectcraft_project::{LayerId, Property, Uid};
 use effectcraft_time::Tick;
 use serde_json::{Value, json};
 
-use super::prop::{edit_keys, prop_ref};
+use super::prop::prop_ref;
 use super::{CommandSpec, bad, comp_id, f_p, has_comp, has_keys, layers_p, merge_p, str_p, time_p};
 use crate::{EngineError, KeyClip, KeyRef, Result, Session, cmd, query};
 
@@ -73,11 +73,19 @@ fn paste(s: &mut Session, p: &Value) -> Result<Value> {
         let path = str_p(p, "path")?;
         comp.layer(*targets.first()?)?.props.prop(path).map(|pr| pr.uid)
     });
+    // Keys copied from several layers, pasted onto as many layers: the first copied layer's keys
+    // go to the first target and so on (else every target gets every copied property).
+    let mut sources: Vec<LayerId> = clip.iter().map(|c| c.layer).collect();
+    sources.dedup();
+    let paired = sources.len() > 1 && sources.len() == targets.len();
     // (layer, prop uid, clip index)
     let mut plan: Vec<(LayerId, Uid, usize)> = vec![];
-    for lid in &targets {
+    for (ti, lid) in targets.iter().enumerate() {
         let Some(l) = comp.layer(*lid) else { continue };
         for (ci, c) in clip.iter().enumerate() {
+            if paired && sources.get(ti) != Some(&c.layer) {
+                continue;
+            }
             let Some(sample) = c.keys.first().map(|k| &k.value) else { continue };
             let target = if clip.len() == 1 {
                 explicit
@@ -145,6 +153,37 @@ fn select_all(s: &mut Session, p: &Value) -> Result<Value> {
             l.props.walk("", &mut |_, pr| sel.extend(pr.keys.iter().map(|k| KeyRef { layer: l.id, prop: pr.uid, time: k.time })));
         }
     }
+    // Keys of locked layers can't be selected.
+    sel.retain(|k| comp.layer(k.layer).is_some_and(|l| !l.switches.locked));
+    s.state.selected_keys = sel;
+    Ok(json!(s.state.selected_keys.len()))
+}
+
+/// The keyframe context menu's Select Equal / Previous / Following Keyframes: in every property
+/// with a selected key, its keys with the same value as a selected one / before the first
+/// selected one / after the last selected one (the selected keys stay selected).
+fn select_related(s: &mut Session, which: &str) -> Result<Value> {
+    let comp = s.active_comp().ok_or(EngineError::NoComp)?;
+    let mut sel = s.state.selected_keys.clone();
+    let mut props: Vec<(LayerId, Uid)> = sel.iter().map(|k| (k.layer, k.prop)).collect();
+    props.sort();
+    props.dedup();
+    for (lid, uid) in props {
+        let Some(pr) = comp.layer(lid).and_then(|l| l.props.find(uid)) else { continue };
+        let picked: Vec<&Keyframe> = pr.keys.iter().filter(|k| sel.iter().any(|r| r.layer == lid && r.prop == uid && r.time == k.time)).collect();
+        let (Some(first), Some(last)) = (picked.iter().map(|k| k.time).min(), picked.iter().map(|k| k.time).max()) else { continue };
+        for k in &pr.keys {
+            let hit = match which {
+                "equal" => picked.iter().any(|p| p.value == k.value),
+                "previous" => k.time < first,
+                _ => k.time > last,
+            };
+            let r = KeyRef { layer: lid, prop: uid, time: k.time };
+            if hit && !sel.contains(&r) {
+                sel.push(r);
+            }
+        }
+    }
     s.state.selected_keys = sel;
     Ok(json!(s.state.selected_keys.len()))
 }
@@ -153,11 +192,8 @@ fn select_all(s: &mut Session, p: &Value) -> Result<Value> {
 fn nudge(s: &mut Session, p: &Value) -> Result<Value> {
     let frames = p.get("frames").and_then(Value::as_i64).ok_or_else(|| bad("keys.nudge", "missing `frames`"))?;
     let comp = s.active_comp().ok_or(EngineError::NoComp)?;
-    let d = Tick(comp.frame_duration().0 * frames);
-    edit_keys(s, "Nudge Keyframes", merge_p(p), move |_, _, t| {
-        *t += d;
-        true
-    })
+    let d = Tick(comp.frame_duration().0.saturating_mul(frames));
+    super::prop::shift_keys(s, "Nudge Keyframes", merge_p(p), d)
 }
 
 /// Edit one key directly: move it in time and/or set its value (Graph Editor drags).
@@ -399,6 +435,9 @@ pub fn specs() -> Vec<CommandSpec> {
             &json!({"frames": -10})
         )),
         cmd!("keys.set", "Edit Keyframe", [], None, "{layer?, path|prop, time (layer s), newTime?, value?, merge?}", has_comp, set_key),
+        cmd!("keys.selectEqual", "Select Equal Keyframes", [], None, "{}", has_keys, |s, _| select_related(s, "equal")),
+        cmd!("keys.selectPrevious", "Select Previous Keyframes", [], None, "{}", has_keys, |s, _| select_related(s, "previous")),
+        cmd!("keys.selectFollowing", "Select Following Keyframes", [], None, "{}", has_keys, |s, _| select_related(s, "following")),
         cmd!(
             "keys.setEase",
             "Set Keyframe Ease",

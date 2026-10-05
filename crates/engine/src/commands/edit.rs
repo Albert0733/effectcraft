@@ -299,46 +299,6 @@ fn copy_expression_only(s: &mut Session, _: &Value) -> Result<Value> {
 }
 
 /// Paste the keyframe clipboard at the CTI onto the selected layers (same property paths).
-fn paste_keys(s: &mut Session, reversed: bool) -> Result<Value> {
-    let cid = s.active_comp_id().ok_or(EngineError::NoComp)?;
-    let ids = s.state.selected_layers.clone();
-    if ids.is_empty() {
-        return Err(EngineError::Other("select a layer to paste keyframes into".into()));
-    }
-    let clip = s.state.key_clipboard.clone();
-    let t = s.time();
-    let n = s.edit(if reversed { "Paste Reversed Keyframes" } else { "Paste Keyframes" }, None, |proj, st| {
-        let mut n = 0;
-        st.selected_keys.clear();
-        for lid in &ids {
-            let l = super::layer_mut(proj, cid, *lid)?;
-            let lt = l.layer_time(t);
-            for c in &clip {
-                let Some(pr) = l.props.prop_mut(&c.path) else { continue };
-                let span = c.keys.last().map(|k| k.time).unwrap_or(Tick::ZERO);
-                for k in &c.keys {
-                    let mut k = k.clone();
-                    if std::mem::discriminant(&k.value) != std::mem::discriminant(&pr.value) {
-                        continue;
-                    }
-                    if reversed {
-                        k.time = span - k.time;
-                        std::mem::swap(&mut k.in_interp, &mut k.out_interp);
-                        std::mem::swap(&mut k.in_ease, &mut k.out_ease);
-                        std::mem::swap(&mut k.spatial_in, &mut k.spatial_out);
-                    }
-                    k.time += lt;
-                    st.selected_keys.push(crate::KeyRef { layer: *lid, prop: pr.uid, time: k.time });
-                    effectcraft_keyframe::set_key(&mut pr.keys, k);
-                    n += 1;
-                }
-            }
-        }
-        Ok(n)
-    })?;
-    Ok(json!({"keys": n}))
-}
-
 fn paste_links(s: &mut Session, clip: LinkClip) -> Result<Value> {
     let cid = s.active_comp_id().ok_or(EngineError::NoComp)?;
     let ids = s.state.selected_layers.clone();
@@ -470,8 +430,34 @@ fn label(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(Value::Null)
 }
 
-fn paste_reversed(s: &mut Session, _: &Value) -> Result<Value> {
-    paste_keys(s, true)
+/// Edit ▸ Paste Reversed Keyframes: the copied keys mirrored in time over their whole span (the
+/// last key first, incoming and outgoing eases swapped), pasted like Edit ▸ Paste
+/// (`keys.paste`: at the current time, into the selected or the same properties).
+fn paste_reversed(s: &mut Session, p: &Value) -> Result<Value> {
+    let original = s.state.key_clipboard.clone();
+    let span = original.iter().flat_map(|c| c.keys.iter().map(|k| k.time)).max().unwrap_or(Tick::ZERO);
+    s.state.key_clipboard = original
+        .iter()
+        .map(|c| crate::KeyClip {
+            keys: c
+                .keys
+                .iter()
+                .rev()
+                .map(|k| {
+                    let mut k = k.clone();
+                    k.time = span - k.time;
+                    std::mem::swap(&mut k.in_interp, &mut k.out_interp);
+                    std::mem::swap(&mut k.in_ease, &mut k.out_ease);
+                    std::mem::swap(&mut k.spatial_in, &mut k.spatial_out);
+                    k
+                })
+                .collect(),
+            ..c.clone()
+        })
+        .collect();
+    let r = s.execute("keys.paste", p.clone());
+    s.state.key_clipboard = original;
+    r
 }
 
 /// Lift (leave a gap) or extract (close the gap) the work area from the selected layers (all
@@ -667,7 +653,7 @@ pub fn specs() -> Vec<CommandSpec> {
         ),
         cmd!("edit.copyExpressionOnly", "Copy Expression Only", ["Edit"], None, "{}", has_props_or_layers, copy_expression_only),
         cmd!("edit.paste", "Paste", ["Edit"], Some("Cmd+V"), "{} (layers, keyframes at the CTI, or property links / expressions)", has_clip, paste),
-        cmd!("edit.pasteReversedKeyframes", "Paste Reversed Keyframes", ["Edit"], None, "{}", has_key_clip, paste_reversed),
+        cmd!("edit.pasteReversedKeyframes", "Paste Reversed Keyframes", ["Edit"], None, "{layers?, prop?|path?, time?}", has_key_clip, paste_reversed),
         cmd!("edit.clear", "Clear", ["Edit"], Some("Delete"), "{layers?}", layers_or_keys, delete),
         cmd!("edit.duplicate", "Duplicate", ["Edit"], Some("Cmd+D"), "{layers?}", has_layers, duplicate),
         cmd!("edit.splitLayer", "Split Layer", ["Edit"], Some("Cmd+Shift+D"), "{layers?}", has_layers, split),

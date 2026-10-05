@@ -133,6 +133,12 @@ build real projects through these interfaces; they are worked examples of everyt
   (a string param that is exactly `"$N"` or `"$N.key"` is replaced; `$2.path` is the trim's path).
 * **Expressions**: `set_property`/`get_property` replies carry `evaluated` (what renders) next to
   `value` (the keyframed value) and `expressionError` when the expression fails.
+* **Keyframes like a person**: `keys.select {keys, toggle: true}` (Shift+click), `keys.selectEqual`
+  / `selectPrevious` / `selectFollowing`, `keys.move {delta, merge}` (steps sharing a merge key are
+  one drag: each applies to the keys as they were before it, so a key passed over survives) and
+  `keys.transform {…, merge, fromStart: true}` (values are the whole transform since the drag
+  started). Keys of locked layers can't be selected. Copy / paste: `keys.copy`, then `keys.paste`
+  at the current time (keys copied from several layers go to as many selected layers in order).
 * **Easing with Keyframe Velocity**: select keys by path, `keys.select {"keys":[{"layer":"Ring","path":"contents/trim/end","time":0}]}`,
   then `keys.velocity {"outSpeed":0,"outInfluence":33.33}`.
 * **Gradients**: `set_property {"path":"contents/gfill/colors","value":["#0080ff","#ffff00"]}` or

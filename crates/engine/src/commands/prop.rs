@@ -335,7 +335,19 @@ fn select_keys(s: &mut Session, p: &Value) -> Result<Value> {
             sel.push(KeyRef { layer: l, prop: pr.uid, time: kt });
         }
     }
-    if b_p(p, "add").unwrap_or(false) {
+    // Keys of locked layers can't be selected (so nothing edits them).
+    sel.retain(|k| comp.layer(k.layer).is_some_and(|l| !l.switches.locked));
+    if b_p(p, "toggle").unwrap_or(false) {
+        // Shift+click: in and out of the selection.
+        for k in sel {
+            match s.state.selected_keys.iter().position(|x| *x == k) {
+                Some(i) => {
+                    s.state.selected_keys.remove(i);
+                }
+                None => s.state.selected_keys.push(k),
+            }
+        }
+    } else if b_p(p, "add").unwrap_or(false) {
         for k in sel {
             if !s.state.selected_keys.contains(&k) {
                 s.state.selected_keys.push(k);
@@ -400,14 +412,72 @@ pub(crate) fn edit_keys(s: &mut Session, label: &str, merge: Option<&str>, f: im
     })
 }
 
+/// Move the selected keys by `d` comp seconds, snapped to the comp's frames in comp time (keys
+/// of time-stretched layers move with the pointer, not by the layer-time distance). Keys of
+/// locked layers stay. A key landing on another key of its property replaces it.
+pub(crate) fn shift_keys(s: &mut Session, label: &str, merge: Option<&str>, d: Tick) -> Result<Value> {
+    let cid = s.active_comp_id().ok_or(EngineError::NoComp)?;
+    // A drag (steps with one merge key) starts again from the keys before it each step.
+    let gesture = merge.is_some_and(|m| s.history.merge_key.as_deref() == Some(m)) && s.key_move.as_ref().map(|g| g.merge.as_str()) == merge;
+    let (from, total, base) = match (&s.key_move, s.history.undo.last()) {
+        (Some(g), Some((_, base))) if gesture => (g.from.clone(), g.total + d, Some(base.clone())),
+        _ => (s.state.selected_keys.clone(), d, None),
+    };
+    s.key_move = merge.map(|m| crate::KeyMove { merge: m.to_string(), from: from.clone(), total });
+    s.edit(label, merge, |proj, st| {
+        if let Some(b) = base {
+            *proj = (*b).clone();
+        }
+        let comp = proj.comp_mut(cid).ok_or(EngineError::NoComp)?;
+        let fr = comp.frame_rate;
+        let mut groups: std::collections::BTreeMap<(LayerId, Uid), Vec<Tick>> = Default::default();
+        for k in &from {
+            groups.entry((k.layer, k.prop)).or_default().push(k.time);
+        }
+        let mut sel = vec![];
+        for ((lid, uid), times) in groups {
+            let Some(l) = comp.layer_mut(lid) else { continue };
+            let to = |t: Tick| l.layer_time(fr.snap_nearest(l.comp_time(t) + total));
+            let moves: Vec<(Tick, Tick)> = times.iter().map(|t| (*t, to(*t))).collect();
+            if l.switches.locked {
+                sel.extend(times.iter().map(|t| KeyRef { layer: lid, prop: uid, time: *t }));
+                continue;
+            }
+            let Some(pr) = l.props.find_mut(uid) else { continue };
+            // Take the moving keys out, then put them back at their new times.
+            let mut moved = vec![];
+            for (old, new) in &moves {
+                if let Some(i) = key_at(&pr.keys, *old) {
+                    let mut k = pr.keys.remove(i);
+                    k.time = *new;
+                    moved.push(k);
+                }
+            }
+            for k in moved {
+                sel.push(KeyRef { layer: lid, prop: uid, time: k.time });
+                match pr.keys.binary_search_by(|x| x.time.cmp(&k.time)) {
+                    Ok(j) => pr.keys[j] = k,
+                    Err(j) => pr.keys.insert(j, k),
+                }
+            }
+            // Roving keys follow their neighbours: keep the selection on them.
+            let before: Vec<Tick> = pr.keys.iter().map(|k| k.time).collect();
+            if effectcraft_keyframe::retime_roving(&mut pr.keys, pr.spatial) {
+                for r in sel.iter_mut().filter(|r| r.layer == lid && r.prop == uid) {
+                    if let Some(i) = before.iter().position(|t| *t == r.time) {
+                        r.time = pr.keys[i].time;
+                    }
+                }
+            }
+        }
+        st.selected_keys = sel;
+        Ok(json!(st.selected_keys.len()))
+    })
+}
+
 fn move_keys(s: &mut Session, p: &Value) -> Result<Value> {
     let d = Tick::from_seconds_f64(f_p(p, "delta").ok_or_else(|| bad("keys.move", "missing `delta` (seconds)"))?);
-    let fr = s.active_comp().map(|c| c.frame_rate);
-    edit_keys(s, "Move Keyframes", merge_p(p), move |_, _, t| {
-        let nt = *t + d;
-        *t = fr.map(|r| r.snap_nearest(nt)).unwrap_or(nt);
-        true
-    })
+    shift_keys(s, "Move Keyframes", merge_p(p), d)
 }
 
 fn delete_keys(s: &mut Session, _: &Value) -> Result<Value> {
@@ -543,7 +613,14 @@ fn interpolation(s: &mut Session, p: &Value) -> Result<Value> {
 fn toggle_hold(s: &mut Session, _: &Value) -> Result<Value> {
     edit_keys(s, "Toggle Hold Keyframe", None, |keys, i, _| {
         let k = &mut keys[i];
-        k.out_interp = if k.out_interp == Interp::Hold { Interp::Linear } else { Interp::Hold };
+        // Off again: back to Bezier when the key eases (its other side, auto / continuous, or
+        // an outgoing ease), else Linear.
+        let bezier = k.auto_bezier || k.continuous || k.in_interp == Interp::Bezier || !k.out_ease.is_empty();
+        k.out_interp = match k.out_interp {
+            Interp::Hold if bezier => Interp::Bezier,
+            Interp::Hold => Interp::Linear,
+            _ => Interp::Hold,
+        };
         false
     })
 }
@@ -667,7 +744,15 @@ pub fn specs() -> Vec<CommandSpec> {
             has_layers,
             convert_expr_to_keys
         ),
-        cmd!("keys.select", "Select Keyframes", [], None, "{keys: [{layer, prop: uid | path (or `path`), time (layer s)}], add?}", has_comp, select_keys),
+        cmd!(
+            "keys.select",
+            "Select Keyframes",
+            [],
+            None,
+            "{keys: [{layer, prop: uid | path (or `path`), time (layer s)}], add?, toggle?: bool (Shift+click: in or out of the selection)}",
+            has_comp,
+            select_keys
+        ),
         cmd!("keys.move", "Move Keyframes", [], None, "{delta (s), merge?}", has_keys, move_keys),
         cmd!("keys.delete", "Delete Keyframes", [], None, "{}", has_keys, delete_keys),
         cmd!("keys.easyEase", "Easy Ease", ["Animation", "Keyframe Assistant"], Some("F9"), "{which?: both|in|out}", has_keys, ease),

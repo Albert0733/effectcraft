@@ -4,7 +4,11 @@
 //! Pure Rust and dependency-free: the values come from the operating system's own reporting
 //! (`/proc/meminfo` on Linux, `sysctl`/`vm_stat` on macOS, `wmic`/PowerShell on Windows). Every
 //! query may fail (sandboxes, the web): callers treat `None` as "unknown" and keep their
-//! configured budgets.
+//! configured budgets. The periodic reading behind the cache budgets runs on a background
+//! thread ([`MemoryWatch`]): on Windows it starts PowerShell, which takes about a second.
+
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use serde::Serialize;
 
@@ -23,10 +27,51 @@ impl SysMemory {
     }
 }
 
+/// The system's memory, read in the background: [`MemoryWatch::poll`] starts a reading (unless
+/// one is running) and [`MemoryWatch::latest`] returns the last one without waiting.
+#[derive(Clone, Default)]
+pub struct MemoryWatch {
+    latest: Arc<Mutex<Option<SysMemory>>>,
+    busy: Arc<AtomicBool>,
+}
+
+impl MemoryWatch {
+    /// Start a new reading in the background (no threads on the web: read inline, it is
+    /// unknown there anyway).
+    pub fn poll(&self) {
+        if self.busy.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let (latest, busy) = (self.latest.clone(), self.busy.clone());
+        let read = move || {
+            if let Some(m) = memory() {
+                *latest.lock().unwrap_or_else(PoisonError::into_inner) = Some(m);
+            }
+            busy.store(false, Ordering::Release);
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        if std::thread::Builder::new().name("ec-memory".into()).spawn(read).is_err() {
+            self.busy.store(false, Ordering::Release);
+        }
+        #[cfg(target_arch = "wasm32")]
+        read();
+    }
+
+    /// The last reading (`None` until one finished).
+    pub fn latest(&self) -> Option<SysMemory> {
+        *self.latest.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 #[allow(dead_code)]
 fn run(cmd: &str, args: &[&str]) -> Option<String> {
-    let out = std::process::Command::new(cmd).args(args).output().ok()?;
+    let mut c = std::process::Command::new(cmd);
+    c.args(args);
+    // A console program started from the windowed app would flash a console window.
+    #[cfg(target_os = "windows")]
+    std::os::windows::process::CommandExt::creation_flags(&mut c, 0x0800_0000); // CREATE_NO_WINDOW
+    let out = c.output().ok()?;
     out.status.success().then(|| String::from_utf8_lossy(&out.stdout).to_string())
 }
 

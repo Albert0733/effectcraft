@@ -29,7 +29,8 @@ struct BoxDrag {
     handle: usize,
     /// Fixed opposite point (comp s, value).
     anchor: [f64; 2],
-    /// Pointer data position of the previous frame.
+    /// Where the drag started (comp s, value): the pointer for a move, the handle for a scale.
+    /// Every step sends the whole transform since then (`keys.transform {fromStart}`).
     last: [f64; 2],
 }
 
@@ -134,7 +135,7 @@ pub(crate) fn transform_box(
         });
     }
     let Some(resp) = resp_any else { return };
-    let Some(mut st) = ctx.data(|d| d.get_temp::<BoxDrag>(box_id())) else { return };
+    let Some(st) = ctx.data(|d| d.get_temp::<BoxDrag>(box_id())) else { return };
     if (st.handle == 8) == handles {
         return;
     }
@@ -142,21 +143,20 @@ pub(crate) fn transform_box(
         && let Some(pt) = resp.interact_pointer_pos()
     {
         let cur = data(pt);
-        let mut params = json!({"merge": "graph-box"});
+        let mut params = json!({"merge": "graph-box", "fromStart": true});
         if st.handle == 8 {
             params["timeOffset"] = json!(cur[0] - st.last[0]);
             if value_ok {
                 params["valueOffset"] = json!(cur[1] - st.last[1]);
             }
-            st.last = cur;
         } else {
             let (time_axis, value_axis) = match st.handle {
                 4 | 6 => (false, true),
                 5 | 7 => (true, false),
                 _ => (true, true),
             };
-            // Scale relative to where the handle is now (incremental, so merged steps compose).
-            let now = corner(st.handle);
+            // Scale relative to where the handle was when the drag started.
+            let now = st.last;
             if time_axis && (now[0] - st.anchor[0]).abs() > 1e-6 {
                 let k = (cur[0] - st.anchor[0]) / (now[0] - st.anchor[0]);
                 if k > 0.01 {
@@ -250,6 +250,8 @@ struct AltScale {
     anchor: f64,
     /// The dragged end is the group's last key (else its first).
     end_is_max: bool,
+    /// The group's span when the drag started (set on its first step).
+    span: Option<f64>,
 }
 
 fn alt_id() -> egui::Id {
@@ -272,9 +274,9 @@ fn sel_range(app: &EffectcraftApp, comp: &Comp) -> Option<(f64, f64)> {
 pub(crate) fn alt_scale_begin(app: &EffectcraftApp, ctx: &egui::Context, comp: &Comp, key_ct: f64) -> bool {
     let Some((lo, hi)) = sel_range(app, comp) else { return false };
     let st = if (key_ct - hi).abs() < 1e-6 {
-        AltScale { anchor: lo, end_is_max: true }
+        AltScale { anchor: lo, end_is_max: true, span: None }
     } else if (key_ct - lo).abs() < 1e-6 {
-        AltScale { anchor: hi, end_is_max: false }
+        AltScale { anchor: hi, end_is_max: false, span: None }
     } else {
         return false;
     };
@@ -293,16 +295,16 @@ pub(crate) fn alt_scale_update(app: &EffectcraftApp, ctx: &egui::Context, comp: 
     let (Some((lo, hi)), Some(px)) = (sel_range(app, comp), ctx.input(|i| i.pointer.latest_pos())) else { return };
     let fr = comp.frame_rate;
     let target = fr.snap_nearest(effectcraft_engine::time::Tick::from_seconds_f64(tm.t(px.x).max(0.0))).seconds();
-    let end = if st.end_is_max { hi } else { lo };
-    let span = end - st.anchor;
+    // The group's span when the drag started: every step sends the whole scale since then.
+    let span = st.span.unwrap_or((if st.end_is_max { hi } else { lo }) - st.anchor);
+    if st.span.is_none() {
+        ctx.data_mut(|d| d.insert_temp(alt_id(), AltScale { span: Some(span), ..st }));
+    }
     let want = target - st.anchor;
     if span.abs() < 1e-9 || want.abs() < 1e-9 || want.signum() != span.signum() {
         return;
     }
-    let k = want / span;
-    if (k - 1.0).abs() > 1e-6 {
-        actions.push(("keys.transform".into(), json!({"timeScale": k, "timeAnchor": st.anchor, "merge": "key-alt-scale"})));
-    }
+    actions.push(("keys.transform".into(), json!({"timeScale": want / span, "timeAnchor": st.anchor, "merge": "key-alt-scale", "fromStart": true})));
 }
 
 /// An Alt-drag group scale is in progress (the plain key move stands aside).
