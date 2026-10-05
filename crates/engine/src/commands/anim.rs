@@ -73,11 +73,19 @@ fn paste(s: &mut Session, p: &Value) -> Result<Value> {
         let path = str_p(p, "path")?;
         comp.layer(*targets.first()?)?.props.prop(path).map(|pr| pr.uid)
     });
+    // Keys copied from several layers, pasted onto as many layers: the first copied layer's keys
+    // go to the first target and so on (else every target gets every copied property).
+    let mut sources: Vec<LayerId> = clip.iter().map(|c| c.layer).collect();
+    sources.dedup();
+    let paired = sources.len() > 1 && sources.len() == targets.len();
     // (layer, prop uid, clip index)
     let mut plan: Vec<(LayerId, Uid, usize)> = vec![];
-    for lid in &targets {
+    for (ti, lid) in targets.iter().enumerate() {
         let Some(l) = comp.layer(*lid) else { continue };
         for (ci, c) in clip.iter().enumerate() {
+            if paired && sources.get(ti) != Some(&c.layer) {
+                continue;
+            }
             let Some(sample) = c.keys.first().map(|k| &k.value) else { continue };
             let target = if clip.len() == 1 {
                 explicit

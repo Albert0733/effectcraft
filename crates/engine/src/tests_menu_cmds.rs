@@ -981,3 +981,36 @@ fn select_equal_previous_and_following_keyframes() {
     s.execute("keys.selectFollowing", json!({})).unwrap();
     assert_eq!(times(&s), vec![1.0, 2.0, 3.0]);
 }
+
+#[test]
+fn keys_from_several_layers_paste_in_order_and_paste_reversed_respects_stretch() {
+    let mut s = comp();
+    let a = solid(&mut s, "#ff0000");
+    let b = solid(&mut s, "#00ff00");
+    opacity_keys(&mut s, a, &[0.0, 1.0]);
+    s.execute("prop.addKey", json!({"layer": b, "path": "transform/opacity", "time": 0.0, "value": 77})).unwrap();
+    let c = solid(&mut s, "#0000ff");
+    let d = solid(&mut s, "#ffffff");
+    // Copy A's and B's Opacity keys, paste onto C and D: A → C, B → D (in order).
+    s.execute("keys.selectAll", json!({"layers": [a, b]})).unwrap();
+    s.execute("keys.copy", json!({})).unwrap();
+    s.execute("time.set", json!({"time": 2.0})).unwrap();
+    s.execute("layer.select", json!({"layers": [c, d]})).unwrap();
+    s.execute("keys.paste", json!({})).unwrap();
+    assert_eq!(key_times(&s, c), vec![2.0, 3.0], "A's two keys");
+    assert_eq!(key_times(&s, d), vec![2.0], "B's one key");
+    // Paste Reversed onto a layer stretched to 200 %: the reversed keys land 2 s apart there too.
+    let e = solid(&mut s, "#808080");
+    s.execute_checked("layer.timeStretch", json!({"layers": [e], "percent": 200})).unwrap();
+    s.execute("keys.selectAll", json!({"layers": [a]})).unwrap();
+    s.execute("keys.copy", json!({})).unwrap();
+    s.execute("time.set", json!({"time": 0.0})).unwrap();
+    s.execute("layer.select", json!({"layers": [e]})).unwrap();
+    s.execute("edit.pasteReversedKeyframes", json!({})).unwrap();
+    let pr = layer(&s, e).props.prop("transform/opacity").unwrap().clone();
+    let l = layer(&s, e);
+    let ct: Vec<f64> = pr.keys.iter().map(|k| l.comp_time(k.time).seconds()).collect();
+    let vals: Vec<f64> = pr.keys.iter().map(|k| k.value.as_f64()).collect();
+    assert!(ct.len() == 2 && (ct[1] - ct[0] - 1.0).abs() < 1e-6, "keys 1 s apart in comp time: {ct:?}");
+    assert_eq!(vals, vec![10.0, 0.0], "reversed");
+}
