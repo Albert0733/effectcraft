@@ -37,7 +37,7 @@ of them have been reconciled.
 | Real-user experience | ≈ 70%, uneven by platform | Issues #41–#47 (all from the Linux AppImage, 5 October): panning the viewer snaps back, panels can't be resized or rearranged, drag-and-drop and double-click import don't work, layer rename gets stuck, the Layer Settings arrow does nothing, the Project panel clips, the Wayland window icon is generic. parity.md counts docking as done. Most checking happens on macOS. No localisation, no accessibility work |
 | Performance | unknown against After Effects | Internal numbers only (e.g. Advanced 3D 290 ms/frame at 1080p on the GPU, an M4 Pro under load). Nothing benchmarked against After Effects; no large real projects (4K footage, hundreds of layers) tested |
 | Media formats | ≈ 80% | H.264, ProRes, HEVC, AV1, image sequences and audio exist. The new HEVC / AV1 encoders have no B-frames, multi-reference or SAO / CDEF, so files are larger than from mature encoders. Camera formats (BRAW, R3D, ProRes RAW, variable-frame-rate phone video) are unverified |
-| AI-assisted tools | ≈ 50% | Roto Brush and face tracking use classical methods (graph cut + optical flow; a shape-model fitter); quality is well below After Effects' learned models |
+| AI-assisted tools | ≈ 50% | Face tracking uses a classical shape-model fitter. Roto Brush 2.0 / 3.0 can use MobileSAM since M13.35 (pure-Rust inference, an optional download): on our synthetic moving-disc test it scores IoU 0.989 on the base frame and ≥ 0.980 over 20 propagated frames (classic: 0.973), but nothing compares it with After Effects yet |
 | Maturity | early | First commit 1 October 2026. ≈ 285,000 lines of almost entirely agent-written Rust, ≈ 2,050 tests, 8 external issue reports so far. After Effects has around 30 years of edge cases behind it |
 
 ## Where we're going: workstreams in priority order
@@ -104,8 +104,13 @@ The most important missing piece: it turns every other estimate here into a meas
 
 ### G7. Learned models for Roto Brush and face tracking
 
-- Already an owner decision in `plan/STATUS.md`: licensed weights with pure-Rust inference, or
-  accept the classical methods as final.
+- Decided on 5 October 2026 for Roto Brush: licensed weights with pure-Rust inference, if the
+  impact on the system is low, in a composable, swappable module. Done in M13.35: the
+  `effectcraft-segment` crate (a `MaskModel` interface, a registry that only accepts
+  open-source licences, MobileSAM under Apache-2.0), weights downloaded on demand and verified,
+  Settings ▸ Roto Brush to choose. Next: measure it against After Effects (G1); faster encoders
+  (GPU) for long shots.
+- Face tracking: still an owner decision (a learned detector, or the classical fitter as final).
 
 ### G8. Plug-in ecosystem
 

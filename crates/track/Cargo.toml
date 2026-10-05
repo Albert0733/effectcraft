@@ -11,6 +11,7 @@ workspace = true
 
 [dependencies]
 effectcraft-raster = { workspace = true }
+effectcraft-segment = { workspace = true }
 rayon = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

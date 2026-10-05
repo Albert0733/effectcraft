@@ -72,7 +72,7 @@ fn main() -> eframe::Result {
             session.autosave.background = true;
             // Settings, shortcut presets and the crash-recovery sentinel live in the platform
             // config directory. Agent-driven runs (`--control`) skip crash recovery.
-            if let Some(dir) = config_dir() {
+            if let Some(dir) = effectcraft_host::config_dir() {
                 // WebAssembly effect plug-ins in <config>/Plug-ins load before the menus are built.
                 let plugins = dir.join("Plug-ins");
                 if plugins.is_dir() {
@@ -161,24 +161,6 @@ impl eframe::App for Desktop {
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         self.app.raw_input_hook(ctx, raw_input);
     }
-}
-
-/// The platform config directory for EffectCraft (`EFFECTCRAFT_CONFIG_DIR` overrides):
-/// `~/Library/Application Support/EffectCraft` (macOS), `%APPDATA%\EffectCraft` (Windows),
-/// `$XDG_CONFIG_HOME/effectcraft` or `~/.config/effectcraft` (Linux and others).
-fn config_dir() -> Option<std::path::PathBuf> {
-    use std::path::PathBuf;
-    if let Some(d) = std::env::var_os("EFFECTCRAFT_CONFIG_DIR") {
-        return Some(PathBuf::from(d));
-    }
-    let home = || std::env::var_os("HOME").map(PathBuf::from);
-    if cfg!(target_os = "macos") {
-        return home().map(|h| h.join("Library/Application Support/EffectCraft"));
-    }
-    if cfg!(target_os = "windows") {
-        return std::env::var_os("APPDATA").map(|a| PathBuf::from(a).join("EffectCraft"));
-    }
-    std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).or_else(|| home().map(|h| h.join(".config"))).map(|c| c.join("effectcraft"))
 }
 
 /// Driven by an agent (`--control`): don't activate the app on launch, so the user's keyboard

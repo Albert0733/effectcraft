@@ -81,6 +81,8 @@ impl Exporter for FileExporter {
 /// A new session with media, import, expressions, scripting and export enabled.
 pub fn session() -> Session {
     Session {
+        // The desktop app, the CLI and the MCP server share installed Roto Brush models.
+        models_dir: config_dir().map(|d| d.join("models")),
         exporter: Some(Arc::new(FileExporter::default())),
         footage: Arc::new(effectcraft_media::MediaPool::new()),
         importer: Some(Arc::new(MediaImporter)),
@@ -91,6 +93,24 @@ pub fn session() -> Session {
         plugin_loader: effectcraft_plugin::wasm_available().then_some(effectcraft_plugin::loader as effectcraft_engine::PluginLoader),
         ..Default::default()
     }
+}
+
+/// The platform config directory for EffectCraft (`EFFECTCRAFT_CONFIG_DIR` overrides):
+/// `~/Library/Application Support/EffectCraft` (macOS), `%APPDATA%\EffectCraft` (Windows),
+/// `$XDG_CONFIG_HOME/effectcraft` or `~/.config/effectcraft` (Linux and others).
+pub fn config_dir() -> Option<std::path::PathBuf> {
+    use std::path::PathBuf;
+    if let Some(d) = std::env::var_os("EFFECTCRAFT_CONFIG_DIR") {
+        return Some(PathBuf::from(d));
+    }
+    let home = || std::env::var_os("HOME").map(PathBuf::from);
+    if cfg!(target_os = "macos") {
+        return home().map(|h| h.join("Library/Application Support/EffectCraft"));
+    }
+    if cfg!(target_os = "windows") {
+        return std::env::var_os("APPDATA").map(|a| PathBuf::from(a).join("EffectCraft"));
+    }
+    std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).or_else(|| home().map(|h| h.join(".config"))).map(|c| c.join("effectcraft"))
 }
 
 #[cfg(test)]

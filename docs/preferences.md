@@ -139,6 +139,10 @@ Commands (CLI, MCP, control channel):
   the Timeline's expression editor
 - `scripting.errorBanner`: a banner along the bottom of the Composition panel names the first
   failing expression (click: reveal it)
+- `roto.model` (Settings ▸ Roto Brush): the segmentation model Roto Brush 2.0 / 3.0 use,
+  `classical` (built in) or `mobilesam` (once installed). The page lists every registered model
+  with its licence, size, source and status, with Download, Install from File… and Remove
+  (`roto.models` / `roto.model.*`); weights live in the `models` folder next to the settings
 
 ### Display-only settings
 
