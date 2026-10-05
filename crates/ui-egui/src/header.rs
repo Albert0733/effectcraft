@@ -293,21 +293,25 @@ pub fn color_popup(ui: &mut egui::Ui, id: egui::Id, pos: egui::Pos2, c: &mut [f3
     changed
 }
 
-/// The EffectCraft mark: a rounded square with a gradient-like split and a keyframe diamond.
+/// The ArtCraft mark as supplied in `docs/brand` (the README's and getartcraft.com's logo; used
+/// unmodified, see `docs/brand/LICENSE-brand.txt`).
+static ARTCRAFT_MARK: &[u8] = include_bytes!("../../../docs/brand/artcraft-mark.png");
+
+/// The ArtCraft mark in `r` (decoded once into a mipmapped texture, so it stays crisp from the
+/// 24 px Tools bar to the About dialog). Nothing is drawn if it can't be decoded.
 pub fn paint_logo(p: &egui::Painter, r: Rect) {
-    p.rect_filled(r, 6.0, Color32::from_rgb(0x1d, 0x2b, 0x5e));
-    let inner = r.shrink(2.0);
-    p.rect_filled(
-        Rect::from_min_max(inner.min, pos2(inner.center().x, inner.max.y)),
-        egui::CornerRadius { nw: 5, sw: 5, ne: 0, se: 0 },
-        Color32::from_rgb(0x2d, 0x8c, 0xeb),
-    );
-    p.rect_filled(
-        Rect::from_min_max(pos2(inner.center().x, inner.min.y), inner.max),
-        egui::CornerRadius { nw: 0, sw: 0, ne: 5, se: 5 },
-        Color32::from_rgb(0x8e, 0x6b, 0xff),
-    );
-    let c = r.center();
-    let s = r.width() * 0.26;
-    p.add(egui::Shape::convex_polygon(vec![c + vec2(0.0, -s), c + vec2(s, 0.0), c + vec2(0.0, s), c + vec2(-s, 0.0)], Color32::WHITE, Stroke::NONE));
+    let ctx = p.ctx();
+    let id = egui::Id::new("artcraft-mark");
+    let tex = ctx.data(|d| d.get_temp::<Option<egui::TextureHandle>>(id)).unwrap_or_else(|| {
+        let tex = image::load_from_memory_with_format(ARTCRAFT_MARK, image::ImageFormat::Png).ok().map(|img| {
+            let img = img.to_rgba8();
+            let ci = egui::ColorImage::from_rgba_unmultiplied([img.width() as usize, img.height() as usize], img.as_raw());
+            ctx.load_texture("artcraft-mark", ci, egui::TextureOptions::LINEAR.with_mipmap_mode(Some(egui::TextureFilter::Linear)))
+        });
+        ctx.data_mut(|d| d.insert_temp(id, tex.clone()));
+        tex
+    });
+    if let Some(t) = tex {
+        p.image(t.id(), r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+    }
 }

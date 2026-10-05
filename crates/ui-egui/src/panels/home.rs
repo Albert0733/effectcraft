@@ -1,8 +1,10 @@
-//! The Home screen (shown in the Composition panel at launch, from the header's Home button, and
-//! by the Learn workspace): New Project / Open Project / New Composition / Open Demo, the recent
-//! projects (File ▸ Open Recent, from Settings) with thumbnails, folders and dates, the
-//! Templates tab (New from Template gallery, `templates`), the Learn tab, and where After
-//! Effects has its Learn / What's New area, the ArtCraft community links.
+//! The Home screen, laid out like After Effects' (shown over the whole workspace at launch, from
+//! the Tools bar's Home button and by the Learn workspace). A left rail holds New Project / Open
+//! Project, the Home / Templates / Learn pages and, at its foot, the ArtCraft community links.
+//! The Home page welcomes you with quick-start tiles (New Composition, the demo project, Import,
+//! New from Template) over the recent projects (File ▸ Open Recent, from Settings): a filterable
+//! table with thumbnails and Name / Opened / Size / Kind columns. Templates is the New from
+//! Template gallery (`templates`), Learn the guided tutorials (`learn`).
 //!
 //! Thumbnails: when a project is opened or saved and the viewer has its frame, a 96×54 RGB
 //! thumbnail is stored in the config store (`thumb-<hash>.txt`, hex) and shown here.
@@ -29,6 +31,10 @@ pub struct RecentEntry {
     pub folder: String,
     /// Last modified (`2026-10-02 14:05`, UTC), when the file is readable.
     pub modified: Option<String>,
+    /// Last modified, Unix seconds.
+    pub modified_secs: Option<i64>,
+    /// File size in bytes.
+    pub size: Option<u64>,
     pub exists: bool,
 }
 
@@ -41,17 +47,19 @@ pub fn recent_entries(prefs: &effectcraft_engine::prefs::Prefs) -> Vec<RecentEnt
         .map(|(index, p)| {
             let path = std::path::Path::new(p);
             let meta = std::fs::metadata(path).ok();
-            let modified = meta
+            let modified_secs = meta
                 .as_ref()
                 .and_then(|m| m.modified().ok())
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| format_utc(d.as_secs() as i64));
+                .map(|d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
             RecentEntry {
                 index,
                 path: p.clone(),
                 name: path.file_stem().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| p.clone()),
                 folder: path.parent().map(|d| d.to_string_lossy().to_string()).unwrap_or_default(),
-                modified,
+                modified: modified_secs.map(format_utc),
+                modified_secs,
+                size: meta.as_ref().filter(|m| m.is_file()).map(|m| m.len()),
                 exists: meta.is_some(),
             }
         })
@@ -73,6 +81,45 @@ pub fn format_utc(secs: i64) -> String {
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = yoe + era * 400 + i64::from(m <= 2);
     format!("{y:04}-{m:02}-{d:02} {:02}:{:02}", rem / 3600, (rem % 3600) / 60)
+}
+
+/// How long ago `then` was, as the Home screen's Opened column shows it ("3 hours ago", then the
+/// date after a week).
+pub fn format_ago(now: i64, then: i64) -> String {
+    let d = now.saturating_sub(then);
+    let plural = |n: i64, unit: &str| format!("{n} {unit}{} ago", if n == 1 { "" } else { "s" });
+    match d {
+        i64::MIN..60 => "Just now".to_string(),
+        60..3_600 => plural(d / 60, "minute"),
+        3_600..86_400 => plural(d / 3_600, "hour"),
+        86_400..172_800 => "Yesterday".to_string(),
+        172_800..604_800 => plural(d / 86_400, "day"),
+        _ => format_utc(then).get(..10).unwrap_or_default().to_string(),
+    }
+}
+
+/// A file size as the Home screen shows it (`12 KB`, `3.4 MB`).
+pub fn format_size(bytes: u64) -> String {
+    let b = bytes as f64;
+    if b < 1024.0 {
+        format!("{bytes} B")
+    } else if b < 1024.0 * 1024.0 {
+        format!("{:.0} KB", b / 1024.0)
+    } else if b < 1024.0 * 1024.0 * 1024.0 {
+        format!("{:.1} MB", b / (1024.0 * 1024.0))
+    } else {
+        format!("{:.1} GB", b / (1024.0 * 1024.0 * 1024.0))
+    }
+}
+
+/// The Kind column: what a recent file is, by its extension.
+fn kind_of(path: &str) -> &'static str {
+    match std::path::Path::new(path).extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref() {
+        Some("ecproj") => "EffectCraft project",
+        Some("aep" | "aepx") => "After Effects project",
+        Some("json" | "lottie") => "Lottie animation",
+        _ => "Project",
+    }
 }
 
 /// The config-store name of a project's thumbnail.
@@ -157,191 +204,261 @@ fn thumb_texture(app: &mut EffectcraftApp, ctx: &egui::Context, path: &str) -> O
     tex
 }
 
-/// Draw the Home screen.
+/// Width of the Home screen's left rail.
+const RAIL_W: f32 = 236.0;
+
+/// Draw the Home screen over `rect` (the whole workspace).
 pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let ctx = ui.ctx().clone();
     let p = ui.painter().with_clip_rect(rect);
-    p.rect_filled(rect, 0.0, Color32::from_rgb(0x1b, 0x1d, 0x24));
-    let wide = rect.width() >= 820.0;
-    let pad = 32.0;
-    let left_w = if wide { 250.0 } else { rect.width() - pad * 2.0 };
+    p.rect_filled(rect, 0.0, t.app_bg);
     let mut actions: Vec<(&str, serde_json::Value)> = vec![];
+    let rail = Rect::from_min_size(rect.min, vec2(RAIL_W.min(rect.width() * 0.4), rect.height()));
+    p.rect_filled(rail, 0.0, t.panel_bg);
+    p.line_segment([rail.right_top(), rail.right_bottom()], Stroke::new(1.0, t.separator));
+    rail_ui(app, ui, &p, rail, &mut actions);
+    let main = Rect::from_min_max(pos2(rail.max.x + 40.0, rect.min.y + 32.0), pos2(rect.max.x - 40.0, rect.max.y - 16.0));
+    if app.ui.home_learn {
+        super::learn::home_tab(app, ui, main);
+    } else if app.ui.home_templates {
+        super::templates::home_tab(app, ui, main);
+    } else {
+        home_page(app, ui, &p, main, &ctx, &mut actions);
+    }
+    run_actions(app, &ctx, actions);
+}
 
-    // ---- left: brand + start actions.
-    let x0 = rect.min.x + pad;
-    let mut y = rect.min.y + pad;
-    crate::header::paint_logo(&p, Rect::from_min_size(pos2(x0, y), vec2(40.0, 40.0)));
-    p.text(pos2(x0 + 52.0, y + 12.0), Align2::LEFT_CENTER, "EffectCraft", Tokens::semibold(22.0), Color32::WHITE);
-    p.text(pos2(x0 + 52.0, y + 32.0), Align2::LEFT_CENTER, format!("Version {}", env!("CARGO_PKG_VERSION")), Tokens::ui(11.0), t.text_faint);
-    y += 56.0;
-    // Home / Templates / Learn tabs.
-    let tab = if app.ui.home_learn {
+/// The left rail: New / Open Project, the pages, and the community links at its foot.
+fn rail_ui(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: &egui::Painter, rail: Rect, actions: &mut Vec<(&'static str, serde_json::Value)>) {
+    let t = app.tokens;
+    let x0 = rail.min.x + 16.0;
+    let w = rail.width() - 32.0;
+    let mut y = rail.min.y + 20.0;
+    for (label, id, primary) in [("New Project", "file.newProject", true), ("Open Project…", "file.open", false)] {
+        let r = Rect::from_min_size(pos2(x0, y), vec2(w, 34.0));
+        if widgets::text_button(ui, r, label, primary, &t, egui::Id::new(("home", id))).clicked() {
+            actions.push((id, json!({})));
+        }
+        app.auto.add(&format!("home.{id}"), r, label);
+        y += 42.0;
+    }
+    y += 10.0;
+    // Pages.
+    let page = if app.ui.home_learn {
         2
     } else if app.ui.home_templates {
         1
     } else {
         0
     };
-    for (k, label) in ["Home", "Templates", "Learn"].into_iter().enumerate() {
-        let r = Rect::from_min_size(pos2(x0 + k as f32 * 84.0, y), vec2(78.0, 28.0));
+    for (k, (label, icon)) in [("Home", Icon::Home), ("Templates", Icon::Grid), ("Learn", Icon::Sparkle)].into_iter().enumerate() {
+        let r = Rect::from_min_size(pos2(rail.min.x + 8.0, y), vec2(rail.width() - 16.0, 34.0));
         let resp = ui.interact(r, egui::Id::new(("home-tab", label)), Sense::click());
-        let on = tab == k;
+        let on = page == k;
         if on || resp.hovered() {
-            p.rect_filled(r, 6.0, if on { Color32::from_rgb(0x2e, 0x31, 0x3b) } else { t.hover });
+            p.rect_filled(r, 6.0, if on { t.row_selected } else { t.hover });
         }
-        p.text(r.center(), Align2::CENTER_CENTER, label, Tokens::medium(13.0), if on { Color32::WHITE } else { t.text_dim });
-        if on {
-            p.line_segment([pos2(r.min.x + 12.0, r.max.y - 1.0), pos2(r.max.x - 12.0, r.max.y - 1.0)], Stroke::new(2.0, t.accent));
-        }
+        let col = if on { t.tab_text_active } else { t.text_dim };
+        icons::paint(p, Rect::from_center_size(pos2(r.min.x + 20.0, r.center().y), vec2(16.0, 16.0)), icon, col);
+        p.text(pos2(r.min.x + 40.0, r.center().y), Align2::LEFT_CENTER, label, Tokens::medium(13.0), col);
         app.auto.add(&format!("home.tab.{}", label.to_ascii_lowercase()), r, label);
         if resp.clicked() {
             app.ui.home_learn = k == 2;
             app.ui.home_templates = k == 1;
         }
+        y += 38.0;
     }
-    y += 40.0;
-    for (label, id, primary) in [
-        ("New Project", "file.newProject", true),
-        ("Open Project…", "file.open", false),
-        ("New Composition", "app.newComp", false),
-        ("Open Demo Project", "file.openDemoProject", false),
-        ("Import Footage…", "file.import", false),
-    ] {
-        let r = Rect::from_min_size(pos2(x0, y), vec2(left_w.min(250.0), 32.0));
-        if widgets::text_button(ui, r, label, primary, &t, egui::Id::new(("home", id))).clicked() {
-            actions.push((id, json!({})));
-        }
-        app.auto.add(&format!("home.{id}"), r, label);
-        y += 40.0;
-    }
-
-    // ---- community (After Effects' Learn / What's New area).
-    let (cx, mut cy, cw) = if wide { (x0, y + 18.0, left_w) } else { (x0, y + 10.0, left_w) };
-    p.text(pos2(cx, cy), Align2::LEFT_CENTER, "Community", Tokens::semibold(13.0), t.text);
-    cy += 16.0;
-    p.text(pos2(cx, cy), Align2::LEFT_CENTER, "Tutorials, help and what's new", Tokens::ui(11.0), t.text_faint);
-    cy += 16.0;
+    // Community links at the foot (below the pages when the window is short).
     let links = [
         (Icon::Chat, "Join the ArtCraft Discord", "help.discord"),
         (Icon::Globe, "getartcraft.com", "help.website"),
         (Icon::Globe, "EffectCraft home page", "help.appPage"),
         (Icon::Code, "EffectCraft on GitHub", "help.github"),
     ];
+    let sib = effectcraft_engine::links::SIBLINGS;
+    let sib_rows = sib.len().div_ceil(2) as f32;
+    let foot_h = 22.0 + links.len() as f32 * 30.0 + 22.0 + sib_rows * 26.0;
+    let mut cy = (rail.max.y - 16.0 - foot_h).max(y + 16.0);
+    p.line_segment([pos2(x0, cy - 10.0), pos2(x0 + w, cy - 10.0)], Stroke::new(1.0, t.separator));
+    p.text(pos2(x0, cy + 6.0), Align2::LEFT_CENTER, "Community", Tokens::semibold(12.0), t.text_dim);
+    cy += 22.0;
     for (icon, label, cmd) in links {
-        let r = Rect::from_min_size(pos2(cx, cy), vec2(cw.min(250.0), 30.0));
+        let r = Rect::from_min_size(pos2(x0, cy), vec2(w, 26.0));
         let resp = ui.interact(r, egui::Id::new(("home-link", cmd)), Sense::click());
         let discord = cmd == "help.discord";
-        let bg = if discord {
-            Color32::from_rgb(0x58, 0x65, 0xf2)
+        if discord {
+            p.rect_filled(r, 13.0, Color32::from_rgb(0x58, 0x65, 0xf2));
         } else if resp.hovered() {
-            t.hover
-        } else {
-            Color32::from_rgb(0x2a, 0x2c, 0x34)
-        };
-        p.rect_filled(r, 15.0, bg);
-        icons::paint(&p, Rect::from_center_size(pos2(r.min.x + 20.0, r.center().y), vec2(14.0, 14.0)), icon, Color32::WHITE);
-        p.text(pos2(r.min.x + 36.0, r.center().y), Align2::LEFT_CENTER, label, Tokens::medium(12.0), Color32::WHITE);
+            p.rect_filled(r, 13.0, t.hover);
+        }
+        let col = if discord { Color32::WHITE } else { t.text };
+        icons::paint(p, Rect::from_center_size(pos2(r.min.x + 16.0, r.center().y), vec2(13.0, 13.0)), icon, col);
+        p.text(pos2(r.min.x + 30.0, r.center().y), Align2::LEFT_CENTER, label, Tokens::medium(12.0), col);
         app.auto.add(&format!("home.{cmd}"), r, label);
         if resp.clicked() {
             let _ = app.session.execute(cmd, json!({}));
         }
-        cy += 36.0;
+        cy += 30.0;
     }
-    cy += 8.0;
-    p.text(pos2(cx, cy), Align2::LEFT_CENTER, "More ArtCraft apps", Tokens::ui(11.0), t.text_faint);
-    cy += 12.0;
-    let sib = effectcraft_engine::links::SIBLINGS;
-    let per_row = 2usize;
-    let sw = (cw.min(250.0) - 6.0) / per_row as f32;
+    p.text(pos2(x0, cy + 8.0), Align2::LEFT_CENTER, "More ArtCraft apps", Tokens::ui(11.0), t.text_faint);
+    cy += 20.0;
+    let sw = (w - 6.0) / 2.0;
     for (i, (name, slug)) in sib.iter().enumerate() {
-        let r = Rect::from_min_size(pos2(cx + (i % per_row) as f32 * (sw + 6.0), cy + (i / per_row) as f32 * 28.0), vec2(sw, 24.0));
+        let r = Rect::from_min_size(pos2(x0 + (i % 2) as f32 * (sw + 6.0), cy + (i / 2) as f32 * 26.0), vec2(sw, 22.0));
         let resp = ui.interact(r, egui::Id::new(("sib", *slug)), Sense::click());
-        p.rect_filled(r, 12.0, if resp.hovered() { t.hover } else { Color32::from_rgb(0x24, 0x26, 0x2e) });
-        p.text(r.center(), Align2::CENTER_CENTER, *name, Tokens::ui(11.5), t.text);
+        p.rect_filled(r, 11.0, if resp.hovered() { t.hover } else { t.field_bg });
+        p.text(r.center(), Align2::CENTER_CENTER, *name, Tokens::ui(11.0), t.text);
         app.auto.add(&format!("home.sibling.{slug}"), r, name);
         if resp.clicked() {
             let _ = app.session.execute("help.sibling", json!({"app": slug}));
         }
     }
-    let community_bottom = cy + sib.len().div_ceil(per_row) as f32 * 28.0;
+}
 
-    // ---- recent projects (or the Learn tab's tutorials).
-    let (rx, mut ry, rw) = if wide {
-        let rx = x0 + left_w + 40.0;
-        (rx, rect.min.y + pad + 6.0, rect.max.x - pad - rx)
-    } else {
-        (x0, community_bottom + 24.0, left_w)
-    };
-    if app.ui.home_learn {
-        super::learn::home_tab(app, ui, Rect::from_min_max(pos2(rx, ry), pos2(rx + rw, rect.max.y - 8.0)));
-        run_actions(app, &ctx, actions);
-        return;
+/// The Home page: the welcome, quick-start tiles and the recent projects table.
+fn home_page(
+    app: &mut EffectcraftApp,
+    ui: &mut egui::Ui,
+    p: &egui::Painter,
+    area: Rect,
+    ctx: &egui::Context,
+    actions: &mut Vec<(&'static str, serde_json::Value)>,
+) {
+    let t = app.tokens;
+    let (x0, w) = (area.min.x, area.width());
+    let mut y = area.min.y;
+    p.text(pos2(x0, y + 14.0), Align2::LEFT_CENTER, "Welcome to EffectCraft", Tokens::semibold(26.0), t.tab_text_active);
+    y += 40.0;
+    p.text(
+        pos2(x0, y + 8.0),
+        Align2::LEFT_CENTER,
+        format!("Motion graphics and visual effects · version {}", env!("CARGO_PKG_VERSION")),
+        Tokens::ui(12.5),
+        t.text_dim,
+    );
+    y += 36.0;
+    // Quick start.
+    let tiles = [
+        ("New Composition", "app.newComp", Icon::NewComp),
+        ("Open Demo Project", "file.openDemoProject", Icon::Play),
+        ("Import Footage…", "file.import", Icon::Footage),
+        ("New from Template", "templates", Icon::Grid),
+    ];
+    let gap = 12.0;
+    let tw = ((w - gap * 3.0) / 4.0).clamp(120.0, 220.0);
+    for (k, (label, id, icon)) in tiles.into_iter().enumerate() {
+        let r = Rect::from_min_size(pos2(x0 + k as f32 * (tw + gap), y), vec2(tw, 64.0));
+        let resp = ui.interact(r, egui::Id::new(("home-tile", id)), Sense::click());
+        p.rect_filled(r, 8.0, if resp.hovered() { t.hover } else { t.panel_bg });
+        p.rect_stroke(r, 8.0, Stroke::new(1.0, if resp.hovered() { t.accent } else { t.separator }), StrokeKind::Inside);
+        let ir = Rect::from_center_size(pos2(r.min.x + 30.0, r.center().y), vec2(32.0, 32.0));
+        p.rect_filled(ir, 7.0, t.accent.gamma_multiply(0.18));
+        icons::paint(p, ir.shrink(8.0), icon, t.accent);
+        p.with_clip_rect(r.shrink(2.0)).text(pos2(ir.max.x + 12.0, r.center().y), Align2::LEFT_CENTER, label, Tokens::medium(12.5), t.text);
+        app.auto.add(&format!("home.{id}"), r, label);
+        if resp.clicked() {
+            if id == "templates" {
+                app.ui.home_templates = true;
+                app.ui.home_learn = false;
+            } else {
+                actions.push((id, json!({})));
+            }
+        }
     }
-    if app.ui.home_templates {
-        super::templates::home_tab(app, ui, Rect::from_min_max(pos2(rx, ry), pos2(rx + rw, rect.max.y - 8.0)));
-        run_actions(app, &ctx, actions);
-        return;
-    }
-    p.text(pos2(rx, ry + 6.0), Align2::LEFT_CENTER, "Recent", Tokens::semibold(16.0), Color32::WHITE);
+    y += 64.0 + 36.0;
+
+    // Recent: heading, filter, clear.
+    p.text(pos2(x0, y + 12.0), Align2::LEFT_CENTER, "Recent", Tokens::semibold(17.0), t.tab_text_active);
     let entries = recent_entries(&app.session.prefs);
+    let fid = egui::Id::new("home-filter");
+    let mut filter: String = ctx.data(|d| d.get_temp(fid)).unwrap_or_default();
+    let fr = Rect::from_min_size(pos2(x0 + w - 240.0, y), vec2(240.0, 26.0));
+    widgets::search_field(ui, fr, &mut filter, "Filter recent files", &t);
+    app.auto.add("home.filter", fr, "Filter recent files");
+    ctx.data_mut(|d| d.insert_temp(fid, filter.clone()));
     if !entries.is_empty() {
-        let cr = Rect::from_min_size(pos2(rx + rw - 100.0, ry - 4.0), vec2(100.0, 20.0));
+        let cr = Rect::from_min_size(pos2(fr.min.x - 96.0, y + 3.0), vec2(84.0, 20.0));
         let resp = ui.interact(cr, egui::Id::new("home-clear-recent"), Sense::click());
-        p.text(cr.right_center(), Align2::RIGHT_CENTER, "Clear list", Tokens::ui(11.0), if resp.hovered() { t.text } else { t.text_faint });
+        p.text(cr.right_center(), Align2::RIGHT_CENTER, "Clear list", Tokens::ui(11.5), if resp.hovered() { t.text } else { t.text_faint });
         app.auto.add("home.clearRecent", cr, "Clear Recent Projects");
         if resp.clicked() {
             actions.push(("file.clearRecent", json!({})));
         }
     }
-    ry += 26.0;
-    // Column headings.
-    let date_w = 130.0;
-    p.text(pos2(rx + 112.0, ry), Align2::LEFT_CENTER, "Name", Tokens::ui(11.0), t.text_faint);
-    p.text(pos2(rx + rw - date_w, ry), Align2::LEFT_CENTER, "Modified", Tokens::ui(11.0), t.text_faint);
-    ry += 10.0;
-    p.line_segment([pos2(rx, ry), pos2(rx + rw, ry)], Stroke::new(1.0, t.separator));
-    ry += 6.0;
-    if entries.is_empty() {
-        p.text(pos2(rx, ry + 20.0), Align2::LEFT_CENTER, "No recent projects. Projects you open or save appear here.", Tokens::ui(12.0), t.text_faint);
+    y += 42.0;
+    // Column headings (Name / Opened / Size / Kind, as in After Effects).
+    let (opened_x, size_x, kind_x) = (x0 + w * 0.52, x0 + w * 0.68, x0 + w * 0.80);
+    for (label, x) in [("NAME", x0 + 76.0), ("OPENED", opened_x), ("SIZE", size_x), ("KIND", kind_x)] {
+        p.text(pos2(x, y), Align2::LEFT_CENTER, label, Tokens::medium(10.5), t.text_faint);
     }
-    let row_h = 66.0;
-    for e in &entries {
-        let r = Rect::from_min_size(pos2(rx, ry), vec2(rw, row_h - 4.0));
-        if r.min.y > rect.max.y {
+    y += 12.0;
+    p.line_segment([pos2(x0, y), pos2(x0 + w, y)], Stroke::new(1.0, t.separator));
+    y += 4.0;
+    let q = filter.trim().to_lowercase();
+    let shown: Vec<&RecentEntry> =
+        entries.iter().filter(|e| q.is_empty() || e.name.to_lowercase().contains(&q) || e.folder.to_lowercase().contains(&q)).collect();
+    if shown.is_empty() {
+        let c = pos2(area.center().x, y + 90.0);
+        icons::paint(p, Rect::from_center_size(c, vec2(40.0, 40.0)), Icon::Folder, t.text_faint);
+        let (head, sub) = if entries.is_empty() {
+            ("Your recent files will show here", "Create a new project, or open the demo project to look around.")
+        } else {
+            ("No recent files match the filter", "Try another name or folder.")
+        };
+        p.text(c + vec2(0.0, 40.0), Align2::CENTER_CENTER, head, Tokens::semibold(14.0), t.text);
+        p.text(c + vec2(0.0, 62.0), Align2::CENTER_CENTER, sub, Tokens::ui(12.0), t.text_faint);
+    }
+    let now = web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
+    let row_h = 48.0;
+    for e in shown {
+        let r = Rect::from_min_size(pos2(x0, y), vec2(w, row_h - 2.0));
+        if r.min.y > area.max.y {
             break;
         }
         let resp = ui.interact(r, egui::Id::new(("home-recent", e.index)), Sense::click()).on_hover_text(&e.path);
         if resp.hovered() {
             p.rect_filled(r, 6.0, t.hover);
         }
-        let tr = Rect::from_min_size(pos2(r.min.x + 6.0, r.min.y + 4.0), vec2(THUMB_W as f32, THUMB_H as f32));
-        match thumb_texture(app, &ctx, &e.path) {
+        let tr = Rect::from_min_size(pos2(r.min.x + 6.0, r.center().y - 18.0), vec2(64.0, 36.0));
+        match thumb_texture(app, ctx, &e.path) {
             Some(tex) => {
                 p.image(tex.id(), tr, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
             }
             None => {
-                p.rect_filled(tr, 3.0, Color32::from_rgb(0x24, 0x26, 0x2e));
-                icons::paint(&p, Rect::from_center_size(tr.center(), vec2(20.0, 20.0)), Icon::Comp, t.text_faint);
+                p.rect_filled(tr, 3.0, t.field_bg);
+                icons::paint(p, Rect::from_center_size(tr.center(), vec2(16.0, 16.0)), Icon::Comp, t.text_faint);
             }
         }
         p.rect_stroke(tr, 3.0, Stroke::new(1.0, t.separator), StrokeKind::Inside);
-        let tx = tr.max.x + 12.0;
-        let text_clip = p.with_clip_rect(Rect::from_min_max(pos2(tx, r.min.y), pos2(r.max.x - date_w - 8.0, r.max.y)));
-        text_clip.text(pos2(tx, r.min.y + 20.0), Align2::LEFT_CENTER, &e.name, Tokens::semibold(13.0), if e.exists { Color32::WHITE } else { t.text_dim });
+        let name_clip = p.with_clip_rect(Rect::from_min_max(pos2(tr.max.x + 6.0, r.min.y), pos2(opened_x - 12.0, r.max.y)));
+        name_clip.text(
+            pos2(tr.max.x + 6.0, r.center().y - 8.0),
+            Align2::LEFT_CENTER,
+            &e.name,
+            Tokens::medium(13.0),
+            if e.exists { t.tab_text_active } else { t.text_dim },
+        );
         let sub = if e.exists { e.folder.clone() } else { format!("{} (missing)", e.folder) };
-        text_clip.text(pos2(tx, r.min.y + 40.0), Align2::LEFT_CENTER, sub, Tokens::ui(11.0), t.text_faint);
-        if let Some(d) = &e.modified {
-            p.text(pos2(r.max.x - date_w, r.min.y + 20.0), Align2::LEFT_CENTER, d, Tokens::ui(11.0), t.text_dim);
-        }
+        name_clip.text(pos2(tr.max.x + 6.0, r.center().y + 9.0), Align2::LEFT_CENTER, sub, Tokens::ui(11.0), t.text_faint);
+        let cell = |x: f32, x1: f32, text: String| {
+            p.with_clip_rect(Rect::from_min_max(pos2(x, r.min.y), pos2(x1 - 8.0, r.max.y))).text(
+                pos2(x, r.center().y),
+                Align2::LEFT_CENTER,
+                text,
+                Tokens::ui(12.0),
+                t.text_dim,
+            );
+        };
+        cell(opened_x, size_x, e.modified_secs.map(|m| format_ago(now, m)).unwrap_or_else(|| "—".into()));
+        cell(size_x, kind_x, e.size.map(format_size).unwrap_or_else(|| "—".into()));
+        cell(kind_x, r.max.x, kind_of(&e.path).to_string());
         app.auto.add(&format!("home.recent.{}", e.index), r, &e.path);
         if resp.clicked() {
             actions.push(("file.openRecent", json!({"index": e.index})));
         }
-        ry += row_h;
+        y += row_h;
     }
-
-    run_actions(app, &ctx, actions);
 }
 
 fn run_actions(app: &mut EffectcraftApp, ctx: &egui::Context, actions: Vec<(&str, serde_json::Value)>) {
@@ -404,6 +521,20 @@ mod tests {
     }
 
     #[test]
+    fn opened_and_size_columns() {
+        let now = 1_790_000_000;
+        assert_eq!(format_ago(now, now - 5), "Just now");
+        assert_eq!(format_ago(now, now - 60), "1 minute ago");
+        assert_eq!(format_ago(now, now - 3 * 3_600), "3 hours ago");
+        assert_eq!(format_ago(now, now - 90_000), "Yesterday");
+        assert_eq!(format_ago(now, now - 3 * 86_400), "3 days ago");
+        assert_eq!(format_ago(now, now - 30 * 86_400), "2026-08-22");
+        assert_eq!(format_ago(now, now + 100), "Just now");
+        assert_eq!((format_size(900), format_size(12_800), format_size(3_500_000)), ("900 B".into(), "13 KB".into(), "3.3 MB".into()));
+        assert_eq!((kind_of("/a/B.ecproj"), kind_of("c.AEP"), kind_of("x")), ("EffectCraft project", "After Effects project", "Project"));
+    }
+
+    #[test]
     fn home_screen_registers_its_controls() {
         let mut s = effectcraft_engine::Session::default();
         s.prefs.push_recent("/projects/Alpha.ecproj");
@@ -425,6 +556,9 @@ mod tests {
             "home.help.discord",
             "home.help.github",
             "home.recent.0",
+            "home.filter",
+            "home.file.import",
+            "home.templates",
             "home.tab.home",
             "home.tab.templates",
             "home.tab.learn",

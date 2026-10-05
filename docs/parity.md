@@ -422,6 +422,14 @@ layers); the Graph Editor has Auto-Select Graph Type (the default: the speed gra
 spatial properties are shown, else the value graph; choosing Value or Speed turns it off). Graph
 Editor keys are small squares whatever their interpolation, as in After Effects.
 
+Since (M13.30–M13.31): the Tools bar and About dialog carry the ArtCraft mark. The
+Home screen is laid out like After Effects' and covers the whole workspace. A left rail holds New
+Project / Open Project, the Home, Templates and Learn pages and, at its foot, the community
+links. The Home page has a "Welcome to EffectCraft" heading, quick-start tiles (New Composition,
+Open Demo Project, Import Footage, New from Template) and the recent projects as a filterable
+table with thumbnails and Name / Opened ("3 hours ago") / Size / Kind columns. New automation ids:
+`home.filter`, `home.templates`, `home.file.import`.
+
 Since (M4.13): motion blur follows a collapsed precomp layer's own motion. Its nested layers are
 drawn with the precomp layer's transform at every sub-sample, and with the containing comp's
 shutter, as they are drawn into its frames. Shape and text layers whose content animates within

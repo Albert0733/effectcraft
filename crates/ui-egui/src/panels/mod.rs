@@ -82,13 +82,7 @@ pub fn timecode(session: &Session, comp: &Comp, t: Tick) -> String {
 
 pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: PanelKind, rect: Rect) {
     match p {
-        PanelKind::Composition => {
-            if app.ui.start_screen {
-                home::show(app, ui, rect);
-            } else {
-                viewer::show(app, ui, rect)
-            }
-        }
+        PanelKind::Composition => viewer::show(app, ui, rect),
         PanelKind::Timeline => timeline::show(app, ui, rect),
         PanelKind::Project => project::show(app, ui, rect),
         PanelKind::EffectControls => effect_controls::show(app, ui, rect),
