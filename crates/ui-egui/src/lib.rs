@@ -39,6 +39,9 @@ use state::UiState;
 use theme::Tokens;
 
 const SCREENSHOT_TIMEOUT_S: f64 = 4.0;
+/// Seconds without a project change before paused prefetch resumes (see
+/// [`EffectcraftApp::editing`]).
+const EDIT_QUIET: f64 = 0.3;
 
 /// Modal dialogs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -184,6 +187,8 @@ pub struct EffectcraftApp {
     /// When the user last did something (input or an edit): Cache Frames When Idle waits for
     /// a second of quiet. (time, project revision then)
     last_activity: (f64, u64),
+    /// When the project last changed, and its revision then (see [`Self::editing`]).
+    last_edit: (f64, u64),
     pub(crate) toast: Option<(String, f64)>,
     /// Texture of the last CPU frame shown in the viewer and the key it came from.
     pub(crate) viewer_tex: Option<(egui::TextureHandle, FrameKey)>,
@@ -263,6 +268,7 @@ impl EffectcraftApp {
             next_token: 1,
             last_ui_time: 0.0,
             last_activity: (0.0, 0),
+            last_edit: (0.0, 0),
             toast: None,
             viewer_tex: None,
             passive_tex: std::collections::HashMap::new(),
@@ -797,10 +803,15 @@ impl EffectcraftApp {
         // Prefetch ahead.
         let cur = fr.frame_at(self.session.time());
         // While paused (scrubbing, editing) the viewer's frame comes first: prefetch only a few
-        // frames, and only once it is done, so prefetch never delays what is on screen.
+        // frames, only once it is done, and not while edits keep coming (a layer dragged in the
+        // viewer): those frames would be stale at the next step and would hold the CPU and GPU
+        // the next viewer frame needs.
         let ahead = if self.playback.playing {
             (self.frames_parallelism() * 2).max(4) as i64
         } else if self.frames.urgent_pending() {
+            0
+        } else if let Some(wait) = self.editing(now) {
+            ctx.request_repaint_after(std::time::Duration::from_secs_f64(wait));
             0
         } else {
             (self.frames_parallelism() / 2).max(2) as i64
@@ -961,6 +972,16 @@ impl EffectcraftApp {
             self.playback.start_frame = fr.frame_at(self.session.time());
         }
         ctx.request_repaint();
+    }
+
+    /// While the project keeps changing (an edit within [`EDIT_QUIET`] seconds), how long until
+    /// it counts as settled.
+    fn editing(&mut self, now: f64) -> Option<f64> {
+        if self.last_edit.1 != self.session.revision {
+            self.last_edit = (now, self.session.revision);
+        }
+        let left = EDIT_QUIET - (now - self.last_edit.0);
+        (left > 0.0).then_some(left)
     }
 
     /// Composition ▸ Preview ▸ Cache Frames When Idle: after a second without input or edits,
