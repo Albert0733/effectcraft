@@ -219,3 +219,47 @@ fn project_details_stay_inside_the_panel() {
     let r = rect(&h, "project.details.hint");
     assert!(r.min.x >= panel.min.x + 9.0 && r.max.x <= panel.max.x - 9.0, "{r:?} in {panel:?}");
 }
+
+/// A file dropped on the window (what the windowing layer hands egui).
+#[derive(Debug)]
+struct Dropped(std::path::PathBuf);
+
+impl egui::DroppedFile for Dropped {
+    fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+    fn bytes(&self) -> Result<Vec<u8>, String> {
+        std::fs::read(&self.0).map_err(|e| e.to_string())
+    }
+}
+
+/// Issue #44: double-clicking the Project panel's empty area asks for files to import (as After
+/// Effects' File ▸ Import ▸ File... does), and files dropped on the window are imported. (Tests
+/// have no media decoders: what is checked is that the import runs with those files.)
+#[test]
+fn project_empty_area_double_click_and_dropped_files_import() {
+    let (mut h, _, _) = harness();
+    let png = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/app-icon/hicolor/16x16/apps/ai.storyteller.effectcraft.png");
+    let png = std::fs::canonicalize(png).unwrap().to_string_lossy().to_string();
+    let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (a, p) = (asked.clone(), png.clone());
+    h.state_mut().hooks.pick_files = Some(Box::new(move |_| {
+        a.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        vec![p.clone()]
+    }));
+    let imports = |h: &Harness<'_, EffectcraftApp>| h.state().session.journal.iter().filter(|(c, p)| c == "file.import" && p["paths"] == json!([png])).count();
+    // Below the last row.
+    let last = rect(&h, "project.item.2");
+    let empty = rect(&h, "project.empty");
+    click_n(&mut h, pos2(empty.center().x, (last.max.y + empty.max.y) / 2.0), 2);
+    assert_eq!(asked.load(std::sync::atomic::Ordering::Relaxed), 1, "the file dialog opened");
+    assert_eq!(imports(&h), 1, "the picked file was imported");
+    // A double-click on a row opens that item instead.
+    let row = rect(&h, "project.item.2.name");
+    click_n(&mut h, row.center(), 2);
+    assert_eq!(asked.load(std::sync::atomic::Ordering::Relaxed), 1);
+    // Dropping a file on the window imports it.
+    h.input_mut().dropped_files.push(std::sync::Arc::new(Dropped(png.clone().into())));
+    h.run_steps(2);
+    assert_eq!(imports(&h), 2, "the dropped file was imported");
+}
