@@ -367,11 +367,58 @@ pub(crate) fn comp_markers(app: &mut EffectcraftApp, ui: &mut egui::Ui, comp: &C
     }
 }
 
-/// Layer markers on a layer's row `r`.
+/// Layer markers on a layer's row `r`; on a precomp layer, its comp's markers too (read-only,
+/// outlined: hover names them, a double-click opens the nested comp at the marker).
 pub(crate) fn layer_markers(app: &mut EffectcraftApp, ui: &mut egui::Ui, clip: Rect, comp: &Comp, layer: &Layer, tm: TMap, r: Rect) {
     let p = ui.painter().with_clip_rect(clip);
+    nested_markers(app, ui, &p, comp, layer, tm, r);
     for (i, m) in layer.markers.iter().enumerate() {
         marker(app, ui, &p, comp, tm, m, layer.comp_time(m.time).seconds(), MarkerRef { layer: Some(layer.id.0), index: i }, r.min.y + 3.0, r.max.y - 3.0);
+    }
+}
+
+/// The nested comp's markers on a precomp layer's bar (`markers.nested`).
+fn nested_markers(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: &egui::Painter, comp: &Comp, layer: &Layer, tm: TMap, r: Rect) {
+    let effectcraft_engine::project::LayerSource::Comp { item } = layer.source else { return };
+    let Some(cid) = app.session.active_comp_id() else { return };
+    let project = app.session.project.clone();
+    let Some(nc) = project.comp(item) else { return };
+    if nc.markers.is_empty() {
+        return;
+    }
+    // Where they land, once per revision (with time remapping that samples the layer's frames).
+    let (key, rev) = (egui::Id::new(("nested-markers", cid.0, layer.id.0)), app.session.revision);
+    let cached = ui.ctx().data(|d| d.get_temp::<(u64, Vec<(Tick, usize)>)>(key)).filter(|(r, _)| *r == rev);
+    let at = cached.map(|(_, v)| v).unwrap_or_else(|| {
+        let v: Vec<(Tick, usize)> =
+            effectcraft_engine::commands::markers::nested_markers(&project, cid, comp, layer).into_iter().map(|(t, i, _)| (t, i)).collect();
+        ui.ctx().data_mut(|d| d.insert_temp(key, (rev, v.clone())));
+        v
+    });
+    let list: Vec<(Tick, usize, &Marker)> = at.into_iter().filter_map(|(t, i)| Some((t, i, nc.markers.get(i)?))).collect();
+    let t = app.tokens;
+    let name = project.item(item).map(|i| i.name.clone()).unwrap_or_default();
+    let (y0, h) = (r.min.y + 3.0, (r.height() - 6.0).min(10.0));
+    for (ct, i, m) in list {
+        let x = tm.x(ct.seconds());
+        let col = if m.label == effectcraft_engine::color::Label::None { Color32::from_rgb(0xd8, 0xd8, 0x60) } else { t.label(m.label) }.gamma_multiply(0.75);
+        let ym = y0 + h * 0.6;
+        let pts = vec![pos2(x - 4.0, y0), pos2(x + 4.0, y0), pos2(x + 4.0, ym), pos2(x, y0 + h), pos2(x - 4.0, ym)];
+        p.add(egui::Shape::closed_line(pts, Stroke::new(1.2, col)));
+        if !m.comment.is_empty() {
+            p.text(pos2(x + 7.0, y0 + h / 2.0), Align2::LEFT_CENTER, m.comment.lines().next().unwrap_or_default(), Tokens::ui(10.0), t.text_dim);
+        }
+        let hit = Rect::from_min_max(pos2(x - 5.0, y0 - 1.0), pos2(x + 5.0, r.max.y - 3.0));
+        let tip = if m.comment.is_empty() { format!("Marker in {name}") } else { format!("{} (marker in {name})", m.comment) };
+        let resp = ui.interact(hit, egui::Id::new(("nested-marker", layer.id.0, i)), Sense::click()).on_hover_text(&tip);
+        app.auto.add(&format!("timeline.layer.{}.nestedMarker.{i}", layer.id.0), hit, &tip);
+        if resp.double_clicked() {
+            let opened =
+                app.session.execute("comp.open", json!({"comp": item.0})).and_then(|_| app.session.execute("time.set", json!({"time": m.time.seconds()})));
+            if let Err(e) = opened {
+                app.ui.status = e.to_string();
+            }
+        }
     }
 }
 

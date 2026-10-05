@@ -5,7 +5,7 @@
 //! comp seconds; layer markers are stored in layer time. All commands are undoable.
 
 use effectcraft_color::Label;
-use effectcraft_project::{Comp, CuePoint, ItemId, LayerId, LayerSource, Marker};
+use effectcraft_project::{Comp, CuePoint, ItemId, Layer, LayerId, LayerSource, Marker, Project};
 use effectcraft_time::Tick;
 use serde_json::{Value, json};
 
@@ -83,6 +83,56 @@ fn list(s: &mut Session, p: &Value) -> Result<Value> {
     let c = s.project.comp(cid).ok_or(EngineError::NoComp)?;
     let ms = markers_of(c, o).cloned().unwrap_or_default();
     Ok(Value::Array(ms.iter().enumerate().map(|(i, m)| marker_json(c, o, i, m)).collect()))
+}
+
+/// The nested comp's markers on a precomp layer, at their times in the containing comp `comp`
+/// and within the layer's In–Out range, as After Effects shows them on the precomp layer's bar:
+/// `(comp time, index in the nested comp, marker)`. The layer's start time and stretch map them;
+/// with time remapping, or a stretch over protected regions (Responsive Design), a marker sits at
+/// the first frame the layer shows its time.
+pub fn nested_markers<'a>(project: &'a Project, comp_id: ItemId, comp: &Comp, layer: &Layer) -> Vec<(Tick, usize, &'a Marker)> {
+    let LayerSource::Comp { item } = layer.source else { return vec![] };
+    let Some(nc) = project.comp(item) else { return vec![] };
+    if nc.markers.is_empty() || item == comp_id {
+        return vec![];
+    }
+    let shown = |t: Tick| t >= layer.in_point && t < layer.out_point;
+    let stretched_regions = (layer.stretch - 100.0).abs() > 1e-9 && nc.markers.iter().any(|m| m.protected);
+    if layer.props.get("timeRemap").is_none() && !stretched_regions {
+        return nc.markers.iter().enumerate().map(|(i, m)| (layer.comp_time(m.time), i, m)).filter(|(t, _, _)| shown(*t)).collect();
+    }
+    // The layer's source time at every frame of its range; each marker at the first frame that
+    // reaches it (within rounding: a thousandth of a nested frame).
+    let fr = comp.frame_rate;
+    let (f0, f1) = (fr.frame_at(layer.in_point), fr.frame_at(layer.out_point));
+    let frames: Vec<(Tick, Tick)> = (f0..f1.min(f0.saturating_add(100_000)))
+        .map(|f| {
+            let t = fr.tick_of(f);
+            (t, effectcraft_render::EvalCtx::new(project, comp_id, comp, t).source_time(layer))
+        })
+        .collect();
+    let eps = nc.frame_duration().0 / 1000;
+    nc.markers
+        .iter()
+        .enumerate()
+        .filter_map(|(i, m)| frames.iter().find(|(_, src)| src.0.saturating_add(eps) >= m.time.0).map(|(t, _)| (*t, i, m)))
+        .filter(|(t, _, _)| shown(*t))
+        .collect()
+}
+
+/// `markers.nested`: the nested comp's markers on a precomp layer (see [`nested_markers`]).
+fn nested(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "markers.nested";
+    let cid = comp_id(s, p)?;
+    let c = s.project.comp(cid).ok_or(EngineError::NoComp)?;
+    let lid = p.get("layer").and_then(|v| resolve_layer(c, v)).ok_or_else(|| bad(cmd, "missing `layer` (a precomp layer)"))?;
+    let l = c.layer(lid).ok_or_else(|| bad(cmd, "no such layer"))?;
+    let LayerSource::Comp { item } = l.source else { return Err(bad(cmd, "not a precomp layer")) };
+    let v: Vec<Value> = nested_markers(&s.project, cid, c, l)
+        .into_iter()
+        .map(|(t, i, m)| json!({"time": t.seconds(), "comp": item.0, "index": i, "nestedTime": m.time.seconds(), "duration": m.duration.seconds(), "comment": m.comment, "label": m.label.name()}))
+        .collect();
+    Ok(json!(v))
 }
 
 fn locked(c: &Comp, o: Owner) -> bool {
@@ -299,6 +349,12 @@ fn has_precomp_layer(s: &Session) -> std::result::Result<(), String> {
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         query!("markers.list", "List Markers", "{layer? (omit for composition markers)}", list),
+        query!(
+            "markers.nested",
+            "Nested Comp Markers",
+            "{layer: a precomp layer, comp?} — its comp's markers at their times in this comp (as on the layer bar)",
+            nested
+        ),
         cmd!(
             "markers.set",
             "Marker Settings",

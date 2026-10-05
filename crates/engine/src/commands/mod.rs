@@ -34,7 +34,7 @@ mod layer_time;
 pub(crate) mod link;
 mod liquify;
 mod lottie;
-mod markers;
+pub mod markers;
 mod mask;
 pub mod mask_interp;
 pub(crate) mod model3d;

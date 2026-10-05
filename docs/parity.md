@@ -422,6 +422,12 @@ layers); the Graph Editor has Auto-Select Graph Type (the default: the speed gra
 spatial properties are shown, else the value graph; choosing Value or Speed turns it off). Graph
 Editor keys are small squares whatever their interpolation, as in After Effects.
 
+Since (M13.33): a precomp layer's bar shows its comp's markers, as outlined, read-only markers.
+They are mapped through the layer's timing (start, stretch, time remapping, Responsive Design
+stretch) and shown within its In–Out range. Hovering names them ("beat (marker in Pre)"), and a
+double-click opens the nested comp at the marker. Agents read the same list with
+`markers.nested {layer}`.
+
 Since (M13.32): View ▸ New Viewer (Alt+Shift+N, also in the Composition panel menu) opens
 another Composition viewer as its own panel, as in After Effects. The viewer in use is locked,
 so it keeps its comp. One viewer is active: it is the interactive one and shows the active comp.
@@ -751,8 +757,8 @@ are pinned bit for bit by golden hashes (`crates/effects/tests/particle_golden.r
     animators).~~ (M4.13)
 17. ~~Content-keyed RAM preview frames, so an edit keeps the frames of comps it doesn't touch.~~
     (M4.14)
-18. ~~View ▸ New Viewer (several Composition viewers)~~ (M13.32); nested comp markers on the
-    precomp layer bar, audio scrubbing.
+18. ~~View ▸ New Viewer (several Composition viewers)~~ (M13.32); ~~nested comp markers on the
+    precomp layer bar~~ (M13.33), audio scrubbing.
 
 At the original audit the engine underneath (keyframes, expressions, shape operators, text
 animators, Classic 3D, all 38 blend modes, the render queue) was already deep, and most of what was
