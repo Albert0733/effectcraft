@@ -303,6 +303,10 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let footer_h = 28.0;
     let list = Rect::from_min_max(pos2(rect.min.x, hdr.max.y), pos2(rect.max.x, rect.max.y - footer_h));
     let lp = p.with_clip_rect(list);
+    // The list's empty area (under the rows and the scroll bar, which take their own clicks):
+    // a double-click imports, as in After Effects (File ▸ Import ▸ File...).
+    let empty = ui.interact(list, egui::Id::new("proj-empty"), Sense::click());
+    app.auto.add("project.empty", list, "Double-click to import files");
     if overflow > 0.0 && ui.rect_contains_pointer(list) {
         let (dx, dy, shift) = ui.input(|i| (i.smooth_scroll_delta.x, i.smooth_scroll_delta.y, i.modifiers.shift));
         let d = if dx.abs() > 0.0 {
@@ -686,6 +690,9 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         actions.push(("project.delete".into(), json!({})));
     }
     app.auto.add("project.delete", tr, "Delete");
+    if empty.double_clicked() {
+        actions.push(("file.import".into(), json!({})));
+    }
     for (id, params) in actions {
         if let Err(e) = crate::menus::invoke(app, &ctx, &id, params) {
             app.ui.status = e;
