@@ -67,6 +67,10 @@ The most important missing piece: it turns every other estimate here into a meas
 - Run the headless snapshot and control-channel checks on Linux (X11 and Wayland) and Windows, not
   only macOS. Interactions that only fail with real input (docking drags, viewer pan, drag-and-drop
   import, inline rename) need scripted input tests.
+- Regression evidence for [#66](https://github.com/storytold/effectcraft/issues/66): scripted
+  pointer tests in `ui_viewer` and `ui_text_edit`, checked headlessly on Linux, cover viewer clicks,
+  marquee selection and text picking when layers are hidden or excluded by solo. They also check
+  hidden/locked solo layers and solo layers outside their active time range.
 - Done when: no open bug blocks a basic workflow (import, arrange, animate, preview, render) on
   any of the three desktop platforms, and every bug users report gets triaged within a day.
 

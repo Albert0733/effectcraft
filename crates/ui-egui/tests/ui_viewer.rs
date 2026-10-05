@@ -58,6 +58,82 @@ fn screen(h: &Harness<'_, EffectcraftApp>, p: [f32; 2]) -> Pos2 {
     c.min + vec2(p[0] * z, p[1] * z)
 }
 
+fn selection_harness() -> Harness<'static, EffectcraftApp> {
+    let mut s = Session::default();
+    s.execute("comp.new", json!({"name": "Selection", "width": 640, "height": 360, "duration": 4})).unwrap();
+    for name in ["Back", "Front"] {
+        s.execute("layer.newSolid", json!({"name": name, "color": "#406080", "width": 80, "height": 80})).unwrap();
+    }
+    s.execute("edit.deselectAll", json!({})).unwrap();
+    let mut h = Harness::builder().with_size(egui::vec2(1600.0, 1000.0)).build_eframe(move |_| EffectcraftApp::new(s));
+    h.run_steps(3);
+    h
+}
+
+#[test]
+fn viewer_click_skips_hidden_and_unsoloed_layers() {
+    for switch in ["video", "solo"] {
+        let mut h = selection_harness();
+        let comp = h.state().session.active_comp().unwrap();
+        let (front, back) = (comp.layers[0].id, comp.layers[1].id);
+        let at = screen(&h, [320.0, 180.0]);
+        click(&mut h, at);
+        assert_eq!(h.state().session.state.selected_layers, vec![front]);
+        let s = &mut h.state_mut().session;
+        let (target, value) = if switch == "video" { (front, false) } else { (back, true) };
+        s.execute("layer.setSwitch", json!({"layers": [target.0], "switch": switch, "value": value})).unwrap();
+        s.execute("edit.deselectAll", json!({})).unwrap();
+        h.run_steps(40); // Start a new click rather than a double-click.
+        click(&mut h, at);
+        assert_eq!(h.state().session.state.selected_layers, vec![back], "{switch}");
+    }
+}
+
+#[test]
+fn viewer_marquee_skips_hidden_and_unsoloed_layers() {
+    for switch in ["video", "solo"] {
+        let mut h = selection_harness();
+        let comp = h.state().session.active_comp().unwrap();
+        let (front, back) = (comp.layers[0].id, comp.layers[1].id);
+        let (target, value) = if switch == "video" { (front, false) } else { (back, true) };
+        h.state_mut().session.execute("layer.setSwitch", json!({"layers": [target.0], "switch": switch, "value": value})).unwrap();
+        h.run_steps(3);
+        let (from, to) = (screen(&h, [250.0, 110.0]), screen(&h, [390.0, 250.0]));
+        drag(&mut h, from, to);
+        assert_eq!(h.state().session.state.selected_layers, vec![back], "{switch}");
+    }
+}
+
+#[test]
+fn viewer_click_does_not_pick_through_hidden_or_locked_solo_layers() {
+    for switch in ["video", "lock"] {
+        let mut h = selection_harness();
+        let front = h.state().session.active_comp().unwrap().layers[0].id;
+        let s = &mut h.state_mut().session;
+        s.execute("layer.setSwitch", json!({"layers": [front.0], "switch": "solo", "value": true})).unwrap();
+        s.execute("layer.setSwitch", json!({"layers": [front.0], "switch": switch, "value": switch == "lock"})).unwrap();
+        h.run_steps(3);
+        let at = screen(&h, [320.0, 180.0]);
+        click(&mut h, at);
+        assert!(h.state().session.state.selected_layers.is_empty(), "{switch}");
+    }
+}
+
+#[test]
+fn viewer_click_ignores_inactive_solo_layers() {
+    let mut h = selection_harness();
+    let comp = h.state().session.active_comp().unwrap();
+    let (front, back) = (comp.layers[0].id, comp.layers[1].id);
+    let s = &mut h.state_mut().session;
+    s.execute("layer.setSwitch", json!({"layers": [front.0], "switch": "solo", "value": true})).unwrap();
+    let cid = s.active_comp_id().unwrap();
+    std::sync::Arc::make_mut(&mut s.project).comp_mut(cid).unwrap().layer_mut(front).unwrap().in_point = effectcraft_engine::time::Tick::from_seconds_f64(1.0);
+    h.run_steps(3);
+    let at = screen(&h, [320.0, 180.0]);
+    click(&mut h, at);
+    assert_eq!(h.state().session.state.selected_layers, vec![back]);
+}
+
 #[test]
 fn bottom_bar_in_after_effects_order() {
     let h = harness();
