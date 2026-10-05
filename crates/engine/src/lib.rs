@@ -970,6 +970,8 @@ mod tests_menu_cmds;
 #[cfg(test)]
 mod tests_model3d;
 #[cfg(test)]
+mod tests_motion_blur_depth;
+#[cfg(test)]
 mod tests_project_items;
 #[cfg(test)]
 mod tests_proxy;
