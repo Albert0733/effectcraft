@@ -160,6 +160,13 @@ impl EffectcraftApp {
     pub(crate) fn dock_area(&mut self, ui: &mut egui::Ui, body: Rect) {
         let t = self.tokens;
         let ctx = ui.ctx().clone();
+        if self.ui.start_screen {
+            // Home covers the whole workspace, as in After Effects (the panels wait behind it).
+            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(body).id_salt("home"));
+            child.set_clip_rect(body.intersect(ui.clip_rect()));
+            panels::home::show(self, &mut child, body);
+            return;
+        }
         // The maximized panel fills the area; the tree is kept as it is.
         let maximized = self.ui.maximized.filter(|m| self.ui.dock.contains(*m));
         let mut dock = match maximized {
