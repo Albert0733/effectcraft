@@ -391,6 +391,8 @@ fn reference_axes_toggle_from_the_grid_menu() {
     h.state_mut().session.execute("layer.setSwitch", json!({"layers": [box_id.0], "switch": "threeD", "value": true})).unwrap();
     h.run_steps(3);
     assert!(h.state().auto.find("viewer.referenceAxes").is_some(), "on by default (Settings ▸ 3D)");
+    // Issue #64: one compass, not two.
+    assert_eq!(h.state().auto.query("viewer.referenceAxes").len(), 1);
     let g = rect(&h, "viewer.grid").center();
     click(&mut h, g);
     h.run_steps(2);
