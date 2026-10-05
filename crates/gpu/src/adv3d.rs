@@ -2,7 +2,7 @@
 //! (`Depth32Float`, Greater), the scene's materials, textures, lights and shadow maps in
 //! storage buffers, and `advanced3d.wgsl`'s physically based fragment shader. Opaque triangles
 //! are drawn with depth writes, then the sorted transparent ones blended over (premultiplied).
-//! Colour (`Rgba16Float`) and camera depth (`R32Float`) stay on the GPU for `adv3d.wgsl`'s
+//! Colour (`Rgba16Float`) and camera depth (`R32Uint` holding f32 bits) stay on the GPU for `adv3d.wgsl`'s
 //! compute kernels, which run the rest of `effectcraft_render::three_d::adv::render_prepared`:
 //! the 2×2 supersampling resolve, the motion-blur sub-sample average (nearest depth), the
 //! depth-based iris depth of field (the Classic 3D bokeh kernel's row spans and prefix-sum
@@ -22,19 +22,43 @@ use crate::context::{Enc, GpuContext, GpuImage};
 /// Pipelines (built on first use).
 pub(crate) struct Pipes {
     bgl: wgpu::BindGroupLayout,
-    opaque: wgpu::RenderPipeline,
-    transparent: wgpu::RenderPipeline,
+    /// (opaque, transparent); `None` when the adapter can't rasterise ([`raster_unsupported`]):
+    /// scenes then render on the CPU.
+    raster: Option<(wgpu::RenderPipeline, wgpu::RenderPipeline)>,
     post: Post,
 }
 
 fn pipes(g: &GpuContext) -> &Pipes {
-    g.adv3d.get_or_init(|| Pipes::new(&g.device))
+    g.adv3d.get_or_init(|| Pipes::new(&g.device, g.adv3d_raster))
 }
 
 const COLOR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
-const DEPTH_OUT: wgpu::TextureFormat = wgpu::TextureFormat::R32Float;
+/// Camera depth as the bits of an f32: integer targets render on every backend, while `R32Float`
+/// needs `EXT_color_buffer_float` on GLES (absent on Mesa's llvmpipe, for one).
+const DEPTH_OUT: wgpu::TextureFormat = wgpu::TextureFormat::R32Uint;
+/// [`DEPTH_OUT`]'s clear value: the bits of −1.0 ("nothing drawn").
+const NO_DEPTH: f64 = 0xBF80_0000u32 as f64;
 const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 const VERTEX_SIZE: u64 = 52;
+
+/// Why `adapter` can't run the rasteriser, or `None` when it can. Building the pipelines anyway
+/// would be a validation error, which release builds only log (and then draw nothing), so the
+/// caller keeps the scenes on the CPU instead.
+pub(crate) fn raster_unsupported(adapter: &wgpu::Adapter) -> Option<String> {
+    use wgpu::TextureFormatFeatureFlags as F;
+    let needs = [(COLOR, F::BLENDABLE), (DEPTH_OUT, F::empty()), (DEPTH, F::empty())];
+    for (format, flags) in needs {
+        let f = adapter.get_texture_format_features(format);
+        if !f.allowed_usages.contains(wgpu::TextureUsages::RENDER_ATTACHMENT) || !f.flags.contains(flags) {
+            return Some(format!("{format:?} is not a {}render target", if flags.is_empty() { "" } else { "blendable " }));
+        }
+    }
+    // The transparent pipeline blends colour and masks the depth target off.
+    if !adapter.get_downlevel_capabilities().flags.contains(wgpu::DownlevelFlags::INDEPENDENT_BLEND) {
+        return Some("no independent blending".into());
+    }
+    None
+}
 
 fn storage(binding: u32) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
@@ -46,7 +70,7 @@ fn storage(binding: u32) -> wgpu::BindGroupLayoutEntry {
 }
 
 impl Pipes {
-    fn new(device: &wgpu::Device) -> Pipes {
+    fn new(device: &wgpu::Device, raster: bool) -> Pipes {
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("effectcraft advanced 3d"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders/advanced3d.wgsl").into()),
@@ -110,7 +134,7 @@ impl Pipes {
                 cache: None,
             })
         };
-        Pipes { opaque: make(false), transparent: make(true), bgl, post: Post::new(device) }
+        Pipes { raster: raster.then(|| (make(false), make(true))), bgl, post: Post::new(device) }
     }
 }
 
@@ -222,9 +246,9 @@ fn half_to_f32(h: u16) -> f32 {
     }
 }
 
-/// Record the render pass of one scene into `e`: (colour `Rgba16Float`, camera depth `R32Float`
+/// Record the render pass of one scene into `e`: (colour `Rgba16Float`, camera depth `R32Uint`
 /// with −1 where nothing was drawn) at the scene's raster size. `None` when the device can't
-/// (size or buffer limits).
+/// (render targets, size or buffer limits).
 fn raster_into(e: &mut Enc, s: &Scene) -> Option<(wgpu::Texture, wgpu::Texture)> {
     let g = e.g;
     if !g.fits(s.width, s.height) || s.indices.is_empty() {
@@ -236,6 +260,7 @@ fn raster_into(e: &mut Enc, s: &Scene) -> Option<(wgpu::Texture, wgpu::Texture)>
         return None;
     }
     let p = pipes(g);
+    let Some((opaque, transparent)) = &p.raster else { return None };
     let dev = &g.device;
     let vb: Vec<u8> = s
         .vertices
@@ -294,7 +319,7 @@ fn raster_into(e: &mut Enc, s: &Scene) -> Option<(wgpu::Texture, wgpu::Texture)>
                     view: &zv,
                     depth_slice: None,
                     resolve_target: None,
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color { r: -1.0, g: 0.0, b: 0.0, a: 0.0 }), store: wgpu::StoreOp::Store },
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color { r: NO_DEPTH, g: 0.0, b: 0.0, a: 0.0 }), store: wgpu::StoreOp::Store },
                 }),
             ],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
@@ -311,11 +336,11 @@ fn raster_into(e: &mut Enc, s: &Scene) -> Option<(wgpu::Texture, wgpu::Texture)>
         pass.set_index_buffer(ibuf.slice(..), wgpu::IndexFormat::Uint32);
         let n = s.indices.len() as u32;
         if s.opaque_count > 0 {
-            pass.set_pipeline(&p.opaque);
+            pass.set_pipeline(opaque);
             pass.draw_indexed(0..s.opaque_count, 0, 0..1);
         }
         if n > s.opaque_count {
-            pass.set_pipeline(&p.transparent);
+            pass.set_pipeline(transparent);
             pass.draw_indexed(s.opaque_count..n, 0, 0..1);
         }
     }
@@ -424,14 +449,10 @@ impl Post {
             label: Some("effectcraft advanced 3d post"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders/adv3d.wgsl").into()),
         });
-        let tex = |binding| wgpu::BindGroupLayoutEntry {
+        let tex = |binding, sample_type| wgpu::BindGroupLayoutEntry {
             binding,
             visibility: wgpu::ShaderStages::COMPUTE,
-            ty: wgpu::BindingType::Texture {
-                sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                view_dimension: wgpu::TextureViewDimension::D2,
-                multisampled: false,
-            },
+            ty: wgpu::BindingType::Texture { sample_type, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
             count: None,
         };
         let buf = |binding, read_only| wgpu::BindGroupLayoutEntry {
@@ -447,8 +468,8 @@ impl Post {
                 ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
                 count: None,
             },
-            tex(1),
-            tex(2),
+            tex(1, wgpu::TextureSampleType::Float { filterable: false }),
+            tex(2, wgpu::TextureSampleType::Uint),
             buf(3, false),
             buf(4, false),
             buf(5, false),

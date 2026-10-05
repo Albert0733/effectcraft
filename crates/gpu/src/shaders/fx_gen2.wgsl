@@ -653,7 +653,7 @@ fn fg2_threads(@builtin(global_invocation_id) gid: vec3<u32>) {
     let fv = v / th - f32(cj);
     let in_h = abs(fv - 0.5) < coverage * 0.5;
     let in_v = abs(fu - 0.5) < coverage * 0.5;
-    let h_top = ((ci + cj) % (2 * overlaps) + 2 * overlaps) % (2 * overlaps) < overlaps;
+    let h_top = imod(ci + cj, 2 * overlaps) < overlaps;
     var horizontal: bool;
     if (in_h && in_v) {
         horizontal = h_top;

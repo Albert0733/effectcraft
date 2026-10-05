@@ -259,6 +259,9 @@ pub struct GpuContext {
     zeros: Mutex<HashMap<(u32, u32), GpuImage>>,
     /// Advanced 3D render pipelines (built on first use).
     pub(crate) adv3d: std::sync::OnceLock<crate::adv3d::Pipes>,
+    /// The adapter can run the Advanced 3D rasteriser (`adv3d::raster_unsupported`); without
+    /// it Advanced 3D scenes render on the CPU.
+    pub(crate) adv3d_raster: bool,
     /// GPU particle pipeline (built on first use) and simulation checkpoints.
     pub(crate) particles: crate::particles::PipesCell,
     pub(crate) particle_states: crate::particles::StatesCell,
@@ -303,6 +306,10 @@ impl GpuContext {
             }
         }
         let name = format!("{} ({:?})", info.name, info.backend);
+        let adv3d_unsupported = crate::adv3d::raster_unsupported(adapter);
+        if let Some(why) = &adv3d_unsupported {
+            log::info!("gpu {name}: Advanced 3D renders on the CPU ({why})");
+        }
         let src = [
             include_str!("shaders/common.wgsl"),
             include_str!("shaders/kernels.wgsl"),
@@ -466,6 +473,7 @@ impl GpuContext {
             transfers: Default::default(),
             zeros: Default::default(),
             adv3d: std::sync::OnceLock::new(),
+            adv3d_raster: adv3d_unsupported.is_none(),
             particles: Default::default(),
             particle_states: Default::default(),
             deferred: None,

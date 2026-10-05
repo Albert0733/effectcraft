@@ -44,7 +44,7 @@ fn fxs_qdiv(x: vec3<f32>, a: f32) -> vec3<f32> {
 }
 
 fn fxs_rem2(i: i32) -> i32 {
-    return ((i % 2) + 2) % 2;
+    return imod(i, 2);
 }
 
 // ---------------------------------------------------------------- per-pixel colour effects
@@ -257,7 +257,7 @@ fn fxs_warp(@builtin(global_invocation_id) gid: vec3<u32>) {
             let d = sqrt(dx * dx + dy * dy);
             if (d < r && d != 0.0) {
                 let nd = d / r;
-                let k = (asin(nd) / FXS_HALF_PI) / nd;
+                let k = (asin_p(nd) / FXS_HALF_PI) / nd;
                 s = vec2<f32>(c.x + dx * k, c.y + dy * k);
             }
         }

@@ -21,7 +21,7 @@ fn adv_sky(@builtin(global_invocation_id) gid: vec3<u32>) {
     // shade::equirect_uv.
     let pi = 3.141592653589793;
     var u = 0.5 + (atan2(dir.x, dir.z) + P.f[2].w) / (2.0 * pi);
-    let v = acos(clamp(-dir.y, -1.0, 1.0)) / pi;
+    let v = acos_p(clamp(-dir.y, -1.0, 1.0)) / pi;
     u = u - floor(u);
     let iw = P.f[4].x;
     let ih = P.f[4].y;

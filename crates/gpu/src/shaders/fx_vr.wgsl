@@ -22,7 +22,7 @@ fn fxv_equi_dir(x: f32, y: f32, w: f32, h: f32) -> vec3<f32> {
 // vr::equi_px.
 fn fxv_equi_px(d: vec3<f32>, w: f32, h: f32) -> vec2<f32> {
     let lon = atan2(d.x, d.z);
-    let lat = asin(clamp(d.y, -1.0, 1.0));
+    let lat = asin_p(clamp(d.y, -1.0, 1.0));
     return vec2<f32>((lon / (2.0 * FXV_PI) + 0.5) * w, (0.5 - lat / FXV_PI) * h);
 }
 
@@ -42,7 +42,7 @@ fn fxv_equi_at(xi0: i32, yi0: i32, w: i32, h: i32) -> vec4<f32> {
         yi = 2 * h - 1 - yi;
         xi += w / 2;
     }
-    let xm = ((xi % w) + w) % w;
+    let xm = imod(xi, w);
     return textureLoad(src, vec2<i32>(xm, clamp(yi, 0, h - 1)), 0);
 }
 
@@ -233,7 +233,7 @@ fn fxv_proj_sample(kind: u32, fov: f32, d: vec3<f32>) -> vec4<f32> {
         return sample_bilinear_clamped(src, x, y);
     }
     if (kind == 8u) {
-        let th = acos(clamp(d.y, -1.0, 1.0));
+        let th = acos_p(clamp(d.y, -1.0, 1.0));
         if (th > FXV_PI / 2.0 + 1e-6) {
             return vec4<f32>(0.0);
         }
@@ -250,7 +250,7 @@ fn fxv_proj_sample(kind: u32, fov: f32, d: vec3<f32>) -> vec4<f32> {
     }
     if (kind == 4u) {
         let half = radians(clamp(fov, 1.0, 360.0) / 2.0);
-        let th = acos(clamp(d.z, -1.0, 1.0));
+        let th = acos_p(clamp(d.z, -1.0, 1.0));
         if (th > half + 1e-6) {
             return vec4<f32>(0.0);
         }
@@ -346,12 +346,12 @@ fn fxv_box_h(@builtin(global_invocation_id) gid: vec3<u32>) {
     let norm = 1.0 / f32(2 * r + 1);
     var acc = vec4<f32>(0.0);
     for (var i = b0 - r; i <= b0 + r; i++) {
-        acc += textureLoad(src, vec2<i32>(((i % w) + w) % w, y), 0);
+        acc += textureLoad(src, vec2<i32>(imod(i, w), y), 0);
     }
     for (var x = b0; x < b1; x++) {
         textureStore(out, vec2<i32>(x, y), acc * norm);
         let add = textureLoad(src, vec2<i32>((x + r + 1) % w, y), 0);
-        let sub = textureLoad(src, vec2<i32>(((x - r) % w + w) % w, y), 0);
+        let sub = textureLoad(src, vec2<i32>(imod(x - r, w), y), 0);
         acc += add - sub;
     }
 }
@@ -362,10 +362,10 @@ fn fxv_pole_at(x0: i32, y0: i32, w: i32, h: i32) -> vec4<f32> {
     var y = y0;
     if (y < 0) {
         y = -1 - y;
-        x = (x + w / 2) % w;
+        x = imod(x + w / 2, w);
     } else if (y >= h) {
         y = 2 * h - 1 - y;
-        x = (x + w / 2) % w;
+        x = imod(x + w / 2, w);
     }
     return textureLoad(src, vec2<i32>(x, clamp(y, 0, h - 1)), 0);
 }
@@ -413,7 +413,7 @@ fn fxv_wrap_pad(@builtin(global_invocation_id) gid: vec3<u32>) {
         sy = 2 * s.y - 1 - sy;
         sx += s.x / 2;
     }
-    textureStore(out, p, textureLoad(src, vec2<i32>(((sx % s.x) + s.x) % s.x, clamp(sy, 0, s.y - 1)), 0));
+    textureStore(out, p, textureLoad(src, vec2<i32>(imod(sx, s.x), clamp(sy, 0, s.y - 1)), 0));
 }
 
 // Per-pixel steps. u[0].x = 0: VR Glow's highlights (u[0].y tint; f[0] = (threshold,
