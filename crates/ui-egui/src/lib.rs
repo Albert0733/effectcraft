@@ -1121,8 +1121,11 @@ impl EffectcraftApp {
         for ev in self.session.drain_events() {
             match ev {
                 effectcraft_engine::Event::OpenComp(_) => {
-                    if !self.ui.locked_tabs.contains(&PanelKind::Composition.id()) {
-                        self.ui.dock.activate(PanelKind::Composition);
+                    // The comp's viewer and its Timeline tab come to the front.
+                    for p in [PanelKind::Composition, PanelKind::Timeline] {
+                        if !self.ui.locked_tabs.contains(&p.id()) {
+                            self.ui.dock.activate(p);
+                        }
                     }
                     self.ui.timeline.pps = None;
                 }

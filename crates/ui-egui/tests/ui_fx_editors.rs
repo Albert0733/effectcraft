@@ -264,6 +264,9 @@ fn composition_tabs_and_scrolling_preview() {
     assert!(h.state().ui.locked_tabs.contains("Composition"));
     click_id(&mut h, "panel.tab.Composition.lock");
     assert!(h.state().ui.locked_tabs.is_empty());
+    // The Timeline's × closes its comp's tab (the panel stays, as in After Effects).
+    let shown = h.state().session.state.active_comp.unwrap();
     click_id(&mut h, "panel.tab.Timeline.close");
-    assert!(!h.state().ui.dock.contains(PanelKind::Timeline));
+    assert!(!h.state().session.state.open_comps.contains(&shown));
+    assert!(h.state().ui.dock.contains(PanelKind::Timeline));
 }

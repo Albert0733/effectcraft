@@ -422,6 +422,12 @@ layers); the Graph Editor has Auto-Select Graph Type (the default: the speed gra
 spatial properties are shown, else the value graph; choosing Value or Speed turns it off). Graph
 Editor keys are small squares whatever their interpolation, as in After Effects.
 
+Since (M3.15): the Timeline shows one tab per open comp, as in After Effects. Double-clicking a
+comp in the Project panel opens it as a new tab next to the comps already open; it no longer
+renames (Enter or the context menu still do). A tab's × closes that comp's Timeline, not the
+panel. A tab dragged over a tab strip shows an insertion mark between the tabs it will land
+between, and lands there; this reorders a group's own tabs too.
+
 Since (M5.16): Key Light (After Effects' Keylight 1.2) is checked end to end on a green-screen
 plate with an uneven screen, spill and soft edges (`effect.apply "Keylight (1.2)"`, pick, Clip
 Black / White, render). The colour eyedroppers of Keying effects sample the effect's input

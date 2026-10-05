@@ -535,7 +535,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         app.auto.add(&format!("project.item.{}", id.0), r, &it.name);
         let nresp = ui.interact(name_clip, egui::Id::new(("pname", id.0)), Sense::click_and_drag());
         app.auto.add(&format!("project.item.{}.name", id.0), name_clip, &it.name);
-        let resp = resp.union(nresp.clone());
+        let resp = resp.union(nresp);
         if resp.clicked() {
             let add = ui.input(|i| i.modifiers.command || i.modifiers.shift);
             if add {
@@ -546,10 +546,9 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 app.session.state.project_selection = vec![*id];
             }
         }
-        if nresp.double_clicked() {
-            // Double-click the name: rename in place.
-            ctx.data_mut(|d| d.insert_temp::<Editing>(edit_id(), (id.0, "name".into(), it.name.clone())));
-        } else if resp.double_clicked() {
+        // Double-click opens the item, as in After Effects (a comp gets its own Timeline tab and
+        // the viewer); Enter or the context menu renames.
+        if resp.double_clicked() {
             match &it.kind {
                 ItemKind::Comp(_) => actions.push(("comp.open".into(), json!({"comp": id.0}))),
                 ItemKind::Folder if !app.ui.project_open_folders.remove(&id.0) => {
