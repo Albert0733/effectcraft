@@ -25,7 +25,9 @@ struct Post {
 
 @group(0) @binding(0) var<uniform> P: Post;
 @group(0) @binding(1) var color_in: texture_2d<f32>;
-@group(0) @binding(2) var z_in: texture_2d<f32>;
+// Camera depth as f32 bits (an `R32Uint` target: integer targets render on every backend,
+// `R32Float` doesn't on GLES without EXT_color_buffer_float).
+@group(0) @binding(2) var z_in: texture_2d<u32>;
 @group(0) @binding(3) var<storage, read_write> acc: array<vec4<f32>>;
 @group(0) @binding(4) var<storage, read_write> depth: array<f32>;
 @group(0) @binding(5) var<storage, read_write> src: array<vec4<f32>>;
@@ -55,7 +57,7 @@ fn resolve(@builtin(global_invocation_id) id: vec3<u32>) {
         for (var i = 0u; i < k; i = i + 1u) {
             let p = vec2<i32>(i32(id.x * k + i), i32(id.y * k + j));
             a = a + textureLoad(color_in, p, 0);
-            let z = textureLoad(z_in, p, 0).x;
+            let z = bitcast<f32>(textureLoad(z_in, p, 0).x);
             if (z >= 0.0) {
                 dz = dz + z;
                 dn = dn + 1.0;

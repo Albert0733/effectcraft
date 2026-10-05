@@ -16,6 +16,40 @@ struct Params {
 @group(0) @binding(2) var aux: texture_2d<f32>;
 @group(0) @binding(4) var<storage, read> data: array<f32>;
 
+// `a` mod `n` in [0, n) for n > 0 (floored). Never `%` on a negative operand: WGSL's `%` truncates,
+// but naga's GLSL output is plain `%`, undefined for negative operands (wrong on Mesa's GL).
+fn imod(a: i32, n: i32) -> i32 {
+    if (a >= 0) {
+        return a % n;
+    }
+    return n - 1 - (-(a + 1)) % n;
+}
+
+// asin / acos to f32 precision on every backend (Cephes' asinf polynomial). WGSL leaves their
+// precision to the implementation, and Mesa's GL drivers use a coarse approximation (errors near
+// 1e-4 rad), which shows in every effect that maps through a sphere or a lens.
+fn asin_p(x: f32) -> f32 {
+    let a = abs(x);
+    let big = a > 0.5;
+    let z = select(a * a, 0.5 * (1.0 - a), big);
+    let s = select(a, sqrt(z), big);
+    var p = ((((4.2163199048e-2 * z + 2.4181311049e-2) * z + 4.5470025998e-2) * z + 7.4953002686e-2) * z + 1.6666752422e-1) * z * s + s;
+    if (big) {
+        p = 1.5707963267948966 - 2.0 * p;
+    }
+    return select(p, -p, x < 0.0);
+}
+
+fn acos_p(x: f32) -> f32 {
+    if (x > 0.5) {
+        return 2.0 * asin_p(sqrt(0.5 * (1.0 - x)));
+    }
+    if (x < -0.5) {
+        return 3.141592653589793 - 2.0 * asin_p(sqrt(0.5 * (1.0 + x)));
+    }
+    return 1.5707963267948966 - asin_p(x);
+}
+
 // ---------------------------------------------------------------- sampling (raster::Image)
 
 fn tex_get(t: texture_2d<f32>, x: i32, y: i32) -> vec4<f32> {

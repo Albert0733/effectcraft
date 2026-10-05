@@ -237,7 +237,7 @@ fn fxw_pageturn(@builtin(global_invocation_id) gid: vec3<u32>) {
         cand[0] = vec4<f32>(FXW_PI * r - d, 1.0, 0.9, 1.0);
         cand[3] = vec4<f32>(d, 0.0, 1.0, 1.0);
     } else {
-        let a = asin(clamp(d / r, -1.0, 1.0));
+        let a = asin_p(clamp(d / r, -1.0, 1.0));
         cand[1] = vec4<f32>(FXW_PI * r - r * a, 1.0, 0.6 + 0.4 * cos(a), 1.0);
         let psi = a / (0.5 * FXW_PI);
         cand[2] = vec4<f32>(r * a, 0.0, 1.0 - 0.4 * psi * (0.5 + 0.5 * ldot), 1.0);

@@ -75,26 +75,28 @@ fn srgb_to_linear(c: f32) -> f32 {
     return pow((c + 0.055) / 1.055, 2.4);
 }
 
+// `a` mod `n` in [0, n) for n > 0 (floored). Never `%` on a negative operand: WGSL's `%` truncates,
+// but naga's GLSL output is plain `%`, undefined for negative operands (wrong on Mesa's GL).
+fn imod(a: i32, n: i32) -> i32 {
+    if (a >= 0) {
+        return a % n;
+    }
+    return n - 1 - (-(a + 1)) % n;
+}
+
 fn wrap_i(i: i32, n: i32, mode: u32) -> i32 {
     if (mode == 1u) {
         return clamp(i, 0, n - 1);
     }
     if (mode == 2u) {
         let p = 2 * n;
-        var m = i % p;
-        if (m < 0) {
-            m = m + p;
-        }
+        let m = imod(i, p);
         if (m >= n) {
             return p - 1 - m;
         }
         return m;
     }
-    var m = i % n;
-    if (m < 0) {
-        m = m + n;
-    }
-    return m;
+    return imod(i, n);
 }
 
 fn texel(t: vec4<u32>, x: i32, y: i32) -> vec4<f32> {
@@ -282,7 +284,8 @@ fn attenuation(kind: u32, falloff: u32, radius: f32, falloff_distance: f32, cos_
 
 struct FOut {
     @location(0) color: vec4<f32>,
-    @location(1) depth: f32,
+    // Camera depth's f32 bits (an `R32Uint` target, see `adv3d.rs`).
+    @location(1) depth: u32,
 };
 
 @fragment
@@ -326,7 +329,7 @@ fn fs(i: VOut, @builtin(front_facing) front: bool) -> FOut {
         emissive = emissive * sample_tex(tex_em, i.uv).rgb;
     }
     var out: FOut;
-    out.depth = dot(g.view_z.xyz, i.pos) + g.view_z.w;
+    out.depth = bitcast<u32>(dot(g.view_z.xyz, i.pos) + g.view_z.w);
     if (unlit || !accepts_lights || g.env2.y < 0.5) {
         let c = rgb + emissive;
         out.color = vec4<f32>(c * alpha, alpha);

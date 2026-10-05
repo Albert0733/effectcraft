@@ -259,6 +259,9 @@ pub struct GpuContext {
     zeros: Mutex<HashMap<(u32, u32), GpuImage>>,
     /// Advanced 3D render pipelines (built on first use).
     pub(crate) adv3d: std::sync::OnceLock<crate::adv3d::Pipes>,
+    /// The adapter can run the Advanced 3D rasteriser (`adv3d::raster_unsupported`); without
+    /// it Advanced 3D scenes render on the CPU.
+    pub(crate) adv3d_raster: bool,
     /// GPU particle pipeline (built on first use) and simulation checkpoints.
     pub(crate) particles: crate::particles::PipesCell,
     pub(crate) particle_states: crate::particles::StatesCell,
@@ -291,11 +294,26 @@ fn storage_tex_entry(binding: u32, format: wgpu::TextureFormat) -> wgpu::BindGro
 impl GpuContext {
     /// Build on an existing device (the desktop app shares egui-wgpu's). `Err` when the
     /// adapter cannot run the compositor (no compute shaders, e.g. WebGL2; no float storage
-    /// textures).
+    /// textures) or the device was created with limits below what its pipelines bind.
     pub fn new(adapter: &wgpu::Adapter, device: wgpu::Device, queue: wgpu::Queue) -> Result<GpuContext, String> {
         let info = adapter.get_info();
         if !adapter.get_downlevel_capabilities().flags.contains(wgpu::DownlevelFlags::COMPUTE_SHADERS) {
             return Err(format!("{} ({:?}): no compute shaders", info.name, info.backend));
+        }
+        // egui-wgpu asks for WebGL2's limits on GL (no storage buffers at all): building the
+        // pipelines there would be a validation error, which release builds only log.
+        let l = device.limits();
+        let needs = [
+            // `adv3d`'s post kernels bind 7 (its rasteriser's fragment stage 6).
+            ("max_storage_buffers_per_shader_stage", l.max_storage_buffers_per_shader_stage, 7),
+            ("max_storage_textures_per_shader_stage", l.max_storage_textures_per_shader_stage, 1),
+            ("max_bind_groups", l.max_bind_groups, 2),
+            ("max_compute_workgroup_size_x", l.max_compute_workgroup_size_x, 64),
+            ("max_compute_workgroup_size_y", l.max_compute_workgroup_size_y, 16),
+            ("max_compute_invocations_per_workgroup", l.max_compute_invocations_per_workgroup, 256),
+        ];
+        if let Some((limit, have, need)) = needs.iter().find(|(_, have, need)| have < need) {
+            return Err(format!("{} ({:?}): device limit {limit} is {have}, needs {need}", info.name, info.backend));
         }
         for f in [FORMAT, wgpu::TextureFormat::Rgba8Unorm] {
             if !adapter.get_texture_format_features(f).allowed_usages.contains(wgpu::TextureUsages::STORAGE_BINDING) {
@@ -303,6 +321,10 @@ impl GpuContext {
             }
         }
         let name = format!("{} ({:?})", info.name, info.backend);
+        let adv3d_unsupported = crate::adv3d::raster_unsupported(adapter);
+        if let Some(why) = &adv3d_unsupported {
+            log::info!("gpu {name}: Advanced 3D renders on the CPU ({why})");
+        }
         let src = [
             include_str!("shaders/common.wgsl"),
             include_str!("shaders/kernels.wgsl"),
@@ -466,6 +488,7 @@ impl GpuContext {
             transfers: Default::default(),
             zeros: Default::default(),
             adv3d: std::sync::OnceLock::new(),
+            adv3d_raster: adv3d_unsupported.is_none(),
             particles: Default::default(),
             particle_states: Default::default(),
             deferred: None,

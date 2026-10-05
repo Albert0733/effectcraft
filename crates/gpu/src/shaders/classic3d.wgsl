@@ -186,7 +186,7 @@ fn attenuation(l: u32, p: vec3<f32>) -> f32 {
     }
     if (li.ints.x == 3u) {
         let cos_a = clamp(dot(-tl.xyz, li.dir.xyz), -1.0, 1.0);
-        let a = acos(cos_a);
+        let a = acos_p(cos_a);
         let outer = li.cone.x;
         let inner = outer * (1.0 - li.cone.y);
         if (a <= inner) {

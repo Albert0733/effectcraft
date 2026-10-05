@@ -14,7 +14,9 @@ use effectcraft_time::{FrameRate, Tick};
 
 use crate::Gpu;
 
+/// A device of the test's own (the test holds [`crate::tests::hold_gpu_lock`]).
 fn gpu() -> Option<Gpu> {
+    crate::tests::hold_gpu_lock();
     let g = Gpu::headless();
     if g.is_none() {
         eprintln!("effectcraft-gpu adv3d tests: no GPU adapter, skipping");
@@ -526,4 +528,25 @@ fn gpu_compositor_draws_split_advanced_3d_runs_and_skies() {
         eprintln!("split case {case}: gpu vs cpu {:.3} % beyond 1/255 (max {max:.4})", share * 100.0);
         assert!(share <= 0.015, "case {case}: {:.3} % of pixels differ from the CPU", share * 100.0);
     }
+}
+
+/// An adapter whose render targets don't qualify (`R32Float` was not renderable on GL's llvmpipe;
+/// the pipelines failed validation, which release builds only log): Advanced 3D renders on the
+/// CPU, the GPU compositor's frame matches the CPU's, and no render pipeline is built (a
+/// validation error panics under test).
+#[test]
+fn adapters_that_cannot_rasterise_render_advanced_3d_on_the_cpu() {
+    crate::tests::hold_gpu_lock();
+    let Some(mut ctx) = crate::context::GpuContext::headless() else { return };
+    ctx.adv3d_raster = false;
+    let g = Gpu::from_context(ctx);
+    let (p, cid) = scene_project();
+    let s = scene(&p, cid);
+    assert!(g.raster_3d(&s).is_none(), "no GPU raster");
+    let cpu = Renderer::new(&p, &NoFootage, RenderOpts::default()).comp_frame(cid, Tick::ZERO);
+    let mut r = Renderer::new(&p, &NoFootage, RenderOpts { backend: effectcraft_render::Backend::Gpu, ..Default::default() });
+    r.accel = Some(&g);
+    let gimg = r.comp_frame(cid, Tick::ZERO);
+    let worst = cpu.data.iter().zip(&gimg.data).flat_map(|(a, b)| (0..4).map(move |k| (a[k] - b[k]).abs())).fold(0.0f32, f32::max);
+    assert!(worst <= 2.0 / 255.0, "GPU compositor with CPU Advanced 3D vs CPU: worst {worst}");
 }

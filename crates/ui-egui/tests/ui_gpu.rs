@@ -21,15 +21,22 @@ fn settle(h: &mut Harness<'_, EffectcraftApp>) {
 
 #[test]
 fn viewer_draws_gpu_frames_that_match_the_cpu() {
-    if effectcraft_gpu::Gpu::headless().is_none() {
+    let Some(probe) = effectcraft_gpu::Gpu::headless() else {
         eprintln!("no GPU adapter: skipping");
         return;
-    }
+    };
+    // egui-wgpu creates its GL device with WebGL2's limits, which the compositor declines.
+    let gl = effectcraft_engine::render::Accelerator::name(&probe).ends_with("(Gl)");
+    drop(probe);
     let mut s = Session::default();
     s.execute("file.openDemoProject", json!({})).unwrap();
     s.execute("time.set", json!({"time": 2.0})).unwrap();
     let mut h = Harness::builder().with_size(egui::vec2(1400.0, 900.0)).with_pixels_per_point(1.0).wgpu().build_eframe(|_| EffectcraftApp::new(s));
     settle(&mut h);
+    if gl && h.state().gpu_adapter().is_none() {
+        eprintln!("egui-wgpu's GL device has WebGL2 limits: the viewer stays on the CPU, skipping");
+        return;
+    }
     assert!(h.state().gpu_adapter().is_some(), "GPU compositor on egui-wgpu's device");
     let gpu_px = h.state_mut().viewer_pixels().expect("read back the GPU frame");
     let gpu_shot = h.render().expect("render");

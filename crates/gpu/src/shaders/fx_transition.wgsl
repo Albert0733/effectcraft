@@ -681,7 +681,7 @@ fn ftr_cylinder(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
     let tau = 6.283185307179586;
-    let th = asin(s);
+    let th = asin_p(s);
     let cz = cos(th);
     let spin = P.f[2].x;
     let front = ftr_shade(ftr_texel((th + spin) / tau + 0.5, v), vec3<f32>(s, 0.0, cz));
@@ -695,7 +695,7 @@ fn ftr_sphere_tex(q: vec3<f32>) -> vec4<f32> {
     let m1 = P.f[8].xyz;
     let m2 = P.f[9].xyz;
     let t = m0 * q.x + m1 * q.y + m2 * q.z;
-    let lat = asin(clamp(t.y, -1.0, 1.0));
+    let lat = asin_p(clamp(t.y, -1.0, 1.0));
     return ftr_texel(ftr_lon_u(t.x, t.z), lat / 3.141592653589793 + 0.5);
 }
 
@@ -775,7 +775,7 @@ fn ftr_env_uv(mapping: u32, r: vec3<f32>) -> vec2<f32> {
         }
         return vec2<f32>((cr.x + (cr.z + 1.0) * 0.5) / 3.0, (cr.y + (cr.w + 1.0) * 0.5) / 4.0);
     }
-    let lat = asin(clamp(r.y, -1.0, 1.0));
+    let lat = asin_p(clamp(r.y, -1.0, 1.0));
     return vec2<f32>(ftr_lon_u(r.x, r.z), 0.5 + lat / 3.141592653589793);
 }
 

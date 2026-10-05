@@ -349,8 +349,8 @@ fn gen_worley(u: f32, v: f32, disperse: f32, evo: f32, seed: u32) -> vec3<f32> {
             var tx = gx;
             var ty = gy;
             if (tile) {
-                tx = ((gx % nx) + nx) % nx;
-                ty = ((gy % ny) + ny) % ny;
+                tx = imod(gx, nx);
+                ty = imod(gy, ny);
             }
             let hx = bitcast<u32>(tx);
             let hy = bitcast<u32>(ty);
@@ -428,7 +428,7 @@ fn gen_axis(q: f32, size: f32, f: f32) -> f32 {
     let fr = u - fl;
     let d = min(fr, 1.0 - fr) * size;
     let n = i32(fl);
-    let s = select(-1.0, 1.0, ((n % 2) + 2) % 2 == 0);
+    let s = select(-1.0, 1.0, imod(n, 2) == 0);
     return s * min(d / (f * 0.5), 1.0);
 }
 

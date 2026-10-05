@@ -661,7 +661,7 @@ fn fp2_hextile(@builtin(global_invocation_id) gid: vec3<u32>) {
     let hy = r * 1.5 * rz;
     var lu = u - hx;
     var lv = v - hy;
-    let odd = ((i32(rx) + i32(rz)) % 2 + 2) % 2 == 1;
+    let odd = imod(i32(rx) + i32(rz), 2) == 1;
     if ((mode == 1u || mode == 2u) && odd) {
         lu = -lu;
     }
