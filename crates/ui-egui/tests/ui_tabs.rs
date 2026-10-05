@@ -144,3 +144,25 @@ fn tab_drag_snapshot() {
     std::fs::create_dir_all(dir).unwrap();
     h.render().expect("render").save(format!("{dir}/tab-drag.png")).unwrap();
 }
+
+/// A precomp layer's bar shows its comp's markers; a double-click opens that comp at the marker.
+#[test]
+fn nested_comp_markers_show_on_the_precomp_bar() {
+    let (mut h, pre, main) = harness();
+    {
+        let s = &mut h.state_mut().session;
+        s.execute("comp.open", json!({"comp": pre})).unwrap();
+        s.execute("markers.set", json!({"new": true, "time": 1.0, "comment": "beat"})).unwrap();
+        s.execute("comp.open", json!({"comp": main})).unwrap();
+    }
+    h.run_steps(4);
+    let l = h.state().session.project.comp(ItemId(main)).unwrap().layers[0].id.0;
+    let id = format!("timeline.layer.{l}.nestedMarker.0");
+    let m = rect(&h, &id);
+    let e = h.state().auto.find(&id).unwrap().clone();
+    assert_eq!(e.label, "beat (marker in Pre)");
+    click_n(&mut h, m.center(), 2);
+    assert_eq!(h.state().session.active_comp_id(), Some(ItemId(pre)));
+    // (29.97 fps: the marker's frame is at 1.001 s)
+    assert!((h.state().session.time().seconds() - 1.0).abs() < 0.034, "{}", h.state().session.time().seconds());
+}

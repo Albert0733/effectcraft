@@ -147,3 +147,37 @@ fn precompose_leave_and_move_attributes() {
     assert_eq!((nl.in_point.seconds(), nl.out_point.seconds()), (1.0, 3.0));
     assert_eq!(s.active_comp_id(), Some(inner));
 }
+
+/// A precomp layer shows its comp's markers on its bar, mapped through its timing.
+#[test]
+fn nested_comp_markers_follow_the_precomp_layers_timing() {
+    let mut s = crate::Session::default();
+    let pre = s.execute("comp.new", json!({"name": "Pre", "width": 32, "height": 32, "frameRate": 10, "duration": 4})).unwrap()["comp"].as_u64().unwrap();
+    for (t, c) in [(1.0, "beat"), (3.0, "drop")] {
+        s.execute("markers.set", json!({"new": true, "time": t, "comment": c})).unwrap();
+    }
+    s.execute("comp.new", json!({"name": "Main", "width": 32, "height": 32, "frameRate": 10, "duration": 20})).unwrap();
+    let l = s.execute("layer.addItem", json!({"item": pre})).unwrap()["layer"].as_u64().unwrap();
+    s.execute("layer.timing", json!({"layers": [l], "start": 2.0})).unwrap();
+    let times = |s: &mut crate::Session| -> Vec<(f64, String)> {
+        let v = s.execute_checked("markers.nested", json!({"layer": l})).unwrap();
+        v.as_array().unwrap().iter().map(|m| (m["time"].as_f64().unwrap(), m["comment"].as_str().unwrap().to_string())).collect()
+    };
+    assert_eq!(times(&mut s), vec![(3.0, "beat".to_string()), (5.0, "drop".to_string())]);
+    // Stretched to 200 %: twice as far from the start.
+    s.execute("layer.timeStretch", json!({"layers": [l], "percent": 200})).unwrap();
+    assert_eq!(times(&mut s), vec![(4.0, "beat".to_string()), (8.0, "drop".to_string())]);
+    s.execute("layer.timeStretch", json!({"layers": [l], "percent": 100})).unwrap();
+    // Trimmed: markers outside the In–Out range are not on the bar.
+    s.execute("layer.timing", json!({"layers": [l], "out": 4.0})).unwrap();
+    assert_eq!(times(&mut s), vec![(3.0, "beat".to_string())]);
+    s.execute("layer.timing", json!({"layers": [l], "out": 6.0})).unwrap();
+    // Time remapping at half speed: nested 1 s is reached 2 s into the layer.
+    s.execute("layer.enableTimeRemap", json!({"layers": [l]})).unwrap();
+    s.execute("prop.addKey", json!({"layer": l, "path": "timeRemap", "time": 4.0, "value": 2.0})).unwrap();
+    let t = times(&mut s);
+    assert_eq!(t.first(), Some(&(4.0, "beat".to_string())), "{t:?}");
+    // Not a precomp layer.
+    let solid = s.execute("layer.newSolid", json!({"color": "#ffffff"})).unwrap()["layer"].as_u64().unwrap();
+    assert!(s.execute("markers.nested", json!({"layer": solid})).is_err());
+}
