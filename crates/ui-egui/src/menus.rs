@@ -562,6 +562,13 @@ pub fn frontend(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, p: Valu
             Value::Null
         }
         // Window ▸ <ScriptUI panel>: dock (or bring forward) the panel the script built.
+        // Audio scrubbing: one frame of audio at `time` (default the current time).
+        "playback.scrubAudio" => {
+            let cid = app.session.active_comp_id().ok_or("no composition")?;
+            let t = p.get("time").and_then(Value::as_f64).map_or(app.session.time(), effectcraft_engine::time::Tick::from_seconds_f64);
+            app.scrub_audio(cid, t, now);
+            json!({"playing": app.scrub.is_some()})
+        }
         // View ▸ New Viewer.
         "view.newViewer" => json!({"viewer": crate::panels::viewers::new_viewer(app)}),
         "window.scriptPanel" => {

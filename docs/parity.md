@@ -422,6 +422,12 @@ layers); the Graph Editor has Auto-Select Graph Type (the default: the speed gra
 spatial properties are shown, else the value graph; choosing Value or Speed turns it off). Graph
 Editor keys are small squares whatever their interpolation, as in After Effects.
 
+Since (M13.34): audio scrubbing. Ctrl-dragging the current-time indicator (Cmd on macOS) plays
+one frame (30–100 ms) of the comp's mix at each new frame, as in After Effects. Snippets fade in
+and out and replace what is still queued, so the sound follows the pointer without lagging.
+Holding still repeats nothing, the Audio panel meters follow, and the output closes after an idle
+second. Agents call `playback.scrubAudio {time}`.
+
 Since (M13.33): a precomp layer's bar shows its comp's markers, as outlined, read-only markers.
 They are mapped through the layer's timing (start, stretch, time remapping, Responsive Design
 stretch) and shown within its In–Out range. Hovering names them ("beat (marker in Pre)"), and a
@@ -758,7 +764,7 @@ are pinned bit for bit by golden hashes (`crates/effects/tests/particle_golden.r
 17. ~~Content-keyed RAM preview frames, so an edit keeps the frames of comps it doesn't touch.~~
     (M4.14)
 18. ~~View ▸ New Viewer (several Composition viewers)~~ (M13.32); ~~nested comp markers on the
-    precomp layer bar~~ (M13.33), audio scrubbing.
+    precomp layer bar~~ (M13.33), ~~audio scrubbing~~ (M13.34).
 
 At the original audit the engine underneath (keyframes, expressions, shape operators, text
 animators, Classic 3D, all 38 blend modes, the render queue) was already deep, and most of what was
