@@ -15,7 +15,8 @@ fn drag_id() -> egui::Id {
 
 impl EffectcraftApp {
     /// Tab labels that name what the panel shows, as After Effects does: "Composition Intro",
-    /// "Effect Controls Title", "Properties: Title", and the Timeline tab named after its comp.
+    /// "Effect Controls Title", "Properties: Title" (the Timeline's tabs are its comps, see
+    /// [`Self::tab_docs`]).
     fn tab_titles(&self) -> Vec<(PanelKind, String)> {
         let mut out = Vec::new();
         // ScriptUI panels are named after their script.
@@ -27,7 +28,6 @@ impl EffectcraftApp {
         let Some(comp) = self.session.active_comp() else { return out };
         let cname = self.session.active_comp_id().and_then(|id| self.session.project.item(id)).map(|i| i.name.clone()).unwrap_or_default();
         out.push((PanelKind::Composition, format!("Composition {cname}")));
-        out.push((PanelKind::Timeline, cname));
         if let Some(l) = self.session.state.selected_layers.first().and_then(|id| comp.layer(*id)) {
             out.push((PanelKind::EffectControls, format!("Effect Controls {}", l.name)));
             out.push((PanelKind::Properties, format!("Properties: {}", l.name)));
@@ -35,13 +35,35 @@ impl EffectcraftApp {
         out
     }
 
+    /// A comp's label colour as a tab swatch (faint without a label).
+    fn comp_swatch(&self, cid: effectcraft_engine::project::ItemId) -> Color32 {
+        match self.session.project.item(cid).map(|i| i.label) {
+            Some(l) if l != effectcraft_engine::color::Label::None => self.tokens.label(l),
+            _ => self.tokens.text_faint,
+        }
+    }
+
+    /// The Timeline's tabs: one per open comp, as in After Effects (opening a precomp adds a tab
+    /// next to its parent's instead of replacing it).
+    fn tab_docs(&self) -> Vec<(PanelKind, Vec<dock::DocTab>)> {
+        let st = &self.session.state;
+        let locked = self.ui.locked_tabs.contains(&PanelKind::Timeline.id());
+        let docs = st
+            .open_comps
+            .iter()
+            .filter_map(|id| {
+                let it = self.session.project.item(*id).filter(|i| i.as_comp().is_some())?;
+                let deco = dock::TabDeco { swatch: self.comp_swatch(*id), locked, viewer: true };
+                Some(dock::DocTab { id: id.0, title: it.name.clone(), deco: Some(deco), active: st.active_comp == Some(*id) })
+            })
+            .collect();
+        vec![(PanelKind::Timeline, docs)]
+    }
+
     /// The Composition and Timeline tabs' close button, label-colour swatch and viewer lock.
     fn tab_decos(&self) -> Vec<(PanelKind, dock::TabDeco)> {
         let Some(cid) = self.session.active_comp_id() else { return vec![] };
-        let swatch = match self.session.project.item(cid).map(|i| i.label) {
-            Some(l) if l != effectcraft_engine::color::Label::None => self.tokens.label(l),
-            _ => self.tokens.text_faint,
-        };
+        let swatch = self.comp_swatch(cid);
         let mut v: Vec<(PanelKind, dock::TabDeco)> = [PanelKind::Composition, PanelKind::Timeline]
             .into_iter()
             .map(|p| (p, dock::TabDeco { swatch, locked: self.ui.locked_tabs.contains(&p.id()), viewer: true }))
@@ -149,9 +171,15 @@ impl EffectcraftApp {
         let mut actions = Vec::new();
         let titles = self.tab_titles();
         let decos = self.tab_decos();
+        let docs = self.tab_docs();
         let title = |p: PanelKind| titles.iter().find(|(k, _)| *k == p).map(|(_, s)| s.clone()).unwrap_or_else(|| p.title().to_string());
+        let info = dock::TabInfo { title: &title, decos: &decos, docs: &docs };
+        // Where each group's tabs are (tab drags show where a tab will land between them).
+        let mut tab_rects: Vec<(String, Vec<(PanelKind, Rect)>)> = vec![];
         for g in &groups {
-            actions.extend(dock::draw_group_chrome(ui, g, self.ui.focused, &t, &mut self.auto, &title, &decos));
+            let c = dock::draw_group_chrome(ui, g, self.ui.focused, &t, &mut self.auto, &info);
+            actions.extend(c.actions);
+            tab_rects.push((g.path.clone(), c.tabs));
         }
         self.label_tab_marks(ui);
         if maximized.is_none() {
@@ -168,7 +196,8 @@ impl EffectcraftApp {
         // Floating groups over the dock.
         let mut float_groups: Vec<Group> = vec![];
         for i in 0..self.ui.floating.len() {
-            if let Some(g) = self.floating_window(&ctx, i, &title, &mut actions) {
+            if let Some((g, tabs)) = self.floating_window(&ctx, i, &info, &mut actions) {
+                tab_rects.push((g.path.clone(), tabs));
                 float_groups.push(g);
             }
         }
@@ -197,15 +226,35 @@ impl EffectcraftApp {
                         self.ui.locked_tabs.insert(p.id().to_string());
                     }
                 }
+                // The Timeline's comp tabs: show that comp / close its Timeline.
+                DockAction::ActivateDoc(p, id) => {
+                    if !self.ui.dock.activate(p)
+                        && let Some(f) = self.ui.floating.iter_mut().find(|f| f.panels.contains(&p))
+                    {
+                        f.active = f.panels.iter().position(|x| *x == p).unwrap_or(0);
+                    }
+                    if self.session.state.active_comp.map(|c| c.0) != Some(id) {
+                        let _ = crate::menus::invoke(self, &ctx, "comp.open", serde_json::json!({"comp": id}));
+                    }
+                }
+                DockAction::CloseDoc(_, id) => {
+                    let _ = crate::menus::invoke(self, &ctx, "comp.close", serde_json::json!({"comp": id}));
+                }
             }
         }
-        self.tab_drag(&ctx, &groups, &float_groups);
+        self.tab_drag(&ctx, &groups, &float_groups, &tab_rects);
         panels::panel_menu_popup(self, ui);
     }
 
     /// One floating group: a window with a tab strip (drag the empty strip to move it, the
     /// corner to resize it) and the active panel's body.
-    fn floating_window(&mut self, ctx: &egui::Context, i: usize, title: &dyn Fn(PanelKind) -> String, actions: &mut Vec<DockAction>) -> Option<Group> {
+    fn floating_window(
+        &mut self,
+        ctx: &egui::Context,
+        i: usize,
+        info: &dock::TabInfo,
+        actions: &mut Vec<DockAction>,
+    ) -> Option<(Group, Vec<(PanelKind, Rect)>)> {
         let t = self.tokens;
         let f = self.ui.floating.get(i)?.clone();
         let screen = ctx.content_rect();
@@ -236,8 +285,8 @@ impl EffectcraftApp {
                 active: f.active.min(f.panels.len().saturating_sub(1)),
                 stacked: None,
             };
-            let decos = self.tab_decos();
-            actions.extend(dock::draw_group_chrome(ui, &g, self.ui.focused, &t, &mut self.auto, title, &decos));
+            let c = dock::draw_group_chrome(ui, &g, self.ui.focused, &t, &mut self.auto, info);
+            actions.extend(c.actions);
             ui.painter().rect_stroke(r, t.radius, Stroke::new(1.0, t.field_border), StrokeKind::Outside);
             if let Some(p) = g.panels.get(g.active).copied() {
                 self.panel_body(ui, p, g.content);
@@ -261,14 +310,16 @@ impl EffectcraftApp {
             {
                 fl.rect = [nr.min.x, nr.min.y, nr.width(), nr.height()];
             }
-            group = Some(g);
+            group = Some((g, c.tabs));
         });
         group
     }
 
-    /// A tab being dragged: highlight the drop zone under the pointer; on release, dock (or
-    /// float with Cmd/Ctrl or outside every group).
-    fn tab_drag(&mut self, ctx: &egui::Context, groups: &[Group], floats: &[Group]) {
+    /// A tab being dragged. Over a tab strip (or the middle of a group) it shows where the tab
+    /// will land: an insertion mark between two tabs (a drop there reorders a group's own tabs
+    /// too); near a group's edge, the half it will split off. On release it lands there (or
+    /// floats with Cmd/Ctrl or outside every group).
+    fn tab_drag(&mut self, ctx: &egui::Context, groups: &[Group], floats: &[Group], tab_rects: &[(String, Vec<(PanelKind, Rect)>)]) {
         let Some(p) = ctx.data(|d| d.get_temp::<PanelKind>(drag_id())) else { return };
         let t = self.tokens;
         let Some(pos) = ctx.pointer_latest_pos() else { return };
@@ -276,23 +327,55 @@ impl EffectcraftApp {
         let target = floats.iter().map(|g| (g, true)).chain(groups.iter().map(|g| (g, false))).find(|(g, _)| g.rect.contains(pos));
         let float_drop = ctx.input(|i| i.modifiers.command);
         let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("dock-drop")));
-        let plan: Option<(PanelKind, Zone)> = match target {
+        let plan: Option<DropPlan> = match target {
             Some((g, is_float)) if !float_drop => {
-                let anchor = g.panels.get(g.active).copied().unwrap_or(p);
+                let others: Vec<PanelKind> = g.panels.iter().copied().filter(|x| *x != p).collect();
                 let zone = if is_float { Zone::Center } else { dock::drop_zone(g.rect, t.tab_h, pos) };
-                let self_only = anchor == p && g.panels.len() == 1;
-                if self_only {
-                    None
-                } else {
-                    let anchor = if anchor == p { g.panels.iter().copied().find(|x| *x != p).unwrap_or(p) } else { anchor };
-                    let hr = dock::zone_rect(g.rect, zone).shrink(2.0);
-                    painter.rect_filled(hr, t.radius, t.focus.gamma_multiply(0.25));
-                    painter.rect_stroke(hr, t.radius, Stroke::new(2.0, t.focus), StrokeKind::Inside);
-                    // Outline the whole group for the side zones, like AE's drop-zone frame.
-                    if zone != Zone::Center {
-                        painter.rect_stroke(g.rect, t.radius, Stroke::new(1.0, t.focus.gamma_multiply(0.6)), StrokeKind::Inside);
+                match (others.first().copied(), zone) {
+                    // The dragged tab alone in its group: nowhere to go here.
+                    (None, _) => None,
+                    (Some(first), Zone::Center) => {
+                        let rects: Vec<(PanelKind, Rect)> = tab_rects
+                            .iter()
+                            .find(|(path, _)| *path == g.path)
+                            .map(|(_, r)| r.iter().copied().filter(|(k, _)| *k != p).collect())
+                            .unwrap_or_default();
+                        let strip = Rect::from_min_size(g.rect.min, vec2(g.rect.width(), t.tab_h));
+                        let before = if strip.contains(pos) {
+                            // Before the first tab whose middle is right of the pointer.
+                            rects.iter().find(|(_, r)| r.center().x > pos.x).map(|(k, _)| *k)
+                        } else if g.panels.contains(&p) {
+                            // The middle of its own group: it stays where it is.
+                            Some(p)
+                        } else {
+                            // The middle of another group: right after its shown tab.
+                            let shown = g.panels.get(g.active).and_then(|a| others.iter().position(|x| x == a)).unwrap_or(others.len());
+                            others.get(shown + 1).copied()
+                        };
+                        if before == Some(p) {
+                            None
+                        } else {
+                            let x = match before.and_then(|b| rects.iter().find(|(k, _)| *k == b)) {
+                                Some((_, r)) => r.min.x - 4.0,
+                                None => rects.last().map_or(strip.min.x + 8.0, |(_, r)| r.max.x + 4.0),
+                            };
+                            painter.rect_filled(strip.shrink2(vec2(2.0, 1.0)), t.radius, t.focus.gamma_multiply(0.12));
+                            if !strip.contains(pos) {
+                                painter.rect_stroke(g.rect, t.radius, Stroke::new(1.0, t.focus.gamma_multiply(0.6)), StrokeKind::Inside);
+                            }
+                            insertion_mark(&painter, x, strip, t.focus);
+                            Some(DropPlan::Tab { anchor: first, before })
+                        }
                     }
-                    Some((anchor, zone))
+                    (Some(first), zone) => {
+                        let shown = g.panels.get(g.active).copied().filter(|a| *a != p).unwrap_or(first);
+                        let hr = dock::zone_rect(g.rect, zone).shrink(2.0);
+                        painter.rect_filled(hr, t.radius, t.focus.gamma_multiply(0.25));
+                        painter.rect_stroke(hr, t.radius, Stroke::new(2.0, t.focus), StrokeKind::Inside);
+                        // Outline the whole group for the side zones, like AE's drop-zone frame.
+                        painter.rect_stroke(g.rect, t.radius, Stroke::new(1.0, t.focus.gamma_multiply(0.6)), StrokeKind::Inside);
+                        Some(DropPlan::Side { anchor: shown, zone })
+                    }
                 }
             }
             _ => None,
@@ -307,7 +390,8 @@ impl EffectcraftApp {
         if ctx.input(|i| i.pointer.any_released()) {
             ctx.data_mut(|d| d.remove::<PanelKind>(drag_id()));
             let ok = match plan {
-                Some((anchor, zone)) => self.edit_layout(|l| l.dock(p, anchor, zone)),
+                Some(DropPlan::Tab { anchor, before }) => self.edit_layout(|l| l.insert_tab(p, anchor, before)),
+                Some(DropPlan::Side { anchor, zone }) => self.edit_layout(|l| l.dock(p, anchor, zone)),
                 None if float_drop || target.is_none() => {
                     let r = [pos.x - 40.0, pos.y - 12.0, 420.0, 320.0];
                     self.edit_layout(|l| l.float(p, r))
@@ -319,6 +403,23 @@ impl EffectcraftApp {
                 self.show_panel(p);
             }
         }
+    }
+}
+
+/// Where a dragged tab lands.
+enum DropPlan {
+    /// A tab in the group of `anchor`, before `before` (last when `None`).
+    Tab { anchor: PanelKind, before: Option<PanelKind> },
+    /// A new group split off one side of `anchor`'s group.
+    Side { anchor: PanelKind, zone: Zone },
+}
+
+/// The insertion mark of a tab drag: a bar between two tabs at `x`, with caps.
+fn insertion_mark(painter: &egui::Painter, x: f32, strip: Rect, col: Color32) {
+    let (y0, y1) = (strip.min.y + 3.0, strip.max.y - 2.0);
+    painter.line_segment([pos2(x, y0), pos2(x, y1)], Stroke::new(2.5, col));
+    for (y, d) in [(y0, 1.0), (y1, -1.0)] {
+        painter.add(egui::Shape::convex_polygon(vec![pos2(x - 4.5, y), pos2(x + 4.5, y), pos2(x, y + 5.0 * d)], col, Stroke::NONE));
     }
 }
 

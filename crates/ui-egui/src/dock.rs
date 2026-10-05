@@ -607,6 +607,39 @@ impl DockNode {
         }
     }
 
+    /// Move panel `p` into the group that holds `anchor` as a tab before `before` (one of that
+    /// group's panels) or last, and show it. False (tree unchanged) if `anchor` isn't docked.
+    pub fn insert_tab(&mut self, p: PanelKind, anchor: PanelKind, before: Option<PanelKind>) -> bool {
+        if p == anchor || !self.contains(anchor) {
+            return false;
+        }
+        let saved = self.clone();
+        self.close(p);
+        fn rec(n: &mut DockNode, p: PanelKind, anchor: PanelKind, before: Option<PanelKind>) -> bool {
+            match n {
+                DockNode::Split { a, b, .. } => rec(a, p, anchor, before) || rec(b, p, anchor, before),
+                DockNode::Tabs { panels, active } if panels.contains(&anchor) => {
+                    let i = before.and_then(|b| panels.iter().position(|x| *x == b)).unwrap_or(panels.len());
+                    panels.insert(i, p);
+                    *active = i;
+                    true
+                }
+                DockNode::Stack { entries } if entries.iter().any(|e| e.panel == anchor) => {
+                    let i = before.and_then(|b| entries.iter().position(|e| e.panel == b)).unwrap_or(entries.len());
+                    entries.insert(i, StackEntry { panel: p, open: true, height: None });
+                    true
+                }
+                _ => false,
+            }
+        }
+        if rec(self, p, anchor, before) {
+            true
+        } else {
+            *self = saved;
+            false
+        }
+    }
+
     /// Path of the group containing `p` (as in [`Group::path`]; stacks add `sN`).
     pub fn path_of(&self, p: PanelKind) -> Option<String> {
         fn rec(n: &DockNode, p: PanelKind, path: &str) -> Option<String> {
@@ -662,6 +695,36 @@ impl Layout {
         }
         self.floating.retain(|f| !f.panels.is_empty());
         found
+    }
+
+    /// Move `p` (docked or floating) into the group of `anchor` (docked or floating) as a tab
+    /// before `before` or last: where a tab dragged onto a tab strip lands.
+    pub fn insert_tab(&mut self, p: PanelKind, anchor: PanelKind, before: Option<PanelKind>) -> bool {
+        if p == anchor || before == Some(p) {
+            return false;
+        }
+        if self.floating.iter().any(|f| f.panels.contains(&anchor)) {
+            if self.root.contains(p) {
+                if self.root.panel_count() <= 1 {
+                    return false;
+                }
+                self.root.close(p);
+            } else {
+                self.unfloat(p);
+            }
+            // (Removing `p` may have dropped an emptied group: look the anchor up again.)
+            let Some(f) = self.floating.iter_mut().find(|f| f.panels.contains(&anchor)) else { return false };
+            let i = before.and_then(|b| f.panels.iter().position(|x| *x == b)).unwrap_or(f.panels.len());
+            f.panels.insert(i, p);
+            f.active = i;
+            return true;
+        }
+        if !self.root.contains(anchor) {
+            return false;
+        }
+        // A floating panel isn't in the tree, so insert_tab's removal is a no-op for it.
+        self.unfloat(p);
+        self.root.insert_tab(p, anchor, before)
     }
 
     /// Dock `p` (docked or floating) next to `anchor`; `anchor` may be floating too (then Center
@@ -724,6 +787,37 @@ pub enum DockAction {
     BeginDrag(PanelKind),
     /// The tab's lock was toggled (Composition / Timeline viewer lock).
     ToggleLock(PanelKind),
+    /// A document tab of a panel was clicked (the Timeline's tab of comp `id`).
+    ActivateDoc(PanelKind, u64),
+    /// A document tab's close button (or middle click): close that document (comp `id`).
+    CloseDoc(PanelKind, u64),
+}
+
+/// One document a panel shows as a tab of its own (the Timeline: one tab per open comp, as in
+/// After Effects).
+#[derive(Debug, Clone, PartialEq)]
+pub struct DocTab {
+    pub id: u64,
+    pub title: String,
+    pub deco: Option<TabDeco>,
+    /// The document the panel shows now.
+    pub active: bool,
+}
+
+/// What a group's tabs show: labels, the comp swatch / close / lock decorations and the panels
+/// that show one tab per document.
+pub struct TabInfo<'a> {
+    pub title: &'a dyn Fn(PanelKind) -> String,
+    pub decos: &'a [(PanelKind, TabDeco)],
+    pub docs: &'a [(PanelKind, Vec<DocTab>)],
+}
+
+/// What drawing a group's chrome produced: actions and where each panel's tabs are (a panel with
+/// document tabs spans all of them; tabs hidden behind the overflow chevron are left out).
+#[derive(Default)]
+pub struct Chrome {
+    pub actions: Vec<DockAction>,
+    pub tabs: Vec<(PanelKind, Rect)>,
 }
 
 /// After Effects-style extras on a tab that shows a composition (Composition, Timeline): a close
@@ -810,18 +904,21 @@ pub fn layout(ui: &mut egui::Ui, node: &mut DockNode, rect: Rect, t: &Tokens, pa
     }
 }
 
-/// Draw a group's frame + tab strip. Returns actions (tab clicks, panel menu, focus).
-/// `title` gives a tab's label, which may name the comp or layer it shows (After Effects style).
-pub fn draw_group_chrome(
-    ui: &mut egui::Ui,
-    g: &Group,
-    focused: PanelKind,
-    t: &Tokens,
-    reg: &mut crate::automation::Registry,
-    title: &dyn Fn(PanelKind) -> String,
-    decos: &[(PanelKind, TabDeco)],
-) -> Vec<DockAction> {
-    let mut actions = Vec::new();
+/// Draw a group's frame + tab strip: one tab per panel, or per document for panels that show
+/// several (the Timeline's comps). Tab labels may name the comp or layer they show (After
+/// Effects style).
+pub fn draw_group_chrome(ui: &mut egui::Ui, g: &Group, focused: PanelKind, t: &Tokens, reg: &mut crate::automation::Registry, info: &TabInfo) -> Chrome {
+    struct Entry {
+        panel: PanelKind,
+        doc: Option<u64>,
+        label: String,
+        deco: Option<TabDeco>,
+        /// The group's shown tab.
+        active: bool,
+        /// The document its panel shows (even behind another tab).
+        shown_doc: bool,
+    }
+    let mut out = Chrome::default();
     let painter = ui.painter().clone();
     painter.rect_filled(g.rect, t.radius, t.panel_bg);
     let active_panel = g.panels.get(g.active).copied();
@@ -833,57 +930,102 @@ pub fn draw_group_chrome(
             painter.circle_filled(c + vec2(dx, 0.0), 1.0, t.text_faint);
         }
     } else {
+        let mut entries: Vec<Entry> = vec![];
+        for (pi, p) in g.panels.iter().enumerate() {
+            let shown = pi == g.active;
+            match info.docs.iter().find(|(k, d)| k == p && !d.is_empty()) {
+                Some((_, docs)) => entries.extend(docs.iter().map(|d| Entry {
+                    panel: *p,
+                    doc: Some(d.id),
+                    label: d.title.clone(),
+                    deco: d.deco,
+                    active: shown && d.active,
+                    shown_doc: d.active,
+                })),
+                None => entries.push(Entry {
+                    panel: *p,
+                    doc: None,
+                    label: (info.title)(*p),
+                    deco: info.decos.iter().find(|(k, _)| k == p).map(|(_, d)| *d),
+                    active: shown,
+                    shown_doc: false,
+                }),
+            }
+        }
+        let ai = entries.iter().position(|e| e.active).unwrap_or(0);
         let strip = Rect::from_min_size(g.rect.min, vec2(g.rect.width(), t.tab_h));
         if t.gradients {
             // Settings ▸ Appearance ▸ Use Gradients.
             crate::theme::gradient_rect(&painter, strip.shrink2(vec2(t.radius, 0.0)), t.grad_top(t.panel_bg), t.panel_bg);
         }
+        let activate = |e: &Entry| match e.doc {
+            Some(id) => DockAction::ActivateDoc(e.panel, id),
+            None => DockAction::Activate(e.panel),
+        };
+        let close = |e: &Entry| match e.doc {
+            Some(id) => DockAction::CloseDoc(e.panel, id),
+            None => DockAction::Close(e.panel),
+        };
         let mut x = strip.min.x + 12.0;
         let text_y = strip.min.y + 16.0;
-        for (i, p) in g.panels.iter().enumerate() {
+        for (k, e) in entries.iter().enumerate() {
+            let p = &e.panel;
             // A collapsed stacked panel's header is plain text (no underline or panel menu).
-            let is_active = i == g.active && g.stacked != Some(false);
-            let label = title(*p);
-            let galley = painter.layout_no_wrap(label.clone(), Tokens::ui(12.0), if is_active { t.tab_text_active } else { t.tab_text });
+            let is_active = k == ai && g.stacked != Some(false);
+            let galley = painter.layout_no_wrap(e.label.clone(), Tokens::ui(12.0), if is_active { t.tab_text_active } else { t.tab_text });
             let menu_w = if is_active { 20.0 } else { 0.0 };
-            let deco = decos.iter().find(|(k, _)| k == p).map(|(_, d)| *d);
+            // The lock belongs to the panel: on its shown document's tab only.
+            let lock = e.deco.is_some_and(|d| d.viewer) && (e.doc.is_none() || is_active);
             // × (active tab only), swatch and lock before the label.
-            let deco_w = match deco {
-                Some(d) if d.viewer => (if is_active { 16.0 } else { 0.0 }) + 14.0 + 16.0,
+            let deco_w = match e.deco {
+                Some(d) if d.viewer => (if is_active { 16.0 } else { 0.0 }) + 14.0 + if lock { 16.0 } else { 0.0 },
                 Some(_) => 14.0,
                 None => 0.0,
             };
             let w = galley.size().x + 16.0 + menu_w + deco_w;
-            if x + w > strip.max.x - 20.0 && i > g.active {
+            if x + w > strip.max.x - 20.0 && k > ai {
                 let r = Rect::from_min_size(pos2(strip.max.x - 22.0, strip.min.y + 6.0), vec2(18.0, 20.0));
                 let resp = ui.interact(r, egui::Id::new(("tab-overflow", g.path.clone())), Sense::click());
                 icons::paint(&painter, r.shrink(4.0).translate(vec2(-2.0, 0.0)), Icon::ChevronRight, t.tab_text);
                 icons::paint(&painter, r.shrink(4.0).translate(vec2(2.0, 0.0)), Icon::ChevronRight, t.tab_text);
-                if resp.clicked() {
-                    let next = g.panels[(g.active + 1) % g.panels.len()];
-                    actions.push(DockAction::Activate(next));
+                if resp.clicked()
+                    && let Some(next) = entries.get((ai + 1) % entries.len())
+                {
+                    out.actions.push(activate(next));
                 }
                 break;
             }
             let tab = Rect::from_min_size(pos2(x, strip.min.y), vec2(w, t.tab_h));
-            let resp = ui.interact(tab, egui::Id::new(("tab", g.path.clone(), i)), Sense::click_and_drag());
-            if resp.drag_started() {
-                actions.push(DockAction::BeginDrag(*p));
+            match out.tabs.iter_mut().find(|(q, _)| q == p) {
+                Some((_, r)) => *r = r.union(tab),
+                None => out.tabs.push((*p, tab)),
             }
-            reg.add(&format!("panel.tab.{}", p.id()), tab, &label);
+            let resp = ui.interact(tab, egui::Id::new(("tab", g.path.clone(), k)), Sense::click_and_drag());
+            if resp.drag_started() {
+                out.actions.push(DockAction::BeginDrag(*p));
+            }
+            // A document tab also answers to the panel's id while it is the shown one.
+            let auto_id = match e.doc {
+                Some(id) => format!("panel.tab.{}.{id}", p.id()),
+                None => format!("panel.tab.{}", p.id()),
+            };
+            reg.add(&auto_id, tab, &e.label);
+            if e.shown_doc {
+                reg.add(&format!("panel.tab.{}", p.id()), tab, &e.label);
+            }
             let mut label_x = tab.min.x + 8.0;
-            if let Some(d) = deco {
+            if let Some(d) = e.deco {
                 let mut dx = tab.min.x + 6.0;
                 if is_active && d.viewer {
                     let cr = Rect::from_center_size(pos2(dx + 5.0, text_y), vec2(10.0, 10.0));
-                    let cresp = ui.interact(cr.expand(2.0), egui::Id::new(("tab-close", g.path.clone(), i)), Sense::click());
+                    let cresp = ui.interact(cr.expand(2.0), egui::Id::new(("tab-close", g.path.clone(), k)), Sense::click());
                     let cc = if cresp.hovered() { t.tab_text_active } else { t.tab_text };
-                    let k = 3.5;
-                    painter.line_segment([cr.center() + vec2(-k, -k), cr.center() + vec2(k, k)], Stroke::new(1.2, cc));
-                    painter.line_segment([cr.center() + vec2(-k, k), cr.center() + vec2(k, -k)], Stroke::new(1.2, cc));
+                    let kk = 3.5;
+                    painter.line_segment([cr.center() + vec2(-kk, -kk), cr.center() + vec2(kk, kk)], Stroke::new(1.2, cc));
+                    painter.line_segment([cr.center() + vec2(-kk, kk), cr.center() + vec2(kk, -kk)], Stroke::new(1.2, cc));
                     reg.add(&format!("panel.tab.{}.close", p.id()), cr, "Close");
                     if cresp.clicked() {
-                        actions.push(DockAction::Close(*p));
+                        out.actions.push(close(e));
                     }
                     dx += 16.0;
                 }
@@ -891,9 +1033,9 @@ pub fn draw_group_chrome(
                 painter.rect_filled(sw, 1.0, d.swatch);
                 dx += 14.0;
                 label_x = dx;
-                if d.viewer {
+                if lock {
                     let lr = Rect::from_center_size(pos2(dx + 6.0, text_y), vec2(12.0, 12.0));
-                    let lresp = ui.interact(lr.expand(2.0), egui::Id::new(("tab-lock", g.path.clone(), i)), Sense::click());
+                    let lresp = ui.interact(lr.expand(2.0), egui::Id::new(("tab-lock", g.path.clone(), k)), Sense::click());
                     let lc = if d.locked {
                         t.tab_text_active
                     } else if lresp.hovered() {
@@ -904,7 +1046,7 @@ pub fn draw_group_chrome(
                     icons::paint(&painter, lr, Icon::Lock, lc);
                     reg.add(&format!("panel.tab.{}.lock", p.id()), lr, if d.locked { "Unlock" } else { "Lock" });
                     if lresp.clicked() {
-                        actions.push(DockAction::ToggleLock(*p));
+                        out.actions.push(DockAction::ToggleLock(*p));
                     }
                     label_x = dx + 16.0;
                 }
@@ -923,19 +1065,19 @@ pub fn draw_group_chrome(
                 let uy = strip.min.y + 23.0;
                 painter.line_segment([pos2(label_x, uy), pos2(mr.max.x, uy)], Stroke::new(1.0, t.tab_text_active));
                 if mresp.clicked() {
-                    actions.push(DockAction::PanelMenu(*p, mr.left_bottom()));
+                    out.actions.push(DockAction::PanelMenu(*p, mr.left_bottom()));
                 }
             }
             if resp.clicked() {
                 if g.stacked.is_some() {
-                    actions.push(DockAction::ToggleStacked(*p));
+                    out.actions.push(DockAction::ToggleStacked(*p));
                 } else {
-                    actions.push(DockAction::Activate(*p));
+                    out.actions.push(activate(e));
                 }
-                actions.push(DockAction::Focus(*p));
+                out.actions.push(DockAction::Focus(*p));
             }
             if resp.middle_clicked() {
-                actions.push(DockAction::Close(*p));
+                out.actions.push(close(e));
             }
             x += w + 8.0;
         }
@@ -949,9 +1091,9 @@ pub fn draw_group_chrome(
         && ui.rect_contains_pointer(g.rect)
         && ui.input(|i| i.pointer.any_pressed())
     {
-        actions.push(DockAction::Focus(p));
+        out.actions.push(DockAction::Focus(p));
     }
-    actions
+    out
 }
 
 /// Placeholder body for panels that are not implemented yet.
