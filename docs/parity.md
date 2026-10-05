@@ -392,6 +392,32 @@ Browser in the web app (landed in M13.10: browser storage and File System Access
   wrong signatures and versions, fuel exhaustion, traps and bit-identical output; script
   `Socket` validates ports, and ScriptUI resource strings accept trailing array commas.
 
+## Update: M5.9–M5.14 keyframes, M3.15 clipboard, M12.8 responsiveness
+
+- **The app froze every 10 s on Windows** (M12.8): the cache budgets' memory reading started
+  PowerShell on the UI thread and waited about a second for it. It runs on a background thread
+  now, every 30 s.
+- **Ctrl+C / Ctrl+X / Ctrl+V** (M3.15) reach Edit ▸ Copy, Cut and Paste in the app (the window
+  layer sends them as clipboard events, which the shortcut dispatcher ignored), and copying puts
+  a line on the system clipboard so Ctrl+V always arrives.
+- **Timeline keyframes** (M5.9–M5.12): a drag follows the pointer to the end (it let go after a
+  frame or two), moves every selected key as one undo step, never deletes keys it passes over,
+  moves keys of time-stretched layers with the pointer, and Shift snaps to the current time,
+  keys, layer ends and markers with a time / offset tooltip; Shift+click toggles selection,
+  Ctrl+click switches Linear ↔ Auto Bezier, Ctrl+Alt+click toggles Hold; keys of locked layers
+  can't be selected; Toggle Hold off restores Bezier; double-click edits a key's value; Select
+  Equal / Previous / Following Keyframes; roving keys draw as dots.
+- **Graph Editor** (M5.11): a drag moves every selected key in time and value from where it was
+  grabbed, Shift keeps one axis; the transform box and Alt-drag scaling never merge keys on the
+  way and move them however slowly they are dragged; the same Shift / Ctrl / Ctrl+Alt clicks.
+- **Paste** (M5.13): keys copied from several layers paste onto as many layers in order; Paste
+  Reversed Keyframes follows Paste's rules (stretch, target property, Hold-only properties).
+- **J / K and Info** (M5.14): J / K also stop at the work area; the Info panel shows a selected
+  key's property, time and value.
+
+Not yet: J / K and Select All Keyframes use every property of the layers, not only the revealed
+ones; Graph Editor keys are drawn as squares whatever their interpolation; Auto-Select Graph Type.
+
 ## Update: M4.9–M4.11 nested comps and motion blur
 
 - **Composition Settings ▸ Advanced ▸ Preserve frame rate when nested or in render queue** and
