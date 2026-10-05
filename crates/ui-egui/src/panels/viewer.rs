@@ -653,23 +653,6 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         }
         app.auto.add("viewer.regionOfInterest", r, "Region of interest");
     }
-    // 3D Reference Axes (grid and guide options): the world axes as seen by the view's camera.
-    if app.session.prefs.three_d.show_reference_axes && comp.layers.iter().any(|l| l.is_3d()) {
-        let cam = cam_state(&ectx);
-        let o = pos2(area.min.x + 40.0, area.max.y - 40.0);
-        for (axis, col, name) in [
-            (effectcraft_engine::geom::vec3(1.0, 0.0, 0.0), Color32::from_rgb(0xe0, 0x40, 0x40), "X"),
-            (effectcraft_engine::geom::vec3(0.0, 1.0, 0.0), Color32::from_rgb(0x50, 0xd0, 0x50), "Y"),
-            (effectcraft_engine::geom::vec3(0.0, 0.0, 1.0), Color32::from_rgb(0x50, 0x80, 0xf0), "Z"),
-        ] {
-            let v = cam.view.apply_vec(axis);
-            let tip = o + vec2(v.x as f32, v.y as f32) * 26.0;
-            painter.line_segment([o, tip], Stroke::new(2.0, col));
-            painter.text(tip + (tip - o).normalized() * 7.0, Align2::CENTER_CENTER, name, Tokens::ui(10.0), col);
-        }
-        app.auto.add("viewer.referenceAxes", Rect::from_center_size(o, vec2(64.0, 64.0)), "3D Reference Axes");
-    }
-
     // Overlays + interaction.
     let selected = app.session.state.selected_layers.clone();
     let mut handle_hits: Vec<(LayerId, usize, Pos2)> = Vec::new();
