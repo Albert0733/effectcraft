@@ -14,6 +14,9 @@
 //! than drifting.
 //!
 //! The feed also tracks per-channel peaks for the Audio panel's VU meters ([`Meter`]).
+//!
+//! **Scrubbing:** Ctrl/Cmd-dragging the current-time indicator plays a short snippet of the mix
+//! at each new frame ([`AudioScrub`], `playback.scrubAudio`), as in After Effects.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -90,6 +93,13 @@ impl AudioFeed {
         self.consumed.fetch_add((real / 2) as u64, Ordering::Relaxed);
         for (c, v) in pk.into_iter().enumerate() {
             let _ = self.peak[c].fetch_update(Ordering::Relaxed, Ordering::Relaxed, |old| (v > f32::from_bits(old)).then_some(v.to_bits()));
+        }
+    }
+
+    /// Drop what is still queued (scrubbing replaces the snippet still playing).
+    pub fn clear(&self) {
+        if let Ok(mut q) = self.queue.lock() {
+            q.clear();
         }
     }
 
@@ -278,16 +288,80 @@ fn feed_block(src: &RenderSource, comp: ItemId, feed: &AudioFeed, span: &PlaySpa
         cursor = span.wa;
     }
     let n = ((span.wb - cursor) as usize).min(BLOCK);
-    let t = sample_time(cursor, rate);
-    let buf = if mix == rate {
-        effectcraft_engine::render::audio::mix_comp(&src.project, src.footage.as_ref(), src.expr.as_deref(), comp, t, n, rate)
-    } else {
-        let m = (n as u64 * mix as u64).div_ceil(rate as u64) as usize + 1;
-        let b = effectcraft_engine::render::audio::mix_comp(&src.project, src.footage.as_ref(), src.expr.as_deref(), comp, t, m, mix);
-        resample_stereo(&b, mix, rate, n)
-    };
-    feed.push(&buf);
+    feed.push(&mix_block(src, comp, sample_time(cursor, rate), n, rate, mix));
     cursor + n as i64
+}
+
+/// `n` stereo frames of `comp`'s mix from comp time `t` at the device `rate`, mixed at `mix` Hz
+/// (resampled when they differ).
+fn mix_block(src: &RenderSource, comp: ItemId, t: Tick, n: usize, rate: u32, mix: u32) -> Vec<f32> {
+    let render =
+        |frames: usize, at: u32| effectcraft_engine::render::audio::mix_comp(&src.project, src.footage.as_ref(), src.expr.as_deref(), comp, t, frames, at);
+    if mix == rate {
+        return render(n, rate);
+    }
+    let m = (n as u64 * mix as u64).div_ceil(rate as u64) as usize + 1;
+    resample_stereo(&render(m, mix), mix, rate, n)
+}
+
+/// Audio scrubbing: an open output that plays a short, faded snippet of the comp's mix each time
+/// the current time moves to another frame (each snippet replaces what is still queued, so the
+/// sound follows the pointer without lagging behind).
+pub struct AudioScrub {
+    pub feed: Arc<AudioFeed>,
+    device: Box<dyn AudioDevice>,
+    pub rate: u32,
+    /// The comp and frame last played (holding still repeats nothing).
+    last: Option<(ItemId, i64)>,
+    /// When it last played (UI seconds): an idle scrub closes the device.
+    pub last_used: f64,
+}
+
+impl AudioScrub {
+    pub fn open(mut device: Box<dyn AudioDevice>, now: f64) -> Result<AudioScrub, String> {
+        let rate = device.sample_rate().max(8000);
+        let feed = Arc::new(AudioFeed::default());
+        device.start(feed.clone())?;
+        Ok(AudioScrub { feed, device, rate, last: None, last_used: now })
+    }
+
+    /// Play the frame of `comp` at `t` (one frame long, 30–100 ms) unless it was the last one
+    /// played. Returns whether a snippet was queued.
+    pub fn play(&mut self, src: &RenderSource, comp: ItemId, t: Tick, mix_rate: u32, now: f64) -> bool {
+        self.last_used = now;
+        let Some(c) = src.project.comp(comp) else { return false };
+        let frame = c.frame_rate.frame_at(t);
+        if self.last == Some((comp, frame)) {
+            return false;
+        }
+        self.last = Some((comp, frame));
+        let rate = self.rate;
+        let mix = if mix_rate == 0 { rate } else { mix_rate.clamp(8000, 192_000) };
+        let n = (c.frame_duration().seconds().clamp(0.03, 0.1) * rate as f64) as usize;
+        let mut buf = mix_block(src, comp, c.frame_rate.tick_of(frame), n, rate, mix);
+        // 3 ms fades: no clicks where snippets meet.
+        let fade = (rate as usize * 3 / 1000).clamp(1, n / 2 + 1);
+        let frames = buf.len() / 2;
+        for i in 0..frames {
+            let g = (i.min(frames - 1 - i) as f32 / fade as f32).min(1.0);
+            buf[2 * i] *= g;
+            buf[2 * i + 1] *= g;
+        }
+        self.feed.clear();
+        self.feed.push(&buf);
+        true
+    }
+
+    /// Every UI frame while open (Web Audio moves queued samples to the output here).
+    pub fn pump(&mut self) {
+        self.device.pump();
+    }
+}
+
+impl Drop for AudioScrub {
+    fn drop(&mut self) {
+        self.device.stop();
+    }
 }
 
 /// Linear resampling of interleaved stereo from `from` Hz to `n` frames at `to` Hz.

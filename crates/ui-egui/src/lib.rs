@@ -211,6 +211,8 @@ pub struct EffectcraftApp {
     pub integrated_titlebar: bool,
     /// Audio preview while playing (audio clock drives playback).
     pub audio: Option<audio::AudioPlayback>,
+    /// Audio scrubbing's open output (Ctrl/Cmd-drag the current time, `playback.scrubAudio`).
+    pub scrub: Option<audio::AudioScrub>,
     /// Audio panel VU meters.
     pub meter: audio::Meter,
     /// Waveform peak summaries per footage item (see `panels::waveform`).
@@ -276,6 +278,7 @@ impl EffectcraftApp {
             dialog_state: Default::default(),
             integrated_titlebar: false,
             audio: None,
+            scrub: None,
             meter: Default::default(),
             waveforms: Default::default(),
             last_reveal: None,
@@ -677,6 +680,30 @@ impl EffectcraftApp {
         }
     }
 
+    /// Audio scrubbing: play the frame of `comp` at `t` (see [`audio::AudioScrub`]), opening the
+    /// output on first use. Silent comps and missing devices do nothing.
+    pub fn scrub_audio(&mut self, comp: ItemId, t: Tick, now: f64) {
+        if self.playback.playing || !effectcraft_engine::render::audio::comp_has_audio(&self.session.project, comp) {
+            return;
+        }
+        if self.scrub.is_none() {
+            let out = audio::AudioOutput::from_prefs(&self.session.prefs);
+            let Some(dev) = self.hooks.audio_device.as_ref().and_then(|f| f(&out)) else { return };
+            match audio::AudioScrub::open(dev, now) {
+                Ok(s) => self.scrub = Some(s),
+                Err(e) => {
+                    log::warn!("audio scrubbing: {e}");
+                    return;
+                }
+            }
+        }
+        let src = self.render_source();
+        let mix = self.session.prefs.audio.preview_sample_rate;
+        if let Some(s) = &mut self.scrub {
+            s.play(&src, comp, t, mix, now);
+        }
+    }
+
     pub fn stop(&mut self) {
         let was = std::mem::replace(&mut self.playback.playing, false);
         self.audio = None;
@@ -845,6 +872,14 @@ impl EffectcraftApp {
         if let Some(a) = &mut self.audio {
             a.pump();
             self.meter.update(a.feed.take_peaks(), now);
+        } else if let Some(s) = &mut self.scrub {
+            // Scrubbing: the meters follow the snippets; an idle second closes the output.
+            s.pump();
+            self.meter.update(s.feed.take_peaks(), now);
+            if now - s.last_used > 1.0 {
+                self.scrub = None;
+            }
+            ctx.request_repaint_after(std::time::Duration::from_millis(50));
         } else if self.meter.active() {
             self.meter.update([0.0; 2], now);
             ctx.request_repaint();

@@ -1048,6 +1048,15 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         let tt = Tick::from_seconds_f64(secs);
         app.session.set_time(tt);
         app.stop();
+        // Ctrl/Cmd-drag scrubs the audio too (After Effects).
+        if rresp.dragged()
+            && ui.input(|i| i.modifiers.command)
+            && let Some(cid) = app.session.active_comp_id()
+        {
+            let now = ui.input(|i| i.time);
+            let t = app.session.time();
+            app.scrub_audio(cid, t, now);
+        }
     }
 
     // ---- column headers (right-click: show/hide columns; click the name header: Source/Layer Name).
