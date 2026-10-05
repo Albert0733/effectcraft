@@ -19,7 +19,7 @@ once.
 | M10 | Export: render queue, H.264, ProRes, image sequences, GIF, audio | Done |
 | M11 | Animation tools: audio playback, meters and waveforms, Lottie import and export, presets, Motion Sketch, Wiggler, Smoother | Done |
 | M12 | Performance: layer cache, parallel and GPU compositing, disk cache, motion tracking (done); GPU versions of the remaining CPU-only effects | Mostly done |
-| M13 | Puppet tools, paint, Roto Brush, motion tracking, a plug-in API, Timeline depth | Done (Roto Brush 2.0 / 3.0 can use a trained model: MobileSAM, open source, downloaded on demand, in a swappable model module; face tracking uses a classical model, a learned one is still to come) |
+| M13 | Puppet tools, paint, Roto Brush, motion tracking, a plug-in API, Timeline depth | Done (trained models, open source, downloaded on demand, in a swappable model module: MobileSAM for Roto Brush 2.0 / 3.0, MediaPipe Face Landmarker for face tracking) |
 | M15 | The web app (WebAssembly, WebGPU) | Done: browser storage, Web Audio, renders and analyses in Web Workers, viewer frames and GPU effects in frame workers with their own WebGPU devices, the disk cache in the Origin Private File System, a storage manager, offline install ([docs/web.md](docs/web.md)) |
 | M14 | Built for agents: MCP server, command-line tool, control channel; Settings, keyboard shortcut editor, auto-save and crash recovery ([docs/preferences.md](docs/preferences.md)) | Done |
 
@@ -40,8 +40,9 @@ in [docs/gaps.md](docs/gaps.md).
     and third-party After Effects plug-ins can't run.
   - **Reliability is uneven across platforms.** Early Linux users hit basic problems: viewer
     panning, panel docking, drag-and-drop import.
-  - **AI tools are behind.** Face tracking uses classical methods. Roto Brush's trained model
-    (MobileSAM, optional, M13.35) is new and not yet compared with After Effects.
+  - **AI tools are new.** Roto Brush's trained model (MobileSAM, M13.35) and face tracking's
+    (MediaPipe Face Landmarker, M13.36) are optional downloads, not yet compared with After
+    Effects.
 
 ## Where we're going
 
@@ -55,7 +56,7 @@ In priority order (details and "done" criteria in [docs/gaps.md](docs/gaps.md)):
 | G4 | Open After Effects projects (`.aep` / `.aepx`, pending an owner decision on clean-room scope); relinking moved footage | The biggest barrier to switching |
 | G5 | Performance benchmarks at 1080p and 4K on real-world-sized projects | Unknown today |
 | G6 | Media depth: encoder efficiency, camera and phone formats | Files are larger than from mature encoders; camera formats are unverified |
-| G7 | Learned models: Roto Brush started (M13.35: MobileSAM, open source, optional download, swappable model module); face tracking still classical | Quality is well below After Effects' and unmeasured |
+| G7 | Learned models: Roto Brush (M13.35: MobileSAM) and face tracking (M13.36: MediaPipe Face Landmarker), open source, optional downloads, swappable model module; next, measure them | Quality against After Effects is unmeasured |
 | G8 | Plug-in ecosystem on our WebAssembly plug-in API | After Effects plug-ins can't run here |
 | G9 | Localisation, accessibility, user documentation | Reach beyond English-speaking power users |
 

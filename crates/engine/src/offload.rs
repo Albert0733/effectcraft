@@ -519,6 +519,7 @@ async fn run_job(s: &mut Session, job: WorkerJob, post: Post) -> Result<(), Stri
                     path,
                     method,
                     times,
+                    face_model: if method.is_face() { s.models.face() } else { None },
                 };
                 s.start_mask_track(work, mask, direction, true)
             })

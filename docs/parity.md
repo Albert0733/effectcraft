@@ -29,7 +29,7 @@ Partial features:
 |---|---|---|---|
 | EFF-5 GPU effects | P1 | 0.98 | Fractal (its escape iteration needs f64: WGSL has none and Metal's fast math defeats double-f32 emulation) and the analysis / tool effects (Camera-Shake Deblur, Detail-preserving Upscale, Puppet, Rolling Shutter Repair, Warp Stabilizer, Mocha Shape, Roto Brush, Match Grain, Paint, Camera Tracker, Face Tracker) render on the CPU. M13.28 moved the remaining pixel effects (CC blur / glass family, Color Link, Cineon, HDR, Inner/Outer Key, Basic 3D…) and the geometry and audio generators (Lightning, Advanced Lightning, Beam, Lens Flare, Radio Waves, Vegas, Stroke, Scribble, Write-on, Paint Bucket, Eyedropper Fill, CC Glue Gun, CC Threads, Audio Spectrum / Waveform, Basic / Path Text) onto the GPU; M13.29 the particle effects (CC Particle World / Systems II, Particle Playground, CC Ball Action, CC Pixel Polly, CC Scatterize) and Curl Noise, and removed the Shatter wireframe, Foam extras, Timewarp matte, strong Warp Fisheye / Twist and custom `.ocio` fallbacks. The 13 audio filters stay on the CPU by design |
 | MSK-4 Roto Brush | P2 | 0.85 | Roto Brush 2.0 / 3.0 can use a trained model since M13.35 (MobileSAM, optional download); its quality has not been compared with After Effects (G1), so the score stands |
-| TRK-3 Face tracking | P2 | 0.9 | Classical fitter: weak on profile and occluded faces; Rolling Shutter Ripple is approximated |
+| TRK-3 Face tracking | P2 | 0.9 | Can use a trained model since M13.36 (MediaPipe Face Landmarker, optional download); the classical fitter is weak on profile and occluded faces; neither is compared with After Effects (G1), so the score stands; Rolling Shutter Ripple is approximated |
 
 Since this audit: the project operations (M3.9–M3.14) and preview (M4.5–M4.12) passes fixed
 behaviour inside features already counted as done, so the counts above stand: unsaved-changes
@@ -175,7 +175,7 @@ the disk cache in the formats wave; the 3D Camera Tracker in M12.6.)
 | Project | ≈ 68% | 5.5 | OCIO displays beyond the built-in tone map; relative footage paths and relinking when a project moves (unsaved-changes prompts, a modified mark that follows undo and project files that name their version and always reopen landed in M3.9 and M3.14; auto-save and crash recovery in M3.7; Color Engine with OCIO/ACES working spaces, HDR compand/tone mapping, Rec. 2100 PQ/HLG output, Feet + Frames, display colour management, Simulate Output and the locked viewer landed in M7.7; proxies and Interpret Footage fields / pixel aspect / alpha guess landed: PRJ-8, PRJ-3) |
 | Masks & roto | 74% | 5.0 | (audit estimates; Roto Brush 2.0 / 3.0's trained model, MobileSAM in the swappable `segment` module, has since landed in M13.35; variable-width mask feather points with the Mask Feather tool landed in M13.5; mask tracking and Mask Interpolation landed in M6.6; Roto Brush & Refine Edge with graph-cut segmentation, flow propagation, edge matting, decontamination and Freeze in M6.7) |
 | Preview | 77% | 2.8 | GPU effects for the audio-driven effects and the stepped particle systems; content-keyed RAM preview frames (an edit drops every comp's), audio scrubbing, more snapshot slots (RAM preview keys with the render options, least-recently-shown eviction, Auto resolution while playing, Cache Before Playback that fits, an achieved-fps readout, Cache Frames When Idle and purges that clear what they name landed in M4.5–M4.8; 3D channel, VR, OCIO, Card Wipe and the simulations' render passes run on the GPU since M13.23; Advanced 3D layers with blend modes / track mattes / Preserve Transparency and environment backgrounds composite on the GPU since M13.22; pooled GPU textures and fused quantisation since M13.13: Lower Third GPU warm 21 → 4 ms/frame, and Auto now picks the CPU or the GPU per comp from measured frame times; Advanced 3D runs — raster, motion blur, iris depth of field, compositing — and wireframes run on the GPU since M13.11: CPU warm 3394 → GPU warm 290 ms/frame at 1920×1080 (11.7×; Half 968 → 85 ms), GPU ≠ CPU on 0.005 % of pixels, on an M4 Pro under load; Classic 3D bokeh depth of field — iris shapes, highlights, fringe, progressive blur on tilted planes — runs in WGSL since M13.6: 3D Showcase GPU warm 205 → 54 ms/frame at full size on an M4 Pro; the Preview panel's five shortcuts with their own Include / Loop / Cache Before Playback / Range / Play From / Frame Rate / Skip / Resolution / Full Screen / stop options and `playback.settings.get/set` landed in M13.8; Classic 3D runs and adjustment layers composite on the GPU since M12.7; persistent disk cache with the blue cache bar landed; region of interest, snapshots, exposure and Fast Previews landed in M0.13) |
-| Tracking | ≈ 96% | 0.3 | face tracking is a classical (skin model + feature components + shape model) fitter, not a learned detector: profile views and occluded faces are weak; Rolling Shutter Ripple is approximated by Subspace Warp's mesh density (face tracking (Outline Only / Detailed Features with Face Track Points and Extract & Copy Face Measurements), Subspace Warp's content-preserving mesh warp on subspace-smoothed trajectories, and radial lens distortion (k1, k2) in the camera bundle adjustment with Undistort Footage landed in M13.3; Rolling Shutter Repair in M9.11; point tracker, mask tracking, Warp Stabilizer and the 3D Camera Tracker in M6.x / M12.5 / M12.6) |
+| Tracking | ≈ 96% | 0.3 | face tracking's trained model (MediaPipe Face Landmarker, M13.36) is an optional download; without it the classical (skin model + feature components + shape model) fitter is weak on profile views and occluded faces; Rolling Shutter Ripple is approximated by Subspace Warp's mesh density (face tracking (Outline Only / Detailed Features with Face Track Points and Extract & Copy Face Measurements), Subspace Warp's content-preserving mesh warp on subspace-smoothed trajectories, and radial lens distortion (k1, k2) in the camera bundle adjustment with Undistort Footage landed in M13.3; Rolling Shutter Repair in M9.11; point tracker, mask tracking, Warp Stabilizer and the 3D Camera Tracker in M6.x / M12.5 / M12.6) |
 | Paint | 0% | 4.0 | Brush, Clone Stamp, Eraser |
 
 ## Effects still missing
@@ -465,6 +465,25 @@ measures it against After Effects ([gaps.md](gaps.md)).
   the decoder (about 0.1 s).
 - Agents use `roto.models`, `roto.model.select`, `roto.model.download`, `roto.model.install` and
   `roto.model.remove`. The browser build uses the classic engine for now.
+
+Since (M13.36): face tracking can use a trained model too. TRK-3 keeps its score until G1 measures
+it against After Effects ([gaps.md](gaps.md)).
+- The model sits behind `effectcraft_segment::face::FaceModel` (find a face in a region, follow
+  it frame to frame), in the same registry as Roto Brush's. A model reports its own points and
+  says which are the tracker's landmarks and which trace the face outline, so models can be
+  swapped without touching the tracker.
+- The first model is **MediaPipe Face Landmarker** (Google, Apache-2.0): the BlazeFace
+  short-range detector and Face Mesh V2 (478 points). Its official `face_landmarker.task` bundle
+  (3.8 MB, pinned SHA-256) runs on our own TensorFlow Lite interpreter in plain Rust, which matches
+  TensorFlow Lite's to about one part in a million.
+- **Settings ▸ Face Tracking** chooses it. Outline Only keys the mesh's face oval into the mask;
+  Detailed Features keys the mesh's eye, pupil, brow, nose and lip points; chin and jaw come from
+  the outline as with the classical fitter, so Extract & Copy Face Measurements means the same with
+  either. When the model finds no face in the mask, the classical fitter runs.
+- On a test portrait its points are 0.85 px from Google's own pipeline on average (2.2 px at
+  worst). Finding a face takes about 45 ms; following it, about 20 ms a frame (32-thread CPU).
+- Agents use `face.models`, `face.model.select`, `face.model.download`, `face.model.install` and
+  `face.model.remove`; `track.mask` reports the engine it tried first as `faceModel`.
 
 Since (M13.32): View ▸ New Viewer (Alt+Shift+N, also in the Composition panel menu) opens
 another Composition viewer as its own panel, as in After Effects. The viewer in use is locked,

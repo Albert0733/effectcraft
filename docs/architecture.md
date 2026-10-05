@@ -22,7 +22,7 @@ cpal or muda. Everything in L0 to L4, the egui UI and the web app also build for
 | L0 | `av1enc` | AV1 encoder from the AV1 bitstream specification: Main profile 8/10-bit 4:2:0, key + inter frames (quarter-pel motion), deblocking, for MP4 (`av01`) and WebM export |
 | L1 | `raster` | Premultiplied float images, sampling, affine and projective warps, blurs, compositing (parallel with rayon) |
 | L1 | `keyframe` | Animated values, keyframes with temporal ease and spatial Bezier, roving, hold, velocity |
-| L1 | `segment` | Swappable trained segmentation models for Roto Brush: the `MaskModel` interface, a registry of open-licensed models (licence, URL, size, SHA-256), a PyTorch checkpoint reader, SHA-256, and MobileSAM (TinyViT + Segment Anything decoder) on rayon and ndarray's safe GEMM |
+| L1 | `segment` | Swappable trained models for Roto Brush and face tracking: the `MaskModel` and `FaceModel` interfaces, a registry of open-licensed models (authors, licence, URL, size, SHA-256), PyTorch checkpoint and TensorFlow Lite readers (with an interpreter), SHA-256, MobileSAM (TinyViT + Segment Anything decoder) and MediaPipe Face Landmarker (BlazeFace + Face Mesh V2) on rayon and ndarray's safe GEMM |
 | L1 | `psd` | Photoshop PSD/PSB reader (layers, groups, masks, blend modes, text, layer effects, adjustment layers; 8/16/32-bit; RGB/CMYK/Gray/Lab) and a minimal writer, from Adobe's published format specification |
 | L1 | `path` | Bezier paths, path operators (trim, offset, round corners, zig zag, twist, merge…), stroking, coverage masks |
 | L2 | `project` | The document: items, compositions, layers, the property tree, render queue model, `.ecproj` serde |
@@ -335,6 +335,10 @@ components inside it, and an active-shape point distribution model trained on sy
 shapes (our own generator, no external weights) that fills and checks the landmarks. The outline
 keys the Mask Path; Detailed Features keys a Face Track Points effect, and
 `track.extractFaceMeasurements` derives a keyed Face Measurements effect (and copies its keys).
+With a trained face model chosen (`effectcraft_segment::face::FaceModel`, Settings ▸ Face
+Tracking; `Session::models` hands it to the mask track), `FaceTracker::new_with` lets the model
+find the face in the mask and follow it; the model's outline and named points replace the
+classical steps, and chin and jaw still come from the outline so the measurements agree.
 
 **Warp Stabilizer** (`effects::warp_stab`, `engine::warp`): `warp.analyze` renders the layer's
 input to the effect (`Renderer::layer_input`: source, masks and the effects above it) for every

@@ -1,6 +1,6 @@
 [package]
 name = "effectcraft-segment"
-description = "Swappable trained segmentation models for Roto Brush: the MaskModel interface, a registry of open-licensed models, a PyTorch checkpoint reader and a pure-Rust MobileSAM (TinyViT + SAM prompt encoder and mask decoder)"
+description = "Swappable trained models for Roto Brush and face tracking: the MaskModel and FaceModel interfaces, a registry of open-licensed models, PyTorch checkpoint and TensorFlow Lite readers, a pure-Rust MobileSAM and MediaPipe Face Landmarker"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

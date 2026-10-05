@@ -198,6 +198,8 @@ pub(crate) struct MaskWork {
     pub method: MaskMethod,
     /// Comp times; the first is the start frame.
     pub times: Vec<Tick>,
+    /// Face tracking's trained model (Settings ▸ Face Tracking), if one is in use.
+    pub face_model: Option<Arc<dyn effectcraft_segment::face::FaceModel>>,
 }
 
 async fn run_work(w: MaskWork, shared: &MaskTrackShared) {
@@ -275,7 +277,7 @@ async fn run_face<F: std::future::Future<Output = Option<(Arc<effectcraft_raster
 ) {
     let detailed = w.method == MaskMethod::FaceDetailed;
     let b = trk::mask::bounds(&flatten(&w.path, 8));
-    let Some((mut tracker, fit)) = trk::face::FaceTracker::new(&trk::Frame { img: &first.0, offset: first.1 }, b) else {
+    let Some((mut tracker, fit)) = trk::face::FaceTracker::new_with(&trk::Frame { img: &first.0, offset: first.1 }, b, w.face_model.clone()) else {
         let mut s = lock(&shared.state);
         s.error = Some("no face found inside the mask (draw the mask around a face)".into());
         s.finished = true;

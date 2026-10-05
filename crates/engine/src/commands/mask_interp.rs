@@ -187,6 +187,7 @@ fn track_mask(s: &mut Session, p: &Value) -> Result<Value> {
         path,
         method,
         times: times.clone(),
+        face_model: if method.is_face() { s.models.face() } else { None },
     };
     s.state.mask_track_method = method;
     let wait = b_p(p, "wait").unwrap_or(false);
@@ -195,6 +196,8 @@ fn track_mask(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({
         "mask": uid,
         "method": method.id(),
+        // The engine face tracking tries first (the classic one when the model finds no face).
+        "faceModel": method.is_face().then(|| s.models.face().map_or(effectcraft_segment::CLASSICAL, |m| m.info().id)),
         "frames": times.len() - 1,
         "start": times[0].seconds(),
         "end": times.last().map(|t| t.seconds()),

@@ -26,6 +26,7 @@ pub mod mask_track;
 pub mod media_browser;
 pub mod media_cache;
 pub mod menus;
+pub mod models;
 pub mod offload;
 pub mod perf;
 pub mod prefs;
@@ -34,7 +35,6 @@ pub mod psd_import;
 pub mod remote;
 pub mod render_queue;
 pub mod roto;
-pub mod roto_models;
 pub mod scriptui;
 mod session_settings;
 pub mod shortcuts;
@@ -349,8 +349,8 @@ pub struct Session {
     pub camera_pending: Vec<(ItemId, LayerId, Uid)>,
     /// The running (or finished, not yet polled) Roto Brush propagation / Freeze.
     pub roto_job: Option<roto::RotoJob>,
-    /// Roto Brush's trained models (Settings ▸ Roto Brush).
-    pub roto_models: roto_models::Models,
+    /// Trained models for Roto Brush and face tracking (Settings ▸ Roto Brush / Face Tracking).
+    pub models: models::Models,
     /// Where installed models live (hosts set it; else `models` next to the settings).
     pub models_dir: Option<std::path::PathBuf>,
     /// Roto Brush instances edited since their last propagation: (comp, layer, effect uid).
@@ -469,7 +469,7 @@ impl Default for Session {
             camera_job: None,
             camera_pending: vec![],
             roto_job: None,
-            roto_models: Default::default(),
+            models: Default::default(),
             models_dir: None,
             roto_pending: vec![],
             events: vec![],
@@ -1087,10 +1087,10 @@ pub fn font_menu(prefs: &prefs::Prefs) -> Vec<FontRow> {
 #[cfg(test)]
 mod tests_history;
 #[cfg(test)]
+mod tests_models;
+#[cfg(test)]
 mod tests_paint;
 #[cfg(test)]
 mod tests_panels;
 #[cfg(test)]
 mod tests_roto;
-#[cfg(test)]
-mod tests_roto_models;

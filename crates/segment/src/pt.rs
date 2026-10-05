@@ -102,6 +102,12 @@ fn read_entry<'a>(b: &'a [u8], e: &Entry) -> Result<std::borrow::Cow<'a, [u8]>> 
     }
 }
 
+/// The bytes of the archive entry `name` (model bundles are zip archives too).
+pub(crate) fn zip_file<'a>(b: &'a [u8], name: &str) -> Result<std::borrow::Cow<'a, [u8]>> {
+    let entries = zip_entries(b)?;
+    read_entry(b, entries.get(name).ok_or_else(|| format!("{name} is missing from the archive"))?)
+}
+
 /// Pickle values (what state dicts use).
 #[derive(Clone, Debug)]
 enum Obj {
@@ -341,7 +347,7 @@ fn to_f32(dtype: &str, bytes: &[u8]) -> Option<Vec<f32>> {
     }
 }
 
-fn half_to_f32(h: u16) -> f32 {
+pub(crate) fn half_to_f32(h: u16) -> f32 {
     let (s, e, m) = ((h >> 15) as u32, ((h >> 10) & 0x1f) as u32, (h & 0x3ff) as u32);
     let bits = match (e, m) {
         (0, 0) => s << 31,

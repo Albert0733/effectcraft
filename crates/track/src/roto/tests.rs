@@ -403,7 +403,9 @@ fn a_model_prior_shapes_the_cut_and_bad_models_are_ignored() {
 #[test]
 fn mobilesam_segments_and_propagates_the_disk() {
     let Ok(path) = std::env::var("EFFECTCRAFT_MOBILESAM") else { return };
-    let model = effectcraft_segment::load("mobilesam", &std::fs::read(path).unwrap()).unwrap();
+    let effectcraft_segment::Loaded::Mask(model) = effectcraft_segment::load("mobilesam", &std::fs::read(path).unwrap()).unwrap() else {
+        panic!("not a mask model")
+    };
     let m = Some(model.as_ref());
     let (img0, gt0) = frame_at(center(0));
     let st = base_strokes(0);

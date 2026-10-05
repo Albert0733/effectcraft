@@ -1,21 +1,28 @@
-//! Trained segmentation models for Roto Brush, behind one swappable interface.
+//! Trained models for Roto Brush and face tracking, each kind behind one swappable interface.
 //!
 //! - [`MaskModel`]: what Roto Brush asks of a model, the foreground probability of each pixel of a
 //!   frame given prompts (foreground / background points from the strokes, a box, a prior mask).
 //!   Anything implementing it can be plugged in; the classical graph-cut segmenter in
 //!   `effectcraft-track` stays the built-in fallback when no model is chosen.
+//! - [`face::FaceModel`]: what face tracking asks of a model: find a face in a region, follow it
+//!   from frame to frame. The classical face tracker stays the built-in fallback.
 //! - [`MODELS`]: the registry. Every entry is open source under a licence compatible with
-//!   EffectCraft's (MIT OR Apache-2.0), with its source, size and SHA-256. Weights are never
-//!   bundled: they are fetched on demand (or installed from a file), verified ([`sha256`]) and
-//!   loaded by [`load`].
-//! - [`pt`]: a PyTorch checkpoint reader, so official weights load as published.
-//! - [`mobilesam`]: MobileSAM (Apache-2.0) in plain Rust ([`nn`] kernels on rayon).
+//!   EffectCraft's (MIT OR Apache-2.0), with its authors, source, size and SHA-256. Weights are
+//!   never bundled: they are fetched on demand (or installed from a file), verified ([`sha256`])
+//!   and loaded by [`load`].
+//! - [`pt`]: a PyTorch checkpoint reader; [`tflite`]: a TensorFlow Lite reader and interpreter;
+//!   so official weights load as published.
+//! - [`mobilesam`]: MobileSAM (Apache-2.0) and [`mediapipe`]: MediaPipe Face Landmarker
+//!   (Apache-2.0), in plain Rust ([`nn`] kernels on rayon).
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::todo, clippy::unreachable)]
 
+pub mod face;
+pub mod mediapipe;
 pub mod mobilesam;
 pub mod nn;
 pub mod pt;
+pub mod tflite;
 
 use std::sync::Arc;
 
@@ -40,12 +47,24 @@ pub trait MaskModel: Send + Sync {
     fn segment(&self, rgb: &[[f32; 3]], w: usize, h: usize, prompt: &Prompt) -> Result<Vec<f32>>;
 }
 
-/// A model in the registry: what it is, its licence and where its weights come from.
+/// What a model is for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Task {
+    /// Roto Brush ([`MaskModel`]).
+    Mask,
+    /// Face tracking ([`face::FaceModel`]).
+    Face,
+}
+
+/// A model in the registry: what it is, who made it, its licence and where its weights come from.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ModelInfo {
     pub id: &'static str,
+    pub task: Task,
     pub name: &'static str,
     pub description: &'static str,
+    /// Who made it (shown with the model, and in ATTRIBUTION.md).
+    pub authors: &'static str,
     /// SPDX licence of the weights and the architecture.
     pub licence: &'static str,
     pub licence_url: &'static str,
@@ -64,8 +83,10 @@ pub const ALLOWED_LICENCES: &[&str] = &["MIT", "Apache-2.0", "BSD-2-Clause", "BS
 
 pub const MOBILE_SAM: ModelInfo = ModelInfo {
     id: "mobilesam",
+    task: Task::Mask,
     name: "MobileSAM",
     description: "Segment Anything distilled to a 5M-parameter TinyViT encoder (C. Zhang et al., 2023). Turns your strokes into a clean matte and tidies every propagated frame.",
+    authors: "Chaoning Zhang et al. (MobileSAM), building on Meta AI's Segment Anything and Microsoft's TinyViT",
     licence: "Apache-2.0",
     licence_url: "https://github.com/ChaoningZhang/MobileSAM/blob/master/LICENSE",
     homepage: "https://github.com/ChaoningZhang/MobileSAM",
@@ -75,18 +96,46 @@ pub const MOBILE_SAM: ModelInfo = ModelInfo {
     sha256: "6dbb90523a35330fedd7f1d3dfc66f995213d81b29a5ca8108dbcdd4e37d6c2f",
 };
 
-/// The models Roto Brush can use besides the built-in classical segmenter.
-pub const MODELS: &[ModelInfo] = &[MOBILE_SAM];
+pub const FACE_LANDMARKER: ModelInfo = ModelInfo {
+    id: "mediapipe-face",
+    task: Task::Face,
+    name: "MediaPipe Face Landmarker",
+    description: "Google's BlazeFace detector and 478-point Face Mesh V2. Follows faces turned to the side, partly covered or in difficult light, where the classic tracker loses them.",
+    authors: "Google LLC (MediaPipe)",
+    licence: "Apache-2.0",
+    licence_url: "https://storage.googleapis.com/mediapipe-assets/Model%20Card%20MediaPipe%20Face%20Mesh%20V2.pdf",
+    homepage: "https://developers.google.com/edge/mediapipe/solutions/vision/face_landmarker",
+    url: "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
+    file_name: "face_landmarker.task",
+    size: 3_758_596,
+    sha256: "64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff",
+};
 
-/// The id of the built-in classical (graph cut) segmenter: no weights, always available.
+/// The trained models, besides the built-in classical engines.
+pub const MODELS: &[ModelInfo] = &[MOBILE_SAM, FACE_LANDMARKER];
+
+/// The id of the built-in classical engines (graph cut segmenter, shape-model face tracker): no
+/// weights, always available.
 pub const CLASSICAL: &str = "classical";
 
 pub fn info(id: &str) -> Option<&'static ModelInfo> {
     MODELS.iter().find(|m| m.id == id)
 }
 
+/// The models for `task`.
+pub fn models(task: Task) -> impl Iterator<Item = &'static ModelInfo> {
+    MODELS.iter().filter(move |m| m.task == task)
+}
+
+/// A loaded model.
+#[derive(Clone)]
+pub enum Loaded {
+    Mask(Arc<dyn MaskModel>),
+    Face(Arc<dyn face::FaceModel>),
+}
+
 /// Check a weights file against the registry and build the model.
-pub fn load(id: &str, bytes: &[u8]) -> Result<Arc<dyn MaskModel>> {
+pub fn load(id: &str, bytes: &[u8]) -> Result<Loaded> {
     let info = info(id).ok_or_else(|| format!("unknown model `{id}`"))?;
     if !ALLOWED_LICENCES.contains(&info.licence) {
         return Err(format!("{}: licence {} is not allowed", info.name, info.licence));
@@ -98,10 +147,19 @@ pub fn load(id: &str, bytes: &[u8]) -> Result<Arc<dyn MaskModel>> {
     match id {
         "mobilesam" => {
             let w = pt::read(bytes)?;
-            Ok(Arc::new(Sam { net: mobilesam::MobileSam::from_weights(&w)? }))
+            Ok(Loaded::Mask(Arc::new(Sam { net: mobilesam::MobileSam::from_weights(&w)? })))
         }
+        "mediapipe-face" => Ok(Loaded::Face(Arc::new(mediapipe::FaceLandmarker::from_task(bytes)?))),
         _ => Err(format!("no loader for `{id}`")),
     }
+}
+
+/// The notice kept next to installed weights: what they are, who made them, their licence.
+pub fn notice(m: &ModelInfo) -> String {
+    format!(
+        "{}\n\nAuthors: {}\nLicence: {} (full text: https://spdx.org/licenses/{}.html; as stated by the authors: {})\nSource: {}\nProject: {}\n\nDownloaded unmodified from the source above. EffectCraft runs it with its own implementation\nand is not affiliated with or endorsed by its authors.\n",
+        m.name, m.authors, m.licence, m.licence, m.licence_url, m.url, m.homepage
+    )
 }
 
 struct Sam {
@@ -202,8 +260,11 @@ mod tests {
         for m in MODELS {
             assert!(ALLOWED_LICENCES.contains(&m.licence), "{}", m.id);
             assert_eq!(m.sha256.len(), 64);
-            assert!(m.url.starts_with("https://"));
+            assert!(m.url.starts_with("https://") && m.licence_url.starts_with("https://") && m.homepage.starts_with("https://"));
+            assert!(!m.authors.is_empty() && notice(m).contains(m.authors));
         }
+        assert_eq!(models(Task::Face).map(|m| m.id).collect::<Vec<_>>(), ["mediapipe-face"]);
+        assert!(load("mediapipe-face", b"nope").err().is_some_and(|e| e.contains("does not match")));
         // A file that isn't the published one is refused before anything is parsed.
         assert!(load("mobilesam", b"not the weights").err().is_some_and(|e| e.contains("does not match")));
         assert!(load("nope", b"").is_err());

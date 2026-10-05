@@ -70,6 +70,34 @@ Screenshots of EffectCraft itself, rendered headlessly, showing only procedurall
   (sidecars `.attribution`).
 - Example effect plug-in: `examples/plugins/posterize-bands` (plug-in API v1, WebAssembly).
 
+## Trained models (optional downloads, not bundled)
+
+The repository and the installers contain no model weights. These models are downloaded only when
+a user asks (Settings ▸ Roto Brush, Settings ▸ Face Tracking, or the `roto.model.*` /
+`face.model.*` commands), unmodified from their authors' official location, checked against a
+pinned SHA-256 and stored in the user's `models` folder with a `<file>.NOTICE.txt` naming their
+authors, licence and source. EffectCraft runs them with its own Rust implementation and is not
+affiliated with or endorsed by their authors.
+
+| Model | Authors | Source | Licence |
+|---|---|---|---|
+| MobileSAM (`mobile_sam.pt`) | Chaoning Zhang et al., building on Meta AI's Segment Anything and Microsoft's TinyViT | https://github.com/ChaoningZhang/MobileSAM | Apache-2.0 |
+| MediaPipe Face Landmarker (`face_landmarker.task`: BlazeFace short-range detector, Face Mesh V2, blendshapes) | Google LLC | https://developers.google.com/edge/mediapipe/solutions/vision/face_landmarker (model cards: https://storage.googleapis.com/mediapipe-assets/MediaPipe%20BlazeFace%20Model%20Card%20(Short%20Range).pdf, https://storage.googleapis.com/mediapipe-assets/Model%20Card%20MediaPipe%20Face%20Mesh%20V2.pdf) | Apache-2.0 |
+
+## Formats and parameters from other open-source projects
+
+Written in Rust for EffectCraft; no code is copied. They follow published specifications and
+configuration from these Apache-2.0 projects:
+
+- `crates/segment/src/tflite.rs` reads TensorFlow Lite files using the field layout of TensorFlow
+  Lite's `schema.fbs` (The TensorFlow Authors, https://github.com/tensorflow/tensorflow,
+  Apache-2.0).
+- `crates/segment/src/mediapipe.rs` follows MediaPipe's published face landmarker graph: the SSD
+  anchor layout, detection decoding, crop sizes and the face-mesh point indices it uses (Google
+  LLC, https://github.com/google-ai-edge/mediapipe, Apache-2.0).
+- `crates/segment/src/mobilesam.rs` follows the MobileSAM, TinyViT and Segment Anything
+  architectures and their Apache-2.0 reference code.
+
 ## First-party brand marks
 
 The ArtCraft name, wordmark and logos are trademarks of the ArtCraft Team. They are not open source and are not
