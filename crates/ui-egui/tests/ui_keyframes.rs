@@ -208,3 +208,31 @@ fn double_click_a_key_to_edit_its_value() {
     let k = h.state().session.active_comp().unwrap().layer(id).unwrap().props.prop("transform/opacity").unwrap().keys[1].clone();
     assert_eq!((k.time.seconds(), k.value.as_f64()), (1.0, 100.0));
 }
+
+#[test]
+fn k_follows_the_revealed_properties_and_auto_select_picks_the_speed_graph_for_position() {
+    let (mut h, id, _) = harness();
+    // A Rotation key at 2 s on a property that isn't revealed: K skips it.
+    h.state_mut().session.execute("prop.addKey", json!({"layer": id.0, "path": "transform/rotation", "time": 2.0, "value": 45})).unwrap();
+    h.state_mut().session.set_time(effectcraft_engine::time::Tick::from_seconds_f64(1.0));
+    h.run_steps(2);
+    h.input_mut().events.push(Event::Key { key: egui::Key::K, physical_key: None, pressed: true, repeat: false, modifiers: Default::default() });
+    h.run_steps(2);
+    assert!(h.state().session.time().seconds() > 3.9, "past the hidden key to the work area end: {}", h.state().session.time().seconds());
+    // Auto-Select Graph Type: Position shows its speed (one curve), Opacity its value.
+    let s = &mut h.state_mut().session;
+    for (t, v) in [(0.0, [40.0, 90.0]), (1.0, [280.0, 90.0])] {
+        s.execute("prop.addKey", json!({"layer": id.0, "path": "transform/position", "time": t, "value": v})).unwrap();
+    }
+    let pos = s.active_comp().unwrap().layer(id).unwrap().props.prop("transform/position").unwrap().uid;
+    s.execute("prop.select", json!({"layer": id.0, "prop": pos})).unwrap();
+    h.state_mut().ui.timeline.graph_editor = true;
+    h.run_steps(4);
+    assert_eq!(h.state().ui.timeline.graph_mode, "auto");
+    assert!(h.state().auto.find(&format!("timeline.graph.key.{pos}.0.0")).is_some());
+    assert!(h.state().auto.find(&format!("timeline.graph.key.{pos}.1.0")).is_none(), "speed graph: one curve");
+    assert!(h.state().auto.find("timeline.graph.autoSelectGraphType").is_some());
+    h.state_mut().ui.timeline.graph_mode = "value".into();
+    h.run_steps(3);
+    assert!(h.state().auto.find(&format!("timeline.graph.key.{pos}.1.0")).is_some(), "value graph: X and Y");
+}

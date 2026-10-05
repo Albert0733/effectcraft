@@ -415,8 +415,12 @@ Browser in the web app (landed in M13.10: browser storage and File System Access
 - **J / K and Info** (M5.14): J / K also stop at the work area; the Info panel shows a selected
   key's property, time and value.
 
-Not yet: J / K and Select All Keyframes use every property of the layers, not only the revealed
-ones; Graph Editor keys are drawn as squares whatever their interpolation; Auto-Select Graph Type.
+Since (M5.15): J / K and Select All Keyframes use what the Timeline shows — the revealed
+properties' keys, layer and comp markers and the work area (`visible: [{layer, prop}]` on
+`time.nextKey` / `previousKey` / `keys.selectAll`; without it, agents get every property of the
+layers); the Graph Editor has Auto-Select Graph Type (the default: the speed graph when only
+spatial properties are shown, else the value graph; choosing Value or Speed turns it off). Graph
+Editor keys are small squares whatever their interpolation, as in After Effects.
 
 ## Update: M4.9–M4.11 nested comps and motion blur
 

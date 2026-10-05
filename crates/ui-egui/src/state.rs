@@ -363,8 +363,9 @@ pub struct TimelineState {
     /// Properties / groups (uids) shown by the `props` reveal (Animation ▸ Reveal Properties…).
     #[serde(default)]
     pub reveal_props: BTreeSet<u64>,
-    /// Graph Editor: `value` or `speed` graph.
-    #[serde(default = "value_graph")]
+    /// Graph Editor: `auto` (Auto-Select Graph Type, the default: the speed graph when every
+    /// property shown is spatial, else the value graph), `value` or `speed`.
+    #[serde(default = "auto_graph")]
     pub graph_mode: String,
     /// Show only the selected properties (else every animated property of the selected layers).
     #[serde(default = "yes")]
@@ -401,8 +402,8 @@ pub fn default_tl_columns() -> BTreeSet<String> {
     ["av", "label", "num", "switches", "parent"].map(String::from).into_iter().collect()
 }
 
-fn value_graph() -> String {
-    "value".into()
+fn auto_graph() -> String {
+    "auto".into()
 }
 fn yes() -> bool {
     true
@@ -423,7 +424,7 @@ impl Default for TimelineState {
             open_groups: BTreeSet::new(),
             reveal: vec![],
             reveal_props: BTreeSet::new(),
-            graph_mode: value_graph(),
+            graph_mode: auto_graph(),
             graph_show_selected: true,
             graph_auto_zoom: true,
             graph_range: None,

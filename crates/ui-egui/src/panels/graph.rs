@@ -63,6 +63,22 @@ struct Curve<'a> {
 }
 
 /// Properties shown: the selected ones, or every animated property of the selected layers.
+/// Whether the speed graph shows: Edit Speed Graph, or Auto-Select Graph Type with only spatial
+/// properties shown (Position, Anchor Point… move along a path: their speed is what to edit).
+fn speed_graph(app: &EffectcraftApp, comp: &Comp) -> bool {
+    match app.ui.timeline.graph_mode.as_str() {
+        "speed" => true,
+        "value" => false,
+        _ => {
+            let props = shown_props(app, comp);
+            !props.is_empty()
+                && props.iter().all(|(lid, uid)| {
+                    comp.layer(*lid).and_then(|l| l.props.find(*uid)).is_some_and(|pr| pr.spatial && matches!(pr.value, Value::Vec2(_) | Value::Vec3(_)))
+                })
+        }
+    }
+}
+
 fn shown_props(app: &EffectcraftApp, comp: &Comp) -> Vec<(LayerId, u64)> {
     let st = &app.session.state;
     let numeric = |pr: &Property| !pr.value.components().is_empty() && pr.value.interpolates();
@@ -179,7 +195,7 @@ pub(crate) fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: &egui::Painte
     let bg = ui.interact(plot, egui::Id::new("graph-bg"), Sense::click_and_drag());
     p.rect_filled(area, 0.0, Color32::from_rgb(0x1d, 0x1d, 0x1d));
     app.auto.add("timeline.graph", plot, &app.ui.timeline.graph_mode.clone());
-    let speed = app.ui.timeline.graph_mode == "speed";
+    let speed = speed_graph(app, comp);
     let cs = curves(app, comp, ectx, tm, plot, speed);
 
     // Vertical range: auto-zoom to the curves + handles, or the stored manual range.
@@ -408,11 +424,25 @@ pub(crate) fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: &egui::Painte
     let y = bar.center().y;
     let mut x = bar.min.x + 8.0;
     let tl = &app.ui.timeline;
-    let (is_value, show_sel, auto_on) = (tl.graph_mode != "speed", tl.graph_show_selected, tl.graph_auto_zoom);
-    if text_button(app, ui, p, &mut x, y, "Value", is_value, "valueGraph", "Edit Value Graph") {
+    let (auto_type, show_sel, auto_on) = (tl.graph_mode == "auto", tl.graph_show_selected, tl.graph_auto_zoom);
+    if text_button(
+        app,
+        ui,
+        p,
+        &mut x,
+        y,
+        "Auto",
+        auto_type,
+        "autoSelectGraphType",
+        "Auto-Select Graph Type (speed graph for spatial properties, else value graph)",
+    ) {
+        app.ui.timeline.graph_mode = if auto_type { if speed { "speed" } else { "value" } } else { "auto" }.into();
+    }
+    // Choosing a graph type turns Auto-Select off, as in After Effects.
+    if text_button(app, ui, p, &mut x, y, "Value", !speed, "valueGraph", "Edit Value Graph") {
         app.ui.timeline.graph_mode = "value".into();
     }
-    if text_button(app, ui, p, &mut x, y, "Speed", !is_value, "speedGraph", "Edit Speed Graph") {
+    if text_button(app, ui, p, &mut x, y, "Speed", speed, "speedGraph", "Edit Speed Graph") {
         app.ui.timeline.graph_mode = "speed".into();
     }
     x += 6.0;

@@ -139,7 +139,14 @@ fn select_all(s: &mut Session, p: &Value) -> Result<Value> {
     let (cid, mut layers) = layers_p(s, p)?;
     let comp = s.project.comp(cid).ok_or(EngineError::NoComp)?;
     let mut sel = vec![];
-    if p.get("layers").is_none() && p.get("layer").is_none() && !s.state.selected_props.is_empty() {
+    if let Some(visible) = super::visible_p(p) {
+        // Ctrl+Alt+A in the Timeline: every key it shows (its revealed properties).
+        for (lid, uid) in visible {
+            if let Some(pr) = comp.layer(lid).and_then(|l| l.props.find(uid)) {
+                sel.extend(pr.keys.iter().map(|k| KeyRef { layer: lid, prop: uid, time: k.time }));
+            }
+        }
+    } else if p.get("layers").is_none() && p.get("layer").is_none() && !s.state.selected_props.is_empty() {
         for (lid, uid) in &s.state.selected_props {
             if let Some(pr) = comp.layer(*lid).and_then(|l| l.props.find(*uid)) {
                 sel.extend(pr.keys.iter().map(|k| KeyRef { layer: *lid, prop: *uid, time: k.time }));
@@ -422,7 +429,15 @@ pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!("keys.copy", "Copy Keyframes", [], None, "{}", has_keys, copy),
         cmd!("keys.paste", "Paste Keyframes", [], None, "{layers?, prop?|path?, time?}", has_key_clip, paste),
-        cmd!("keys.selectAll", "Select All Keyframes", [], Some("Cmd+Alt+A"), "{layers?}", keys_or_layers, select_all),
+        cmd!(
+            "keys.selectAll",
+            "Select All Keyframes",
+            [],
+            Some("Cmd+Alt+A"),
+            "{layers?, visible?: [{layer, prop}] (every key of these properties)}",
+            keys_or_layers,
+            select_all
+        ),
         cmd!("keys.nudge", "Nudge Keyframes", [], None, "{frames, merge?}", has_keys, nudge),
         cmd!("keys.nudgeForward", "Move Keyframes 1 Frame Later", [], Some("Alt+ArrowRight"), "{}", has_keys, |s, _| nudge(s, &json!({"frames": 1}))),
         cmd!("keys.nudgeBackward", "Move Keyframes 1 Frame Earlier", [], Some("Alt+ArrowLeft"), "{}", has_keys, |s, _| nudge(s, &json!({"frames": -1}))),

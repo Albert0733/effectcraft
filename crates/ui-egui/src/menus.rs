@@ -196,6 +196,15 @@ pub fn invoke(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, params: V
     if crate::panels::unsaved::guard(app, id, &params) {
         return Ok(json!({"dialog": "unsavedChanges"}));
     }
+    // J / K and Select All Keyframes act on what the Timeline shows (its revealed properties).
+    if matches!(id, "time.nextKey" | "time.previousKey" | "keys.selectAll")
+        && ["visible", "layers", "layer", "prop"].iter().all(|k| params.get(*k).is_none())
+        && let Some(c) = app.session.active_comp_arc()
+    {
+        let mut p = if params.is_object() { params.clone() } else { json!({}) };
+        p["visible"] = json!(crate::panels::timeline::visible_props(app, &c));
+        return run_engine(app, ctx, id, p);
+    }
     // New Camera/Light and Camera/Light Settings without parameters open their dialogs.
     if crate::panels::dialogs_3d::route(app, id, &params)? {
         return Ok(Value::Null);

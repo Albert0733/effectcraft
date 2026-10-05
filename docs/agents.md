@@ -139,6 +139,8 @@ build real projects through these interfaces; they are worked examples of everyt
   `keys.transform {…, merge, fromStart: true}` (values are the whole transform since the drag
   started). Keys of locked layers can't be selected. Copy / paste: `keys.copy`, then `keys.paste`
   at the current time (keys copied from several layers go to as many selected layers in order).
+  `time.nextKey` / `time.previousKey` / `keys.selectAll` take `visible: [{layer, prop}]` to act
+  only on those properties (the Timeline passes its revealed ones, as J / K and Ctrl+Alt+A do).
 * **Easing with Keyframe Velocity**: select keys by path, `keys.select {"keys":[{"layer":"Ring","path":"contents/trim/end","time":0}]}`,
   then `keys.velocity {"outSpeed":0,"outInfluence":33.33}`.
 * **Gradients**: `set_property {"path":"contents/gfill/colors","value":["#0080ff","#ffff00"]}` or
