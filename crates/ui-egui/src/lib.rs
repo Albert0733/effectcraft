@@ -511,11 +511,12 @@ impl EffectcraftApp {
         FrameKey { frame, ..self.frame_series(comp, scale) }
     }
 
-    /// The key of frame 0 of `comp`'s viewer frames at `scale` (the revision, view and render
+    /// The key of frame 0 of `comp`'s viewer frames at `scale` (the content, view and render
     /// options are the same for every frame: loops compute this once).
     pub fn frame_series(&self, comp: ItemId, scale: f64) -> FrameKey {
         FrameKey {
             revision: self.session.revision,
+            content: self.frames.content_of(&self.session.project, self.session.revision, comp),
             comp: comp.0,
             frame: 0,
             scale: (scale * 1000.0).round() as u32,
@@ -524,14 +525,11 @@ impl EffectcraftApp {
         }
     }
 
-    /// The frame series the viewer of `comp` shows now (its scale, view and options, at the
-    /// current revision): what the cache bars count.
+    /// The frame series the viewer of `comp` shows now (its scale, view and options, for the
+    /// comp's current content): what the cache bars count.
     pub fn shown_series(&self, comp: ItemId) -> FrameKey {
-        match self.viewer_shown.as_ref().map(|(_, k)| *k) {
-            Some(k) if k.comp == comp.0 && k.revision == self.session.revision => FrameKey { frame: 0, ..k },
-            Some(k) => self.frame_series(comp, k.scale as f64 / 1000.0),
-            None => self.frame_series(comp, 1.0),
-        }
+        let scale = self.viewer_shown.as_ref().filter(|(_, k)| k.comp == comp.0).map_or(1000, |(_, k)| k.scale);
+        self.frame_series(comp, scale as f64 / 1000.0)
     }
 
     /// Hash of the comp viewer's 3D view camera (0 for the active camera view).
@@ -1132,7 +1130,8 @@ impl EffectcraftApp {
                 effectcraft_engine::Event::Toast { message, .. } => self.toast = Some((message, ctx.input(|i| i.time))),
                 effectcraft_engine::Event::OpenUrl(url) => ctx.open_url(egui::OpenUrl::new_tab(url)),
                 // Frames of earlier revisions can't be shown again.
-                effectcraft_engine::Event::ProjectChanged { revision } => self.frames.drop_stale(revision),
+                // Frames are keyed by content: an edit keeps those of comps it doesn't touch.
+                effectcraft_engine::Event::ProjectChanged { .. } => {}
                 effectcraft_engine::Event::Frontend { command, params } => {
                     if let Err(e) = crate::menus::frontend(self, ctx, &command, params) {
                         self.ui.status = e;

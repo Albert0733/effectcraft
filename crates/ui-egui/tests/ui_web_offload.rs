@@ -105,16 +105,24 @@ fn viewer_frames_render_remotely_from_project_diffs() {
     let comp = s.active_comp_id().unwrap();
     let c = s.project.comp(comp).unwrap().clone();
     let opts = RenderOpts { scale: 0.25, guides: true, ..Default::default() };
-    let key = |rev: u64, f: i64| FrameKey { revision: rev, comp: comp.0, frame: f, scale: 250, view: 0, opts: 0 };
+    let key = |s: &Session, f: i64| FrameKey {
+        revision: s.revision,
+        content: effectcraft_ui_egui::frames::comp_content(&s.project, comp),
+        comp: comp.0,
+        frame: f,
+        scale: 250,
+        view: 0,
+        opts: 0,
+    };
     let worker = Arc::new(FakeWorker::new(&s, 2));
     let mut frames = Frames::default();
     frames.set_remote(Some(worker.clone()));
     assert!(frames.remote_active());
     // Three prefetch frames, then the viewer's frame.
     for f in 1..=3 {
-        frames.request(&source(&s), key(s.revision, f), comp, c.frame_rate.tick_of(f), opts);
+        frames.request(&source(&s), key(&s, f), comp, c.frame_rate.tick_of(f), opts);
     }
-    frames.request_urgent(&source(&s), key(s.revision, 10), comp, c.frame_rate.tick_of(10), opts);
+    frames.request_urgent(&source(&s), key(&s, 10), comp, c.frame_rate.tick_of(10), opts);
     assert_eq!(frames.inflight(), 4);
     // Nothing renders until dispatched (no frame threads with a remote renderer); the viewer's
     // frame goes first, then prefetch in request order.
@@ -126,15 +134,15 @@ fn viewer_frames_render_remotely_from_project_diffs() {
     // Frames arrive: the cache holds exactly what the page would have rendered.
     worker.deliver();
     assert_eq!(frames.remote_busy(), 0);
-    let img = match frames.get(&key(s.revision, 10)).expect("viewer frame cached") {
+    let img = match frames.get(&key(&s, 10)).expect("viewer frame cached") {
         FrameImage::Cpu(c) => c,
         FrameImage::Gpu(_) => unreachable!(),
     };
     let local = effectcraft_ui_egui::frames::to_color_image(&s.render(comp, c.frame_rate.tick_of(10), opts));
     assert_eq!(img.size, local.size);
     assert_eq!(img.pixels, local.pixels);
-    assert!(frames.is_cached(&key(s.revision, 1)));
-    assert!(!frames.is_cached(&key(s.revision, 2)));
+    assert!(frames.is_cached(&key(&s, 1)));
+    assert!(!frames.is_cached(&key(&s, 2)));
     // The rest; an edit later travels as a patch.
     frames.dispatch_remote();
     worker.deliver();
@@ -142,19 +150,19 @@ fn viewer_frames_render_remotely_from_project_diffs() {
     worker.deliver();
     assert_eq!(frames.inflight(), 0);
     s.execute("layer.newSolid", json!({"color": "#ff8800"})).unwrap();
-    frames.request_urgent(&source(&s), key(s.revision, 10), comp, c.frame_rate.tick_of(10), opts);
+    frames.request_urgent(&source(&s), key(&s, 10), comp, c.frame_rate.tick_of(10), opts);
     frames.dispatch_remote();
     worker.deliver();
     assert_eq!(worker.syncs.lock().unwrap().last(), Some(&"patch"));
-    let FrameImage::Cpu(img) = frames.get(&key(s.revision, 10)).unwrap() else { unreachable!() };
+    let FrameImage::Cpu(img) = frames.get(&key(&s, 10)).unwrap() else { unreachable!() };
     let local = effectcraft_ui_egui::frames::to_color_image(&s.render(comp, c.frame_rate.tick_of(10), opts));
     assert_eq!(img.pixels, local.pixels);
     // A lost frame is released (requested again later), not cached.
-    frames.request(&source(&s), key(s.revision, 20), comp, c.frame_rate.tick_of(20), opts);
+    frames.request(&source(&s), key(&s, 20), comp, c.frame_rate.tick_of(20), opts);
     frames.dispatch_remote();
     worker.lose();
     assert_eq!(frames.inflight(), 0);
-    assert!(!frames.is_cached(&key(s.revision, 20)));
+    assert!(!frames.is_cached(&key(&s, 20)));
     // Without slots the remote renderer is unusable (frames render here again).
     frames.set_remote(Some(Arc::new(FakeWorker::new(&s, 0))));
     assert!(!frames.remote_active());
