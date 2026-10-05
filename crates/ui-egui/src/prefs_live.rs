@@ -41,12 +41,13 @@ fn dropped_files(app: &mut EffectcraftApp, ctx: &egui::Context) {
     }
 }
 
-/// Re-read the system's free memory every few seconds (cache budgets follow it).
+/// Re-read the system's free memory every 30 s (cache budgets follow it; on Windows each
+/// reading starts PowerShell in the background, so it isn't done more often).
 fn memory_watch(app: &mut EffectcraftApp, ctx: &egui::Context) {
     let now = ctx.input(|i| i.time);
     let id = egui::Id::new("prefs-memory-watch");
     let last = ctx.data(|d| d.get_temp::<f64>(id));
-    if last.is_some_and(|t| now - t < 10.0) {
+    if last.is_some_and(|t| now - t < 30.0) {
         return;
     }
     ctx.data_mut(|d| d.insert_temp(id, now));
