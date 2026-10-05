@@ -67,6 +67,11 @@ The most important missing piece: it turns every other estimate here into a meas
 - Run the headless snapshot and control-channel checks on Linux (X11 and Wayland) and Windows, not
   only macOS. Interactions that only fail with real input (docking drags, viewer pan, drag-and-drop
   import, inline rename) need scripted input tests.
+- Regression evidence for [#67](https://github.com/storytold/effectcraft/issues/67): scripted
+  input tests in `ui_project_delete`, checked headlessly on Linux, cover Delete/Backspace on
+  Project items, multiple selection and undo. They check that an unrelated Timeline layer stays,
+  an empty Project selection does nothing, viewer focus still deletes layers, and typing or
+  dialogs do not delete items.
 - Done when: no open bug blocks a basic workflow (import, arrange, animate, preview, render) on
   any of the three desktop platforms, and every bug users report gets triaged within a day.
 

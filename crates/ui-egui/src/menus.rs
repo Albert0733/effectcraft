@@ -1307,9 +1307,20 @@ pub fn handle_shortcuts(app: &mut EffectcraftApp, ctx: &egui::Context) {
         if key == egui::Key::Enter && !mods.any() && app.ui.focused == PanelKind::Project {
             continue;
         }
-        // Delete/Backspace clears selection.
+        // The Project panel has its own selection; a previously selected Timeline layer
+        // must not be deleted while the Project panel has focus.
         if matches!(key, egui::Key::Delete | egui::Key::Backspace) && !mods.any() {
-            let _ = invoke(app, ctx, "edit.clear", json!({}));
+            let command = if app.ui.focused == PanelKind::Project {
+                if app.session.state.project_selection.is_empty() {
+                    continue;
+                }
+                "project.delete"
+            } else {
+                "edit.clear"
+            };
+            if let Err(e) = invoke(app, ctx, command, json!({})) {
+                app.ui.status = e;
+            }
             continue;
         }
         if let Some((_, _, id, params)) = binds.iter().find(|(m, k, ..)| *k == key && mods_match(*m, mods)) {
