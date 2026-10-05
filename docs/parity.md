@@ -2,17 +2,25 @@
 
 How close EffectCraft is to After Effects 2026, feature by feature, and how much work is left.
 
-## Current status (audit at commit `d39c0e8`, 4 October 2026; updated 5 October for M3.9–M4.12 and M13.35)
+> **Read this as a measure of breadth, not of real-world readiness.** It checks whether each
+> feature exists, using our own catalogue, graded by the agents that built it. It does not measure
+> whether the feature behaves like After Effects (nothing compares the two yet), whether After
+> Effects projects open (they don't), or how the app holds up for real users on every platform.
+> Those gaps, and the work that closes them, are in [gaps.md](gaps.md). Don't raise the numbers
+> here without the evidence gaps.md asks for. The per-area table further down has stale rows that
+> have not been reconciled with the headline.
+
+## Current status (audit at commit `d39c0e8`, 4 October 2026; updated 5 October for M3.9–M4.12)
 
 | Measure | Value |
 |---|---|
-| **Feature parity, weighted by tier** (P0 ×3, P1 ×2, P2 ×1) | **≈ 99.4%** counting every partial feature as half done; ≈ 99.9% using per-feature fractions |
-| Unweighted | ≈ 98.9% (half-credit) / 99.9% (fractions) |
-| P0 / P1 / P2 | 100% / 98% / 95% (half-credit); 100% / 99.8% / 99% (fractions) |
-| Features done / partial / missing | 90 / 2 / 0 of 92 (MSK-4 Roto Brush done in M13.35) |
+| **Feature parity, weighted by tier** (P0 ×3, P1 ×2, P2 ×1) | **≈ 99%** counting every partial feature as half done; ≈ 99.8% using per-feature fractions |
+| Unweighted | ≈ 98.4% (half-credit) / 99.6% (fractions) |
+| P0 / P1 / P2 | 100% / 98% / 90% (half-credit); 100% / 99.7% / 97.5% (fractions) |
+| Features done / partial / missing | 89 / 3 / 0 of 92 |
 | **Effects** | **306** effects, every one implemented in full ([effects.md](effects.md)); 280 run on the GPU |
 | Disabled menu entries left | 1, on purpose: Import ▸ Vanishing Point (.vpe), whose format has no public specification |
-| Remaining work | ≈ 8.5 agent-hours at the audit (≈ 26 on the conservative audit scale), before M13.35 landed Roto Brush's trained model; the learned face tracker is the one learned-model item left |
+| Remaining work | ≈ 8.5 agent-hours at the pace measured so far (≈ 26 on the conservative audit scale); ≈ 3.5 without the learned-model items |
 | **Wall-clock estimate** | **≈ 2–3 hours** with five agents in parallel; ≈ 1 hour without the learned-model items |
 
 Partial features:
@@ -20,6 +28,7 @@ Partial features:
 | id | Tier | Done | What is missing |
 |---|---|---|---|
 | EFF-5 GPU effects | P1 | 0.98 | Fractal (its escape iteration needs f64: WGSL has none and Metal's fast math defeats double-f32 emulation) and the analysis / tool effects (Camera-Shake Deblur, Detail-preserving Upscale, Puppet, Rolling Shutter Repair, Warp Stabilizer, Mocha Shape, Roto Brush, Match Grain, Paint, Camera Tracker, Face Tracker) render on the CPU. M13.28 moved the remaining pixel effects (CC blur / glass family, Color Link, Cineon, HDR, Inner/Outer Key, Basic 3D…) and the geometry and audio generators (Lightning, Advanced Lightning, Beam, Lens Flare, Radio Waves, Vegas, Stroke, Scribble, Write-on, Paint Bucket, Eyedropper Fill, CC Glue Gun, CC Threads, Audio Spectrum / Waveform, Basic / Path Text) onto the GPU; M13.29 the particle effects (CC Particle World / Systems II, Particle Playground, CC Ball Action, CC Pixel Polly, CC Scatterize) and Curl Noise, and removed the Shatter wireframe, Foam extras, Timewarp matte, strong Warp Fisheye / Twist and custom `.ocio` fallbacks. The 13 audio filters stay on the CPU by design |
+| MSK-4 Roto Brush | P2 | 0.85 | Roto Brush 2.0 / 3.0 can use a trained model since M13.35 (MobileSAM, optional download); its quality has not been compared with After Effects (G1), so the score stands |
 | TRK-3 Face tracking | P2 | 0.9 | Classical fitter: weak on profile and occluded faces; Rolling Shutter Ripple is approximated |
 
 Since this audit: the project operations (M3.9–M3.14) and preview (M4.5–M4.12) passes fixed
@@ -433,7 +442,8 @@ stretch) and shown within its In–Out range. Hovering names them ("beat (marker
 double-click opens the nested comp at the marker. Agents read the same list with
 `markers.nested {layer}`.
 
-Since (M13.35): Roto Brush can use a trained segmentation model; MSK-4 is done.
+Since (M13.35): Roto Brush can use a trained segmentation model. MSK-4 keeps its score until G1
+measures it against After Effects ([gaps.md](gaps.md)).
 - The model sits behind a swappable interface: `effectcraft_segment::MaskModel` plus a registry
   where every entry must have an open-source licence compatible with ours, a source URL, a size
   and a SHA-256.

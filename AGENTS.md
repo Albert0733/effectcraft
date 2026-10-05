@@ -107,6 +107,7 @@ a command, everything is agent-drivable, and the quality gates (`cargo xtask ci`
 
 ## See also
 
+- [docs/gaps.md](docs/gaps.md): where EffectCraft falls short of After Effects and the prioritised workstreams (G1–G9); read it before choosing work
 - [CONTRIBUTING.md](CONTRIBUTING.md): setup, gates, commits, how to add things
 - [docs/architecture.md](docs/architecture.md): layers, data model, commands, pipeline
 - [docs/testing.md](docs/testing.md): oracle tests, criteria, benchmarks

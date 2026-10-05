@@ -195,14 +195,25 @@ tests, layering, asset attribution and the WebAssembly build). See [CONTRIBUTING
 
 ## Where it stands
 
-EffectCraft is young. The core of After Effects is in place and gets deeper every week: what is
-done and what comes next is in the [ROADMAP](ROADMAP.md). Roto Brush can use a trained model
-(MobileSAM, Apache-2.0, a 40 MB download you opt into in Settings ▸ Roto Brush). Still to come: a
-learned face tracker (face tracking uses classical methods today), GPU versions of the remaining
-CPU-only effects, the Advanced 3D Extended Viewer, and shared-memory threads in the web build. The
-web build ([docs/web.md](docs/web.md)) runs the full app in the browser, with renders, analyses
-and viewer frames in Web Workers. Projects are saved as `.ecproj`, readable versioned JSON; After
-Effects `.aep` files cannot be opened.
+EffectCraft is young: its first commit was on 1 October 2026. Nearly every After Effects feature
+exists, including all of its effects, but existing is not the same as behaving exactly like After
+Effects, and we haven't measured that yet. Today it's a good place to try things and to tell us
+what breaks. It isn't yet a replacement for After Effects on client work. In particular:
+
+- **After Effects projects can't be opened.** Projects are saved as `.ecproj`, readable versioned
+  JSON, but EffectCraft can't open `.aep` / `.aepx` files, and After Effects plug-ins don't run.
+- **Behaviour still differs from After Effects in places.** Nothing yet compares our renders with
+  After Effects automatically, so please report differences.
+- **macOS is the most tested platform.** Linux and Windows users have hit basic interaction
+  bugs, which we're fixing first.
+- **Face tracking uses classical methods.** Roto Brush can use a trained model (MobileSAM, an
+  optional 40 MB download in Settings ▸ Roto Brush); it is new and not yet compared with After
+  Effects.
+
+The [ROADMAP](ROADMAP.md) has the plan and [docs/gaps.md](docs/gaps.md) the full, honest
+assessment. The web build ([docs/web.md](docs/web.md)) runs the full app in the browser.
+[Bug reports](https://github.com/storytold/effectcraft/issues) are the most useful thing you can
+send us right now.
 
 ## How it's made
 
