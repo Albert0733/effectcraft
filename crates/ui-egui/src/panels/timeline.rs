@@ -1870,7 +1870,12 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                             None if ks => t.keyframe_selected,
                             None => t.keyframe,
                         };
-                        icons::keyframe(&gp, c, 11.0, icon.left, icon.right, kcol, Color32::from_black_alpha(200));
+                        if k.roving {
+                            // Roving keys: a small dot (their time follows their neighbours).
+                            gp.circle_filled(c, 2.5, kcol);
+                        } else {
+                            icons::keyframe(&gp, c, 11.0, icon.left, icon.right, kcol, Color32::from_black_alpha(200));
+                        }
                         let kr = Rect::from_center_size(c, vec2(12.0, 14.0));
                         let kresp = ui.interact(kr, egui::Id::new(("key", uid, k.time.0)), Sense::click_and_drag());
                         app.auto.add(&format!("timeline.key.{uid}.{}", fr.frame_at(ct)), kr, &format!("{} key", prop.name));
@@ -1896,12 +1901,23 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                             actions.push(("keys.select".into(), p));
                         }
                         if kresp.double_clicked() {
-                            ui_actions.push(UiAct::SetTime(ct));
+                            // Edit the key's value (numeric properties), as After Effects does.
+                            if matches!(k.value, Value::Scalar(_) | Value::Vec2(_) | Value::Vec3(_)) {
+                                actions.push(("keys.set".into(), json!({"layer": layer.id.0, "prop": uid, "time": k.time.seconds()})));
+                            } else {
+                                ui_actions.push(UiAct::SetTime(ct));
+                            }
                         }
                         kresp.context_menu(|ui| {
                             for (lbl, cmd, params) in [
+                                ("Edit Value…", "keys.set", json!({"layer": layer.id.0, "prop": uid, "time": k.time.seconds()})),
+                                ("-", "", json!({})),
                                 ("Copy", "keys.copy", json!({})),
                                 ("Paste", "keys.paste", json!({})),
+                                ("-", "", json!({})),
+                                ("Select Equal Keyframes", "keys.selectEqual", json!({})),
+                                ("Select Previous Keyframes", "keys.selectPrevious", json!({})),
+                                ("Select Following Keyframes", "keys.selectFollowing", json!({})),
                                 ("-", "", json!({})),
                                 ("Keyframe Interpolation…", "keys.interpolation", json!({})),
                                 ("Keyframe Velocity…", "keys.velocity", json!({})),
@@ -1941,6 +1957,9 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                                     continue;
                                 }
                                 if lbl == "Rove Across Time" && !prop.spatial {
+                                    continue;
+                                }
+                                if lbl == "Edit Value…" && !matches!(k.value, Value::Scalar(_) | Value::Vec2(_) | Value::Vec3(_)) {
                                     continue;
                                 }
                                 if ui.button(lbl).clicked() {

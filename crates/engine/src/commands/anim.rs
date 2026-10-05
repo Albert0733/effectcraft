@@ -151,6 +151,35 @@ fn select_all(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!(s.state.selected_keys.len()))
 }
 
+/// The keyframe context menu's Select Equal / Previous / Following Keyframes: in every property
+/// with a selected key, its keys with the same value as a selected one / before the first
+/// selected one / after the last selected one (the selected keys stay selected).
+fn select_related(s: &mut Session, which: &str) -> Result<Value> {
+    let comp = s.active_comp().ok_or(EngineError::NoComp)?;
+    let mut sel = s.state.selected_keys.clone();
+    let mut props: Vec<(LayerId, Uid)> = sel.iter().map(|k| (k.layer, k.prop)).collect();
+    props.sort();
+    props.dedup();
+    for (lid, uid) in props {
+        let Some(pr) = comp.layer(lid).and_then(|l| l.props.find(uid)) else { continue };
+        let picked: Vec<&Keyframe> = pr.keys.iter().filter(|k| sel.iter().any(|r| r.layer == lid && r.prop == uid && r.time == k.time)).collect();
+        let (Some(first), Some(last)) = (picked.iter().map(|k| k.time).min(), picked.iter().map(|k| k.time).max()) else { continue };
+        for k in &pr.keys {
+            let hit = match which {
+                "equal" => picked.iter().any(|p| p.value == k.value),
+                "previous" => k.time < first,
+                _ => k.time > last,
+            };
+            let r = KeyRef { layer: lid, prop: uid, time: k.time };
+            if hit && !sel.contains(&r) {
+                sel.push(r);
+            }
+        }
+    }
+    s.state.selected_keys = sel;
+    Ok(json!(s.state.selected_keys.len()))
+}
+
 /// Move the selected keys by whole frames (Alt+→ / Alt+←, Shift for 10 frames).
 fn nudge(s: &mut Session, p: &Value) -> Result<Value> {
     let frames = p.get("frames").and_then(Value::as_i64).ok_or_else(|| bad("keys.nudge", "missing `frames`"))?;
@@ -398,6 +427,9 @@ pub fn specs() -> Vec<CommandSpec> {
             &json!({"frames": -10})
         )),
         cmd!("keys.set", "Edit Keyframe", [], None, "{layer?, path|prop, time (layer s), newTime?, value?, merge?}", has_comp, set_key),
+        cmd!("keys.selectEqual", "Select Equal Keyframes", [], None, "{}", has_keys, |s, _| select_related(s, "equal")),
+        cmd!("keys.selectPrevious", "Select Previous Keyframes", [], None, "{}", has_keys, |s, _| select_related(s, "previous")),
+        cmd!("keys.selectFollowing", "Select Following Keyframes", [], None, "{}", has_keys, |s, _| select_related(s, "following")),
         cmd!(
             "keys.setEase",
             "Set Keyframe Ease",

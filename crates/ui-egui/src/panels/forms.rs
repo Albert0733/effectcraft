@@ -195,6 +195,23 @@ pub fn open_form(app: &mut EffectcraftApp, id: &str, p: &Value) -> bool {
                 ],
             )
         }
+        // Double-click a keyframe (or its context menu ▸ Edit Value…): the property's value at
+        // that key, like After Effects' value dialog.
+        "keys.set" if !has(p, &["value", "newTime"]) => {
+            let l = p.get("layer").and_then(Value::as_u64).and_then(|l| comp?.layer(effectcraft_engine::project::LayerId(l)));
+            let pr = l.and_then(|l| l.props.find(p.get("prop").and_then(Value::as_u64)?));
+            let t = p.get("time").and_then(Value::as_f64).map(effectcraft_engine::time::Tick::from_seconds_f64);
+            let Some((pr, t)) = pr.zip(t) else { return false };
+            let Some(k) = pr.keys.iter().min_by_key(|k| (k.time.0 - t.0).abs()) else { return false };
+            use effectcraft_engine::keyframe::Value as KV;
+            let fields = match &k.value {
+                KV::Scalar(v) => vec![Field::num("value", &pr.name, *v)],
+                KV::Vec2(v) => vec![Field::num("value[0]", "X", v[0]), Field::num("value[1]", "Y", v[1])],
+                KV::Vec3(v) => vec![Field::num("value[0]", "X", v[0]), Field::num("value[1]", "Y", v[1]), Field::num("value[2]", "Z", v[2])],
+                _ => return false,
+            };
+            (pr.name.clone(), fields)
+        }
         "layer.setTransform" if !has(p, &["value"]) => {
             let prop = p.get("prop").and_then(Value::as_str).unwrap_or("position");
             let cur = layer.and_then(|l| l.transform()).and_then(|tr| tr.get(if prop == "anchorPoint" { "anchor" } else { prop })).map(|pr| pr.value_at(lt));

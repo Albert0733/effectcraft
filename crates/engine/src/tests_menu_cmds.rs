@@ -957,3 +957,27 @@ fn transform_drags_apply_their_whole_offset_to_the_keys_they_started_with() {
     }
     assert_eq!(key_times(&s, a), vec![0.1, 1.1, 2.1]);
 }
+
+#[test]
+fn select_equal_previous_and_following_keyframes() {
+    let mut s = comp();
+    let a = solid(&mut s, "#ff0000");
+    for (t, v) in [(0.0, 20.0), (1.0, 50.0), (2.0, 20.0), (3.0, 70.0)] {
+        s.execute("prop.addKey", json!({"layer": a, "path": "transform/opacity", "time": t, "value": v})).unwrap();
+    }
+    let pick = |s: &mut Session, t: f64| s.execute("keys.select", json!({"keys": [{"layer": a, "path": "transform/opacity", "time": t}]})).unwrap();
+    let times = |s: &Session| {
+        let mut v: Vec<f64> = s.state.selected_keys.iter().map(|k| k.time.seconds()).collect();
+        v.sort_by(f64::total_cmp);
+        v
+    };
+    pick(&mut s, 0.0);
+    s.execute("keys.selectEqual", json!({})).unwrap();
+    assert_eq!(times(&s), vec![0.0, 2.0]);
+    pick(&mut s, 2.0);
+    s.execute("keys.selectPrevious", json!({})).unwrap();
+    assert_eq!(times(&s), vec![0.0, 1.0, 2.0]);
+    pick(&mut s, 1.0);
+    s.execute("keys.selectFollowing", json!({})).unwrap();
+    assert_eq!(times(&s), vec![1.0, 2.0, 3.0]);
+}

@@ -178,3 +178,33 @@ fn graph_editor_drags_move_every_selected_key_and_shift_keeps_an_axis() {
     let v = values(&h);
     assert!(v[0] < 0.0 && (v[1] - 100.0 - v[0]).abs() < 1e-6, "{v:?}");
 }
+
+#[test]
+fn double_click_a_key_to_edit_its_value() {
+    let (mut h, id, uid) = harness();
+    let k1 = keys(&h, uid)[1];
+    h.input_mut().events.push(Event::PointerMoved(k1));
+    h.step();
+    // Both clicks inside egui's double-click time.
+    for _ in 0..2 {
+        h.input_mut().events.push(Event::PointerButton { pos: k1, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() });
+        h.input_mut().events.push(Event::PointerButton { pos: k1, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() });
+    }
+    h.step();
+    h.run_steps(2);
+    assert_eq!(h.state().dialog, Some(effectcraft_ui_egui::Dialog::Form), "the value dialog opened");
+    h.run_steps(2);
+    assert!(h.state().auto.find("form.field.value").is_some(), "one Opacity field");
+    // OK keeps the key where it is (the dialog edits the value only).
+    let ok = h.state().auto.find("form.ok").expect("form.ok").clone();
+    let p = pos2(ok.rect[0] + ok.rect[2] / 2.0, ok.rect[1] + ok.rect[3] / 2.0);
+    h.input_mut().events.push(Event::PointerMoved(p));
+    h.step();
+    h.input_mut().events.push(Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() });
+    h.step();
+    h.input_mut().events.push(Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() });
+    h.run_steps(2);
+    assert!(h.state().dialog.is_none());
+    let k = h.state().session.active_comp().unwrap().layer(id).unwrap().props.prop("transform/opacity").unwrap().keys[1].clone();
+    assert_eq!((k.time.seconds(), k.value.as_f64()), (1.0, 100.0));
+}
