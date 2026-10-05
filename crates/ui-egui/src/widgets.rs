@@ -143,6 +143,17 @@ pub fn icon_button(ui: &mut Ui, rect: Rect, icon: Icon, active: bool, t: &Tokens
     resp
 }
 
+/// One line of `text` at `pos` (placed by `align`), cut short with "…" past `max_w` points so it
+/// never runs out of its panel. Returns where it was painted.
+pub fn text_fit(p: &egui::Painter, pos: egui::Pos2, align: Align2, text: &str, font: egui::FontId, max_w: f32, color: Color32) -> Rect {
+    let mut job = egui::text::LayoutJob::simple_singleline(text.to_owned(), font, color);
+    job.wrap = egui::text::TextWrapping { max_width: max_w.max(0.0), max_rows: 1, break_anywhere: true, overflow_character: Some('…') };
+    let galley = p.layout_job(job);
+    let rect = align.anchor_size(pos, galley.size());
+    p.galley(rect.min, galley, color);
+    rect
+}
+
 /// Rounded search field with a magnifier icon.
 pub fn search_field(ui: &mut Ui, rect: Rect, text: &mut String, hint: &str, t: &Tokens) -> Response {
     let h = rect.height();
