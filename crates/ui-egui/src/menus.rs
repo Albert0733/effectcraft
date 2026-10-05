@@ -497,10 +497,32 @@ pub fn invoke(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, params: V
 }
 
 /// Run an engine command and perform the frontend events it emitted right away.
+/// Commands that fill the internal clipboard.
+const COPY_COMMANDS: &[&str] =
+    &["edit.copy", "edit.cut", "edit.copyWithPropertyLinks", "edit.copyWithRelativePropertyLinks", "edit.copyExpressionOnly", "keys.copy", "effect.copy"];
+
+/// A line for the system clipboard naming what EffectCraft copied. The system clipboard must
+/// hold something: with nothing on it, the windowing layer sends no paste event for Ctrl+V.
+fn clipboard_note(s: &effectcraft_engine::Session) -> String {
+    let st = &s.state;
+    let n = |n: usize, one: &str, many: &str| format!("EffectCraft: {n} {}", if n == 1 { one } else { many });
+    if st.clip_is_keys && !st.key_clipboard.is_empty() {
+        n(st.key_clipboard.iter().map(|c| c.keys.len()).sum(), "keyframe", "keyframes")
+    } else if !st.effect_clipboard.is_empty() {
+        n(st.effect_clipboard.len(), "effect", "effects")
+    } else if st.link_clipboard.is_some() {
+        "EffectCraft: property links".into()
+    } else {
+        n(st.clipboard.len(), "layer", "layers")
+    }
+}
+
 fn run_engine(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, params: Value) -> Result<Value, String> {
     let r = app.session.execute(id, params).map_err(|e| e.to_string());
     if let Err(e) = &r {
         app.ui.status = e.clone();
+    } else if COPY_COMMANDS.contains(&id) && app.session.state.text_edit.is_none() {
+        ctx.copy_text(clipboard_note(&app.session));
     }
     let events = app.session.drain_events();
     for ev in events {
@@ -1217,7 +1239,13 @@ pub fn handle_shortcuts(app: &mut EffectcraftApp, ctx: &egui::Context) {
     if ctx.egui_wants_keyboard_input() {
         return;
     }
+    // Text editing in the viewer takes the clipboard events itself.
+    let clipboard = app.session.state.text_edit.is_none();
     let events: Vec<(egui::Key, egui::Modifiers)> = ctx.input(|i| {
+        // The windowing layer turns Ctrl+C / Ctrl+X / Ctrl+V into clipboard events instead of
+        // key presses: map them back to the keys (with the modifiers held) so Edit ▸ Copy, Cut,
+        // Paste and their variants (Ctrl+Alt+C…) run.
+        let held = if i.modifiers.command { i.modifiers } else { egui::Modifiers::COMMAND };
         i.events
             .iter()
             .filter_map(|e| match e {
@@ -1226,6 +1254,9 @@ pub fn handle_shortcuts(app: &mut EffectcraftApp, ctx: &egui::Context) {
                 {
                     Some((*key, *modifiers))
                 }
+                egui::Event::Copy if clipboard => Some((egui::Key::C, held)),
+                egui::Event::Cut if clipboard => Some((egui::Key::X, held)),
+                egui::Event::Paste(_) if clipboard => Some((egui::Key::V, held)),
                 _ => None,
             })
             .collect()

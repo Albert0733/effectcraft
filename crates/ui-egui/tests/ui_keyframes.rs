@@ -79,3 +79,36 @@ fn a_key_drag_follows_the_pointer_for_its_whole_length() {
     drag(&mut h, ks[1], near, egui::Modifiers { shift: true, ..Default::default() });
     assert_eq!(key_times(&h, id)[1], 0.5, "snapped to the current time");
 }
+
+#[test]
+fn ctrl_c_and_ctrl_v_copy_and_paste_keys_at_the_current_time() {
+    let (mut h, id, uid) = harness();
+    let ks = keys(&h, uid);
+    // Click the 1 s key to select it, Ctrl+C (a clipboard event, not a key press).
+    h.input_mut().events.push(Event::PointerMoved(ks[1]));
+    h.step();
+    h.input_mut().events.push(Event::PointerButton { pos: ks[1], button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() });
+    h.step();
+    h.input_mut().events.push(Event::PointerButton { pos: ks[1], button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() });
+    h.run_steps(2);
+    assert_eq!(h.state().session.state.selected_keys.len(), 1);
+    h.input_mut().events.push(Event::Copy);
+    h.step();
+    let copied: Vec<String> = h
+        .output()
+        .platform_output
+        .commands
+        .iter()
+        .filter_map(|c| match c {
+            egui::OutputCommand::CopyText(t) => Some(t.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(copied, ["EffectCraft: 1 keyframe"], "the system clipboard is filled, so Ctrl+V sends a paste event");
+    assert!(h.state().session.state.clip_is_keys);
+    // Move to 3 s, Ctrl+V: the key lands there.
+    h.state_mut().session.set_time(effectcraft_engine::time::Tick::from_seconds_f64(3.0));
+    h.input_mut().events.push(Event::Paste("EffectCraft: 1 keyframe".into()));
+    h.run_steps(2);
+    assert_eq!(key_times(&h, id), vec![0.0, 1.0, 3.0]);
+}
