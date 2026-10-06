@@ -1,4 +1,4 @@
-//! Drag and drop between panels (egui_kittest, real pointer drags), as in After Effects: Project
+//! Drag and drop between panels (egui_kittest, real pointer drags): Project
 //! items land in the Timeline where they are dropped, between layers and, over the time graph,
 //! starting there (#89); dropped on the Composition viewer they are centred where they land
 //! (#85); an effect dropped on the viewer goes on the layer under the pointer (#88).

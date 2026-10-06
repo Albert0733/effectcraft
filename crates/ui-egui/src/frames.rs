@@ -4,9 +4,9 @@
 //! never waits for the compositor. Results land in a memory-budgeted cache keyed by the comp's
 //! *content* ([`comp_content`]: the comp and everything it uses), frame, scale, view and render
 //! options; the timeline draws the cached range as the green cache bar. An edit keeps the frames
-//! of every comp it doesn't touch, and undo finds the frames of the state it returns to, as in
-//! After Effects. Switches that don't change pixels (Audio, Lock, Shy, Hide Shy Layers) keep
-//! the frames too. When the budget is full the least recently shown frames go first.
+//! of every comp it doesn't touch, and undo finds the frames of the state it returns to.
+//! Switches that don't change pixels (Audio, Lock, Shy, Hide Shy Layers) keep the frames too.
+//! When the budget is full the least recently shown frames go first.
 //!
 //! wasm32 has no threads: jobs wait in the same priority queue and [`Frames::pump`] hands them
 //! to a [`RemoteFrames`] (the browser's frame worker, a second engine instance fed with project

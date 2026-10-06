@@ -41,7 +41,7 @@ pub fn parse_angle(s: &str) -> Option<f64> {
     s.parse().ok()
 }
 
-/// After Effects' angle value, `0x+45.0°`, at `at` (top left): the revolutions and the degrees
+/// An angle value, `0x+45.0°`, at `at` (top left): the revolutions and the degrees
 /// are hot numbers of their own (drag to scrub, click to type) and changing one keeps the other.
 /// Returns the revolutions' rect, the degrees' rect and the new angle when either changed.
 pub fn angle_field(ui: &mut egui::Ui, at: Pos2, id: egui::Id, v: f64, decimals: usize, t: &Tokens) -> (Rect, Rect, Option<f64>) {
