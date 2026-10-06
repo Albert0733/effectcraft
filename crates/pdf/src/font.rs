@@ -231,21 +231,21 @@ fn parse_cmap(data: &[u8]) -> CMap {
                 let a = std::mem::take(&mut args);
                 match mode {
                     "cs" => {
-                        for p in a.chunks_exact(2) {
+                        for p in a.as_chunks::<2>().0 {
                             if let (Obj::Str(lo), Obj::Str(hi)) = (&p[0], &p[1]) {
                                 m.codespace.push((lo.len().max(1), be(lo), be(hi)));
                             }
                         }
                     }
                     "bfchar" => {
-                        for p in a.chunks_exact(2) {
+                        for p in a.as_chunks::<2>().0 {
                             if let (Obj::Str(src), Obj::Str(dst)) = (&p[0], &p[1]) {
                                 m.unicode.insert(be(src), utf16(dst));
                             }
                         }
                     }
                     "bfrange" => {
-                        for p in a.chunks_exact(3) {
+                        for p in a.as_chunks::<3>().0 {
                             let (Obj::Str(lo), Obj::Str(hi)) = (&p[0], &p[1]) else { continue };
                             let (lo, hi) = (be(lo), be(hi));
                             if hi < lo || hi - lo > 65535 {
@@ -273,7 +273,7 @@ fn parse_cmap(data: &[u8]) -> CMap {
                         }
                     }
                     "cidchar" => {
-                        for p in a.chunks_exact(2) {
+                        for p in a.as_chunks::<2>().0 {
                             if let (Obj::Str(src), Some(cid)) = (&p[0], p[1].num()) {
                                 let c = be(src);
                                 m.cids.push((c, c, cid as u32));
@@ -281,7 +281,7 @@ fn parse_cmap(data: &[u8]) -> CMap {
                         }
                     }
                     "cidrange" => {
-                        for p in a.chunks_exact(3) {
+                        for p in a.as_chunks::<3>().0 {
                             if let (Obj::Str(lo), Obj::Str(hi), Some(cid)) = (&p[0], &p[1], p[2].num()) {
                                 m.cids.push((be(lo), be(hi), cid as u32));
                             }
@@ -431,7 +431,7 @@ impl Font {
                     match w.get(i + 1).map(|x| file.resolve(x)) {
                         Some(Obj::Array(list)) => {
                             let v: Vec<f64> = list.iter().filter_map(|x| file.resolve(x).num()).collect();
-                            for (k, t) in v.chunks_exact(3).enumerate() {
+                            for (k, t) in v.as_chunks::<3>().0.iter().enumerate() {
                                 f.cid_vmetrics.insert(first + k as u32, (t[0] / 1000.0, t[1] / 1000.0, t[2] / 1000.0));
                             }
                             i += 2;
@@ -468,7 +468,7 @@ impl Font {
             }
             match file.get(&desc_dict, "CIDToGIDMap") {
                 Some(Obj::Stream(sd, raw)) => {
-                    f.cid_to_gid = decode_stream(file, sd, raw).map(|b| b.chunks_exact(2).map(|c| u16::from_be_bytes([c[0], c[1]])).collect());
+                    f.cid_to_gid = decode_stream(file, sd, raw).map(|b| b.as_chunks::<2>().0.iter().map(|c| u16::from_be_bytes([c[0], c[1]])).collect());
                 }
                 _ => f.cid_to_gid = None,
             }

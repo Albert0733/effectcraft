@@ -209,7 +209,7 @@ pub fn text_button(ui: &mut Ui, rect: Rect, text: &str, primary: bool, t: &Token
     } else if resp.hovered() {
         t.pressed
     } else {
-        Color32::from_rgb(0x33, 0x33, 0x33)
+        t.hover
     };
     ui.painter().rect_filled(rect, rect.height() / 2.0, bg);
     ui.painter().text(rect.center(), Align2::CENTER_CENTER, text, Tokens::medium(12.0), if primary { Color32::WHITE } else { t.text });

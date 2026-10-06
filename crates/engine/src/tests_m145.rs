@@ -244,7 +244,7 @@ fn import_export_helpers() {
     // Append Bit Depth to File Name.
     assert_eq!(p.output_name("/out/Comp 1.png", 16), "/out/Comp 1.png");
     p.export.append_bits_to_name = true;
-    assert_eq!(p.output_name("/out/Comp 1.png", 16), "/out/Comp 1_16bpc.png");
+    assert_eq!(PathBuf::from(p.output_name("/out/Comp 1.png", 16)), PathBuf::from("/out/Comp 1_16bpc.png"));
     assert_eq!(p.output_name("Comp_[#####].exr", 32), "Comp_[#####]_32bpc.exr");
     // Segments: sequences by file count, movies by size at the data rate.
     assert_eq!(p.segment_frames(100, true, 0.0), None);
@@ -299,7 +299,7 @@ fn render_queue_uses_default_folder_bit_depth_names_and_segments() {
     assert_eq!(segs.len(), 1, "20 frames × 50 kB fit in 1 MB");
     item.output.bitrate_kbps = 8000; // 100 kB per frame: 10 frames per MB
     let segs = s.segments(&item, "/o/Main.mp4");
-    assert_eq!(segs.iter().map(|(_, p)| p.as_str()).collect::<Vec<_>>(), ["/o/Main_001.mp4", "/o/Main_002.mp4"]);
+    assert_eq!(segs.iter().map(|(_, p)| PathBuf::from(p)).collect::<Vec<_>>(), [PathBuf::from("/o/Main_001.mp4"), PathBuf::from("/o/Main_002.mp4")]);
 }
 
 #[test]

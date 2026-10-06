@@ -393,7 +393,9 @@ pub fn parse(bytes: &[u8], resolve: &dyn Fn(&str) -> Option<Vec<u8>>) -> Result<
         let inverse_bind = match idx(s, "inverseBindMatrices") {
             Some(a) => {
                 let (f, _) = d.floats(a)?;
-                f.chunks_exact(16)
+                f.as_chunks::<16>()
+                    .0
+                    .iter()
                     .map(|v| {
                         let mut m = [[0.0; 4]; 4];
                         for c in 0..4 {
@@ -495,29 +497,29 @@ fn primitive(d: &Doc, p: &Value, materials: &[Material]) -> Result<Option<Primit
     let attrs = p.get("attributes").ok_or_else(|| perr("primitive without attributes"))?;
     let Some(pa) = idx(attrs, "POSITION") else { return Ok(None) };
     let (pos, _) = d.floats(pa)?;
-    let positions: Vec<[f32; 3]> = pos.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect();
+    let positions: Vec<[f32; 3]> = pos.as_chunks::<3>().0.iter().map(|c| [c[0], c[1], c[2]]).collect();
     let n = positions.len();
     let vec3s = |a: Option<usize>| -> Result<Vec<[f32; 3]>> {
         Ok(match a {
-            Some(a) => d.floats(a)?.0.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect(),
+            Some(a) => d.floats(a)?.0.as_chunks::<3>().0.iter().map(|c| [c[0], c[1], c[2]]).collect(),
             None => vec![],
         })
     };
     let mut normals = vec3s(idx(attrs, "NORMAL"))?;
     let uvs: Vec<[f32; 2]> = match idx(attrs, "TEXCOORD_0") {
-        Some(a) => d.floats(a)?.0.chunks_exact(2).map(|c| [c[0], c[1]]).collect(),
+        Some(a) => d.floats(a)?.0.as_chunks::<2>().0.iter().map(|c| [c[0], c[1]]).collect(),
         None => vec![],
     };
     let tangents: Vec<[f32; 4]> = match idx(attrs, "TANGENT") {
-        Some(a) => d.floats(a)?.0.chunks_exact(4).map(|c| [c[0], c[1], c[2], c[3]]).collect(),
+        Some(a) => d.floats(a)?.0.as_chunks::<4>().0.iter().map(|c| [c[0], c[1], c[2], c[3]]).collect(),
         None => vec![],
     };
     let joints: Vec<[u16; 4]> = match idx(attrs, "JOINTS_0") {
-        Some(a) => d.ints(a)?.chunks_exact(4).map(|c| [c[0] as u16, c[1] as u16, c[2] as u16, c[3] as u16]).collect(),
+        Some(a) => d.ints(a)?.as_chunks::<4>().0.iter().map(|c| [c[0] as u16, c[1] as u16, c[2] as u16, c[3] as u16]).collect(),
         None => vec![],
     };
     let weights: Vec<[f32; 4]> = match idx(attrs, "WEIGHTS_0") {
-        Some(a) => d.floats(a)?.0.chunks_exact(4).map(|c| [c[0], c[1], c[2], c[3]]).collect(),
+        Some(a) => d.floats(a)?.0.as_chunks::<4>().0.iter().map(|c| [c[0], c[1], c[2], c[3]]).collect(),
         None => vec![],
     };
     let raw: Vec<u32> = match idx(p, "indices") {
@@ -540,7 +542,7 @@ fn primitive(d: &Doc, p: &Value, materials: &[Material]) -> Result<Option<Primit
                 indices.extend([raw[0], raw[i - 1], raw[i]]);
             }
         }
-        _ => indices.extend(raw.chunks_exact(3).flatten()),
+        _ => indices.extend(raw.as_chunks::<3>().0.iter().flatten()),
     }
     if normals.len() != n {
         normals.clear();

@@ -329,6 +329,7 @@ pub fn viewer_hook(
         }
     });
     if resp.hovered()
+        && app.dialog.is_none()
         && !selected.is_empty()
         && ui.input(|i| i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace))
         && !ctx.egui_wants_keyboard_input()

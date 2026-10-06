@@ -322,7 +322,7 @@ fn write_still<W: std::io::Write + std::io::Seek>(
         }
         OutputFormat::JpegSequence => {
             let px = cx.pixels(img, comp, if channels == Channels::Alpha { Channels::Alpha } else { Channels::Rgb }, w, h);
-            let rgb: Vec<u8> = px.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
+            let rgb: Vec<u8> = px.as_chunks::<4>().0.iter().flat_map(|p| [p[0], p[1], p[2]]).collect();
             image::codecs::jpeg::JpegEncoder::new_with_quality(file, quality.clamp(1, 100))
                 .write_image(&rgb, w, h, ExtendedColorType::Rgb8)
                 .map_err(|e| ExportError::Encode(e.to_string()))
@@ -331,8 +331,8 @@ fn write_still<W: std::io::Write + std::io::Seek>(
             let px = cx.pixels(img, comp, channels, w, h);
             let (data, ct) = match channels {
                 Channels::Rgba => (px, ExtendedColorType::Rgba8),
-                Channels::Alpha => (px.chunks_exact(4).map(|p| p[0]).collect(), ExtendedColorType::L8),
-                Channels::Rgb => (px.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect(), ExtendedColorType::Rgb8),
+                Channels::Alpha => (px.as_chunks::<4>().0.iter().map(|p| p[0]).collect(), ExtendedColorType::L8),
+                Channels::Rgb => (px.as_chunks::<4>().0.iter().flat_map(|p| [p[0], p[1], p[2]]).collect(), ExtendedColorType::Rgb8),
             };
             if fmt == OutputFormat::PngSequence {
                 image::codecs::png::PngEncoder::new(file).write_image(&data, w, h, ct).map_err(|e| ExportError::Encode(e.to_string()))

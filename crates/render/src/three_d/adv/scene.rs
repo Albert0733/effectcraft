@@ -326,7 +326,7 @@ impl Builder {
         }
         // Mirroring transforms reverse the winding.
         let flip = flip_count * 2 > p.positions.len();
-        for t in p.indices.chunks_exact(3) {
+        for t in p.indices.as_chunks::<3>().0 {
             let (a, b, c) = (t[0] + base, t[1] + base, t[2] + base);
             if flip {
                 self.s.indices.extend([a, c, b])
@@ -340,7 +340,7 @@ impl Builder {
 
     /// Opaque triangles first, then transparent ones back to front.
     fn sort_triangles(&mut self) {
-        let tris: Vec<[u32; 3]> = self.s.indices.chunks_exact(3).map(|t| [t[0], t[1], t[2]]).collect();
+        let tris: Vec<[u32; 3]> = self.s.indices.as_chunks::<3>().0.iter().map(|t| [t[0], t[1], t[2]]).collect();
         let mut order: Vec<usize> = (0..tris.len()).collect();
         order.sort_by(|&a, &b| {
             let (ta, za) = self.tri_depth[a];

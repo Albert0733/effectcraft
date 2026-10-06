@@ -482,7 +482,7 @@ fn wav_and_aiff_audio_only() {
         } else {
             // AIFF: big-endian samples after the SSND chunk's offset/block size.
             let at = bytes.windows(4).position(|w| w == b"SSND").expect("SSND") + 16;
-            let left = bytes[at..].chunks_exact(4).skip(14_400).take(24_000).map(|c| i16::from_be_bytes([c[0], c[1]]) as f32 / 32767.0);
+            let left = bytes[at..].as_chunks::<4>().0.iter().skip(14_400).take(24_000).map(|c| i16::from_be_bytes([c[0], c[1]]) as f32 / 32767.0);
             rms(left)
         };
         assert!((l - 0.3536).abs() < 0.01, "{name}: left RMS {l}");

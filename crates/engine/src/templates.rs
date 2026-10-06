@@ -716,15 +716,14 @@ fn footage_dir(s: &Session, name: &str, footage_dir: Option<&str>, project_path:
     }
     let safe: String = name.chars().map(|c| if c.is_alphanumeric() || " -_()".contains(c) { c } else { '_' }).collect();
     let safe = if safe.trim().is_empty() { "Template".to_string() } else { safe.trim().to_string() };
-    let base = match s.config.as_ref().and_then(|c| c.dir()) {
-        Some(d) => d.join(FOOTAGE_DIR),
-        None => PathBuf::from(format!("/{FOOTAGE_DIR}")),
-    };
+    let base = s.config.as_ref().and_then(|c| c.dir()).map(|d| d.join(FOOTAGE_DIR));
     // A fresh folder per created project.
     let mut k = 1;
     loop {
-        let d = base.join(if k == 1 { safe.clone() } else { format!("{safe} {k}") });
-        let ds = d.to_string_lossy().into_owned();
+        let folder = if k == 1 { safe.clone() } else { format!("{safe} {k}") };
+        // Virtual storage keys use '/' independently of the host OS. Native settings
+        // folders retain their platform path semantics.
+        let ds = base.as_ref().map(|d| d.join(&folder).to_string_lossy().into_owned()).unwrap_or_else(|| format!("/{FOOTAGE_DIR}/{folder}"));
         if !s.services.exists(&ds) || k > 999 {
             return ds;
         }
@@ -955,7 +954,7 @@ mod tests {
             assert!(t.width > 0 && t.duration > 0.0, "{t:?}");
             let th = decode_thumb(&thumbnail(&s, &t.id).unwrap()).unwrap();
             // Not a blank frame: some variety in the pixels.
-            let distinct: std::collections::BTreeSet<[u8; 3]> = th.chunks_exact(3).map(|c| [c[0] / 16, c[1] / 16, c[2] / 16]).collect();
+            let distinct: std::collections::BTreeSet<[u8; 3]> = th.as_chunks::<3>().0.iter().map(|c| [c[0] / 16, c[1] / 16, c[2] / 16]).collect();
             assert!(distinct.len() > 3, "{}: thumbnail looks blank", t.id);
         }
         let sq = l.iter().find(|t| t.id == "social-square").unwrap();
@@ -1121,7 +1120,7 @@ mod tests {
         let dir = root.join("work").join("Promo Footage");
         let fp = footage_paths(&s);
         let get = |n: &str| fp.iter().find(|f| f.0 == n).unwrap().clone();
-        assert_eq!(get("Still").1, dir.join("still.png").to_string_lossy());
+        assert_eq!(std::path::Path::new(&get("Still").1), dir.join("still.png"));
         assert_eq!(std::fs::read(dir.join("still.png")).unwrap(), vec![1u8; 1000]);
         let shot = get("Shot");
         assert_eq!(shot.2.len(), 3);

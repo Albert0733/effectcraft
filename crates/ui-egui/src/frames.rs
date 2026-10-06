@@ -396,6 +396,15 @@ pub fn to_color_image(img: &effectcraft_engine::render::Image) -> egui::ColorIma
 }
 
 impl Frames {
+    /// Actual native frame-worker capacity, including the OS fallback pool.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn parallelism(&self) -> usize {
+        self.pool.as_ref().map_or_else(rayon::current_num_threads, rayon::ThreadPool::current_num_threads)
+    }
+    #[cfg(target_arch = "wasm32")]
+    pub fn parallelism(&self) -> usize {
+        self.remote_slots().max(1)
+    }
     pub fn set_context(&mut self, ctx: &egui::Context) {
         if self.ctx.is_none() {
             self.ctx = Some(ctx.clone());
@@ -736,18 +745,21 @@ impl Worker {
         let t0 = web_time::Instant::now();
         let disk = job.src.disk.as_ref().map(|dc| (dc.clone(), frame_disk_key(content_keys, &job.src.project, &job.key, opts_hash(&job.opts))));
         let from_disk = disk.as_ref().and_then(|(dc, k)| dc.get_frame(*k));
+        let disk_hit = from_disk.is_some();
         let ci = match from_disk {
             Some(f) => FrameImage::Cpu(Arc::new(egui::ColorImage::from_rgba_premultiplied([f.width as usize, f.height as usize], &f.rgba))),
-            None => {
-                let ci = self.render_job(&job);
-                if let (Some((dc, k)), FrameImage::Cpu(img)) = (&disk, &ci) {
-                    let rgba: Vec<u8> = img.pixels.iter().flat_map(|c| c.to_array()).collect();
-                    dc.put_frame(*k, img.size[0] as u32, img.size[1] as u32, &rgba);
-                }
-                ci
-            }
+            None => self.render_job(&job),
         };
-        self.finish(&job, ci, t0);
+        // Publish the shared frame and wake the viewer before optional RGBA conversion
+        // and compression. Persistence still runs on this worker, using the same snapshot.
+        self.finish(&job, ci.clone(), t0);
+        if !disk_hit && let (Some((dc, k)), FrameImage::Cpu(img)) = (&disk, &ci) {
+            let rgba: Vec<u8> = img.pixels.iter().flat_map(|c| c.to_array()).collect();
+            dc.put_frame(*k, img.size[0] as u32, img.size[1] as u32, &rgba);
+            if let Some(ctx) = &self.ctx {
+                ctx.request_repaint();
+            }
+        }
         true
     }
 

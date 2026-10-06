@@ -255,6 +255,7 @@ fn lift_and_extract_work_area() {
 
 #[test]
 fn label_group_purge_and_edit_original() {
+    crate::tests_roto::hold_roto_cache_test_lock();
     let mut s = comp();
     let a = solid(&mut s, "#ff0000");
     let b = solid(&mut s, "#00ff00");

@@ -38,7 +38,7 @@ fn ffmpeg_decode(exe: &str, codec: &str, file: &[u8], channels: usize, tag: &str
     // timestamping, not the bitstream, so it is the one message tolerated.
     let errors: Vec<&str> = stderr.lines().filter(|l| !l.trim().is_empty() && !l.contains("non monotonically increasing dts to muxer")).collect();
     assert!(errors.is_empty(), "ffmpeg ({codec}) reported errors: {errors:?}");
-    Some(out.stdout.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect())
+    Some(out.stdout.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect())
 }
 
 #[test]

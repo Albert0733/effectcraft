@@ -37,7 +37,7 @@ fn thumb(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, budget: &mut b
     }
     *budget = false;
     let tex = templates::thumbnail(&app.session, id).ok().and_then(|t| templates::decode_thumb(&t)).map(|rgb| {
-        let px = rgb.chunks_exact(3).map(|c| Color32::from_rgb(c[0], c[1], c[2])).collect();
+        let px = rgb.as_chunks::<3>().0.iter().map(|c| Color32::from_rgb(c[0], c[1], c[2])).collect();
         ctx.load_texture(format!("template-thumb-{id}"), egui::ColorImage::new([THUMB_W, THUMB_H], px), egui::TextureOptions::LINEAR)
     });
     app.template_thumbs.insert(id.to_string(), tex.clone());

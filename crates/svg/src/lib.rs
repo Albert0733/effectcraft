@@ -966,7 +966,7 @@ impl<'a, 'i> Parser<'a, 'i> {
                 }
                 let mut p = BezPath::new();
                 p.move_to((nums[0], nums[1]));
-                for c in nums[2..].chunks_exact(2) {
+                for c in nums[2..].as_chunks::<2>().0 {
                     p.line_to((c[0], c[1]));
                 }
                 if n.tag_name().name() == "polygon" {

@@ -169,7 +169,7 @@ impl Primitive {
     /// Smooth vertex normals from the triangles (area weighted), for meshes without normals.
     pub fn compute_normals(&mut self) {
         let mut n = vec![[0.0f32; 3]; self.positions.len()];
-        for t in self.indices.chunks_exact(3) {
+        for t in self.indices.as_chunks::<3>().0 {
             let (a, b, c) = (self.positions[t[0] as usize], self.positions[t[1] as usize], self.positions[t[2] as usize]);
             let f = cross(sub(b, a), sub(c, a));
             for &i in t {
@@ -185,7 +185,7 @@ impl Primitive {
     /// primitive has none).
     pub fn flat_normals(&mut self) {
         let mut p = Primitive { material: self.material, ..Default::default() };
-        for t in self.indices.chunks_exact(3) {
+        for t in self.indices.as_chunks::<3>().0 {
             let (a, b, c) = (self.positions[t[0] as usize], self.positions[t[1] as usize], self.positions[t[2] as usize]);
             let f = normalize(cross(sub(b, a), sub(c, a))).unwrap_or([0.0, 0.0, 1.0]);
             for &i in t {
@@ -213,7 +213,7 @@ impl Primitive {
         }
         let mut tan = vec![[0.0f32; 3]; n];
         let mut bit = vec![[0.0f32; 3]; n];
-        for t in self.indices.chunks_exact(3) {
+        for t in self.indices.as_chunks::<3>().0 {
             let (i0, i1, i2) = (t[0] as usize, t[1] as usize, t[2] as usize);
             let (p0, p1, p2) = (self.positions[i0], self.positions[i1], self.positions[i2]);
             let (w0, w1, w2) = (self.uvs[i0], self.uvs[i1], self.uvs[i2]);

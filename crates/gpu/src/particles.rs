@@ -233,8 +233,10 @@ fn sim_key(req: &SimRequest) -> u128 {
 
 /// Live particles of a state buffer's bytes.
 fn parse(bytes: &[u8]) -> Vec<SimParticle> {
-    let f: Vec<f32> = bytes.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
-    f.chunks_exact(12)
+    let f: Vec<f32> = bytes.as_chunks::<4>().0.iter().map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+    f.as_chunks::<12>()
+        .0
+        .iter()
         .enumerate()
         .filter(|(_, s)| s[9] != 0.0)
         .map(|(id, s)| SimParticle { p: [s[0], s[1], s[2]], v: [s[4], s[5], s[6]], age: s[3], life: s[7], rnd: s[8], id: id as u32 })

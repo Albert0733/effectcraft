@@ -88,7 +88,7 @@ fn delete_and_backspace_remove_project_items_and_undo() {
 fn project_multi_selection_deletes_together_and_undoes_once() {
     let (mut h, items, keep) = harness();
     for (i, item) in items.iter().enumerate() {
-        click(&mut h, &format!("project.item.{}.name", item.0), if i == 0 { Modifiers::NONE } else { Modifiers::SHIFT });
+        click(&mut h, &format!("project.item.{}.name", item.0), if i == 0 { Modifiers::NONE } else { Modifiers::COMMAND });
     }
     assert_eq!(h.state().session.state.project_selection, items);
     let project = h.state().session.project.clone();

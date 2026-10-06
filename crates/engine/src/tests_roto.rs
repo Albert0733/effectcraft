@@ -10,6 +10,21 @@ use serde_json::{Value, json};
 use crate::Session;
 use crate::tests_track::{H, W, frame_time, setup};
 
+/// Keep cache/model mutation tests from clearing segmentations under another fixture.
+/// Libtest runs each test on its own thread; the guard lives until that thread exits.
+pub(crate) fn hold_roto_cache_test_lock() {
+    use std::cell::RefCell;
+    use std::sync::{Mutex, MutexGuard, PoisonError};
+    static LOCK: Mutex<()> = Mutex::new(());
+    thread_local! {
+        static HELD: RefCell<Option<MutexGuard<'static, ()>>> = const { RefCell::new(None) };
+    }
+    HELD.with(|h| {
+        if h.borrow().is_none() {
+            *h.borrow_mut() = Some(LOCK.lock().unwrap_or_else(PoisonError::into_inner));
+        }
+    });
+}
 const R: f64 = 40.0;
 
 fn noise(x: f64, y: f64, seed: u32) -> f64 {
@@ -74,6 +89,7 @@ fn line(a: [f64; 2], b: [f64; 2]) -> Value {
 /// frame 0. `name`: the footage file name (segmentations are cached process-wide by content key,
 /// which includes the footage's identity: different clips need different names).
 fn painted(path: fn(u32) -> [f64; 2], name: &str) -> (Session, LayerId, u64) {
+    hold_roto_cache_test_lock();
     let (mut s, clip, solid) = setup(move |f| draw(path(f)));
     let cid = s.active_comp_id().unwrap();
     s.edit("remove solid", None, |p, _| {

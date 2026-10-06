@@ -509,6 +509,12 @@ impl GpuContext {
     pub async fn request() -> Result<GpuContext, String> {
         #[allow(unused_mut)]
         let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            // Match eframe's backend override so CLI and headless acceptance tests
+            // exercise the backend requested for the native viewer.
+            desc.backends = wgpu::Backends::from_env().unwrap_or(desc.backends);
+        }
         #[cfg(target_arch = "wasm32")]
         {
             desc.backends = wgpu::Backends::BROWSER_WEBGPU;

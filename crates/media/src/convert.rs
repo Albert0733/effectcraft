@@ -60,7 +60,7 @@ pub(crate) fn frame_to_image_in(f: &VideoFrame, op: AlphaOp, mut buf: Vec<Px>) -
         PixelData::Rgba8(d) => {
             img.data.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
                 let src = &d[y * w * 4..(y + 1) * w * 4];
-                for (o, s) in row.iter_mut().zip(src.chunks_exact(4)) {
+                for (o, s) in row.iter_mut().zip(src.as_chunks::<4>().0.iter()) {
                     *o = op.apply([U8[s[0] as usize], U8[s[1] as usize], U8[s[2] as usize]], U8[s[3] as usize]);
                 }
             });
@@ -69,7 +69,7 @@ pub(crate) fn frame_to_image_in(f: &VideoFrame, op: AlphaOp, mut buf: Vec<Px>) -
             // linear premultiplied → encoded premultiplied
             img.data.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
                 let src = &d[y * w * 4..(y + 1) * w * 4];
-                for (o, s) in row.iter_mut().zip(src.chunks_exact(4)) {
+                for (o, s) in row.iter_mut().zip(src.as_chunks::<4>().0.iter()) {
                     let a = s[3];
                     let inv = if a > 0.0 { 1.0 / a } else { 0.0 };
                     let c = [encode(s[0] * inv) * a, encode(s[1] * inv) * a, encode(s[2] * inv) * a];

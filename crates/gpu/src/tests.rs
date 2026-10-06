@@ -581,6 +581,30 @@ fn registry_badges_match_the_gpu_implementation() {
 }
 
 #[test]
+fn quantization_preserves_cpu_levels_and_half_step_neighbors() {
+    let Some(g) = gpu() else { return };
+    for levels in [255.0_f32, 32768.0] {
+        let mut values = vec![0.0, 1.0];
+        for i in 0..255 {
+            let half = (i as f32 + 0.5) / levels;
+            values.extend([half.next_down(), half, half.next_up()]);
+        }
+        let mut cpu = Image::new(values.len() as u32, 1);
+        for (p, v) in cpu.data.iter_mut().zip(values) {
+            *p = [v, v, v, 1.0];
+        }
+        let input = g.ctx.upload_image(&cpu).unwrap();
+        effectcraft_render::color::quantize(&mut cpu, levels);
+        let mut e = crate::context::Enc::new(&g.ctx);
+        let out = crate::ops::quantize(&mut e, &input, levels);
+        let bytes = e.read_texture(&out.texture, out.width, out.height, 16).unwrap();
+        for (i, (want, got)) in cpu.data.iter().flatten().zip(bytes.as_chunks::<4>().0).enumerate() {
+            let actual = f32::from_le_bytes(*got);
+            assert_eq!(actual, *want, "levels {levels}, component {i}");
+        }
+    }
+}
+#[test]
 fn backend_selection_and_display_frames() {
     let Some(g) = gpu() else { return };
     let s = blend_scene(BitDepth::Bpc8, BlendMode::Screen);
@@ -600,7 +624,7 @@ fn backend_selection_and_display_frames() {
     let f = g.render_display(&r, s.cid, Tick::ZERO).expect("display frame");
     let bytes = g.read_display(&f).expect("readback");
     let cpu = Renderer::new(&s.p, &Pattern, opts()).comp_frame_cpu(s.cid, Tick::ZERO);
-    for (p, q) in cpu.data.iter().zip(bytes.chunks_exact(4)) {
+    for (p, q) in cpu.data.iter().zip(bytes.as_chunks::<4>().0.iter()) {
         let a = p[3].clamp(0.0, 1.0);
         let want = [p[0].clamp(0.0, a), p[1].clamp(0.0, a), p[2].clamp(0.0, a), a].map(|v| (v * 255.0 + 0.5) as u8);
         for k in 0..4 {

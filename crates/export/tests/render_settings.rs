@@ -224,7 +224,7 @@ fn render_logs() {
     let r = r.unwrap();
     let (path, text) = log_of(&files).expect("log");
     assert_eq!(r.log.as_deref(), Some(path.as_str()));
-    assert_eq!(path, "/l/b_RenderLog.txt");
+    assert_eq!(std::path::Path::new(&path), std::path::Path::new("/l/b_RenderLog.txt"));
     assert!(text.contains("Item: #1 Comp") && text.contains("Result: Done (5 frames"), "{text}");
     assert!(text.contains("Field Render: Upper Field First") && text.contains("Template: DV-ish") && text.contains("Format: PNG Sequence"), "{text}");
     assert_eq!(text.lines().filter(|l| l.contains("rendered in")).count(), 5, "{text}");
@@ -239,7 +239,7 @@ fn render_logs() {
     let (r, files) = run_with(&p, ItemId(424_242), &s, &gif, "/l/d.gif", JobOptions::default(), false);
     assert!(r.is_err());
     let (path, text) = log_of(&files).expect("error log");
-    assert_eq!(path, "/l/d_RenderLog.txt");
+    assert_eq!(std::path::Path::new(&path), std::path::Path::new("/l/d_RenderLog.txt"));
     assert!(text.contains("Result: Failed") && text.contains("Error: composition not found") && !text.contains("Render Settings:"), "{text}");
     // A user stop is not an error: no log.
     let (r, files) = run_with(&p, cid, &s, &gif, "/l/e.gif", JobOptions::default(), true);
@@ -255,7 +255,7 @@ struct Quota {
 
 impl StorageQuota for Quota {
     fn has_room(&self, path: &str, bytes: u64) -> bool {
-        if !path.starts_with("/primary/") {
+        if !std::path::Path::new(path).starts_with("/primary") {
             return true;
         }
         let mut u = self.used.lock().unwrap();
@@ -278,7 +278,14 @@ fn storage_overflow_moves_files_to_the_overflow_folder() {
     let r = r.unwrap();
     assert_eq!(r.overflow.len(), 10, "{:?}", r.overflow);
     let f = files.lock().unwrap();
-    assert_eq!(f.iter().filter(|(p, _)| p.starts_with("/overflow/seq_") && p.ends_with(".png")).count(), 10);
+    assert_eq!(
+        f.iter()
+            .filter(|(p, _)| std::path::Path::new(p).parent() == Some(std::path::Path::new("/overflow"))
+                && std::path::Path::new(p).file_name().is_some_and(|n| n.to_string_lossy().starts_with("seq_"))
+                && p.ends_with(".png"))
+            .count(),
+        10
+    );
     let log = f.iter().find(|(p, _)| p.ends_with("_RenderLog.txt")).map(|(_, d)| String::from_utf8_lossy(d).to_string()).unwrap();
     assert!(log.contains("Storage overflow: 10 file(s)"), "{log}");
     drop(f);
@@ -288,7 +295,7 @@ fn storage_overflow_moves_files_to_the_overflow_folder() {
     let opts = JobOptions { storage: Some(&q), overflow: vec!["/overflow".into()], ..Default::default() };
     let (r, files) = run_with(&p, cid, &off, &om, "/primary/seq_[#####].png", opts, false);
     assert!(r.unwrap().overflow.is_empty());
-    assert!(files.lock().unwrap().iter().all(|(p, _)| p.starts_with("/primary/")));
+    assert!(files.lock().unwrap().iter().all(|(p, _)| std::path::Path::new(p).starts_with("/primary")));
 }
 
 #[test]

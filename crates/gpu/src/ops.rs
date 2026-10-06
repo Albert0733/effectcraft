@@ -97,7 +97,7 @@ pub fn warp_q(
     p.f[0] = r[0];
     p.f[1] = r[1];
     p.f[2] = r[2];
-    p.f[3] = [opacity, accumulate.unwrap_or(1.0), levels.unwrap_or(0.0), 0.0];
+    p.f[3] = [opacity, accumulate.unwrap_or(1.0), levels.unwrap_or(0.0), levels.map_or(0.0, |v| 1.0 / v)];
     p.f[4] = [x0 as f32, y0 as f32, x1 as f32, y1 as f32];
     let mut out = e.scratch(dst.width, dst.height);
     e.pixels("warp_blend", &p, &img, Some(dst), &out, None);
@@ -110,7 +110,7 @@ pub fn warp_q(
 pub fn blend_full(e: &mut Enc, dst: &GpuImage, src: &GpuImage, mode: BlendMode, opacity: f32, seed: u32, levels: Option<f32>) -> GpuImage {
     let mut p = Params::default();
     p.u[0] = [mode_id(mode), 0, seed, 0];
-    p.f[0] = [opacity, levels.unwrap_or(0.0), 0.0, 0.0];
+    p.f[0] = [opacity, levels.unwrap_or(0.0), levels.map_or(0.0, |v| 1.0 / v), 0.0];
     let mut out = e.scratch(dst.width, dst.height);
     e.pixels("blend_full", &p, src, Some(dst), &out, None);
     out.levels = levels;
@@ -174,6 +174,7 @@ pub fn quantize(e: &mut Enc, img: &GpuImage, levels: f32) -> GpuImage {
     }
     let mut p = Params::default();
     p.f[0][0] = levels;
+    p.f[0][1] = 1.0 / levels;
     let mut out = e.scratch(img.width, img.height);
     e.pixels("quantize", &p, img, None, &out, None);
     out.levels = Some(levels);

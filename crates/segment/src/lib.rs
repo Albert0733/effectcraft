@@ -196,9 +196,9 @@ pub mod sha256 {
             tail.push(0);
         }
         tail.extend_from_slice(&bits.to_be_bytes());
-        for block in data[..data.len() - data.len() % 64].chunks_exact(64).chain(tail.chunks_exact(64)) {
+        for block in data[..data.len() - data.len() % 64].as_chunks::<64>().0.iter().chain(tail.as_chunks::<64>().0.iter()) {
             let mut w = [0u32; 64];
-            for (i, c) in block.chunks_exact(4).enumerate() {
+            for (i, c) in block.as_chunks::<4>().0.iter().enumerate() {
                 w[i] = u32::from_be_bytes([c[0], c[1], c[2], c[3]]);
             }
             for i in 16..64 {

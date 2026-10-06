@@ -145,12 +145,8 @@ fn segment_ease(keys: &[Keyframe], i: usize, spatial: bool) -> (Vec<f64>, Vec<f6
         };
         let lin = Ease { speed: dv / dur, influence: 1.0 / 3.0 };
         let (eo, ei) = (eo.unwrap_or(lin), ei.unwrap_or(lin));
-        let (mut i0, mut i1) = (eo.influence.clamp(0.0, 1.0), ei.influence.clamp(0.0, 1.0));
-        if i0 + i1 > 1.0 {
-            let k = 1.0 / (i0 + i1);
-            i0 *= k;
-            i1 *= k;
-        }
+        // Crossing time handles must retain the independently specified influences.
+        let (i0, i1) = (eo.influence.clamp(0.0, 1.0), ei.influence.clamp(0.0, 1.0));
         let (y0, y1) = if dv.abs() > 1e-12 { (eo.speed * i0 * dur / dv, 1.0 - ei.speed * i1 * dur / dv) } else { (0.0, 1.0) };
         ox.push(r6(i0));
         oy.push(r6(y0));

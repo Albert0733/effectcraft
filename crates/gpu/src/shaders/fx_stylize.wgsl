@@ -453,10 +453,15 @@ fn fxs_warp(@builtin(global_invocation_id) gid: vec3<u32>) {
                 u = bu + (u - bu) * persp;
                 v = bv + (v - bv) * persp;
             }
-            if (u < -1e-9 || u > 1.0 + 1e-9 || v < -1e-9 || v > 1.0 + 1e-9) {
+            // The CPU's 1e-9 edge allowance disappears in f32 at 1.0. Allow eight
+            // f32 ULPs for the inverse solve so exact quad-edge pixels remain covered.
+            let edge = 0.00000095367431640625;
+            if (u < -edge || u > 1.0 + edge || v < -edge || v > 1.0 + edge) {
                 textureStore(out, p, vec4<f32>(0.0));
                 return;
             }
+            u = clamp(u, 0.0, 1.0);
+            v = clamp(v, 0.0, 1.0);
             let rc = P.f[5];
             let lx = rc.x + u * rc.z;
             let ly = rc.y + v * rc.w;

@@ -114,7 +114,7 @@ impl Tokens {
             accent_hover: Color32::from_rgb(0x4a, 0xa0, 0xf5),
             text: Color32::from_rgb(0xc8, 0xc8, 0xc8),
             text_dim: Color32::from_rgb(0x9a, 0x9a, 0x9a),
-            text_faint: Color32::from_rgb(0x66, 0x66, 0x66),
+            text_faint: Color32::from_rgb(0x8c, 0x8c, 0x8c),
             icon: Color32::from_rgb(0xb4, 0xb4, 0xb4),
             icon_active: Color32::from_rgb(0xf0, 0xf0, 0xf0),
             hover: Color32::from_rgb(0x30, 0x30, 0x30),
@@ -170,7 +170,9 @@ impl Tokens {
                 tab_text_active: Color32::from_rgb(0x14, 0x14, 0x14),
                 text: Color32::from_rgb(0x22, 0x22, 0x22),
                 text_dim: Color32::from_rgb(0x5a, 0x5a, 0x5a),
-                text_faint: Color32::from_rgb(0x8c, 0x8c, 0x8c),
+                text_faint: Color32::from_rgb(0x68, 0x68, 0x68),
+                hot_text: Color32::from_rgb(0x00, 0x5a, 0x9c),
+                timecode: Color32::from_rgb(0x00, 0x5a, 0x9c),
                 icon: Color32::from_rgb(0x3c, 0x3c, 0x3c),
                 icon_active: Color32::from_rgb(0x10, 0x10, 0x10),
                 hover: Color32::from_rgb(0xd0, 0xd0, 0xd0),
@@ -307,11 +309,11 @@ pub fn apply_visuals(ctx: &egui::Context, t: &Tokens) {
     v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, t.separator);
     v.widgets.noninteractive.fg_stroke = Stroke::new(1.0, t.text);
     v.widgets.inactive.bg_fill = t.field_bg;
-    v.widgets.inactive.weak_bg_fill = Color32::from_rgb(0x2e, 0x2e, 0x2e);
+    v.widgets.inactive.weak_bg_fill = t.field_bg;
     v.widgets.inactive.bg_stroke = Stroke::new(1.0, t.field_border);
     v.widgets.inactive.fg_stroke = Stroke::new(1.0, t.text);
     v.widgets.hovered.bg_fill = t.hover;
-    v.widgets.hovered.weak_bg_fill = Color32::from_rgb(0x3a, 0x3a, 0x3a);
+    v.widgets.hovered.weak_bg_fill = t.hover;
     v.widgets.hovered.bg_stroke = Stroke::new(1.0, t.field_border);
     v.widgets.hovered.fg_stroke = Stroke::new(1.0, t.tab_text_active);
     v.widgets.active.bg_fill = t.pressed;

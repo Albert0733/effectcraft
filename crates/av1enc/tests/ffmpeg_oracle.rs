@@ -75,7 +75,7 @@ fn check(name: &str, cfg: EncoderConfig, pics: &[Pic]) -> Vec<u32> {
     let raw = std::fs::read(&output).expect("decoded yuv");
     let _ = std::fs::remove_dir_all(&dir);
     let samples: Vec<u16> =
-        if bd == 8 { raw.iter().map(|&b| b as u16).collect() } else { raw.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect() };
+        if bd == 8 { raw.iter().map(|&b| b as u16).collect() } else { raw.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes([c[0], c[1]])).collect() };
     let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
     let fsize = w * h + 2 * cw * ch;
     assert_eq!(samples.len(), fsize * pics.len(), "{name}: decoded frame count");

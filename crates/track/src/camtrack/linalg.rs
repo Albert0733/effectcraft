@@ -301,9 +301,8 @@ pub fn sym_eigen(a: &[f64], n: usize) -> (Vec<f64>, Vec<f64>) {
 /// Dot product, four lanes (lets the compiler vectorise).
 fn dot_n(a: &[f64], b: &[f64]) -> f64 {
     let mut acc = [0.0f64; 4];
-    let (ca, cb) = (a.chunks_exact(4), b.chunks_exact(4));
-    let (ra, rb) = (ca.remainder(), cb.remainder());
-    for (x, y) in ca.zip(cb) {
+    let ((ca, ra), (cb, rb)) = (a.as_chunks::<4>(), b.as_chunks::<4>());
+    for (x, y) in ca.iter().zip(cb) {
         for k in 0..4 {
             acc[k] += x[k] * y[k];
         }

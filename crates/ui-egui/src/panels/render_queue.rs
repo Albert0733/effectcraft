@@ -406,6 +406,26 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let rendering = app.session.is_rendering();
     let available = app.session.exporter.as_ref().map(|e| e.formats()).unwrap_or_default();
     let mut actions: Vec<(&'static str, Value)> = Vec::new();
+    app.auto.add("renderQueue.drop", rect, "Drop compositions to queue");
+    if !rendering
+        && let Some(crate::panels::DragPayload::Item(id)) = egui::DragAndDrop::payload::<crate::panels::DragPayload>(ui.ctx()).as_deref()
+        && app.session.project.comp(effectcraft_engine::project::ItemId(*id)).is_some()
+        && ui.input(|i| i.pointer.hover_pos()).is_some_and(|pos| rect.contains(pos))
+    {
+        let ids: Vec<u64> = if app.session.state.project_selection.contains(&effectcraft_engine::project::ItemId(*id)) {
+            app.session.state.project_selection.iter().filter(|i| app.session.project.comp(**i).is_some()).map(|i| i.0).collect()
+        } else {
+            vec![*id]
+        };
+        if ui.input(|i| i.pointer.any_released()) {
+            for comp in ids {
+                actions.push(("renderQueue.add", json!({"comp": comp})));
+            }
+            egui::DragAndDrop::clear_payload(ui.ctx());
+        } else {
+            p.rect_stroke(rect.shrink(2.0), 0.0, Stroke::new(2.0, t.accent), StrokeKind::Inside);
+        }
+    }
     let mut forms: Vec<(RenderQueueItem, String)> = Vec::new();
     let state_id = egui::Id::new("rq-ui");
     let (mut open, mut selected): (Vec<u64>, Option<u64>) = ui.data(|d| d.get_temp(state_id).unwrap_or_default());
@@ -723,6 +743,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         && editing.is_none()
         && !rendering
         && let Some(id) = selected
+        && app.dialog.is_none()
         && ui.input(|i| i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace))
         && !ui.ctx().egui_wants_keyboard_input()
     {

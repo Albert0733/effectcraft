@@ -236,7 +236,7 @@ fn mix_into(
             continue;
         }
         let buf = env.layer_audio(l, s0 + a as i64, b - a);
-        for (i, f) in buf.chunks_exact(2).enumerate() {
+        for (i, f) in buf.as_chunks::<2>().0.iter().enumerate() {
             out[(a + i) * 2] += f[0] * ll;
             out[(a + i) * 2 + 1] += f[1] * lr;
         }
@@ -257,7 +257,7 @@ pub fn peak_summary(samples: &[f32], bin: usize) -> Vec<[f32; 4]> {
         .chunks(bin * 2)
         .map(|c| {
             let mut s = [f32::MAX, f32::MIN, f32::MAX, f32::MIN];
-            for f in c.chunks_exact(2) {
+            for f in c.as_chunks::<2>().0 {
                 s[0] = s[0].min(f[0]);
                 s[1] = s[1].max(f[0]);
                 s[2] = s[2].min(f[1]);

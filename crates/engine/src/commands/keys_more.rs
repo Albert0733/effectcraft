@@ -58,7 +58,7 @@ pub(crate) fn label_keys(s: &mut Session, p: &Value) -> Result<Value> {
 pub fn amplitudes(buf: &[f32]) -> (f64, f64, f64) {
     let n = (buf.len() / 2).max(1) as f64;
     let (mut l, mut r) = (0.0f64, 0.0f64);
-    for c in buf.chunks_exact(2) {
+    for c in buf.as_chunks::<2>().0 {
         l += c[0].abs() as f64;
         r += c[1].abs() as f64;
     }

@@ -46,15 +46,15 @@ fn scene(collapse: bool, flatten: bool) -> (Project, ItemId) {
         set(l, "transform/scale", Value::Vec3([150.0, 150.0, 100.0]));
         set(l, "transform/rotation", Value::Scalar(20.0));
     };
-    let cid;
-    if flatten {
+
+    let cid = if flatten {
         let mut null = build::layer(&mut p, &outer, "Null", LayerSource::Null, (100, 100), None);
         xf(&mut null);
         a.parent = Some(null.id);
         b.parent = Some(null.id);
         let mut c = outer.clone();
         c.layers = vec![null, b, a, bg];
-        cid = p.add_item("Outer", Label::Sandstone, None, ItemKind::Comp(c.into()));
+        p.add_item("Outer", Label::Sandstone, None, ItemKind::Comp(c.into()))
     } else {
         let mut inner = inner;
         inner.layers = vec![b, a];
@@ -64,8 +64,8 @@ fn scene(collapse: bool, flatten: bool) -> (Project, ItemId) {
         pre.switches.collapse = collapse;
         let mut c = outer.clone();
         c.layers = vec![pre, bg];
-        cid = p.add_item("Outer", Label::Sandstone, None, ItemKind::Comp(c.into()));
-    }
+        p.add_item("Outer", Label::Sandstone, None, ItemKind::Comp(c.into()))
+    };
     (p, cid)
 }
 

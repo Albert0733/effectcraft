@@ -191,6 +191,35 @@ fn no_params(p: &Value) -> bool {
 
 /// Execute a UI or engine command by id.
 pub fn invoke(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, params: Value) -> Result<Value, String> {
+    if no_params(&params) && app.ui.focused == PanelKind::Project {
+        match id {
+            "edit.duplicate" => return run_engine(app, ctx, "project.duplicate", json!({})),
+            "edit.selectAll" => {
+                let items: Vec<u64> = crate::panels::project::visible_rows(app)
+                    .into_iter()
+                    .filter(|(id, _)| app.ui.project_search.is_empty() || app.session.project.item(*id).is_some_and(|it| !it.is_folder()))
+                    .map(|(id, _)| id.0)
+                    .collect();
+                return run_engine(app, ctx, "project.select", json!({"items":items}));
+            }
+            "edit.deselectAll" => return run_engine(app, ctx, "project.select", json!({"items":[]})),
+            "edit.cut" | "edit.copy" | "edit.paste" | "edit.copyWithPropertyLinks" | "edit.copyWithRelativePropertyLinks" | "edit.copyExpressionOnly" => {
+                return Err("Project clipboard actions are not supported yet".into());
+            }
+            _ => {}
+        }
+    }
+    // Clear follows panel focus, including the Edit menu and keyboard shortcut.
+    if id == "edit.clear" && params.as_object().is_some_and(|p| p.is_empty()) && app.ui.focused == PanelKind::Project {
+        return run_engine(app, ctx, "project.delete", json!({}));
+    }
+    if id == "edit.clear" && params.as_object().is_some_and(|p| p.is_empty()) && app.ui.focused == PanelKind::RenderQueue {
+        let selected = ctx.data(|d| d.get_temp::<(Vec<u64>, Option<u64>)>(egui::Id::new("rq-ui"))).and_then(|(_, id)| id);
+        return match selected {
+            Some(item) => run_engine(app, ctx, "renderQueue.remove", json!({"item": item})),
+            None => Err("select a Render Queue item first".into()),
+        };
+    }
     let now = ctx.input(|i| i.time);
     // Closing a modified project asks to save it first; the command runs once answered.
     if crate::panels::unsaved::guard(app, id, &params) {
@@ -1121,6 +1150,26 @@ pub(crate) fn entry_checked(app: &EffectcraftApp, e: &MenuEntry) -> Option<bool>
 }
 
 pub(crate) fn entry_enabled(app: &EffectcraftApp, e: &MenuEntry) -> bool {
+    if app.ui.focused == PanelKind::Project {
+        match e.command.as_str() {
+            "edit.duplicate" => {
+                return !app.session.state.project_selection.is_empty()
+                    && app.session.state.project_selection.iter().all(|id| app.session.project.item(*id).is_some_and(|i| !i.is_folder()));
+            }
+            "edit.selectAll" => return !app.session.project.items.is_empty(),
+            "edit.deselectAll" => return !app.session.state.project_selection.is_empty(),
+            "edit.cut" | "edit.copy" | "edit.paste" | "edit.copyWithPropertyLinks" | "edit.copyWithRelativePropertyLinks" | "edit.copyExpressionOnly" => {
+                return false;
+            }
+            _ => {}
+        }
+    }
+    if e.command == "edit.clear" && app.ui.focused == PanelKind::Project {
+        return app.session.is_enabled("project.delete");
+    }
+    if e.command == "edit.clear" && app.ui.focused == PanelKind::RenderQueue {
+        return !app.session.is_rendering() && !app.session.project.render_queue.is_empty();
+    }
     if e.command == "window.panel" {
         return true;
     }
@@ -1258,6 +1307,28 @@ fn mods_match(want: egui::Modifiers, got: egui::Modifiers) -> bool {
 
 /// Dispatch keyboard shortcuts (skipped while typing in a text field).
 pub fn handle_shortcuts(app: &mut EffectcraftApp, ctx: &egui::Context) {
+    // Dialog cancellation owns Escape even when a text field has keyboard focus.
+    if app.dialog.is_some() && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        if crate::panels::shortcut_editor::recording(app) || egui::Popup::is_any_open(ctx) {
+            return;
+        }
+        ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+        if app.dialog == Some(crate::Dialog::LayerStyles) {
+            crate::panels::layer_styles_dialog::finish(app, false);
+        } else {
+            if app.dialog == Some(crate::Dialog::Settings)
+                && let Some(p) = app.dialog_state.prefs_snapshot.take()
+            {
+                app.session.prefs = p;
+                app.session.prefs_changed();
+            }
+            if app.dialog == Some(crate::Dialog::UnsavedChanges) {
+                app.dialog_state.unsaved.command = None;
+            }
+            app.dialog = None;
+        }
+        return;
+    }
     if ctx.egui_wants_keyboard_input() {
         return;
     }
@@ -1314,17 +1385,18 @@ pub fn handle_shortcuts(app: &mut EffectcraftApp, ctx: &egui::Context) {
         // The Project panel has its own selection; a previously selected Timeline layer
         // must not be deleted while the Project panel has focus.
         if matches!(key, egui::Key::Delete | egui::Key::Backspace) && !mods.any() {
-            let command = if app.ui.focused == PanelKind::Project {
-                if app.session.state.project_selection.is_empty() {
-                    continue;
+            if matches!(app.ui.focused, PanelKind::Composition | PanelKind::Viewer(_)) && !app.session.state.camera_points.is_empty() {
+                if let Err(e) = run_engine(app, ctx, "camera.deletePoints", json!({})) {
+                    app.ui.status = e;
                 }
-                "project.delete"
-            } else {
-                "edit.clear"
-            };
-            if let Err(e) = invoke(app, ctx, command, json!({})) {
-                app.ui.status = e;
+                ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, key));
+                continue;
             }
+            // The queue panel consumes the event after its selection state is drawn.
+            if app.ui.focused == PanelKind::RenderQueue {
+                continue;
+            }
+            let _ = invoke(app, ctx, "edit.clear", json!({}));
             continue;
         }
         if let Some((_, _, id, params)) = binds.iter().find(|(m, k, ..)| *k == key && mods_match(*m, mods)) {

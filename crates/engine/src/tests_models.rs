@@ -28,6 +28,7 @@ fn wait_loaded(s: &mut Session, task: Task) {
 
 #[test]
 fn models_are_listed_chosen_and_verified() {
+    crate::tests_roto::hold_roto_cache_test_lock();
     let (mut s, d) = session("list");
     std::fs::create_dir_all(&d).unwrap();
     let bogus = d.join("bogus.bin");

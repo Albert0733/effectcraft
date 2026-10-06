@@ -202,3 +202,26 @@ fn echo_and_posterize_time() {
         }
     }
 }
+
+#[test]
+fn dust_threshold_on_quantized_input() {
+    let Some(g) = crate::tests::gpu() else { return };
+    let spec = effectcraft_effects::find("ec.noise.dustscratches").unwrap();
+    let size = [70.0, 44.0];
+    let mut params =
+        effectcraft_effects::Params { values: spec.params.iter().map(|p| (p.id.to_string(), effectcraft_effects::default_value(p, size))).collect() };
+    params.values.insert("radius".into(), n(3.0));
+    params.values.insert("threshold".into(), n(10.0));
+    let ctx = || effectcraft_effects::EffectCtx { params: &params, time: 0.25, layer_size: size, seed: 11, adjustment: false, env: Default::default() };
+    for seed in 1..32 {
+        let mut img = crate::tests::pattern(seed, 70, 44);
+        effectcraft_render::color::quantize(&mut img, 255.0);
+        let buf = effectcraft_effects::Buf { img, offset: [0.0; 2], scale: 1.0 };
+        let cpu = (spec.render)(&ctx(), buf.clone());
+        let gpu = effectcraft_render::Accelerator::effects(g, &[effectcraft_render::FxStep { spec, ctx: ctx() }], &buf, None).unwrap();
+        for (i, (a, b)) in cpu.img.data.iter().zip(&gpu.img.data).enumerate() {
+            let d = a.iter().zip(b).map(|(x, y)| (x - y).abs()).fold(0.0_f32, f32::max);
+            assert!(d < 1e-6, "seed {seed} pixel {i} input {:?} CPU {a:?} GPU {b:?}", buf.img.data[i]);
+        }
+    }
+}

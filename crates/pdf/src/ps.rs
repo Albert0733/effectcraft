@@ -561,7 +561,9 @@ impl Interp {
             _ => vec![],
         };
         let m = self.gs.ctm;
-        nums.chunks_exact(4)
+        nums.as_chunks::<4>()
+            .0
+            .iter()
             .map(|r| {
                 let mut p = BezPath::new();
                 p.move_to(m * Point::new(r[0], r[1]));
@@ -656,7 +658,7 @@ impl Interp {
                 let items = self.st.split_off(self.st.len() - k);
                 self.st.pop();
                 let d = new_dict();
-                for kv in items.chunks_exact(2) {
+                for kv in items.as_chunks::<2>().0 {
                     d.borrow_mut().insert(kv[0].key(), kv[1].clone());
                 }
                 self.push(V::Dict(d));

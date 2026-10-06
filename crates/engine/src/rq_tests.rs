@@ -69,7 +69,7 @@ fn add_configure_render() {
     assert!(s.execute("renderQueue.setOutputModule", json!({"item": id, "format": "jpeg", "channels": "rgba"})).is_err());
     let r = s.execute("renderQueue.setOutput", json!({"item": id, "path": "/tmp/rq/out.mov"})).unwrap();
     assert_eq!(r["output"]["format"], "ProRes", "Output To with .mov switches to ProRes");
-    assert_eq!(r["outputPath"], "/tmp/rq/out.mov");
+    assert_eq!(std::path::Path::new(r["outputPath"].as_str().unwrap()), std::path::absolute("/tmp/rq/out.mov").unwrap());
     // A second item that fails, a third that is unqueued.
     let b = s.execute("renderQueue.add", json!({"format": "gif", "output": "/tmp/rq/fail.gif"})).unwrap();
     let c = s.execute("renderQueue.add", json!({"output": "/tmp/rq/skip.mp4"})).unwrap();
@@ -77,11 +77,14 @@ fn add_configure_render() {
     assert_eq!(s.project.render_queue[2].status.label(), "Unqueued");
     let r = s.execute("renderQueue.render", json!({})).unwrap();
     assert_eq!(r["items"].as_array().unwrap().len(), 2);
-    assert_eq!(*ex.log.lock().unwrap(), vec!["/tmp/rq/out.mov".to_string(), "/tmp/rq/fail.gif".to_string()]);
+    assert_eq!(
+        ex.log.lock().unwrap().iter().map(std::path::PathBuf::from).collect::<Vec<_>>(),
+        [std::path::absolute("/tmp/rq/out.mov").unwrap(), std::path::absolute("/tmp/rq/fail.gif").unwrap()]
+    );
     let q = &s.project.render_queue;
     assert_eq!(q[0].status.label(), "Done");
     assert!(q[0].started.is_some() && q[0].render_time.is_some());
-    assert_eq!(q[0].last_output.as_deref(), Some("/tmp/rq/out.mov"));
+    assert_eq!(std::path::Path::new(q[0].last_output.as_deref().unwrap()), std::path::absolute("/tmp/rq/out.mov").unwrap());
     assert_eq!(q[1].status, RenderStatus::Failed("boom".into()));
     assert_eq!(q[2].status.label(), "Unqueued");
     assert!(s.drain_events().iter().any(|e| matches!(e, Event::Toast { error: true, .. })));

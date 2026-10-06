@@ -352,7 +352,7 @@ fn ffmpeg_oracle_decodes_ogg_opus() {
             .expect("run ffmpeg");
         let _ = std::fs::remove_file(&path);
         assert!(out.status.success(), "ffmpeg failed: {}", String::from_utf8_lossy(&out.stderr));
-        let dec: Vec<f32> = out.stdout.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect();
+        let dec: Vec<f32> = out.stdout.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect();
         assert_eq!(dec.len(), len * c, "ffmpeg must honour pre-skip and the end granule");
         for ch in 0..c {
             let d: Vec<f32> = (0..len).map(|i| dec[i * c + ch]).collect();
