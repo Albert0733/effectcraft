@@ -29,6 +29,7 @@ Commands (CLI, MCP, control channel):
 
 ### Settings that change behaviour
 
+- `general.language`: interface language (`en` / `ja`), Settings ▸ General ▸ Language; menu labels change immediately. Native Japanese UI uses installed system fonts; the web host must supply a Japanese font.
 - `general.undoLevels`: Levels of Undo
 - `general.pathPointSize`: Path Point and Handle Size
 - `general.recentItems`: Recent Projects Shown

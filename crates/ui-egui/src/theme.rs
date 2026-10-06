@@ -282,6 +282,24 @@ pub fn install(ctx: &egui::Context, t: &Tokens) {
     fonts.families.entry(FontFamily::Monospace).or_default().insert(0, "jbmono".into());
     fonts.families.insert(FontFamily::Name("semibold".into()), vec!["inter-semibold".into(), "inter".into()]);
     fonts.families.insert(FontFamily::Name("medium".into()), vec!["inter-medium".into(), "inter".into()]);
+    // Reuse the text engine's script-aware system fallback (#84), without embedding a CJK font.
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use effectcraft_text::fonts;
+        let base = fonts::resolve("Inter", "Regular").face;
+        let face = fonts::face(fonts::fallback_for('あ', base));
+        if face.has_char('あ')
+            && let Some(font) = face.font()
+        {
+            // Use the already-read, parsed bytes rather than reading a font file twice.
+            let mut data = FontData::from_owned(font.data().as_bytes().to_vec());
+            data.index = face.info.index;
+            fonts.font_data.insert("japanese-system".into(), Arc::new(data));
+            for family in fonts.families.values_mut() {
+                family.push("japanese-system".into());
+            }
+        }
+    }
     ctx.set_fonts(fonts);
     apply_visuals(ctx, t);
 }
@@ -334,4 +352,41 @@ pub fn apply_visuals(ctx: &egui::Context, t: &Tokens) {
         s.text_styles.insert(TextStyle::Monospace, FontId::new(12.0, FontFamily::Monospace));
         s.animation_time = 0.1;
     });
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod japanese_font_tests {
+    #[test]
+    fn installed_japanese_fallback_is_available_in_all_ui_families() {
+        use effectcraft_text::fonts;
+        let base = fonts::resolve("Inter", "Regular").face;
+        if !fonts::face(fonts::fallback_for('あ', base)).has_char('あ') {
+            eprintln!("no Japanese system font installed; skipping glyph coverage");
+            return;
+        }
+        let ctx = egui::Context::default();
+        super::install(&ctx, &super::Tokens::for_kind(super::ThemeKind::Dark));
+        let _ = ctx.run_ui(egui::RawInput::default(), |_| {});
+        ctx.fonts_mut(|fonts| {
+            for family in [
+                egui::FontFamily::Proportional,
+                egui::FontFamily::Monospace,
+                egui::FontFamily::Name("medium".into()),
+                egui::FontFamily::Name("semibold".into()),
+            ] {
+                let font = egui::FontId::new(13.0, family);
+                // epaint 0.36's has_glyph compares face keys, so it reports a false
+                // negative when a real Japanese glyph shares the replacement face.
+                // Check the rendered atlas glyph instead of that face-level predicate.
+                let missing = fonts.layout_no_wrap("\u{10ffff}".into(), font.clone(), egui::Color32::WHITE);
+                let missing_uv = missing.rows[0].glyphs[0].uv_rect;
+                for ch in "日本語コンポジションレイヤーエフェクト設定".chars() {
+                    let rendered = fonts.layout_no_wrap(ch.to_string(), font.clone(), egui::Color32::WHITE);
+                    let uv = rendered.rows[0].glyphs[0].uv_rect;
+                    assert!(uv.size.x > 0.0 && uv.size.y > 0.0, "empty {ch} in {font:?}");
+                    assert_ne!((uv.min, uv.max), (missing_uv.min, missing_uv.max), "replacement glyph for {ch} in {font:?}");
+                }
+            }
+        });
+    }
 }

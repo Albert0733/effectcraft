@@ -94,8 +94,8 @@ impl NativeBar {
                 let sub = Submenu::new(label, true);
                 self.fill(&sub, children);
                 match label.as_str() {
-                    "Window" => sub.set_as_windows_menu_for_nsapp(),
-                    "Help" => sub.set_as_help_menu_for_nsapp(),
+                    "Window" | "ウィンドウ" => sub.set_as_windows_menu_for_nsapp(),
+                    "Help" | "ヘルプ" => sub.set_as_help_menu_for_nsapp(),
                     _ => {}
                 }
                 if let Err(e) = menu.append(&sub) {

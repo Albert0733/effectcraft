@@ -1,5 +1,7 @@
 # Roadmap
 
+- 2026-10-06: Settings ▸ General ▸ Language persists English/Japanese menu labels (`general.language`); native UI reuses installed Japanese font fallback, with no bundled CJK font. Dialog and panel contents remain English.
+
 EffectCraft aims to do what After Effects does, with the same panels, menus and behaviour, written
 from scratch in Rust. This is where it stands. The milestones overlap; several are worked on at
 once.

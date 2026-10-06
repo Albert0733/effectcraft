@@ -44,6 +44,8 @@ macro_rules! page {
 }
 
 page!(General {
+    /// Interface language (`en` or `ja`).
+    language: String = "en".into(),
     /// Levels of Undo (1–99).
     undo_levels: u32 = 32,
     /// Path Point and Handle Size (px).
@@ -415,6 +417,9 @@ impl Prefs {
     pub fn normalize(&mut self) {
         self.version = PREFS_VERSION;
         let g = &mut self.general;
+        if !matches!(g.language.as_str(), "en" | "ja") {
+            g.language = "en".into();
+        }
         g.undo_levels = g.undo_levels.clamp(1, 99);
         g.path_point_size = g.path_point_size.clamp(3, 20);
         g.recent_items = g.recent_items.clamp(1, 30);
@@ -453,6 +458,9 @@ impl Prefs {
 
     /// Set the value at a dotted key. The key must exist and the value must have its type.
     pub fn set(&mut self, key: &str, value: Value) -> Result<(), String> {
+        if key == "general.language" && !matches!(value.as_str(), Some("en" | "ja")) {
+            return Err("`general.language` expects `en` or `ja`".into());
+        }
         let mut v = serde_json::to_value(&*self).map_err(|e| e.to_string())?;
         let ptr = format!("/{}", key.replace('.', "/"));
         let slot = v.pointer_mut(&ptr).ok_or_else(|| format!("unknown setting `{key}`"))?;
@@ -877,6 +885,7 @@ pub fn pages() -> Vec<Page> {
             id: "general",
             title: "General",
             items: vec![
+                s("general.language", "Language", Kind::Choice(&[("English", "en"), ("日本語", "ja")]), true),
                 s("general.undoLevels", "Levels of Undo", Kind::Int(1, 99, ""), true),
                 s("general.pathPointSize", "Path Point and Handle Size", Kind::Int(3, 20, "px"), true),
                 s("general.recentItems", "Recent Projects Shown", Kind::Int(1, 30, ""), true),

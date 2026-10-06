@@ -15,6 +15,7 @@ pub mod dock;
 pub mod dock_ui;
 pub mod frames;
 pub mod header;
+pub mod i18n;
 pub mod icons;
 pub mod menus;
 pub mod native_menu;
