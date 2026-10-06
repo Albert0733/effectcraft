@@ -47,6 +47,27 @@ fn demo_layer_cache_is_transparent() {
     }
 }
 
+/// Audio, Lock and Shy don't change pixels: toggling them keeps the cached layers (#103).
+#[test]
+fn audio_lock_and_shy_keep_cached_layers() {
+    let mut s = Session::default();
+    s.execute("comp.new", json!({"name": "C", "width": 160, "height": 90, "frameRate": 30, "duration": 1})).unwrap();
+    s.execute("layer.newSolid", json!({"color": "#3080ff", "width": 80, "height": 40})).unwrap();
+    s.execute("effect.apply", json!({"layer": "#1", "effect": "Gaussian Blur"})).unwrap();
+    s.execute("prop.set", json!({"layer": "#1", "path": "effects/#1/blurriness", "value": 12})).unwrap();
+    let cid = s.active_comp_id().unwrap();
+    let t = s.time();
+    s.render(cid, t, Default::default());
+    let before = s.layer_cache.stats();
+    for sw in ["audio", "lock", "shy"] {
+        s.execute("layer.setSwitch", json!({"layers": ["#1"], "switch": sw, "value": sw != "audio"})).unwrap();
+    }
+    s.render(cid, t, Default::default());
+    let after = s.layer_cache.stats();
+    assert_eq!(after.misses, before.misses, "no layer rendered again");
+    assert!(after.hits > before.hits);
+}
+
 #[test]
 fn every_command_has_unique_id_and_runs_or_reports() {
     let mut ids = std::collections::HashSet::new();
