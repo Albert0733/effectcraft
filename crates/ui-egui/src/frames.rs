@@ -36,8 +36,11 @@ use rayon::prelude::*;
 /// Comp identities (and the project snapshots behind them) the RAM preview keeps frames of.
 const MAX_KEEPERS: usize = 64;
 
-/// GPU frames kept for RAM preview (bytes of video memory).
+/// GPU frames kept for RAM preview (bytes of video memory) at first. wgpu can't tell how much
+/// video memory there is: each time the device runs out, the budget halves (to
+/// [`MIN_GPU_BUDGET`]) and the frame renders on the CPU (#106).
 const GPU_BUDGET: usize = 1 << 30;
+const MIN_GPU_BUDGET: usize = 64 << 20;
 
 /// A rendered viewer frame: CPU pixels or a GPU texture.
 #[derive(Clone)]
@@ -112,6 +115,8 @@ struct Cache {
     /// Bytes of GPU frames (also counted in `bytes`).
     gpu_bytes: usize,
     budget: usize,
+    /// Bytes of GPU frames to keep at most ([`GPU_BUDGET`]).
+    gpu_budget: usize,
 }
 
 impl Cache {
@@ -130,13 +135,21 @@ impl Cache {
             let Some(old) = self.order.pop_front() else { break };
             self.remove(&old);
         }
-        // Video memory: drop the oldest GPU frames past their own budget.
-        while self.gpu_bytes > GPU_BUDGET {
+        self.evict_gpu();
+    }
+    /// Video memory: drop the oldest GPU frames past their own budget.
+    fn evict_gpu(&mut self) {
+        while self.gpu_bytes > self.gpu_budget {
             let Some(i) = self.order.iter().position(|k| self.map.get(k).is_some_and(FrameImage::is_gpu)) else { break };
             if let Some(old) = self.order.remove(i) {
                 self.remove(&old);
             }
         }
+    }
+    /// The GPU ran out of memory: keep half as many GPU frames from now on.
+    fn gpu_out_of_memory(&mut self) {
+        self.gpu_budget = (self.gpu_budget / 2).max(MIN_GPU_BUDGET);
+        self.evict_gpu();
     }
     fn forget(&mut self, img: &FrameImage) {
         self.bytes -= img.bytes();
@@ -370,7 +383,7 @@ impl Default for Frames {
         #[cfg(not(target_arch = "wasm32"))]
         let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(2, 16);
         Frames {
-            cache: Arc::new(Mutex::new(Cache { map: HashMap::new(), order: VecDeque::new(), bytes: 0, gpu_bytes: 0, budget: 3 << 30 })),
+            cache: Arc::new(Mutex::new(Cache { map: HashMap::new(), order: VecDeque::new(), bytes: 0, gpu_bytes: 0, budget: 3 << 30, gpu_budget: GPU_BUDGET })),
             inflight: Arc::new(Mutex::new(HashSet::new())),
             queue: Arc::new(Mutex::new(Queue::default())),
             #[cfg(not(target_arch = "wasm32"))]
@@ -786,7 +799,14 @@ impl Worker {
         let disk_hit = from_disk.is_some();
         let ci = match from_disk {
             Some(f) => FrameImage::Cpu(Arc::new(egui::ColorImage::from_rgba_premultiplied([f.width as usize, f.height as usize], &f.rgba))),
-            None => self.render_job(&job),
+            None => match self.render_guarded(&job) {
+                Some(ci) => ci,
+                None => {
+                    // Not "in progress" forever: the viewer asks for it again.
+                    self.release(job.key, job.urgent);
+                    return true;
+                }
+            },
         };
         // Publish the shared frame and wake the viewer before optional RGBA conversion
         // and compression. Persistence still runs on this worker, using the same snapshot.
@@ -832,6 +852,24 @@ impl Worker {
         }
     }
 
+    /// [`Worker::render_job`], again on the CPU if it panicked (the panic hook has logged it);
+    /// `None` if that panicked too.
+    fn render_guarded(&self, job: &Job) -> Option<FrameImage> {
+        let attempt = |gpu: bool| std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.render_job(job, gpu))).ok();
+        attempt(true).or_else(|| {
+            log::error!("a frame render panicked (frame {})", job.key.frame);
+            job.src.gpu.as_ref().and_then(|_| attempt(false))
+        })
+    }
+
+    /// The GPU ran out of video memory rendering a frame (#106): fewer GPU frames are kept.
+    fn out_of_memory(&self, e: &str) {
+        log::warn!("the GPU ran out of memory ({e}); the frame renders on the CPU and fewer GPU frames are kept");
+        if let Ok(mut c) = self.cache.lock() {
+            c.gpu_out_of_memory();
+        }
+    }
+
     /// The frame on the GPU, kept there for the viewer, if the compositor can do it alone.
     fn render_gpu(&self, job: &Job) -> Option<FrameImage> {
         let g = job.src.gpu.as_ref()?;
@@ -840,19 +878,27 @@ impl Worker {
         r.cache = Some(&job.src.layer_cache);
         r.accel = Some(g as &dyn effectcraft_engine::render::Accelerator);
         r.active_accel()?;
-        g.render_display(&r, job.comp, job.t).map(|f| FrameImage::Gpu(Arc::new(f)))
+        match g.within_memory(|| g.render_display(&r, job.comp, job.t)) {
+            Ok(f) => f.map(|f| FrameImage::Gpu(Arc::new(f))),
+            Err(e) => {
+                self.out_of_memory(&e);
+                None
+            }
+        }
     }
 
-    fn render_job(&self, job: &Job) -> FrameImage {
+    /// Render a frame; `gpu: false` keeps it off the GPU compositor.
+    fn render_job(&self, job: &Job, gpu: bool) -> FrameImage {
         let mut r = Renderer::new(&job.src.project, job.src.footage.as_ref(), job.opts);
         r.expr = job.src.expr.as_deref();
         r.cache = Some(&job.src.layer_cache);
-        r.accel = job.src.gpu.as_ref().map(|g| g as &dyn effectcraft_engine::render::Accelerator);
+        let gpu = job.src.gpu.as_ref().filter(|_| gpu);
+        r.accel = gpu.map(|g| g as &dyn effectcraft_engine::render::Accelerator);
         // The GPU leaves the frame in a texture for the viewer; otherwise (Software Only, no
         // adapter, or a frame the GPU cannot finish here) the CPU renders it.
         // Auto (Mercury GPU Acceleration) shows each comp on whichever compositor measured
         // faster for it (light comps composite faster on the CPU).
-        if let (Some(g), Some(a)) = (&job.src.gpu, r.active_accel())
+        if let (Some(g), Some(a)) = (gpu, r.active_accel())
             && job.src.gpu_display
         {
             // The browser cannot wait for the GPU to time it (and its CPU path is slow): always
@@ -860,16 +906,24 @@ impl Worker {
             let auto = if cfg!(target_arch = "wasm32") { None } else { r.frame_auto(a, job.comp, true) };
             if auto.is_none_or(|(p, key)| p.choose(key)) {
                 let t0 = web_time::Instant::now();
-                if let Some(f) = g.render_display(&r, job.comp, job.t) {
-                    if let Some((p, key)) = auto {
-                        // Time the GPU's work, not just its recording.
-                        g.wait();
-                        p.record(key, true, t0.elapsed().as_secs_f64() * 1000.0);
+                match g.within_memory(|| g.render_display(&r, job.comp, job.t)) {
+                    Ok(Some(f)) => {
+                        if let Some((p, key)) = auto {
+                            // Time the GPU's work, not just its recording.
+                            g.wait();
+                            p.record(key, true, t0.elapsed().as_secs_f64() * 1000.0);
+                        }
+                        return FrameImage::Gpu(Arc::new(f));
                     }
-                    return FrameImage::Gpu(Arc::new(f));
-                }
-                if let Some((p, key)) = auto {
-                    p.declined(key);
+                    Ok(None) => {
+                        if let Some((p, key)) = auto {
+                            p.declined(key);
+                        }
+                    }
+                    Err(e) => {
+                        self.out_of_memory(&e);
+                        return self.render_job(job, false);
+                    }
                 }
             }
             let t0 = web_time::Instant::now();
@@ -878,6 +932,16 @@ impl Worker {
                 p.record(key, false, t0.elapsed().as_secs_f64() * 1000.0);
             }
             return FrameImage::Cpu(Arc::new(img));
+        }
+        if let Some(g) = gpu {
+            // The GPU composites and the frame is read back.
+            return match g.within_memory(|| r.comp_frame(job.comp, job.t)) {
+                Ok(img) => FrameImage::Cpu(Arc::new(to_color_image(&img))),
+                Err(e) => {
+                    self.out_of_memory(&e);
+                    self.render_job(job, false)
+                }
+            };
         }
         FrameImage::Cpu(Arc::new(to_color_image(&r.comp_frame(job.comp, job.t))))
     }
@@ -922,6 +986,67 @@ mod tests {
 
     fn insert(f: &Frames, k: FrameKey) {
         f.cache.lock().unwrap().insert(k, img());
+    }
+
+    /// A frame whose render panics (a GPU out of memory used to, on every frame thread) is
+    /// released, not left "in progress" forever, so the viewer can ask for it again (#106).
+    #[test]
+    fn a_frame_whose_render_panics_is_released() {
+        use effectcraft_engine::Session;
+        use effectcraft_engine::project::{Footage, FootageKind};
+        use effectcraft_engine::render::Image;
+        use serde_json::json;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        #[derive(Default)]
+        struct Explodes(AtomicUsize);
+        impl FootageSource for Explodes {
+            fn frame(&self, _: ItemId, _: &Footage, _: Tick) -> Option<Arc<Image>> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                panic!("a decoder bug");
+            }
+        }
+        let mut s = Session::default();
+        let cid = ItemId(s.execute("comp.new", json!({"name": "A", "width": 8, "height": 8, "duration": 1})).unwrap()["comp"].as_u64().unwrap());
+        let clip = Footage { kind: FootageKind::Still, width: 8, height: 8, has_video: true, ..Default::default() };
+        let item = Arc::make_mut(&mut s.project).add_item("clip.png", Default::default(), None, ItemKind::Footage(clip));
+        s.execute("layer.addItem", json!({"item": item.0})).unwrap();
+        let footage = Arc::new(Explodes::default());
+        let src = RenderSource {
+            project: s.project.clone(),
+            footage: footage.clone(),
+            expr: None,
+            layer_cache: Arc::default(),
+            gpu: None,
+            gpu_display: false,
+            disk: None,
+        };
+        let f = Frames::default();
+        let key = FrameKey { revision: s.revision, content: f.content_of(&s.project, s.revision, cid), ..key(0, 0, 0) };
+        let key = FrameKey { comp: cid.0, ..key };
+        f.request(&src, key, cid, Tick::ZERO, RenderOpts::default());
+        for _ in 0..1000 {
+            if f.inflight() == 0 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(footage.0.load(Ordering::SeqCst) > 0, "the render reached the footage");
+        assert_eq!(f.inflight(), 0, "released");
+        assert!(!f.is_cached(&key));
+    }
+
+    /// Each time the GPU runs out of memory, half as many GPU frames are kept, down to a floor.
+    #[test]
+    fn running_out_of_video_memory_halves_the_gpu_frame_budget() {
+        let f = Frames::default();
+        let mut c = f.cache.lock().unwrap();
+        assert_eq!(c.gpu_budget, GPU_BUDGET);
+        c.gpu_out_of_memory();
+        assert_eq!(c.gpu_budget, GPU_BUDGET / 2);
+        for _ in 0..20 {
+            c.gpu_out_of_memory();
+        }
+        assert_eq!(c.gpu_budget, MIN_GPU_BUDGET);
     }
 
     #[test]

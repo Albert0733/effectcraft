@@ -291,6 +291,20 @@ fn storage_tex_entry(binding: u32, format: wgpu::TextureFormat) -> wgpu::BindGro
     }
 }
 
+/// Log the device's uncaptured errors instead of wgpu's default panic.
+fn log_uncaptured_errors(device: &wgpu::Device) {
+    device.on_uncaptured_error(Arc::new(|e| {
+        // Under test a validation error (a WGSL typo invalidates every kernel) fails loudly.
+        #[cfg(test)]
+        #[allow(clippy::panic)] // test builds only
+        {
+            panic!("wgpu: {e}")
+        }
+        #[cfg(not(test))]
+        log::error!("wgpu: {e}")
+    }));
+}
+
 impl GpuContext {
     /// Build on an existing device (the desktop app shares egui-wgpu's). `Err` when the
     /// adapter cannot run the compositor (no compute shaders, e.g. WebGL2; no float storage
@@ -469,6 +483,12 @@ impl GpuContext {
         let dummy_buf =
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("dummy"), contents: &[0u8; 16], usage: wgpu::BufferUsages::STORAGE });
         let max_dim = device.limits().max_texture_dimension_2d;
+        // From here on errors are logged, not fatal: wgpu's default handler panics, and egui-wgpu
+        // installs none on the device the desktop app shares. Running out of video memory on a
+        // frame thread must not crash the app (#106); frames catch it with
+        // [`crate::Gpu::within_memory`]. (Errors while the pipelines are built above still panic
+        // on that device, which the app catches to fall back to the CPU.)
+        log_uncaptured_errors(&device);
         Ok(GpuContext {
             device,
             queue,
@@ -534,16 +554,7 @@ impl GpuContext {
             .request_device(&wgpu::DeviceDescriptor { label: Some("effectcraft gpu"), required_limits, ..Default::default() })
             .await
             .map_err(|e| format!("no device: {e}"))?;
-        device.on_uncaptured_error(Arc::new(|e| {
-            // Under test a validation error (a WGSL typo invalidates every kernel) fails loudly.
-            #[cfg(test)]
-            #[allow(clippy::panic)] // test builds only
-            {
-                panic!("wgpu: {e}")
-            }
-            #[cfg(not(test))]
-            log::error!("wgpu: {e}")
-        }));
+        log_uncaptured_errors(&device);
         GpuContext::new(&adapter, device, queue)
     }
 

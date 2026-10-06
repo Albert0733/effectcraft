@@ -244,6 +244,27 @@ impl Gpu {
         }
     }
 
+    /// Run GPU work `f` on this thread, catching the device running out of video memory
+    /// meanwhile (#106). `Err` (why) means the result is incomplete: a texture that failed to
+    /// allocate holds nothing. The uploaded layers and pooled textures are then freed, so the
+    /// next render has room. The browser reports it to the device's error handler instead.
+    pub fn within_memory<T>(&self, f: impl FnOnce() -> T) -> Result<T, String> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let scope = self.ctx.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+            let out = f();
+            match pollster::block_on(scope.pop()) {
+                Some(e) => {
+                    self.ctx.clear_uploads();
+                    Err(e.to_string())
+                }
+                None => Ok(out),
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        Ok(f())
+    }
+
     /// Wait for all submitted GPU work (benchmarks).
     pub fn wait(&self) {
         let _ = self.ctx.device.poll(wgpu::PollType::wait_indefinitely());
