@@ -135,6 +135,10 @@ pub struct Playback {
     pub restore_max: Option<Option<PanelKind>>,
     /// Audio-only previews: the frame under the audible sample (the current time stays put).
     pub audio_frame: Option<i64>,
+    /// The preview's sound waits for frames: while the frames ahead aren't cached, every frame
+    /// shows as it renders, silently; the sound starts once the rest of the preview (or what
+    /// fits in the RAM preview) is cached, so it never plays over skipped frames (#103).
+    pub audio_held: bool,
     /// When the last frames were shown (seconds, the last second's worth): the achieved rate.
     pub shown_at: std::collections::VecDeque<f64>,
 }
@@ -684,31 +688,33 @@ impl EffectcraftApp {
             layer_controls: preset.include_layer_controls,
             restore_max,
             audio_frame: (!plan.video).then_some(plan.first),
+            audio_held: false,
             shown_at: Default::default(),
         };
         if !self.playback.caching {
-            self.start_audio(fr.tick_of(plan.first));
+            if plan.video {
+                self.playback.audio_held = self.audio_plays();
+            } else {
+                self.start_audio(fr.tick_of(plan.first));
+            }
         }
     }
 
-    /// Start audio preview from comp time `t` when the preview includes audio at the comp's
-    /// frame rate, the comp has something audible and an output device opens.
+    /// The preview includes audio at the comp's frame rate and the comp has something audible.
+    fn audio_plays(&self) -> bool {
+        let (Some(pl), Some(cid)) = (self.playback.plan, self.session.active_comp_id()) else { return false };
+        let Some(c) = self.session.project.comp(cid) else { return false };
+        // A preview at another frame rate plays slower or faster than real time: silent.
+        pl.audio && (pl.fps - c.frame_rate.as_f64()).abs() <= 0.01 && effectcraft_engine::render::audio::comp_has_audio(&self.session.project, cid)
+    }
+
+    /// Start audio preview from comp time `t` when [`Self::audio_plays`] and an output device
+    /// opens.
     fn start_audio(&mut self, t: Tick) {
         self.audio = None;
         self.meter.clipped = [false; 2];
-        let Some(pl) = self.playback.plan else { return };
-        if !pl.audio {
-            return;
-        }
-        let Some(cid) = self.session.active_comp_id() else { return };
-        let Some(c) = self.session.project.comp_arc(cid) else { return };
-        // A preview at another frame rate plays slower or faster than real time: silent.
-        if (pl.fps - c.frame_rate.as_f64()).abs() > 0.01 {
-            return;
-        }
-        if !effectcraft_engine::render::audio::comp_has_audio(&self.session.project, cid) {
-            return;
-        }
+        let (Some(pl), Some(cid)) = (self.playback.plan, self.session.active_comp_id()) else { return };
+        let Some(c) = self.session.project.comp_arc(cid).filter(|_| self.audio_plays()) else { return };
         let out = audio::AudioOutput::from_prefs(&self.session.prefs);
         let Some(dev) = self.hooks.audio_device.as_ref().and_then(|f| f(&out)) else { return };
         let mix = self.session.prefs.audio.preview_sample_rate;
@@ -935,8 +941,17 @@ impl EffectcraftApp {
             return;
         }
         let snap = |f: i64| wa + (f - wa).div_euclid(step) * step;
-        // Audio clock drives playback: show the frame under the audible sample (frames that
-        // are not rendered yet are dropped, never delayed).
+        // Held sound starts once the frames ahead are cached (see `Playback::audio_held`).
+        if self.playback.audio_held
+            && let Some(p) = plan
+            && self.cached_ahead(&p, &series, cur, self.frames_that_fit(&c, scale))
+        {
+            self.playback.audio_held = false;
+            self.playback.start_wall = now;
+            self.playback.start_frame = cur;
+            self.start_audio(fr.tick_of(cur));
+        }
+        // Audio clock drives playback: show the frame under the audible sample.
         if let Some(a) = &self.audio {
             if a.finished() {
                 if video {
@@ -950,12 +965,20 @@ impl EffectcraftApp {
             let target = snap(audio::frame_of_sample(a.clock(), a.rate, fr).clamp(wa, wb));
             if !video {
                 self.playback.audio_frame = Some(target);
-            } else {
-                self.playback.waiting = !self.frames.is_cached(&FrameKey { frame: target, ..series });
+            } else if self.frames.is_cached(&FrameKey { frame: target, ..series }) {
+                self.playback.waiting = false;
                 if target != cur {
                     self.session.set_time(fr.tick_of(target));
                     self.playback.frame_shown(now);
                 }
+            } else {
+                // Rendering can't keep up: rather than skip frames, the sound stops and every
+                // frame shows as it renders until the frames ahead are cached again.
+                self.audio = None;
+                self.playback.audio_held = true;
+                self.playback.waiting = true;
+                self.playback.start_wall = now;
+                self.playback.start_frame = cur;
             }
             ctx.request_repaint();
             return;
@@ -1065,6 +1088,13 @@ impl EffectcraftApp {
 
     /// How many viewer frames of `comp` at `scale` the RAM preview budget holds (90 % of it,
     /// at least one).
+    /// The frames of `plan` from `cur` to its end, or as many as fit in the RAM preview, are
+    /// cached: sound can play from `cur` in real time.
+    fn cached_ahead(&self, plan: &effectcraft_engine::preview::PreviewPlan, series: &FrameKey, cur: i64, fit: i64) -> bool {
+        let cached = self.frames.cached_frames(series);
+        (0..fit).map_while(|k| plan.frame_after(cur, k)).take_while(|f| *f >= cur).all(|f| cached.binary_search(&f).is_ok())
+    }
+
     fn frames_that_fit(&self, comp: &effectcraft_engine::project::Comp, scale: f64) -> i64 {
         let side = |n: u32| (n as f64 * scale).ceil().max(1.0);
         let frame = side(comp.width) * side(comp.height) * 4.0;

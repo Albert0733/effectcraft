@@ -163,7 +163,11 @@ keys, with a nesting-depth guard.
 **Audio** is mixed by `render::audio::mix_comp` in blocks: Audio switch, solo, Audio Levels and
 the Effect > Audio effects (`effects::audio_fx`, applied per layer with a pre-roll so blocks are
 independent). Export and preview playback share it; the desktop app plays it through cpal and the
-audio clock drives preview playback (`ui-egui::audio`).
+audio clock drives preview playback (`ui-egui::audio`). The sound starts once the frames ahead
+are cached; until then, and whenever playback reaches a frame that isn't cached, every frame
+shows as it renders, silently, rather than being skipped. Layer and frame caches ignore the
+switches that don't change pixels (Audio, Lock, Shy, Hide Shy Layers: `Switches::pixels`,
+`Comp::same_pixels`), so toggling them keeps the cached frames.
 
 **Layer styles** (Layer ▸ Layer Styles; `crates/render/src/styles.rs`) render in layer space and
 may grow the layer's bounds. Drop Shadow and Outer Glow become separate passes composited below the

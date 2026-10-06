@@ -5,7 +5,8 @@
 //! *content* ([`comp_content`]: the comp and everything it uses), frame, scale, view and render
 //! options; the timeline draws the cached range as the green cache bar. An edit keeps the frames
 //! of every comp it doesn't touch, and undo finds the frames of the state it returns to, as in
-//! After Effects. When the budget is full the least recently shown frames go first.
+//! After Effects. Switches that don't change pixels (Audio, Lock, Shy, Hide Shy Layers) keep
+//! the frames too. When the budget is full the least recently shown frames go first.
 //!
 //! wasm32 has no threads: jobs wait in the same priority queue and [`Frames::pump`] hands them
 //! to a [`RemoteFrames`] (the browser's frame worker, a second engine instance fed with project
@@ -25,7 +26,7 @@
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 
-use effectcraft_engine::project::{ItemId, ItemKind, LayerSource, Node, Project, PropGroup};
+use effectcraft_engine::project::{Comp, ItemId, ItemKind, LayerSource, Node, Project, PropGroup};
 use effectcraft_engine::render::disk_cache::{self, DiskCache};
 use effectcraft_engine::render::{ExprHost, FootageSource, LayerCache, RenderOpts, Renderer};
 use effectcraft_engine::time::Tick;
@@ -191,6 +192,10 @@ pub struct RenderSource {
     pub disk: Option<Arc<DiskCache>>,
 }
 
+/// A [`comp_content`] identity and, when it was found in another project, that project
+/// ([`Frames::identity`]).
+type Identity = (u64, Option<Arc<Project>>);
+
 /// Content keys of (project revision, comp), computed once per revision.
 type ContentKeys = Arc<Mutex<HashMap<(u64, u64), u128>>>;
 
@@ -214,6 +219,11 @@ fn content_key(keys: &ContentKeys, project: &Project, revision: u64, comp: u64) 
 /// hands out), and by value the project settings and the footage, solids and proxies it uses.
 /// With expressions in its comps (which can read anything) every item counts.
 pub fn comp_content(project: &Project, comp: ItemId) -> u64 {
+    comp_content_with(project, comp, |_, c| Arc::as_ptr(c))
+}
+
+/// [`comp_content`] with each comp's address given by `addr`.
+fn comp_content_with(project: &Project, comp: ItemId, addr: impl Fn(ItemId, &Arc<Comp>) -> *const Comp) -> u64 {
     use std::hash::{Hash, Hasher};
     fn has_expression(g: &PropGroup) -> bool {
         g.children.iter().any(|c| match c {
@@ -247,7 +257,7 @@ pub fn comp_content(project: &Project, comp: ItemId) -> u64 {
             it.name.hash(&mut h);
         }
         match &it.kind {
-            ItemKind::Comp(c) => (Arc::as_ptr(c) as usize).hash(&mut h),
+            ItemKind::Comp(c) => (addr(id, c) as usize).hash(&mut h),
             k => format!("{k:?}").hash(&mut h),
         }
         format!("{:?}", it.proxy).hash(&mut h);
@@ -342,8 +352,11 @@ pub struct Frames {
     /// Render time of the last viewer (urgent) frame in ms, for the Info panel / perf readout.
     pub last_ms: Arc<Mutex<f64>>,
     content_keys: ContentKeys,
-    /// [`comp_content`] identities by (revision, comp).
-    identities: Mutex<HashMap<(u64, u64), u64>>,
+    /// [`comp_content`] identities by (revision, comp), with the project that keeps an identity
+    /// found by [`Frames::identity`] in another project.
+    identities: Mutex<HashMap<(u64, u64), Identity>>,
+    /// The last new identity of each comp and its project (see [`Frames::identity`]).
+    bases: Mutex<HashMap<u64, (u64, Arc<Project>)>>,
     /// A project snapshot for each identity handed out, with when it was last asked for (see
     /// [`Frames::content_of`]); the counter.
     keepers: Mutex<(u64, HashMap<u64, (u64, Arc<Project>)>)>,
@@ -373,6 +386,7 @@ impl Default for Frames {
             last_ms: Arc::new(Mutex::new(0.0)),
             content_keys: Arc::default(),
             identities: Mutex::default(),
+            bases: Mutex::default(),
             keepers: Mutex::default(),
             remote: None,
             remote_busy: Arc::default(),
@@ -428,22 +442,22 @@ impl Frames {
     /// revision). The project is kept while frames of that identity are cached or rendering, so
     /// the comp addresses it hashes can't be reused by other comps meanwhile.
     pub fn content_of(&self, project: &Arc<Project>, revision: u64, comp: ItemId) -> u64 {
-        let known = self.identities.lock().ok().and_then(|m| m.get(&(revision, comp.0)).copied());
-        let id = known.unwrap_or_else(|| {
-            let id = comp_content(project, comp);
+        let known = self.identities.lock().ok().and_then(|m| m.get(&(revision, comp.0)).cloned());
+        let (id, base) = known.unwrap_or_else(|| {
+            let found = self.identity(project, comp);
             if let Ok(mut m) = self.identities.lock() {
                 if m.len() > 256 {
                     m.clear();
                 }
-                m.insert((revision, comp.0), id);
+                m.insert((revision, comp.0), found.clone());
             }
-            id
+            found
         });
         if let Ok(mut guard) = self.keepers.lock() {
             let (clock, k) = &mut *guard;
             *clock += 1;
             let now = *clock;
-            k.entry(id).or_insert_with(|| (now, project.clone())).0 = now;
+            k.entry(id).or_insert_with(|| (now, base.unwrap_or_else(|| project.clone()))).0 = now;
             if k.len() > MAX_KEEPERS {
                 let inflight: HashSet<u64> = self.inflight.lock().map(|s| s.iter().map(|f| f.content).collect()).unwrap_or_default();
                 if let Ok(mut c) = self.cache.lock() {
@@ -462,6 +476,30 @@ impl Frames {
             }
         }
         id
+    }
+
+    /// The [`comp_content`] identity of `comp` in `project`, or the comp's last new identity when
+    /// every comp it draws is the same or draws the same pixels there ([`Comp::same_pixels`]:
+    /// only Audio, Lock or Shy switches changed), so toggling those keeps the cached frames
+    /// (#103). That identity hashes the addresses of the comps in its project, which is
+    /// returned to keep them.
+    fn identity(&self, project: &Arc<Project>, comp: ItemId) -> Identity {
+        let plain = comp_content(project, comp);
+        let Ok(mut bases) = self.bases.lock() else { return (plain, None) };
+        if let Some((base_id, base)) = bases.get(&comp.0)
+            && *base_id != plain
+            && comp_content_with(project, comp, |id, c| match base.item(id).map(|i| &i.kind) {
+                Some(ItemKind::Comp(b)) if Arc::ptr_eq(b, c) || b.same_pixels(c) => Arc::as_ptr(b),
+                _ => Arc::as_ptr(c),
+            }) == *base_id
+        {
+            return (*base_id, Some(base.clone()));
+        }
+        if bases.len() > MAX_KEEPERS {
+            bases.clear();
+        }
+        bases.insert(comp.0, (plain, project.clone()));
+        (plain, None)
     }
 
     pub fn is_cached(&self, k: &FrameKey) -> bool {
@@ -969,5 +1007,43 @@ mod tests {
         let comp = Arc::make_mut(&mut p).comp_mut(a).unwrap();
         comp.width = 16;
         assert_ne!(f.content_of(&p, 2, a), before);
+    }
+
+    /// Audio, Lock and Shy (and Hide Shy Layers) don't change pixels: toggling them, in the comp
+    /// or a comp it nests, keeps its frames, also when toggled back (#103).
+    #[test]
+    fn audio_lock_and_shy_switches_keep_the_frames() {
+        use effectcraft_engine::Session;
+        use serde_json::json;
+        let mut s = Session::default();
+        let id = |v: serde_json::Value, k: &str| v[k].as_u64().unwrap();
+        let inner = ItemId(id(s.execute("comp.new", json!({"name": "Inner", "width": 8, "height": 8, "duration": 1})).unwrap(), "comp"));
+        let solid = id(s.execute("layer.newSolid", json!({"comp": inner.0, "color": "#ff0000"})).unwrap(), "layer");
+        let outer = ItemId(id(s.execute("comp.new", json!({"name": "Outer", "width": 8, "height": 8, "duration": 1})).unwrap(), "comp"));
+        let nested = id(s.execute("layer.addItem", json!({"comp": outer.0, "item": inner.0})).unwrap(), "layer");
+        let f = Frames::default();
+        let at = |s: &Session| f.content_of(&s.project, s.revision, outer);
+        let o0 = at(&s);
+        let switch = |s: &mut Session, comp: ItemId, layer: u64, sw: &str, v: bool| {
+            s.execute("layer.setSwitch", json!({"comp": comp.0, "layers": [layer], "switch": sw, "value": v})).unwrap();
+        };
+        for (comp, layer, sw) in [(outer, nested, "audio"), (outer, nested, "lock"), (outer, nested, "shy"), (inner, solid, "audio"), (inner, solid, "shy")] {
+            // Audio off; Lock and Shy on.
+            switch(&mut s, comp, layer, sw, sw != "audio");
+            assert_eq!(at(&s), o0, "{sw} on in {comp:?}");
+        }
+        s.execute("comp.setSwitch", json!({"comp": outer.0, "switch": "hideShy", "value": true})).unwrap();
+        assert_eq!(at(&s), o0, "Hide Shy Layers");
+        switch(&mut s, outer, nested, "audio", true);
+        switch(&mut s, outer, nested, "lock", false);
+        assert_eq!(at(&s), o0, "toggled back");
+        // Switches that change pixels still do.
+        switch(&mut s, inner, solid, "video", false);
+        let o1 = at(&s);
+        assert_ne!(o1, o0, "Video");
+        switch(&mut s, outer, nested, "audio", false);
+        assert_eq!(at(&s), o1, "a mute after a real edit keeps that edit's frames");
+        switch(&mut s, inner, solid, "video", true);
+        assert_ne!(at(&s), o1);
     }
 }
