@@ -543,6 +543,50 @@ fn puppet_pin_click_selects_and_delete_removes_only_the_pins() {
     assert!(h.state().session.active_comp().unwrap().layer(LayerId(id)).is_some());
 }
 
+/// Filled circles painted this frame (flattening nested shape lists).
+fn circles(h: &Harness<'_, EffectcraftApp>) -> Vec<egui::epaint::CircleShape> {
+    fn walk(s: &egui::Shape, out: &mut Vec<egui::epaint::CircleShape>) {
+        match s {
+            egui::Shape::Circle(c) => out.push(*c),
+            egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+            _ => {}
+        }
+    }
+    let mut out = vec![];
+    for c in &h.output().shapes {
+        walk(&c.shape, &mut out);
+    }
+    out
+}
+
+/// Issue #96: a selected puppet pin is filled with its colour and ringed; an unselected one is
+/// hollow (dark centre, coloured outline), like selected and unselected mask vertices. They used to
+/// differ by 1 px and a slight brightness change.
+#[test]
+fn selected_puppet_pins_are_filled_and_unselected_hollow() {
+    let (mut h, _id, bend) = puppet_harness();
+    let pins: Vec<u64> = h.state().auto.previous.iter().filter_map(|e| e.id.strip_prefix("viewer.puppetPin.").and_then(|r| r.parse().ok())).collect();
+    let position: Vec<u64> = pins.into_iter().filter(|p| *p != bend).collect();
+    let (a, b) = (position[0], position[1]);
+    let pa = rect(&h, &format!("viewer.puppetPin.{a}")).center();
+    let pb = rect(&h, &format!("viewer.puppetPin.{b}")).center();
+    click(&mut h, pa);
+    assert_eq!(h.state().session.state.selected_props.iter().map(|(_, u)| *u).collect::<Vec<_>>(), vec![a]);
+    // Pointer away from the pins (hover enlarges a pin), then look at the painted pins.
+    h.input_mut().events.push(Event::PointerMoved(pos2(5.0, 5.0)));
+    h.run_steps(2);
+    let col = effectcraft_ui_egui::panels::puppet_tool::pin_color(effectcraft_engine::effects::puppet::PinKind::Position);
+    let at = |p: Pos2| circles(&h).into_iter().filter(move |c| c.center.distance(p) < 0.5).collect::<Vec<_>>();
+    let dark = |c: egui::Color32| c.r().max(c.g()).max(c.b()) < 0x60;
+    let sel = at(pa);
+    assert!(sel.iter().any(|c| c.fill == col), "the selected pin is filled with its colour: {sel:?}");
+    assert!(sel.iter().any(|c| c.fill == egui::Color32::TRANSPARENT && c.stroke.color == egui::Color32::WHITE), "and ringed in white: {sel:?}");
+    let unsel = at(pb);
+    assert!(!unsel.is_empty(), "the unselected pin is drawn");
+    assert!(unsel.iter().all(|c| c.fill == egui::Color32::TRANSPARENT || dark(c.fill)), "the unselected pin is hollow: {unsel:?}");
+    assert!(unsel.iter().any(|c| c.stroke.color == col), "with a coloured outline: {unsel:?}");
+}
+
 #[test]
 fn puppet_marquee_selects_pins_and_alt_drag_works_over_the_art() {
     let (mut h, _id, bend) = puppet_harness();

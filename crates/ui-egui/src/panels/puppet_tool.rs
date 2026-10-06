@@ -170,9 +170,18 @@ pub fn draw(
                 }
             }
             // Pins grow under the pointer.
+            // Selected pins are filled with their colour and ringed in white; unselected pins are
+            // hollow (dark centre, coloured outline), like selected and unselected mask vertices.
+            // Drawing only: hit-testing uses `pos` alone.
             let r = if sel { 5.5 } else { 4.5 } + if hover.is_some_and(|h| h.distance(pos) < 8.0) { 1.5 } else { 0.0 };
-            painter.circle_filled(pos, r, if sel { col } else { col.gamma_multiply(0.85) });
-            painter.circle_stroke(pos, r, Stroke::new(1.0, Color32::BLACK));
+            if sel {
+                painter.circle_filled(pos, r, col);
+                painter.circle_stroke(pos, r, Stroke::new(1.0, Color32::BLACK));
+                painter.circle_stroke(pos, r + 2.5, Stroke::new(1.5, Color32::WHITE));
+            } else {
+                painter.circle_filled(pos, r, Color32::from_black_alpha(160));
+                painter.circle_stroke(pos, r, Stroke::new(1.5, col));
+            }
             hits.push(PinHit { layer: layer.id, pin: pn.uid, kind: pn.kind, pos, rotation: pn.rotation, scale: pn.scale, handle });
         }
     }
