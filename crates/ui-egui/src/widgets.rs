@@ -229,6 +229,15 @@ pub fn checkbox(ui: &mut Ui, rect: Rect, on: bool, t: &Tokens, id: egui::Id) -> 
     resp
 }
 
+/// A pointer press this frame landed outside a popup `Area` (its `show` response). egui
+/// hit-tests a fixed-position area where it was asked to go, not where it was moved to fit the
+/// window, so `contains_pointer` / `hovered` are false over a menu shifted up from the bottom of
+/// the window and the menu would close on the press before its entry is clicked (#117). The
+/// area's response rect is where it was drawn.
+pub fn pressed_outside(ctx: &egui::Context, area: &Response) -> bool {
+    ctx.input(|i| i.pointer.any_pressed() && !i.pointer.interact_pos().is_some_and(|p| area.rect.contains(p)))
+}
+
 /// Show a popup menu anchored at `pos` with string options; returns the chosen index.
 pub fn popup_menu(ui: &mut Ui, id: egui::Id, pos: egui::Pos2, options: &[String], current: Option<usize>) -> Option<usize> {
     let mut chosen = None;
@@ -254,7 +263,7 @@ pub fn popup_menu(ui: &mut Ui, id: egui::Id, pos: egui::Pos2, options: &[String]
             });
         });
     });
-    let clicked_outside = ui.input(|i| i.pointer.any_pressed()) && !area.response.contains_pointer() && !area.response.hovered();
+    let clicked_outside = pressed_outside(ui.ctx(), &area.response);
     if chosen.is_some() || clicked_outside || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
         ui.data_mut(|d| d.insert_temp(open_id, false));
     }

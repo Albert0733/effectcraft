@@ -184,7 +184,7 @@ pub fn panel_menu_popup(app: &mut EffectcraftApp, ui: &mut egui::Ui) {
             }
         });
     });
-    if close || (ui.input(|i| i.pointer.any_pressed()) && !area.response.contains_pointer() && !area.response.hovered()) {
+    if close || crate::widgets::pressed_outside(ui.ctx(), &area.response) {
         ui.ctx().data_mut(|d| d.remove::<(PanelKind, egui::Pos2)>(id));
     }
 }
