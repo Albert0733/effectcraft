@@ -123,6 +123,7 @@ fn gaps_of(h: &mut Harness<'_, EffectcraftApp>, p: PanelKind) -> Vec<String> {
 }
 
 #[test]
+#[cfg_attr(not(debug_assertions), ignore = "egui records widget types only in debug builds")]
 fn every_panel_registers_automation_ids_for_its_widgets() {
     let mut s = session();
     // Content for the selection-driven panels: the title (text with effects), a Render Queue
@@ -133,7 +134,9 @@ fn every_panel_registers_automation_ids_for_its_widgets() {
     let title = s.active_comp().unwrap().layers.iter().find(|l| l.name == "EFFECTCRAFT").map(|l| l.id.0).unwrap();
     let mut h = harness(s);
     h.state_mut().ui.layer_panel = Some(title);
-    // egui records widget types (to tell labels from controls) with this debug option.
+    // egui records widget types (to tell labels from controls) with this debug option, which
+    // only debug builds have.
+    #[cfg(debug_assertions)]
     h.ctx.all_styles_mut(|st| st.debug.show_interactive_widgets = true);
     let mut gaps = vec![];
     for p in PanelKind::ALL {
