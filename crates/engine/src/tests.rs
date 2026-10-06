@@ -68,6 +68,34 @@ fn add_item_at_a_stack_index_and_time() {
     assert!(s.execute("layer.addItem", json!({"item": clip, "index": 0})).is_err(), "1-based");
 }
 
+/// Files dropped on the Timeline or the Composition viewer (`file.import {addToComp}`) become
+/// layers of the comp that was active, one under the other, where they were dropped (#85, #89).
+#[test]
+fn imported_files_go_into_the_comp_where_they_were_dropped() {
+    use effectcraft_project::{Footage, FootageKind};
+    struct Probe;
+    impl crate::Importer for Probe {
+        fn probe(&self, path: &str) -> Result<Footage, String> {
+            Ok(Footage { path: path.into(), kind: FootageKind::Still, width: 64, height: 32, has_video: true, ..Default::default() })
+        }
+    }
+    let mut s = Session { importer: Some(std::sync::Arc::new(Probe)), ..Default::default() };
+    s.execute("comp.new", json!({"name": "Main", "width": 320, "height": 180, "frameRate": 30, "duration": 4})).unwrap();
+    s.execute("layer.newSolid", json!({"name": "Bg"})).unwrap();
+    let params = json!({"paths": ["/drop/a.png", "/drop/b.png"], "addToComp": true, "position": [40.0, 50.0], "index": 1, "time": 1.0});
+    s.execute("file.import", params).unwrap();
+    let comp = s.active_comp().unwrap();
+    assert_eq!(comp.layers.iter().map(|l| l.name.as_str()).collect::<Vec<_>>(), ["a.png", "b.png", "Bg"]);
+    for l in &comp.layers[..2] {
+        assert_eq!(l.props.prop("transform/position").map(|p| p.value.clone()), Some(effectcraft_keyframe::Value::Vec3([40.0, 50.0, 0.0])));
+        assert_eq!(l.in_point, effectcraft_time::Tick::from_seconds_f64(1.0));
+    }
+    // Without `addToComp` they only import.
+    s.execute("file.import", json!({"paths": ["/drop/c.png"]})).unwrap();
+    assert_eq!(s.active_comp().unwrap().layers.len(), 3);
+    assert!(s.execute("layer.addItem", json!({"item": "a.png", "position": [1.0]})).is_err(), "position needs x and y");
+}
+
 /// Audio, Lock and Shy don't change pixels: toggling them keeps the cached layers (#103).
 #[test]
 fn audio_lock_and_shy_keep_cached_layers() {

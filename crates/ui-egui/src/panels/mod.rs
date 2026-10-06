@@ -49,6 +49,7 @@ pub mod timeline;
 pub mod tracker;
 pub mod unsaved;
 pub mod viewer;
+pub mod viewer_drop;
 pub mod viewer_overlays;
 pub mod viewer_text;
 pub mod viewer_tools;
