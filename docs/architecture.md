@@ -268,7 +268,11 @@ zero texture per size, readback staging buffers are reused, and the 8/16 bpc qua
 each layer is fused into the layer's composite kernel; under test, pooled scratch images start
 as NaNs (a kernel that skips pixels fails the oracle) and validation errors panic. The desktop viewer builds the
 `Gpu` on egui-wgpu's device and shows frames from GPU textures without reading them back
-(`ui-egui::frames`); headless renders, the CLI (unless `--gpu`) and CI use the CPU. On the web
+(`ui-egui::frames`); headless renders, the CLI (unless `--gpu`) and CI use the CPU. Outside
+tests, device errors are logged rather than fatal. A viewer frame that runs out of video memory
+(`Gpu::within_memory`) renders on the CPU, the uploaded layers and pooled textures are freed, and
+the RAM preview keeps half as many GPU frames from then on. A frame whose render panics is
+rendered again on the CPU or released, never left in progress. On the web
 (WebGPU) the GPU composites viewer frames; steps that need a readback fall back to the CPU (the
 Info panel's pixel readout reads GPU frames back asynchronously). **GPU particles**
 (`effects::psim`, `gpu::particles`): CC Particle World, CC Particle Systems II and Particle
