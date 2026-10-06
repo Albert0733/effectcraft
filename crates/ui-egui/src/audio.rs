@@ -92,6 +92,9 @@ impl AudioFeed {
         out[real..].iter_mut().for_each(|o| *o = 0.0);
         self.consumed.fetch_add((real / 2) as u64, Ordering::Relaxed);
         for (c, v) in pk.into_iter().enumerate() {
+            // Rust 1.99 renamed `fetch_update` to `try_update`; keep the old name while the
+            // workspace supports Rust 1.95 (`rust-version`).
+            #[allow(deprecated)]
             let _ = self.peak[c].fetch_update(Ordering::Relaxed, Ordering::Relaxed, |old| (v > f32::from_bits(old)).then_some(v.to_bits()));
         }
     }
