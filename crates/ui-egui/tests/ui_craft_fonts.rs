@@ -18,7 +18,9 @@ fn installed() -> egui::Context {
     let ctx = egui::Context::default();
     theme::install(&ctx, &Tokens::for_kind(ThemeKind::Dark));
     // Fonts are loaded at the start of the first frame.
-    let _ = ctx.run_ui(egui::RawInput::default(), |_| {});
+    let mut out = ctx.run_ui(egui::RawInput::default(), |_| {});
+    // Nothing renders here; drop the atlas upload instead of applying it.
+    out.textures_delta.clear();
     ctx
 }
 
