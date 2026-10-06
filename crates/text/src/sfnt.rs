@@ -16,6 +16,9 @@ pub struct FaceNames {
     /// The family name in another language than English (CJK, Arabic… fonts), when the font
     /// has one (Settings ▸ Type ▸ Show Font Names in English off shows it).
     pub native_family: Option<String>,
+    /// The PostScript name (name id 6, e.g. `YuGothic-Bold`): what After Effects scripts and
+    /// `.aep`-derived data call a font.
+    pub postscript: Option<String>,
 }
 
 fn be16(b: &[u8], o: usize) -> Option<u16> {
@@ -79,6 +82,7 @@ fn read_face<R: Read + Seek>(r: &mut R, off: u64, index: u32) -> Option<FaceName
     let style = get(17).or_else(|| get(2)).unwrap_or_else(|| "Regular".into());
     let full_name = get(4).unwrap_or_else(|| format!("{family} {style}"));
     let native_family = native_name(&nb, 16).or_else(|| native_name(&nb, 1)).filter(|n| *n != family);
+    let postscript = get(6).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
     let (mut weight, mut italic) = (400u16, false);
     if let Some((oo, ol)) = os2
         && let Some(ob) = read_at(r, oo, ol.min(78))
@@ -88,7 +92,7 @@ fn read_face<R: Read + Seek>(r: &mut R, off: u64, index: u32) -> Option<FaceName
     }
     let sl = style.to_ascii_lowercase();
     italic |= sl.contains("italic") || sl.contains("oblique");
-    Some(FaceNames { index, family, style, full_name, weight, italic, native_family })
+    Some(FaceNames { index, family, style, full_name, weight, italic, native_family, postscript })
 }
 
 /// A Windows Unicode name-table string by id in a language other than US English.
