@@ -227,3 +227,27 @@ fn opentype_features_per_range_render_and_query() {
     assert!(f["options"]["stylisticSets"].as_array().unwrap().contains(&json!(1)));
     assert_eq!(f["options"]["smallCaps"], false);
 }
+
+#[test]
+fn fonts_lists_bundled_and_installed_families() {
+    let mut s = Session::default();
+    let r = s.execute("text.fonts", json!({})).unwrap();
+    let fams = r["families"].as_array().unwrap();
+    assert_eq!(r["count"].as_u64().unwrap() as usize, fams.len());
+    let inter = fams.iter().find(|f| f["family"] == "Inter").unwrap();
+    assert_eq!(inter["origin"], "bundled");
+    assert!(inter["styles"].as_array().unwrap().contains(&json!("Bold")));
+    // Installed fonts are listed without any layer having asked for one.
+    use effectcraft_text::fonts::FontSource as _;
+    for face in effectcraft_text::fonts::DirectorySource::system().faces() {
+        assert!(fams.iter().any(|f| f["family"].as_str().unwrap().eq_ignore_ascii_case(&face.family)), "{} not listed", face.family);
+    }
+    // Filtered by name; rescanning keeps what was there.
+    let r = s.execute("text.fonts", json!({"query": "noto ser", "rescan": true})).unwrap();
+    assert_eq!(r["families"][0]["family"], "Noto Serif");
+    assert_eq!(r["families"][0]["styles"], json!(["Regular"]));
+    assert!(r["families"].as_array().unwrap().iter().all(|f| f["family"].as_str().unwrap().to_lowercase().contains("noto ser")));
+    // The style menus offer a family's own styles.
+    assert_eq!(crate::font_styles("noto serif"), vec!["Regular".to_string()]);
+    assert_eq!(crate::font_styles("No Such Family").len(), 5);
+}

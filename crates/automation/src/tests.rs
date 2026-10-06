@@ -394,6 +394,18 @@ fn high_level_tools_add_effect_and_report_state() {
     assert!(err && c[0]["text"].as_str().unwrap().contains("unknown effect"), "{c:?}");
 }
 
+#[test]
+fn list_fonts_lists_families_with_styles() {
+    let mut s = server();
+    let all = call_json(&mut s, "list_fonts", json!({}));
+    let fams = all["families"].as_array().unwrap();
+    assert!(fams.iter().any(|f| f["family"] == "Inter" && f["origin"] == "bundled"), "{all}");
+    let one = call_json(&mut s, "list_fonts", json!({"query": "jetbrains"}));
+    assert_eq!(one["count"], 1, "{one}");
+    assert_eq!(one["families"][0]["family"], "JetBrains Mono");
+    assert!(one["families"][0]["styles"].as_array().unwrap().contains(&json!("Regular")), "{one}");
+}
+
 /// Trained models over MCP (Roto Brush and face tracking): listed with their authors and
 /// licence, chosen, refused when unknown.
 #[test]

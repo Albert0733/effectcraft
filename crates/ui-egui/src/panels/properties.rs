@@ -345,9 +345,10 @@ fn text_section(
         widgets::open_popup(ui, pop);
     }
     app.auto.add("properties.text.font", fr, "Font family");
-    let fams: Vec<String> = effectcraft_engine::text_families();
-    if let Some(i) = widgets::popup_menu(ui, pop, fr.left_bottom(), &fams, fams.iter().position(|f| *f == doc.font)) {
-        set(actions, json!({"font": fams[i]}));
+    // Every installed family (built only while the menu is open: it can be long).
+    let fams: Vec<String> = if widgets::popup_is_open(ui, pop) { effectcraft_engine::text_families() } else { vec![] };
+    if let Some(f) = widgets::popup_menu(ui, pop, fr.left_bottom(), &fams, fams.iter().position(|f| *f == doc.font)).and_then(|i| fams.get(i)) {
+        set(actions, json!({"font": f}));
     }
     y += 28.0;
     let sr = Rect::from_min_size(pos2(x0, y), vec2(w, 22.0));
@@ -356,9 +357,10 @@ fn text_section(
         widgets::open_popup(ui, spop);
     }
     app.auto.add("properties.text.style", sr, "Font style");
-    let styles: Vec<String> = ["Regular", "Medium", "SemiBold", "Bold", "Italic"].iter().map(|s| s.to_string()).collect();
-    if let Some(i) = widgets::popup_menu(ui, spop, sr.left_bottom(), &styles, styles.iter().position(|s| *s == doc.style)) {
-        set(actions, json!({"style": styles[i]}));
+    // The family's own styles.
+    let styles: Vec<String> = if widgets::popup_is_open(ui, spop) { effectcraft_engine::font_styles(&doc.font) } else { vec![] };
+    if let Some(st) = widgets::popup_menu(ui, spop, sr.left_bottom(), &styles, styles.iter().position(|s| *s == doc.style)).and_then(|i| styles.get(i)) {
+        set(actions, json!({"style": st}));
     }
     y += 32.0;
     // Size / leading, tracking / stroke width.

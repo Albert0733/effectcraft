@@ -1018,6 +1018,17 @@ pub fn text_families() -> Vec<String> {
     effectcraft_text::families().into_iter().map(|(f, _)| f).collect()
 }
 
+/// The styles a family offers (its own faces, in weight order), for the style menus. A family
+/// that isn't installed offers the usual styles, which resolve to Inter's.
+pub fn font_styles(family: &str) -> Vec<String> {
+    effectcraft_text::families()
+        .into_iter()
+        .find(|(f, _)| f.eq_ignore_ascii_case(family))
+        .map(|(_, st)| st)
+        .filter(|st| !st.is_empty())
+        .unwrap_or_else(|| ["Regular", "Medium", "SemiBold", "Bold", "Italic"].iter().map(|s| s.to_string()).collect())
+}
+
 /// The OpenType feature tags (GSUB / GPOS) of the face a family + style resolves to.
 pub fn font_features(family: &str, style: &str) -> Vec<String> {
     effectcraft_text::fonts::face(effectcraft_text::resolve(family, style).face).features()

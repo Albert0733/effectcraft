@@ -54,6 +54,8 @@ fn main() -> eframe::Result {
             _ => files.push(a),
         }
     }
+    // The font menus list the installed fonts: read their names while the window opens.
+    effectcraft_engine::text::fonts::scan_system_in_background();
     // Wayland shows the window's icon from its desktop entry: an AppImage brings its own.
     #[cfg(target_os = "linux")]
     appimage::integrate_from_env(ICON_PNG);
