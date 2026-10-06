@@ -306,12 +306,16 @@ pub fn add_font_data(data: Vec<u8>) -> Vec<FaceId> {
     names.into_iter().map(|n| push(&mut d, info_from(n, FaceData::Shared(data.clone()), "user"))).collect()
 }
 
+/// Held for a whole system scan: a concurrent caller waits for the complete list instead of
+/// returning early and resolving against a half-filled database.
+static SCAN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Scan the system font folders once (native only; a no-op on wasm). Returns the number of faces
 /// added by this call.
 pub fn scan_system() -> usize {
-    // Held for the whole scan: a concurrent caller waits for the complete list instead of
-    // returning early and resolving against a half-filled database.
-    static SCAN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    if system_scanned() {
+        return 0;
+    }
     let _scan = SCAN.lock().unwrap_or_else(|e| e.into_inner());
     if system_scanned() {
         return 0;
@@ -319,6 +323,31 @@ pub fn scan_system() -> usize {
     let n = if cfg!(target_arch = "wasm32") { 0 } else { add_source(&DirectorySource::system()) };
     db().write().unwrap_or_else(|e| e.into_inner()).scanned = true;
     n
+}
+
+/// Scan the system font folders again, adding fonts installed since the last scan (faces already
+/// known are kept, so font ids stay valid). Returns the number of faces added.
+pub fn rescan_system() -> usize {
+    let _scan = SCAN.lock().unwrap_or_else(|e| e.into_inner());
+    let n = if cfg!(target_arch = "wasm32") { 0 } else { add_source(&DirectorySource::system()) };
+    db().write().unwrap_or_else(|e| e.into_inner()).scanned = true;
+    n
+}
+
+/// Start the system font scan on a background thread, so the font menus are complete by the
+/// time someone opens them without the first open waiting for the scan. Native only; on wasm
+/// (no threads, no font folders) this does nothing.
+pub fn scan_system_in_background() {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        if system_scanned() {
+            return;
+        }
+        // A failed spawn only means the scan happens on first use instead.
+        let _ = std::thread::Builder::new().name("font-scan".into()).spawn(|| {
+            scan_system();
+        });
+    }
 }
 
 pub fn system_scanned() -> bool {
@@ -340,13 +369,18 @@ pub fn all_faces() -> Vec<Arc<Face>> {
 }
 
 /// Family names in the fonts' own languages: English family → native family (only families
-/// that have one).
+/// that have one). Scans the system fonts first if that hasn't happened yet.
 pub fn native_families() -> std::collections::BTreeMap<String, String> {
+    scan_system();
     all_faces().into_iter().filter_map(|f| Some((f.info.family.clone(), f.info.native_family.clone()?))).collect()
 }
 
-/// Families with their style names, sorted by family; styles in weight order.
+/// Families with their style names, sorted by family; styles in weight order. This is what font
+/// menus list, so it scans the system fonts first if that hasn't happened yet (before, only a
+/// project asking for a font the bundled ones lack started the scan, and the menus offered the
+/// three bundled families alone).
 pub fn families() -> Vec<(String, Vec<String>)> {
+    scan_system();
     let mut m: std::collections::BTreeMap<String, Vec<(bool, u16, String)>> = Default::default();
     for f in all_faces() {
         let v = m.entry(f.info.family.clone()).or_default();
@@ -649,9 +683,15 @@ mod tests {
         let s = resolve("Noto Serif", "Bold Italic");
         assert_eq!(face(s.face).info.family, "Noto Serif");
         assert!(s.synth_bold && s.synth_italic);
-        // Inter Bold Italic: nearest is Italic (400) → synth bold
+        // Inter Bold Italic: the bundled cuts' nearest is Italic (400) → synth bold. Listing the
+        // families scanned the system fonts, so an installed Inter's real Bold Italic wins.
         let bi = resolve("Inter", "Bold Italic");
-        assert!(face(bi.face).info.italic && bi.synth_bold && !bi.synth_italic);
+        let f = face(bi.face);
+        if f.info.origin == "bundled" {
+            assert!(f.info.italic && bi.synth_bold && !bi.synth_italic);
+        } else {
+            assert!(f.info.style.eq_ignore_ascii_case("Bold Italic") && !bi.synth_bold && !bi.synth_italic);
+        }
     }
 
     #[test]

@@ -107,9 +107,10 @@ pub fn character(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         widgets::open_popup(ui, spop);
     }
     app.auto.add("character.style", sr, "Font style");
-    let styles: Vec<String> = ["Regular", "Medium", "SemiBold", "Bold", "Italic"].iter().map(|s| s.to_string()).collect();
-    if let Some(i) = widgets::popup_menu(ui, spop, sr.left_bottom(), &styles, styles.iter().position(|s| *s == doc.style)) {
-        actions.push(json!({"style": styles[i]}));
+    // The family's own styles.
+    let styles: Vec<String> = if widgets::popup_is_open(ui, spop) { effectcraft_engine::font_styles(&doc.font) } else { vec![] };
+    if let Some(st) = widgets::popup_menu(ui, spop, sr.left_bottom(), &styles, styles.iter().position(|s| *s == doc.style)).and_then(|i| styles.get(i)) {
+        actions.push(json!({"style": st}));
     }
     y += 34.0;
     // Numeric fields in AE's two-column grid (Kerning is a popup, at row 1 right).

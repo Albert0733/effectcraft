@@ -97,8 +97,8 @@ Paragraph, Align, Info, Preview, Audio and the Render Queue, docked the way you 
 - **Shapes and masks:** shape layers with trim paths, repeaters, round corners, offset, zig zag,
   twist, wiggle, merge paths and gradient strokes; masks drawn with the pen tool, with modes,
   feather, expansion and vertex editing in the viewer.
-- **Text:** point and paragraph text with real shaping, the Character and Paragraph panels, and
-  text animators with range selectors.
+- **Text:** point and paragraph text with real shaping in any font installed on your machine, the
+  Character and Paragraph panels, and text animators with range selectors.
 - **Expressions:** JavaScript with the After Effects object model (`wiggle`, `loopOut`,
   `thisComp.layer("…")`, vector maths on arrays), an inline editor and the pick-whip.
 - **Timeline like you know it:** twirl layers open to Transform, masks, effects and the rest; drag

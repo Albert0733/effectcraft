@@ -150,6 +150,10 @@ fn list_effects(b: &mut Backend, a: &Value) -> Result<Reply> {
     json_reply(b.exec("effect.list", obj(&[("filter", get(a, "filter"))]))?)
 }
 
+fn list_fonts(b: &mut Backend, a: &Value) -> Result<Reply> {
+    json_reply(b.exec("text.fonts", obj(&[("query", get(a, "query")), ("rescan", get(a, "rescan"))]))?)
+}
+
 /// `effect.apply` on one layer, then set parameters on the new instance by param id.
 fn add_effect(b: &mut Backend, a: &Value) -> Result<Reply> {
     let (layer, effect, comp) = (need(a, "layer")?, need(a, "effect")?, get(a, "comp"));
@@ -606,6 +610,21 @@ static TOOLS: &[ToolDef] = &[
         bridge_only: false,
         schema: || schema(json!({"filter": {"type": "string", "description": "Only effects whose id, name or category contains this text."}}), &[]),
         run: list_effects,
+    },
+    ToolDef {
+        name: "list_fonts",
+        description: "The font families text layers can use, bundled and installed on this machine: family, styles, origin (bundled / system / user) and the name in the font's own language. Narrow with `query`; `rescan` picks up fonts installed since launch. Set one with execute_command `layer.setText {\"layer\", \"font\", \"style\"}`.",
+        bridge_only: false,
+        schema: || {
+            schema(
+                json!({
+                    "query": {"type": "string", "description": "Only families whose name (English or own-language) contains this text."},
+                    "rescan": {"type": "boolean", "description": "Look for fonts installed since launch first."}
+                }),
+                &[],
+            )
+        },
+        run: list_fonts,
     },
     ToolDef {
         name: "get_state",
