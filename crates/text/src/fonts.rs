@@ -679,18 +679,27 @@ mod tests {
         let b = resolve("inter", "bold");
         assert_eq!(face(b.face).info.style, "Bold");
         assert!(!b.synth_bold);
-        // Noto Serif has only Regular: Bold Italic is synthesised
-        let s = resolve("Noto Serif", "Bold Italic");
-        assert_eq!(face(s.face).info.family, "Noto Serif");
-        assert!(s.synth_bold && s.synth_italic);
-        // Inter Bold Italic: the bundled cuts' nearest is Italic (400) → synth bold. Listing the
-        // families scanned the system fonts, so an installed Inter's real Bold Italic wins.
-        let bi = resolve("Inter", "Bold Italic");
-        let f = face(bi.face);
-        if f.info.origin == "bundled" {
-            assert!(f.info.italic && bi.synth_bold && !bi.synth_italic);
-        } else {
-            assert!(f.info.style.eq_ignore_ascii_case("Bold Italic") && !bi.synth_bold && !bi.synth_italic);
+        let faces = all_faces();
+        assert!(faces.iter().any(|f| f.info.family == "Noto Serif" && f.info.style == "Regular" && f.info.origin == "bundled"));
+        // A real installed Bold Italic takes priority. Partial installed families can instead
+        // supply the nearest weight/slant, so neither synthesis flag is fixed by the OS.
+        for family in ["Noto Serif", "Inter"] {
+            let resolved = resolve(family, "Bold Italic");
+            let selected = face(resolved.face);
+            assert!(selected.info.family.eq_ignore_ascii_case(family));
+            assert!(!resolved.missing);
+            let candidates: Vec<_> = faces.iter().filter(|f| f.info.family.eq_ignore_ascii_case(family)).collect();
+            if let Some(exact) = candidates.iter().find(|f| f.info.style.eq_ignore_ascii_case("Bold Italic")) {
+                assert_eq!(resolved.face, exact.id, "real style wins for {family}");
+                assert!(!resolved.synth_bold && !resolved.synth_italic);
+            } else {
+                // Italic mismatch dominates any supported font weight distance.
+                let distance = |f: &Face| u32::from(f.info.weight.abs_diff(700)) + if f.info.italic { 0 } else { 1_000 };
+                let nearest = candidates.iter().map(|f| distance(f)).min().unwrap();
+                assert_eq!(distance(&selected), nearest, "closest available style for {family}");
+                assert_eq!(resolved.synth_bold, selected.info.weight <= 500);
+                assert_eq!(resolved.synth_italic, !selected.info.italic);
+            }
         }
     }
 

@@ -239,15 +239,23 @@ fn fonts_lists_bundled_and_installed_families() {
     assert!(inter["styles"].as_array().unwrap().contains(&json!("Bold")));
     // Installed fonts are listed without any layer having asked for one.
     use effectcraft_text::fonts::FontSource as _;
-    for face in effectcraft_text::fonts::DirectorySource::system().faces() {
+    let installed = effectcraft_text::fonts::DirectorySource::system().faces();
+    for face in &installed {
         assert!(fams.iter().any(|f| f["family"].as_str().unwrap().eq_ignore_ascii_case(&face.family)), "{} not listed", face.family);
     }
     // Filtered by name; rescanning keeps what was there.
     let r = s.execute("text.fonts", json!({"query": "noto ser", "rescan": true})).unwrap();
     assert_eq!(r["families"][0]["family"], "Noto Serif");
-    assert_eq!(r["families"][0]["styles"], json!(["Regular"]));
+    // The bundled face is Regular; the OS can also provide Bold, Italic, or other faces.
+    // Compare against the independent directory inventory rather than assuming an empty OS.
+    let mut expected_styles = std::collections::BTreeSet::from(["Regular".to_string()]);
+    expected_styles.extend(installed.iter().filter(|face| face.family.eq_ignore_ascii_case("Noto Serif")).map(|face| face.style.clone()));
+    let styles: Vec<String> = r["families"][0]["styles"].as_array().unwrap().iter().map(|style| style.as_str().unwrap().to_string()).collect();
+    assert_eq!(styles.iter().cloned().collect::<std::collections::BTreeSet<_>>(), expected_styles);
+    assert_eq!(styles.len(), expected_styles.len(), "style menu has no duplicates");
     assert!(r["families"].as_array().unwrap().iter().all(|f| f["family"].as_str().unwrap().to_lowercase().contains("noto ser")));
     // The style menus offer a family's own styles.
-    assert_eq!(crate::font_styles("noto serif"), vec!["Regular".to_string()]);
+    assert_eq!(crate::font_styles("noto serif"), styles);
+    assert_eq!(crate::font_styles("NOTO SERIF"), styles);
     assert_eq!(crate::font_styles("No Such Family").len(), 5);
 }
