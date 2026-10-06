@@ -166,3 +166,100 @@ fn nested_comp_markers_show_on_the_precomp_bar() {
     // (29.97 fps: the marker's frame is at 1.001 s)
     assert!((h.state().session.time().seconds() - 1.0).abs() < 0.034, "{}", h.state().session.time().seconds());
 }
+
+/// Issue #46: a panel dragged by its panel-menu (hamburger) button onto the left edge of another
+/// group docks there as its own group; dragging the gap between panels resizes them.
+#[test]
+fn panels_dock_beside_others_and_gutters_resize_them() {
+    let (mut h, _, _) = harness();
+    let dock = |h: &Harness<'_, EffectcraftApp>| h.state().ui.dock.clone();
+    // Show Effect Controls in its group so its menu button is on screen, then drag by it.
+    let tab = rect(&h, "panel.tab.EffectControls");
+    click_n(&mut h, tab.center(), 1);
+    let grip = rect(&h, "panel.menu.EffectControls").center();
+    let tl = rect(&h, "panel.Timeline");
+    drag(&mut h, grip, pos2(tl.min.x + tl.width() * 0.08, tl.center().y));
+    assert_eq!(group_of(&dock(&h), PanelKind::EffectControls), Some(vec![PanelKind::EffectControls]));
+    assert!(!group_of(&dock(&h), PanelKind::Timeline).unwrap().contains(&PanelKind::EffectControls));
+    let (fx, tl) = (rect(&h, "panel.EffectControls"), rect(&h, "panel.Timeline"));
+    assert!(fx.max.x <= tl.min.x + 1.0 && (fx.center().y - tl.center().y).abs() < tl.height(), "{fx:?} {tl:?}");
+    // The gutter on the Project panel's right edge: dragging it 60 px widens the panel by 60.
+    let project = rect(&h, "panel.Project");
+    let gutter = h
+        .state()
+        .auto
+        .previous
+        .iter()
+        .filter(|e| e.id.starts_with("dock.gutter.") && e.rect[3] > e.rect[2])
+        .map(|e| egui::Rect::from_min_size(pos2(e.rect[0], e.rect[1]), egui::vec2(e.rect[2], e.rect[3])))
+        .filter(|g| g.y_range().contains(project.center().y))
+        .min_by(|a, b| (a.center().x - project.max.x).abs().total_cmp(&(b.center().x - project.max.x).abs()))
+        .expect("a gutter beside the Project panel");
+    drag(&mut h, gutter.center(), gutter.center() + egui::vec2(60.0, 0.0));
+    let wider = rect(&h, "panel.Project");
+    assert!((wider.width() - project.width() - 60.0).abs() < 2.0, "{} → {}", project.width(), wider.width());
+}
+
+/// Issue #45: the Project panel's details (name, size, duration) stay inside the panel with a
+/// margin, cut short with "…" when they don't fit; so does the hint shown with nothing selected.
+#[test]
+fn project_details_stay_inside_the_panel() {
+    let (mut h, pre, _) = harness();
+    let long = "A composition with a very long name that could never fit beside the thumbnail".to_string();
+    h.state_mut().session.execute("project.rename", json!({"item": pre, "name": long})).unwrap();
+    h.state_mut().session.state.project_selection = vec![ItemId(pre)];
+    h.run_steps(3);
+    let panel = rect(&h, "panel.Project");
+    for id in ["project.details.name", "project.details.0", "project.details.1"] {
+        let r = rect(&h, id);
+        assert!(r.max.x <= panel.max.x - 9.0 && r.width() > 10.0, "{id}: {r:?} in {panel:?}");
+    }
+    h.state_mut().session.state.project_selection.clear();
+    h.run_steps(3);
+    let r = rect(&h, "project.details.hint");
+    assert!(r.min.x >= panel.min.x + 9.0 && r.max.x <= panel.max.x - 9.0, "{r:?} in {panel:?}");
+}
+
+/// A file dropped on the window (what the windowing layer hands egui).
+#[derive(Debug)]
+struct Dropped(std::path::PathBuf);
+
+impl egui::DroppedFile for Dropped {
+    fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+    fn bytes(&self) -> Result<Vec<u8>, String> {
+        std::fs::read(&self.0).map_err(|e| e.to_string())
+    }
+}
+
+/// Issue #44: double-clicking the Project panel's empty area asks for files to import (as After
+/// Effects' File ▸ Import ▸ File... does), and files dropped on the window are imported. (Tests
+/// have no media decoders: what is checked is that the import runs with those files.)
+#[test]
+fn project_empty_area_double_click_and_dropped_files_import() {
+    let (mut h, _, _) = harness();
+    let png = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/app-icon/hicolor/16x16/apps/ai.storyteller.effectcraft.png");
+    let png = std::fs::canonicalize(png).unwrap().to_string_lossy().to_string();
+    let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (a, p) = (asked.clone(), png.clone());
+    h.state_mut().hooks.pick_files = Some(Box::new(move |_| {
+        a.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        vec![p.clone()]
+    }));
+    let imports = |h: &Harness<'_, EffectcraftApp>| h.state().session.journal.iter().filter(|(c, p)| c == "file.import" && p["paths"] == json!([png])).count();
+    // Below the last row.
+    let last = rect(&h, "project.item.2");
+    let empty = rect(&h, "project.empty");
+    click_n(&mut h, pos2(empty.center().x, (last.max.y + empty.max.y) / 2.0), 2);
+    assert_eq!(asked.load(std::sync::atomic::Ordering::Relaxed), 1, "the file dialog opened");
+    assert_eq!(imports(&h), 1, "the picked file was imported");
+    // A double-click on a row opens that item instead.
+    let row = rect(&h, "project.item.2.name");
+    click_n(&mut h, row.center(), 2);
+    assert_eq!(asked.load(std::sync::atomic::Ordering::Relaxed), 1);
+    // Dropping a file on the window imports it.
+    h.input_mut().dropped_files.push(std::sync::Arc::new(Dropped(png.clone().into())));
+    h.run_steps(2);
+    assert_eq!(imports(&h), 2, "the dropped file was imported");
+}

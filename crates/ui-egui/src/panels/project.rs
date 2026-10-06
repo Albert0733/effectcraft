@@ -212,8 +212,11 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
             },
         }
         app.auto.add("project.thumbnail", thumb, &it.name);
+        // The details stay inside the panel (a margin on the right), cut short with "…".
         let tx = thumb.max.x + 10.0;
-        p.text(pos2(tx, thumb.min.y + 6.0), Align2::LEFT_CENTER, &it.name, Tokens::semibold(12.0), t.text);
+        let max_w = head.max.x - 10.0 - tx;
+        let r = widgets::text_fit(&p, pos2(tx, thumb.min.y + 6.0), Align2::LEFT_CENTER, &it.name, Tokens::semibold(12.0), max_w, t.text);
+        app.auto.add("project.details.name", r, &it.name);
         let mut lines = vec![];
         if let Some((w, h)) = it.dimensions() {
             lines.push(format!("{w} x {h} (1.00)"));
@@ -226,10 +229,13 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
             lines.push(f.codec.clone());
         }
         for (i, l) in lines.iter().enumerate() {
-            p.text(pos2(tx, thumb.min.y + 22.0 + 13.0 * i as f32), Align2::LEFT_CENTER, l, Tokens::ui(11.0), t.text_dim);
+            let r = widgets::text_fit(&p, pos2(tx, thumb.min.y + 22.0 + 13.0 * i as f32), Align2::LEFT_CENTER, l, Tokens::ui(11.0), max_w, t.text_dim);
+            app.auto.add(&format!("project.details.{i}"), r, l);
         }
     } else {
-        p.text(head.center(), Align2::CENTER_CENTER, "Select an item to see its details", Tokens::ui(11.0), t.text_faint);
+        let hint = "Select an item to see its details";
+        let r = widgets::text_fit(&p, head.center(), Align2::CENTER_CENTER, hint, Tokens::ui(11.0), head.width() - 20.0, t.text_faint);
+        app.auto.add("project.details.hint", r, hint);
     }
     // Search.
     let sr = Rect::from_min_size(pos2(rect.min.x + 8.0, head.max.y + 2.0), vec2(rect.width() - 16.0, 22.0));
@@ -297,6 +303,10 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let footer_h = 28.0;
     let list = Rect::from_min_max(pos2(rect.min.x, hdr.max.y), pos2(rect.max.x, rect.max.y - footer_h));
     let lp = p.with_clip_rect(list);
+    // The list's empty area (under the rows and the scroll bar, which take their own clicks):
+    // a double-click imports, as in After Effects (File ▸ Import ▸ File...).
+    let empty = ui.interact(list, egui::Id::new("proj-empty"), Sense::click());
+    app.auto.add("project.empty", list, "Double-click to import files");
     if overflow > 0.0 && ui.rect_contains_pointer(list) {
         let (dx, dy, shift) = ui.input(|i| (i.smooth_scroll_delta.x, i.smooth_scroll_delta.y, i.modifiers.shift));
         let d = if dx.abs() > 0.0 {
@@ -680,6 +690,9 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         actions.push(("project.delete".into(), json!({})));
     }
     app.auto.add("project.delete", tr, "Delete");
+    if empty.double_clicked() {
+        actions.push(("file.import".into(), json!({})));
+    }
     for (id, params) in actions {
         if let Err(e) = crate::menus::invoke(app, &ctx, &id, params) {
             app.ui.status = e;

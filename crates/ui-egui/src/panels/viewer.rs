@@ -6,7 +6,7 @@
 
 use effectcraft_engine::effects::puppet::PinKind;
 use effectcraft_engine::geom::{Mat3, vec2 as gv2};
-use effectcraft_engine::project::{Layer, LayerId};
+use effectcraft_engine::project::{Comp, Layer, LayerId};
 use effectcraft_engine::render::EvalCtx;
 use effectcraft_engine::render::three_d::{self, CameraState, View3D};
 use effectcraft_engine::time::Tick;
@@ -68,10 +68,16 @@ enum Gesture {
     Camera {
         tool: Tool,
     },
+    /// A bounding-box handle: scales about the anchor point so the grabbed point follows the
+    /// pointer (corners both axes, edges one), relative to the layer as the drag began.
     Scale {
         layer: LayerId,
         start_scale: [f64; 3],
+        /// The grabbed point relative to the anchor, in layer pixels.
         start_local: [f64; 2],
+        anchor: [f64; 2],
+        axes: [bool; 2],
+        /// Comp → layer pixels as the drag began.
         inv: Mat3,
     },
     Rotate {
@@ -240,6 +246,32 @@ fn layer_quad(ctx: &EvalCtx, layer: &Layer) -> Option<(Mat3, [[f64; 2]; 4], [f64
         [q.x, q.y]
     });
     Some((m, pts, b))
+}
+
+/// Which axes a bounding-box handle scales: corners (0–3) both; the top and bottom edges (4, 6)
+/// y; the right and left edges (5, 7) x.
+fn handle_axes(handle: usize) -> [bool; 2] {
+    match handle {
+        4 | 6 => [false, true],
+        5 | 7 => [true, false],
+        _ => [true, true],
+    }
+}
+
+/// The scale that puts the point grabbed at `start` (relative to the anchor, layer pixels)
+/// under the pointer at `cur`, for a layer whose scale was `start_scale` when the drag began.
+/// `proportional` (Shift on a corner) keeps the aspect ratio, following the pointer along the
+/// handle's diagonal. Dragging past the anchor flips the layer, as in After Effects; an axis
+/// whose grabbed point sits on the anchor keeps its scale.
+fn drag_scale(start_scale: [f64; 3], start: [f64; 2], cur: [f64; 2], axes: [bool; 2], proportional: bool) -> [f64; 3] {
+    let ratio = |k: usize| if axes[k] && start[k].abs() > 1e-3 { cur[k] / start[k] } else { 1.0 };
+    let (mut fx, mut fy) = (ratio(0), ratio(1));
+    if proportional && axes == [true, true] {
+        let d2 = start[0] * start[0] + start[1] * start[1];
+        let f = if d2 > 1e-6 { (cur[0] * start[0] + cur[1] * start[1]) / d2 } else { 1.0 };
+        (fx, fy) = (f, f);
+    }
+    [start_scale[0] * fx, start_scale[1] * fy, start_scale[2]]
 }
 
 fn point_in_quad(p: [f64; 2], q: &[[f64; 2]; 4]) -> bool {
@@ -621,23 +653,6 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         }
         app.auto.add("viewer.regionOfInterest", r, "Region of interest");
     }
-    // 3D Reference Axes (grid and guide options): the world axes as seen by the view's camera.
-    if app.session.prefs.three_d.show_reference_axes && comp.layers.iter().any(|l| l.is_3d()) {
-        let cam = cam_state(&ectx);
-        let o = pos2(area.min.x + 40.0, area.max.y - 40.0);
-        for (axis, col, name) in [
-            (effectcraft_engine::geom::vec3(1.0, 0.0, 0.0), Color32::from_rgb(0xe0, 0x40, 0x40), "X"),
-            (effectcraft_engine::geom::vec3(0.0, 1.0, 0.0), Color32::from_rgb(0x50, 0xd0, 0x50), "Y"),
-            (effectcraft_engine::geom::vec3(0.0, 0.0, 1.0), Color32::from_rgb(0x50, 0x80, 0xf0), "Z"),
-        ] {
-            let v = cam.view.apply_vec(axis);
-            let tip = o + vec2(v.x as f32, v.y as f32) * 26.0;
-            painter.line_segment([o, tip], Stroke::new(2.0, col));
-            painter.text(tip + (tip - o).normalized() * 7.0, Align2::CENTER_CENTER, name, Tokens::ui(10.0), col);
-        }
-        app.auto.add("viewer.referenceAxes", Rect::from_center_size(o, vec2(64.0, 64.0)), "3D Reference Axes");
-    }
-
     // Overlays + interaction.
     let selected = app.session.state.selected_layers.clone();
     let mut handle_hits: Vec<(LayerId, usize, Pos2)> = Vec::new();
@@ -1043,8 +1058,11 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     layer: h.layer,
                 }
             }),
+            // Everything starts where the button went down: by the time the pointer has moved
+            // far enough to count as a drag it may have left a small handle.
             Tool::Selection => {
-                if let Some((lid, hi, _)) = handle_hits.iter().find(|(_, _, h)| h.distance(pos) < HANDLE + 2.0).cloned() {
+                let cpt = map.to_comp(press);
+                if let Some((lid, hi, _)) = handle_hits.iter().find(|(_, _, h)| h.distance(press) < HANDLE + 2.0).cloned() {
                     let layer = comp.layer(lid).cloned();
                     layer.and_then(|layer| {
                         let tr = layer.transform()?;
@@ -1052,8 +1070,14 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                         let inv = l2c.inverse()?;
                         let a = ectx.v3(&layer, tr, "anchor", [0.0; 3]);
                         let lp = inv.apply(gv2(cpt[0], cpt[1]));
-                        let _ = hi;
-                        Some(Gesture::Scale { layer: lid, start_scale: ectx.v3(&layer, tr, "scale", [100.0; 3]), start_local: [lp.x - a[0], lp.y - a[1]], inv })
+                        Some(Gesture::Scale {
+                            layer: lid,
+                            start_scale: ectx.v3(&layer, tr, "scale", [100.0; 3]),
+                            start_local: [lp.x - a[0], lp.y - a[1]],
+                            anchor: [a[0], a[1]],
+                            axes: handle_axes(hi),
+                            inv,
+                        })
                     })
                 } else if let Some(l) = pick(app, &ectx, cpt, mods.shift) {
                     let layers: Vec<(LayerId, [f64; 3], [f64; 3], [f64; 3])> = app
@@ -1085,7 +1109,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     if !vertex_hits.iter().any(|h| h.tangent.is_none()) {
                         let _ = app.session.execute("edit.deselectAll", json!({}));
                     }
-                    Some(Gesture::Marquee { start: pos })
+                    Some(Gesture::Marquee { start: press })
                 }
             }
             _ => None,
@@ -1121,52 +1145,10 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     let _ = app.session.execute("prop.set", json!({"layer": lid.0, "path": "transform/position", "value": v, "merge": merge}));
                 }
             }
-            Gesture::Scale { layer, start_scale, start_local, inv, .. } => {
+            Gesture::Scale { layer, start_scale, start_local, anchor, axes, inv } => {
                 let lp = inv.apply(gv2(cpt[0], cpt[1]));
-                // Local point relative to the anchor in *unscaled* layer space.
-                let a = comp.layer(layer).and_then(|l| l.transform().map(|tr| ectx.v3(l, tr, "anchor", [0.0; 3]))).unwrap_or([0.0; 3]);
-                let cur = [lp.x - a[0], lp.y - a[1]];
-                let fx = if start_local[0].abs() > 1e-6 { cur[0] / start_local[0] } else { 1.0 };
-                let fy = if start_local[1].abs() > 1e-6 { cur[1] / start_local[1] } else { 1.0 };
-                let (fx, fy) = if mods.shift {
-                    let f = (fx + fy) / 2.0;
-                    (f, f)
-                } else {
-                    (if start_local[0].abs() > 1e-3 { fx } else { 1.0 }, if start_local[1].abs() > 1e-3 { fy } else { 1.0 })
-                };
-                // The local point moved within the *current* scale; compose with the start scale.
-                let cs = comp.layer(layer).and_then(|l| l.transform().map(|tr| ectx.v3(l, tr, "scale", [100.0; 3]))).unwrap_or([100.0; 3]);
-                let nx = cs[0] * fx;
-                let ny = cs[1] * fy;
-                let _ = start_scale;
-                let _ = app.session.execute("prop.set", json!({"layer": layer.0, "path": "transform/scale", "value": [nx, ny, cs[2]], "merge": merge}));
-                ui.data_mut(|d| {
-                    if let Some(Gesture::Scale { start_local, .. }) = d.get_temp_mut_or_default::<Option<Gesture>>(egui::Id::new("unused")).as_mut() {
-                        let _ = start_local;
-                    }
-                });
-                // Re-baseline so the next frame's ratios are relative to the new scale.
-                let lp_unscaled = [cur[0] / fx.max(1e-9) * fx, cur[1] / fy.max(1e-9) * fy];
-                let mut g2 = gesture.clone();
-                if let Some(Gesture::Scale { start_local, inv: i2, .. }) = g2.as_mut() {
-                    *start_local = lp_unscaled;
-                    if let Some(l) = app.session.active_comp().and_then(|c| c.layer(layer)).cloned() {
-                        let e2 = EvalCtx {
-                            project: &app.session.project,
-                            comp_id: cid,
-                            comp: app.session.project.comp(cid).unwrap_or(&comp),
-                            time,
-                            expr: app.session.expr.as_deref(),
-                            footage: None,
-                        };
-                        if let Some(m) = l2c(&e2, &l).0.inverse() {
-                            *i2 = m;
-                        }
-                    }
-                }
-                if let Some(g2) = g2 {
-                    ui.data_mut(|d| d.insert_temp(gid, g2));
-                }
+                let v = drag_scale(start_scale, start_local, [lp.x - anchor[0], lp.y - anchor[1]], axes, mods.shift);
+                let _ = app.session.execute("prop.set", json!({"layer": layer.0, "path": "transform/scale", "value": v, "merge": merge}));
             }
             Gesture::Rotate { layer, center, start_angle, start_rot } => {
                 let ang = ((pos.y - center.y) as f64).atan2((pos.x - center.x) as f64).to_degrees();
@@ -1373,10 +1355,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     let b = map.to_comp(pos);
                     let (x0, x1) = (a[0].min(b[0]), a[0].max(b[0]));
                     let (y0, y1) = (a[1].min(b[1]), a[1].max(b[1]));
-                    let hits: Vec<u64> = comp
-                        .layers
-                        .iter()
-                        .filter(|l| l.is_active_at(time) && !l.switches.locked)
+                    let hits: Vec<u64> = selectable_layers(&comp, time)
                         .filter(|l| layer_quad(&ectx, l).is_some_and(|(_, q, _)| q.iter().any(|p| p[0] >= x0 && p[0] <= x1 && p[1] >= y0 && p[1] <= y1)))
                         .map(|l| l.id.0)
                         .collect();
@@ -1683,15 +1662,18 @@ fn pen_press(app: &mut EffectcraftApp, ui: &mut egui::Ui, ectx: &EvalCtx, map: &
     });
 }
 
+/// Visible, unlocked layers eligible for viewer hit tests, in front-to-back order.
+/// Solo scope matches the renderer: only active AV layers activate it, even when hidden or locked.
+pub(crate) fn selectable_layers(comp: &Comp, time: Tick) -> impl Iterator<Item = &Layer> {
+    let any_solo = comp.layers.iter().any(|l| l.switches.solo && l.source.is_av() && l.is_active_at(time));
+    comp.layers
+        .iter()
+        .filter(move |l| l.is_active_at(time) && l.switches.video && !l.switches.locked && !l.is_camera() && !l.is_light() && (!any_solo || l.switches.solo))
+}
+
 /// Topmost layer under a comp point (selects it; shift toggles). Returns the hit layer.
 pub(crate) fn pick(app: &mut EffectcraftApp, ectx: &EvalCtx, cpt: [f64; 2], toggle: bool) -> Option<LayerId> {
-    let hit = ectx
-        .comp
-        .layers
-        .iter()
-        .filter(|l| l.is_active_at(ectx.time) && l.switches.video && !l.switches.locked && !l.is_camera() && !l.is_light())
-        .find(|l| layer_quad(ectx, l).is_some_and(|(_, q, _)| point_in_quad(cpt, &q)))
-        .map(|l| l.id)?;
+    let hit = selectable_layers(ectx.comp, ectx.time).find(|l| layer_quad(ectx, l).is_some_and(|(_, q, _)| point_in_quad(cpt, &q))).map(|l| l.id)?;
     if toggle {
         let _ = app.session.execute("layer.select", json!({"layers": [hit.0], "toggle": true}));
     } else if !app.session.state.selected_layers.contains(&hit) {

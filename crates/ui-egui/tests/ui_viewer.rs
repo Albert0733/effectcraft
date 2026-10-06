@@ -58,6 +58,82 @@ fn screen(h: &Harness<'_, EffectcraftApp>, p: [f32; 2]) -> Pos2 {
     c.min + vec2(p[0] * z, p[1] * z)
 }
 
+fn selection_harness() -> Harness<'static, EffectcraftApp> {
+    let mut s = Session::default();
+    s.execute("comp.new", json!({"name": "Selection", "width": 640, "height": 360, "duration": 4})).unwrap();
+    for name in ["Back", "Front"] {
+        s.execute("layer.newSolid", json!({"name": name, "color": "#406080", "width": 80, "height": 80})).unwrap();
+    }
+    s.execute("edit.deselectAll", json!({})).unwrap();
+    let mut h = Harness::builder().with_size(egui::vec2(1600.0, 1000.0)).build_eframe(move |_| EffectcraftApp::new(s));
+    h.run_steps(3);
+    h
+}
+
+#[test]
+fn viewer_click_skips_hidden_and_unsoloed_layers() {
+    for switch in ["video", "solo"] {
+        let mut h = selection_harness();
+        let comp = h.state().session.active_comp().unwrap();
+        let (front, back) = (comp.layers[0].id, comp.layers[1].id);
+        let at = screen(&h, [320.0, 180.0]);
+        click(&mut h, at);
+        assert_eq!(h.state().session.state.selected_layers, vec![front]);
+        let s = &mut h.state_mut().session;
+        let (target, value) = if switch == "video" { (front, false) } else { (back, true) };
+        s.execute("layer.setSwitch", json!({"layers": [target.0], "switch": switch, "value": value})).unwrap();
+        s.execute("edit.deselectAll", json!({})).unwrap();
+        h.run_steps(40); // Start a new click rather than a double-click.
+        click(&mut h, at);
+        assert_eq!(h.state().session.state.selected_layers, vec![back], "{switch}");
+    }
+}
+
+#[test]
+fn viewer_marquee_skips_hidden_and_unsoloed_layers() {
+    for switch in ["video", "solo"] {
+        let mut h = selection_harness();
+        let comp = h.state().session.active_comp().unwrap();
+        let (front, back) = (comp.layers[0].id, comp.layers[1].id);
+        let (target, value) = if switch == "video" { (front, false) } else { (back, true) };
+        h.state_mut().session.execute("layer.setSwitch", json!({"layers": [target.0], "switch": switch, "value": value})).unwrap();
+        h.run_steps(3);
+        let (from, to) = (screen(&h, [250.0, 110.0]), screen(&h, [390.0, 250.0]));
+        drag(&mut h, from, to);
+        assert_eq!(h.state().session.state.selected_layers, vec![back], "{switch}");
+    }
+}
+
+#[test]
+fn viewer_click_does_not_pick_through_hidden_or_locked_solo_layers() {
+    for switch in ["video", "lock"] {
+        let mut h = selection_harness();
+        let front = h.state().session.active_comp().unwrap().layers[0].id;
+        let s = &mut h.state_mut().session;
+        s.execute("layer.setSwitch", json!({"layers": [front.0], "switch": "solo", "value": true})).unwrap();
+        s.execute("layer.setSwitch", json!({"layers": [front.0], "switch": switch, "value": switch == "lock"})).unwrap();
+        h.run_steps(3);
+        let at = screen(&h, [320.0, 180.0]);
+        click(&mut h, at);
+        assert!(h.state().session.state.selected_layers.is_empty(), "{switch}");
+    }
+}
+
+#[test]
+fn viewer_click_ignores_inactive_solo_layers() {
+    let mut h = selection_harness();
+    let comp = h.state().session.active_comp().unwrap();
+    let (front, back) = (comp.layers[0].id, comp.layers[1].id);
+    let s = &mut h.state_mut().session;
+    s.execute("layer.setSwitch", json!({"layers": [front.0], "switch": "solo", "value": true})).unwrap();
+    let cid = s.active_comp_id().unwrap();
+    std::sync::Arc::make_mut(&mut s.project).comp_mut(cid).unwrap().layer_mut(front).unwrap().in_point = effectcraft_engine::time::Tick::from_seconds_f64(1.0);
+    h.run_steps(3);
+    let at = screen(&h, [320.0, 180.0]);
+    click(&mut h, at);
+    assert_eq!(h.state().session.state.selected_layers, vec![back]);
+}
+
 #[test]
 fn bottom_bar_in_after_effects_order() {
     let h = harness();
@@ -391,6 +467,8 @@ fn reference_axes_toggle_from_the_grid_menu() {
     h.state_mut().session.execute("layer.setSwitch", json!({"layers": [box_id.0], "switch": "threeD", "value": true})).unwrap();
     h.run_steps(3);
     assert!(h.state().auto.find("viewer.referenceAxes").is_some(), "on by default (Settings ▸ 3D)");
+    // Issue #64: one compass, not two.
+    assert_eq!(h.state().auto.query("viewer.referenceAxes").len(), 1);
     let g = rect(&h, "viewer.grid").center();
     click(&mut h, g);
     h.run_steps(2);
@@ -742,4 +820,80 @@ fn double_press_shortcuts_reveal_their_second_set() {
         assert_eq!(reveal(&h), vec![want], "{k:?}{k:?}");
         h.run_steps(40);
     }
+}
+
+/// Drag through `path` with `modifiers` held (press at the first point, release at the last).
+fn drag_path(h: &mut Harness<'_, EffectcraftApp>, path: &[Pos2], modifiers: egui::Modifiers) {
+    h.input_mut().events.push(Event::ModifiersChanged(modifiers));
+    h.input_mut().events.push(Event::PointerMoved(path[0]));
+    h.input_mut().events.push(Event::PointerButton { pos: path[0], button: egui::PointerButton::Primary, pressed: true, modifiers });
+    h.step();
+    for w in path.windows(2) {
+        for i in 1..=6 {
+            h.input_mut().events.push(Event::PointerMoved(w[0] + (w[1] - w[0]) * (i as f32 / 6.0)));
+            h.step();
+        }
+    }
+    let end = *path.last().unwrap();
+    h.input_mut().events.push(Event::PointerButton { pos: end, button: egui::PointerButton::Primary, pressed: false, modifiers });
+    h.run_steps(2);
+    // The keys come up after the button, as a hand does.
+    h.input_mut().events.push(Event::ModifiersChanged(Default::default()));
+    h.step();
+}
+
+/// Issue #63: a bounding-box handle scales about the anchor point so the grabbed corner follows
+/// the pointer, relative to the scale the drag began with: dragging through the anchor and back
+/// out recovers (it used to stick at 0), edges scale one axis, Shift keeps the proportions.
+#[test]
+fn handle_drags_scale_about_the_anchor_and_follow_the_pointer() {
+    let mut h = harness();
+    let box_id = h.state().session.active_comp().unwrap().layers[0].id;
+    let set = |h: &mut Harness<'_, EffectcraftApp>, path: &str, v: serde_json::Value| {
+        h.state_mut().session.execute("prop.set", json!({"layer": box_id.0, "path": path, "value": v})).unwrap();
+    };
+    let scale = |h: &Harness<'_, EffectcraftApp>| {
+        let l = h.state().session.active_comp().unwrap().layer(box_id).unwrap().clone();
+        l.props.prop("transform/scale").unwrap().value.as_vec3()
+    };
+    let close = |a: [f64; 3], b: [f64; 2]| (a[0] - b[0]).abs() < 1.0 && (a[1] - b[1]).abs() < 1.0;
+    h.state_mut().session.execute("layer.select", json!({"layers": [box_id.0]})).unwrap();
+    // The 80×80 box is centred at (320, 180) with its anchor in the middle.
+    h.state_mut().session.execute("view.snapping", json!({"value": false})).unwrap();
+    h.run_steps(2);
+    let undo0 = h.state().session.history.undo.len();
+    // Bottom-right corner (360, 220) to (400, 260): twice as far from the anchor.
+    let corner = rect(&h, &format!("viewer.handle.{}.2", box_id.0)).center();
+    let path = [corner, screen(&h, [400.0, 260.0])];
+    drag_path(&mut h, &path, Default::default());
+    assert!(close(scale(&h), [200.0, 200.0]), "{:?}", scale(&h));
+    assert_eq!(h.state().session.history.undo.len(), undo0 + 1, "one undo step per drag");
+    // Through the anchor (scale ≈ 0) and back out to 1.5×: the layer follows, nothing sticks.
+    set(&mut h, "transform/scale", json!([100, 100, 100]));
+    h.run_steps(2);
+    let corner = rect(&h, &format!("viewer.handle.{}.2", box_id.0)).center();
+    let path = [corner, screen(&h, [320.0, 180.0]), screen(&h, [300.0, 170.0]), screen(&h, [380.0, 240.0])];
+    drag_path(&mut h, &path, Default::default());
+    assert!(close(scale(&h), [150.0, 150.0]), "{:?}", scale(&h));
+    // Past the anchor the layer flips, as in After Effects.
+    set(&mut h, "transform/scale", json!([100, 100, 100]));
+    h.run_steps(2);
+    let corner = rect(&h, &format!("viewer.handle.{}.2", box_id.0)).center();
+    let path = [corner, screen(&h, [280.0, 140.0])];
+    drag_path(&mut h, &path, Default::default());
+    assert!(close(scale(&h), [-100.0, -100.0]), "{:?}", scale(&h));
+    // The right edge (handle 5) scales x only.
+    set(&mut h, "transform/scale", json!([100, 100, 100]));
+    h.run_steps(2);
+    let edge = rect(&h, &format!("viewer.handle.{}.5", box_id.0)).center();
+    let path = [edge, screen(&h, [380.0, 200.0])];
+    drag_path(&mut h, &path, Default::default());
+    assert!(close(scale(&h), [150.0, 100.0]), "{:?}", scale(&h));
+    // Shift on a corner keeps the proportions: the pointer's place along the diagonal.
+    set(&mut h, "transform/scale", json!([100, 100, 100]));
+    h.run_steps(2);
+    let corner = rect(&h, &format!("viewer.handle.{}.2", box_id.0)).center();
+    let path = [corner, screen(&h, [400.0, 230.0])];
+    drag_path(&mut h, &path, egui::Modifiers::SHIFT);
+    assert!(close(scale(&h), [162.5, 162.5]), "{:?}", scale(&h));
 }

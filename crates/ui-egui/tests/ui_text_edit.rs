@@ -47,6 +47,31 @@ fn edited(h: &Harness<'_, EffectcraftApp>) -> (u64, String, usize, usize) {
 }
 
 #[test]
+fn type_tool_skips_hidden_and_unsoloed_text_layers() {
+    for switch in ["video", "solo"] {
+        let mut s = Session::default();
+        s.execute("comp.new", json!({"name": "Type", "width": 640, "height": 360, "duration": 2})).unwrap();
+        let mut ids = vec![];
+        for _ in 0..2 {
+            let lid = s.execute("layer.newText", json!({"text": "alpha beta", "size": 80, "position": [100, 200], "justify": "left"})).unwrap()["layer"]
+                .as_u64()
+                .unwrap();
+            ids.push(lid);
+        }
+        let (target, value) = if switch == "video" { (ids[1], false) } else { (ids[0], true) };
+        s.execute("layer.setSwitch", json!({"layers": [target], "switch": switch, "value": value})).unwrap();
+        s.execute("edit.deselectAll", json!({})).unwrap();
+        let mut h = Harness::builder().with_size(egui::vec2(1600.0, 1000.0)).build_eframe(move |_| EffectcraftApp::new(s));
+        h.state_mut().ui.tool = effectcraft_ui_egui::state::Tool::Type;
+        h.run_steps(3);
+        let comp = rect(&h, "viewer.comp");
+        let k = comp.width() / 640.0;
+        click(&mut h, comp.min + egui::vec2(330.0 * k, 180.0 * k), Modifiers::NONE);
+        assert_eq!(edited(&h).0, ids[0], "{switch}");
+    }
+}
+
+#[test]
 fn type_tool_click_type_edit_and_commit() {
     let mut h = Harness::builder().with_size(egui::vec2(1600.0, 1000.0)).with_step_dt(1.0 / 60.0).build_eframe(|_| app());
     h.state_mut().show_panel(PanelKind::Composition);

@@ -34,7 +34,7 @@ of them have been reconciled.
 | Behaves like After Effects | unmeasured, ≈ 60–80% | One outside contributor found four bugs in features marked done within a day (PRs #6–#10): Hold keyframes eased the motion into them, `keyInSpatialTangent` / `keyOutSpatialTangent` had the wrong names, a zero frame rate crashed, Find and Enter Full Screen shared Ctrl+F off macOS. There are about 10 After Effects reference captures in total. No test compares our renders or property values with After Effects itself; the tests check what the agents believed After Effects does |
 | Opening existing After Effects work | ≈ 0% | `.aep` / `.aepx` projects cannot be opened. Third-party After Effects plug-ins cannot run. Expressions and the scripting object model are strong, so scripts and expressions carry over |
 | Stability | improving | 23 never-crash PRs landed on 4 October; [AGENTS.md](../AGENTS.md) "Never crash" now binds every crate. On 5 October `cargo xtask ci` failed on main under Rust 1.99's clippy (a fix is in progress) |
-| Real-user experience | ≈ 70%, uneven by platform | Issues #41–#47 (all from the Linux AppImage, 5 October): panning the viewer snaps back, panels can't be resized or rearranged, drag-and-drop and double-click import don't work, layer rename gets stuck, the Layer Settings arrow does nothing, the Project panel clips, the Wayland window icon is generic. parity.md counts docking as done. Most checking happens on macOS. No localisation, no accessibility work |
+| Real-user experience | ≈ 70%, uneven by platform | Issues #41–#47 (all from the Linux AppImage 0.1.1, 5 October): panning the viewer snaps back, panels can't be resized or rearranged, drag-and-drop and double-click import don't work, layer rename gets stuck, the Layer Settings arrow does nothing, the Project panel clips, the Wayland window icon is generic. Issues #63–#68 (macOS, 5 October): scaling a layer by its handles goes wrong and can stick at 0, two 3D compasses, the viewer lags while a layer is dragged (a frame renders in 20 ms but showed after ≈ 100 ms, behind RAM preview prefetch), the Discord and other links do nothing, Delete doesn't delete in the Project panel, hidden layers can be selected in the viewer. All but the last two were fixed or confirmed fixed with a test on 5–6 October (those two have community PRs); file drops still can't work on Wayland (winit has no support). The panning, rename and arrow bugs had been fixed in v0.2.0 already; nobody had told the reporter. Most checking happens on macOS. No localisation, no accessibility work |
 | Performance | unknown against After Effects | Internal numbers only (e.g. Advanced 3D 290 ms/frame at 1080p on the GPU, an M4 Pro under load). Nothing benchmarked against After Effects; no large real projects (4K footage, hundreds of layers) tested |
 | Media formats | ≈ 80% | H.264, ProRes, HEVC, AV1, image sequences and audio exist. The new HEVC / AV1 encoders have no B-frames, multi-reference or SAO / CDEF, so files are larger than from mature encoders. Camera formats (BRAW, R3D, ProRes RAW, variable-frame-rate phone video) are unverified |
 | AI-assisted tools | ≈ 50% | Both tools can use trained models (pure-Rust inference, optional downloads), but nothing compares them with After Effects yet. Roto Brush 2.0 / 3.0 with MobileSAM (M13.35) scores IoU 0.989 on the base frame of our synthetic moving-disc test and ≥ 0.980 over 20 propagated frames (classic: 0.973). Face tracking with MediaPipe Face Landmarker (M13.36) matches Google's own pipeline to 0.85 px on average on a test portrait; on our synthetic clip the eyes and chin stay within 4% of the face height |
@@ -63,10 +63,15 @@ The most important missing piece: it turns every other estimate here into a meas
 
 ### G2. Real-user reliability on every platform
 
-- Fix the open user issues (#41–#47), each with a regression test.
+- Fix user issues as they come in, each with a regression test, and answer the reporter (#41–#47
+  and #63–#68 are handled; Wayland file drops wait on winit).
 - Run the headless snapshot and control-channel checks on Linux (X11 and Wayland) and Windows, not
   only macOS. Interactions that only fail with real input (docking drags, viewer pan, drag-and-drop
   import, inline rename) need scripted input tests.
+- Regression evidence for [#66](https://github.com/storytold/effectcraft/issues/66): scripted
+  pointer tests in `ui_viewer` and `ui_text_edit`, checked headlessly on Linux, cover viewer clicks,
+  marquee selection and text picking when layers are hidden or excluded by solo. They also check
+  hidden/locked solo layers and solo layers outside their active time range.
 - Regression evidence for [#67](https://github.com/storytold/effectcraft/issues/67): scripted
   input tests in `ui_project_delete`, checked headlessly on Linux, cover Delete/Backspace on
   Project items, multiple selection and undo. They check that an unrelated Timeline layer stays,
