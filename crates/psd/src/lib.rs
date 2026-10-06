@@ -833,7 +833,7 @@ impl Psd {
             16 => {
                 for row in v.chunks_exact_mut(w * 2).take(h) {
                     let mut prev = 0u16;
-                    for c in row.chunks_exact_mut(2) {
+                    for c in row.as_chunks_mut::<2>().0 {
                         let x = u16::from_be_bytes([c[0], c[1]]).wrapping_add(prev);
                         c.copy_from_slice(&x.to_be_bytes());
                         prev = x;
@@ -878,8 +878,8 @@ impl Psd {
                 }
                 out
             }
-            16 => raw.chunks_exact(2).take(w * h).map(|c| u16::from_be_bytes([c[0], c[1]]) as f32 / 65535.0).collect(),
-            32 => raw.chunks_exact(4).take(w * h).map(|c| f32::from_be_bytes([c[0], c[1], c[2], c[3]])).collect(),
+            16 => raw.as_chunks::<2>().0.iter().take(w * h).map(|c| u16::from_be_bytes([c[0], c[1]]) as f32 / 65535.0).collect(),
+            32 => raw.as_chunks::<4>().0.iter().take(w * h).map(|c| f32::from_be_bytes([c[0], c[1], c[2], c[3]])).collect(),
             _ => raw.iter().take(w * h).map(|&b| b as f32 / 255.0).collect(),
         }
     }

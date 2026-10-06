@@ -193,7 +193,7 @@ impl FaceLandmarker {
         let out = self.mesh.run(&[&x])?;
         let (Some(pts), Some(flag)) = (out.first(), out.get(1).and_then(|f| f.first())) else { return Err("face mesh: missing outputs".into()) };
         let s = MESH_SIZE as f32;
-        let points = pts.chunks_exact(3).take(MESH_POINTS).map(|p| roi.to_frame(p[0] / s, p[1] / s)).collect();
+        let points = pts.as_chunks::<3>().0.iter().take(MESH_POINTS).map(|p| roi.to_frame(p[0] / s, p[1] / s)).collect();
         Ok(Face { points, score: sigmoid(*flag) })
     }
 

@@ -711,7 +711,9 @@ pub(crate) fn bottom_bar(app: &mut EffectcraftApp, ui: &mut egui::Ui, bar: Rect,
     app.auto.add("viewer.timecode", tr, "Current time");
     // Right: render time.
     let ms = app.frames.last_ms.lock().map(|v| *v).unwrap_or(0.0);
-    p.text(pos2(bar.max.x - 10.0, cy), Align2::RIGHT_CENTER, format!("{ms:.0} ms"), Tokens::ui(11.0), t.text_faint);
+    if tr.max.x + 50.0 < bar.max.x {
+        p.text(pos2(bar.max.x - 10.0, cy), Align2::RIGHT_CENTER, format!("{ms:.0} ms"), Tokens::ui(11.0), t.text_faint);
+    }
 }
 
 #[cfg(test)]

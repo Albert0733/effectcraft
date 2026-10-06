@@ -460,8 +460,8 @@ fn open_recent_increment_and_revert() {
     assert!(s.prefs.recent_projects[0].ends_with("A.ecproj"));
     s.execute("file.clearRecent", json!({})).unwrap();
     assert!(!s.is_enabled("file.openRecent"));
-    assert_eq!(autosave::increment_path("/x/Intro 9.ecproj", |_| false), "/x/Intro 10.ecproj");
-    assert_eq!(autosave::increment_path("/x/v1.ecproj", |p| p.ends_with("v1 2.ecproj")), "/x/v1 3.ecproj");
+    assert_eq!(std::path::PathBuf::from(autosave::increment_path("/x/Intro 9.ecproj", |_| false)), std::path::PathBuf::from("/x/Intro 10.ecproj"));
+    assert_eq!(std::path::PathBuf::from(autosave::increment_path("/x/v1.ecproj", |p| p.ends_with("v1 2.ecproj"))), std::path::PathBuf::from("/x/v1 3.ecproj"));
     let _ = std::fs::remove_dir_all(d);
 }
 

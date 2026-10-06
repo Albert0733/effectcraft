@@ -141,8 +141,8 @@ impl EffectPlugin for WasmPlugin {
         let r = match r {
             Ok(0) => {
                 inst.memory.read(&inst.store, base + params_bytes, &mut buf[params_bytes..]).map_err(err)?;
-                for (px, b) in frame.pixels.iter_mut().zip(buf[params_bytes..].chunks_exact(16)) {
-                    for (c, v) in px.iter_mut().zip(b.chunks_exact(4)) {
+                for (px, b) in frame.pixels.iter_mut().zip(buf[params_bytes..].as_chunks::<16>().0.iter()) {
+                    for (c, v) in px.iter_mut().zip(b.as_chunks::<4>().0.iter()) {
                         *c = f32::from_le_bytes([v[0], v[1], v[2], v[3]]);
                     }
                 }

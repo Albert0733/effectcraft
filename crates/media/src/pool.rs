@@ -301,7 +301,7 @@ impl MediaPool {
         f.seek(SeekFrom::Start(s0 as u64 * 8)).ok()?;
         let mut bytes = vec![0u8; n * 8];
         f.read_exact(&mut bytes).ok()?;
-        for (o, c) in out.iter_mut().zip(bytes.chunks_exact(4)) {
+        for (o, c) in out.iter_mut().zip(bytes.as_chunks::<4>().0.iter()) {
             *o = f32::from_le_bytes([c[0], c[1], c[2], c[3]]);
         }
         Some(out)

@@ -1530,10 +1530,10 @@ mod tests {
         assert_eq!(m.output_size(&c, &rs), (1280, 720));
         m.crop = Crop { enabled: true, left: 480, right: 480, ..Default::default() };
         assert_eq!(m.output_size(&c, &rs), (1280, 1440), "960×1080 cropped, then 1280 wide at 8:9");
-        assert_eq!(log_path("/out/Main_[#####].png"), "/out/Main_RenderLog.txt");
-        assert_eq!(log_path("/out/a.mov"), "/out/a_RenderLog.txt");
+        assert_eq!(std::path::PathBuf::from(log_path("/out/Main_[#####].png")), std::path::PathBuf::from("/out/Main_RenderLog.txt"));
+        assert_eq!(std::path::PathBuf::from(log_path("/out/a.mov")), std::path::PathBuf::from("/out/a_RenderLog.txt"));
         assert_eq!(log_path("seq###.tif"), "seq_RenderLog.txt");
-        assert_eq!(log_path("gen/g_[###].png"), "gen/g_RenderLog.txt", "any bracketed run (M13.15)");
+        assert_eq!(std::path::PathBuf::from(log_path("gen/g_[###].png")), std::path::PathBuf::from("gen/g_RenderLog.txt"), "any bracketed run (M13.15)");
     }
 
     #[test]

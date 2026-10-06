@@ -433,14 +433,21 @@ impl EffectcraftApp {
         }
         self.gpu_checked = true;
         let Some(rs) = frame.wgpu_render_state() else { return };
-        match effectcraft_gpu::Gpu::new(&rs.adapter, rs.device.clone(), rs.queue.clone()) {
-            Ok(g) => {
+        // Backend validation can panic on shader compilation even when device creation
+        // succeeded. Keep the document and the egui renderer, and use CPU compositing.
+        let gpu = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| effectcraft_gpu::Gpu::new(&rs.adapter, rs.device.clone(), rs.queue.clone())));
+        match gpu {
+            Ok(Ok(g)) => {
                 log::info!("GPU compositor: {}", effectcraft_engine::render::Accelerator::name(&g));
                 self.session.accel = Some(Arc::new(g.clone()));
                 self.gpu = Some(g);
                 self.wgpu = Some(rs.clone());
             }
-            Err(e) => log::info!("GPU compositor unavailable: {e}"),
+            Ok(Err(e)) => log::info!("GPU compositor unavailable: {e}"),
+            Err(e) => {
+                let reason = e.downcast_ref::<String>().map(String::as_str).or_else(|| e.downcast_ref::<&str>().copied()).unwrap_or("backend panicked");
+                log::warn!("GPU compositor setup failed; using CPU compositing: {reason}");
+            }
         }
     }
 
@@ -461,7 +468,7 @@ impl EffectcraftApp {
     /// and returns `None`; a later call (the next frame) has the pixels.
     pub fn viewer_pixels(&mut self) -> Option<Arc<egui::ColorImage>> {
         let to_image = |bytes: Vec<u8>, w: u32, h: u32| {
-            let px = bytes.chunks_exact(4).map(|c| egui::Color32::from_rgba_premultiplied(c[0], c[1], c[2], c[3])).collect();
+            let px = bytes.as_chunks::<4>().0.iter().map(|c| egui::Color32::from_rgba_premultiplied(c[0], c[1], c[2], c[3])).collect();
             Arc::new(egui::ColorImage::new([w as usize, h as usize], px))
         };
         if self.viewer_image.is_none()
@@ -511,7 +518,7 @@ impl EffectcraftApp {
         // play back, and frames cached by a preview stay on screen when it stops.
         let full = self.ui.viewer.res.scale(zoom, ppp);
         // Fast Previews ▸ Adaptive Resolution / Fast Draft: lower resolution while dragging.
-        let (_, k) = self.session.state.viewer.fast_previews.render(self.ui.viewer.interacting);
+        let (_, k) = self.session.state.viewer.fast_previews.render(self.ui.viewer.interacting || self.ui.viewer.property_interacting);
         if k < 1.0 && self.ui.viewer.res == state::Resolution::Auto {
             return full.min((full * 0.5).max(self.session.prefs.adaptive_limit()));
         }
@@ -585,7 +592,7 @@ impl EffectcraftApp {
 
     /// Render options of viewer frames of `comp` at `scale`.
     pub fn frame_opts(&self, comp: ItemId, scale: f64) -> RenderOpts {
-        let (draft, _) = self.session.state.viewer.fast_previews.render(self.ui.viewer.interacting);
+        let (draft, _) = self.session.state.viewer.fast_previews.render(self.ui.viewer.interacting || self.ui.viewer.property_interacting);
         let roi = self.viewer_region(comp);
         RenderOpts {
             scale,
@@ -814,7 +821,9 @@ impl EffectcraftApp {
             ctx.request_repaint_after(std::time::Duration::from_secs_f64(wait));
             0
         } else {
-            (self.frames_parallelism() / 2).max(2) as i64
+            // Keep workers available for a newly edited viewer frame. Running obsolete
+            // background renders cannot be preempted by the priority queue.
+            self.frames_parallelism().saturating_sub(1).min(2) as i64
         };
         let mut queued = self.frames.inflight();
         let series = self.frame_series(cid, scale);
@@ -1042,7 +1051,7 @@ impl EffectcraftApp {
             // on the UI thread (`Frames::pump`)
             return self.frames.remote_slots().max(1);
         }
-        std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4)
+        self.frames.parallelism()
     }
 
     // ---------------------------------------------------------------- control channel
@@ -1252,8 +1261,14 @@ impl EffectcraftApp {
             self.command_inbox = Some(rx);
         }
         menus::handle_shortcuts(self, &ctx);
+        if !ctx.input(|i| i.pointer.primary_down()) {
+            self.ui.viewer.property_interacting = false;
+        }
         let t = self.tokens;
         let full = ui.max_rect();
+        if self.dialog.is_some() {
+            ui.disable();
+        }
         ui.painter().rect_filled(full, 0.0, t.app_bg);
         let mut top = full.min.y;
         if self.ui.show_menu_bar {
@@ -1288,7 +1303,7 @@ impl EffectcraftApp {
             let t = &self.tokens;
             let galley = ui.painter().layout_no_wrap(m, Tokens::ui(12.0), t.text);
             let r = egui::Rect::from_min_size(egui::pos2(full.min.x + 16.0, full.max.y - 44.0), galley.size() + egui::vec2(24.0, 14.0));
-            ui.painter().rect_filled(r, 6.0, egui::Color32::from_rgba_premultiplied(30, 30, 30, 235));
+            ui.painter().rect_filled(r, 6.0, t.panel_bg);
             ui.painter().rect_stroke(r, 6.0, egui::Stroke::new(1.0, t.field_border), egui::StrokeKind::Inside);
             ui.painter().galley(r.min + egui::vec2(12.0, 7.0), galley, t.text);
             let resp = ui.interact(r, egui::Id::new("toast"), egui::Sense::click());

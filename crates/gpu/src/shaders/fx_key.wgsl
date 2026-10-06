@@ -2,10 +2,17 @@
 // the CPU effect in effectcraft-effects operation for operation. Every name here is prefixed
 // `fxk_` (the family files share one module).
 
+// Correct the approximate quotient before bitwise/threshold operations.
+fn fxk_div3(a: vec3<f32>, b: f32) -> vec3<f32> {
+    let q = a / b;
+    let r = fma(-q, vec3<f32>(b), a);
+    return fma(r, vec3<f32>(1.0 / b), q);
+}
+
 // util::unpremul: (straight colour, alpha); colour 0 when alpha ≤ 1e-6.
 fn fxk_straight(px: vec4<f32>) -> vec3<f32> {
     if (px.w > 1e-6) {
-        return px.xyz / px.w;
+        return fxk_div3(px.xyz, px.w);
     }
     return vec3<f32>(0.0);
 }
@@ -457,7 +464,7 @@ fn fxk_point(@builtin(global_invocation_id) gid: vec3<u32>) {
                 textureStore(out, p, px);
                 return;
             }
-            let s = px.xyz / px.w;
+            let s = fxk_div3(px.xyz, px.w);
             var r = vec3<f32>(0.0);
             for (var i = 0u; i < 3u; i++) {
                 let v = s[i];

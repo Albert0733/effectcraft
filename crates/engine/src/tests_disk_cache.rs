@@ -30,6 +30,7 @@ fn project(s: &mut Session) -> effectcraft_project::ItemId {
 
 #[test]
 fn disk_cache_settings_persistence_and_invalidation() {
+    crate::tests_roto::hold_roto_cache_test_lock();
     let dir = folder("persist");
     let mut s = session(&dir);
     let st = s.execute_checked("cache.diskStats", json!({})).unwrap();

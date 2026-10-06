@@ -292,6 +292,29 @@ fn point_in_quad(p: [f64; 2], q: &[[f64; 2]; 4]) -> bool {
     true
 }
 
+/// Separating-axis test: a marquee may cross a layer without containing any corner.
+fn quad_intersects_box(q: &[[f64; 2]; 4], a: [f64; 2], b: [f64; 2]) -> bool {
+    if q.iter().flatten().chain(a.iter()).chain(b.iter()).any(|v| !v.is_finite()) {
+        return false;
+    }
+    let lo = [a[0].min(b[0]), a[1].min(b[1])];
+    let hi = [a[0].max(b[0]), a[1].max(b[1])];
+    let rect = [lo, [hi[0], lo[1]], hi, [lo[0], hi[1]]];
+    let axes = [[1.0, 0.0], [0.0, 1.0]].into_iter().chain((0..4).map(|i| {
+        let j = (i + 1) % 4;
+        [q[j][1] - q[i][1], q[i][0] - q[j][0]]
+    }));
+    for axis in axes {
+        let project = |p: &[f64; 2]| p[0] * axis[0] + p[1] * axis[1];
+        let (qmin, qmax) = q.iter().map(project).fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), v| (lo.min(v), hi.max(v)));
+        let (rmin, rmax) = rect.iter().map(project).fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), v| (lo.min(v), hi.max(v)));
+        if qmax < rmin || rmax < qmin {
+            return false;
+        }
+    }
+    true
+}
+
 /// Parent-space linear inverse (to convert a comp-space drag delta into a position delta).
 fn parent_inverse(ctx: &EvalCtx, layer: &Layer) -> Mat3 {
     match layer.parent.and_then(|p| ctx.comp.layer(p)) {
@@ -860,6 +883,47 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
 
     // Interaction.
     let resp = ui.interact(area, egui::Id::new("viewer-interact"), Sense::click_and_drag());
+    let menu_hits_id = egui::Id::new(("viewer-menu-hits", cid.0));
+    if resp.secondary_clicked()
+        && let Some(pos) = resp.interact_pointer_pos()
+    {
+        // Picking an already selected layer preserves the group; an unselected hit
+        // becomes the target, using the same visible/unlocked hit test as left-click.
+        pick(app, &ectx, map.to_comp(pos), false);
+        let point = map.to_comp(pos);
+        let hits: Vec<(u64, String)> = selectable_layers(&comp, time)
+            .filter(|l| layer_quad(&ectx, l).is_some_and(|(_, q, _)| point_in_quad(point, &q)))
+            .map(|l| (l.id.0, l.name.clone()))
+            .collect();
+        ui.data_mut(|d| d.insert_temp(menu_hits_id, hits));
+    }
+    let context_layers: Vec<u64> =
+        app.session.state.selected_layers.iter().filter(|id| comp.layer(**id).is_some_and(|l| !l.switches.locked)).map(|id| id.0).collect();
+    let mut context_actions = Vec::new();
+    resp.context_menu(|ui| {
+        let hits = ui.data(|d| d.get_temp::<Vec<(u64, String)>>(menu_hits_id)).unwrap_or_default();
+        if !hits.is_empty() {
+            ui.menu_button("Select", |ui| {
+                for (id, name) in &hits {
+                    if ui.button(name).clicked() {
+                        context_actions.push(("layer.select".to_owned(), serde_json::json!({"layers":[id]})));
+                        ui.close();
+                    }
+                }
+            });
+            ui.separator();
+        }
+        if context_layers.is_empty() {
+            ui.label("No unlocked layer selected");
+        } else {
+            super::timeline::layer_menu(ui, &context_layers, &mut context_actions);
+        }
+    });
+    for (id, params) in context_actions {
+        if let Err(e) = crate::menus::invoke(app, &ctx, &id, params) {
+            app.ui.status = e;
+        }
+    }
     let gid = egui::Id::new("viewer-gesture");
     if let Some(hp) = resp.hover_pos() {
         app.pointer_comp = Some({
@@ -1106,7 +1170,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 } else {
                     // With path vertices on screen the marquee selects vertices (layers stay
                     // selected); otherwise it starts from a clean selection.
-                    if !vertex_hits.iter().any(|h| h.tangent.is_none()) {
+                    if !mods.shift && !vertex_hits.iter().any(|h| h.tangent.is_none()) {
                         let _ = app.session.execute("edit.deselectAll", json!({}));
                     }
                     Some(Gesture::Marquee { start: press })
@@ -1353,13 +1417,11 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 Gesture::Marquee { start } => {
                     let a = map.to_comp(start);
                     let b = map.to_comp(pos);
-                    let (x0, x1) = (a[0].min(b[0]), a[0].max(b[0]));
-                    let (y0, y1) = (a[1].min(b[1]), a[1].max(b[1]));
                     let hits: Vec<u64> = selectable_layers(&comp, time)
-                        .filter(|l| layer_quad(&ectx, l).is_some_and(|(_, q, _)| q.iter().any(|p| p[0] >= x0 && p[0] <= x1 && p[1] >= y0 && p[1] <= y1)))
+                        .filter(|l| layer_quad(&ectx, l).is_some_and(|(_, q, _)| quad_intersects_box(&q, a, b)))
                         .map(|l| l.id.0)
                         .collect();
-                    let _ = app.session.execute("layer.select", json!({"layers": hits}));
+                    let _ = app.session.execute("layer.select", json!({"layers": hits, "toggle": mods.shift}));
                 }
                 _ => {}
             }

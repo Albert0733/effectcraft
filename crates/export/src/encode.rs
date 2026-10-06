@@ -162,7 +162,7 @@ impl VideoEncoder for ProRes {
         let mut fr = filmcraft_prores::Frame::new(self.w, self.h, chroma, 10, self.alpha);
         rgba_to_yuv_10(rgba, self.w as usize, self.h as usize, self.is_444(), &mut fr.y, &mut fr.cb, &mut fr.cr);
         if let Some(a) = fr.alpha.as_mut() {
-            for (d, s) in a.iter_mut().zip(rgba.chunks_exact(4)) {
+            for (d, s) in a.iter_mut().zip(rgba.as_chunks::<4>().0.iter()) {
                 *d = ((s[3] as u32 * 1023 + 127) / 255) as u16;
             }
         }
@@ -217,7 +217,7 @@ fn deinterleave(buf: &[f32], channels: usize) -> Vec<Vec<f32>> {
 /// (mono = the average of left and right).
 pub(crate) fn mix(cx: &Cx, start: effectcraft_time::Tick, n: usize, sr: u32) -> Vec<f32> {
     let st = effectcraft_render::audio::mix_comp(&cx.project, cx.footage, cx.expr, cx.comp, start, n, sr);
-    if cx.output.audio_channels == 1 { st.chunks_exact(2).map(|p| (p[0] + p[1]) * 0.5).collect() } else { st }
+    if cx.output.audio_channels == 1 { st.as_chunks::<2>().0.iter().map(|p| (p[0] + p[1]) * 0.5).collect() } else { st }
 }
 
 /// PCM bytes of samples in `fmt` (little or big endian).

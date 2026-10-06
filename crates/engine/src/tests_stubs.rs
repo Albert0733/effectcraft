@@ -284,9 +284,20 @@ fn add_output_module_encodes_twice() {
     s.execute("renderQueue.setOutput", json!({"index": 1, "module": 2, "path": "/tmp/om/second.mov"})).unwrap();
     assert!(s.execute("renderQueue.setOutput", json!({"index": 1, "module": 3, "path": "/tmp/x.mov"})).is_err());
     s.execute("renderQueue.render", json!({})).unwrap();
-    assert_eq!(*ex.log.lock().unwrap(), vec!["H264:/tmp/om/main.mp4".to_string(), "ProRes:/tmp/om/second.mov".to_string()]);
+    assert_eq!(
+        ex.log
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|entry| {
+                let (format, path) = entry.split_once(':').unwrap();
+                (format.to_string(), std::path::PathBuf::from(path))
+            })
+            .collect::<Vec<_>>(),
+        [("H264".to_string(), std::path::absolute("/tmp/om/main.mp4").unwrap()), ("ProRes".to_string(), std::path::absolute("/tmp/om/second.mov").unwrap())]
+    );
     assert_eq!(s.project.render_queue[0].status.label(), "Done");
-    assert_eq!(s.project.render_queue[0].last_output.as_deref(), Some("/tmp/om/main.mp4"));
+    assert_eq!(std::path::Path::new(s.project.render_queue[0].last_output.as_deref().unwrap()), std::path::absolute("/tmp/om/main.mp4").unwrap());
     s.execute("edit.undo", json!({})).unwrap();
     assert_eq!(s.project.render_queue[0].extra_outputs.len(), 1, "undo the Output To edit");
 }
@@ -307,7 +318,9 @@ fn pre_render_imports_and_replaces() {
     assert_eq!(ex.log.lock().unwrap().len(), 1);
     let l = &s.project.comp(outer).unwrap().layers[0];
     let LayerSource::Footage { item } = l.source else { panic!("not replaced: {:?}", l.source) };
-    assert!(matches!(&s.project.item(item).unwrap().kind, effectcraft_project::ItemKind::Footage(f) if f.path == "/tmp/pre/inner.mov"));
+    assert!(
+        matches!(&s.project.item(item).unwrap().kind, effectcraft_project::ItemKind::Footage(f) if std::path::Path::new(&f.path) == std::path::absolute("/tmp/pre/inner.mov").unwrap())
+    );
     s.execute("edit.undo", json!({})).unwrap();
     assert!(matches!(s.project.comp(outer).unwrap().layers[0].source, LayerSource::Comp { .. }));
 }
@@ -323,13 +336,15 @@ fn post_render_actions_import_and_set_proxy() {
     assert_eq!(s.project.render_queue[0].post_render, PostRenderAction::Import);
     s.execute("renderQueue.render", json!({})).unwrap();
     assert_eq!(s.project.items.len(), items_before + 1);
-    assert!(s.project.items.values().any(|i| matches!(&i.kind, effectcraft_project::ItemKind::Footage(f) if f.path == "/tmp/post/a.mov")));
+    assert!(s.project.items.values().any(
+        |i| matches!(&i.kind, effectcraft_project::ItemKind::Footage(f) if std::path::Path::new(&f.path) == std::path::absolute("/tmp/post/a.mov").unwrap())
+    ));
     // Set Proxy: the comp gets the render as its proxy.
     let b = s.execute("renderQueue.add", json!({"output": "/tmp/post/b.mov"})).unwrap();
     s.execute("renderQueue.setOutputModule", json!({"item": b["item"], "postRenderAction": "Set Proxy"})).unwrap();
     s.execute("renderQueue.render", json!({})).unwrap();
     let px = s.project.item(cid).unwrap().proxy.clone().expect("proxy set");
-    assert_eq!(px.footage.path, "/tmp/post/b.mov");
+    assert_eq!(std::path::Path::new(&px.footage.path), std::path::absolute("/tmp/post/b.mov").unwrap());
     // None: nothing happens.
     let n = s.project.items.len();
     let c = s.execute("renderQueue.add", json!({"output": "/tmp/post/c.mov"})).unwrap();
@@ -413,7 +428,7 @@ fn log_notify_and_overflow_settings() {
     let (mut s, _) = rq();
     let a = s.execute("renderQueue.add", json!({"output": "/tmp/n/a.mp4", "log": "plusPerFrameInfo"})).unwrap();
     assert_eq!(a["logLabel"], "Plus Per Frame Info");
-    assert_eq!(a["logPath"], "/tmp/n/a_RenderLog.txt");
+    assert_eq!(std::path::Path::new(a["logPath"].as_str().unwrap()), std::path::absolute("/tmp/n/a_RenderLog.txt").unwrap());
     s.execute("renderQueue.setLog", json!({"item": a["item"], "log": "plusSettings"})).unwrap();
     assert_eq!(s.project.render_queue[0].log, effectcraft_project::render_queue::RenderLog::PlusSettings);
     s.execute("renderQueue.setOverflowFolders", json!({"folders": ["/tmp/o1", " ", "/tmp/o2"]})).unwrap();

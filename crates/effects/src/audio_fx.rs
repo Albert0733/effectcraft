@@ -247,7 +247,7 @@ pub fn process(id: &str, params: &Params, buf: &mut [f32], rate: u32, start: f64
     match id {
         "ec.audio.backwards" => {
             if params.b("swapChannels") {
-                buf.chunks_exact_mut(2).for_each(|f| f.swap(0, 1));
+                buf.as_chunks_mut::<2>().0.iter_mut().for_each(|f| f.swap(0, 1));
             }
         }
         "ec.audio.basstreble" => {
@@ -471,7 +471,7 @@ fn compressor(params: &Params, buf: &mut [f32], sr: f64) {
     let limit = db_to_lin(params.f("outputLimit").min(0.0)) as f32;
     // Smoothed gain change in dB: attack while the reduction grows, release as it shrinks.
     let (mut g, mut gs) = (0.0f64, 0.0f64);
-    for f in buf.chunks_exact_mut(2) {
+    for f in buf.as_chunks_mut::<2>().0.iter_mut() {
         let peak = f[0].abs().max(f[1].abs()) as f64;
         let target = compressor_gain_db(lin_to_db(peak), th, ratio, knee);
         let k = if target < g { att } else { rel };
@@ -497,7 +497,7 @@ fn gate(params: &Params, buf: &mut [f32], sr: f64) {
     // Openness 0..1 (closed..open) is the gain: a closed gate mutes.
     let mut g = 0.0f64;
     let mut held = 0usize;
-    for f in buf.chunks_exact_mut(2) {
+    for f in buf.as_chunks_mut::<2>().0.iter_mut() {
         let peak = f[0].abs().max(f[1].abs()) as f64;
         let open = if peak >= th {
             held = hold;
@@ -560,7 +560,7 @@ fn distortion(params: &Params, buf: &mut [f32], sr: f64, start: f64) {
     // Sample-and-hold on absolute sample positions, so blocks agree with one long run.
     let first = (start * sr).round() as i64;
     let mut held = [0.0f32; 2];
-    for (i, f) in buf.chunks_exact_mut(2).enumerate() {
+    for (i, f) in buf.as_chunks_mut::<2>().0.iter_mut().enumerate() {
         let take = i == 0 || (first + i as i64).rem_euclid(down) == 0;
         for ch in 0..2 {
             let x = f[ch];
@@ -696,7 +696,7 @@ fn stereo_mixer(params: &Params, buf: &mut [f32]) {
     let (l_to_l, l_to_r) = pan(params.f("leftPan"));
     let (r_to_l, r_to_r) = pan(params.f("rightPan"));
     let inv = if params.b("invertPhase") { -1.0 } else { 1.0 };
-    for f in buf.chunks_exact_mut(2) {
+    for f in buf.as_chunks_mut::<2>().0.iter_mut() {
         let (l, r) = (f[0] * ll, f[1] * rl);
         f[0] = (l * l_to_l + r * r_to_l) * inv;
         f[1] = (l * l_to_r + r * r_to_r) * inv;

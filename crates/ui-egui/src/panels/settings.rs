@@ -428,32 +428,34 @@ pub fn show(app: &mut EffectcraftApp, ctx: &egui::Context, t: &Tokens) {
     let mut acts: Vec<Act> = vec![];
     let (mut ok, mut cancel) = (false, false);
     super::dialogs::modal(ctx, "Settings", vec2(820.0, 600.0), t, |ui| {
-        let body_h = 470.0;
+        let body_h = (ctx.content_rect().height() - 170.0).clamp(120.0, 470.0);
         ui.allocate_ui_with_layout(vec2(ui.available_width(), body_h), egui::Layout::left_to_right(egui::Align::Min), |ui| {
             ui.set_height(body_h);
             // Page list (left, like After Effects).
             ui.vertical(|ui| {
                 ui.set_width(180.0);
-                for p in &all {
-                    let (r, resp) = ui.allocate_exact_size(vec2(176.0, 24.0), egui::Sense::click());
-                    let sel = page == p.id;
-                    if sel {
-                        ui.painter().rect_filled(r, 3.0, t.accent);
-                    } else if resp.hovered() {
-                        ui.painter().rect_filled(r, 3.0, t.hover);
+                egui::ScrollArea::vertical().id_salt("settings-pages").max_height(body_h).auto_shrink([false, false]).show(ui, |ui| {
+                    for p in &all {
+                        let (r, resp) = ui.allocate_exact_size(vec2(176.0, 24.0), egui::Sense::click());
+                        let sel = page == p.id;
+                        if sel {
+                            ui.painter().rect_filled(r, 3.0, t.accent);
+                        } else if resp.hovered() {
+                            ui.painter().rect_filled(r, 3.0, t.hover);
+                        }
+                        ui.painter().text(
+                            r.left_center() + vec2(10.0, 0.0),
+                            egui::Align2::LEFT_CENTER,
+                            p.title,
+                            Tokens::ui(12.5),
+                            if sel { Color32::WHITE } else { t.text },
+                        );
+                        app.auto.add(&format!("settings.page.{}", p.id), r, p.title);
+                        if resp.clicked() {
+                            page = p.id.to_string();
+                        }
                     }
-                    ui.painter().text(
-                        r.left_center() + vec2(10.0, 0.0),
-                        egui::Align2::LEFT_CENTER,
-                        p.title,
-                        Tokens::ui(12.5),
-                        if sel { Color32::WHITE } else { t.text },
-                    );
-                    app.auto.add(&format!("settings.page.{}", p.id), r, p.title);
-                    if resp.clicked() {
-                        page = p.id.to_string();
-                    }
-                }
+                });
             });
             ui.separator();
             ui.vertical(|ui| {

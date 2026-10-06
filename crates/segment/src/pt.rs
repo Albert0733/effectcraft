@@ -340,9 +340,9 @@ fn unpickle(p: &[u8]) -> Result<Obj> {
 /// Element bytes and conversion of a storage dtype.
 fn to_f32(dtype: &str, bytes: &[u8]) -> Option<Vec<f32>> {
     match dtype {
-        "FloatStorage" => Some(bytes.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect()),
-        "HalfStorage" => Some(bytes.chunks_exact(2).map(|c| half_to_f32(u16::from_le_bytes([c[0], c[1]]))).collect()),
-        "BFloat16Storage" => Some(bytes.chunks_exact(2).map(|c| f32::from_bits((u16::from_le_bytes([c[0], c[1]]) as u32) << 16)).collect()),
+        "FloatStorage" => Some(bytes.as_chunks::<4>().0.iter().map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect()),
+        "HalfStorage" => Some(bytes.as_chunks::<2>().0.iter().map(|c| half_to_f32(u16::from_le_bytes([c[0], c[1]]))).collect()),
+        "BFloat16Storage" => Some(bytes.as_chunks::<2>().0.iter().map(|c| f32::from_bits((u16::from_le_bytes([c[0], c[1]]) as u32) << 16)).collect()),
         _ => None,
     }
 }

@@ -189,6 +189,25 @@ pub fn begin_rename(app: &EffectcraftApp, ctx: &egui::Context) {
     }
 }
 
+pub(crate) fn visible_rows(app: &EffectcraftApp) -> Vec<(ItemId, usize)> {
+    fn walk(app: &EffectcraftApp, folder: Option<ItemId>, depth: usize, q: &str, out: &mut Vec<(ItemId, usize)>) {
+        let mut kids = app.session.project.children(folder);
+        sort_items(&mut kids, &app.ui.project_sort, app.ui.project_sort_desc);
+        for it in kids {
+            if !q.is_empty() && !it.is_folder() && !it.name.to_lowercase().contains(q) {
+                continue;
+            }
+            out.push((it.id, depth));
+            if it.is_folder() && (app.ui.project_open_folders.contains(&it.id.0) || !q.is_empty()) {
+                walk(app, Some(it.id), depth + 1, q, out);
+            }
+        }
+    }
+    let mut rows = vec![];
+    walk(app, None, 0, &app.ui.project_search.to_lowercase(), &mut rows);
+    rows
+}
+
 pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let p = ui.painter().clone();
@@ -330,22 +349,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
             app.ui.project_hscroll = (hscroll + sresp.drag_delta().x * overflow / (track.width() - tw).max(1.0)).clamp(0.0, overflow);
         }
     }
-    let query = app.ui.project_search.to_lowercase();
-    let mut rows: Vec<(ItemId, usize)> = vec![];
-    fn walk(app: &EffectcraftApp, folder: Option<ItemId>, depth: usize, q: &str, out: &mut Vec<(ItemId, usize)>) {
-        let mut kids = app.session.project.children(folder);
-        sort_items(&mut kids, &app.ui.project_sort, app.ui.project_sort_desc);
-        for it in kids {
-            if !q.is_empty() && !it.is_folder() && !it.name.to_lowercase().contains(q) {
-                continue;
-            }
-            out.push((it.id, depth));
-            if it.is_folder() && (app.ui.project_open_folders.contains(&it.id.0) || !q.is_empty()) {
-                walk(app, Some(it.id), depth + 1, q, out);
-            }
-        }
-    }
-    walk(app, None, 0, &query, &mut rows);
+    let rows = visible_rows(app);
     // Enter renames the selected item (Project panel focused, not typing).
     if app.ui.focused == crate::dock::PanelKind::Project
         && app.dialog.is_none()
@@ -547,13 +551,24 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         app.auto.add(&format!("project.item.{}.name", id.0), name_clip, &it.name);
         let resp = resp.union(nresp);
         if resp.clicked() {
-            let add = ui.input(|i| i.modifiers.command || i.modifiers.shift);
-            if add {
-                if !app.session.state.project_selection.contains(id) {
+            let m = ui.input(|i| i.modifiers);
+            let anchor_key = egui::Id::new("project-selection-anchor");
+            let anchor = ctx.data(|d| d.get_temp::<ItemId>(anchor_key)).or_else(|| app.session.state.project_selection.first().copied());
+            if m.shift
+                && let Some(a) = anchor.and_then(|a| rows.iter().position(|(i, _)| *i == a))
+            {
+                let b = rows.iter().position(|(i, _)| i == id).unwrap_or(a);
+                app.session.state.project_selection = rows.get(a.min(b)..=a.max(b)).unwrap_or_default().iter().map(|(i, _)| *i).collect();
+            } else if m.command {
+                if app.session.state.project_selection.contains(id) {
+                    app.session.state.project_selection.retain(|i| i != id);
+                } else {
                     app.session.state.project_selection.push(*id);
                 }
+                ctx.data_mut(|d| d.insert_temp(anchor_key, *id));
             } else {
                 app.session.state.project_selection = vec![*id];
+                ctx.data_mut(|d| d.insert_temp(anchor_key, *id));
             }
         }
         // Double-click opens the item, as in After Effects (a comp gets its own Timeline tab and
@@ -576,6 +591,11 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
             egui::DragAndDrop::set_payload(&ctx, DragPayload::Item(id.0));
         }
         resp.context_menu(|ui| {
+            if ui.button("Delete").clicked() {
+                let items: Vec<u64> = if selected { app.session.state.project_selection.iter().map(|i| i.0).collect() } else { vec![id.0] };
+                actions.push(("project.delete".into(), json!({"items": items})));
+                ui.close();
+            }
             if matches!(it.kind, ItemKind::Comp(_)) && ui.button("Open Composition").clicked() {
                 actions.push(("comp.open".into(), json!({"comp": id.0})));
                 ui.close();

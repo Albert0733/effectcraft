@@ -147,18 +147,18 @@ pub fn route_layer_settings(app: &mut EffectcraftApp, id: &str, params: &Value) 
 }
 
 pub(crate) fn modal(ctx: &egui::Context, title: &str, size: egui::Vec2, t: &Tokens, body: impl FnOnce(&mut egui::Ui)) {
-    // Dim the app.
-    let screen = ctx.content_rect();
-    ctx.layer_painter(egui::LayerId::new(egui::Order::Middle, egui::Id::new("modal-dim"))).rect_filled(screen, 0.0, Color32::from_black_alpha(120));
-    egui::Area::new(egui::Id::new(("modal", title))).order(egui::Order::Foreground).fixed_pos(screen.center() - size / 2.0).show(ctx, |ui| {
-        egui::Frame::window(ui.style()).fill(t.panel_bg).inner_margin(egui::Margin::same(18)).show(ui, |ui| {
+    let available = (ctx.content_rect().size() - vec2(48.0, 48.0)).max(vec2(120.0, 80.0));
+    let size = size.min(available);
+    egui::Modal::new(egui::Id::new(("modal", title)))
+        .backdrop_color(Color32::from_black_alpha(120))
+        .frame(egui::Frame::window(&ctx.style_of(ctx.theme())).fill(t.panel_bg).inner_margin(egui::Margin::same(18)))
+        .show(ctx, |ui| {
             ui.set_width(size.x - 36.0);
             ui.set_min_height(size.y - 36.0);
             ui.label(egui::RichText::new(title).font(Tokens::semibold(15.0)).color(t.tab_text_active));
             ui.add_space(10.0);
-            body(ui);
+            egui::ScrollArea::both().max_height((available.y - 84.0).max(40.0)).auto_shrink([false, true]).show(ui, body);
         });
-    });
 }
 
 pub fn show(app: &mut EffectcraftApp, ctx: &egui::Context) {
@@ -228,11 +228,12 @@ fn about(app: &mut EffectcraftApp, ctx: &egui::Context, t: &Tokens) {
                 } else if resp.hovered() {
                     t.hover
                 } else {
-                    Color32::from_rgb(0x2b, 0x2b, 0x2b)
+                    t.field_bg
                 },
             );
-            icons::paint(p, Rect::from_center_size(pos2(r.min.x + 18.0, r.center().y), vec2(15.0, 15.0)), icon, Color32::WHITE);
-            p.text(pos2(r.min.x + 36.0, r.center().y), Align2::LEFT_CENTER, label, Tokens::medium(12.5), Color32::WHITE);
+            let foreground = if discord { Color32::WHITE } else { t.text };
+            icons::paint(p, Rect::from_center_size(pos2(r.min.x + 18.0, r.center().y), vec2(15.0, 15.0)), icon, foreground);
+            p.text(pos2(r.min.x + 36.0, r.center().y), Align2::LEFT_CENTER, label, Tokens::medium(12.5), foreground);
             p.text(
                 pos2(r.max.x - 12.0, r.center().y),
                 Align2::RIGHT_CENTER,

@@ -24,7 +24,7 @@ pub fn load_peaks(file: &Path) -> Option<Vec<[f32; 4]>> {
         return None;
     }
     let f = |c: &[u8]| f32::from_le_bytes([c[0], c[1], c[2], c[3]]);
-    Some(b.chunks_exact(16).map(|c| [f(&c[0..4]), f(&c[4..8]), f(&c[8..12]), f(&c[12..16])]).collect())
+    Some(b.as_chunks::<16>().0.iter().map(|c| [f(&c[0..4]), f(&c[4..8]), f(&c[8..12]), f(&c[12..16])]).collect())
 }
 
 /// Store a summary (atomically: written beside, then renamed).

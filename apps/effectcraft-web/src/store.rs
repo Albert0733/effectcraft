@@ -477,8 +477,8 @@ mod tests {
         a.execute("comp.new", json!({"name": "C"})).unwrap();
         // Untitled: the auto-save lands in the store's file table.
         let p = a.autosave_now().unwrap();
-        assert_eq!(p, "/EffectCraft Auto-Save/Untitled Project auto-save 1.ecproj");
-        assert!(s.file(&p).is_some());
+        assert_eq!(Path::new(&p), Path::new("/EffectCraft Auto-Save/Untitled Project auto-save 1.ecproj"));
+        assert!(s.file(&path_str(Path::new(&p))).is_some());
         // The tab closes without a clean exit: the next visit offers the auto-save.
         let mut b = Session { config: Some(Arc::new(WebConfig::new(s.clone()))), ..Default::default() };
         b.load_settings();

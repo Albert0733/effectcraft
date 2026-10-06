@@ -320,7 +320,7 @@ pub fn hook(
     }
 
     // ---- keyboard
-    if app.session.state.text_edit.is_some() {
+    if app.session.state.text_edit.is_some() && app.dialog.is_none() && ui.is_enabled() {
         ui.memory_mut(|m| {
             m.set_focus_lock_filter(focus_id(), egui::EventFilter { tab: true, horizontal_arrows: true, vertical_arrows: true, escape: true });
         });

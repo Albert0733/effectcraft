@@ -159,7 +159,7 @@ pub fn decode_thumb(text: &str) -> Option<egui::ColorImage> {
         return None;
     }
     let b: Vec<u8> = (0..t.len()).step_by(2).map(|i| u8::from_str_radix(&t[i..i + 2], 16)).collect::<Result<_, _>>().ok()?;
-    let px = b.chunks_exact(3).map(|c| Color32::from_rgb(c[0], c[1], c[2])).collect();
+    let px = b.as_chunks::<3>().0.iter().map(|c| Color32::from_rgb(c[0], c[1], c[2])).collect();
     Some(egui::ColorImage::new([THUMB_W, THUMB_H], px))
 }
 

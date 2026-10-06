@@ -60,8 +60,8 @@ pub fn encode_png(w: u32, h: u32, rgba: Vec<u8>, max_side: u32) -> Result<Vec<u8
     let mut out = Vec::new();
     let enc = PngEncoder::new_with_quality(&mut out, CompressionType::Fast, FilterType::Adaptive);
     let raw = img.into_raw();
-    let r = if raw.chunks_exact(4).all(|p| p[3] == 255) {
-        let rgb: Vec<u8> = raw.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
+    let r = if raw.as_chunks::<4>().0.iter().all(|p| p[3] == 255) {
+        let rgb: Vec<u8> = raw.as_chunks::<4>().0.iter().flat_map(|p| [p[0], p[1], p[2]]).collect();
         enc.write_image(&rgb, w, h, image::ExtendedColorType::Rgb8)
     } else {
         enc.write_image(&raw, w, h, image::ExtendedColorType::Rgba8)

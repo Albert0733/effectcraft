@@ -1064,6 +1064,10 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
             egui::DragAndDrop::clear_payload(&ctx);
         }
     }
+    if ui.input(|i| i.pointer.primary_down()) && actions.iter().any(|(id, _)| id == "prop.set") {
+        app.ui.viewer.property_interacting = true;
+        ctx.request_repaint();
+    }
     for (id, params) in actions {
         if let Err(e) = crate::menus::invoke(app, &ctx, &id, params) {
             app.ui.status = e;

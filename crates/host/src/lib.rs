@@ -229,8 +229,10 @@ mod tests {
         s.poll_render();
         let mut got = got.lock().unwrap().clone();
         got.sort_by(|a, b| a.0.cmp(&b.0));
-        let names: Vec<&str> = got.iter().map(|(p, _)| p.as_str()).collect();
-        assert_eq!(names, [format!("{dir}/a.gif"), format!("{dir}/seq_00.png"), format!("{dir}/seq_01.png"), format!("{dir}/seq_02.png")]);
+        let names: Vec<std::path::PathBuf> = got.iter().map(|(p, _)| std::path::PathBuf::from(p)).collect();
+        let expected = [format!("{dir}/a.gif"), format!("{dir}/seq_00.png"), format!("{dir}/seq_01.png"), format!("{dir}/seq_02.png")]
+            .map(|p| std::path::absolute(p).unwrap());
+        assert_eq!(names, expected);
         assert!(got[0].1.starts_with(b"GIF89a"));
         assert!(got[1].1.starts_with(b"\x89PNG"));
         assert!(!std::path::Path::new(dir).exists());

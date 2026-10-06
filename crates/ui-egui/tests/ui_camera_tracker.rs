@@ -71,6 +71,23 @@ fn click(h: &mut Harness<'_, EffectcraftApp>, at: egui::Pos2, modifiers: egui::M
 }
 
 #[test]
+fn deleting_viewer_track_points_preserves_the_effect_and_layer() {
+    let (a, plate, uid) = app();
+    let mut h = Harness::builder().with_size(egui::vec2(1600.0, 1000.0)).build_eframe(|_| a);
+    h.state_mut().show_panel(PanelKind::Composition);
+    h.run_steps(4);
+    let point = rect(&h, "viewer.cameraTracker.point.7").center();
+    click(&mut h, point, Default::default());
+    h.state_mut().ui.focused = PanelKind::Composition;
+    h.input_mut().events.push(egui::Event::Key { key: egui::Key::Delete, physical_key: None, pressed: true, repeat: false, modifiers: Default::default() });
+    h.run_steps(3);
+    let layer = h.state().session.active_comp().unwrap().layer(effectcraft_engine::project::LayerId(plate)).unwrap();
+    let effect = layer.props.find_group(uid).expect("tracker effect survived");
+    let params = effectcraft_engine::camera_track::static_params(effect);
+    assert!(ct::deleted(&params).contains(&7));
+}
+
+#[test]
 fn viewer_points_selection_and_effect_controls() {
     let (a, plate, uid) = app();
     let mut h = Harness::builder().with_size(egui::vec2(1600.0, 1000.0)).build_eframe(|_| a);

@@ -222,7 +222,7 @@ fn description(t: Option<&[u8]>) -> Option<String> {
             // The first record: UTF-16BE.
             let len = be32(t, 20)? as usize;
             let off = be32(t, 24)? as usize;
-            let u: Vec<u16> = t.get(off..off + len)?.chunks_exact(2).map(|c| u16::from_be_bytes([c[0], c[1]])).collect();
+            let u: Vec<u16> = t.get(off..off + len)?.as_chunks::<2>().0.iter().map(|c| u16::from_be_bytes(*c)).collect();
             Some(String::from_utf16_lossy(&u).trim_end_matches('\0').to_string())
         }
         _ => None,

@@ -205,7 +205,7 @@ pub fn parse(bytes: &[u8], resolve: &dyn Fn(&str) -> Option<Vec<u8>>) -> Result<
                 let (_, prim, map, need) = &mut prims[slot];
                 let mut ids = vec![];
                 for (vi, ti, ni) in refs {
-                    let k = Key { v: vi, t: ti.map_or(u32::MAX, |x| x), n: ni.map_or(u32::MAX, |x| x), s };
+                    let k = Key { v: vi, t: ti.unwrap_or(u32::MAX), n: ni.unwrap_or(u32::MAX), s };
                     let id = *map.entry(k).or_insert_with(|| {
                         prim.positions.push(v[vi as usize]);
                         prim.uvs.push(ti.map_or([0.0, 0.0], |t| vt[t as usize]));

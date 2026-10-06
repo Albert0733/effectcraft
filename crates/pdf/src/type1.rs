@@ -116,7 +116,7 @@ impl Type1 {
         let hex = body.iter().take(4).all(u8::is_ascii_hexdigit);
         let raw: Vec<u8> = if hex {
             let digits: Vec<u8> = body.iter().copied().filter(u8::is_ascii_hexdigit).collect();
-            digits.chunks_exact(2).map(|p| (hexv(p[0]) << 4) | hexv(p[1])).collect()
+            digits.as_chunks::<2>().0.iter().map(|p| (hexv(p[0]) << 4) | hexv(p[1])).collect()
         } else {
             body.to_vec()
         };

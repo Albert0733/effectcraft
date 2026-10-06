@@ -452,6 +452,6 @@ pub fn rgba_to_yuv420(rgba: &[u8], w: u32, h: u32, full_range: bool) -> (Vec<u8>
 pub fn alpha_to_yuv420(rgba: &[u8], w: u32, h: u32) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
     let (w, h) = (w as usize, h as usize);
     let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
-    let y: Vec<u8> = rgba.chunks_exact(4).take(w * h).map(|p| p[3]).collect();
+    let y: Vec<u8> = rgba.as_chunks::<4>().0.iter().take(w * h).map(|p| p[3]).collect();
     (y, vec![128; cw * ch], vec![128; cw * ch])
 }

@@ -560,7 +560,7 @@ impl Func {
 /// PDF text string → Rust string (UTF-16BE with a byte-order mark, else PDFDocEncoding ≈ Latin-1).
 pub fn text_string(b: &[u8]) -> String {
     if b.starts_with(&[0xFE, 0xFF]) {
-        let u: Vec<u16> = b[2..].chunks_exact(2).map(|c| u16::from_be_bytes([c[0], c[1]])).collect();
+        let u: Vec<u16> = b[2..].as_chunks::<2>().0.iter().map(|c| u16::from_be_bytes([c[0], c[1]])).collect();
         return String::from_utf16_lossy(&u);
     }
     if let Some(rest) = b.strip_prefix(&[0xEF, 0xBB, 0xBF]) {

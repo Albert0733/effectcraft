@@ -733,7 +733,7 @@ impl T2<'_> {
                 }
                 5 => {
                     let s = self.args();
-                    for c in s.chunks_exact(2) {
+                    for c in s.as_chunks::<2>().0 {
                         self.line_to(c[0], c[1]);
                     }
                 }
@@ -751,7 +751,7 @@ impl T2<'_> {
                 }
                 8 => {
                     let s = self.args();
-                    for c in s.chunks_exact(6) {
+                    for c in s.as_chunks::<6>().0 {
                         self.curve([c[0], c[1], c[2], c[3], c[4], c[5]]);
                     }
                 }
@@ -759,7 +759,7 @@ impl T2<'_> {
                     // rcurveline
                     let s = self.args();
                     let nc = s.len().saturating_sub(2) / 6;
-                    for c in s[..nc * 6].chunks_exact(6) {
+                    for c in s[..nc * 6].as_chunks::<6>().0 {
                         self.curve([c[0], c[1], c[2], c[3], c[4], c[5]]);
                     }
                     if s.len() >= nc * 6 + 2 {
@@ -771,7 +771,7 @@ impl T2<'_> {
                     let s = self.args();
                     if s.len() >= 6 {
                         let nl = (s.len() - 6) / 2;
-                        for c in s[..nl * 2].chunks_exact(2) {
+                        for c in s[..nl * 2].as_chunks::<2>().0 {
                             self.line_to(c[0], c[1]);
                         }
                         let c = &s[nl * 2..];
@@ -785,7 +785,7 @@ impl T2<'_> {
                     if s.len() % 4 == 1 {
                         dx1 = s.remove(0);
                     }
-                    for c in s.chunks_exact(4) {
+                    for c in s.as_chunks::<4>().0 {
                         self.curve([dx1, c[0], c[1], c[2], 0.0, c[3]]);
                         dx1 = 0.0;
                     }
@@ -797,7 +797,7 @@ impl T2<'_> {
                     if s.len() % 4 == 1 {
                         dy1 = s.remove(0);
                     }
-                    for c in s.chunks_exact(4) {
+                    for c in s.as_chunks::<4>().0 {
                         self.curve([c[0], dy1, c[1], c[2], c[3], 0.0]);
                         dy1 = 0.0;
                     }

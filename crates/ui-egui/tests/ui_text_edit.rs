@@ -72,6 +72,24 @@ fn type_tool_skips_hidden_and_unsoloed_text_layers() {
 }
 
 #[test]
+fn modal_blocks_background_text_events() {
+    let mut h = Harness::builder().with_size(egui::vec2(1600.0, 1000.0)).build_eframe(|_| app());
+    h.run_steps(3);
+    h.state_mut().ui.tool = effectcraft_ui_egui::state::Tool::Type;
+    h.run_steps(1);
+    let p = rect(&h, "viewer.comp").center();
+    click(&mut h, p, Modifiers::NONE);
+    type_text(&mut h, "Preserve");
+    let before = edited(&h).1;
+    h.state_mut().dialog = Some(effectcraft_ui_egui::Dialog::About);
+    h.run_steps(3);
+    h.input_mut().events.push(Event::Text("changed".into()));
+    h.input_mut().events.push(Event::Paste("pasted".into()));
+    key(&mut h, Key::Backspace, Modifiers::NONE);
+    assert_eq!(edited(&h).1, before);
+}
+
+#[test]
 fn type_tool_click_type_edit_and_commit() {
     let mut h = Harness::builder().with_size(egui::vec2(1600.0, 1000.0)).with_step_dt(1.0 / 60.0).build_eframe(|_| app());
     h.state_mut().show_panel(PanelKind::Composition);

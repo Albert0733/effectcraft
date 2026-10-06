@@ -15,11 +15,14 @@ fn fxn_pixel(gid: vec3<u32>) -> vec2<i32> {
 }
 
 // a / b rounded like the CPU's IEEE division (GPU division may be approximate): one
-// residual correction with fma. Used where a threshold follows the quotient.
+// residual correction with fma, followed by a second refinement for half-step cases.
+// Used where a strict threshold follows the quotient.
 fn fxn_div4(a: vec4<f32>, b: vec4<f32>) -> vec4<f32> {
     let q = a / b;
     let r = fma(-q, b, a);
-    return fma(r, 1.0 / b, q);
+    let corrected = fma(r, 1.0 / b, q);
+    let residual = fma(-corrected, b, a);
+    return fma(residual, 1.0 / b, corrected);
 }
 
 // util::unpremul: (straight colour, alpha).

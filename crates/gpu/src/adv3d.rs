@@ -387,9 +387,11 @@ pub(crate) fn render(g: &GpuContext, s: &Scene) -> Option<Target> {
     if cb.len() != (s.width * s.height * 8) as usize || zb.len() != (s.width * s.height * 4) as usize {
         return None;
     }
-    let color = cb.chunks_exact(8).map(|c| [0, 1, 2, 3].map(|k| half_to_f32(u16::from_le_bytes([c[2 * k], c[2 * k + 1]])))).collect();
+    let color = cb.as_chunks::<8>().0.iter().map(|c| [0, 1, 2, 3].map(|k| half_to_f32(u16::from_le_bytes([c[2 * k], c[2 * k + 1]])))).collect();
     let depth = zb
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| {
             let z = f32::from_le_bytes([c[0], c[1], c[2], c[3]]);
             if z < 0.0 { f32::INFINITY } else { z }
@@ -765,7 +767,9 @@ pub(crate) fn render_prepared(g: &GpuContext, prep: &Prepared) -> Option<Rendere
     let px = r.width as u64 * r.height as u64;
     let db = read_buffer(&mut e, &r.depth, px * 4)?;
     let depth = db
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| {
             let z = f32::from_le_bytes([c[0], c[1], c[2], c[3]]);
             if z >= BIG * 0.5 { f32::INFINITY } else { z }
@@ -812,7 +816,9 @@ fn render_prepared_deferred(g: &GpuContext, d: &std::sync::Arc<crate::deferred::
             dst.copy_from_slice(&a.bytes);
             let depth = b
                 .bytes
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .map(|c| {
                     let z = f32::from_le_bytes([c[0], c[1], c[2], c[3]]);
                     if z >= BIG * 0.5 { f32::INFINITY } else { z }

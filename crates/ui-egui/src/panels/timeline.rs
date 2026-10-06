@@ -1205,6 +1205,9 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     // Registered before the rows so keys, bars and editors on top of it get the pointer first.
     let empty_rect = if graph_on { Rect::NOTHING } else { Rect::from_min_max(pos2(graph_x0, rows_rect.min.y), rows_rect.max) };
     let empty = ui.interact(empty_rect, egui::Id::new("tl-graph-bg"), Sense::click_and_drag());
+    let outline_rect = Rect::from_min_max(rows_rect.min, pos2(graph_x0 - 1.0, rows_rect.max.y));
+    let outline_empty = ui.interact(outline_rect, egui::Id::new("tl-layer-bg"), Sense::click_and_drag());
+    app.auto.add("timeline.layerMarquee", outline_rect, "Drag empty outline to select layers");
     let mut hit_rows: Vec<(Rect, Row)> = vec![];
     for (ri, row) in rows.iter().enumerate() {
         // Outline widgets never spill into the time graph (narrow timelines).
@@ -1336,7 +1339,28 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 app.auto.add(&format!("timeline.layer.{}.row", layer.id.0), left, &layer.name);
                 if row_resp.clicked() && !locked {
                     let m = ui.input(|i| i.modifiers);
-                    actions.push(("layer.select".into(), json!({"layers": [layer.id.0], "toggle": m.command, "add": m.shift})));
+                    let anchor_key = egui::Id::new(("timeline-selection-anchor", cid.0));
+                    let anchor = ctx.data(|d| d.get_temp::<LayerId>(anchor_key)).or_else(|| selected.first().copied());
+                    let range = if m.shift {
+                        anchor.and_then(|a| comp.layers.iter().position(|l| l.id == a)).map(|a| {
+                            let b = comp.layers.iter().position(|l| l.id == layer.id).unwrap_or(a);
+                            comp.layers
+                                .get(a.min(b)..=a.max(b))
+                                .unwrap_or_default()
+                                .iter()
+                                .filter(|l| !l.switches.locked && rows.iter().any(|r| r.layer == l.id))
+                                .map(|l| l.id.0)
+                                .collect::<Vec<_>>()
+                        })
+                    } else {
+                        None
+                    };
+                    if let Some(layers) = range {
+                        actions.push(("layer.select".into(), json!({"layers": layers})));
+                    } else {
+                        actions.push(("layer.select".into(), json!({"layers": [layer.id.0], "toggle": m.command})));
+                        ctx.data_mut(|d| d.insert_temp(anchor_key, layer.id));
+                    }
                 }
                 if row_resp.double_clicked() {
                     match &layer.source {
@@ -2015,6 +2039,29 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         }
     }
     ui.set_clip_rect(full_clip);
+    if outline_empty.clicked() && !ui.input(|i| i.modifiers.shift || i.modifiers.command) {
+        actions.push(("layer.select".into(), json!({"layers": []})));
+    }
+    if let (Some(start), Some(end)) = (ctx.input(|i| i.pointer.press_origin()), outline_empty.interact_pointer_pos())
+        && outline_empty.dragged()
+    {
+        let box_rect = Rect::from_two_pos(start, end).intersect(outline_rect);
+        lp.rect_filled(box_rect, 0.0, t.accent.gamma_multiply(0.12));
+        lp.rect_stroke(box_rect, 0.0, Stroke::new(1.0, t.accent), StrokeKind::Inside);
+        ctx.data_mut(|d| d.insert_temp(egui::Id::new("tl-layer-box"), box_rect));
+    }
+    if outline_empty.drag_stopped()
+        && let Some(box_rect) = ctx.data(|d| d.get_temp::<Rect>(egui::Id::new("tl-layer-box")))
+    {
+        ctx.data_mut(|d| d.remove::<Rect>(egui::Id::new("tl-layer-box")));
+        let layers: Vec<u64> = hit_rows
+            .iter()
+            .filter(|(r, row)| matches!(row.kind, RowKind::Layer) && r.intersects(box_rect))
+            .filter(|(_, row)| comp.layer(row.layer).is_some_and(|l| !l.switches.locked))
+            .map(|(_, row)| row.layer.0)
+            .collect();
+        actions.push(("layer.select".into(), json!({"layers": layers, "add": ui.input(|i| i.modifiers.shift || i.modifiers.command)})));
+    }
     // Pick whips: a line follows the pointer; releasing over a row links to it.
     if let Some((kind, src_layer, src_prop, start)) = ctx.data(|d| d.get_temp::<PickWhip>(pick_whip_id())) {
         let ptr = ctx.input(|i| i.pointer.latest_pos()).unwrap_or(start);
@@ -2287,6 +2334,10 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
             UiAct::EndMerge => app.session.history.merge_key = None,
         }
     }
+    if ui.input(|i| i.pointer.primary_down()) && actions.iter().any(|(id, _)| id == "prop.set") {
+        app.ui.viewer.property_interacting = true;
+        ctx.request_repaint();
+    }
     for (id, params) in actions {
         if id == "__endMerge" {
             app.session.history.merge_key = None;
@@ -2540,63 +2591,66 @@ fn zoom_at(app: &mut EffectcraftApp, comp: &Comp, tm: TMap, k: f64, at_x: f32) {
 }
 
 fn layer_context_menu(resp: &egui::Response, layer: &Layer, actions: &mut Vec<(String, serde_json::Value)>) {
-    resp.context_menu(|ui| {
-        let id = layer.id.0;
-        let mut item = |ui: &mut egui::Ui, label: &str, cmd: &str, params: serde_json::Value| {
-            if ui.button(label).clicked() {
-                actions.push(("layer.select".into(), json!({"layers": [id]})));
-                actions.push((cmd.into(), params));
-                ui.close();
-            }
-        };
-        ui.menu_button("New", |ui| {
-            item(ui, "Text", "layer.newText", json!({"text": "Text"}));
-            item(ui, "Solid…", "app.solidSettings", json!({}));
-            item(ui, "Light…", "layer.newLight", json!({}));
-            item(ui, "Camera…", "layer.newCamera", json!({}));
-            item(ui, "Null Object", "layer.newNull", json!({}));
-            item(ui, "Shape Layer", "layer.newShape", json!({"kind": "none"}));
-            item(ui, "Adjustment Layer", "layer.newAdjustment", json!({}));
-        });
-        item(ui, "Layer Settings…", "layer.settings", json!({}));
-        ui.separator();
-        ui.menu_button("Masks", |ui| {
-            item(ui, "New Mask", "layer.addMask", json!({"layer": id}));
-        });
-        ui.menu_button("Transform", |ui| {
-            item(ui, "Reset", "layer.transform", json!({"layers": [id], "op": "reset"}));
-            item(ui, "Center In View", "layer.transform", json!({"layers": [id], "op": "center"}));
-            item(ui, "Fit to Comp", "layer.transform", json!({"layers": [id], "op": "fit"}));
-            item(ui, "Flip Horizontal", "layer.transform", json!({"layers": [id], "op": "flipH"}));
-            item(ui, "Flip Vertical", "layer.transform", json!({"layers": [id], "op": "flipV"}));
-        });
-        ui.menu_button("Time", |ui| {
-            item(ui, "Enable Time Remapping", "layer.enableTimeRemap", json!({"layers": [id]}));
-            item(ui, "Time-Reverse Layer", "layer.timeReverse", json!({"layers": [id]}));
-            item(ui, "Time Stretch…", "layer.timeStretch", json!({}));
-            item(ui, "Freeze Frame", "layer.freezeFrame", json!({"layers": [id]}));
-            item(ui, "Freeze on Last Frame", "layer.freezeOnLastFrame", json!({"layers": [id]}));
-        });
-        ui.menu_button("Blending Mode", |ui| {
-            for m in BlendMode::ALL {
-                item(ui, m.label(), "layer.setBlendMode", json!({"layers": [id], "mode": m.label()}));
-                if m.ends_group() {
-                    ui.separator();
-                }
-            }
-        });
-        ui.menu_button("Arrange", |ui| {
-            item(ui, "Bring Layer to Front", "layer.arrange", json!({"layers": [id], "to": "front"}));
-            item(ui, "Bring Layer Forward", "layer.arrange", json!({"layers": [id], "to": "forward"}));
-            item(ui, "Send Layer Backward", "layer.arrange", json!({"layers": [id], "to": "backward"}));
-            item(ui, "Send Layer to Back", "layer.arrange", json!({"layers": [id], "to": "back"}));
-        });
-        ui.separator();
-        item(ui, "Pre-compose…", "layer.precompose", json!({"layers": [id]}));
-        item(ui, "Duplicate", "edit.duplicate", json!({"layers": [id]}));
-        item(ui, "Split Layer", "edit.splitLayer", json!({"layers": [id]}));
-        item(ui, "Delete", "edit.clear", json!({"layers": [id]}));
+    resp.context_menu(|ui| layer_menu(ui, &[layer.id.0], actions));
+}
+
+/// Shared layer actions for Timeline rows and Composition context menus.
+pub(crate) fn layer_menu(ui: &mut egui::Ui, layers: &[u64], actions: &mut Vec<(String, serde_json::Value)>) {
+    let Some(&id) = layers.first() else { return };
+    let mut item = |ui: &mut egui::Ui, label: &str, cmd: &str, params: serde_json::Value| {
+        if ui.button(label).clicked() {
+            actions.push(("layer.select".into(), json!({"layers": layers})));
+            actions.push((cmd.into(), params));
+            ui.close();
+        }
+    };
+    ui.menu_button("New", |ui| {
+        item(ui, "Text", "layer.newText", json!({"text": "Text"}));
+        item(ui, "Solid…", "app.solidSettings", json!({}));
+        item(ui, "Light…", "layer.newLight", json!({}));
+        item(ui, "Camera…", "layer.newCamera", json!({}));
+        item(ui, "Null Object", "layer.newNull", json!({}));
+        item(ui, "Shape Layer", "layer.newShape", json!({"kind": "none"}));
+        item(ui, "Adjustment Layer", "layer.newAdjustment", json!({}));
     });
+    item(ui, "Layer Settings…", "layer.settings", json!({}));
+    ui.separator();
+    ui.menu_button("Masks", |ui| {
+        item(ui, "New Mask", "layer.addMask", json!({"layer": id}));
+    });
+    ui.menu_button("Transform", |ui| {
+        item(ui, "Reset", "layer.transform", json!({"layers": layers, "op": "reset"}));
+        item(ui, "Center In View", "layer.transform", json!({"layers": layers, "op": "center"}));
+        item(ui, "Fit to Comp", "layer.transform", json!({"layers": layers, "op": "fit"}));
+        item(ui, "Flip Horizontal", "layer.transform", json!({"layers": layers, "op": "flipH"}));
+        item(ui, "Flip Vertical", "layer.transform", json!({"layers": layers, "op": "flipV"}));
+    });
+    ui.menu_button("Time", |ui| {
+        item(ui, "Enable Time Remapping", "layer.enableTimeRemap", json!({"layers": layers}));
+        item(ui, "Time-Reverse Layer", "layer.timeReverse", json!({"layers": layers}));
+        item(ui, "Time Stretch…", "layer.timeStretch", json!({}));
+        item(ui, "Freeze Frame", "layer.freezeFrame", json!({"layers": layers}));
+        item(ui, "Freeze on Last Frame", "layer.freezeOnLastFrame", json!({"layers": layers}));
+    });
+    ui.menu_button("Blending Mode", |ui| {
+        for m in BlendMode::ALL {
+            item(ui, m.label(), "layer.setBlendMode", json!({"layers": layers, "mode": m.label()}));
+            if m.ends_group() {
+                ui.separator();
+            }
+        }
+    });
+    ui.menu_button("Arrange", |ui| {
+        item(ui, "Bring Layer to Front", "layer.arrange", json!({"layers": layers, "to": "front"}));
+        item(ui, "Bring Layer Forward", "layer.arrange", json!({"layers": layers, "to": "forward"}));
+        item(ui, "Send Layer Backward", "layer.arrange", json!({"layers": layers, "to": "backward"}));
+        item(ui, "Send Layer to Back", "layer.arrange", json!({"layers": layers, "to": "back"}));
+    });
+    ui.separator();
+    item(ui, "Pre-compose…", "layer.precompose", json!({"layers": layers}));
+    item(ui, "Duplicate", "edit.duplicate", json!({"layers": layers}));
+    item(ui, "Split Layer", "edit.splitLayer", json!({"layers": layers}));
+    item(ui, "Delete", "edit.clear", json!({"layers": layers}));
 }
 
 fn fmt_num(v: f64, d: usize) -> String {

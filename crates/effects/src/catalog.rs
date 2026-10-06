@@ -173,7 +173,8 @@ mod tests {
             std::fs::write(path, &want).unwrap();
             return;
         }
-        let have = std::fs::read_to_string(path).unwrap_or_default();
+        // A Windows checkout may use CRLF; catalog content must still match exactly.
+        let have = std::fs::read_to_string(path).unwrap_or_default().replace("\r\n", "\n");
         assert!(have == want, "docs/effects.md is stale: UPDATE_DOCS=1 cargo test -p effectcraft-effects --lib effects_doc_is_current");
     }
 

@@ -25,6 +25,7 @@ fn viewer_draws_gpu_frames_that_match_the_cpu() {
         eprintln!("no GPU adapter: skipping");
         return;
     };
+    eprintln!("headless compositor adapter: {}", effectcraft_engine::render::Accelerator::name(&probe));
     // egui-wgpu creates its GL device with WebGL2's limits, which the compositor declines.
     let gl = effectcraft_engine::render::Accelerator::name(&probe).ends_with("(Gl)");
     drop(probe);
@@ -38,6 +39,7 @@ fn viewer_draws_gpu_frames_that_match_the_cpu() {
         return;
     }
     assert!(h.state().gpu_adapter().is_some(), "GPU compositor on egui-wgpu's device");
+    eprintln!("viewer compositor adapter: {:?}", h.state().gpu_adapter());
     let gpu_px = h.state_mut().viewer_pixels().expect("read back the GPU frame");
     let gpu_shot = h.render().expect("render");
     // Mercury Software Only: the same frame from the CPU.

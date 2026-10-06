@@ -197,6 +197,10 @@ fn easing_converts_exactly_both_ways() {
     assert!((k0["o"]["x"][0].as_f64().unwrap() - 0.6).abs() < 1e-9);
     assert!((k0["o"]["y"][0].as_f64().unwrap() - 300.0 * 0.6 * 0.8 / 180.0).abs() < 1e-5);
     assert_eq!(json["layers"][0]["ks"]["r"]["k"][1]["h"], json!(1));
+    let scale = &json["layers"][0]["ks"]["s"]["k"][0];
+    assert!((scale["o"]["x"][0].as_f64().unwrap() - 0.9).abs() < 1e-9);
+    assert!((scale["i"]["x"][0].as_f64().unwrap() - 2.0 / 3.0).abs() < 1e-6);
+    assert!((scale["o"]["y"][0].as_f64().unwrap() + 0.1125).abs() < 1e-9);
     let rq = &q.comp(nc).unwrap().layers[0];
     let rk = &rq.props.prop("transform/rotation").unwrap().keys;
     assert!((rk[0].out_ease[0].speed - 300.0).abs() < 1e-3 && (rk[0].out_ease[0].influence - 0.6).abs() < 1e-6, "{:?}", rk[0].out_ease);

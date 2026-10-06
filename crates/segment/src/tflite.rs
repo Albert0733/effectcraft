@@ -263,13 +263,13 @@ impl Model {
                     let data = bytes.get(at..at.checked_add(len).ok_or("bad buffer")?).ok_or("truncated model")?;
                     match ty {
                         FLOAT32 if data.len() == 4 * count => {
-                            floats[i] = Some(data.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect())
+                            floats[i] = Some(data.as_chunks::<4>().0.iter().map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect())
                         }
                         FLOAT16 if data.len() == 2 * count => {
-                            floats[i] = Some(data.chunks_exact(2).map(|c| half_to_f32(u16::from_le_bytes([c[0], c[1]]))).collect())
+                            floats[i] = Some(data.as_chunks::<2>().0.iter().map(|c| half_to_f32(u16::from_le_bytes([c[0], c[1]]))).collect())
                         }
                         INT32 if data.len() == 4 * count => {
-                            ints[i] = Some(data.chunks_exact(4).map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect())
+                            ints[i] = Some(data.as_chunks::<4>().0.iter().map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect())
                         }
                         _ => return Err(format!("{}: unsupported tensor data", names[i])),
                     }
@@ -389,7 +389,9 @@ impl Model {
                 op::PAD => {
                     let p = ints[input(1)?].clone().ok_or("PAD: paddings must be constant")?;
                     let pads = p
-                        .chunks_exact(2)
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
                         .map(|c| Ok([usize::try_from(c[0]).map_err(|_| "bad pad")?, usize::try_from(c[1]).map_err(|_| "bad pad")?]))
                         .collect::<Result<Vec<_>>>()?;
                     Op::Pad(pads)
