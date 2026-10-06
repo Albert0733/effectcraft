@@ -2701,19 +2701,15 @@ fn value_editor(
         Value::Scalar(v) => {
             let (min, max, dec, speed) = match &prop.ui {
                 ParamUi::Slider { min, max, decimals, .. } => (*min, *max, *decimals as usize, ((max - min) / 400.0).clamp(0.01, 10.0)),
-                ParamUi::Angle => (-1e9, 1e9, 1, 0.5),
                 ParamUi::Percent => (-1e6, 1e6, 1, 0.5),
                 _ => (-1e9, 1e9, 1, 1.0),
             };
             if matches!(prop.ui, ParamUi::Angle) {
-                let rev = (v / 360.0).trunc();
-                let deg = v - rev * 360.0;
-                p.text(pos2(x, at.y), Align2::LEFT_CENTER, format!("{}x", rev as i64), Tokens::ui(12.0), t.hot_text);
-                x += 22.0;
-                let (r, nv, _) = widgets::hot_number_at(ui, pos2(x, y), egui::Id::new(("v", uid, 0)), deg, speed, (-1e9, 1e9), 1, "°", &t);
-                app.auto.add(&format!("timeline.prop.{uid}.value"), r, &prop.name);
+                let (rr, dr, nv) = super::fx_widgets::angle_field(ui, pos2(x, y), egui::Id::new(("v", uid, 0)), *v, 1, &t);
+                app.auto.add(&format!("timeline.prop.{uid}.value"), dr, &prop.name);
+                app.auto.add(&format!("timeline.prop.{uid}.revolutions"), rr, &prop.name);
                 if let Some(nv) = nv {
-                    set(actions, json!(rev * 360.0 + nv));
+                    set(actions, json!(nv));
                 }
             } else {
                 let suffix = if matches!(prop.ui, ParamUi::Percent) || prop.match_id == "opacity" { "%" } else { "" };
