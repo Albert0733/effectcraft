@@ -366,7 +366,9 @@ mod japanese_font_tests {
         }
         let ctx = egui::Context::default();
         super::install(&ctx, &super::Tokens::for_kind(super::ThemeKind::Dark));
-        let _ = ctx.run_ui(egui::RawInput::default(), |_| {});
+        let mut out = ctx.run_ui(egui::RawInput::default(), |_| {});
+        // No renderer here: drop the frame's texture uploads (egui asserts on unhandled ones in debug).
+        out.textures_delta.clear();
         ctx.fonts_mut(|fonts| {
             for family in [
                 egui::FontFamily::Proportional,

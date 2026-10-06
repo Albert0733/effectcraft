@@ -31,6 +31,9 @@ fn harness() -> (Harness<'static, EffectcraftApp>, Vec<ItemId>, LayerId) {
 }
 
 fn click(h: &mut Harness<'_, EffectcraftApp>, id: &str, modifiers: Modifiers) {
+    // Let a dialog opened by the previous input finish its first (sizing) frame, so its buttons
+    // are where the automation tree says.
+    h.run_steps(2);
     let e = h.state().auto.find(id).unwrap_or_else(|| panic!("no {id}")).clone();
     let p = pos2(e.rect[0] + e.rect[2] / 2.0, e.rect[1] + e.rect[3] / 2.0);
     h.input_mut().events.push(Event::ModifiersChanged(modifiers));

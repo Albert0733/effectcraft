@@ -211,7 +211,8 @@ pub fn invoke(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, params: V
     }
     // Clear follows panel focus, including the Edit menu and keyboard shortcut.
     if id == "edit.clear" && params.as_object().is_some_and(|p| p.is_empty()) && app.ui.focused == PanelKind::Project {
-        return run_engine(app, ctx, "project.delete", json!({}));
+        // Through `invoke`, so deleting items that compositions use still asks first (M3.16).
+        return invoke(app, ctx, "project.delete", json!({}));
     }
     if id == "edit.clear" && params.as_object().is_some_and(|p| p.is_empty()) && app.ui.focused == PanelKind::RenderQueue {
         let selected = ctx.data(|d| d.get_temp::<(Vec<u64>, Option<u64>)>(egui::Id::new("rq-ui"))).and_then(|(_, id)| id);

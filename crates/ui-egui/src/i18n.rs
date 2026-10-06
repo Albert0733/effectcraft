@@ -756,9 +756,11 @@ mod tests {
         let tokens = crate::theme::Tokens::for_kind(crate::theme::ThemeKind::Dark);
         crate::theme::install(&ctx, &tokens);
         crate::panels::settings::open(&mut app, "general");
-        let _ = ctx.run_ui(egui::RawInput::default(), |_| {
+        let mut out = ctx.run_ui(egui::RawInput::default(), |_| {
             crate::panels::settings::show(&mut app, &ctx, &tokens);
         });
+        // No renderer here: drop the frame's texture uploads (egui asserts on unhandled ones in debug).
+        out.textures_delta.clear();
         assert!(app.auto.find("settings.general.language").is_some());
     }
 }
