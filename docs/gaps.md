@@ -72,6 +72,11 @@ The most important missing piece: it turns every other estimate here into a meas
   pointer tests in `ui_viewer` and `ui_text_edit`, checked headlessly on Linux, cover viewer clicks,
   marquee selection and text picking when layers are hidden or excluded by solo. They also check
   hidden/locked solo layers and solo layers outside their active time range.
+- Regression evidence for [#67](https://github.com/storytold/effectcraft/issues/67): scripted
+  input tests in `ui_project_delete`, checked headlessly on Linux, cover Delete/Backspace on
+  Project items, multiple selection and undo. They check that an unrelated Timeline layer stays,
+  an empty Project selection does nothing, viewer focus still deletes layers, and typing or
+  dialogs do not delete items.
 - Done when: no open bug blocks a basic workflow (import, arrange, animate, preview, render) on
   any of the three desktop platforms, and every bug users report gets triaged within a day.
 
