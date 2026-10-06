@@ -93,9 +93,10 @@ EffectCraft uses it as an **optional build input**, never a Cargo dependency:
 
 ```sh
 git clone https://github.com/storytold/craft-fonts ../craft-fonts
-CRAFT_FONTS_DIR=../craft-fonts cargo run -p effectcraft
+CRAFT_FONTS_DIR="$PWD/../craft-fonts" cargo run -p effectcraft
 ```
 
+Use an absolute path: `build.rs` runs in `crates/text`, so a relative one resolves from there.
 `crates/text/build.rs` embeds the fonts in its `fonts/manifest.txt` as
 `effectcraft_text::fonts::CRAFT_FONTS` (wasm32: only BIZ UDPGothic Regular, for the download size);
 unset, `CRAFT_FONTS` is empty and the app builds, tests and runs as before. The Japanese faces are the

@@ -199,7 +199,7 @@ cargo xtask web --serve 8765                # the browser build on http://127.0.
 Japanese text in the UI and in text layers uses the system's Japanese fonts. To embed the shared
 fonts from [craft-fonts](https://github.com/storytold/craft-fonts) instead (as release builds do,
 and the only way the browser build gets Japanese), clone it and build with
-`CRAFT_FONTS_DIR=../craft-fonts`; see [AGENTS.md](AGENTS.md).
+`CRAFT_FONTS_DIR="$PWD/../craft-fonts"` (an absolute path: `build.rs` resolves a relative one from `crates/text`); see [AGENTS.md](AGENTS.md).
 
 To work on it: `cargo test --workspace`, and `cargo xtask ci` before every commit (format, lints,
 tests, layering, asset attribution and the WebAssembly build). See [CONTRIBUTING.md](CONTRIBUTING.md),

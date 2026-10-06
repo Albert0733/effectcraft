@@ -18,7 +18,7 @@ Optional: build with the shared fonts from [craft-fonts](https://github.com/stor
 
 ```sh
 git clone https://github.com/storytold/craft-fonts ../craft-fonts
-CRAFT_FONTS_DIR=../craft-fonts cargo test --workspace
+CRAFT_FONTS_DIR="$PWD/../craft-fonts" cargo test --workspace
 ```
 
 ## Ground rules
