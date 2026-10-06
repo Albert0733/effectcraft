@@ -63,6 +63,10 @@ The most important missing piece: it turns every other estimate here into a meas
 
 ### G2. Real-user reliability on every platform
 
+- Follow-up angle-input regressions in `ui_angles`, checked headlessly on Linux, verify that
+  Escape cancels edits and non-finite entries leave the value and undo history unchanged in
+  Effect Controls, Timeline and Properties. Valid entries still commit on Enter or click-away.
+
 - Fix user issues as they come in, each with a regression test, and answer the reporter (#41–#47
   and #63–#68 are handled, as are the Windows report that the font menus missed installed fonts
   and the reports of 6 October, #85, #88, #89, #93, #103, #106 and #117; Wayland file drops wait
