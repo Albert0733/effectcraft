@@ -805,6 +805,18 @@ fn key_drag_id() -> egui::Id {
     egui::Id::new("tl-key-drag")
 }
 /// Set on the frame the reorder drag is released.
+/// Where layers dropped at height `py` land among the visible layer rows: above the first row
+/// whose middle is below it (its index in `layer_rows`), else below the last row. Returns that
+/// and the y of the line that shows it (`top` without rows).
+fn insertion(layer_rows: &[(Rect, LayerId)], py: f32, top: f32) -> (Option<usize>, f32) {
+    let at = layer_rows.iter().position(|(r, _)| py < r.center().y);
+    let y = match at {
+        Some(i) => layer_rows.get(i).map_or(top, |(r, _)| r.min.y),
+        None => layer_rows.last().map_or(top, |(r, _)| r.max.y),
+    };
+    (at, y)
+}
+
 fn layer_drop_id() -> egui::Id {
     egui::Id::new("tl-layer-drop")
 }
@@ -2130,11 +2142,9 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         let dropped = ctx.data_mut(|d| d.remove_temp::<bool>(layer_drop_id())).unwrap_or(false);
         let layer_rows: Vec<(Rect, LayerId)> = hit_rows.iter().filter(|(_, r)| matches!(r.kind, RowKind::Layer)).map(|(rr, r)| (*rr, r.layer)).collect();
         if let Some(py) = ui.input(|i| i.pointer.interact_pos().or(i.pointer.latest_pos())).map(|p| p.y)
-            && let Some(last) = layer_rows.last()
+            && !layer_rows.is_empty()
         {
-            // The first layer row whose middle is below the pointer: the layers go above it.
-            let at = layer_rows.iter().position(|(rr, _)| py < rr.center().y);
-            let line_y = at.map(|i| layer_rows[i].0.min.y).unwrap_or(last.0.max.y);
+            let (at, line_y) = insertion(&layer_rows, py, rows_rect.min.y);
             let target = at.and_then(|i| layer_rows[i..].iter().find(|(_, l)| !moving.contains(&l.0)).map(|(_, l)| *l));
             if dropped {
                 ctx.data_mut(|d| d.remove::<Vec<u64>>(layer_drag_id()));
@@ -2298,25 +2308,55 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let mrows = rows_rect.intersect(Rect::from_min_max(pos2(graph_x0, rows_rect.min.y), rows_rect.max));
     super::markers_ui::comp_markers(app, ui, &comp, tm, mstrip, mrows);
 
-    // Drop targets: footage/comps from the Project panel, effects from Effects & Presets.
+    // Drop targets: effects from Effects & Presets go on the layer under the pointer. Footage and
+    // comps from the Project panel and files from the Media Browser go where they are dropped: a
+    // line shows the place in the stack, and over the time graph a marker shows the In point too
+    // (Shift: at the current time), as in After Effects.
     if let Some(payload) = egui::DragAndDrop::payload::<crate::panels::DragPayload>(&ctx)
         && !matches!(*payload, crate::panels::DragPayload::Property { .. })
-        && ui.rect_contains_pointer(rows_rect)
+        && let Some(ptr) = ctx.input(|i| i.pointer.hover_pos()).filter(|_| ui.rect_contains_pointer(rows_rect))
     {
-        p.rect_stroke(rows_rect, 0.0, Stroke::new(2.0, t.accent), StrokeKind::Inside);
-        if ctx.input(|i| i.pointer.any_released()) {
-            let hover_y = ctx.input(|i| i.pointer.hover_pos()).map(|p| p.y).unwrap_or(0.0);
-            let target = hit_rows.iter().find(|(r, _)| hover_y >= r.min.y && hover_y < r.max.y).map(|(_, row)| row.layer);
-            match payload.as_ref() {
-                crate::panels::DragPayload::Item(id) => actions.push(("layer.addItem".into(), json!({"item": id}))),
-                crate::panels::DragPayload::Effect(e) => {
-                    if let Some(l) = target {
-                        actions.push(("effect.apply".into(), json!({"effect": e, "layers": [l.0]})));
-                    }
-                }
-                crate::panels::DragPayload::Files(paths) => actions.push(("mediaBrowser.import".into(), json!({"paths": paths, "addToComp": true}))),
-                crate::panels::DragPayload::Property { .. } => {}
+        let released = ctx.input(|i| i.pointer.any_released());
+        if let crate::panels::DragPayload::Effect(e) = payload.as_ref() {
+            p.rect_stroke(rows_rect, 0.0, Stroke::new(2.0, t.accent), StrokeKind::Inside);
+            let target = hit_rows.iter().find(|(r, _)| ptr.y >= r.min.y && ptr.y < r.max.y).map(|(_, row)| row.layer);
+            if released && let Some(l) = target {
+                actions.push(("effect.apply".into(), json!({"effect": e, "layers": [l.0]})));
             }
+        } else {
+            let layer_rows: Vec<(Rect, LayerId)> = hit_rows.iter().filter(|(_, r)| matches!(r.kind, RowKind::Layer)).map(|(rr, r)| (*rr, r.layer)).collect();
+            let (at, line_y) = insertion(&layer_rows, ptr.y, rows_rect.min.y);
+            let index = match at.and_then(|i| layer_rows.get(i)) {
+                Some((_, l)) => comp.index_of(*l).unwrap_or(1),
+                None => layer_rows.last().and_then(|(_, l)| comp.index_of(*l)).unwrap_or(comp.layers.len()) + 1,
+            };
+            let start = (ptr.x >= graph_x0 && !graph_on).then(|| {
+                let t = if ctx.input(|i| i.modifiers.shift) { time } else { Tick::from_seconds_f64(tm.t(ptr.x)) };
+                comp.frame_rate.snap_nearest(t).clamp(Tick::ZERO, comp.duration - comp.frame_duration())
+            });
+            let rp = p.with_clip_rect(rows_rect);
+            rp.line_segment([pos2(rect.min.x, line_y), pos2(rows_rect.max.x, line_y)], Stroke::new(2.0, t.accent));
+            if let Some(s) = start {
+                let x = tm.x(s.seconds());
+                rp.line_segment([pos2(x, rows_rect.min.y), pos2(x, rows_rect.max.y)], Stroke::new(1.0, t.accent));
+                // The In point's time in a tag beside the marker.
+                let g = rp.layout_no_wrap(super::timecode(&app.session, &comp, s), Tokens::ui(11.0), Color32::WHITE);
+                let tag = Align2::LEFT_BOTTOM.anchor_size(pos2(x + 4.0, line_y - 3.0), g.size());
+                rp.rect_filled(tag.expand(2.0), 2.0, t.accent);
+                rp.galley(tag.min, g, Color32::WHITE);
+            }
+            if released {
+                let (index, time) = (json!(index), json!(start.map(Tick::seconds)));
+                match payload.as_ref() {
+                    crate::panels::DragPayload::Item(id) => actions.push(("layer.addItem".into(), json!({"item": id, "index": index, "time": time}))),
+                    crate::panels::DragPayload::Files(paths) => {
+                        actions.push(("mediaBrowser.import".into(), json!({"paths": paths, "addToComp": true, "index": index, "time": time})))
+                    }
+                    crate::panels::DragPayload::Effect(_) | crate::panels::DragPayload::Property { .. } => {}
+                }
+            }
+        }
+        if released {
             egui::DragAndDrop::clear_payload(&ctx);
         }
     }

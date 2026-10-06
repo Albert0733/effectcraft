@@ -24,13 +24,32 @@ pub(crate) fn color_p(p: &Value, k: &str) -> Option<[f32; 3]> {
 }
 
 /// Insert a new layer above the selection (or at the top) and select it.
-pub(crate) fn insert_layer(proj: &mut Project, st: &mut crate::EditorState, cid: ItemId, mut layer: Layer) -> Result<LayerId> {
+pub(crate) fn insert_layer(proj: &mut Project, st: &mut crate::EditorState, cid: ItemId, layer: Layer) -> Result<LayerId> {
+    insert_layer_at(proj, st, cid, layer, None)
+}
+
+/// `index`: an `index` parameter, the layer's 1-based place in the stack (1 = top; past the
+/// bottom = the bottom), as 0-based.
+pub(crate) fn index_p(p: &Value, cmd: &str) -> Result<Option<usize>> {
+    match p.get("index") {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => {
+            v.as_u64().filter(|i| *i >= 1).map(|i| Some(usize::try_from(i - 1).unwrap_or(usize::MAX))).ok_or_else(|| bad(cmd, "index: 1-based stack position"))
+        }
+    }
+}
+
+/// [`insert_layer`] at stack position `at` (0 = top) instead of above the selected layer.
+pub(crate) fn insert_layer_at(proj: &mut Project, st: &mut crate::EditorState, cid: ItemId, mut layer: Layer, at: Option<usize>) -> Result<LayerId> {
     // Text and shape layers in Advanced 3D comps get Geometry Options (extrusion, bevels).
     if proj.comp(cid).is_some_and(|c| c.renderer == effectcraft_project::Renderer::Advanced3D) {
         super::model3d::add_geometry_options(&mut proj.next_id, &mut layer);
     }
     let comp = proj.comp_mut(cid).ok_or(EngineError::NoComp)?;
-    let at = st.selected_layers.first().and_then(|id| comp.layers.iter().position(|l| l.id == *id)).unwrap_or(0);
+    let at = match at {
+        Some(i) => i.min(comp.layers.len()),
+        None => st.selected_layers.first().and_then(|id| comp.layers.iter().position(|l| l.id == *id)).unwrap_or(0),
+    };
     let id = layer.id;
     comp.layers.insert(at, layer);
     st.selected_layers = vec![id];
@@ -258,12 +277,13 @@ fn add_item(s: &mut Session, p: &Value) -> Result<Value> {
             return Err(bad("layer.addItem", "data files can't be layers; read them in expressions with footage(\"name\").sourceData"));
         }
         ItemKind::Footage(f) if f.kind == effectcraft_project::FootageKind::Model => {
-            return super::model3d::new_model(s, &serde_json::json!({"comp": cid.0, "item": item.0, "time": f_p(p, "time")}));
+            return super::model3d::new_model(s, &serde_json::json!({"comp": cid.0, "item": item.0, "time": f_p(p, "time"), "index": p.get("index")}));
         }
         ItemKind::Footage(f) => (LayerSource::Footage { item }, (f.width, f.height), Some(f.duration)),
         ItemKind::Solid(so) => (LayerSource::Solid { item }, (so.width, so.height), None),
         ItemKind::Folder => return Err(bad("layer.addItem", "folders can't be layers")),
     };
+    let index = index_p(p, "layer.addItem")?;
     let fr = comp.frame_rate;
     // Settings ▸ General ▸ Create Layers at Composition Start Time (off: at the current time).
     let default_start = if s.prefs.general.create_layers_at_comp_start || s.active_comp_id() != Some(cid) { Tick::ZERO } else { s.time() };
@@ -273,7 +293,7 @@ fn add_item(s: &mut Session, p: &Value) -> Result<Value> {
         l.start_time = start;
         l.in_point = start;
         l.out_point = fr.snap_nearest((start + dur.unwrap_or(comp.duration)).min(comp.duration)).max(start + fr.frame_duration());
-        insert_layer(proj, st, cid, l)
+        insert_layer_at(proj, st, cid, l, index)
     })?;
     Ok(json!({"layer": id.0}))
 }
@@ -1242,7 +1262,15 @@ pub fn specs() -> Vec<CommandSpec> {
             has_layer_settings,
             layer_settings
         ),
-        cmd!("layer.addItem", "Add Footage to Comp", ["File"], Some("Cmd+/"), "{item: id|name, time?, duration? (s, for a still)}", has_comp, add_item),
+        cmd!(
+            "layer.addItem",
+            "Add Footage to Comp",
+            ["File"],
+            Some("Cmd+/"),
+            "{item: id|name, time? (s, the In point), index? (1-based stack position; default above the selected layer), duration? (s, for a still)}",
+            has_comp,
+            add_item
+        ),
         cmd!("layer.select", "Select Layers", [], None, "{layers: [id|name|#n], add?, toggle?}", has_comp, select),
         cmd!("layer.selectNext", "Select Next Layer", [], Some("Cmd+ArrowDown"), "{add?}", has_comp, select_next),
         cmd!("layer.selectPrevious", "Select Previous Layer", [], Some("Cmd+ArrowUp"), "{add?}", has_comp, select_prev),
