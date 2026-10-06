@@ -85,7 +85,9 @@ then to go further in a few places where it matters to us:
 
 The panels, menus and shortcuts follow After Effects, so your muscle memory carries over:
 Project, Composition, Timeline, Effect Controls, Properties, Effects & Presets, Character,
-Paragraph, Align, Info, Preview, Audio and the Render Queue, docked the way you expect.
+Paragraph, Align, Info, Preview, Audio and the Render Queue, docked the way you expect. Drag
+footage, comps and effects between them: onto the comp viewer, where they land under the pointer,
+or into the Timeline, between layers and at the time you point to.
 
 - **Layers of every kind:** solids, shapes, text, footage, nested compositions, nulls,
   adjustment layers, cameras and lights; parenting, track mattes, all 38 blend modes, motion blur.

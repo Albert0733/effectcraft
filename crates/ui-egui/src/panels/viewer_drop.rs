@@ -1,4 +1,4 @@
-//! Dropping onto the Composition viewer, as in After Effects: footage, comps and solids from the
+//! Dropping onto the Composition viewer: footage, comps and solids from the
 //! Project panel and files from the Media Browser become layers centred where they are dropped
 //! (#85), and an effect from Effects & Presets goes on the layer under the pointer, outlined
 //! while it is dragged (#88). Agents do the same with `layer.addItem {position}`,
