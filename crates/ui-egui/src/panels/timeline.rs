@@ -1601,7 +1601,20 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 }
             }
             RowKind::Group { uid, name, open, has_children, fx, eye } => {
-                lp.rect_filled(left, 0.0, if ri % 2 == 0 { t.row } else { t.row_alt });
+                // Selected groups (an effect, a mask, a shape group…) highlight like selected
+                // property rows.
+                let sel_group = app.session.state.selected_props.contains(&(layer.id, *uid));
+                lp.rect_filled(
+                    left,
+                    0.0,
+                    if sel_group {
+                        t.row_selected
+                    } else if ri % 2 == 0 {
+                        t.row
+                    } else {
+                        t.row_alt
+                    },
+                );
                 gp.rect_filled(Rect::from_min_max(pos2(graph_x0, r.min.y), r.max), 0.0, t.tl_bg);
                 let indent = cw.name + 6.0 + 14.0 * row.depth as f32;
                 if *has_children {

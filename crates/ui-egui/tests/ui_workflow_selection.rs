@@ -372,3 +372,41 @@ fn workflow_snapshot() {
     h.run_steps(3);
     h.render().expect("offscreen UI render").save(out).unwrap();
 }
+
+/// Filled rects painted this frame (flattening nested shape lists).
+fn filled_rects(h: &Harness<'_, EffectcraftApp>) -> Vec<(Rect, egui::Color32)> {
+    fn walk(s: &egui::Shape, out: &mut Vec<(Rect, egui::Color32)>) {
+        match s {
+            egui::Shape::Rect(r) => out.push((r.rect, r.fill)),
+            egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+            _ => {}
+        }
+    }
+    let mut out = vec![];
+    for c in &h.output().shapes {
+        walk(&c.shape, &mut out);
+    }
+    out
+}
+
+/// Issues #91 / #97: clicking an effect's name in the Timeline selects it, and its row then
+/// highlights like a selected property row (it used to stay unhighlighted).
+#[test]
+fn timeline_selected_effect_row_highlights() {
+    let mut h = harness();
+    let id = h.state().session.active_comp().unwrap().layers[0].id;
+    let fx = h.state_mut().session.execute("effect.apply", json!({"layers": [id.0], "effect": "Gaussian Blur"})).unwrap()["effects"][0].as_u64().unwrap();
+    let fx_group = h.state().session.active_comp().unwrap().layer(id).unwrap().props.sub("effects").unwrap().uid;
+    h.state_mut().ui.timeline.open_layers.insert(id.0);
+    h.state_mut().ui.timeline.open_groups.insert(fx_group);
+    // `effect.apply` selects the new effect; start from no property selection.
+    h.state_mut().session.state.selected_props.clear();
+    h.run_steps(3);
+    let row_selected = h.state().tokens.row_selected;
+    let name = rect(&h, &format!("timeline.group.{fx}.name"));
+    let highlighted = |h: &Harness<'_, EffectcraftApp>| filled_rects(h).iter().any(|(r, c)| *c == row_selected && r.contains(name.center()));
+    assert!(!highlighted(&h), "not highlighted before it is selected");
+    click(&mut h, name.center(), Modifiers::NONE);
+    assert!(h.state().session.state.selected_props.contains(&(id, fx)), "the click selects the effect");
+    assert!(highlighted(&h), "the selected effect's row is highlighted");
+}
