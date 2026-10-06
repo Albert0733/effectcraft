@@ -287,7 +287,7 @@ pub fn color_popup(ui: &mut egui::Ui, id: egui::Id, pos: egui::Pos2, c: &mut [f3
             }
         });
     });
-    if ui.input(|i| i.pointer.any_pressed()) && !area.response.contains_pointer() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+    if widgets::pressed_outside(ui.ctx(), &area.response) || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
         ui.data_mut(|d| d.insert_temp(open_id, false));
     }
     changed
