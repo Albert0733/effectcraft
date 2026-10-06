@@ -74,6 +74,23 @@ pub fn hot_number_at(
     (rect, out, resp.drag_stopped())
 }
 
+/// [`hot_number_at`] for a whole number (an angle's revolutions): a drag steps it once every
+/// `1 / speed` pixels however slowly the pointer moves (the fractions add up between frames),
+/// and a typed value is truncated. Returns (rect, Some(new value) when changed, drag finished).
+pub fn hot_int_at(ui: &mut Ui, rect_min: egui::Pos2, id: egui::Id, value: i64, speed: f64, suffix: &str, t: &Tokens) -> (Rect, Option<i64>, bool) {
+    let (rect, nv, done) = hot_number_at(ui, rect_min, id, value as f64, speed, (-1e6, 1e6), 0, suffix, t);
+    let acc_id = id.with("acc");
+    let acc = ui.data(|d| d.get_temp::<f64>(acc_id)).unwrap_or(0.0) + nv.map_or(0.0, |n| n - value as f64);
+    // (Ten 0.1 steps add up to just under 1.)
+    let step = (acc + acc.signum() * 1e-9).trunc();
+    if ui.ctx().is_being_dragged(id) && !done {
+        ui.data_mut(|d| d.insert_temp(acc_id, acc - step));
+    } else {
+        ui.data_mut(|d| d.remove::<f64>(acc_id));
+    }
+    (rect, (step != 0.0).then(|| value.saturating_add(step as i64)), done)
+}
+
 /// A colour swatch; returns the response (click opens the picker in the caller).
 pub fn swatch(ui: &mut Ui, rect: Rect, c: [f32; 4], id: egui::Id, t: &Tokens) -> Response {
     let resp = ui.interact(rect, id, Sense::click());
