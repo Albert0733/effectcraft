@@ -55,6 +55,8 @@ pub(crate) fn gpu() -> Option<&'static Gpu> {
         let g = Gpu::headless();
         if g.is_none() {
             eprintln!("effectcraft-gpu tests: no GPU adapter, skipping GPU comparisons");
+        } else if let Some(g) = &g {
+            eprintln!("effectcraft-gpu tests: adapter {}", g.ctx.name);
         }
         g
     })
