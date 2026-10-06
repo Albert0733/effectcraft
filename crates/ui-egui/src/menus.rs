@@ -1066,7 +1066,7 @@ pub fn menus() -> Vec<&'static str> {
 }
 
 pub(crate) fn entry_label(app: &EffectcraftApp, e: &MenuEntry) -> String {
-    match e.command.as_str() {
+    let shown = match e.command.as_str() {
         "edit.undo" => app.session.history.undo.last().map(|u| format!("Undo {}", u.0)).unwrap_or_else(|| "Can't Undo".into()),
         "edit.redo" => app.session.history.redo.last().map(|u| format!("Redo {}", u.0)).unwrap_or_else(|| "Can't Redo".into()),
         // Window ▸ Layer: the layer open in the Layer panel.
@@ -1079,7 +1079,8 @@ pub(crate) fn entry_label(app: &EffectcraftApp, e: &MenuEntry) -> String {
             format!("Layer: {}", name.unwrap_or_else(|| "(none)".into()))
         }
         _ => effectcraft_engine::menus::entry_label(&app.session, e),
-    }
+    };
+    crate::i18n::entry(app, e, shown)
 }
 
 /// The entry's shortcut in the active keyboard shortcut preset.
@@ -1345,7 +1346,7 @@ pub fn menu_bar(app: &mut EffectcraftApp, ui: &mut egui::Ui) {
         egui::MenuBar::new().ui(ui, |ui| {
             for node in effectcraft_engine::menus::menu_bar() {
                 if let MenuNode::Submenu { label, children } = node {
-                    let r = ui.menu_button(label, |ui| {
+                    let r = ui.menu_button(crate::i18n::label(app, "", label), |ui| {
                         ui.set_min_width(if label == "Effect" { 200.0 } else { 280.0 });
                         menu_nodes(app, ui, children, &mut clicked);
                     });
@@ -1397,7 +1398,7 @@ fn menu_nodes(app: &mut EffectcraftApp, ui: &mut egui::Ui, nodes: &[MenuNode], c
             }
             MenuNode::Submenu { label, children } => {
                 let ws = app.ui.workspace.clone();
-                let shown = effectcraft_engine::menus::submenu_label(&app.session, label, &dyn_ctx(&ws));
+                let shown = crate::i18n::submenu(app, label, effectcraft_engine::menus::submenu_label(&app.session, label, &dyn_ctx(&ws)));
                 ui.menu_button((gutter(false), shown.as_str()), |ui| {
                     ui.set_min_width(if children.len() > 30 { 200.0 } else { 240.0 });
                     // Long submenus (Blending Mode, effect categories) scroll instead of running

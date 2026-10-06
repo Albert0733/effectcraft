@@ -486,3 +486,25 @@ fn memory_tick_never_waits_for_the_system() {
         assert!(got.is_some_and(|m| m.total > 0), "the reading arrives in the background");
     }
 }
+
+#[test]
+fn interface_language_is_validated_persisted_and_backward_compatible() {
+    let store = Arc::new(MemoryConfig::default());
+    let mut s = Session { config: Some(store.clone()), ..Default::default() };
+    assert_eq!(s.prefs.general.language, "en");
+    s.execute("prefs.set", json!({"key": "general.language", "value": "ja"})).unwrap();
+    assert_eq!(s.execute("prefs.get", json!({"key": "general.language"})).unwrap(), json!("ja"));
+    let saved = store.read(PREFS_FILE).unwrap();
+    for bad in [json!("fr"), json!(""), json!(17), json!(null)] {
+        assert!(s.execute("prefs.set", json!({"key": "general.language", "value": bad})).is_err());
+        assert_eq!(s.prefs.general.language, "ja");
+        assert_eq!(store.read(PREFS_FILE).unwrap(), saved);
+    }
+    let mut reloaded = Session { config: Some(store), ..Default::default() };
+    reloaded.load_settings();
+    assert_eq!(reloaded.prefs.general.language, "ja");
+    reloaded.execute("prefs.reset", json!({"page": "general"})).unwrap();
+    assert_eq!(reloaded.prefs.general.language, "en");
+    assert_eq!(Prefs::from_json(r#"{"general":{"undoLevels":17}}"#).general.language, "en");
+    assert_eq!(Prefs::from_json(r#"{"general":{"language":"unknown"}}"#).general.language, "en");
+}
