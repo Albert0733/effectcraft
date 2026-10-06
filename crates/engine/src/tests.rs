@@ -47,6 +47,27 @@ fn demo_layer_cache_is_transparent() {
     }
 }
 
+/// `layer.addItem` puts the layer at `index` (1-based) in the stack and starts it at `time`, as a
+/// drop in the Timeline does (#89).
+#[test]
+fn add_item_at_a_stack_index_and_time() {
+    let mut s = Session::default();
+    let clip = s.execute("comp.new", json!({"name": "Clip", "width": 16, "height": 16, "frameRate": 30, "duration": 1})).unwrap()["comp"].as_u64().unwrap();
+    s.execute("comp.new", json!({"name": "Main", "width": 32, "height": 32, "frameRate": 30, "duration": 4})).unwrap();
+    for name in ["C", "B", "A"] {
+        s.execute("layer.newSolid", json!({"name": name})).unwrap();
+    }
+    let names = |s: &Session| s.active_comp().unwrap().layers.iter().map(|l| l.name.clone()).collect::<Vec<_>>();
+    s.execute("layer.addItem", json!({"item": clip, "index": 2, "time": 1.01})).unwrap();
+    assert_eq!(names(&s), ["A", "Clip", "B", "C"]);
+    let l = &s.active_comp().unwrap().layers[1];
+    assert_eq!(l.in_point, effectcraft_time::Tick::from_seconds_f64(1.0), "on the nearest frame");
+    // Past the bottom: the bottom.
+    s.execute("layer.addItem", json!({"item": clip, "index": 99})).unwrap();
+    assert_eq!(names(&s).last().map(String::as_str), Some("Clip 2"));
+    assert!(s.execute("layer.addItem", json!({"item": clip, "index": 0})).is_err(), "1-based");
+}
+
 /// Audio, Lock and Shy don't change pixels: toggling them keeps the cached layers (#103).
 #[test]
 fn audio_lock_and_shy_keep_cached_layers() {

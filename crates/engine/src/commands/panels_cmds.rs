@@ -110,8 +110,13 @@ fn browser_import(s: &mut Session, p: &Value) -> Result<Value> {
         && s.active_comp_id().is_some()
         && let Some(items) = r.get("items").and_then(Value::as_array)
     {
-        for it in items {
-            s.execute("layer.addItem", json!({"item": it}))?;
+        // Where a drop put them (`time`, `index`): one under the other.
+        for (k, it) in items.iter().enumerate() {
+            let mut add = json!({"item": it, "time": p.get("time")});
+            if let Some(i) = p.get("index").and_then(Value::as_u64) {
+                add["index"] = json!(i.saturating_add(k as u64));
+            }
+            s.execute("layer.addItem", add)?;
         }
     }
     Ok(r)
@@ -233,7 +238,15 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!("mediaBrowser.go", "Go to Folder", [], None, "{path?: folder | \"..\", importableOnly?}", browser_enabled, browser_go),
         cmd!("mediaBrowser.addFavorite", "Add to Favorites", [], None, "{path?}", browser_enabled, |s, p| browser_favorite(s, p, true)),
         cmd!("mediaBrowser.removeFavorite", "Remove from Favorites", [], None, "{path?}", browser_enabled, |s, p| browser_favorite(s, p, false)),
-        cmd!("mediaBrowser.import", "Import", [], None, "{paths, addToComp?}", browser_enabled, browser_import),
+        cmd!(
+            "mediaBrowser.import",
+            "Import",
+            [],
+            None,
+            "{paths, addToComp?, time?, index? (where the layers go, as in layer.addItem)}",
+            browser_enabled,
+            browser_import
+        ),
         cmd!(
             "mediaBrowser.action",
             "Media Browser Action",
