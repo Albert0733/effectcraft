@@ -179,7 +179,14 @@ See [docs/agents.md](docs/agents.md) and [docs/control-protocol.md](docs/control
 
 ## Get started
 
-You need [Rust](https://rustup.rs/) 1.95 or newer.
+Installers for each version are on the [Releases](https://github.com/storytold/effectcraft/releases)
+page: a universal macOS app; Windows MSIs and portable zips for x64, x86 and ARM64; and Linux
+AppImage, deb, rpm and tar.gz for x86_64 and aarch64. The Windows ARM64 build runs natively on
+Windows on ARM, without x64 emulation. CI installs that MSI on Windows 11 ARM64 hardware, checks
+both programs are ARM64 and runs the command-line tool there, but it doesn't open the app's window
+or run the test suite natively on ARM64 yet, so please report anything that behaves differently.
+
+To build it yourself you need [Rust](https://rustup.rs/) 1.95 or newer.
 
 ```sh
 git clone https://github.com/storytold/effectcraft
