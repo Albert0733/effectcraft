@@ -84,6 +84,8 @@ pub enum Dialog {
     RenderTemplates,
     /// Save changes before closing the project? (`panels::unsaved`).
     UnsavedChanges,
+    /// Delete Project items that compositions use? (`panels::delete_items`).
+    DeleteItems,
 }
 
 /// Host hooks provided by the native app (file pickers etc.).

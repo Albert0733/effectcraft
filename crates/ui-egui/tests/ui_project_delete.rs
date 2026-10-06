@@ -2,8 +2,8 @@
 
 use effectcraft_engine::Session;
 use effectcraft_engine::project::{Footage, FootageKind, ItemId, ItemKind, LayerId};
-use effectcraft_ui_egui::EffectcraftApp;
 use effectcraft_ui_egui::dock::PanelKind;
+use effectcraft_ui_egui::{Dialog, EffectcraftApp};
 use egui::{Event, Key, Modifiers, pos2};
 use egui_kittest::Harness;
 use serde_json::json;
@@ -48,6 +48,16 @@ fn key(h: &mut Harness<'_, EffectcraftApp>, key: Key, modifiers: Modifiers) {
     h.run_steps(2);
 }
 
+/// Items that compositions use ask first, as in After Effects: answer Delete when asked.
+/// Returns whether it asked.
+fn confirm_if_asked(h: &mut Harness<'_, EffectcraftApp>) -> bool {
+    if h.state().dialog != Some(Dialog::DeleteItems) {
+        return false;
+    }
+    click(h, "dialog.deleteItems.delete", Modifiers::NONE);
+    true
+}
+
 #[test]
 fn delete_and_backspace_remove_project_items_and_undo() {
     for delete_key in [Key::Delete, Key::Backspace] {
@@ -61,6 +71,8 @@ fn delete_and_backspace_remove_project_items_and_undo() {
             let project = h.state().session.project.clone();
             let undo = h.state().session.history.undo.len();
             key(&mut h, delete_key, Modifiers::NONE);
+            // Only the solid is used by a layer: only it asks first.
+            assert_eq!(confirm_if_asked(&mut h), target == 1, "item {target}");
             assert!(h.state().session.project.item(item).is_none(), "{delete_key:?} should delete project item {target}");
             assert!(h.state().session.active_comp().unwrap().layer(keep).is_some(), "the unrelated Timeline layer stays");
             assert!(h.state().session.state.project_selection.is_empty());
@@ -82,6 +94,7 @@ fn project_multi_selection_deletes_together_and_undoes_once() {
     let project = h.state().session.project.clone();
     let undo = h.state().session.history.undo.len();
     key(&mut h, Key::Backspace, Modifiers::NONE);
+    assert!(confirm_if_asked(&mut h), "the solid is in use");
     assert!(items.iter().all(|i| h.state().session.project.item(*i).is_none()));
     assert!(h.state().session.active_comp().unwrap().layer(keep).is_some());
     assert_eq!(h.state().session.history.undo.len(), undo + 1);
@@ -138,4 +151,39 @@ fn typing_dialogs_and_modified_keys_do_not_delete_project_items() {
         key(&mut h, delete_key, Modifiers::NONE);
         assert_eq!(h.state().session.project, project, "typing must not delete the item");
     }
+}
+
+/// Deleting an item a composition uses asks first, as in After Effects, and says what goes with
+/// it; Cancel and Escape keep everything, Delete removes the item and the layers using it in one
+/// undo step. Agents running the command directly are not asked.
+#[test]
+fn deleting_items_in_use_asks_first() {
+    let (mut h, items, _) = harness();
+    let solid = items[1];
+    let usage = h.state_mut().session.execute("project.usage", json!({"items": [solid.0]})).unwrap();
+    assert_eq!(usage, json!({"items": 1, "layers": 1, "comps": 1}));
+    let uses = |h: &Harness<'_, EffectcraftApp>| {
+        h.state().session.project.comps().flat_map(|(_, c)| c.layers.iter()).filter(|l| l.source.item() == Some(solid)).count()
+    };
+    click(&mut h, &format!("project.item.{}.name", solid.0), Modifiers::NONE);
+    for cancel in ["button", "escape"] {
+        key(&mut h, Key::Delete, Modifiers::NONE);
+        assert_eq!(h.state().dialog, Some(Dialog::DeleteItems));
+        if cancel == "button" {
+            click(&mut h, "dialog.deleteItems.cancel", Modifiers::NONE);
+        } else {
+            key(&mut h, Key::Escape, Modifiers::NONE);
+        }
+        assert_eq!(h.state().dialog, None, "{cancel}");
+        assert!(h.state().session.project.item(solid).is_some() && uses(&h) == 1, "{cancel} keeps the item and its layer");
+    }
+    let undo = h.state().session.history.undo.len();
+    key(&mut h, Key::Delete, Modifiers::NONE);
+    assert!(confirm_if_asked(&mut h));
+    assert!(h.state().session.project.item(solid).is_none() && uses(&h) == 0);
+    assert_eq!(h.state().session.history.undo.len(), undo + 1);
+    // The command itself (agents, scripts) deletes without asking.
+    h.state_mut().session.execute("edit.undo", json!({})).unwrap();
+    h.state_mut().session.execute("project.delete", json!({"items": [solid.0]})).unwrap();
+    assert!(h.state().session.project.item(solid).is_none());
 }

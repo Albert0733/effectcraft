@@ -196,6 +196,10 @@ pub fn invoke(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, params: V
     if crate::panels::unsaved::guard(app, id, &params) {
         return Ok(json!({"dialog": "unsavedChanges"}));
     }
+    // Deleting Project items that compositions use asks first, as in After Effects.
+    if crate::panels::delete_items::guard(app, id, &params) {
+        return Ok(json!({"dialog": "deleteItems"}));
+    }
     // J / K and Select All Keyframes act on what the Timeline shows (its revealed properties).
     if matches!(id, "time.nextKey" | "time.previousKey" | "keys.selectAll")
         && ["visible", "layers", "layer", "prop"].iter().all(|k| params.get(*k).is_none())

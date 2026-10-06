@@ -5,7 +5,7 @@ use effectcraft_project::{ItemId, Project};
 use serde_json::{Value, json};
 
 use super::{CommandSpec, always, b_p, bad, str_p};
-use crate::{EngineError, Result, Session, cmd};
+use crate::{EngineError, Result, Session, cmd, query};
 
 /// `item` (id or name) → id.
 fn item_ref(s: &Session, v: &Value, cmd: &str) -> Result<ItemId> {
@@ -140,17 +140,40 @@ fn set_comment(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(Value::Null)
 }
 
+/// The items deleting `ids` removes: them and, for folders, everything inside.
+fn doomed_items(project: &Project, ids: &[ItemId]) -> Vec<ItemId> {
+    project.items.keys().copied().filter(|id| ids.iter().any(|d| is_within(project, *id, *d))).collect()
+}
+
+/// What deleting `items` takes with it: (layers using them, in how many comps), counting only
+/// the comps that stay.
+fn usage_of(project: &Project, items: &[ItemId]) -> (usize, usize) {
+    let mut layers = 0;
+    let mut comps = 0;
+    for (_, comp) in project.comps().filter(|(cid, _)| !items.contains(cid)) {
+        let n = comp.layers.iter().filter(|l| l.source.item().is_some_and(|i| items.contains(&i))).count();
+        layers += n;
+        comps += usize::from(n > 0);
+    }
+    (layers, comps)
+}
+
+/// What deleting the items (default: selected) would delete: the items (with folder contents)
+/// and the layers in other compositions that use them. The Project panel asks before deleting
+/// items in use, as After Effects does.
+fn usage(s: &mut Session, p: &Value) -> Result<Value> {
+    let ids = items_p(s, p, "project.usage")?;
+    let doomed = doomed_items(&s.project, &ids);
+    let (layers, comps) = usage_of(&s.project, &doomed);
+    Ok(json!({"items": doomed.len(), "layers": layers, "comps": comps}))
+}
+
 /// Delete project items (folders with their contents). Layers that use a deleted item and Render
 /// Queue items of deleted comps go too, like After Effects' Edit ▸ Clear in the Project panel.
 fn delete(s: &mut Session, p: &Value) -> Result<Value> {
     let c = "project.delete";
     let ids = items_p(s, p, c)?;
-    let mut doomed: Vec<ItemId> = vec![];
-    for id in s.project.items.keys() {
-        if ids.iter().any(|d| is_within(&s.project, *id, *d)) {
-            doomed.push(*id);
-        }
-    }
+    let doomed = doomed_items(&s.project, &ids);
     let n = doomed.len();
     s.edit("Delete Items", None, |proj, st| {
         for id in &doomed {
@@ -242,6 +265,7 @@ pub fn specs() -> Vec<CommandSpec> {
             always,
             delete
         ),
+        query!("project.usage", "Project Item Usage", "{items?: [id|name] (default: selected)} → {items, layers, comps} that deleting them removes", usage),
         cmd!("project.duplicate", "Duplicate Project Items", [], None, "{items?: [id|name] (default: selected)} → {items}", always, duplicate),
     ]
 }
