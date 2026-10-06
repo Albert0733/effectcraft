@@ -1669,7 +1669,14 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     actions.push(("prop.select".into(), json!({"layer": layer.id.0, "prop": uid, "selectKeys": false})));
                 }
                 if gr.double_clicked() {
-                    ui_actions.push(UiAct::ToggleGroup(*uid));
+                    if fx.is_some() {
+                        // An effect's name: open it in Effect Controls (as in After Effects).
+                        actions.push(("layer.select".into(), json!({"layers": [layer.id.0]})));
+                        actions.push(("prop.select".into(), json!({"layer": layer.id.0, "prop": uid, "selectKeys": false})));
+                        actions.push(("window.panel".into(), json!({"panel": "EffectControls"})));
+                    } else {
+                        ui_actions.push(UiAct::ToggleGroup(*uid));
+                    }
                 }
             }
             RowKind::Waveform { item } => {

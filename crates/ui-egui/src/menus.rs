@@ -529,6 +529,15 @@ pub fn invoke(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, params: V
                 }
                 return r;
             }
+            // An effect added to a layer (Effect menu, Last Effect, dropped on a layer) brings
+            // up Effect Controls on that layer, as in After Effects.
+            if matches!(id, "effect.apply" | "effect.applyLast") {
+                let r = run_engine(app, ctx, id, params.clone());
+                if r.is_ok() {
+                    crate::panels::effect_controls::reveal_applied(app, &params);
+                }
+                return r;
+            }
             if id == "layer.rename" && params.get("name").is_none() {
                 crate::panels::timeline::begin_rename(app, ctx);
                 return Ok(Value::Null);

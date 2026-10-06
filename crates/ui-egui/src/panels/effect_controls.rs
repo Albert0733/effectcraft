@@ -39,6 +39,27 @@ fn selected_layer(app: &EffectcraftApp) -> Option<Layer> {
     comp.layer(*id).cloned()
 }
 
+/// An effect was just applied (`effect.apply` / `effect.applyLast` with `params`): Effect
+/// Controls comes up (opened if closed, brought to the front, the focus left where it is) on the
+/// layer the effect went to, with the new effect selected, as in After Effects.
+pub fn reveal_applied(app: &mut EffectcraftApp, params: &serde_json::Value) {
+    // `effect.apply` selects the new effect on (the last of) the layers it went to.
+    let target = app.session.state.selected_props.last().map(|(l, _)| *l);
+    if let Some(l) = target
+        && !app.session.state.selected_layers.contains(&l)
+        && params.get("comp").is_none()
+        && app.session.active_comp().is_some_and(|c| c.layer(l).is_some())
+    {
+        // Show that layer (dropped on an unselected one), keeping the new effect selected.
+        let props = app.session.state.selected_props.clone();
+        match app.session.execute("layer.select", json!({"layers": [l.0]})) {
+            Ok(_) => app.session.state.selected_props = props,
+            Err(e) => app.ui.status = e.to_string(),
+        }
+    }
+    app.raise_panel(crate::dock::PanelKind::EffectControls);
+}
+
 /// An undo-merge key for one gesture on `id`: a new key each time a drag starts, so separate
 /// drags are separate undo steps while one drag is one step.
 pub(super) fn gesture_key(ui: &egui::Ui, id: egui::Id, started: bool) -> String {

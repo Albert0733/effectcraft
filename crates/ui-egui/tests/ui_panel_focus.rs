@@ -1,5 +1,6 @@
 //! Panels that come up on their own (egui_kittest), as in After Effects: opening a comp brings up
-//! its Composition panel even when it was closed (#90).
+//! its Composition panel even when it was closed (#90); adding an effect, or double-clicking one
+//! in the Timeline, brings up Effect Controls (#87).
 
 use effectcraft_engine::Session;
 use effectcraft_engine::project::ItemId;
@@ -107,4 +108,82 @@ fn opening_a_comp_in_the_minimal_workspace_docks_the_viewer_above_the_timeline()
         }
         other => panic!("expected the viewer above the Timeline, got {other:?}"),
     }
+}
+
+/// The id of layer `name` in the active comp.
+fn layer_id(h: &Harness<'_, EffectcraftApp>, name: &str) -> u64 {
+    h.state().session.active_comp().unwrap().layers.iter().find(|l| l.name == name).unwrap().id.0
+}
+
+fn try_invoke(h: &mut Harness<'_, EffectcraftApp>, id: &str, params: serde_json::Value) -> serde_json::Value {
+    let ctx = h.ctx.clone();
+    let r = effectcraft_ui_egui::menus::invoke(h.state_mut(), &ctx, id, params).unwrap();
+    h.run_steps(2);
+    r
+}
+
+fn ec_up(h: &Harness<'_, EffectcraftApp>) -> bool {
+    h.state().ui.dock.is_visible(PanelKind::EffectControls) && h.state().auto.elements.iter().any(|e| e.id == "panel.EffectControls")
+}
+
+/// Issue #87: adding an effect to a layer from the Effect menu (and Last Effect), or dropping one
+/// on a layer in the Timeline (`effect.apply` with its `layers`), brings up Effect Controls, even
+/// when it was closed, on the layer the effect went to; the focus stays where it was.
+#[test]
+fn applying_an_effect_brings_up_effect_controls_on_that_layer() {
+    let (mut h, _, _) = harness();
+    invoke(&mut h, "layer.newSolid", json!({"name": "Blue", "color": [0.0, 0.0, 1.0, 1.0]}));
+    let (red, blue) = (layer_id(&h, "Red"), layer_id(&h, "Blue"));
+    // Effect Controls shares its group with the Project panel, which is in front.
+    invoke(&mut h, "window.panel", json!({"panel": "Project"}));
+    assert!(!h.state().ui.dock.is_visible(PanelKind::EffectControls));
+
+    // Effect ▸ Blur & Sharpen ▸ Gaussian Blur on the selected layer.
+    invoke(&mut h, "layer.select", json!({"layers": [red]}));
+    h.state_mut().ui.focused = PanelKind::Timeline;
+    try_invoke(&mut h, "effect.apply", json!({"effect": "ec.blur.gaussian"}));
+    assert!(ec_up(&h), "Effect Controls came to the front");
+    assert_eq!(h.state().ui.focused, PanelKind::Timeline, "the focus stays");
+
+    // Closed: Effect ▸ Last Effect reopens it.
+    invoke(&mut h, "window.closePanel", json!({"panel": "EffectControls"}));
+    assert!(!h.state().ui.dock.contains(PanelKind::EffectControls));
+    try_invoke(&mut h, "effect.applyLast", json!({}));
+    assert!(ec_up(&h), "Effect Controls reopened");
+
+    // Dropped on the other (unselected) layer in the Timeline: Effect Controls shows that layer,
+    // with the new effect selected.
+    invoke(&mut h, "window.closePanel", json!({"panel": "EffectControls"}));
+    let r = try_invoke(&mut h, "effect.apply", json!({"effect": "ec.blur.gaussian", "layers": [blue]}));
+    let uid = r["effects"][0].as_u64().unwrap();
+    assert!(ec_up(&h));
+    let st = &h.state().session.state;
+    assert_eq!(st.selected_layers.iter().map(|l| l.0).collect::<Vec<_>>(), vec![blue], "Effect Controls shows the layer it went to");
+    assert_eq!(st.selected_props.iter().map(|(l, u)| (l.0, *u)).collect::<Vec<_>>(), vec![(blue, uid)], "the new effect is selected");
+}
+
+/// Issue #87: double-clicking an effect's name under its layer in the Timeline opens it in
+/// Effect Controls (instead of twirling it).
+#[test]
+fn double_clicking_an_effect_in_the_timeline_opens_effect_controls() {
+    let (mut h, _, _) = harness();
+    invoke(&mut h, "layer.newSolid", json!({"name": "Blue", "color": [0.0, 0.0, 1.0, 1.0]}));
+    let red = layer_id(&h, "Red");
+    let r = try_invoke(&mut h, "effect.apply", json!({"effect": "ec.blur.gaussian", "layers": [red]}));
+    let uid = r["effects"][0].as_u64().unwrap();
+    // Reveal the layer's effects (E), then close Effect Controls and select the other layer.
+    invoke(&mut h, "layer.select", json!({"layers": [red]}));
+    invoke(&mut h, "timeline.revealAdd.effects", json!({}));
+    invoke(&mut h, "window.closePanel", json!({"panel": "EffectControls"}));
+    let blue = layer_id(&h, "Blue");
+    invoke(&mut h, "layer.select", json!({"layers": [blue]}));
+    assert!(!h.state().ui.dock.contains(PanelKind::EffectControls));
+
+    let name = rect(&h, &format!("timeline.group.{uid}.name"));
+    click_n(&mut h, name.center(), 2);
+    assert!(ec_up(&h), "Effect Controls opened");
+    let st = &h.state().session.state;
+    assert_eq!(st.selected_layers.iter().map(|l| l.0).collect::<Vec<_>>(), vec![red], "on the effect's layer");
+    assert_eq!(st.selected_props.iter().map(|(l, u)| (l.0, *u)).collect::<Vec<_>>(), vec![(red, uid)], "with the effect selected");
+    assert!(!h.state().ui.timeline.open_groups.contains(&uid), "the effect did not twirl open");
 }
