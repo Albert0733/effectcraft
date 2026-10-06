@@ -119,10 +119,8 @@ fn edited(app: &EffectcraftApp, ectx: &EvalCtx, lid: LayerId) -> Option<Edited> 
 
 /// The topmost text layer whose text is under screen point `s`.
 fn text_layer_at(app: &EffectcraftApp, ectx: &EvalCtx, map: &ViewerMap, s: Pos2) -> Option<Edited> {
-    ectx.comp
-        .layers
-        .iter()
-        .filter(|l| matches!(l.source, LayerSource::Text) && l.is_active_at(ectx.time) && l.switches.video && !l.switches.locked)
+    super::viewer::selectable_layers(ectx.comp, ectx.time)
+        .filter(|l| matches!(l.source, LayerSource::Text))
         .filter_map(|l| edited(app, ectx, l.id))
         .find(|e| e.contains(map, s))
 }

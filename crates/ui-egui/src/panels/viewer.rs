@@ -6,7 +6,7 @@
 
 use effectcraft_engine::effects::puppet::PinKind;
 use effectcraft_engine::geom::{Mat3, vec2 as gv2};
-use effectcraft_engine::project::{Layer, LayerId};
+use effectcraft_engine::project::{Comp, Layer, LayerId};
 use effectcraft_engine::render::EvalCtx;
 use effectcraft_engine::render::three_d::{self, CameraState, View3D};
 use effectcraft_engine::time::Tick;
@@ -1355,10 +1355,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     let b = map.to_comp(pos);
                     let (x0, x1) = (a[0].min(b[0]), a[0].max(b[0]));
                     let (y0, y1) = (a[1].min(b[1]), a[1].max(b[1]));
-                    let hits: Vec<u64> = comp
-                        .layers
-                        .iter()
-                        .filter(|l| l.is_active_at(time) && !l.switches.locked)
+                    let hits: Vec<u64> = selectable_layers(&comp, time)
                         .filter(|l| layer_quad(&ectx, l).is_some_and(|(_, q, _)| q.iter().any(|p| p[0] >= x0 && p[0] <= x1 && p[1] >= y0 && p[1] <= y1)))
                         .map(|l| l.id.0)
                         .collect();
@@ -1665,15 +1662,18 @@ fn pen_press(app: &mut EffectcraftApp, ui: &mut egui::Ui, ectx: &EvalCtx, map: &
     });
 }
 
+/// Visible, unlocked layers eligible for viewer hit tests, in front-to-back order.
+/// Solo scope matches the renderer: only active AV layers activate it, even when hidden or locked.
+pub(crate) fn selectable_layers(comp: &Comp, time: Tick) -> impl Iterator<Item = &Layer> {
+    let any_solo = comp.layers.iter().any(|l| l.switches.solo && l.source.is_av() && l.is_active_at(time));
+    comp.layers
+        .iter()
+        .filter(move |l| l.is_active_at(time) && l.switches.video && !l.switches.locked && !l.is_camera() && !l.is_light() && (!any_solo || l.switches.solo))
+}
+
 /// Topmost layer under a comp point (selects it; shift toggles). Returns the hit layer.
 pub(crate) fn pick(app: &mut EffectcraftApp, ectx: &EvalCtx, cpt: [f64; 2], toggle: bool) -> Option<LayerId> {
-    let hit = ectx
-        .comp
-        .layers
-        .iter()
-        .filter(|l| l.is_active_at(ectx.time) && l.switches.video && !l.switches.locked && !l.is_camera() && !l.is_light())
-        .find(|l| layer_quad(ectx, l).is_some_and(|(_, q, _)| point_in_quad(cpt, &q)))
-        .map(|l| l.id)?;
+    let hit = selectable_layers(ectx.comp, ectx.time).find(|l| layer_quad(ectx, l).is_some_and(|(_, q, _)| point_in_quad(cpt, &q))).map(|l| l.id)?;
     if toggle {
         let _ = app.session.execute("layer.select", json!({"layers": [hit.0], "toggle": true}));
     } else if !app.session.state.selected_layers.contains(&hit) {
