@@ -3,7 +3,11 @@
 //!
 //! Faces are addressed by [`FaceId`] (an index that never changes for the life of the process).
 //! [`resolve`] maps a family + style name (as stored in projects) to a face and the synthetic
-//! bold/italic needed when the family lacks that style. Unknown families fall back to Inter.
+//! bold/italic needed when the family lacks that style; a full name (`Yu Gothic Bold`) or
+//! PostScript name (`YuGothic-Bold`, how After Effects scripts name fonts) is accepted too.
+//! Unknown families fall back to Inter. [`fallback_for`] finds a face for a character the chosen
+//! face lacks: bundled faces first, then the system's usual family for the character's script
+//! (CJK), then any installed face that covers it.
 
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock, RwLock};
@@ -50,6 +54,10 @@ pub struct FaceInfo {
     pub origin: &'static str,
     /// The family name in the font's own (non-English) language, when it has one.
     pub native_family: Option<String>,
+    /// The full name (`Yu Gothic Bold`) and PostScript name (`YuGothic-Bold`), so a face can also
+    /// be requested the way After Effects scripts name fonts.
+    pub full_name: String,
+    pub postscript: Option<String>,
 }
 
 /// Something that can list fonts (system folders, a web font picker, a project's font folder…).
@@ -123,7 +131,18 @@ impl FontSource for DirectorySource {
 }
 
 fn info_from(n: FaceNames, data: FaceData, origin: &'static str) -> FaceInfo {
-    FaceInfo { family: n.family, style: n.style, weight: n.weight, italic: n.italic, index: n.index, data, origin, native_family: n.native_family }
+    FaceInfo {
+        family: n.family,
+        style: n.style,
+        weight: n.weight,
+        italic: n.italic,
+        index: n.index,
+        data,
+        origin,
+        native_family: n.native_family,
+        full_name: n.full_name,
+        postscript: n.postscript,
+    }
 }
 
 /// A loaded (or loadable) face.
@@ -382,12 +401,12 @@ fn style_wants(style: &str) -> (u16, bool) {
 /// Resolve a family + style name. Family matching is case-insensitive; a style that the family
 /// lacks picks the nearest weight and synthesises bold (≥ 600 requested, ≤ 500 found) or italic.
 pub fn resolve(family: &str, style: &str) -> Resolved {
-    if let Some(r) = resolve_in(family, style) {
+    if let Some(r) = resolve_in(family, style).or_else(|| resolve_by_name(family)) {
         return r;
     }
     if !system_scanned() && !family.is_empty() && !family.eq_ignore_ascii_case(DEFAULT_FAMILY) {
         scan_system();
-        if let Some(r) = resolve_in(family, style) {
+        if let Some(r) = resolve_in(family, style).or_else(|| resolve_by_name(family)) {
             return r;
         }
     }
@@ -414,7 +433,140 @@ fn resolve_in(family: &str, style: &str) -> Option<Resolved> {
     Some(Resolved { face: best.id, synth_bold: w >= 600 && best.info.weight <= 500, synth_italic: it && !best.info.italic, missing: false })
 }
 
-/// A face that covers `c`, preferring `prefer`; bundled and already-registered faces are searched.
+/// A face whose full name or PostScript name is `name` (case-insensitive), the way After Effects
+/// scripts (`textDocument.font = "YuGothic-Bold"`) and `.aep`-derived data refer to fonts.
+fn resolve_by_name(name: &str) -> Option<Resolved> {
+    let name = name.trim();
+    if name.is_empty() {
+        return None;
+    }
+    let faces = all_faces();
+    let f = faces
+        .iter()
+        .find(|f| f.info.postscript.as_deref().is_some_and(|p| p.eq_ignore_ascii_case(name)))
+        .or_else(|| faces.iter().find(|f| f.info.full_name.eq_ignore_ascii_case(name)))?;
+    Some(Resolved { face: f.id, synth_bold: false, synth_italic: false, missing: false })
+}
+
+/// The writing systems that need a dedicated fallback family: the bundled fonts cover none of
+/// them, and picking "any face with the glyph" gives Chinese glyph shapes to Japanese text (or the
+/// other way round), since Han ideographs are shared.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum FallbackScript {
+    /// Kana: unambiguously Japanese.
+    Japanese,
+    /// Hangul: unambiguously Korean.
+    Korean,
+    /// Han ideographs, CJK punctuation and full-width forms: shared by Japanese, Chinese and
+    /// Korean; the locale decides which family to try first.
+    Han,
+    Other,
+}
+
+fn script_of(c: char) -> FallbackScript {
+    match c as u32 {
+        0x3040..=0x30FF | 0x31F0..=0x31FF | 0xFF66..=0xFF9F => FallbackScript::Japanese,
+        0x1100..=0x11FF | 0x3130..=0x318F | 0xA960..=0xA97F | 0xAC00..=0xD7FF => FallbackScript::Korean,
+        0x2E80..=0x2FDF
+        | 0x3000..=0x303F
+        | 0x3100..=0x312F
+        | 0x3190..=0x31EF
+        | 0x3200..=0x9FFF
+        | 0xF900..=0xFAFF
+        | 0xFE30..=0xFE4F
+        | 0xFF00..=0xFFEF
+        | 0x20000..=0x3FFFF => FallbackScript::Han,
+        _ => FallbackScript::Other,
+    }
+}
+
+/// Families usually installed for each CJK language, in the order the platforms' own fallback
+/// tables prefer them (Windows, macOS, then the Linux/Noto names). Missing ones cost one name
+/// lookup each.
+const JAPANESE_FAMILIES: &[&str] = &[
+    "Yu Gothic",
+    "Meiryo",
+    "BIZ UDPGothic",
+    "MS Gothic",
+    "Yu Gothic UI",
+    "Hiragino Sans",
+    "Hiragino Kaku Gothic ProN",
+    "Noto Sans CJK JP",
+    "Noto Sans JP",
+    "Source Han Sans JP",
+    "Source Han Sans",
+    "IPAGothic",
+    "VL Gothic",
+];
+const CHINESE_FAMILIES: &[&str] = &[
+    "Microsoft YaHei",
+    "Microsoft JhengHei",
+    "SimSun",
+    "MingLiU",
+    "PingFang SC",
+    "PingFang TC",
+    "Noto Sans CJK SC",
+    "Noto Sans CJK TC",
+    "Noto Sans SC",
+    "Noto Sans TC",
+    "Source Han Sans SC",
+    "Source Han Sans TC",
+    "WenQuanYi Micro Hei",
+];
+const KOREAN_FAMILIES: &[&str] = &["Malgun Gothic", "Gulim", "Apple SD Gothic Neo", "Noto Sans CJK KR", "Noto Sans KR", "Source Han Sans KR", "NanumGothic"];
+
+/// The CJK language to try first for Han ideographs, from the locale environment (`LANG`,
+/// `LC_ALL`, `LC_CTYPE`; `EFFECTCRAFT_CJK_LOCALE` overrides them). Japanese when nothing says
+/// otherwise: the ambiguity only matters for ideographs, and kana / hangul in the same text pick
+/// their language regardless.
+fn han_order() -> [FallbackScript; 3] {
+    let tag = ["EFFECTCRAFT_CJK_LOCALE", "LC_ALL", "LC_CTYPE", "LANG"]
+        .iter()
+        .filter_map(|k| std::env::var(k).ok())
+        .map(|v| v.trim().to_ascii_lowercase())
+        .find(|v| !v.is_empty() && v != "c" && v != "posix")
+        .unwrap_or_default();
+    if tag.starts_with("zh") {
+        [FallbackScript::Han, FallbackScript::Japanese, FallbackScript::Korean]
+    } else if tag.starts_with("ko") {
+        [FallbackScript::Korean, FallbackScript::Japanese, FallbackScript::Han]
+    } else {
+        [FallbackScript::Japanese, FallbackScript::Han, FallbackScript::Korean]
+    }
+}
+
+fn families_for(s: FallbackScript) -> &'static [&'static str] {
+    match s {
+        FallbackScript::Japanese => JAPANESE_FAMILIES,
+        FallbackScript::Han => CHINESE_FAMILIES,
+        FallbackScript::Korean => KOREAN_FAMILIES,
+        FallbackScript::Other => &[],
+    }
+}
+
+/// Whether a not-yet-loaded face covers `c`, reading its file without keeping the bytes (the
+/// last-resort search may look at every installed font once).
+fn file_covers(f: &Face, c: char) -> bool {
+    if f.bytes.get().is_some() {
+        return f.has_char(c);
+    }
+    let FaceData::File(p) = &f.info.data else { return f.has_char(c) };
+    let Ok(data) = std::fs::read(p) else { return false };
+    FontRef::from_index(&data, f.info.index).ok().and_then(|font| font.charmap().map(c)).is_some_and(|g| g.to_u32() != 0)
+}
+
+/// Results of the expensive part of [`fallback_for`], per 256-character block and preferred face
+/// (so bold text gets the bold cut of the fallback family). `None` records that nothing installed
+/// covers the block, so the search over every font runs once per block, not once per character.
+fn fallback_cache() -> &'static RwLock<std::collections::HashMap<(u32, FaceId), Option<FaceId>>> {
+    static CACHE: OnceLock<RwLock<std::collections::HashMap<(u32, FaceId), Option<FaceId>>>> = OnceLock::new();
+    CACHE.get_or_init(Default::default)
+}
+
+/// A face that covers `c`, preferring `prefer`. Bundled faces and faces already loaded are tried
+/// first (cheap); then, for CJK characters, the platform's usual family for that language, in the
+/// preferred face's style; then any installed face that covers the character. `prefer` when
+/// nothing does (the glyph renders as the missing-glyph box).
 pub fn fallback_for(c: char, prefer: FaceId) -> FaceId {
     let p = face(prefer);
     if p.has_char(c) || c.is_control() {
@@ -432,7 +584,49 @@ pub fn fallback_for(c: char, prefer: FaceId) -> FaceId {
             return f.id;
         }
     }
-    prefer
+    let key = (c as u32 >> 8, prefer);
+    if let Some(cached) = fallback_cache().read().unwrap_or_else(|e| e.into_inner()).get(&key).copied() {
+        match cached {
+            Some(id) if face(id).has_char(c) => return id,
+            Some(_) => {}
+            None => return prefer,
+        }
+    }
+    if cfg!(not(target_arch = "wasm32")) && !system_scanned() {
+        scan_system();
+    }
+    let found = system_fallback(c, &p.info.style);
+    fallback_cache().write().unwrap_or_else(|e| e.into_inner()).insert(key, found);
+    found.unwrap_or(prefer)
+}
+
+/// The script-aware then exhaustive search behind [`fallback_for`].
+fn system_fallback(c: char, style: &str) -> Option<FaceId> {
+    let script = script_of(c);
+    let order: Vec<FallbackScript> = match script {
+        FallbackScript::Other => vec![],
+        FallbackScript::Han => han_order().to_vec(),
+        s => {
+            let mut v = vec![s];
+            v.extend(han_order().iter().copied().filter(|o| *o != s));
+            v
+        }
+    };
+    for s in order {
+        for fam in families_for(s) {
+            if let Some(r) = resolve_in(fam, style)
+                && face(r.face).has_char(c)
+            {
+                return Some(r.face);
+            }
+        }
+    }
+    // Anything installed, in scan order; the style's weight and slant break ties among the faces
+    // of the first covering family.
+    let faces = all_faces();
+    let first = faces.iter().find(|f| f.info.origin != "bundled" && file_covers(f, c))?;
+    let r = resolve_in(&first.info.family, style)?;
+    Some(if face(r.face).has_char(c) { r.face } else { first.id })
 }
 
 #[cfg(test)]
@@ -482,6 +676,59 @@ mod tests {
             let l = crate::layout_text("Helvetica", &crate::TextStyle { family: "Helvetica".into(), size: 30.0, ..Default::default() }, &Default::default());
             assert!(!l.missing_font && l.glyphs.iter().all(|g| g.id != 0));
         }
+    }
+
+    #[test]
+    fn postscript_and_full_names_resolve() {
+        // Bundled Inter: name id 6 is `Inter-Bold`, name id 4 is `Inter Bold`.
+        let ps = resolve("Inter-Bold", "");
+        assert_eq!(face(ps.face).info.style, "Bold");
+        assert!(!ps.missing && !ps.synth_bold);
+        let full = resolve("inter semibold", "");
+        assert_eq!(face(full.face).info.style, "SemiBold");
+        assert!(!full.missing);
+        // A family name still wins over a name lookup.
+        assert_eq!(face(resolve("Inter", "Bold").face).info.style, "Bold");
+    }
+
+    #[test]
+    fn scripts_are_classified() {
+        assert_eq!(script_of('あ'), FallbackScript::Japanese);
+        assert_eq!(script_of('ｶ'), FallbackScript::Japanese);
+        assert_eq!(script_of('한'), FallbackScript::Korean);
+        assert_eq!(script_of('水'), FallbackScript::Han);
+        assert_eq!(script_of('、'), FallbackScript::Han);
+        assert_eq!(script_of('Ａ'), FallbackScript::Han);
+        assert_eq!(script_of('\u{20000}'), FallbackScript::Han);
+        assert_eq!(script_of('A'), FallbackScript::Other);
+        assert_eq!(script_of('\u{5d0}'), FallbackScript::Other);
+    }
+
+    /// Native: Japanese text in a Latin-only family falls back to an installed Japanese family
+    /// (whichever the platform ships) instead of the missing-glyph box, without any layer having
+    /// loaded a CJK font first. Skipped where no family from the list is installed.
+    #[test]
+    fn cjk_falls_back_to_a_system_family() {
+        scan_system();
+        let inter = resolve("Inter", "Bold").face;
+        let installed = JAPANESE_FAMILIES.iter().any(|f| resolve_in(f, "Regular").is_some());
+        if !installed {
+            eprintln!("no Japanese family installed; skipping");
+            return;
+        }
+        for c in ['水', 'あ', 'ア', '。'] {
+            let id = fallback_for(c, inter);
+            let f = face(id);
+            assert!(f.has_char(c), "{c}: {} {} lacks it", f.info.family, f.info.style);
+            assert!(JAPANESE_FAMILIES.iter().any(|n| f.info.family.eq_ignore_ascii_case(n)), "{c} → {}", f.info.family);
+        }
+        // The bold cut of the fallback family is chosen for bold text when the family has one.
+        let f = face(fallback_for('水', inter));
+        let (w, _) = style_wants(&f.info.style);
+        let has_bold = all_faces().iter().any(|g| g.info.family == f.info.family && style_wants(&g.info.style).0 >= 600);
+        assert!(!has_bold || w >= 600, "{} {}", f.info.family, f.info.style);
+        // Cached: the second call is a lookup.
+        assert_eq!(fallback_for('水', inter), f.id);
     }
 
     #[test]
