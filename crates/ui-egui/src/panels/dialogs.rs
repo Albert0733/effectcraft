@@ -57,6 +57,8 @@ pub struct DialogState {
     pub layer_style: super::layer_styles_dialog::LayerStyleState,
     /// The unsaved-changes prompt and the command it holds.
     pub unsaved: super::unsaved::Pending,
+    /// Deleting Project items in use: the deletion waiting on the prompt.
+    pub delete_items: super::delete_items::Pending,
 }
 
 pub fn open_new_comp(app: &mut EffectcraftApp) {
@@ -188,6 +190,7 @@ pub fn show(app: &mut EffectcraftApp, ctx: &egui::Context) {
         Dialog::TrackApply => super::tracker::apply_dialog(app, ctx, &t),
         Dialog::RenderTemplates => super::rq_templates::show(app, ctx, &t),
         Dialog::UnsavedChanges => super::unsaved::show(app, ctx, &t),
+        Dialog::DeleteItems => super::delete_items::show(app, ctx, &t),
     }
 }
 
