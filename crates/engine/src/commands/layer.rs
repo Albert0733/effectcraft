@@ -663,6 +663,45 @@ pub(crate) fn parent_fixes(s: &Session, cid: ItemId, ids: &[LayerId], parent: Op
         .collect()
 }
 
+/// Validate the proposed ancestor chain before any authored edit, including when compensation
+/// is disabled. Bound both unique ancestors and linear lookup/selection work on loaded graphs.
+fn check_parent_chain(comp: &Comp, ids: &[LayerId], parent: Option<LayerId>, max_visits: usize, max_work: usize) -> Result<()> {
+    let mut seen = std::collections::HashSet::new();
+    let mut work = 0usize;
+    let mut cur = parent;
+    while let Some(id) = cur {
+        if seen.len() >= max_visits {
+            return Err(bad("layer.setParent", "parent chain exceeds the safety visit limit"));
+        }
+        if !seen.insert(id) {
+            return Err(bad("layer.setParent", "parent chain contains an existing cycle"));
+        }
+        for selected in ids {
+            if work >= max_work {
+                return Err(bad("layer.setParent", "parent chain exceeds the safety work limit"));
+            }
+            work += 1;
+            if *selected == id {
+                return Err(bad("layer.setParent", "parenting would create a cycle"));
+            }
+        }
+        let mut ancestor = None;
+        for layer in &comp.layers {
+            if work >= max_work {
+                return Err(bad("layer.setParent", "parent chain exceeds the safety work limit"));
+            }
+            work += 1;
+            if layer.id == id {
+                ancestor = Some(layer);
+                break;
+            }
+        }
+        let layer = ancestor.ok_or_else(|| bad("layer.setParent", "parent chain refers to a missing layer"))?;
+        cur = layer.parent;
+    }
+    Ok(())
+}
+
 fn set_parent(s: &mut Session, p: &Value) -> Result<Value> {
     let (cid, ids) = layers_p(s, p)?;
     let comp = s.project.comp(cid).ok_or(EngineError::NoComp)?;
@@ -670,16 +709,9 @@ fn set_parent(s: &mut Session, p: &Value) -> Result<Value> {
         None | Some(Value::Null) => None,
         Some(v) => Some(resolve_layer(comp, v).ok_or_else(|| bad("layer.setParent", "no such parent layer"))?),
     };
-    // Cycle check.
-    if let Some(par) = parent {
-        let mut cur = Some(par);
-        while let Some(c) = cur {
-            if ids.contains(&c) {
-                return Err(bad("layer.setParent", "parenting would create a cycle"));
-            }
-            cur = comp.layer(c).and_then(|l| l.parent);
-        }
-    }
+    // A loaded cycle need not include a selected child. Validate before compensation or edit;
+    // do not impose the renderer's 64-ancestor truncation as a new ordinary hierarchy limit.
+    check_parent_chain(comp, &ids, parent, 4096, 1_048_576)?;
     // Like AE's pick-whip, parenting keeps the layer where it is: its transform is re-expressed
     // in the new parent's space (Position, Rotation, Scale), unless `compensate: false`.
     let compensate = b_p(p, "compensate").unwrap_or(true);
@@ -1399,3 +1431,120 @@ pub fn specs() -> Vec<CommandSpec> {
 
 #[allow(dead_code)]
 fn unused(_: &Comp) {}
+
+#[cfg(test)]
+mod parent_chain_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    fn fixture() -> (Session, u64, u64, u64) {
+        let mut s = Session::default();
+        s.execute("comp.new", json!({"name":"Parent safety","width":16,"height":16,"duration":1})).unwrap();
+        let a = s.execute("layer.newSolid", json!({"name":"A"})).unwrap()["layer"].as_u64().unwrap();
+        let b = s.execute("layer.newSolid", json!({"name":"B"})).unwrap()["layer"].as_u64().unwrap();
+        let c = s.execute("layer.newSolid", json!({"name":"C"})).unwrap()["layer"].as_u64().unwrap();
+        for id in [a, b, c] {
+            s.execute("prop.set", json!({"layer":id,"path":"transform/anchor","value":[0,0,0]})).unwrap();
+        }
+        s.execute("prop.set", json!({"layer":a,"path":"transform/position","value":[100,200,0]})).unwrap();
+        s.execute("prop.set", json!({"layer":c,"path":"transform/position","value":[10,20,0]})).unwrap();
+        s.history.undo.clear();
+        (s, a, b, c)
+    }
+    fn malformed_parent(s: &mut Session, child: u64, parent: u64) {
+        let cid = s.active_comp_id().unwrap();
+        Arc::make_mut(&mut s.project).comp_mut(cid).unwrap().layer_mut(LayerId(child)).unwrap().parent = Some(LayerId(parent));
+    }
+    fn assert_atomic_error(s: &mut Session, child: u64, parent: u64, compensate: bool, message: &str) {
+        let before = s.project.clone();
+        let revision = s.revision;
+        let undo = s.history.undo.len();
+        let err = s.execute("layer.setParent", json!({"layers":[child],"parent":parent,"compensate":compensate})).unwrap_err();
+        assert!(err.to_string().contains(message), "{err}");
+        assert!(Arc::ptr_eq(&before, &s.project));
+        assert_eq!(s.revision, revision);
+        assert_eq!(s.history.undo.len(), undo);
+    }
+    #[test]
+    fn loaded_cycle_excluding_selected_child_is_rejected_atomically() {
+        for compensate in [true, false] {
+            let (mut s, a, b, c) = fixture();
+            // Simulate a malformed loaded project. Never execute this on the unguarded baseline.
+            malformed_parent(&mut s, a, b);
+            malformed_parent(&mut s, b, a);
+            assert_atomic_error(&mut s, c, a, compensate, "existing cycle");
+        }
+    }
+    #[test]
+    fn dangling_loaded_parent_is_rejected_atomically() {
+        for compensate in [true, false] {
+            let (mut s, a, _, c) = fixture();
+            malformed_parent(&mut s, a, u64::MAX);
+            assert_atomic_error(&mut s, c, a, compensate, "missing layer");
+        }
+    }
+    #[test]
+    fn selected_descendant_and_direct_self_are_rejected() {
+        let (mut s, a, _, c) = fixture();
+        assert_atomic_error(&mut s, c, c, false, "create a cycle");
+        s.execute("layer.setParent", json!({"layers":[a],"parent":c,"compensate":false})).unwrap();
+        assert_atomic_error(&mut s, c, a, true, "create a cycle");
+    }
+    #[test]
+    fn ordinary_parent_and_unparent_keep_explicit_false_and_undo_semantics() {
+        for compensate in [true, false] {
+            let (mut s, a, _, c) = fixture();
+            let old = s.project.clone();
+            let world = |s: &Session| {
+                let cid = s.active_comp_id().unwrap();
+                let comp = s.active_comp().unwrap();
+                let ctx = effectcraft_render::EvalCtx::new(&s.project, cid, comp, s.time());
+                ctx.world_matrix(comp.layer(LayerId(c)).unwrap()).apply(effectcraft_geom::Vec3::ZERO)
+            };
+            let before = world(&s);
+            s.execute("layer.setParent", json!({"layers":[c],"parent":a,"compensate":compensate})).unwrap();
+            let expected = if compensate { before } else { before + effectcraft_geom::vec3(100.0, 200.0, 0.0) };
+            assert!((world(&s) - expected).length() < 1e-9);
+            assert_eq!(s.active_comp().unwrap().layer(LayerId(c)).unwrap().parent, Some(LayerId(a)));
+            assert_eq!(s.history.undo.len(), 1);
+            let parented = s.project.clone();
+            assert!(s.undo());
+            assert!(Arc::ptr_eq(&s.project, &old));
+            assert!(s.redo());
+            assert!(Arc::ptr_eq(&s.project, &parented));
+            s.execute("layer.setParent", json!({"layers":[c],"parent":null,"compensate":compensate})).unwrap();
+            assert_eq!(s.active_comp().unwrap().layer(LayerId(c)).unwrap().parent, None);
+            assert!(s.undo());
+            assert!(Arc::ptr_eq(&s.project, &parented));
+        }
+    }
+    #[test]
+    fn ancestor_and_lookup_work_budgets_fail_closed() {
+        let (mut s, a, b, c) = fixture();
+        malformed_parent(&mut s, a, b);
+        let comp = s.active_comp().unwrap();
+        // New solids are inserted above the selection: C,B,A. Walking A->B scans
+        // three then two layers, and compares the one selected child twice: seven work units.
+        assert_eq!(comp.layers.iter().map(|l| l.id).collect::<Vec<_>>(), vec![LayerId(c), LayerId(b), LayerId(a)]);
+        assert!(check_parent_chain(comp, &[LayerId(c)], Some(LayerId(a)), 2, 7).is_ok());
+        assert!(check_parent_chain(comp, &[LayerId(c)], Some(LayerId(a)), 2, 6).unwrap_err().to_string().contains("work limit"));
+        assert!(check_parent_chain(comp, &[LayerId(c)], Some(LayerId(a)), 2, 256).is_ok());
+        assert!(check_parent_chain(comp, &[LayerId(c)], Some(LayerId(a)), 1, 256).unwrap_err().to_string().contains("visit limit"));
+        assert!(check_parent_chain(comp, &[LayerId(c)], Some(LayerId(a)), 2, 1).unwrap_err().to_string().contains("work limit"));
+        assert!(check_parent_chain(comp, &[LayerId(c)], None, 0, 0).is_ok(), "unparenting does not traverse ancestors");
+    }
+
+    #[test]
+    fn well_formed_chain_beyond_renderer_depth_is_not_unnecessarily_rejected() {
+        let (s, _, _, c) = fixture();
+        let mut comp = s.active_comp().unwrap().clone();
+        let template = comp.layers.first().unwrap().clone();
+        for n in 0..80 {
+            let mut layer = template.clone();
+            layer.id = LayerId(10_000 + n);
+            layer.parent = (n < 79).then_some(LayerId(10_001 + n));
+            comp.layers.push(layer);
+        }
+        assert!(check_parent_chain(&comp, &[LayerId(c)], Some(LayerId(10_000)), 4096, 1_048_576).is_ok());
+    }
+}
