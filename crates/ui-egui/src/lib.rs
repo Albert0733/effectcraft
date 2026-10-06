@@ -381,17 +381,41 @@ impl EffectcraftApp {
         v
     }
 
+    /// Show panel `p` (opening it in its usual place if it is closed), bring it to the front and
+    /// give it the focus: Window ▸ <panel>.
     pub fn show_panel(&mut self, p: PanelKind) {
-        if let Some(f) = self.ui.floating.iter_mut().find(|f| f.panels.contains(&p)) {
-            f.active = f.panels.iter().position(|x| *x == p).unwrap_or(0);
-            self.ui.focused = p;
-            return;
-        }
-        if self.ui.maximized.is_some_and(|m| m != p) {
+        if !self.ui.floating.iter().any(|f| f.panels.contains(&p)) && self.ui.maximized.is_some_and(|m| m != p) {
             self.ui.maximized = None;
         }
+        self.raise_panel(p);
+        self.ui.focused = p;
+    }
+
+    /// Bring panel `p` to the front of its group, opening it in its usual place if it is closed,
+    /// without moving the focus (a comp opening brings up its viewer, an effect applied brings up
+    /// Effect Controls).
+    pub fn raise_panel(&mut self, p: PanelKind) {
+        if let Some(f) = self.ui.floating.iter_mut().find(|f| f.panels.contains(&p)) {
+            f.active = f.panels.iter().position(|x| *x == p).unwrap_or(0);
+            return;
+        }
         if !self.ui.dock.contains(p) {
+            // The Composition panel lives in the centre, with the Layer panel and other viewers;
+            // with none of those left, above the Timeline.
+            let centre = |d: &dock::DockNode| {
+                let mut v = Vec::new();
+                d.panels(&mut v);
+                v.into_iter().find(|q| matches!(q, PanelKind::Layer | PanelKind::Viewer(_) | PanelKind::Flowchart | PanelKind::Footage))
+            };
             let near = match p {
+                PanelKind::Composition => match centre(&self.ui.dock) {
+                    Some(q) => q,
+                    None if self.ui.dock.dock_panel(p, PanelKind::Timeline, dock::Zone::Top) => {
+                        self.ui.dock.activate(p);
+                        return;
+                    }
+                    None => PanelKind::EffectsPresets,
+                },
                 PanelKind::Layer | PanelKind::Flowchart | PanelKind::Viewer(_) => PanelKind::Composition,
                 PanelKind::RenderQueue => PanelKind::Timeline,
                 PanelKind::EffectControls | PanelKind::History => PanelKind::Project,
@@ -400,7 +424,6 @@ impl EffectcraftApp {
             self.ui.dock.open_near(p, near);
         }
         self.ui.dock.activate(p);
-        self.ui.focused = p;
     }
 
     pub fn render_source(&self) -> RenderSource {

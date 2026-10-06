@@ -192,10 +192,12 @@ pub fn on_open_comp(app: &mut EffectcraftApp, comp: ItemId) {
         };
     }
     app.ui.viewers.insert(app.ui.active_viewer, Some(comp.0));
-    // The comp's viewer and its Timeline tab come to the front (unless locked).
+    // The comp's viewer and its Timeline tab come to the front (unless locked), reopened if they
+    // were closed (as in After Effects).
     for p in [active_panel(app), PanelKind::Timeline] {
-        if !app.ui.locked_tabs.contains(&p.id()) {
-            app.ui.dock.activate(p);
+        let closed = !app.ui.dock.contains(p) && !app.ui.floating.iter().any(|f| f.panels.contains(&p));
+        if closed || !app.ui.locked_tabs.contains(&p.id()) {
+            app.raise_panel(p);
         }
     }
 }
