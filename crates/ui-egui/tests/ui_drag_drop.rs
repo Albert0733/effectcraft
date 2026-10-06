@@ -1,9 +1,14 @@
-//! Dragging Project items into the Timeline (egui_kittest, real pointer drags): they land where
-//! they are dropped, between layers and, over the time graph, starting there (#89).
+//! Drag and drop between panels (egui_kittest, real pointer drags), as in After Effects: Project
+//! items land in the Timeline where they are dropped, between layers and, over the time graph,
+//! starting there (#89); dropped on the Composition viewer they are centred where they land
+//! (#85); an effect dropped on the viewer goes on the layer under the pointer (#88).
 
 use effectcraft_engine::Session;
+use effectcraft_engine::keyframe::Value as KV;
 use effectcraft_engine::time::Tick;
 use effectcraft_ui_egui::EffectcraftApp;
+use effectcraft_ui_egui::dock::PanelKind;
+use effectcraft_ui_egui::panels::viewer::{comp_to_screen, last_fit};
 use egui::{Event, Modifiers, Pos2, Rect, pos2, vec2};
 use egui_kittest::Harness;
 use serde_json::json;
@@ -96,4 +101,38 @@ fn project_items_land_where_they_are_dropped_in_the_timeline() {
     drag(&mut h, item, pos2(at_2s, row.max.y + 30.0), Modifiers::SHIFT);
     assert_eq!(stack(&h), ["Top", "Middle", "Bottom", "Clip"]);
     assert!((in_point(&h, 3) - 1.0).abs() < 1e-9, "Shift starts it at the current time");
+}
+
+/// #85: a Project item dropped on the Composition viewer becomes a layer centred where it was
+/// dropped (above the selected layer, like any new layer).
+#[test]
+fn project_items_dropped_on_the_viewer_land_under_the_pointer() {
+    let (mut h, clip) = harness();
+    let item = rect(&h, &format!("project.item.{clip}.name")).center();
+    let to = comp_to_screen(&h.ctx, [80.0, 45.0]).unwrap();
+    drag(&mut h, item, to, Modifiers::NONE);
+    assert_eq!(stack(&h), ["Clip", "Top", "Middle", "Bottom"]);
+    let comp = h.state().session.active_comp().unwrap();
+    let Some(KV::Vec3(p)) = comp.layers[0].props.prop("transform/position").map(|p| p.value.clone()) else { panic!("no position") };
+    // One screen point is up to 1/zoom comp pixels.
+    let tol = 1.0 / last_fit(&h.ctx) as f64 + 1e-6;
+    assert!((p[0] - 80.0).abs() <= tol && (p[1] - 45.0).abs() <= tol, "{p:?}");
+}
+
+/// #88: an effect dragged from Effects & Presets onto the viewer goes on the layer under the
+/// pointer, not the selected one.
+#[test]
+fn effects_dropped_on_the_viewer_go_on_the_layer_under_the_pointer() {
+    let (mut h, _) = harness();
+    let (top, middle) = (layer_id(&h, "Top"), layer_id(&h, "Middle"));
+    h.state_mut().session.execute("layer.select", json!({"layers": [middle]})).unwrap();
+    h.state_mut().show_panel(PanelKind::EffectsPresets);
+    h.state_mut().ui.effects_search = "Gaussian Blur".into();
+    h.run_steps(3);
+    let fx = rect(&h, "effects.item.ec.blur.gaussian").center();
+    let to = comp_to_screen(&h.ctx, [160.0, 90.0]).unwrap();
+    drag(&mut h, fx, to, Modifiers::NONE);
+    let comp = h.state().session.active_comp().unwrap();
+    let effects = |id: u64| comp.layer(effectcraft_engine::project::LayerId(id)).unwrap().effects().map_or(0, |fx| fx.groups().count());
+    assert_eq!((effects(top), effects(middle)), (1, 0), "on Top, which is under the pointer");
 }

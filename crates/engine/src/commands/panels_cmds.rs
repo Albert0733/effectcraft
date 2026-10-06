@@ -104,20 +104,14 @@ fn browser_import(s: &mut Session, p: &Value) -> Result<Value> {
     if !browser(s)?.fetch(&list, p) {
         return Ok(json!({"pending": true, "paths": list}));
     }
-    let r = s.execute("file.import", json!({"paths": paths}))?;
-    // Add to the active comp (drag into the timeline).
-    if b_p(p, "addToComp").unwrap_or(false)
-        && s.active_comp_id().is_some()
-        && let Some(items) = r.get("items").and_then(Value::as_array)
+    let target = s.active_comp_id();
+    let mut r = s.execute("file.import", json!({"paths": paths}))?;
+    // Dragged into the Timeline or the Composition viewer: into the comp, where they were dropped.
+    let errors = super::file::add_to_comp(s, &r, target, p);
+    if !errors.is_empty()
+        && let Some(e) = r.get_mut("errors").and_then(Value::as_array_mut)
     {
-        // Where a drop put them (`time`, `index`): one under the other.
-        for (k, it) in items.iter().enumerate() {
-            let mut add = json!({"item": it, "time": p.get("time")});
-            if let Some(i) = p.get("index").and_then(Value::as_u64) {
-                add["index"] = json!(i.saturating_add(k as u64));
-            }
-            s.execute("layer.addItem", add)?;
-        }
+        e.extend(errors.into_iter().map(Value::from));
     }
     Ok(r)
 }
@@ -243,7 +237,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Import",
             [],
             None,
-            "{paths, addToComp?, time?, index? (where the layers go, as in layer.addItem)}",
+            "{paths, addToComp?, time?, index?, position? (where the layers go, as in layer.addItem)}",
             browser_enabled,
             browser_import
         ),

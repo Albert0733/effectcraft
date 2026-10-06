@@ -39,6 +39,32 @@ pub(crate) fn index_p(p: &Value, cmd: &str) -> Result<Option<usize>> {
     }
 }
 
+/// A `position` parameter: `[x, y]` in comp pixels (finite).
+pub(crate) fn position_p(p: &Value, cmd: &str) -> Result<Option<[f64; 2]>> {
+    match p.get("position") {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => v
+            .as_array()
+            .and_then(|a| Some([a.first()?.as_f64()?, a.get(1)?.as_f64()?]))
+            .filter(|c| c.iter().all(|x| x.is_finite()))
+            .map(Some)
+            .ok_or_else(|| bad(cmd, "position: [x, y] in comp pixels")),
+    }
+}
+
+/// Put a new layer's Position at `pos` (comp pixels).
+pub(crate) fn place(l: &mut Layer, pos: Option<[f64; 2]>) {
+    if let Some([x, y]) = pos
+        && let Some(pr) = l.props.prop_mut("transform/position")
+    {
+        let z = match pr.value {
+            KV::Vec3(v) => v[2],
+            _ => 0.0,
+        };
+        pr.value = KV::Vec3([x, y, z]);
+    }
+}
+
 /// [`insert_layer`] at stack position `at` (0 = top) instead of above the selected layer.
 pub(crate) fn insert_layer_at(proj: &mut Project, st: &mut crate::EditorState, cid: ItemId, mut layer: Layer, at: Option<usize>) -> Result<LayerId> {
     // Text and shape layers in Advanced 3D comps get Geometry Options (extrusion, bevels).
@@ -277,13 +303,17 @@ fn add_item(s: &mut Session, p: &Value) -> Result<Value> {
             return Err(bad("layer.addItem", "data files can't be layers; read them in expressions with footage(\"name\").sourceData"));
         }
         ItemKind::Footage(f) if f.kind == effectcraft_project::FootageKind::Model => {
-            return super::model3d::new_model(s, &serde_json::json!({"comp": cid.0, "item": item.0, "time": f_p(p, "time"), "index": p.get("index")}));
+            return super::model3d::new_model(
+                s,
+                &serde_json::json!({"comp": cid.0, "item": item.0, "time": f_p(p, "time"), "index": p.get("index"), "position": p.get("position")}),
+            );
         }
         ItemKind::Footage(f) => (LayerSource::Footage { item }, (f.width, f.height), Some(f.duration)),
         ItemKind::Solid(so) => (LayerSource::Solid { item }, (so.width, so.height), None),
         ItemKind::Folder => return Err(bad("layer.addItem", "folders can't be layers")),
     };
     let index = index_p(p, "layer.addItem")?;
+    let position = position_p(p, "layer.addItem")?;
     let fr = comp.frame_rate;
     // Settings ▸ General ▸ Create Layers at Composition Start Time (off: at the current time).
     let default_start = if s.prefs.general.create_layers_at_comp_start || s.active_comp_id() != Some(cid) { Tick::ZERO } else { s.time() };
@@ -293,6 +323,7 @@ fn add_item(s: &mut Session, p: &Value) -> Result<Value> {
         l.start_time = start;
         l.in_point = start;
         l.out_point = fr.snap_nearest((start + dur.unwrap_or(comp.duration)).min(comp.duration)).max(start + fr.frame_duration());
+        place(&mut l, position);
         insert_layer_at(proj, st, cid, l, index)
     })?;
     Ok(json!({"layer": id.0}))
@@ -1267,7 +1298,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Add Footage to Comp",
             ["File"],
             Some("Cmd+/"),
-            "{item: id|name, time? (s, the In point), index? (1-based stack position; default above the selected layer), duration? (s, for a still)}",
+            "{item: id|name, time? (s, the In point), index? (1-based stack position; default above the selected layer), position? ([x, y] comp px; default the centre), duration? (s, for a still)}",
             has_comp,
             add_item
         ),
