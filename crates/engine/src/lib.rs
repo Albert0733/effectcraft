@@ -81,6 +81,9 @@ pub enum EngineError {
     BadParams { cmd: String, msg: String },
     #[error("no active composition")]
     NoComp,
+    /// A `comp` reference (name or id) that names no composition.
+    #[error("no composition {0}")]
+    NoSuchComp(String),
     #[error("{0}")]
     Project(#[from] effectcraft_project::ProjectError),
     #[error("{0}")]
