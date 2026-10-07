@@ -628,14 +628,17 @@ impl GpuContext {
         });
         loop {
             self.readbacks.check()?;
-            self.poll_readbacks(wgpu::PollType::Poll)?;
             let remaining = deadline.saturating_duration_since(std::time::Instant::now());
             if remaining.is_zero() {
                 let error = "GPU readback receive timed out; context retired".to_string();
                 self.readbacks.retire(error.clone());
                 return Err(error);
             }
-            match rx.recv_timeout(remaining.min(std::time::Duration::from_millis(10))) {
+            // Block until the GPU is done (bounded by the deadline: a timeout retires the
+            // context) rather than polling and sleeping, which adds latency to every readback.
+            self.poll_readbacks(wgpu::PollType::Wait { submission_index: None, timeout: Some(remaining) })?;
+            // The callback may be running on another thread that polled the same device.
+            match rx.recv_timeout(remaining.min(std::time::Duration::from_millis(1))) {
                 Ok(result) => return result,
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
                 Err(e) => return Err(format!("GPU readback completion channel: {e}")),
