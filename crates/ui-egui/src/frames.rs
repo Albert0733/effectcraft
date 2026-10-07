@@ -24,6 +24,7 @@
 //! them (Info panel, eyedroppers, histograms).
 
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use effectcraft_engine::project::{Comp, ItemId, ItemKind, LayerSource, Node, Project, PropGroup};
@@ -365,6 +366,7 @@ pub struct Frames {
     /// Render time of the last viewer (urgent) frame in ms, for the Info panel / perf readout.
     pub last_ms: Arc<Mutex<f64>>,
     content_keys: ContentKeys,
+    gpu_retired: Arc<AtomicBool>,
     /// [`comp_content`] identities by (revision, comp), with the project that keeps an identity
     /// found by [`Frames::identity`] in another project.
     identities: Mutex<HashMap<(u64, u64), Identity>>,
@@ -398,6 +400,7 @@ impl Default for Frames {
             ctx: None,
             last_ms: Arc::new(Mutex::new(0.0)),
             content_keys: Arc::default(),
+            gpu_retired: Arc::default(),
             identities: Mutex::default(),
             bases: Mutex::default(),
             keepers: Mutex::default(),
@@ -423,6 +426,24 @@ pub fn to_color_image(img: &effectcraft_engine::render::Image) -> egui::ColorIma
 }
 
 impl Frames {
+    /// Retire only GPU preview state; documents, CPU frames and running job leases survive.
+    /// Publication checks the same latch while holding the cache lock, so a late GPU frame
+    /// cannot restore an invalid texture after this removal.
+    pub fn retire_gpu(&self) {
+        self.gpu_retired.store(true, Ordering::Release);
+        if let Ok(mut cache) = self.cache.lock() {
+            let keys: Vec<_> = cache.map.iter().filter_map(|(key, image)| image.is_gpu().then_some(*key)).collect();
+            for key in keys {
+                cache.remove(&key);
+            }
+            let Cache { map, order, .. } = &mut *cache;
+            order.retain(|key| map.contains_key(key));
+        }
+        if let Some(ctx) = &self.ctx {
+            ctx.request_repaint();
+        }
+    }
+
     /// Actual native frame-worker capacity, including the OS fallback pool.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn parallelism(&self) -> usize {
@@ -649,6 +670,7 @@ impl Frames {
             ctx: self.ctx.clone(),
             last: self.last_ms.clone(),
             content_keys: self.content_keys.clone(),
+            gpu_retired: self.gpu_retired.clone(),
         }
     }
 
@@ -777,6 +799,7 @@ struct Worker {
     ctx: Option<egui::Context>,
     last: Arc<Mutex<f64>>,
     content_keys: ContentKeys,
+    gpu_retired: Arc<AtomicBool>,
 }
 
 impl Worker {
@@ -830,7 +853,9 @@ impl Worker {
         if urgent && let Ok(mut l) = self.last.lock() {
             *l = t0.elapsed().as_secs_f64() * 1000.0;
         }
-        if let Ok(mut c) = self.cache.lock() {
+        if let Ok(mut c) = self.cache.lock()
+            && (!img.is_gpu() || !self.gpu_retired.load(Ordering::Acquire))
+        {
             c.insert(key, img);
         }
         self.release(key, urgent);
@@ -862,8 +887,13 @@ impl Worker {
         })
     }
 
-    /// The GPU ran out of video memory rendering a frame (#106): fewer GPU frames are kept.
-    fn out_of_memory(&self, e: &str) {
+    /// A failed scoped attempt retries on CPU. Retired contexts cannot recover by reducing
+    /// their budget; only a healthy device's allocation failure uses the upstream backoff.
+    fn gpu_attempt_failed(&self, gpu: &Gpu, e: &str) {
+        if gpu.context().check_health().is_err() {
+            log::warn!("the GPU context is retired ({e}); the frame renders on the CPU");
+            return;
+        }
         log::warn!("the GPU ran out of memory ({e}); the frame renders on the CPU and fewer GPU frames are kept");
         if let Ok(mut c) = self.cache.lock() {
             c.gpu_out_of_memory();
@@ -872,6 +902,9 @@ impl Worker {
 
     /// The frame on the GPU, kept there for the viewer, if the compositor can do it alone.
     fn render_gpu(&self, job: &Job) -> Option<FrameImage> {
+        if self.gpu_retired.load(Ordering::Acquire) {
+            return None;
+        }
         let g = job.src.gpu.as_ref()?;
         let mut r = Renderer::new(&job.src.project, job.src.footage.as_ref(), job.opts);
         r.expr = job.src.expr.as_deref();
@@ -881,7 +914,7 @@ impl Worker {
         match g.within_memory(|| g.render_display(&r, job.comp, job.t)) {
             Ok(f) => f.map(|f| FrameImage::Gpu(Arc::new(f))),
             Err(e) => {
-                self.out_of_memory(&e);
+                self.gpu_attempt_failed(g, &e);
                 None
             }
         }
@@ -891,8 +924,11 @@ impl Worker {
     fn render_job(&self, job: &Job, gpu: bool) -> FrameImage {
         let mut r = Renderer::new(&job.src.project, job.src.footage.as_ref(), job.opts);
         r.expr = job.src.expr.as_deref();
-        r.cache = Some(&job.src.layer_cache);
-        let gpu = job.src.gpu.as_ref().filter(|_| gpu);
+        let gpu_allowed = gpu && !self.gpu_retired.load(Ordering::Acquire);
+        // A failed GPU attempt may have populated intermediate entries before its scope
+        // reported failure. The CPU retry must compute its own pixels from the snapshot.
+        r.cache = gpu_allowed.then_some(job.src.layer_cache.as_ref());
+        let gpu = job.src.gpu.as_ref().filter(|_| gpu_allowed);
         r.accel = gpu.map(|g| g as &dyn effectcraft_engine::render::Accelerator);
         // The GPU leaves the frame in a texture for the viewer; otherwise (Software Only, no
         // adapter, or a frame the GPU cannot finish here) the CPU renders it.
@@ -911,6 +947,9 @@ impl Worker {
                         if let Some((p, key)) = auto {
                             // Time the GPU's work, not just its recording.
                             g.wait();
+                            if g.context().check_health().is_err() {
+                                return self.render_job(job, false);
+                            }
                             p.record(key, true, t0.elapsed().as_secs_f64() * 1000.0);
                         }
                         return FrameImage::Gpu(Arc::new(f));
@@ -921,7 +960,7 @@ impl Worker {
                         }
                     }
                     Err(e) => {
-                        self.out_of_memory(&e);
+                        self.gpu_attempt_failed(g, &e);
                         return self.render_job(job, false);
                     }
                 }
@@ -938,7 +977,7 @@ impl Worker {
             return match g.within_memory(|| r.comp_frame(job.comp, job.t)) {
                 Ok(img) => FrameImage::Cpu(Arc::new(to_color_image(&img))),
                 Err(e) => {
-                    self.out_of_memory(&e);
+                    self.gpu_attempt_failed(g, &e);
                     self.render_job(job, false)
                 }
             };
@@ -975,6 +1014,24 @@ impl Queue {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retirement_reaches_existing_workers_and_keeps_cpu_frames_and_completion_live() {
+        let frames = Frames::default();
+        let worker = frames.worker();
+        let first = key(1, 0, 0);
+        insert(&frames, first);
+        frames.retire_gpu();
+        assert!(worker.gpu_retired.load(Ordering::Acquire), "already queued workers share retirement");
+        assert!(frames.is_cached(&first), "healthy materialized CPU frames survive");
+        let next = key(1, 1, 0);
+        frames.inflight.lock().unwrap().insert(next);
+        frames.queue.lock().unwrap().running.insert(next);
+        worker.finish_key(next, false, img(), web_time::Instant::now());
+        assert!(frames.is_cached(&next), "CPU retry can still publish");
+        assert_eq!(frames.inflight(), 0);
+        assert!(frames.queue.lock().unwrap().running.is_empty());
+    }
 
     fn key(content: u64, frame: i64, opts: u64) -> FrameKey {
         FrameKey { revision: content, content, comp: 1, frame, scale: 1000, view: 0, opts }

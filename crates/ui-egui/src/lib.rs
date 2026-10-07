@@ -14,6 +14,7 @@ pub mod control;
 pub mod dock;
 pub mod dock_ui;
 pub mod frames;
+pub mod gpu_failure;
 pub mod header;
 pub mod i18n;
 pub mod icons;
@@ -215,6 +216,8 @@ pub struct EffectcraftApp {
     /// The GPU compositor on that device (None: no usable adapter → CPU only).
     pub(crate) gpu: Option<effectcraft_gpu::Gpu>,
     gpu_checked: bool,
+    gpu_failures: Option<gpu_failure::GpuFailureBridge>,
+    gpu_failure_applied: Option<bool>,
     /// Commands from the native menu bar.
     pub command_inbox: Option<Receiver<String>>,
     /// Pointer position in comp pixels (Info panel).
@@ -286,6 +289,8 @@ impl EffectcraftApp {
             wgpu: None,
             gpu: None,
             gpu_checked: false,
+            gpu_failures: None,
+            gpu_failure_applied: None,
             command_inbox: None,
             pointer_comp: None,
             dialog_state: Default::default(),
@@ -455,6 +460,60 @@ impl EffectcraftApp {
             && self.ui.viewer.extended.is_none()
     }
 
+    /// Provide the executable/embedding host's device notifications. The host installs the
+    /// handlers once; this frontend never replaces handlers on a borrowed device.
+    pub fn set_gpu_failure_bridge(&mut self, bridge: gpu_failure::GpuFailureBridge) {
+        if let Some(gpu) = &self.gpu {
+            bridge.forward_to(gpu.context().device_failure_notifier());
+        }
+        self.gpu_failures = Some(bridge);
+    }
+
+    fn apply_gpu_failure(&mut self, ctx: &egui::Context) {
+        let Some(bridge) = &self.gpu_failures else { return };
+        // Readback deadlines can retire the compositor without a host device notification.
+        if let Some(gpu) = &self.gpu
+            && let Err(reason) = gpu.context().check_health()
+        {
+            bridge.report(&reason, false);
+        }
+        let Some(failure) = bridge.failure() else { return };
+        if self.gpu_failure_applied == Some(failure.presentation_lost) {
+            return;
+        }
+        self.gpu_failure_applied = Some(failure.presentation_lost);
+        self.gpu_checked = true;
+        self.frames.retire_gpu();
+        self.session.accel = None;
+        self.session.layer_cache.clear();
+        self.gpu = None;
+        if let Some(rs) = &self.wgpu {
+            let mut renderer = rs.renderer.write();
+            if let Some((id, _, _)) = &self.viewer_native {
+                renderer.free_texture(id);
+            }
+            for (_, texture) in self.passive_tex.values() {
+                if let panels::viewers::PassiveTexture::Gpu(id, _) = texture {
+                    renderer.free_texture(id);
+                }
+            }
+        }
+        self.viewer_native = None;
+        self.passive_tex.retain(|_, (_, texture)| matches!(texture, panels::viewers::PassiveTexture::Cpu(_)));
+        self.viewer_shown = self.viewer_tex.as_ref().map(|(texture, key)| (texture.id(), *key));
+        self.viewer_image = None;
+        // Old completion closures retain only their detached slot, not the replacement.
+        self.viewer_readback = Default::default();
+        self.wgpu = None;
+        self.ui.status = if failure.presentation_lost {
+            "Graphics device lost. The project is still open; presentation requires restarting the application.".into()
+        } else {
+            "Shared GPU preview disabled; CPU compositing remains available.".into()
+        };
+        log::warn!("GPU preview retired: {}", failure.reason);
+        ctx.request_repaint();
+    }
+
     /// Set up the GPU compositor on egui-wgpu's device (once). Without an adapter that runs
     /// compute shaders (WebGL2, software GL) everything stays on the CPU.
     pub(crate) fn init_gpu(&mut self, frame: &eframe::Frame) {
@@ -462,12 +521,21 @@ impl EffectcraftApp {
             return;
         }
         self.gpu_checked = true;
+        if self.gpu_failures.as_ref().is_some_and(|bridge| bridge.failure().is_some()) {
+            return;
+        }
         let Some(rs) = frame.wgpu_render_state() else { return };
         // Backend validation can panic on shader compilation even when device creation
         // succeeded. Keep the document and the egui renderer, and use CPU compositing.
         let gpu = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| effectcraft_gpu::Gpu::new(&rs.adapter, rs.device.clone(), rs.queue.clone())));
         match gpu {
             Ok(Ok(g)) => {
+                if let Some(bridge) = &self.gpu_failures {
+                    bridge.forward_to(g.context().device_failure_notifier());
+                    if bridge.failure().is_some() {
+                        return;
+                    }
+                }
                 log::info!("GPU compositor: {}", effectcraft_engine::render::Accelerator::name(&g));
                 self.session.accel = Some(Arc::new(g.clone()));
                 self.gpu = Some(g);
@@ -1263,6 +1331,7 @@ impl EffectcraftApp {
 
     fn frame(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        self.apply_gpu_failure(&ctx);
         self.auto.begin_frame();
         self.frames.set_context(&ctx);
         if self.session.render_job.is_some() {
@@ -1439,6 +1508,7 @@ impl eframe::App for EffectcraftApp {
     }
 
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.apply_gpu_failure(ctx);
         if !self.styled {
             theme::install(ctx, &self.tokens);
             self.styled = true;
@@ -1494,4 +1564,43 @@ impl eframe::App for EffectcraftApp {
 /// Advance playback with the viewer's scale (called by the viewer panel each frame).
 pub(crate) fn tick_playback(app: &mut EffectcraftApp, ctx: &egui::Context, scale: f64) {
     app.advance_playback(ctx, scale);
+}
+
+#[cfg(test)]
+mod gpu_failure_tests {
+    use super::*;
+
+    #[test]
+    fn host_failure_preserves_document_undo_and_cpu_pixels_and_detaches_late_readbacks() {
+        let mut session = Session::default();
+        let comp = ItemId(session.execute("comp.new", json!({"name": "Recovery", "width": 4, "height": 4, "duration": 1})).unwrap()["comp"].as_u64().unwrap());
+        session.execute("layer.newSolid", json!({"comp": comp.0, "color": "#ff0000"})).unwrap();
+        let before = session.render(comp, Tick::ZERO, RenderOpts::default());
+        let project = session.project.clone();
+        let revision = session.revision;
+        let prefs = serde_json::to_value(&session.prefs).unwrap();
+        let mut app = EffectcraftApp::new(session);
+        let ctx = egui::Context::default();
+        let bridge = gpu_failure::GpuFailureBridge::new(&ctx);
+        app.set_gpu_failure_bridge(bridge.clone());
+        let late_slot = app.viewer_readback.1.clone();
+        let key = FrameKey { revision, content: 1, comp: comp.0, frame: 0, scale: 1000, view: 0, opts: 0 };
+        app.viewer_readback.0 = Some(key);
+        bridge.report("synthetic host device failure", true);
+        app.apply_gpu_failure(&ctx);
+        assert!(Arc::ptr_eq(&project, &app.session.project));
+        assert_eq!(app.session.revision, revision);
+        assert_eq!(serde_json::to_value(&app.session.prefs).unwrap(), prefs);
+        assert!(app.gpu_checked, "failed device cannot be initialized again next frame");
+        assert!(app.session.accel.is_none());
+        assert!(app.ui.status.contains("presentation requires restarting"));
+        assert_eq!(app.session.render(comp, Tick::ZERO, RenderOpts::default()).data, before.data);
+        *late_slot.lock().unwrap() = Some((key, Arc::new(egui::ColorImage::new([1, 1], vec![egui::Color32::RED]))));
+        assert!(app.viewer_readback.0.is_none());
+        assert!(app.viewer_readback.1.lock().unwrap().is_none(), "a late completion cannot refill the replacement slot");
+        app.session.execute("edit.undo", json!({})).unwrap();
+        assert!(app.session.project.comp(comp).unwrap().layers.is_empty());
+        app.session.execute("edit.redo", json!({})).unwrap();
+        assert_eq!(app.session.render(comp, Tick::ZERO, RenderOpts::default()).data, before.data);
+    }
 }
