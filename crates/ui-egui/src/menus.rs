@@ -43,7 +43,8 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("view.theme.light", "Theme: Light", [], None),
     uic!("timeline.zoomIn", "Zoom In Time", [], Some("=")),
     uic!("timeline.zoomOut", "Zoom Out Time", [], Some("-")),
-    uic!("timeline.zoomFit", "Zoom to Fit Comp", [], Some(";")),
+    uic!("timeline.zoomFit", "Zoom to Fit Comp", [], None),
+    uic!("timeline.zoomFrameToggle", "Zoom In to Frame Level / Out to the Whole Comp", [], Some(";")),
     uic!("timeline.graphEditor", "Graph Editor", [], Some("Shift+F3")),
     uic!("timeline.switchesModes", "Toggle Switches / Modes", [], Some("F4")),
     uic!("timeline.workAreaBegin", "Set Work Area Begin", [], Some("B")),
@@ -156,33 +157,46 @@ pub fn reveal(app: &mut EffectcraftApp, kind: &str, now: f64, add: bool) {
         _ if pressed == "masks" => "maskPath",
         _ => pressed,
     };
+    let targets = reveal_targets(app);
     let tl = &mut app.ui.timeline;
     let present = tl.reveal.iter().any(|k| k == kind);
-    let sel: Vec<u64> = if app.session.state.selected_layers.is_empty() {
+    let mut kinds = tl.reveal.clone();
+    if add {
+        if present {
+            kinds.retain(|k| k != kind);
+        } else {
+            kinds.retain(|k| k != "props" || !tl.reveal_props.is_empty());
+            kinds.push(kind.to_string());
+        }
+    } else if present && kinds.len() == 1 {
+        kinds.clear();
+    } else {
+        kinds = vec![kind.to_string()];
+    }
+    tl.apply_reveal(&targets, kinds);
+}
+
+/// Show Time Remap on the layers of a `layer.enableTimeRemap` (`layers` by id, else the
+/// selected ones) that have it now.
+fn reveal_time_remap(app: &mut EffectcraftApp, params: &Value) {
+    let asked: Vec<u64> = match params.get("layers").and_then(Value::as_array) {
+        Some(a) => a.iter().filter_map(Value::as_u64).collect(),
+        None => app.session.state.selected_layers.iter().map(|l| l.0).collect(),
+    };
+    let Some(comp) = app.session.active_comp() else { return };
+    let layers: Vec<u64> = comp.layers.iter().filter(|l| asked.contains(&l.id.0) && l.props.get("timeRemap").is_some()).map(|l| l.id.0).collect();
+    if !layers.is_empty() {
+        app.ui.timeline.apply_reveal(&layers, vec!["timeRemap".into()]);
+    }
+}
+
+/// The layers a reveal shortcut acts on: the selected ones, else every layer of the active comp.
+fn reveal_targets(app: &EffectcraftApp) -> Vec<u64> {
+    if app.session.state.selected_layers.is_empty() {
         app.session.active_comp().map(|c| c.layers.iter().map(|l| l.id.0).collect()).unwrap_or_default()
     } else {
         app.session.state.selected_layers.iter().map(|l| l.0).collect()
-    };
-    if add {
-        if present {
-            tl.reveal.retain(|k| k != kind);
-            if tl.reveal.is_empty() {
-                tl.open_layers.clear();
-            }
-        } else {
-            tl.reveal.retain(|k| k != "props" || !tl.reveal_props.is_empty());
-            tl.reveal.push(kind.to_string());
-            tl.open_layers.extend(sel);
-        }
-        return;
     }
-    if present && tl.reveal.len() == 1 {
-        tl.reveal.clear();
-        tl.open_layers.clear();
-        return;
-    }
-    tl.reveal = vec![kind.to_string()];
-    tl.open_layers = sel.into_iter().collect();
 }
 
 fn no_params(p: &Value) -> bool {
@@ -316,8 +330,8 @@ pub fn invoke(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, params: V
                 return run_engine(app, ctx, "anim.reveal", json!({"kind": "modified"}));
             }
             Some((k, _)) if k == "keyframes" && app.ui.timeline.reveal == ["props"] => {
-                app.ui.timeline.reveal.clear();
-                app.ui.timeline.open_layers.clear();
+                let targets = reveal_targets(app);
+                app.ui.timeline.apply_reveal(&targets, vec![]);
                 return Ok(json!({"revealed": 0}));
             }
             _ => {}
@@ -427,6 +441,7 @@ pub fn invoke(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, params: V
             return Ok(Value::Null);
         }
         "timeline.zoomFit" => app.ui.timeline.pps = None,
+        "timeline.zoomFrameToggle" => crate::panels::timeline::toggle_frame_zoom(app, ctx),
         "timeline.column" => {
             let col = params.get("column").and_then(Value::as_str).ok_or("timeline.column: need `column`")?;
             let on = params.get("visible").and_then(Value::as_bool).unwrap_or(!crate::panels::timeline::column_visible(&app.ui.timeline, col));
@@ -451,14 +466,18 @@ pub fn invoke(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, params: V
             app.ui.timeline.open_layers.clear();
             app.ui.timeline.open_groups.clear();
             app.ui.timeline.reveal.clear();
+            app.ui.timeline.layer_reveal.clear();
         }
         // Ctrl+`: twirl the selected layers open (all closed ones) or closed (all open). From a
         // reveal shortcut's view it opens their full property trees.
         "timeline.twirlSelected" => {
             let sel: Vec<u64> = app.session.state.selected_layers.iter().map(|l| l.0).collect();
             let tl = &mut app.ui.timeline;
-            let revealing = !tl.reveal.is_empty();
+            let revealing = sel.iter().any(|l| tl.layer_reveal.contains_key(l));
             tl.reveal.clear();
+            for l in &sel {
+                tl.layer_reveal.remove(l);
+            }
             if !revealing && sel.iter().all(|l| tl.open_layers.contains(l)) {
                 for l in &sel {
                     tl.open_layers.remove(l);
@@ -535,6 +554,14 @@ pub fn invoke(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, params: V
                 let r = run_engine(app, ctx, id, params.clone());
                 if r.is_ok() {
                     crate::panels::effect_controls::reveal_applied(app, &params);
+                }
+                return r;
+            }
+            // Enabling time remapping twirls its layers open on Time Remap and its two keys.
+            if id == "layer.enableTimeRemap" {
+                let r = run_engine(app, ctx, id, params.clone());
+                if r.as_ref().is_ok_and(|on| on.as_bool() == Some(true)) {
+                    reveal_time_remap(app, &params);
                 }
                 return r;
             }
@@ -987,11 +1014,33 @@ pub fn frontend(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, p: Valu
         }
         "timeline.revealProps" => {
             let props = p.get("props").and_then(Value::as_array).cloned().unwrap_or_default();
+            let uids = |k: &str| -> Vec<u64> { props.iter().filter_map(|x| x.get(k).and_then(Value::as_u64)).collect() };
+            let (found, with_props) = (uids("prop"), uids("layer"));
+            // The layers it looked at (`layers`), else those it found something on. Layers that
+            // have nothing to show close; the others' reveals stay.
+            let targets: Vec<u64> = match p.get("layers").and_then(Value::as_array) {
+                Some(l) => l.iter().filter_map(Value::as_u64).collect(),
+                None => with_props.clone(),
+            };
+            // The targets' earlier picks go (U after UU shows the keyframed ones only).
+            let comp = app.session.active_comp_arc();
+            let theirs = |u: u64| {
+                comp.as_ref().is_some_and(|c| {
+                    targets
+                        .iter()
+                        .filter_map(|l| c.layer(effectcraft_engine::project::LayerId(*l)))
+                        .any(|l| l.props.find(u).is_some() || l.props.find_group(u).is_some())
+                })
+            };
             let tl = &mut app.ui.timeline;
-            tl.reveal_props = props.iter().filter_map(|x| x.get("prop").and_then(Value::as_u64)).collect();
-            tl.open_layers = props.iter().filter_map(|x| x.get("layer").and_then(Value::as_u64)).collect();
-            tl.reveal = if tl.reveal_props.is_empty() { vec![] } else { vec!["props".into()] };
-            json!({"revealed": tl.reveal_props.len()})
+            tl.reveal_props.retain(|u| !theirs(*u));
+            tl.reveal_props.extend(found.iter().copied());
+            let (shown, hidden): (Vec<u64>, Vec<u64>) = targets.into_iter().partition(|l| with_props.contains(l));
+            tl.apply_reveal(&hidden, vec![]);
+            if !shown.is_empty() {
+                tl.apply_reveal(&shown, vec!["props".into()]);
+            }
+            json!({"revealed": found.len()})
         }
         _ => return Err(format!("`{id}` is not a frontend command")),
     })
