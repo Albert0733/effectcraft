@@ -363,6 +363,19 @@ fn set_zoom(tl: &mut crate::state::TimelineState, comp: &Comp, pps: f64, fit: f6
     tl.pps = Some(npps);
 }
 
+/// `;`: from the whole comp, zoom in to frame level around the CTI; otherwise show the whole comp.
+pub fn toggle_frame_zoom(app: &mut EffectcraftApp, ctx: &egui::Context) {
+    let Some((_, w)) = ctx.data(|d| d.get_temp::<(f32, f32)>(egui::Id::new("timeline-graph-area"))) else { return };
+    let Some(comp) = app.session.active_comp_arc() else { return };
+    let fit = fit_pps(w, &comp);
+    if app.ui.timeline.pps.is_some_and(|p| p > fit) {
+        set_zoom(&mut app.ui.timeline, &comp, fit, fit, 0.0, 0.0);
+        return;
+    }
+    let cti = app.session.time().seconds();
+    set_zoom(&mut app.ui.timeline, &comp, MAX_PPS, fit, cti, w as f64 / 2.0);
+}
+
 /// Zoom the time ruler around the CTI.
 pub fn zoom(app: &mut EffectcraftApp, ctx: &egui::Context, k: f64) {
     let Some((_, w)) = ctx.data(|d| d.get_temp::<(f32, f32)>(egui::Id::new("timeline-graph-area"))) else { return };
@@ -953,6 +966,8 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     for x in [nav_vis.min.x, nav_vis.max.x] {
         p.rect_filled(Rect::from_min_max(pos2(x - 3.0, nav.min.y - 1.0), pos2(x + 3.0, nav.max.y + 1.0)), 3.0, t.accent);
     }
+    // The middle scrolls at the current zoom; each end is a handle that moves that side of the
+    // visible span (pulled in: zoomed in; stretched to the whole track: the whole comp).
     let nresp = ui.interact(nav, egui::Id::new("tl-nav"), Sense::drag());
     app.auto.add("timeline.navigator", nav, "Time navigator");
     if nresp.dragged() {
@@ -960,6 +975,23 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         app.ui.timeline.start = (app.ui.timeline.start + d).clamp(0.0, comp.duration.seconds());
         if app.ui.timeline.pps.is_none() {
             app.ui.timeline.pps = Some(pps);
+        }
+    }
+    let span_px = (graph_x1 - tm.x0) as f64;
+    let (t0, t1) = (tm.start, tm.t(graph_x1));
+    for (end, x) in [("start", nav_vis.min.x), ("end", nav_vis.max.x)] {
+        let hr = Rect::from_center_size(pos2(x, nav.center().y), vec2(10.0, nav.height() + 6.0));
+        let hresp = ui.interact(hr, egui::Id::new(("tl-nav", end)), Sense::drag());
+        app.auto.add(&format!("timeline.navigator.{end}"), hr, if end == "start" { "Time navigator start" } else { "Time navigator end" });
+        if hresp.hovered() || hresp.dragged() {
+            ctx.set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+        }
+        if let Some(px) = hresp.interact_pointer_pos().filter(|_| hresp.dragged()) {
+            let t = ((px.x - nav.min.x) / nav.width()) as f64 * comp.duration.seconds();
+            // The other end stays; the span is at least what the most zoomed-in ruler shows.
+            let min_span = span_px / MAX_PPS;
+            let (keep_t, keep_px, span) = if end == "start" { (t1, span_px, t1 - t.min(t1 - min_span)) } else { (t0, 0.0, t.max(t0 + min_span) - t0) };
+            set_zoom(&mut app.ui.timeline, &comp, span_px / span.max(min_span), fit_pps, keep_t, keep_px);
         }
     }
     p.rect_filled(ruler, 0.0, t.tl_ruler_bg);

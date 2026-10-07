@@ -43,7 +43,8 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("view.theme.light", "Theme: Light", [], None),
     uic!("timeline.zoomIn", "Zoom In Time", [], Some("=")),
     uic!("timeline.zoomOut", "Zoom Out Time", [], Some("-")),
-    uic!("timeline.zoomFit", "Zoom to Fit Comp", [], Some(";")),
+    uic!("timeline.zoomFit", "Zoom to Fit Comp", [], None),
+    uic!("timeline.zoomFrameToggle", "Zoom In to Frame Level / Out to the Whole Comp", [], Some(";")),
     uic!("timeline.graphEditor", "Graph Editor", [], Some("Shift+F3")),
     uic!("timeline.switchesModes", "Toggle Switches / Modes", [], Some("F4")),
     uic!("timeline.workAreaBegin", "Set Work Area Begin", [], Some("B")),
@@ -440,6 +441,7 @@ pub fn invoke(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, params: V
             return Ok(Value::Null);
         }
         "timeline.zoomFit" => app.ui.timeline.pps = None,
+        "timeline.zoomFrameToggle" => crate::panels::timeline::toggle_frame_zoom(app, ctx),
         "timeline.column" => {
             let col = params.get("column").and_then(Value::as_str).ok_or("timeline.column: need `column`")?;
             let on = params.get("visible").and_then(Value::as_bool).unwrap_or(!crate::panels::timeline::column_visible(&app.ui.timeline, col));
