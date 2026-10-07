@@ -417,7 +417,8 @@ impl Prefs {
     pub fn normalize(&mut self) {
         self.version = PREFS_VERSION;
         let g = &mut self.general;
-        if !matches!(g.language.as_str(), "en" | "ja") {
+        // AI編輯：允許繁體中文（zh-hant）。
+        if !matches!(g.language.as_str(), "en" | "ja" | "zh-hant" | "zh-tw" | "zh") {
             g.language = "en".into();
         }
         g.undo_levels = g.undo_levels.clamp(1, 99);
@@ -458,8 +459,9 @@ impl Prefs {
 
     /// Set the value at a dotted key. The key must exist and the value must have its type.
     pub fn set(&mut self, key: &str, value: Value) -> Result<(), String> {
-        if key == "general.language" && !matches!(value.as_str(), Some("en" | "ja")) {
-            return Err("`general.language` expects `en` or `ja`".into());
+        // AI編輯：新增繁體中文（zh-hant）介面語言。
+        if key == "general.language" && !matches!(value.as_str(), Some("en" | "ja" | "zh-hant" | "zh-tw" | "zh")) {
+            return Err("`general.language` expects `en`, `ja` or `zh-hant`".into());
         }
         let mut v = serde_json::to_value(&*self).map_err(|e| e.to_string())?;
         let ptr = format!("/{}", key.replace('.', "/"));
@@ -885,7 +887,8 @@ pub fn pages() -> Vec<Page> {
             id: "general",
             title: "General",
             items: vec![
-                s("general.language", "Language", Kind::Choice(&[("English", "en"), ("日本語", "ja")]), true),
+                // AI編輯：語言選項新增「繁體中文」。
+                s("general.language", "Language", Kind::Choice(&[("English", "en"), ("日本語", "ja"), ("繁體中文", "zh-hant")]), true),
                 s("general.undoLevels", "Levels of Undo", Kind::Int(1, 99, ""), true),
                 s("general.pathPointSize", "Path Point and Handle Size", Kind::Int(3, 20, "px"), true),
                 s("general.recentItems", "Recent Projects Shown", Kind::Int(1, 30, ""), true),

@@ -300,8 +300,64 @@ pub fn install(ctx: &egui::Context, t: &Tokens) {
             }
         }
     }
+    // AI編輯：加入系統中文字型（含繁中）作為所有家族的最後後備，
+    // 讓繁體中文介面不需嵌入 CJK 字型即可正確顯示（Windows 微軟正黑體、macOS PingFang TC 等）。
+    for (name, data) in system_cjk_fonts() {
+        fonts.font_data.insert(name.clone(), data);
+        for family in fonts.families.values_mut() {
+            family.push(name.clone());
+        }
+    }
     ctx.set_fonts(fonts);
     apply_visuals(ctx, t);
+}
+
+// AI編輯：掃描系統已安裝的中文字型，依優先順序列出（繁體黑體在前）。
+const SYSTEM_CJK_FONTS: &[(&str, u32)] = &[
+    ("msjh.ttc", 0), // Microsoft JhengHei（繁中黑體）
+    ("msjhbd.ttc", 0),
+    ("msjhl.ttc", 0),
+    ("msyh.ttc", 0), // Microsoft YaHei
+    ("msyhbd.ttc", 0),
+    ("simsun.ttc", 0),
+    ("Deng.ttf", 0),
+    ("Dengb.ttf", 0),
+    ("simhei.ttf", 0),
+    ("PingFang.ttc", 0), // macOS PingFang TC/SC
+    ("STHeiti Light.ttc", 0),
+    ("Hiragino Sans GB.ttc", 0),
+    ("NotoSansCJK-Regular.ttc", 0),
+    ("NotoSansCJKtc-Regular.otf", 0),
+    ("wqy-microhei.ttc", 0),
+    ("wqy-zenhei.ttc", 0),
+];
+
+fn system_cjk_fonts() -> Vec<(String, Arc<FontData>)> {
+    let dirs = [
+        "C:\\Windows\\Fonts",
+        "/System/Library/Fonts",
+        "/System/Library/Fonts/Supplemental",
+        "/usr/share/fonts/opentype/noto",
+        "/usr/share/fonts/truetype/wqy",
+    ];
+    let mut out = Vec::new();
+    for (file, index) in SYSTEM_CJK_FONTS {
+        let mut path = None;
+        for dir in dirs {
+            let candidate = std::path::Path::new(dir).join(file);
+            if candidate.is_file() {
+                path = Some(candidate);
+                break;
+            }
+        }
+        if let Some(path) = path {
+            if let Ok(bytes) = std::fs::read(path) {
+                let name = format!("system-cjk-{}", file.replace(['.', ' ', '-'], "_"));
+                out.push((name, Arc::new(FontData { font: std::borrow::Cow::Owned(bytes), index: *index, tweak: Default::default() })));
+            }
+        }
+    }
+    out
 }
 
 pub fn apply_visuals(ctx: &egui::Context, t: &Tokens) {
