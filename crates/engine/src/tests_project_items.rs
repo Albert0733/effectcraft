@@ -124,3 +124,46 @@ fn property_group_edits() {
     let tr = s.active_comp().unwrap().layers[0].props.sub("transform").unwrap().uid;
     assert!(s.execute("prop.removeGroup", json!({"layer": l, "prop": tr})).is_err());
 }
+
+/// Delete with a text animator, mask or shape group selected removes just those groups, in one
+/// undo step, and keeps their layers (#151). A fixed group selected still deletes the layer.
+#[test]
+fn delete_removes_selected_groups_not_their_layer() {
+    let mut s = Session::default();
+    s.execute("comp.new", json!({"name": "C", "width": 64, "height": 64, "duration": 1})).unwrap();
+    let t = s.execute("layer.newText", json!({"text": "ABCD"})).unwrap()["layer"].as_u64().unwrap();
+    s.execute("layer.addTextAnimator", json!({"layer": t, "properties": ["tracking"]})).unwrap();
+    let sh = s.execute("layer.newShape", json!({"kind": "star"})).unwrap()["layer"].as_u64().unwrap();
+    s.execute("layer.addMask", json!({"layer": sh, "shape": "ellipse"})).unwrap();
+    let groups = |s: &Session, l: u64, path: &str| -> Vec<u64> {
+        s.active_comp().unwrap().layer(LayerId(l)).map_or(vec![], |l| l.props.group(path).unwrap().groups().map(|g| g.uid).collect())
+    };
+    let anim = groups(&s, t, "text/animators")[0];
+    let (mask, shape) = (groups(&s, sh, "masks")[0], groups(&s, sh, "contents")[0]);
+    let delete = |s: &mut Session| {
+        let undo = s.history.undo.len();
+        s.execute("edit.clear", json!({})).unwrap();
+        assert_eq!(s.history.undo.len(), undo + 1, "one undo step");
+    };
+
+    s.execute("prop.select", json!({"layer": t, "prop": anim, "selectKeys": false})).unwrap();
+    let before = s.project.clone();
+    delete(&mut s);
+    assert!(groups(&s, t, "text/animators").is_empty(), "the animator is gone");
+    assert_eq!(s.active_comp().unwrap().layers.len(), 2, "its layer stays");
+    assert!(s.state.selected_props.is_empty());
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(s.project, before);
+
+    s.execute("prop.select", json!({"layer": sh, "prop": mask, "selectKeys": false})).unwrap();
+    s.execute("prop.select", json!({"layer": sh, "prop": shape, "selectKeys": false, "add": true})).unwrap();
+    delete(&mut s);
+    assert!(groups(&s, sh, "masks").is_empty());
+    assert!(!groups(&s, sh, "contents").contains(&shape));
+    assert_eq!(s.active_comp().unwrap().layers.len(), 2);
+
+    let tr = s.active_comp().unwrap().layer(LayerId(t)).unwrap().props.sub("transform").unwrap().uid;
+    s.execute("prop.select", json!({"layer": t, "prop": tr, "selectKeys": false})).unwrap();
+    delete(&mut s);
+    assert!(s.active_comp().unwrap().layer(LayerId(t)).is_none(), "a fixed group selected: the layer goes");
+}
