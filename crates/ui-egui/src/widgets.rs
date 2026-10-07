@@ -30,7 +30,10 @@ pub fn hot_number_at(
         let mut out = None;
         if r.lost_focus() {
             let txt = buf.trim().trim_end_matches(suffix).trim().replace(',', ".");
-            if let Ok(v) = txt.parse::<f64>() {
+            if !ui.input(|i| i.key_pressed(egui::Key::Escape))
+                && let Ok(v) = txt.parse::<f64>()
+                && v.is_finite()
+            {
                 out = Some(v.clamp(range.0, range.1));
             }
             ui.data_mut(|d| d.remove::<String>(editing_id));
