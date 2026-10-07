@@ -62,6 +62,14 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         if resp.clicked() {
             app.ui.tool = cur;
         }
+        // Ctrl+double-click Pan Behind: Center Anchor Point in Layer Content.
+        if cur == Tool::PanBehind
+            && resp.double_clicked()
+            && ui.input(|i| i.modifiers.command)
+            && let Err(e) = crate::menus::invoke(app, ui.ctx(), "layer.centerAnchor", json!({}))
+        {
+            app.ui.status = e;
+        }
         if slot.len() > 1 {
             resp.context_menu(|ui| {
                 for tool in slot.iter() {
