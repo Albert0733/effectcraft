@@ -1,6 +1,6 @@
 //! Project panel item edits: move into folders, rename, label, comment, with undo.
 
-use effectcraft_project::ItemId;
+use effectcraft_project::{ItemId, LayerId};
 use serde_json::json;
 
 use crate::Session;
@@ -70,6 +70,34 @@ fn delete_and_duplicate_items() {
     s.execute("project.move", json!({"items": [dup.0], "folder": f.0})).unwrap();
     s.execute("project.delete", json!({"items": [f.0]})).unwrap();
     assert!(s.project.item(dup).is_none());
+}
+
+/// A new layer takes its Project item's label (#153); layers made before keep their own when the
+/// item's label changes. Layers with no item keep their type's default.
+#[test]
+fn new_layers_take_their_items_label() {
+    use crate::color::Label;
+    use effectcraft_project::{Footage, FootageKind, ItemKind};
+    let mut s = Session::default();
+    let inner = s.execute("comp.new", json!({"name": "Inner", "width": 64, "height": 64, "duration": 1})).unwrap()["comp"].as_u64().unwrap();
+    s.execute("comp.new", json!({"name": "Main", "width": 64, "height": 64, "duration": 1})).unwrap();
+    s.execute("file.importPlaceholder", json!({"name": "Clip"})).unwrap();
+    let clip = s.state.project_selection[0].0;
+    let model = std::sync::Arc::make_mut(&mut s.project)
+        .add_item("Model", Label::Aqua, None, ItemKind::Footage(Footage { kind: FootageKind::Model, path: "missing.glb".into(), ..Default::default() }))
+        .0;
+    let solid = s.execute("layer.newSolid", json!({"name": "Solid", "color": "#406080"})).unwrap()["layer"].as_u64().unwrap();
+    let solid_item = s.active_comp().unwrap().layer(LayerId(solid)).unwrap().source.item().unwrap().0;
+    let label = |s: &Session, layer: &serde_json::Value| s.active_comp().unwrap().layer(LayerId(layer["layer"].as_u64().unwrap())).unwrap().label;
+    for (item, lab) in [(inner, "Blue"), (clip, "Green"), (model, "Orange"), (solid_item, "Fuchsia")] {
+        let before = s.execute("layer.addItem", json!({"item": item})).unwrap();
+        s.execute("project.setLabel", json!({"items": [item], "label": lab})).unwrap();
+        let after = s.execute("layer.addItem", json!({"item": item})).unwrap();
+        assert_eq!(label(&s, &after).name(), lab, "a new layer takes item {item}'s label");
+        assert_ne!(label(&s, &before).name(), lab, "a layer made before keeps its own");
+    }
+    let text = s.execute("layer.newText", json!({"text": "Hi"})).unwrap();
+    assert_eq!(label(&s, &text), Label::Red, "no item: the type's default");
 }
 
 #[test]
