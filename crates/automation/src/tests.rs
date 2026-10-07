@@ -421,3 +421,41 @@ fn trained_models_over_mcp() {
         assert!(err && c[0]["text"].as_str().unwrap().contains("unknown model"), "{c:?}");
     }
 }
+
+/// docs/agents.md's Tools table lists every tool, and an entry that lists arguments lists every
+/// argument the tool's input schema accepts (#137).
+#[test]
+fn agents_doc_tools_table_is_current() {
+    // (Checkouts may have CRLF line endings.)
+    let doc = include_str!("../../../docs/agents.md").replace("\r\n", "\n");
+    let table: String = doc
+        .split("### Tools")
+        .nth(1)
+        .and_then(|t| t.split("\n\n").nth(1))
+        .unwrap_or_default()
+        .to_string();
+    assert!(table.starts_with("| Tool |"), "no Tools table");
+    let mut missing = vec![];
+    for t in crate::tools::catalogue() {
+        // `name` (no arguments) or `name {a, b?, …}`.
+        let Some(at) = table.find(&format!("`{}", t.name)).filter(|i| {
+            let rest = &table[i + 1 + t.name.len()..];
+            rest.starts_with('`') || rest.starts_with(" {")
+        }) else {
+            missing.push(format!("{}: no entry", t.name));
+            continue;
+        };
+        let rest = &table[at + 1 + t.name.len()..];
+        if !rest.starts_with(" {") {
+            continue;
+        }
+        let args = rest.split("}`").next().unwrap_or_default();
+        let schema = t.input_schema();
+        for prop in schema["properties"].as_object().into_iter().flat_map(|p| p.keys()) {
+            if !args.split(|c: char| !(c.is_alphanumeric() || c == '_')).any(|w| w == prop) {
+                missing.push(format!("{}: argument `{prop}`", t.name));
+            }
+        }
+    }
+    assert!(missing.is_empty(), "docs/agents.md's Tools table is missing: {missing:#?}");
+}
