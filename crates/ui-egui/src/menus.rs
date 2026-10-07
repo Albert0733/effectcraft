@@ -175,6 +175,20 @@ pub fn reveal(app: &mut EffectcraftApp, kind: &str, now: f64, add: bool) {
     tl.apply_reveal(&targets, kinds);
 }
 
+/// Show Time Remap on the layers of a `layer.enableTimeRemap` (`layers` by id, else the
+/// selected ones) that have it now.
+fn reveal_time_remap(app: &mut EffectcraftApp, params: &Value) {
+    let asked: Vec<u64> = match params.get("layers").and_then(Value::as_array) {
+        Some(a) => a.iter().filter_map(Value::as_u64).collect(),
+        None => app.session.state.selected_layers.iter().map(|l| l.0).collect(),
+    };
+    let Some(comp) = app.session.active_comp() else { return };
+    let layers: Vec<u64> = comp.layers.iter().filter(|l| asked.contains(&l.id.0) && l.props.get("timeRemap").is_some()).map(|l| l.id.0).collect();
+    if !layers.is_empty() {
+        app.ui.timeline.apply_reveal(&layers, vec!["timeRemap".into()]);
+    }
+}
+
 /// The layers a reveal shortcut acts on: the selected ones, else every layer of the active comp.
 fn reveal_targets(app: &EffectcraftApp) -> Vec<u64> {
     if app.session.state.selected_layers.is_empty() {
@@ -538,6 +552,14 @@ pub fn invoke(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, params: V
                 let r = run_engine(app, ctx, id, params.clone());
                 if r.is_ok() {
                     crate::panels::effect_controls::reveal_applied(app, &params);
+                }
+                return r;
+            }
+            // Enabling time remapping twirls its layers open on Time Remap and its two keys.
+            if id == "layer.enableTimeRemap" {
+                let r = run_engine(app, ctx, id, params.clone());
+                if r.as_ref().is_ok_and(|on| on.as_bool() == Some(true)) {
+                    reveal_time_remap(app, &params);
                 }
                 return r;
             }

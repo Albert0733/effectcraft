@@ -3015,6 +3015,29 @@ mod tests {
         assert!(rows.iter().any(|r| r.trim() == ">Transform"), "{rows:?}");
     }
 
+    /// Enabling time remapping twirls the layer open on Time Remap (#157); disabling it reveals
+    /// nothing.
+    #[test]
+    fn enabling_time_remapping_reveals_time_remap() {
+        let mut s = effectcraft_engine::Session::default();
+        let inner = s.execute("comp.new", json!({"name": "Inner", "width": 32, "height": 32, "duration": 2})).unwrap()["comp"].as_u64().unwrap();
+        s.execute("comp.new", json!({"name": "Main", "width": 64, "height": 64, "duration": 4})).unwrap();
+        s.execute("layer.newSolid", json!({"name": "Other"})).unwrap();
+        let nested = s.execute("layer.addItem", json!({"item": inner})).unwrap()["layer"].as_u64().unwrap();
+        let mut app = EffectcraftApp::new(s);
+        let ctx = egui::Context::default();
+        crate::menus::invoke(&mut app, &ctx, "layer.enableTimeRemap", json!({"layers": [nested]})).unwrap();
+        assert_eq!(app.ui.timeline.layer_reveal.get(&nested), Some(&vec!["timeRemap".to_string()]));
+        let rows = labels(&app);
+        let at = rows.iter().position(|r| r == "Inner").unwrap();
+        assert_eq!(rows[at + 1].trim(), "Time Remap", "{rows:?}");
+        // Through the selection (the Layer menu), turning it off again: nothing new is revealed.
+        app.session.execute("layer.select", json!({"layers": [nested]})).unwrap();
+        app.ui.timeline.layer_reveal.clear();
+        crate::menus::invoke(&mut app, &ctx, "layer.enableTimeRemap", json!({})).unwrap();
+        assert!(app.ui.timeline.layer_reveal.is_empty());
+    }
+
     #[test]
     fn cti_snaps_to_the_nearest_candidate() {
         assert_eq!(snap_time(&[0.0, 1.0, 2.0], 1.04, 0.1), 1.0);
