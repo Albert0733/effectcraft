@@ -341,19 +341,37 @@ fn tl_map_id() -> egui::Id {
     egui::Id::new("timeline-map")
 }
 
+/// The most a time ruler zooms in (pixels per second).
+const MAX_PPS: f64 = 4000.0;
+
+/// Pixels per second that fit `comp` in a time graph `width` points wide.
+fn fit_pps(width: f32, comp: &Comp) -> f64 {
+    (width - 10.0).max(1.0) as f64 / comp.duration.seconds().max(0.01)
+}
+
+/// Zoom the time ruler to `pps` pixels per second, keeping comp time `at_t` at `at_px` pixels
+/// from the ruler's start. Zooming out stops at `fit`, where the whole comp shows (and the
+/// ruler keeps fitting it).
+fn set_zoom(tl: &mut crate::state::TimelineState, comp: &Comp, pps: f64, fit: f64, at_t: f64, at_px: f64) {
+    let npps = pps.min(MAX_PPS.max(fit)).max(fit);
+    if npps <= fit {
+        tl.pps = None;
+        tl.start = 0.0;
+        return;
+    }
+    tl.start = (at_t - at_px / npps).clamp(0.0, comp.duration.seconds());
+    tl.pps = Some(npps);
+}
+
 /// Zoom the time ruler around the CTI.
 pub fn zoom(app: &mut EffectcraftApp, ctx: &egui::Context, k: f64) {
-    let Some((x0, w)) = ctx.data(|d| d.get_temp::<(f32, f32)>(egui::Id::new("timeline-graph-area"))) else { return };
-    let comp = app.session.active_comp_arc();
-    let Some(comp) = comp else { return };
-    let fit = (w as f64 - 20.0) / comp.duration.seconds().max(0.01);
+    let Some((_, w)) = ctx.data(|d| d.get_temp::<(f32, f32)>(egui::Id::new("timeline-graph-area"))) else { return };
+    let Some(comp) = app.session.active_comp_arc() else { return };
+    let fit = fit_pps(w, &comp);
     let pps = app.ui.timeline.pps.unwrap_or(fit);
-    let npps = (pps * k).clamp(fit.min(1.0), 4000.0);
     let cti = app.session.time().seconds();
     let rel = (cti - app.ui.timeline.start) * pps;
-    app.ui.timeline.start = (cti - rel / npps).max(0.0);
-    app.ui.timeline.pps = Some(npps);
-    let _ = x0;
+    set_zoom(&mut app.ui.timeline, &comp, pps * k, fit, cti, rel);
 }
 
 /// Screen point of a layer bar (centre, or at a comp time).
@@ -850,7 +868,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let graph_x0 = rect.min.x + left_w + 1.0;
     let graph_x1 = rect.max.x - 10.0;
     ctx.data_mut(|d| d.insert_temp(egui::Id::new("timeline-graph-area"), (graph_x0, graph_x1 - graph_x0)));
-    let fit_pps = (graph_x1 - graph_x0 - 10.0) as f64 / comp.duration.seconds().max(0.01);
+    let fit_pps = fit_pps(graph_x1 - graph_x0, &comp);
     let pps = app.ui.timeline.pps.unwrap_or(fit_pps);
     if app.ui.timeline.pps.is_none() {
         app.ui.timeline.start = 0.0;
@@ -1184,7 +1202,9 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     if ui.rect_contains_pointer(rows_rect) {
         let (dy, dx, zoom) = ui.input(|i| (i.smooth_scroll_delta.y, i.smooth_scroll_delta.x, i.modifiers.alt));
         if zoom && dy.abs() > 0.0 {
-            zoom_at(app, &comp, tm, (dy as f64 / 200.0).exp(), ui.input(|i| i.pointer.hover_pos()).map(|p| p.x).unwrap_or(graph_x0));
+            // Alt+wheel zooms around the pointer, out until the whole comp shows.
+            let at_x = ui.input(|i| i.pointer.hover_pos()).map(|p| p.x).unwrap_or(graph_x0);
+            set_zoom(&mut app.ui.timeline, &comp, tm.pps * (dy as f64 / 200.0).exp(), fit_pps, tm.t(at_x), (at_x - tm.x0) as f64);
         } else {
             let over_outline = ui.input(|i| i.pointer.hover_pos()).is_some_and(|p| p.x < graph_x0);
             let shift = ui.input(|i| i.modifiers.shift);
@@ -2286,7 +2306,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     icons::paint(&p, Rect::from_center_size(pos2(zs.min.x - 14.0, footer.center().y), vec2(14.0, 14.0)), Icon::MountainSmall, t.text_dim);
     icons::paint(&p, Rect::from_center_size(pos2(zs.max.x + 14.0, footer.center().y), vec2(16.0, 16.0)), Icon::MountainLarge, t.text_dim);
     p.rect_filled(zs, 2.0, t.field_bg);
-    let maxpps = 4000.0f64;
+    let maxpps = MAX_PPS;
     let frac = ((pps / fit_pps).ln() / (maxpps / fit_pps).ln()).clamp(0.0, 1.0) as f32;
     let knob = pos2(zs.min.x + zs.width() * frac, zs.center().y);
     p.circle_filled(knob, 6.0, t.text);
@@ -2642,14 +2662,6 @@ fn kind_name(k: MatteKind) -> &'static str {
         MatteKind::Luma => "luma",
         MatteKind::LumaInverted => "lumaInverted",
     }
-}
-
-fn zoom_at(app: &mut EffectcraftApp, comp: &Comp, tm: TMap, k: f64, at_x: f32) {
-    let fit = tm.pps / app.ui.timeline.pps.map(|p| p / tm.pps).unwrap_or(1.0);
-    let npps = (tm.pps * k).clamp(fit.min(5.0), 4000.0);
-    let at_t = tm.t(at_x);
-    app.ui.timeline.start = (at_t - (at_x - tm.x0) as f64 / npps).clamp(0.0, comp.duration.seconds());
-    app.ui.timeline.pps = Some(npps);
 }
 
 fn layer_context_menu(resp: &egui::Response, layer: &Layer, actions: &mut Vec<(String, serde_json::Value)>) {
