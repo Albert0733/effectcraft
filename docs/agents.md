@@ -53,18 +53,20 @@ The server speaks JSON-RPC 2.0 over stdio, one message per line, and supports MC
 | `get_state` | Editor state (active comp, time, selections, tool) plus `app`: version, command and effect counts, export formats, parity summary. |
 | `run_script {code, name?}` | Run JavaScript with the After Effects-style scripting object model (`app.project`, `comp.layers.addText(…)`, `layer.property("ADBE Transform Group").property("ADBE Position").setValueAtTime(…)`…). Returns `{ok, result, output, error: {message, line, column}}`; edits are undoable. |
 | `get_project` / `get_comp {comp?}` | Project items, comp settings and layers. |
-| `get_layer {layer, comp?, time?, flat?}` | A layer's property tree. Every node has a `path`. |
+| `get_layer {layer, comp?, time?, depth?, flat?}` | A layer's property tree (`depth` limits how many group levels expand). Every node has a `path`. |
 | `get_property {layer, path, comp?, time?}` | Value at a time, keyframes and expression. |
 | `set_property {layer, path, value?, time?, expression?, comp?}` | Sets a static value. With `time` it sets a keyframe; with `expression` it sets an expression. |
-| `add_keyframe {layer, path, time+value \| keys:[...], interpolation?}` | Adds keys, then optionally applies linear/bezier/hold/easyEase. |
+| `add_keyframe {layer, path, time+value \| keys:[...], interpolation?, comp?}` | Adds keys, then optionally applies linear/bezier/hold/easyEase. |
 | `list_effects {filter?}` | Effect ids, names, categories, GPU / 32-bpc support and parameters. |
 | `list_fonts {query?, rescan?}` | Font families text layers can use, bundled and installed, with their styles, origin and own-language name; `rescan` picks up fonts installed since launch. |
 | `add_effect {layer, effect, values?, comp?}` | Apply an effect and set its parameters in one call; returns the instance path (`effects/#n`) and its parameter paths. |
 | `render_frame {comp?, time?, max_side?, path?, inline?, transparent?}` | Returns a PNG image of a frame; `transparent: true` keeps the alpha (as an RGB + Alpha render writes it) instead of compositing over the comp background. |
 | `open_project {path \| demo \| new}` / `save_project {path?}` | Open and save files. |
 | `undo {steps?}` / `redo {steps?}` | History. |
+| `history {goto?}` | The branching undo history (History panel): every state with its index, id, label, branch depth and whether it's current; `goto` (an index or id) jumps to any state, on any branch, without losing the others. |
+| `script_ui {action?, window?, widget?, value?, result?}` | Drive ScriptUI windows that scripts opened: `list` (default) the open windows, `get` a window's control tree, `click` a button / checkbox / radio button, `set` text, a slider or a list item, `close` a window (`result`: what a dialog's `show()` returns, default 2 = Cancel). |
 | `batch {steps: [{command, params}], label?, atomic?}` | Several commands in one call and one undo step (`engine.batch`); `"$N.key"` in a param is step N's result (`"$1.layer"`). A failing step rolls the batch back and names the step. |
-| *(bridge)* `screenshot {panel?, id?}`, `ui_inspect`, `ui_elements {prefix?}`, `ui_click`, `ui_drag`, `ui_key`, `ui_type`, `ui_set`, `control {method, params}` | Look at and operate the live window. |
+| *(bridge)* `screenshot {panel?, id?, max_side?, path?}`, `ui_inspect`, `ui_elements {prefix?}`, `ui_click`, `ui_drag`, `ui_key`, `ui_type`, `ui_set`, `control {method, params}` | Look at and operate the live window. |
 
 Layers are referenced by id (from `get_comp`), `"#n"` (1-based index from the top) or name. Comps are
 referenced by id or name, and default to the active comp. Property paths come from `get_layer`, for

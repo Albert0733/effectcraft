@@ -400,10 +400,15 @@ fn list_fonts_lists_families_with_styles() {
     let all = call_json(&mut s, "list_fonts", json!({}));
     let fams = all["families"].as_array().unwrap();
     assert!(fams.iter().any(|f| f["family"] == "Inter" && f["origin"] == "bundled"), "{all}");
+    // The query filters by substring: the bundled JetBrains Mono, and any installed family whose
+    // name contains it (JetBrainsMono Nerd Font…) (#149).
     let one = call_json(&mut s, "list_fonts", json!({"query": "jetbrains"}));
-    assert_eq!(one["count"], 1, "{one}");
-    assert_eq!(one["families"][0]["family"], "JetBrains Mono");
-    assert!(one["families"][0]["styles"].as_array().unwrap().contains(&json!("Regular")), "{one}");
+    let matched = one["families"].as_array().unwrap();
+    assert_eq!(one["count"].as_u64(), Some(matched.len() as u64), "{one}");
+    assert!(matched.iter().all(|f| f["family"].as_str().unwrap().to_lowercase().contains("jetbrains")), "{one}");
+    assert!(matched.len() < fams.len(), "the query filters: {one}");
+    let mono = matched.iter().find(|f| f["family"] == "JetBrains Mono").unwrap_or_else(|| panic!("{one}"));
+    assert!(mono["styles"].as_array().unwrap().contains(&json!("Regular")), "{one}");
 }
 
 /// Trained models over MCP (Roto Brush and face tracking): listed with their authors and
@@ -420,4 +425,37 @@ fn trained_models_over_mcp() {
         let (c, err) = call(&mut s, "execute_command", json!({"command": format!("{prefix}.model.select"), "params": {"id": "nope"}}));
         assert!(err && c[0]["text"].as_str().unwrap().contains("unknown model"), "{c:?}");
     }
+}
+
+/// docs/agents.md's Tools table lists every tool, and an entry that lists arguments lists every
+/// argument the tool's input schema accepts (#137).
+#[test]
+fn agents_doc_tools_table_is_current() {
+    // (Checkouts may have CRLF line endings.)
+    let doc = include_str!("../../../docs/agents.md").replace("\r\n", "\n");
+    let table: String = doc.split("### Tools").nth(1).and_then(|t| t.split("\n\n").nth(1)).unwrap_or_default().to_string();
+    assert!(table.starts_with("| Tool |"), "no Tools table");
+    let mut missing = vec![];
+    for t in crate::tools::catalogue() {
+        // `name` (no arguments) or `name {a, b?, …}`.
+        let Some(at) = table.find(&format!("`{}", t.name)).filter(|i| {
+            let rest = &table[i + 1 + t.name.len()..];
+            rest.starts_with('`') || rest.starts_with(" {")
+        }) else {
+            missing.push(format!("{}: no entry", t.name));
+            continue;
+        };
+        let rest = &table[at + 1 + t.name.len()..];
+        if !rest.starts_with(" {") {
+            continue;
+        }
+        let args = rest.split("}`").next().unwrap_or_default();
+        let schema = t.input_schema();
+        for prop in schema["properties"].as_object().into_iter().flat_map(|p| p.keys()) {
+            if !args.split(|c: char| !(c.is_alphanumeric() || c == '_')).any(|w| w == prop) {
+                missing.push(format!("{}: argument `{prop}`", t.name));
+            }
+        }
+    }
+    assert!(missing.is_empty(), "docs/agents.md's Tools table is missing: {missing:#?}");
 }
