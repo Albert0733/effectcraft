@@ -95,6 +95,8 @@ enum Gesture {
         l2p: Mat3,
         /// The layer's own snap targets as the drag began (its box and path vertices).
         own: Vec<effectcraft_engine::viewer::SnapTarget>,
+        /// Alt held as the drag began: the anchor point moves alone, so the layer shifts.
+        anchor_only: bool,
     },
     Pan {
         start_pan: [f32; 2],
@@ -274,6 +276,17 @@ fn drag_scale(start_scale: [f64; 3], start: [f64; 2], cur: [f64; 2], axes: [bool
         (fx, fy) = (f, f);
     }
     [start_scale[0] * fx, start_scale[1] * fy, start_scale[2]]
+}
+
+/// A drag `d` (comp pixels), kept to the axis it moves along most when `shift` is held.
+fn one_axis(d: [f64; 2], shift: bool) -> [f64; 2] {
+    if !shift {
+        d
+    } else if d[0].abs() > d[1].abs() {
+        [d[0], 0.0]
+    } else {
+        [0.0, d[1]]
+    }
 }
 
 fn point_in_quad(p: [f64; 2], q: &[[f64; 2]; 4]) -> bool {
@@ -1060,6 +1073,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     inv: l2c.inverse().unwrap_or(Mat3::IDENTITY),
                     l2p,
                     own: effectcraft_engine::viewer::layer_targets(&ectx, layer, false),
+                    anchor_only: mods.alt,
                 })
             }),
             t if t.is_shape() => Some(Gesture::Create { tool: t, start: cpt }),
@@ -1201,10 +1215,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 }
             }
             Gesture::Move { layers, start, snap_src } => {
-                let mut d = [cpt[0] - start[0], cpt[1] - start[1]];
-                if mods.shift {
-                    if d[0].abs() > d[1].abs() { d[1] = 0.0 } else { d[0] = 0.0 }
-                }
+                let mut d = one_axis([cpt[0] - start[0], cpt[1] - start[1]], mods.shift);
                 if let Some(src) = snap_src {
                     let ids: Vec<LayerId> = layers.iter().map(|x| x.0).collect();
                     let c = vt::snap(app, &ctx, &ectx, &map, &ids, &[[src[0] + d[0], src[1] + d[1]]], mods);
@@ -1228,21 +1239,24 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 }
                 let _ = app.session.execute("prop.set", json!({"layer": layer.0, "path": "transform/rotation", "value": r, "merge": merge}));
             }
-            Gesture::Anchor { layer, start_anchor, start_pos, start, inv, l2p, own } => {
+            Gesture::Anchor { layer, start_anchor, start_pos, start, inv, l2p, own, anchor_only } => {
                 // Pan Behind snaps the anchor point (to its own layer's box, other layers' features,
-                // guides and the grid).
+                // guides and the grid); Shift keeps the move to one axis.
+                let d = one_axis([cpt[0] - start[0], cpt[1] - start[1]], mods.shift);
                 let anchor_c = inv.inverse().map(|m| m.apply(gv2(start_anchor[0], start_anchor[1]))).unwrap_or(gv2(start[0], start[1]));
-                let want = [anchor_c.x + cpt[0] - start[0], anchor_c.y + cpt[1] - start[1]];
+                let want = [anchor_c.x + d[0], anchor_c.y + d[1]];
                 let sc = vt::snap_with(app, &ctx, &ectx, &map, &[layer], &[want], mods, &own);
-                let cpt = [cpt[0] + sc[0], cpt[1] + sc[1]];
                 let a = inv.apply(gv2(start[0], start[1]));
-                let b = inv.apply(gv2(cpt[0], cpt[1]));
+                let b = inv.apply(gv2(start[0] + d[0] + sc[0], start[1] + d[1] + sc[1]));
                 let dl = gv2(b.x - a.x, b.y - a.y);
                 let na = [start_anchor[0] + dl.x, start_anchor[1] + dl.y, start_anchor[2]];
-                let dp = l2p.apply_vec(dl);
-                let np = [start_pos[0] + dp.x, start_pos[1] + dp.y, start_pos[2]];
                 let _ = app.session.execute("prop.set", json!({"layer": layer.0, "path": "transform/anchor", "value": na, "merge": merge}));
-                let _ = app.session.execute("prop.set", json!({"layer": layer.0, "path": "transform/position", "value": np, "merge": merge}));
+                // Position follows so the layer stays put, unless Alt moves the anchor point alone.
+                if !anchor_only {
+                    let dp = l2p.apply_vec(dl);
+                    let np = [start_pos[0] + dp.x, start_pos[1] + dp.y, start_pos[2]];
+                    let _ = app.session.execute("prop.set", json!({"layer": layer.0, "path": "transform/position", "value": np, "merge": merge}));
+                }
             }
             Gesture::Camera { tool } => {
                 let d = resp.drag_delta();

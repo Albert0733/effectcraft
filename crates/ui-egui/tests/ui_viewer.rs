@@ -472,6 +472,48 @@ fn pan_behind_snaps_the_anchor_to_its_own_layer() {
     assert!((p[0] - 100.0).abs() < 0.01 && (p[1] - 100.0).abs() < 0.01, "{p:?}");
 }
 
+/// Issue #162: with Pan Behind, Alt-drag moves the anchor point alone (the layer shifts, its
+/// position stays), Shift keeps the move to one axis, and Ctrl+double-clicking the tool's button
+/// centres the anchor point in the layer content.
+#[test]
+fn pan_behind_alt_moves_the_anchor_alone_shift_constrains_and_the_tool_button_centres_it() {
+    let mut h = harness();
+    let box_id = h.state().session.active_comp().unwrap().layers[0].id;
+    h.state_mut().session.execute("prop.set", json!({"layer": box_id.0, "path": "transform/position", "value": [100, 100, 0]})).unwrap();
+    h.state_mut().session.execute("layer.select", json!({"layers": [box_id.0]})).unwrap();
+    h.state_mut().session.execute("view.snapping", json!({"value": false})).unwrap();
+    h.state_mut().ui.tool = Tool::PanBehind;
+    h.run_steps(2);
+    let close = |a: [f64; 3], b: [f64; 2]| (a[0] - b[0]).abs() < 0.01 && (a[1] - b[1]).abs() < 0.01;
+    // Alt: the anchor point moves by the drag, Position stays.
+    let (from, to) = (screen(&h, [100.0, 100.0]), screen(&h, [120.0, 105.0]));
+    hold_drag(&mut h, from, to, egui::Modifiers::ALT);
+    let (p, a) = position_and_anchor(&h, box_id);
+    assert!(close(a, [60.0, 45.0]) && close(p, [100.0, 100.0]), "Alt moves the anchor point alone: {a:?} {p:?}");
+    // Shift: the move keeps to the axis dragged along most (Position compensates).
+    h.state_mut().session.execute("prop.set", json!({"layer": box_id.0, "path": "transform/anchor", "value": [40, 40, 0]})).unwrap();
+    h.run_steps(2);
+    let (from, to) = (screen(&h, [100.0, 100.0]), screen(&h, [130.0, 110.0]));
+    hold_drag(&mut h, from, to, egui::Modifiers::SHIFT);
+    let (p, a) = position_and_anchor(&h, box_id);
+    assert!(close(a, [70.0, 40.0]) && close(p, [130.0, 100.0]), "Shift keeps to x: {a:?} {p:?}");
+    // Ctrl+double-click the tool's button: Center Anchor Point in Layer Content (the layer stays).
+    let ctrl = egui::Modifiers { ctrl: true, command: true, ..Default::default() };
+    let b = rect(&h, "tools.PanBehind").center();
+    h.input_mut().events.push(Event::ModifiersChanged(ctrl));
+    h.input_mut().events.push(Event::PointerMoved(b));
+    h.step();
+    for _ in 0..2 {
+        h.input_mut().events.push(Event::PointerButton { pos: b, button: egui::PointerButton::Primary, pressed: true, modifiers: ctrl });
+        h.input_mut().events.push(Event::PointerButton { pos: b, button: egui::PointerButton::Primary, pressed: false, modifiers: ctrl });
+    }
+    h.run_steps(2);
+    h.input_mut().events.push(Event::ModifiersChanged(Default::default()));
+    h.step();
+    let (p, a) = position_and_anchor(&h, box_id);
+    assert!(close(a, [40.0, 40.0]) && close(p, [100.0, 100.0]), "anchor point centred: {a:?} {p:?}");
+}
+
 /// Drag from `from` to `to` with `modifiers` held, holding the end point a frame (the viewer's
 /// gestures apply the pointer of the previous frame).
 fn hold_drag(h: &mut Harness<'_, EffectcraftApp>, from: Pos2, to: Pos2, modifiers: egui::Modifiers) {
