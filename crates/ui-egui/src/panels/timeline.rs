@@ -562,8 +562,8 @@ fn build_rows(app: &EffectcraftApp, comp: &Comp) -> Vec<Row> {
         if !tl.open_layers.contains(&l.id.0) {
             continue;
         }
-        if !tl.reveal.is_empty() {
-            reveal_rows(app, l, &mut rows);
+        if let Some(kinds) = tl.layer_reveal.get(&l.id.0).filter(|k| !k.is_empty()) {
+            reveal_rows(app, l, kinds, &mut rows);
             continue;
         }
         for c in &l.props.children {
@@ -612,9 +612,9 @@ fn build_rows(app: &EffectcraftApp, comp: &Comp) -> Vec<Row> {
 /// Rows of a twirled-open layer under the reveal shortcuts (one, or several added with Shift):
 /// masks, effects, the revealed properties in property-tree order, the Reveal Properties
 /// selection, then the waveform.
-fn reveal_rows(app: &EffectcraftApp, l: &Layer, rows: &mut Vec<Row>) {
+fn reveal_rows(app: &EffectcraftApp, l: &Layer, kinds: &[String], rows: &mut Vec<Row>) {
     let tl = &app.ui.timeline;
-    let has = |k: &str| tl.reveal.iter().any(|r| r == k);
+    let has = |k: &str| kinds.iter().any(|r| r == k);
     let group_rows = |rows: &mut Vec<Row>, g: &PropGroup, fx: bool| {
         for g in g.groups() {
             rows.push(Row {
@@ -668,7 +668,7 @@ fn reveal_rows(app: &EffectcraftApp, l: &Layer, rows: &mut Vec<Row>) {
     }
     // P/S/R/T/A/F/L/animated: matching properties, in tree order, each once.
     let mut wanted = std::collections::BTreeSet::new();
-    for kind in &tl.reveal {
+    for kind in kinds {
         let Some((group, ids)) = reveal_targets(kind) else { continue };
         let root = match group {
             "" => Some(&l.props),
@@ -2366,7 +2366,9 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         match a {
             UiAct::ToggleLayer(id, all) => {
                 let tl = &mut app.ui.timeline;
+                // Twirled by hand, the layer shows its whole tree again.
                 tl.reveal.clear();
+                tl.layer_reveal.remove(&id);
                 let open = !tl.open_layers.contains(&id);
                 if open {
                     tl.open_layers.insert(id);
@@ -2967,6 +2969,50 @@ mod tests {
         assert!(n_keys >= 1);
         crate::menus::invoke(&mut app, &ctx, "anim.reveal", json!({"kind": "keyframes"})).unwrap();
         assert!(app.ui.timeline.reveal_props.len() > n_keys, "UU reveals modified properties too");
+    }
+
+    /// U and the other reveal shortcuts act on the selected layers only: other layers keep their
+    /// twirl state and their own reveal (#160).
+    #[test]
+    fn reveal_shortcuts_leave_unselected_layers_alone() {
+        let mut app = app();
+        let ctx = egui::Context::default();
+        let comp = app.session.active_comp().unwrap().clone();
+        let id = |n: &str| comp.layers.iter().find(|l| l.name == n).unwrap().id.0;
+        let (plate, bx) = (id("Plate"), id("Box"));
+        let select = |app: &mut EffectcraftApp, l: u64| app.session.execute("layer.select", json!({"layers": [l]})).unwrap();
+        // Plate shows Scale (S); then U on Box.
+        select(&mut app, plate);
+        crate::menus::invoke(&mut app, &ctx, "timeline.reveal.scale", json!({})).unwrap();
+        select(&mut app, bx);
+        crate::menus::invoke(&mut app, &ctx, "anim.reveal", json!({"kind": "keyframes"})).unwrap();
+        let tl = &app.ui.timeline;
+        assert!(tl.open_layers.contains(&plate) && tl.open_layers.contains(&bx), "{:?}", tl.open_layers);
+        assert_eq!(tl.layer_reveal.get(&plate), Some(&vec!["scale".to_string()]), "Plate keeps its reveal");
+        assert_eq!(tl.layer_reveal.get(&bx), Some(&vec!["props".to_string()]));
+        let rows = labels(&app);
+        let at = |n: &str| rows.iter().position(|r| r == n).unwrap();
+        assert_eq!(rows[at("Plate") + 1].trim(), "Scale", "{rows:?}");
+        assert_eq!(rows[at("Box") + 1].trim(), "Position", "{rows:?}");
+        // UU (modified), then U later: Box shows its keyframed properties only again.
+        crate::menus::invoke(&mut app, &ctx, "anim.reveal", json!({"kind": "keyframes"})).unwrap();
+        assert!(labels(&app).iter().any(|r| r.trim() == ">Gaussian Blur"), "UU shows the effect");
+        app.last_reveal = Some(("keyframes".into(), -10.0));
+        crate::menus::invoke(&mut app, &ctx, "anim.reveal", json!({"kind": "keyframes"})).unwrap();
+        app.last_reveal = Some(("keyframes".into(), -10.0));
+        crate::menus::invoke(&mut app, &ctx, "anim.reveal", json!({"kind": "keyframes"})).unwrap();
+        let rows = labels(&app);
+        assert!(!rows.iter().any(|r| r.trim() == ">Gaussian Blur") && rows.iter().any(|r| r.trim() == "Position"), "{rows:?}");
+        // U again on Box (later than a double press) hides only Box's.
+        app.last_reveal = Some(("keyframes".into(), -10.0));
+        crate::menus::invoke(&mut app, &ctx, "anim.reveal", json!({"kind": "keyframes"})).unwrap();
+        let tl = &app.ui.timeline;
+        assert!(!tl.open_layers.contains(&bx) && tl.open_layers.contains(&plate), "{:?}", tl.open_layers);
+        // A layer twirled open by hand shows its whole tree, whatever was revealed elsewhere.
+        app.session.execute("layer.select", json!({"layers": []})).unwrap();
+        app.ui.timeline.open_layers.insert(bx);
+        let rows = labels(&app);
+        assert!(rows.iter().any(|r| r.trim() == ">Transform"), "{rows:?}");
     }
 
     #[test]
