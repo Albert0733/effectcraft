@@ -93,6 +93,8 @@ enum Gesture {
         start: [f64; 2],
         inv: Mat3,
         l2p: Mat3,
+        /// The layer's own snap targets as the drag began (its box and path vertices).
+        own: Vec<effectcraft_engine::viewer::SnapTarget>,
     },
     Pan {
         start_pan: [f32; 2],
@@ -1057,6 +1059,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     start: map.to_comp(press),
                     inv: l2c.inverse().unwrap_or(Mat3::IDENTITY),
                     l2p,
+                    own: effectcraft_engine::viewer::layer_targets(&ectx, layer, false),
                 })
             }),
             t if t.is_shape() => Some(Gesture::Create { tool: t, start: cpt }),
@@ -1225,11 +1228,12 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 }
                 let _ = app.session.execute("prop.set", json!({"layer": layer.0, "path": "transform/rotation", "value": r, "merge": merge}));
             }
-            Gesture::Anchor { layer, start_anchor, start_pos, start, inv, l2p } => {
-                // Pan Behind snaps the anchor point (to layer features, guides and the grid).
+            Gesture::Anchor { layer, start_anchor, start_pos, start, inv, l2p, own } => {
+                // Pan Behind snaps the anchor point (to its own layer's box, other layers' features,
+                // guides and the grid).
                 let anchor_c = inv.inverse().map(|m| m.apply(gv2(start_anchor[0], start_anchor[1]))).unwrap_or(gv2(start[0], start[1]));
                 let want = [anchor_c.x + cpt[0] - start[0], anchor_c.y + cpt[1] - start[1]];
-                let sc = vt::snap(app, &ctx, &ectx, &map, &[layer], &[want], mods);
+                let sc = vt::snap_with(app, &ctx, &ectx, &map, &[layer], &[want], mods, &own);
                 let cpt = [cpt[0] + sc[0], cpt[1] + sc[1]];
                 let a = inv.apply(gv2(start[0], start[1]));
                 let b = inv.apply(gv2(cpt[0], cpt[1]));
